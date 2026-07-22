@@ -185,6 +185,43 @@ have been seen, rather than guessing now at what the message should say.
 
 ---
 
+## 2026-07-22 — Second run: the PAT was set but the PR step never used it
+
+**What happened.** Created `AGENT_PAT`, re-labelled #4, and the run failed at `Open draft PR`
+with the *exact same* error as run one:
+
+```
+GitHub Actions is not permitted to create or approve pull requests
+```
+
+**Why the PAT didn't help.** A workflow bug of mine, not a GitHub setting. The `gh` CLI reads
+its credential from `GH_TOKEN` in the environment. The workflow sets `GH_TOKEN` **once, at job
+level**, to `secrets.GITHUB_TOKEN`. The PAT was only wired into two places:
+
+- the `Checkout main` step's `token:` input — which is why `git push` worked; and
+- nowhere near `gh pr create`.
+
+So the branch pushed as the PAT (user identity) while the PR creation still ran as the Actions
+bot — and the Actions bot is precisely what the org setting forbids from creating PRs. The
+push succeeding *masked* the misconfiguration: it looked like the PAT was in effect.
+
+**The subtlety worth keeping.** "Set the AGENT_PAT secret" is necessary but not sufficient.
+A secret does nothing until a step's `GH_TOKEN` actually points at it. Job-level `GH_TOKEN`
+plus a per-step `token:` override is a trap: `git` operations honour the override, `gh`
+operations silently keep using the job-level value.
+
+**Fix.** Override `GH_TOKEN` on the `Open draft PR` step to
+`${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}`. Left the label/comment steps on the
+job-level `GITHUB_TOKEN` — those work fine as the Actions bot and there is no reason to widen
+the PAT's use beyond the one operation that requires it.
+
+**Still unproven after this fix.** Whether `ci.yml` triggers on the resulting PR. The theory
+is yes — the branch and the PR now both carry the PAT's user identity, and user-authored pushes
+do trigger workflows — but run one never got far enough to test it and run two failed at the
+same gate. Third run is the first real test of the full path.
+
+---
+
 ## Pending — not yet exercised
 
 Nothing below has survived contact with a real run:

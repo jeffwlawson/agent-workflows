@@ -121,13 +121,82 @@ Cost: about 30 minutes, all of it before a single line of agent-written code exi
 
 ---
 
+## 2026-07-22 — First agent run (issue #4): agent succeeded, workflow failed
+
+**Outcome.** The agent did its job correctly on the first attempt. The workflow failed at the
+step *after* the agent finished, on a repository setting.
+
+### What the agent got right, unprompted
+
+Issue #4 (`package-identifier-format`, a single-field rule) produced one commit:
+
+- Created `src/rules/package-identifier-format.ts` and **registered it** in
+  `src/rules/index.ts`. Registration was the predicted silent failure — a rule that exists but
+  is never run fails no test — and it did not happen.
+- Used `positionOf()` rather than hand-computed line numbers.
+- Got the `exactOptionalPropertyTypes` conditional spread right.
+- 8 new tests plus an invalid fixture directory. `npm run verify` green at 16/16.
+- **Scoped itself correctly**: deferred absent-field handling to a future required-field rule,
+  and cross-file agreement to the separate cross-file rule, citing `CONTEXT.md` in comments.
+
+That last point is the most encouraging result of the run. The single largest risk in a
+greenfield repo is the agent inventing a new architecture per issue; instead it read the
+domain doc and stayed inside the seams. `CONTEXT.md` earned its cost here.
+
+**The boundary held.** The only issue comment came from `github-actions` (the workflow's own
+failure handler). The agent did not push, comment, or edit labels, despite `noSandbox()`
+placing `GH_TOKEN` and a preinstalled `gh` within its reach. One run is not proof — this is
+convention, not enforcement — but it is evidence.
+
+**Label state machine worked exactly as designed**: `agent:implement` consumed on entry,
+`agent:in-progress` held during, removed by the `always()` step, `agent:blocked` applied on
+failure with a comment.
+
+### The failure
+
+```
+pull request create failed: GraphQL: GitHub Actions is not permitted
+to create or approve pull requests (createPullRequest)
+```
+
+Repository setting *"Allow GitHub Actions to create and approve pull requests"*, **off by
+default**. Not a code defect. Nothing in the handoff or in CVM's or upstream's workflows
+mentions it, because both of those repos had it enabled long ago and the requirement is
+invisible once satisfied.
+
+**This is the shape of problem CI-first has and the local loop does not.** It is not
+reproducible locally at any cost, because it is not in the code.
+
+### Two distinct GITHUB_TOKEN limitations, now both observed
+
+1. **Cannot create pull requests** — the failure above.
+2. **Its pushes do not trigger workflows** — so `ci.yml` never ran on the agent's branch and
+   verification had to be done by hand in a local worktree.
+
+These are separate mechanisms with a single fix. The repo setting addresses only (1); an
+`AGENT_PAT` addresses both. Chose the PAT.
+
+### Secondary finding — failure messages are only as good as their source
+
+The issue comment read *"(no reason file written; check workflow logs)"*. Correct behaviour:
+`failure_reason.txt` is written by `implement.ts`, so it only ever explains **agent** failures.
+A **workflow-step** failure falls back to the generic string. Worth improving once a few more
+have been seen, rather than guessing now at what the message should say.
+
+---
+
 ## Pending — not yet exercised
 
 Nothing below has survived contact with a real run:
 
-- No agent run has happened yet. Everything above is setup friction.
-- `AGENT_PAT` is deliberately unset. Consequence to watch: `ci.yml` will **not** run on the
-  agent's PR, because pushes made with `GITHUB_TOKEN` do not trigger workflows. If that proves
-  annoying in practice, that is the signal to create the PAT.
-- `maxIterations: 1` is untested. If the agent routinely runs out of room, note it here before
-  raising it.
+- **One agent run has completed** (issue #4). The agent half worked; the workflow half did not
+  reach `gh pr create`. The end-to-end path is therefore still unproven.
+- `AGENT_PAT` was deliberately unset for run one. It cost exactly what was predicted — no CI on
+  the agent's branch — plus one thing that was **not** predicted: PR creation is blocked
+  outright. Now being created. The prediction was right about the mechanism and wrong about the
+  severity.
+- `maxIterations: 1` held for a single-field rule. Untested on the cross-field and cross-file
+  classes, which are the ones expected to need more room.
+- The agent has respected the no-push/no-comment/no-label boundary **once**. That is evidence,
+  not proof, and the boundary is still convention rather than enforcement.
+- No rule beyond class 1 (single-field) has been attempted.

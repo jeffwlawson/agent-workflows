@@ -61,6 +61,66 @@ cannot drift apart.
 
 ---
 
+## 2026-07-22 — First local run: Sandcastle's shell escaping is POSIX-only
+
+**What happened.** The very first attempt to run `implement.ts` locally on Windows died before
+the agent did any work:
+
+```
+FAILED: claude-code exited with code 1:
+There's an issue with the selected model ('claude-opus-4-8').
+It may not exist or you may not have access to it.
+```
+
+**What it looked like.** A model-availability or entitlement problem — the obvious readings
+being "the OAuth token lacks Opus 4.8" or "the model id is wrong". Both were wrong.
+
+**What it actually was.** `@ai-hero/sandcastle@0.12.0`, `dist/index.js:2788`:
+
+```js
+var shellEscape = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
+```
+
+POSIX single-quote escaping with no platform branch. `claudeCode`'s `buildPrintCommand`
+interpolates `--model ${shellEscape(model)}` into a command string that is executed via the
+platform shell. On Linux `sh` strips the quotes; on Windows `cmd.exe` does not treat `'` as a
+quoting character, so Claude Code receives a model named **`'claude-opus-4-8'`** — quotes
+included — and the API returns 404 `model_not_found`.
+
+**How it was isolated.** Narrowing, in this order:
+
+1. `claude --model claude-opus-4-8 -p ...` → works. So the model id is valid.
+2. The exact Sandcastle command shape (`--print --verbose --output-format stream-json -p -`)
+   → works. So the flag combination is fine.
+3. Same command with `CLAUDE_CODE_OAUTH_TOKEN` exported → works. **So the token is fine, and
+   Opus 4.8 is entitled.** This ruled out the two hypotheses that looked most likely.
+4. Same command with the model passed as `"'claude-opus-4-8'"` → reproduces the error
+   *byte for byte*, and the stream-json `init` event shows `"model":"'claude-opus-4-8'"`.
+
+Step 4 is the proof. Steps 1–3 are the ones worth remembering: the error message pointed
+confidently at the wrong subsystem, and two plausible theories had to be killed before the
+real cause was even visible.
+
+**Impact.** Windows-only, and it affects local prompt tuning *only*:
+
+- **CI is unaffected.** GitHub runners are Linux, `sh` strips the quotes, same code path works.
+- The bug is not Claude-specific. `pi`, `codex`, `opencode` and `copilot` all build commands
+  through the same `shellEscape`, so every provider is affected on Windows.
+
+**Resolution.** Abandoned local prompt tuning; going straight to CI. The upstream bug is
+recorded here rather than filed for now.
+
+**The lesson that generalises.** The handoff mandated WSL-native work and gave two reasons:
+`/mnt/c` is slow under Docker, and CRLF. Decision 2 removed Docker, so only CRLF appeared to
+survive — and CRLF was solved with `.gitattributes`. That reasoning was sound and still wrong,
+because there was a *third* reason nobody had enumerated: the toolchain assumes a POSIX shell.
+Dropping a constraint because its stated justifications no longer apply is not the same as
+verifying the constraint is unnecessary.
+
+Cost: about 30 minutes, all of it before a single line of agent-written code existed.
+
+---
+
 ## Pending — not yet exercised
 
 Nothing below has survived contact with a real run:

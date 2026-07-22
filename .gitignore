@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local agent scratch — noSandbox() runs write to the working tree.
+.sandcastle/**/output/
+failure_reason.txt

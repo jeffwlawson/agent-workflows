@@ -1,0 +1,9 @@
+# Normalise line endings. Authored on Windows, executed on Linux CI runners —
+# without this, the agent and CI disagree about every file's checksum and
+# shell scripts arrive with CRLF that bash refuses to run.
+* text=auto eol=lf
+
+# Fixtures are byte-for-byte comparisons against real winget manifests.
+# Never let git rewrite them.
+tests/fixtures/** -text
+schemas/** -text

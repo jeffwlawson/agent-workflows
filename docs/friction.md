@@ -222,18 +222,53 @@ same gate. Third run is the first real test of the full path.
 
 ---
 
+## 2026-07-22 — Third run: the loop closed
+
+**Outcome.** Full path, green. This is the run the pilot was built to produce.
+
+| Step | Result |
+|---|---|
+| Agent implements #4 | rule written, registered, 8 tests |
+| Push branch | via PAT |
+| Open draft PR | **PR #27**, authored by the human user (PAT identity, `is_bot: false`) |
+| CI cascades onto the PR | `verify` passed in 10s, unattended |
+| Labels settle | #4 returned to no agent labels |
+
+**The thing that had never worked, worked.** `ci.yml` triggered on the agent's PR by itself,
+because the branch and PR now carry a user identity rather than the Actions bot's, and
+user-authored pushes trigger workflows. Hand-verification in a local worktree is no longer
+needed. This is the concrete payoff of the PAT, distinct from "PRs can now be created" — it is
+the *second* GITHUB_TOKEN limitation from the first-run entry, also resolved.
+
+**Cost to get here:** three runs. Run 1 exposed the create-PR org restriction. Run 2 exposed
+my own miswiring of the PAT. Run 3 closed it. None of the three failures were in the agent's
+code — the agent got the rule right on run 1 and every run since. Every failure was in the
+plumbing around it. That is the expected shape: the workflow is the hard part, the linter is
+the easy part, and this whole exercise exists to debug the former.
+
+**Observation, not yet friction — Node 20 deprecation warning.** Every run annotates:
+
+> Node.js 20 is deprecated. actions/checkout@v4 and actions/setup-node@v4 are being forced to
+> run on Node.js 24.
+
+Harmless today (they run on 24 regardless), but `@v4` will eventually stop being patched.
+Bumping to `@v5` when convenient removes the noise. Logged so it is a decision, not a surprise.
+
+---
+
 ## Pending — not yet exercised
 
-Nothing below has survived contact with a real run:
+The end-to-end loop is proven (three runs of #4). Still unexercised:
 
-- **One agent run has completed** (issue #4). The agent half worked; the workflow half did not
-  reach `gh pr create`. The end-to-end path is therefore still unproven.
-- `AGENT_PAT` was deliberately unset for run one. It cost exactly what was predicted — no CI on
-  the agent's branch — plus one thing that was **not** predicted: PR creation is blocked
-  outright. Now being created. The prediction was right about the mechanism and wrong about the
-  severity.
+- **PR #27 is open but not reviewed or merged.** No `agent-review.yml` exists yet — review is
+  still a human step. Decision 4 says live with implement-only for ~15 issues first.
 - `maxIterations: 1` held for a single-field rule. Untested on the cross-field and cross-file
   classes, which are the ones expected to need more room.
-- The agent has respected the no-push/no-comment/no-label boundary **once**. That is evidence,
-  not proof, and the boundary is still convention rather than enforcement.
-- No rule beyond class 1 (single-field) has been attempted.
+- The agent has respected the no-push/no-comment/no-label boundary across **three** runs. Still
+  convention, not enforcement, but the evidence is accumulating.
+- No rule beyond class 1 (single-field) has been attempted. Classes 2 and 3 are where the
+  domain model and the prompt actually get stress-tested.
+- The winget-pkgs corpus job (#23) does not exist, so no rule has faced a real-world manifest.
+- `AGENT_PAT` expiry is **not tracked**. Set a reminder for whatever expiry was chosen, or the
+  loop dies silently with a 401 when it lapses.
+- Actions are on `@v4` (Node 20 deprecation warning). Bump to `@v5` eventually.

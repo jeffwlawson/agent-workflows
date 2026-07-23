@@ -282,6 +282,37 @@ green class-1 run tells us little new; a class-3 run is where the next real fric
 
 ---
 
+## 2026-07-23 — Fifth run (issue #18): first cross-file rule, and CONTEXT.md paid off
+
+**Outcome.** Green, no intervention, PR #31 — but the result worth recording is *how* the agent
+scoped the rule, not that CI passed. This was the first class-3 (cross-file) rule, chosen
+specifically to stress the domain model. The model held.
+
+`PackageVersion` appears in all three manifest files. A naive implementation checks all three
+against the directory name and emits three diagnostics for one logical problem. The agent
+instead:
+
+- Checked **only the version manifest** (the index file), via the `versionFile()` accessor and
+  the parser's `directoryVersion`.
+- **Explicitly deferred** the "installer and locale files carry the same `PackageVersion`"
+  check to a separate cross-file rule — which is exactly issue #17 (`cross-file-fields-agree`),
+  a sibling it could not see. It reasoned about a rule-boundary it had no direct knowledge of,
+  purely from the rule-class model in `CONTEXT.md`.
+- Documented that boundary in a comment, so the next agent working #17 inherits the seam.
+
+That coordination-to-avoid-double-reporting is a genuine design judgment, and it is precisely
+what `CONTEXT.md`'s "three rule classes" section was written to produce. The single largest
+greenfield risk — the agent inventing a fresh architecture or triple-reporting because it
+lacked the whole-system view — did not materialise. The domain doc earned its cost here more
+clearly than on any single-field rule.
+
+**Ramp status.** Class 1 (two rules) and now class 3 (one rule) both land clean with
+`maxIterations: 1`. Class 2 (cross-field-within-a-file, e.g. #12 duplicate-tuple) is the one
+remaining untested shape. On current evidence the ramp holds and the prompt does not yet need
+the harder rule classes spelled out inline.
+
+---
+
 ## Pending — not yet exercised
 
 The end-to-end loop is proven (three runs of #4). Still unexercised:

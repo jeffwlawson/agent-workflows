@@ -313,6 +313,44 @@ the harder rule classes spelled out inline.
 
 ---
 
+## 2026-07-23 — Sixth run (issue #12): class 2 lands, ramp complete
+
+**Outcome.** Green, no intervention, PR #33. This was the last untested rule class
+(cross-field-within-a-file), and the hardest reasoning yet. The agent got every subtlety the
+issue and `CONTEXT.md` called out:
+
+- **File-level default fallback.** `InstallerType`/`Scope` may be declared once at the root and
+  overridden per installer. The agent resolved each entry's effective value
+  (`record["InstallerType"] ?? rootType`) *before* comparing — the exact trap a naive
+  implementation falls into by reading per-installer fields only.
+- **Architecture is always per-installer** — no fallback, noted in a comment.
+- **Absent scope is itself a value.** Two installers that both omit `Scope` collide; the agent
+  reasoned this explicitly and its `JSON.stringify` key makes it hold.
+- **Reports the second occurrence, not the first** — via a `seen` set.
+- The fixture demonstrates the collision (two `x64`/`machine` entries with an `x86` between).
+
+**Minor deviation, not a defect.** The agent named the rule
+`installer-architecture-type-scope-unique`, not the issue's suggested `installer-tuple-unique`.
+The issues only ever *suggested* ids, and the chosen name is arguably clearer. Flagged in case a
+future issue references an exact id — none currently does.
+
+**Ramp complete.** All three rule classes now land clean under `maxIterations: 1`:
+
+| Class | Issue | |
+|---|---|---|
+| 1 — single-field | #4, #5 | clean |
+| 2 — cross-field in a file | #12 | clean, fallback resolved correctly |
+| 3 — cross-file | #18 | clean, sibling-rule scoping correct |
+
+**Tally: six implement runs, agent code correct on all six.** Every failure in the whole pilot
+was plumbing (runs 1–2: create-PR restriction, PAT miswiring), never the agent. The loop is
+boring in the sense the handoff meant it: the interesting question is no longer "does it work"
+but "what do we point it at". The remaining backlog is mechanical; the next *design* work is
+`agent-review.yml` (+ the shared-helper extraction scoped earlier) and the winget-pkgs corpus
+job (#22), which is the first time a rule meets a real manifest rather than a hand-built fixture.
+
+---
+
 ## Pending — not yet exercised
 
 The end-to-end loop is proven (three runs of #4). Still unexercised:

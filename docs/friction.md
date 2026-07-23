@@ -351,19 +351,94 @@ job (#22), which is the first time a rule meets a real manifest rather than a ha
 
 ---
 
+## 2026-07-23 — The corpus found real bugs, and the loop fixed them
+
+This is the most important entry in the log. The corpus job caught genuine rule bugs, and the
+same agent loop repaired them, validated against 4,000 real manifests. Find → fix → validate,
+end to end.
+
+### The catch: 417 false positives, from specs *I* wrote
+
+First corpus run (4,000 of 155,150 version directories, a 2.6% sample) emitted **417
+diagnostics** — every one a false positive by definition, since Microsoft accepted every
+manifest in the corpus. Two rules, both wrong:
+
+| Rule | Count | The bug |
+|---|---|---|
+| `installer-architecture-type-scope-unique` | 405 | uniqueness key omitted `InstallerLocale` |
+| `package-identifier-format` | 12 | capped identifiers at 4 segments; winget allows 8 |
+
+**Neither was an agent error.** The agent implemented issues #4 and #12 faithfully and
+correctly. The bugs were in the *issue specs*, which encoded my imperfect understanding of the
+winget rules. This is exactly the failure mode the corpus exists to catch and that nothing
+upstream of it can: the agent cannot know the spec is wrong, and hand-built fixtures only test
+the behaviour you already thought of. Only real known-good data is an independent oracle.
+
+### The lesson that changed how the fixes were written
+
+Having just watched two of my own specs turn out wrong, I did not write the correction specs
+from memory. I pulled ground truth first:
+
+- PackageIdentifier segment count — from the actual schema in `microsoft/winget-cli`
+  (`manifest.version.1.6.0.json`): pattern `{1,32}(\.{1,32}){1,7}` → 2–8 segments, each 1–32
+  chars, ≤128 total.
+- Installer uniqueness key — from winget-cli's validation source
+  (`ManifestValidation.cpp`): *"{installerType, arch, language and scope} combination is the
+  key."* Plus two subtleties in the comparator: archive types also key on `NestedInstallerType`,
+  and an unspecified scope is a wildcard, not a concrete value.
+
+Both corrected issues (#36, #37) cited these sources inline, so the agent implemented against
+ground truth rather than my guess. **Dropping a spec into the loop without grounding it is how
+the false positives got there in the first place; the fix was to ground the correction.**
+
+### How the agent did on the fixes
+
+- **#36 (identifier, #38):** got the segment-count fix right and even recognised that an old
+  failing test (`A.B.C.D.E`, 5 segments) was now *valid* and replaced it with a 9-segment case.
+  But it **skipped the secondary ask** — the per-segment 1–32 char bound. A clean example of an
+  issue with a primary fix plus a bundled extra getting the extra dropped. Hand-completed in #39
+  (the check subsumes the empty-segment case). Cheap to finish by hand; not worth a second run.
+- **#37 (installer, #40):** the strongest agent output of the pilot. It added `InstallerLocale`
+  with root fallback, folded `NestedInstallerType` in for archives, implemented the
+  scope-wildcard rule — and, unprompted, recognised that a wildcard *breaks hashset equality*
+  (matching is non-transitive), so it replaced the `Set<string>` key with a pairwise `collides()`
+  predicate. It also turned the real false-positive manifest (`abgox.InputTip`, a gitee zh-CN
+  mirror) into a *valid* regression fixture. That algorithmic insight was not in the issue.
+
+### The validation
+
+Re-ran the corpus against the same pinned SHA — identical 4,000 directories, only the rules
+changed. **417 → 0. Clean.** The corpus job is now on `main` as a standing gate: PRs touching
+`src/**` re-run it, so a future rule regression that a fixture misses still gets caught.
+
+### What the whole episode proves
+
+The pilot's earlier runs proved an agent can *implement* rules. This proves the thing that
+actually matters for correctness: an agent implements the spec it is given, so **the spec — and
+the oracle that checks it — are where correctness lives.** The corpus is that oracle, and the
+loop that writes rules is the same loop that fixes them once the oracle points at the problem.
+
+---
+
 ## Pending — not yet exercised
 
-The end-to-end loop is proven (three runs of #4). Still unexercised:
+The loop is proven for implement across all three rule classes, and the corpus has closed the
+find→fix→validate cycle. Still unexercised or outstanding:
 
-- **PR #27 is open but not reviewed or merged.** No `agent-review.yml` exists yet — review is
-  still a human step. Decision 4 says live with implement-only for ~15 issues first.
-- `maxIterations: 1` held for a single-field rule. Untested on the cross-field and cross-file
-  classes, which are the ones expected to need more room.
-- The agent has respected the no-push/no-comment/no-label boundary across **three** runs. Still
-  convention, not enforcement, but the evidence is accumulating.
-- No rule beyond class 1 (single-field) has been attempted. Classes 2 and 3 are where the
-  domain model and the prompt actually get stress-tested.
-- The winget-pkgs corpus job (#23) does not exist, so no rule has faced a real-world manifest.
-- `AGENT_PAT` expiry is **not tracked**. Set a reminder for whatever expiry was chosen, or the
-  loop dies silently with a 401 when it lapses.
+- **`agent-review.yml` does not exist.** Review is still a human step. When it is added it uses
+  `pull_request_target` — on this public repo, add
+  `if: github.event.pull_request.head.repo.full_name == github.repository` from the first commit,
+  or forks can execute code with secrets in scope. The shared-helper extraction (a composite
+  action for the setup steps; backfilling `shared/common.ts`) pays off when this second workflow
+  lands, not before.
+- **`AGENT_PAT` expiry is not tracked.** Set a reminder for the chosen expiry, or the loop dies
+  silently with a 401 when it lapses. Highest-priority loose end because it fails invisibly.
+- The corpus is a **2.6% stride sample** (4,000 of 155,150) at one pinned SHA. Clean there is
+  strong but not exhaustive evidence; a rule could still have a false positive on an unsampled
+  manifest. Raising `MAX_PACKAGES` or bumping the pinned SHA are the levers, at the cost of CI
+  minutes.
+- Corpus `checkout` of winget-pkgs is the slow step (~6 min). Not cached. If it becomes painful,
+  caching by SHA is the tunable the original issue (#22) called for.
 - Actions are on `@v4` (Node 20 deprecation warning). Bump to `@v5` eventually.
+- Remaining backlog rules (~13) are mechanical now. The open question is whether to keep running
+  them one-by-one or trust batching several labels at once.

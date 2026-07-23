@@ -256,6 +256,32 @@ Bumping to `@v5` when convenient removes the noise. Logged so it is a decision, 
 
 ---
 
+## 2026-07-23 — Fourth run (issue #5): the loop is boring
+
+**Outcome.** Labelled #5, walked away, came back to a green PR. **No intervention between runs
+— the first time that has been true.** This is the milestone that matters more than run three:
+run three proved the mechanism *can* complete once; this proves it repeats with zero plumbing
+changes, which is the bar the handoff set ("live with it until it's boring") before trusting
+harder rule classes.
+
+- `package-version-path-safe` (another class-1 single-field rule).
+- PR #29, draft, authored by the user; `ci.yml` cascaded and passed in 10s.
+- **The agent appended to the registry** — `[packageIdentifierFormat, packageVersionPathSafe]`
+  — rather than overwriting it. It read the current state of `index.ts` and extended it. The
+  registry-registration step, predicted as the most likely silent failure, has now been done
+  correctly on two independent rules against two different base states.
+
+**Tally so far:** two rules on `main`, one in review (#29), all class-1. Four implement runs;
+the only failures were the two plumbing bugs (create-PR restriction, PAT miswiring), both in
+the first two runs, both fixed. The agent's code has been correct every single run.
+
+**What this unlocks.** Class 1 is demonstrably boring. The next informative run is a class-2
+(cross-field, e.g. #13 duplicate-tuple) or class-3 (cross-file, e.g. #18 agreement) rule —
+where `maxIterations: 1`, the prompt, and `CONTEXT.md`'s model actually get stress-tested. A
+green class-1 run tells us little new; a class-3 run is where the next real friction lives.
+
+---
+
 ## Pending — not yet exercised
 
 The end-to-end loop is proven (three runs of #4). Still unexercised:

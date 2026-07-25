@@ -9,6 +9,8 @@ export interface PullRequestFeedback {
   readonly conversation: string;
   /** All of the above rendered as one block, or "" when there is none. */
   readonly all: string;
+  /** Node ids of the unresolved threads shown to the agent, for reply/resolve. */
+  readonly threadIds: readonly string[];
   /** Diff of the branch against `main`. */
   readonly diff: string;
   /** False when nothing trusted was found — callers should refuse rather than invent work. */
@@ -29,9 +31,13 @@ query($owner:String!,$repo:String!,$number:Int!) {
       reviews(first:50) { nodes { body state author { login } authorAssociation } }
       reviewThreads(first:100) {
         nodes {
+          id
           isResolved
           comments(first:50) {
-            nodes { path line originalLine body author { login } authorAssociation }
+            nodes {
+              path line startLine originalLine originalStartLine
+              body author { login } authorAssociation
+            }
           }
         }
       }
@@ -47,8 +53,32 @@ interface GqlAuthored {
 interface GqlThreadComment extends GqlAuthored {
   path?: string | null;
   line?: number | null;
+  startLine?: number | null;
   originalLine?: number | null;
+  originalStartLine?: number | null;
 }
+
+interface GqlThread {
+  id?: string;
+  isResolved?: boolean;
+  comments?: { nodes?: GqlThreadComment[] };
+}
+
+/**
+ * Where a thread comment points, and whether that anchor is still live.
+ *
+ * `line` is null once the code under a comment has changed — GitHub calls this
+ * *outdated* and keeps `originalLine` as the position it was written against.
+ * Saying so matters: an agent handed a bare line number cannot tell whether it
+ * describes today's code or code that has since moved.
+ */
+const anchorOf = (c: GqlThreadComment): string => {
+  const outdated = c.line === null || c.line === undefined;
+  const end = c.line ?? c.originalLine;
+  const start = c.startLine ?? c.originalStartLine;
+  const range = start !== null && start !== undefined && start !== end ? `${start}-${end}` : `${end ?? "?"}`;
+  return `${c.path ?? "unknown"}:${range}${outdated ? " (outdated — the code here has changed since)" : ""}`;
+};
 
 /** Trusted, non-empty, and rendered — the filter every surface shares. */
 const render = <T extends GqlAuthored>(
@@ -81,7 +111,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     | {
         comments?: { nodes?: GqlAuthored[] };
         reviews?: { nodes?: (GqlAuthored & { state?: string })[] };
-        reviewThreads?: { nodes?: { isResolved?: boolean; comments?: { nodes?: GqlThreadComment[] } }[] };
+        reviewThreads?: { nodes?: GqlThread[] };
       }
     | undefined;
   try {
@@ -109,13 +139,32 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     (n, login) => `**@${login}** (${n.state ?? "COMMENTED"}):\n${(n.body ?? "").trim()}`,
   );
 
-  const unresolved = (pr?.reviewThreads?.nodes ?? [])
-    .filter((thread) => thread.isResolved !== true)
-    .flatMap((thread) => thread.comments?.nodes ?? []);
-  const inline = render(unresolved, (n, login) => {
-    const where = `${n.path ?? "unknown"}:${n.line ?? n.originalLine ?? "?"}`;
-    return `**${where}** (@${login}):\n${(n.body ?? "").trim()}`;
-  });
+  // Grouped by thread, not flattened: the fix agent has to name a thread to
+  // reply to or resolve it, so thread identity must survive into the prompt.
+  const threads = (pr?.reviewThreads?.nodes ?? [])
+    .filter((thread): thread is GqlThread & { id: string } =>
+      thread.isResolved !== true && typeof thread.id === "string",
+    )
+    .map((thread) => {
+      const trusted = (thread.comments?.nodes ?? []).filter(
+        (c) =>
+          isTrustedAuthor(c.authorAssociation, c.author?.login ?? undefined) &&
+          (c.body ?? "").trim().length > 0,
+      );
+      return { id: thread.id, comments: trusted };
+    })
+    .filter((thread) => thread.comments.length > 0);
+
+  const inline = threads
+    .map((thread) => {
+      const first = thread.comments[0];
+      const header = `**${anchorOf(first!)}** — thread \`${thread.id}\``;
+      const body = thread.comments
+        .map((c) => `@${c.author?.login ?? "unknown"}:\n${(c.body ?? "").trim()}`)
+        .join("\n\n");
+      return `${header}\n\n${body}`;
+    })
+    .join("\n\n---\n\n");
 
   const all = [
     summaries && `### Review summaries\n\n${summaries}`,
@@ -130,6 +179,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     inline,
     conversation,
     all,
+    threadIds: threads.map((t) => t.id),
     diff: sh("git diff main...HEAD"),
     hasFeedback: all.length > 0,
   };

@@ -1,8 +1,18 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
-import { claudeAgent, fail, required, scrubGitHubTokens, sh } from "../shared/common.js";
+import {
+  claudeAgent,
+  fail,
+  required,
+  scrubGitHubTokens,
+  sh,
+  writeJson,
+} from "../shared/common.js";
+import { filterOutcomes, fixOutputSchema } from "../shared/fix-output.js";
 import { fetchPullRequestFeedback } from "../shared/pr-feedback.js";
+import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
@@ -26,7 +36,7 @@ try {
 
   const before = sh("git rev-parse HEAD").trim();
 
-  await sandcastle.run({
+  const result = await runWithExtraction({
     name: `implement-pr-${PR_NUMBER}`,
     agent: claudeAgent(),
     sandbox: noSandbox(),
@@ -40,17 +50,26 @@ try {
       CONVERSATION: feedback.conversation || "(none)",
       DIFF_TO_MAIN: feedback.diff,
     },
-    maxIterations: 1,
+    output: sandcastle.Output.object({ tag: "output", schema: fixOutputSchema }),
+    extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),
   });
+
+  const outcomes = filterOutcomes(result.output.threadOutcomes, feedback.threadIds);
+  writeJson("thread_outcomes.json", outcomes);
 
   const after = sh("git rev-parse HEAD").trim();
   if (before === after) {
-    // Not a failure: the agent may have judged every comment already-addressed
-    // or not worth acting on. Say so plainly and let the workflow skip the push.
+    // Not a failure: the agent may have judged every comment already handled or
+    // not worth acting on. It still owes replies, which the workflow posts.
     console.log("Agent made no commits — nothing to push.");
   } else {
     console.log(`Agent committed changes on ${BRANCH} (${before.slice(0, 7)} -> ${after.slice(0, 7)}).`);
   }
+  console.log(
+    `Thread outcomes: ${outcomes.filter((o) => o.status === "addressed").length} addressed, ` +
+      `${outcomes.filter((o) => o.status === "declined").length} declined ` +
+      `(${result.output.threadOutcomes.length} produced, ${outcomes.length} kept).`,
+  );
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }

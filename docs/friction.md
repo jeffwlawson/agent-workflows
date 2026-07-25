@@ -661,19 +661,57 @@ prerequisite rather than a nicety.
 
 ---
 
+## 2026-07-23 — Closing the loop: `agent:fix`, and what consolidation caught
+
+Built `agent-implement-pr.yml` (trigger label **`agent:fix`**), completing implement → review →
+fix. Three things from the build are worth keeping.
+
+**1. A distinct label instead of CVM's overload.** CVM triggers both its issue-implement and its
+PR-fix workflows with `agent:implement`, disambiguated only by event type. Copying that here
+would have been a footgun: our `agent-implement.yml` listens on `issues:` only, so labelling a
+*PR* `agent:implement` would silently do nothing at all. `agent:fix` makes the two intents
+distinct at a glance.
+
+**2. Consolidation was the right call and it found a latent bug.** Review and fix both needed PR
+feedback, so the three REST calls became one GraphQL query shared by both. That was not just
+tidying — **REST does not expose `isResolved` at all**, so the consolidated query is what made
+"skip resolved threads" possible. Resolving a thread now means what a human expects: handled,
+stop re-raising it.
+
+While testing that query, the author login came back as `github-actions` — but the trusted-bot
+set contained only `github-actions[bot]`, the **REST** spelling. GraphQL spells the same account
+differently. Left unfixed, review would have silently discarded its own agent's comments and the
+review→fix handoff would have quietly done nothing. Found by smoke-testing the real query against
+PR #43 before shipping, not by reading the code. Both spellings are now listed.
+
+**3. Two gaps found by asking a plain question.** "Will it read comments and replies I add?"
+turned out to have an asymmetric answer: `agent:fix` read all four PR comment surfaces, but
+`agent:review` read only conversation comments — so a re-review was blind to inline notes left on
+the previous one and would repeat itself. Both now use the shared fetch. The question was worth
+more than the code review that preceded it.
+
+Also added `docs/parity.md`: every CVM feature tracked side by side, with deliberate omissions
+(❌) distinguished from not-yet-done (📋). The point is that a gap should be a visible decision,
+not an accident discovered later.
+
+---
+
 ## Pending — not yet exercised
 
-The loop is proven for implement across all three rule classes, and the corpus has closed the
-find→fix→validate cycle. Still unexercised or outstanding:
+The loop is proven for implement across all three rule classes, the corpus has closed the
+find→fix→validate cycle, and review has run once. Still unexercised or outstanding:
 
-- **`agent-review.yml` (review-lite) is built but not yet merged or run** (PR #42). Fork-guarded,
-  author-gated, token-scrubbed, `contents: read`. Untested end to end — no PR has been reviewed by
-  it yet. That is the next thing to exercise.
-- **Shared-setup extraction still pending.** implement and review now duplicate the
-  checkout → node → npm ci → install-Claude-Code steps; a composite action is the focused
-  follow-up now that a second workflow exists to justify it.
-- **Full review is gated on the author-association filter for review threads** (see the residual
-  entry above) — a hard prerequisite before porting thread-replies, which upstream does not gate.
+- **The full cycle has never run end to end.** implement → review → fix all exist on `main`, but
+  no single issue has travelled all three. Review has run once (on #43); `agent:fix` has **never
+  run at all**. That is the next thing to exercise.
+- **`agent:fix` needs review to actually find something.** If a review comes back clean, the fix
+  run correctly refuses ("no trusted feedback to act on"). That is right behaviour but a thin
+  test, so the loop test should use an issue with real review surface — or a human comment should
+  be added deliberately, which also exercises the collaborator-steering path.
+- **Shared-setup extraction still pending.** Three workflows now duplicate
+  checkout → node → npm ci → install-Claude-Code. A composite action is the obvious cleanup.
+- **Thread replies are still absent from both review and fix** (`docs/parity.md` §3, §4). Neither
+  agent can speak in-thread; fix speaks only through commit messages.
 - **`AGENT_PAT` expiry is not tracked.** Set a reminder for the chosen expiry, or the loop dies
   silently with a 401 when it lapses. Highest-priority loose end because it fails invisibly.
 - The corpus is a **2.6% stride sample** (4,000 of 155,150) at one pinned SHA. Clean there is

@@ -696,18 +696,103 @@ not an accident discovered later.
 
 ---
 
+## 2026-07-23 — The full cycle runs: implement → review → fix, no human in the middle
+
+Issue #13 (`nested-installer-compatibility`, class 2) travelled all three workflows in sequence
+with no intervention at any stage. `agent:fix` had never run before.
+
+| Stage | Result |
+|---|---|
+| `agent:implement` | PR #46 — rule, three-file fixture, tests |
+| `agent:review` | flagged helper duplication with a silent-drift risk |
+| `agent:fix` | hoisted the shared helpers into `manifest.ts` |
+
+**The review found something no test could.** Both rules were individually correct, so no fixture
+and no corpus run would ever have flagged them. What it spotted was that `ARCHIVE_TYPES` — the set
+encoding *which InstallerTypes winget unpacks rather than runs* — was defined in **two** places,
+in `installer-entry-unique.ts` and again in the new rule. Add a second archive type someday and one
+rule updates while the other silently does not. A maintainability failure with no present-day
+symptom, which is exactly the category automated checks cannot reach: fixtures test behaviour, the
+corpus tests behaviour against real data, and neither has an opinion about duplication.
+
+### …and the review was confidently, specifically wrong about correctness
+
+Unprompted, the review also argued the rule was corpus-safe:
+
+> The converse check (nested fields on a non-archive) is a real winget-cli error, and since winget
+> itself rejects such manifests they cannot appear in the known-good corpus, so it will not produce
+> false positives.
+
+That is the oracle's own premise, reasoned about by an agent nobody asked to think about it — and
+**both of its claims are false.** The corpus then failed with **13 errors**, all from that check.
+
+Ground truth, `winget-cli/src/AppInstallerCommonCore/Manifest/ManifestValidation.cpp:323`: the
+entire nested-installer validation block is wrapped in `if (IsArchiveType(...))`. Archive types
+*require* `NestedInstallerType` and `NestedInstallerFiles`; non-archive types are **not checked at
+all**. There is no converse rule. Komac routinely emits `InstallerType: portable` alongside
+`NestedInstallerType` and `NestedInstallerFiles` (that is how a portable gets its
+`PortableCommandAlias`), and Microsoft accepts it — `Gruntwork.Terragrunt`, `Navidrome`, `TEdit`,
+`iLEAPP`, `g-helper` all do exactly this.
+
+The converse check was never a winget rule. **It was invented in issue #13 — by me** — and is the
+third spec error of the pilot, after the identifier segment count and the installer uniqueness key.
+
+**The lesson, and it is the sharpest one here.** The review's argument was specific, domain-aware,
+cited the right mechanism, and read as expert. It was also wrong, and it was wrong *in the same
+direction as the spec it was reviewing* — both came from the same mistaken belief about winget.
+A reviewer that shares the author's wrong premise cannot catch the error, however carefully it
+reasons; it will instead produce a confident justification for it. That is worse than silence,
+because it manufactures false assurance.
+
+Worth recording that the human (me) then amplified it: the reasoning was praised as a highlight of
+the run before the corpus finished. Plausibility is not evidence. **Only the oracle grounded it** —
+and the oracle is the only layer here that consults something outside the team's own beliefs.
+
+**The fix discriminated rather than complied.** The review named four duplicated items. The agent
+moved three and **declined the fourth with a reason**: `label` is diagnostic-message presentation
+("(none)" for an absent value), not manifest domain knowledge, so it carries no drift risk and
+reads better beside the messages it formats. That is the distinction the prompt asks for —
+*"do not make a change you believe is wrong just because a comment asked for it"* — actually
+exercised rather than merely stated. It also renamed `isArchive` → `isArchiveType` for clarity at
+module scope, which nobody requested.
+
+**The detail that is easy to miss:** it edited the *already-merged* `installer-entry-unique.ts` to
+import the shared helpers. Extracting only for the new rule would have looked like a fix while
+leaving the duplication — and the drift risk — exactly where it was. Removing the risk required
+touching code outside the PR's original scope, and it did that without being told.
+
+**What the pilot has demonstrated.** The handoff asked whether a CI-driven agent loop is viable.
+Across nine implement runs the agent's code has been correct every time; every failure in the
+entire pilot was plumbing. The four mechanisms catch genuinely different classes of problem, and
+none subsumes another:
+
+| Mechanism | Catches | Blind to |
+|---|---|---|
+| `npm run verify` | behaviour contradicting its own tests | anything the spec got wrong |
+| corpus oracle | **spec** errors nobody on the team knows are errors | design, duplication, style |
+| `agent:review` | **design** problems with no runtime symptom | any error it shares the author's premise about |
+| `agent:fix` | acts on findings, with the judgement to decline | whatever was never flagged |
+
+The corpus caught a bug in a rule, then a bug in *its own gate*, and now a spec error that the
+review had explicitly certified as safe. The review caught a duplication no test could see.
+
+The non-overlap is the finding — but this run sharpens it. Three of the four layers only ever
+check the work against *the team's own beliefs*: tests encode them, review reasons from them, fix
+acts on that reasoning. When the belief is wrong, those three agree with each other and produce
+confident, mutually-reinforcing justification. **Only the corpus consults something external**, and
+it is therefore the only layer that can catch a wrong premise rather than a wrong implementation.
+Every spec error in this pilot — all three — was caught by the corpus and by nothing else.
+
+---
+
 ## Pending — not yet exercised
 
-The loop is proven for implement across all three rule classes, the corpus has closed the
-find→fix→validate cycle, and review has run once. Still unexercised or outstanding:
+The full cycle is proven. Still unexercised or outstanding:
 
-- **The full cycle has never run end to end.** implement → review → fix all exist on `main`, but
-  no single issue has travelled all three. Review has run once (on #43); `agent:fix` has **never
-  run at all**. That is the next thing to exercise.
-- **`agent:fix` needs review to actually find something.** If a review comes back clean, the fix
-  run correctly refuses ("no trusted feedback to act on"). That is right behaviour but a thin
-  test, so the loop test should use an issue with real review surface — or a human comment should
-  be added deliberately, which also exercises the collaborator-steering path.
+- **`agent:fix`'s refusal path has never run.** Every fix run so far had feedback to act on. The
+  "no trusted feedback" refusal is implemented but untested.
+- **The collaborator-steering path is untested in anger.** `fetchTrustedComments` works (smoke
+  tested), but no run has yet been driven by a human comment rather than an agent review.
 - **Shared-setup extraction still pending.** Three workflows now duplicate
   checkout → node → npm ci → install-Claude-Code. A composite action is the obvious cleanup.
 - **Thread replies are still absent from both review and fix** (`docs/parity.md` §3, §4). Neither

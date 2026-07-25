@@ -24,6 +24,21 @@ steering as authoritative, but keep your own judgement about the code.
 
 {{DISCUSSION}}
 
+# CI RESULTS
+
+The PR's other checks, waited for and collected before this review started.
+
+**Treat these as evidence that outranks your own reasoning about the code.** The `corpus` job in
+particular lints a pinned snapshot of `microsoft/winget-pkgs`, where every manifest is known-good
+because Microsoft accepted it — so any error it reports is a false positive in one of our rules,
+demonstrated against real data. If a check failed, diagnosing *why* is the most valuable thing you
+can do in this review.
+
+Do not assert that a rule is corpus-safe when the corpus says otherwise, and do not recommend
+merging a PR whose checks are failing.
+
+{{CI_STATUS}}
+
 # DIFF TO MAIN
 
 ```diff

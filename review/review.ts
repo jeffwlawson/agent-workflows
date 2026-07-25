@@ -18,6 +18,24 @@ import { runWithExtraction } from "../shared/run-with-extraction.js";
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
 
+/**
+ * Results of the PR's other checks, gathered by the workflow after waiting for
+ * them to finish. This is the only evidence in the prompt that comes from
+ * *outside* the repo's own assumptions — the diff, the issue and the tests all
+ * encode what the team already believes, whereas the corpus job compares the
+ * rules against manifests Microsoft actually accepted. Absent (or timed out) it
+ * degrades to a note; it never blocks the review.
+ */
+const readCiStatus = (): string => {
+  const file = process.env["CI_STATUS_FILE"];
+  if (!file) return "(CI results were not collected for this run.)";
+  try {
+    return fs.readFileSync(file, "utf8").trim() || "(no other checks reported.)";
+  } catch {
+    return "(CI results were not available.)";
+  }
+};
+
 try {
   const context = fetchPullRequestContext(PR_NUMBER);
 
@@ -40,6 +58,7 @@ try {
       ISSUE_TITLE: context.issueTitle || "(no linked issue)",
       LINKED_ISSUE: context.linkedIssue,
       DISCUSSION: context.discussion || "(no collaborator comments)",
+      CI_STATUS: readCiStatus(),
       DIFF_TO_MAIN: context.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),

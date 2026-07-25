@@ -12,10 +12,15 @@ change any files.
 
 {{LINKED_ISSUE}}
 
-# DISCUSSION
+# EXISTING FEEDBACK
 
-Collaborator comments on this PR and its linked issue (steering from maintainers — treat as
-authoritative context, but still your own judgement on the code):
+Feedback already on this PR — earlier review summaries, unresolved inline threads (replies
+included), and conversation comments — plus any collaborator comments on the linked issue.
+Resolved threads are omitted deliberately: they have been handled.
+
+**Do not repeat a point that is already made below.** If a previous comment was addressed, say
+so briefly rather than raising it again; if it was not, you may reinforce it. Treat maintainer
+steering as authoritative, but keep your own judgement about the code.
 
 {{DISCUSSION}}
 

@@ -69,6 +69,26 @@ export const scrubGitHubTokens = (): void => {
 
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
+/**
+ * Our own workflows post as `github-actions[bot]`, whose `author_association`
+ * is `NONE` — so an association-only gate would discard the review agent's own
+ * findings and break the review → fix handoff.
+ *
+ * Trusting this one login is sound because the identity is *transitively
+ * write-gated*: only a workflow in this repository can post as it, and adding
+ * or editing a workflow requires write access. Deliberately NOT `user.type ===
+ * "Bot"` in general — that would also trust Dependabot and any GitHub App an
+ * admin installs, which is a far wider surface for a workflow that commits code.
+ */
+// Both spellings on purpose: the REST API reports this account as
+// `github-actions[bot]`, GraphQL reports the same account as `github-actions`.
+// Listing only one silently drops our own review's comments on whichever path
+// uses the other.
+const TRUSTED_BOT_LOGINS = new Set(["github-actions[bot]", "github-actions"]);
+
+export const isTrustedAuthor = (association: string | undefined, login: string | undefined): boolean =>
+  TRUSTED_ASSOCIATIONS.has(association ?? "") || TRUSTED_BOT_LOGINS.has(login ?? "");
+
 export interface TrustedIssue {
   readonly title: string;
   readonly body: string;
@@ -90,13 +110,18 @@ export interface TrustedIssue {
  */
 export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
   const ghRepo = process.env["GH_REPO"] ?? "";
-  let parsed: { title?: string; body?: string | null; author_association?: string } = {};
+  let parsed: {
+    title?: string;
+    body?: string | null;
+    author_association?: string;
+    user?: { login?: string };
+  } = {};
   try {
     parsed = JSON.parse(safeSh(`gh api repos/${ghRepo}/issues/${issueNumber}`) || "{}");
   } catch {
     parsed = {};
   }
-  if (!TRUSTED_ASSOCIATIONS.has(parsed.author_association ?? "")) {
+  if (!isTrustedAuthor(parsed.author_association, parsed.user?.login)) {
     return { title: "", body: "", trusted: false };
   }
   return { title: parsed.title ?? "", body: (parsed.body ?? "").trim(), trusted: true };
@@ -123,7 +148,7 @@ export const fetchTrustedComments = (number: string): string => {
     comments = [];
   }
   return comments
-    .filter((c) => TRUSTED_ASSOCIATIONS.has(c.author_association ?? ""))
+    .filter((c) => isTrustedAuthor(c.author_association, c.user?.login))
     .map((c) => `**@${c.user?.login ?? "unknown"}:**\n${(c.body ?? "").trim()}`)
     .filter((text) => text.trim().length > 0)
     .join("\n\n---\n\n");

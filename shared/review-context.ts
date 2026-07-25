@@ -1,4 +1,5 @@
-import { fetchTrustedComments, fetchTrustedIssue, gh, sh } from "./common.js";
+import { fetchTrustedComments, fetchTrustedIssue, gh } from "./common.js";
+import { fetchPullRequestFeedback } from "./pr-feedback.js";
 import { parseDiffLines } from "./diff-lines.js";
 
 export interface PullRequestContext {
@@ -49,24 +50,23 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
     }
   }
 
-  // Collaborator conversation comments on the PR and (if any) the linked issue —
-  // author-gated the same way, so a maintainer's review steering is included and
-  // world-writable comments are not. Inline review-thread comments are NOT read
-  // here; those belong to the full workflow and need the same gate.
-  const prComments = fetchTrustedComments(prNumber);
+  // Every feedback surface on the PR, author-gated, via the same shared fetch
+  // `agent:fix` uses: review summaries, unresolved inline threads (replies
+  // included), and conversation comments. A re-review therefore sees the notes
+  // a human left on the previous one instead of repeating itself.
+  const feedback = fetchPullRequestFeedback(prNumber);
   const issueComments = issueNumber ? fetchTrustedComments(issueNumber) : "";
   const discussion = [
-    prComments && `### On the PR\n\n${prComments}`,
+    feedback.all,
     issueComments && `### On the linked issue\n\n${issueComments}`,
   ]
     .filter(Boolean)
     .join("\n\n");
 
-  // `main` is fetched as a local ref by the workflow before this runs. Use the
-  // three-dot diff (changes since the merge-base) only — no two-dot fallback,
-  // which has different semantics and would silently mis-filter inline comments.
-  // An empty string here legitimately means "no changes", not an error.
-  const diff = sh("git diff main...HEAD");
+  // The three-dot diff (changes since the merge-base) — never a two-dot
+  // fallback, which has different semantics and would silently mis-filter
+  // inline comments. Empty legitimately means "no changes", not an error.
+  const diff = feedback.diff;
 
   return {
     prTitle: prView.title,

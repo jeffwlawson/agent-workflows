@@ -785,9 +785,76 @@ Every spec error in this pilot — all three — was caught by the corpus and by
 
 ---
 
+## 2026-07-25 — The conversation loop: suggestions, replies, resolution
+
+Closed the gap between "the agents exchange data" and "the agents hold a conversation you can
+read." Three features (#49, #50), then an end-to-end test on PR #46 that found a flaw in one.
+
+### A Copilot comparison worth recording
+
+The prompting question was whether our reviews use the same machinery as GitHub Copilot's, since
+they look different. **They use the same API.** Copilot posts an ordinary pull request review and
+is likewise constrained to `COMMENT` — never approve, never request-changes — which is exactly our
+`event: "COMMENT"`. The visible differences: it posts as `copilot-pull-request-reviewer[bot]`, it
+occupies the *Reviewers* sidebar because it is a requested reviewer (a GitHub App), and it emits
+` ```suggestion ` blocks. Only the last is substantive, and it is what we built.
+
+### Design decisions that carried weight
+
+**Only `addressed` resolves; `declined` stays open.** Auto-resolving a decline would let the agent
+quietly bury a disagreement. An extra open thread is a far better failure than a silently
+dismissed objection.
+
+**Invented thread ids are dropped.** A hallucinated id would not merely fail —
+`resolveReviewThread` could close an *unrelated* thread. `filterOutcomes` honours only ids we
+actually handed over.
+
+**Suggestions are explicitly not authoritative.** The fix prompt says to verify before applying:
+*"a confident reviewer working from a false premise produces a tidy patch that is still wrong."*
+That is #46's lesson encoded, and it matters more once suggestions arrive looking ready to apply —
+prose invites scrutiny, a patch invites a click.
+
+**Introspect before designing.** Checking the GraphQL schema first showed both
+`addPullRequestReviewThreadReply` and `resolveReviewThread` key on the **thread node id**, which
+deleted a planned REST `databaseId` mapping layer entirely.
+
+### The test, and what it caught
+
+PR #46 was usefully messy: four unresolved threads, two of them *outdated*, two saying the same
+thing. The review produced a correctly-ranged multi-line suggestion (`87-88`); the fix applied it,
+replied to all four threads, and resolved two.
+
+**Flaw found — the schema was too narrow.** `addressed` was documented as *"the code was changed
+to satisfy the comment."* The two already-satisfied threads were therefore classified `declined`,
+which by design leaves them **open forever** — reviving the exact accumulation this machinery
+exists to prevent. The agent followed the spec correctly; the spec was wrong. Fixed by making the
+test *"is anything still outstanding?"* rather than *"did I personally change something?"*.
+
+That is the **fourth** spec error of the pilot with the same signature: a definition narrower than
+the world it describes, written confidently, caught only by running it.
+
+**Second, smaller catch.** The fix reflowed the suggestion rather than pasting it — correct
+behaviour — but justified it as preventing the sentence "being truncated." Checking the diff, the
+suggestion would have applied cleanly; nothing would have truncated. Right action, wrong reason.
+Worth recording precisely because a good outcome hid a bad justification — the same failure mode
+that produced the 13 corpus false positives.
+
+### An operational trap, found while setting the test up
+
+`pull_request_target` takes the **workflow YAML** from the base branch, but the job checks out the
+**PR head** — so `.sandcastle/` runner scripts come from the PR branch. An agent PR opened before
+a script change keeps running the *old* scripts, silently, with no error. #46 needed `main` merged
+into it before the test meant anything.
+
+That is a standing hazard for every in-flight agent PR after any `.sandcastle/` change, and a
+concrete argument for `agent-update-branch` (`parity.md` §1), whose whole job is refreshing stale
+PR branches.
+
+---
+
 ## Pending — not yet exercised
 
-The full cycle is proven. Still unexercised or outstanding:
+The full cycle is proven, including replies and resolution. Still unexercised or outstanding:
 
 - **`agent:fix`'s refusal path has never run.** Every fix run so far had feedback to act on. The
   "no trusted feedback" refusal is implemented but untested.

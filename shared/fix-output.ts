@@ -5,12 +5,20 @@ export interface ThreadOutcome {
   /** GraphQL node id of the thread, taken verbatim from the feedback shown. */
   readonly threadId: string;
   /**
-   * `addressed` — the code was changed to satisfy the comment. The workflow
-   * replies and **resolves** the thread.
+   * `addressed` — the comment's concern is satisfied in the current HEAD.
+   * That includes work done by an *earlier* commit, not only by this run: a
+   * thread with nothing outstanding should close regardless of which commit
+   * settled it. The workflow replies and **resolves**.
    *
-   * `declined` — deliberately not acted on. The workflow replies with the
-   * reason and leaves the thread **open**, so a human can push back. Resolving
-   * a decline would let the agent quietly bury a disagreement.
+   * `declined` — you disagree, or deliberately are not acting. The workflow
+   * replies with the reason and leaves the thread **open** so a human can push
+   * back; resolving a decline would let the agent quietly bury a disagreement.
+   *
+   * The split is deliberately "is anything still outstanding?", not "did I
+   * personally change something?". An earlier, narrower wording ("the code was
+   * changed to satisfy the comment") made the agent classify already-handled
+   * threads as declined, so they stayed open forever — reviving exactly the
+   * accumulation this reply/resolve machinery exists to prevent.
    */
   readonly status: "addressed" | "declined";
   /** Markdown reply posted into the thread. */

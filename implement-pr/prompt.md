@@ -76,6 +76,11 @@ whether you **addressed** it or **declined** it, and a short reply explaining wh
 replies are posted publicly into the threads, and addressed threads are then resolved, so write
 them for the person who left the comment.
 
+The test is **"is anything still outstanding?"**, not "did I personally change something?". A
+comment that an earlier commit already satisfied is **addressed** — say so and let it close. Use
+**declined** only when you disagree or are deliberately not acting, so the thread stays open for
+a human to push back on.
+
 Keep track as you go of which thread each change answers; you cannot resolve a thread you never
 decided about.
 

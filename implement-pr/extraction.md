@@ -6,9 +6,12 @@ Report one outcome per review thread you were shown, using the `threadId` exactl
 feedback (the `` thread `PRRT_...` `` marker). Do not invent ids — an unrecognised id is dropped.
 Omit threads you did not consider.
 
-- `addressed` — you changed the code to satisfy the comment. The thread will be **resolved**.
-- `declined` — you deliberately did not act. The thread stays **open** so a human can push back.
-  Say plainly why, in the reply.
+- `addressed` — nothing is outstanding: the comment's concern is satisfied in the current HEAD.
+  Use this **whether you fixed it in this run or an earlier commit already did** — the question
+  is whether anything is still owed, not whether you personally changed something. The thread
+  will be **resolved**.
+- `declined` — you disagree, or are deliberately not acting. The thread stays **open** so a human
+  can push back. Say plainly why, in the reply.
 
 The reply is posted publicly into the thread, so write it to the person who left the comment.
 

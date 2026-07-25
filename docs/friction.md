@@ -571,6 +571,96 @@ the same author-association gate to review-thread comments, and its self-improve
 
 ---
 
+## 2026-07-23 — First review run: the review agent predicted a corpus failure, and was right
+
+`agent-review.yml` ran for the first time against PR #43 (issue #16, the ReleaseDate warn rule).
+Everything worked mechanically — label transition, structured-output extraction, diff-line
+filtering, review posted, labels cleaned up. But the *content* is the result worth recording.
+
+**The review made two inline comments and one falsifiable prediction.**
+
+Comment 1 noticed something no fixture could: this was the ruleset's first *heuristic warning* —
+every prior rule flags a hard schema violation — and it went and read `scripts/lint-corpus.ts`,
+saw the gate was `findings.length === 0`, and reasoned that warnings therefore count as corpus
+failures. It predicted the corpus job would go red on legitimately-old software, and asked for
+confirmation before merge.
+
+**The corpus then went red with exactly that failure**: 4 warnings, all pre-2015 dates on real
+Microsoft-accepted packages — `Microsoft.XNARedist` (2011-09-01) being the clincher, since that
+is Microsoft's own package with a genuinely 2011 release date.
+
+Two independent mechanisms cross-validated each other. The review reasoned from source it was not
+pointed at; the corpus confirmed it from real data. Either alone is useful; together they caught
+the problem before merge and explained *why* it happened.
+
+Comment 2 was a factual catch: the rule justified its 2015 bound with "winget did not exist
+before this." winget launched in **2020**, and `ReleaseDate` is the *software's* release date,
+which legitimately predates any package manager. Partly wrong, though — it claimed the same
+wording appeared in `CONTEXT.md`, and it did not. Scoring honestly: one comment fully correct,
+one correct in substance with an incorrect supporting detail. Both were worth having.
+
+**Two fixes, and the second matters more than the first.**
+
+1. *The rule:* dropped the lower bound entirely. Any "implausibly old" cutoff is arbitrary and the
+   corpus proves legitimately old software exists; we now flag only what is unambiguously wrong —
+   a date that has not happened yet. The old-date fixture moved from `invalid/` to `valid/` and
+   became a regression test.
+2. *The harness (mine):* `lint-corpus.ts` failed on `findings.length === 0`, counting **warnings**
+   as failures. The oracle's premise is "Microsoft accepted it → it is valid → any **error** is a
+   false positive." A warning makes no claim of invalidity. So as written, **the corpus gate made
+   warning-severity rules structurally impossible** — the first one ever written failed CI
+   immediately. Now: errors fail the build; warnings are counted and printed so a rule that goes
+   haywire is still visible, but do not fail it.
+
+That second one is the deeper lesson. The corpus caught a bug in a *rule* last time; this time it
+caught a bug in **the oracle itself** — an assumption ("every diagnostic is a correctness claim")
+baked in when every rule happened to be an error. A gate is only as good as the premise encoded
+in its exit condition, and that premise silently expired the moment a new severity appeared.
+
+**Also validated in the same run:** the hardened `implement.ts` executed correctly in CI (no
+"withheld" in the log, so `fetchTrustedIssue`/`fetchTrustedComments`/`scrubGitHubTokens` all work
+against the real API), and the agent avoided the purity trap the issue set — it introduced
+`RuleContext { now }` and threaded it from `lintDirectory` rather than reading the clock.
+
+## 2026-07-23 — The review→fix handoff is blocked on agent identity
+
+Looked up how CVM closes the loop, since ours currently stops at "review posted".
+
+**CVM overloads one label across two workflows, disambiguated by event type:** `agent:implement`
+on an *issue* triggers `agent-implement.yml`; the same label on a *PR* triggers
+`agent-implement-pr.yml`, which reads unresolved review threads, review summaries, and top-level
+PR comments, then fixes the branch. It refuses with a comment if all three are empty, so a no-op
+run cannot burn CI.
+
+**The asymmetry is deliberate.** implement→review cascades automatically (implement adds
+`agent:review` using `AGENT_PAT` so the event fires). review→fix does **not** — `agent-review.yml`
+just clears its labels and stops. A human decides whether the feedback is worth acting on. That is
+the brake that stops two agents ping-ponging a PR, and it is worth keeping.
+
+**What blocks us, confirmed empirically.** Our review posts as `github-actions[bot]` with
+`author_association = NONE`:
+
+```
+user=github-actions[bot]  type=Bot  assoc=NONE
+```
+
+So our own author-association gate would drop our own review's feedback, and a CVM-style
+`implement-pr` would refuse the run as "nothing to act on". The "define the agent trust identity"
+decision, logged earlier as hypothetical, is now the concrete blocker.
+
+Two resolutions when we build it: (a) trust `github-actions[bot]` explicitly — defensible because
+that identity is only obtainable by workflows *in* the repo, and adding a workflow requires write
+access, so it is transitively write-gated; or (b) post reviews under `AGENT_PAT` so the author is
+the owner. (a) keeps honest bot attribution and is the smaller change.
+
+Note this must be paired with author-gating the *other* two feedback sources. Top-level PR
+comments and review summaries are genuinely world-writable on a public repo, and `implement-pr`
+runs with `contents: write` and pushes — so an injection there steers **committed code**, not just
+review text. That makes it the highest-risk workflow in the set, and the author gate a hard
+prerequisite rather than a nicety.
+
+---
+
 ## Pending — not yet exercised
 
 The loop is proven for implement across all three rule classes, and the corpus has closed the

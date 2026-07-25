@@ -78,6 +78,11 @@ try {
       path: c.path,
       line: c.line,
       side: "RIGHT",
+      // start_line/start_side turn the anchor into a range, which is what makes
+      // a multi-line ```suggestion replace all of it rather than just the last
+      // line. Omitted entirely for single-line comments — GitHub rejects
+      // start_line == line.
+      ...(c.startLine === undefined ? {} : { start_line: c.startLine, start_side: "RIGHT" }),
       body: c.body,
     })),
   });

@@ -62,6 +62,30 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
 Prefer a few high-signal comments over many trivial ones. If the change is clean, say so plainly
 rather than inventing problems.
 
+# SUGGESTED CHANGES
+
+When a fix is **mechanical and you are confident of the exact replacement text**, put it in a
+` ```suggestion ` block in the comment body. GitHub renders these as an applicable patch, so a
+maintainer fixes it with one click instead of another agent run.
+
+    ```suggestion
+    the exact replacement text for the anchored line(s)
+    ```
+
+Rules that make a suggestion apply cleanly:
+
+- The block replaces **exactly** the anchored lines: `line` alone, or `startLine`..`line`.
+- Set `startLine` whenever the replacement spans more than one line. A stale sentence running
+  across two lines needs `startLine` on the first and `line` on the last, or you will replace
+  only half of it.
+- Reproduce surrounding indentation exactly; the block is the literal new content.
+- Do not include the leading `-`/`+` of a diff, and do not wrap it in another code fence.
+
+Good candidates: a wrong word or stale claim in a comment, a rename, a misspelled identifier, a
+missing `readonly`. **Do not** suggest when the fix needs judgement, spans several places, or
+changes behaviour — describe it in prose and leave it to `agent:fix`. A wrong suggestion is worse
+than none, because it is one click from being committed.
+
 # BOUNDARIES
 
 Do not modify files. Do not push. Do not edit labels. Do not create GitHub comments or reviews

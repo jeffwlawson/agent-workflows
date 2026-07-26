@@ -24,7 +24,7 @@ row marked ❌.
 | `agent-implement` — issue → branch → PR | ✅ | ✅ | |
 | `agent-review` — review a PR | ✅ | 🟡 | review-only; see §3 |
 | `agent-implement-pr` — act on PR feedback | ✅ | 🟡 | ours is `agent:fix`; see §4 |
-| `agent-update-branch` — refresh a stale PR branch | ✅ | 📋 | best next addition — small, no new risk surface |
+| `agent-update-branch` — refresh a stale PR branch | ✅ | ✅ | ours merges mechanically and only calls the agent on conflicts |
 | `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | PRD tier. Backlog is flat, uniform rule issues |
 | `agent-implement-prd` — work sub-issues in sequence | ✅ | ❌ | PRD tier; includes run-chaining |
 | `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | needs dependency chains we don't have |
@@ -170,12 +170,36 @@ silently do nothing.
 
 ## 9. If we closed the gaps, in order
 
-1. **`agent-update-branch`** (📋) — small, no new risk surface, solves a real annoyance.
-2. **Auto-cascade implement → review** (📋) — one step with `AGENT_PAT`; removes a manual label.
-3. **Composite action for setup** (📋) — pure cleanup, now that three workflows duplicate it.
-4. **Mark PR ready after review** (❌, trivial).
-5. **Review/fix conversational replies** (❌) — the largest UX gain; a second output schema.
+Done since first written: **conversational replies + resolution** (#49/#50 — and ours also
+*resolves* threads, which CVM does not), and **`agent-update-branch`** (motivated by a real trap,
+not theory — see `friction.md`).
+
+1. **Auto-cascade fix → review** (📋) — approved in principle; ~15 lines with `AGENT_PAT`.
+2. **Auto-cascade implement → review** (📋) — removes the other manual label.
+3. **Composite action for setup** (📋) — four workflows now duplicate checkout → node → ci → claude.
+4. **GitHub App identity** (📋, "D") — retires the untracked `AGENT_PAT` expiry via per-run tokens,
+   and may occupy the Reviewers sidebar the way Copilot's App does.
+5. **Mark PR ready after review** (❌, trivial).
 6. **Review self-improvement** (❌) — biggest capability gain, but flips review to
-   `contents: write`. Deliberately declined so far.
+   `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
+   confidently-wrong claim is worse than one that can only say it (see #46).
 7. **PRD tier** (❌ ×3) — only pays off for multi-week features decomposed into sub-issues.
 8. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier.
+
+## 10. Invariants
+
+Rules that must hold as features are added, each recording a decision that is cheap now and
+expensive to rediscover.
+
+- **Never auto-cascade review → fix.** `agent:fix` → `agent:review` is safe *only* because review
+  adds no trigger label, so every round still needs a human `agent:fix`. Automating the return leg
+  closes a true cycle with no gate.
+- **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
+  is what bounds the damage a wrong review can do. Adding self-improvement (§9.6) forfeits this
+  and also requires moving review into the `agent-mutate-pr-*` concurrency group.
+- **Only `addressed` resolves a thread.** A `declined` thread keeps its reply and stays open, so a
+  human can push back; auto-resolving a decline lets an agent bury a disagreement silently.
+- **Every world-writable input is author-gated.** Issue and PR text reaches agents only from
+  collaborators or our own bot. `agent:fix` pushes code, so an ungated input there steers commits.
+- **Agents never hold the GitHub token.** Context is fetched before the agent starts and the token
+  is scrubbed, so the no-push/no-label/no-comment boundary is technical rather than conventional.

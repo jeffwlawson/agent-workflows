@@ -171,15 +171,19 @@ silently do nothing.
 ## 9. If we closed the gaps, in order
 
 Done since first written: **conversational replies + resolution** (#49/#50 — and ours also
-*resolves* threads, which CVM does not), and **`agent-update-branch`** (motivated by a real trap,
-not theory — see `friction.md`).
+*resolves* threads, which CVM does not), and **`agent-update-branch`** (#52, motivated by a real
+trap, not theory — see `friction.md`).
 
-1. **Auto-cascade fix → review** (📋) — approved in principle; ~15 lines with `AGENT_PAT`.
-2. **Auto-cascade implement → review** (📋) — removes the other manual label.
-3. **Composite action for setup** (📋) — four workflows now duplicate checkout → node → ci → claude.
-4. **GitHub App identity** (📋, "D") — retires the untracked `AGENT_PAT` expiry via per-run tokens,
+What remains is ranked by value per unit of risk, not by size. Anything that widens an agent's
+write access sits below everything that does not, regardless of how useful it looks.
+
+1. **Composite action for setup** (📋) — pure cleanup, now that four workflows duplicate
+   checkout → node → ci → claude.
+2. **Mark PR ready after review** (❌, trivial).
+3. **Auto-cascade implement → review** (📋) — one step with `AGENT_PAT`; removes a manual label.
+4. **Auto-cascade fix → review** (📋) — approved in principle; ~15 lines with `AGENT_PAT`.
+5. **GitHub App identity** (📋, "D") — retires the untracked `AGENT_PAT` expiry via per-run tokens,
    and may occupy the Reviewers sidebar the way Copilot's App does.
-5. **Mark PR ready after review** (❌, trivial).
 6. **Review self-improvement** (❌) — biggest capability gain, but flips review to
    `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
    confidently-wrong claim is worse than one that can only say it (see #46).

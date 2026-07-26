@@ -852,18 +852,74 @@ PR branches.
 
 ---
 
+## 2026-07-25 — `agent-update-branch`, and testing the path I nearly skipped
+
+Built the workflow that refreshes a stale PR branch (#52), for a reason that had already bitten:
+`pull_request_target` takes the **workflow YAML from the base branch** but checks out the **PR
+head**, so a PR opened before a `.sandcastle/` change keeps running the *old* runner scripts —
+silently, with no error. #46 needed `main` merged in by hand before its test meant anything.
+
+Design copied from CVM and worth keeping: **the workflow does the merge in bash and calls the
+agent only when git reports conflicts.** Most refreshes are clean, so the common path skips node,
+`npm ci` and the Claude install entirely.
+
+### The reasoning error worth recording
+
+The PR description originally argued for waiting to hit a real conflict rather than manufacturing
+one. That was wrong, and wrong in a specific way: it ran together *"can a synthetic conflict test
+the agent's judgement?"* (no, not convincingly) and *"can it test the plumbing?"* (yes,
+completely), then let the first answer excuse skipping both. The plumbing — the whole
+`update-branch.ts` runner, the extraction, and the two guards against pushing a half-finished
+merge — had **never executed once**, and is both the likelier thing to be broken and much worse
+to discover during a genuine merge crisis.
+
+It took being asked "what does *the conflict path is untested* mean?" to notice. Writing a
+limitation down is not the same as having thought about it.
+
+### The test
+
+Manufactured a real conflict with no throwaway commits on `main`: a branch editing `parity.md` §9
+one way, while #52 rewrote the same section another way. Every guard behaved — conflict detected,
+runner executed, `npm run verify` run (116 tests), merge **committed**, nothing half-finished
+pushed.
+
+**The resolution was better than a hand-merge would have been.** The stale branch still listed
+`agent-update-branch` as 📋 and conversational replies as ❌. Naively "preserving both sides" —
+the obvious reading of the prompt's own instruction — would have **re-listed shipped features as
+future work**: textually a clean merge, semantically wrong. The agent noticed #52 had shipped
+them, folded them into the done-list, and applied the other side's value-per-risk ranking to only
+what genuinely remained. It also volunteered what it had traded away.
+
+That is exactly the failure class the prompt warns about ("taking both compiles and is still
+wrong"), and the first evidence that the warning does work.
+
+The salvaged §9 was kept — throwing away a verified improvement to preserve a fixture's throwaway
+status would have been tidiness for its own sake.
+
+---
+
 ## Pending — not yet exercised
 
-The full cycle is proven, including replies and resolution. Still unexercised or outstanding:
+The full cycle is proven, including replies, resolution, and conflict resolution. Still
+unexercised or outstanding:
 
+- **Stale agent scripts still fail silently — accepted, not fixed.** `agent-update-branch` can now
+  *fix* a stale branch, but nothing *detects* one, and nothing applies the label automatically (in
+  this repo or in CVM). Labelling by hand is the current answer.
+
+  Deliberate: this has bitten exactly once, and was caught. Building detection now would be
+  designing against a hypothesis. If it recurs, the design is already worked out — a check in the
+  **YAML**, which is always current even when the scripts it guards are stale, comparing the PR
+  head against `main` for two different things: `.sandcastle/**` differing means the tooling is
+  wrong and the run should **refuse**; `CONTEXT.md`/`CLAUDE.md` differing means the agent is
+  applying superseded *conventions*, which should be **reported into the prompt** rather than
+  refused. Deliberately not "is the branch behind `main`" — that is true of nearly every PR nearly
+  always, and a check that always fires is one nobody reads. Ordinary `src/` divergence is what
+  GitHub's own "require branches up to date" setting is for.
 - **`agent:fix`'s refusal path has never run.** Every fix run so far had feedback to act on. The
   "no trusted feedback" refusal is implemented but untested.
-- **The collaborator-steering path is untested in anger.** `fetchTrustedComments` works (smoke
-  tested), but no run has yet been driven by a human comment rather than an agent review.
-- **Shared-setup extraction still pending.** Three workflows now duplicate
+- **Shared-setup extraction still pending.** Four workflows now duplicate
   checkout → node → npm ci → install-Claude-Code. A composite action is the obvious cleanup.
-- **Thread replies are still absent from both review and fix** (`docs/parity.md` §3, §4). Neither
-  agent can speak in-thread; fix speaks only through commit messages.
 - **`AGENT_PAT` expiry is not tracked.** Set a reminder for the chosen expiry, or the loop dies
   silently with a 401 when it lapses. Highest-priority loose end because it fails invisibly.
 - The corpus is a **2.6% stride sample** (4,000 of 155,150) at one pinned SHA. Clean there is

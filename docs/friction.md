@@ -898,6 +898,46 @@ status would have been tidiness for its own sake.
 
 ---
 
+## 2026-07-25 — Batching three issues, and the parity doc drifting
+
+Ran #9, #10 and #11 concurrently to answer the open batching question.
+
+**The implement phase batches cleanly.** Three runs in parallel, no interference — the per-issue
+concurrency groups did their job — and all three came back green on `verify` *and* corpus.
+
+**The predicted registry conflict mostly did not happen**, and the reason is worth keeping. The
+registry is alphabetised, so the three new entries inserted at *different* points
+(`architectureEnum` at the top, the other two mid-list). Git merges distant insertions without
+complaint; only neighbours collide. The final registry came out correctly ordered with all nine
+rules. So the batching cost scales with how *adjacent* the new names are, not with how many PRs
+there are — cheaper than predicted.
+
+**One agent reached outside its issue, correctly.** The `architecture-enum` run also hoisted
+`canonicalArchitecture()` into `manifest.ts` and applied it to the already-merged
+`installer-entry-unique`, which had been keying on the raw string — so `x64` and `X64` read as
+different installers and a genuine duplicate would have slipped through. A latent false negative
+in merged code, found while implementing something else, fixed following the shared-helper pattern
+the `ARCHIVE_TYPES` hoist established. The corpus stayed green, which is the part that mattered:
+tightening a uniqueness key can only ever produce *more* diagnostics, so a red corpus would have
+meant the fix was wrong.
+
+### The parity doc drifted, which is the more interesting failure
+
+`docs/parity.md` exists to make every gap a visible decision. It had gone stale in three places —
+§1 still said "3 of CVM's 8 workflows" after `agent-update-branch` shipped, and §4 still marked
+thread replies ❌ after #50 shipped them — **while §9 listed that same feature as done**. The
+document contradicted itself.
+
+That is worse than merely out of date, because a parity table is consulted precisely when nobody
+remembers the answer, so a wrong row reads as authoritative. The lesson is not "remember to update
+the doc" — it is that a doc recording *decisions* has to be updated in the change that makes the
+decision, not in a later tidy-up. A note to that effect is now in §1.
+
+Worth noting what did *not* drift: this file. An append-only log cannot go stale, because nothing
+in it claims to describe the present. Only "Pending" can rot, which is why it stays short.
+
+---
+
 ## Pending — not yet exercised
 
 The full cycle is proven, including replies, resolution, and conflict resolution. Still

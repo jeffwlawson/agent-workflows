@@ -28,13 +28,18 @@ row marked ❌.
 | `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | PRD tier. Backlog is flat, uniform rule issues |
 | `agent-implement-prd` — work sub-issues in sequence | ✅ | ❌ | PRD tier; includes run-chaining |
 | `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | needs dependency chains we don't have |
-| `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the three below are boring |
+| `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
 
-**3 of CVM's 8 agent workflows.** The four omitted at the bottom are the PRD/autonomy tier, which
-handoff Decision 4 deferred on purpose: live with one workflow, then two, before building a label
-state machine.
+**4 of CVM's 8 agent workflows.** The four omitted are the PRD/autonomy tier, which handoff
+Decision 4 deferred on purpose: live with one workflow, then two, before building a label state
+machine.
+
+> **Keeping this file honest.** It drifted once already — §4 still marked thread replies ❌ after
+> #50 shipped them, while §9 listed the same feature as done. A parity doc that contradicts itself
+> is worse than none, because it is consulted precisely when nobody remembers the answer. Update
+> the relevant row in the same PR that changes behaviour, not afterwards.
 
 ---
 
@@ -67,7 +72,7 @@ state machine.
 | Posts inline comments | ✅ | ✅ | |
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query; skips resolved threads |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
-| **Replies in review threads** | ✅ | ❌ | ours has no in-thread voice |
+| **Replies in review threads** | ✅ | ❌ | the *review* does not reply — but `agent:fix` does, and resolves what it settled (§4) |
 | **Marks the PR ready for review** when done | ✅ | ❌ | trivial to add |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
@@ -89,12 +94,14 @@ state machine.
 | Refuses when the PR is closed/merged | ✅ | ✅ | |
 | Agent may **decline** feedback with a reason | ✅ | ✅ | explicit in both prompts |
 | Pushes with `--force-with-lease` pinned to the run's head SHA | ✅ | ✅ | |
-| **Posts thread replies back** | ✅ | ❌ | ours speaks only through the commit message |
-| **Posts new inline comments** | ✅ | ❌ | |
+| **Posts thread replies back** | ✅ | ✅ | one reply per thread, `addressed` or `declined`, with the reason |
+| **Resolves the threads it addressed** | ❌ | ➕ | declines stay **open** so a human can push back |
+| **Posts new inline comments** | ✅ | ❌ | it answers existing threads; it does not open new ones |
 | **Posts top-level comments** | ✅ | ❌ | |
 
-The three ❌ rows are one feature: CVM's fix agent *converses*; ours edits and commits. Adding
-them means a second structured-output schema plus REST→GraphQL id resolution for replies.
+Ours converses in-thread and closes what it settled; CVM replies but never resolves, so its
+threads accumulate until a human clears them. What ours still cannot do is *raise* something new —
+it answers what it was asked, and anything else goes in the commit message.
 
 ---
 

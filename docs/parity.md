@@ -54,7 +54,7 @@ machine.
 | Refuses when a PR already targets the issue | ✅ | ✅ | |
 | Refuses a **sub-issue** / PRD-shaped issue | ✅ | ❌ | needs the PRD tier to be meaningful |
 | Issue body passed in by the runner (agent never calls `gh`) | ✅ | ✅ | |
-| **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed template — enough for uniform rule PRs |
+| **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed heredoc in the workflow. Re-rated 2026-08-01: this is the only channel an agent has for reporting a **non-code** finding, and #63 hit that limit — see §9.3 |
 | **Auto-cascade: adds `agent:review` to the new PR** | ✅ | ✅ | needs `AGENT_PAT`; warns loudly if absent, since a `GITHUB_TOKEN` label add is a silent no-op |
 | `failure_reason.txt` → issue comment on failure | ✅ | ✅ | |
 | Opens the PR as a draft | ✅ | ✅ | |
@@ -186,18 +186,24 @@ write access sits below everything that does not, regardless of how useful it lo
 
 1. **Composite action for setup** (📋) — pure cleanup, now that four workflows duplicate
    checkout → node → ci → claude.
-2. **Mark PR ready after review** (❌, trivial).
-3. **Auto-cascade fix → review** (📋) — deliberately still manual. implement → review is safe to
+2. **Mark PR ready after review** (❌, trivial). Not merely cosmetic: until it lands, a human marks
+   every agent PR ready by hand before it can be merged.
+3. **Agent-authored PR body** (❌, `write-pr`) — promoted from "cosmetic" on 2026-08-01. The body is
+   a hardcoded heredoc in `agent-implement.yml`, so it is the one thing an agent **cannot** write —
+   and therefore the missing channel for any finding that is not code. Issue #63 asked the agent to
+   report a bug it was told not to fix; it had nowhere to put it but a comment inside a test file.
+   Widens no write access: the workflow already authors the PR.
+4. **Auto-cascade fix → review** (📋) — deliberately still manual. implement → review is safe to
    automate because it fires *once per PR*; fix → review fires *every iteration*, and keeping a
    human on that leg is what makes "should we act on this feedback?" a decision rather than a
    reflex.
-4. **GitHub App identity** (📋, "D") — retires the untracked `AGENT_PAT` expiry via per-run tokens,
+5. **GitHub App identity** (📋, "D") — retires the untracked `AGENT_PAT` expiry via per-run tokens,
    and may occupy the Reviewers sidebar the way Copilot's App does.
-5. **Review self-improvement** (❌) — biggest capability gain, but flips review to
+6. **Review self-improvement** (❌) — biggest capability gain, but flips review to
    `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
    confidently-wrong claim is worse than one that can only say it (see #46).
-6. **PRD tier** (❌ ×3) — only pays off for multi-week features decomposed into sub-issues.
-7. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier.
+7. **PRD tier** (❌ ×3) — only pays off for multi-week features decomposed into sub-issues.
+8. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier.
 
 ## 10. Invariants
 
@@ -208,7 +214,7 @@ expensive to rediscover.
   adds no trigger label, so every round still needs a human `agent:fix`. Automating the return leg
   closes a true cycle with no gate.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
-  is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this
+  is what bounds the damage a wrong review can do. Adding self-improvement (§9.6) forfeits this
   and also requires moving review into the `agent-mutate-pr-*` concurrency group.
 - **Only `addressed` resolves a thread.** A `declined` thread keeps its reply and stays open, so a
   human can push back; auto-resolving a decline lets an agent bury a disagreement silently.

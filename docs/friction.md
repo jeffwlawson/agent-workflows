@@ -938,6 +938,162 @@ in it claims to describe the present. Only "Pending" can rot, which is why it st
 
 ---
 
+## 2026-08-01 — Pointing the loop at its own plumbing, and a spec that asked for the impossible
+
+Issue #63 asked for tests covering two untested functions in the agent loop itself: the author
+trust gate (`isTrustedAuthor`) and the diff-line allow-list (`parseDiffLines`). **The first agent
+run in this pilot on code that is not the linter.** It went green with no intervention, found a
+real bug, and exposed a structural limit in the workflow that nobody had noticed.
+
+### The constraint held, and it was a load-bearing one
+
+The issue forbade any change under `.sandcastle/`, `src/`, or `.github/` — tests only. That is not
+tidiness. `agent-review.yml` and `agent-implement-pr.yml` use `pull_request_target`, which takes
+the workflow YAML from the base branch but checks out the **PR head**, so the review and fix agents
+execute the `.sandcastle/` code *from the branch under review*. Editing `common.ts` there would
+have had the review agent running its own unreviewed changes to the trust gate that decides which
+comments it is allowed to read.
+
+The obvious shortcut was available and declined: `pr-feedback.ts` has two private helpers (`render`,
+`anchorOf`) that would be trivially testable if exported, and exporting them is both a production
+change and precisely the "improvised test seam" the implement prompt warns against. The agent
+tested neither and said why.
+
+### The bug it found, and the half it nearly buried
+
+`parseDiffLines` splits the diff on `\n`. A `git diff` ends with a newline, so the final element is
+an empty string, and the parser's blank-context branch (`line === ""`) counts it — appending one
+phantom line to whichever file it was last pointed at.
+
+The agent surfaced this via the deleted-file case the issue asked about: `+++ /dev/null` does not
+match the `+++ b/` prefix, so `currentFile` is never repointed, the deletion's `@@ -1,2 +0,0 @@`
+header resets the counter to `0`, and the trailing empty string lands on the *previous* file as
+line 0. It documented the behaviour, declined to fix it as instructed, and named the mechanism
+correctly.
+
+But it filed the *harmless* half as the finding. Line 0 is unreachable — no reviewer emits it. The
+same defect in an ordinary diff with no deletion anywhere produces `{1,2,3,4}` for a three-line
+file: **one line past the end of the last file**, which is exactly the anchor a reviewer commenting
+on a trailing addition would produce. That one is reachable, and the consequence is the silent
+failure the allow-list exists to prevent — GitHub rejects the *entire* review if one comment lands
+off-diff, so it posts nothing, with no error.
+
+The agent did identify the general mechanism, in its file-header comment, and chose membership
+checks (`.has(n)`) over exact set equality specifically so the artifact would not muddy unrelated
+assertions. Defensible. But the reachable variant stayed prose in a comment while the unreachable
+one got a named test. **The review agent then caught it** — unprompted, correctly classified as
+"the same defect class … both stem from counting the trailing empty string," and correctly scoped
+as pre-existing and out of scope. Independently reached, and it matches what a hand-trace of the
+parser produces. Became #65, fixed in #66 the same day.
+
+### The spec that flagged its own limit, and got a better answer for it
+
+#65 is the first spec in this pilot to state an uncertainty instead of resolving it. Ground truth
+established that `git diff` emits an empty context line as a single space (verified with `cat -A`),
+so within this codebase the `line === ""` branch has no legitimate input at all. The obvious spec
+would have said "delete the branch." Instead it said the evidence establishes the branch is
+unreachable *here*, does **not** establish it is safe to delete everywhere — some tools strip a
+`" "` context line to `""` — and told the agent to weigh that and pick a fix it could defend.
+
+It kept the branch and stripped exactly one trailing newline before the split, killing the phantom
+element while leaving the defensive path intact. Verified by hand across three cases: the ordinary
+variant (`{1,2,3,4}` → `{1,2,3}`), the deleted-file variant (`{0,1,2,3}` → `{1,2,3}`), and a
+whitespace-stripped mid-diff empty context line, which is still counted. It also upgraded the tests
+from membership checks to exact set equality — the phantom line was the only reason they were
+loose — inverted the `documents a bug` assertion, and added a case for an added line at the true
+end of the last file, which is the anchor the bug would have mis-filtered.
+
+Worth separating from the other six entries in this log: those are all cases where a spec asserted
+something false with confidence, and the agent faithfully built it. This is the first where a spec
+marked the edge of its own knowledge and got back a narrower, better-defended fix than the one it
+would have specified. On current evidence, saying "I do not know this part" is cheaper than trying
+to be right about everything.
+
+### Silence that could have meant two things
+
+Because #66 changes `.sandcastle/`, `pull_request_target` had the review agent filtering its **own**
+inline comments through the modified parser. An over-restrictive fix would have posted zero inline
+comments — indistinguishable from a review that found nothing. The issue said so explicitly: *do not
+read silence as approval on this PR.*
+
+The review posted zero inline comments. The review also argued at length that the fix could not
+suppress them, and that argument was correct. It is not what settled it. That was the runner's own
+counter in the workflow log —
+
+```
+Inline comments: 0 kept of 0 produced.
+```
+
+— plus a hand-run of the fixed parser outside CI. Both external to the review's judgement, both
+agreeing. This is the #46 shape exactly: an agent reasoning about whether its own mechanism is
+sound, in a case where being wrong produces the same observable as being right. It happened to be
+right. The counter is why we know. **Any workflow whose failure mode is silence needs a
+produced-vs-kept counter, not an argument.** That one already existed; it is worth not losing.
+
+### The spec asked for something the agent structurally could not do
+
+Issue #63 said the documented bug should also be "called out in the PR description." The review
+closed by noting the PR body did not mention it and asking a human to fix that.
+
+The PR body is a hardcoded heredoc in `agent-implement.yml`:
+
+```
+Closes #63
+
+Implemented by the `agent:implement` workflow.
+```
+
+**The agent has no channel to write the PR description at all.** The instruction was unsatisfiable,
+and it routed around it as well as it could by putting the finding in a `DOCUMENTED BUG` comment
+inside the test file.
+
+That is the sixth spec error of the pilot, with the same signature as the other five — written
+confidently, plausible, narrower than the world it describes. (The fifth is not yet logged; see the
+gap note below.) What is new is the failure *mode*: the previous five were wrong about the domain.
+This one was wrong about **our own workflow's capabilities** — it assumed a channel the loop does
+not have. The review caught the symptom and missed the cause, addressing the fix to a human rather
+than noticing that nothing could have satisfied it.
+
+### What that re-rates
+
+`docs/parity.md` §2 called the fixed template "enough for uniform rule PRs", and §9's ranked gap
+list did not mention agent-authored PR bodies (CVM's `write-pr`) at all — it was filed as cosmetic
+and therefore not worth ranking. That is now wrong, and specifically so: the PR body is the only
+channel an agent has for reporting something that is **not code**. This run produced exactly that —
+a bug it was told to find and not fix — and had nowhere to put it but a comment inside a test file,
+discoverable only by opening it. Not cosmetic; a missing output channel. Both sections updated, and
+it now sits at §9.3 — above everything that widens write access, since the workflow already authors
+the PR.
+
+Also observed in passing: the PR had to be marked ready by hand before it could be merged, because
+review does not call `gh pr ready`. §3 has it as ❌ "trivial to add", and it is — but it is now a
+step a human performs on every single agent PR, which is the definition of a gap worth closing.
+
+### The declined thread stayed open, on purpose
+
+Two review comments, both non-blocking. The first (trailing-line defect class) was replied to and
+resolved — captured in #65, not dropped. The second suggested swapping one trusted bot spelling for
+the other because it "would exercise a different code path"; it would not — both are members of the
+same `TRUSTED_BOT_LOGINS` set and reach the same `.has()` call. Declined, with the reasoning
+written into the thread, and **left open**.
+
+§10's invariant says only `addressed` resolves and a decline stays open so a human can push back.
+That rule was written to constrain the *agent*. Applying it to a human decline is the same principle
+one level up: the person declining should not also be the person closing the argument. Worth
+recording that the invariant generalised without modification.
+
+### Gap in this log
+
+Entries stop at 2026-07-25. Runs for issues #19, #20 and #21 (PRs #60, #61, #62, merged 07-27/28)
+are unlogged. #21 is the one that matters: review found that `--strict` could not affect the exit
+code, because issue #21 had specified `1 = diagnostics found`, lumping warnings in with errors —
+so promoting warnings to errors changed nothing. The implementation was faithful; the spec was
+incoherent. That is the **fifth** spec error, and the first caught by a human reviewer rather than
+by the corpus. It is also a case the corpus structurally could not catch: there is no manifest that
+exercises a CLI flag's exit code. Worth a proper entry from whoever ran it.
+
+---
+
 ## Pending — not yet exercised
 
 The full cycle is proven, including replies, resolution, and conflict resolution. Still
@@ -969,5 +1125,16 @@ unexercised or outstanding:
 - Corpus `checkout` of winget-pkgs is the slow step (~6 min). Not cached. If it becomes painful,
   caching by SHA is the tunable the original issue (#22) called for.
 - Actions are on `@v4` (Node 20 deprecation warning). Bump to `@v5` eventually.
-- Remaining backlog rules (~13) are mechanical now. The open question is whether to keep running
-  them one-by-one or trust batching several labels at once.
+- Remaining backlog is **9 open issues** (8 rules plus #23, a parser change), mechanical now.
+  Batching answered the "one-by-one or several at once" question in the 2026-07-25 entry: batching
+  is cheaper than predicted, and its cost scales with how *adjacent* the new registry names are.
+- **A declined review thread is open on #64** — the review suggested swapping one trusted bot
+  spelling for the other on the grounds it exercises a different code path; it does not, since both
+  are members of the same `TRUSTED_BOT_LOGINS` set. Left open on purpose, per §10: the person
+  declining should not also be the person closing the argument.
+- **`agent-explore` is missing from `docs/parity.md` entirely.** Upstream `mattpocock/sandcastle`
+  @ 0.12.0 ships it (label `agent:explore`, `issues: write` and nothing else) and CVM does not, so
+  it fell through a table built from CVM's workflow list. It is the only upstream feature aimed at
+  *verifying an issue's claims before implementation* — its prompt asks the agent to check "whether
+  assertions the issue makes are actually true" — which is the failure class that has produced every
+  real defect in this pilot. Against upstream we are at 4 of 5 workflows, not 4 of 8.

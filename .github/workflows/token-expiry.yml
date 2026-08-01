@@ -1,0 +1,166 @@
+name: Token Expiry
+
+# AGENT_PAT is the loop's single point of failure. agent-implement pushes the
+# branch with it, opens the PR with it, and adds the `agent:review` label with
+# it — and that last one is why a lapse is so quiet: a label add that fails just
+# means the review never starts. Nothing announces a 401.
+#
+# This turns an invisible expiry into a dated, recurring warning. It is a
+# stopgap: the real fix is a GitHub App with per-run tokens (parity.md §9.4),
+# which retires the expiry problem rather than monitoring it.
+on:
+  schedule:
+    # Weekly, Monday. Offset from corpus.yml's 06:17 so the two do not queue up.
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      # Two full weeks of Mondays before the deadline, so a warning cannot be
+      # missed by being on holiday for one of them.
+      WARN_DAYS: "21"
+      ISSUE_TITLE: "AGENT_PAT is expiring"
+    steps:
+      - name: Check AGENT_PAT expiry
+        id: check
+        env:
+          PAT: ${{ secrets.AGENT_PAT }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "$PAT" ]; then
+            echo "::warning::AGENT_PAT is not set. The loop falls back to GITHUB_TOKEN, which cannot create PRs and whose pushes do not trigger CI."
+            echo "state=unset" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # One request, two things captured: the response headers (for the
+          # expiry date) and the HTTP status. The status is what tells a real
+          # answer apart from a 401 (revoked/invalid token) or a network blip —
+          # all of which would otherwise return no header and masquerade as
+          # "no expiry", greening the run on the exact failure we exist to catch.
+          # --max-time stops a hung connection from doing the same.
+          headers_file="${RUNNER_TEMP}/pat-headers.txt"
+          http_code=$(curl -sS -o /dev/null -D "$headers_file" -w '%{http_code}' \
+            --max-time 20 \
+            -H "Authorization: token $PAT" \
+            https://api.github.com/user) || http_code="000"
+
+          if [ "$http_code" != "200" ]; then
+            # A revoked/invalid token (401/403) is actionable — file the issue.
+            # Anything else (000 network error, 5xx) is likely transient, so we
+            # redden the run without raising an issue. Neither is "no expiry".
+            echo "http_code=$http_code" >> "$GITHUB_OUTPUT"
+            if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
+              echo "::warning::GitHub rejected AGENT_PAT (HTTP $http_code) — it looks revoked or already expired."
+              echo "state=invalid" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Could not reach GitHub to check AGENT_PAT (HTTP $http_code)."
+              echo "state=unreachable" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          # GitHub returns this header for any PAT that carries an expiry date.
+          # Fine-grained tokens always do; a classic token set to "no expiration"
+          # omits it.
+          expiry=$(tr -d '\r' < "$headers_file" \
+            | awk -F': ' 'tolower($1)=="github-authentication-token-expiration"{print $2}')
+
+          if [ -z "$expiry" ]; then
+            echo "AGENT_PAT carries no expiry date — nothing to track."
+            echo "state=no-expiry" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "AGENT_PAT expires: $expiry"
+          expiry_epoch=$(date -u -d "$expiry" +%s) || {
+            echo "::warning::Could not parse expiry '$expiry'."
+            echo "state=unparseable" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          days=$(( (expiry_epoch - $(date -u +%s)) / 86400 ))
+
+          echo "days=$days"        >> "$GITHUB_OUTPUT"
+          echo "expiry=$expiry"    >> "$GITHUB_OUTPUT"
+          echo "Days remaining: $days"
+
+          if [ "$days" -le 0 ]; then
+            echo "state=expired" >> "$GITHUB_OUTPUT"
+          elif [ "$days" -le "$WARN_DAYS" ]; then
+            echo "state=expiring" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=ok" >> "$GITHUB_OUTPUT"
+            echo "::notice::AGENT_PAT is valid for $days more days (expires $expiry)."
+          fi
+
+      # One open issue at a time, reused rather than duplicated — a new issue
+      # every Monday would train you to ignore it.
+      - name: Raise or update the reminder issue
+        if: steps.check.outputs.state == 'expiring' || steps.check.outputs.state == 'expired' || steps.check.outputs.state == 'invalid'
+        env:
+          STATE: ${{ steps.check.outputs.state }}
+          DAYS: ${{ steps.check.outputs.days }}
+          EXPIRY: ${{ steps.check.outputs.expiry }}
+          HTTP_CODE: ${{ steps.check.outputs.http_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          if [ "$STATE" = "expired" ]; then
+            headline="**\`AGENT_PAT\` has expired** (expiry: $EXPIRY)."
+          elif [ "$STATE" = "invalid" ]; then
+            headline="**\`AGENT_PAT\` was rejected by GitHub** (HTTP $HTTP_CODE) — it has most likely been revoked or already expired."
+          else
+            headline="**\`AGENT_PAT\` expires in $DAYS days** (expiry: $EXPIRY)."
+          fi
+
+          body_file="${RUNNER_TEMP}/expiry.md"
+          {
+            echo "$headline"
+            echo
+            echo "Every agent workflow depends on it. When it lapses:"
+            echo
+            echo "- \`agent-implement\` cannot push the branch or open the PR;"
+            echo "- the \`agent:review\` label add becomes a **silent no-op**, so reviews simply stop happening."
+            echo
+            echo "Rotate it in Settings → Developer settings → Personal access tokens, then update the"
+            echo "\`AGENT_PAT\` repository secret. Close this issue once done; it will reopen if the new"
+            echo "token is also close to expiry."
+            echo
+            echo "Longer-term fix: a GitHub App with per-run tokens (\`docs/parity.md\` §9.4) removes the"
+            echo "expiry problem instead of monitoring it."
+            echo
+            echo "_Raised automatically by [Token Expiry]($RUN_URL)._"
+          } > "$body_file"
+
+          existing=$(gh issue list --state open --search "$ISSUE_TITLE in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$ISSUE_TITLE\")] | .[0].number // empty")
+
+          if [ -n "$existing" ]; then
+            echo "Updating existing issue #$existing"
+            gh issue comment "$existing" --body-file "$body_file"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body-file "$body_file"
+          fi
+
+      # Fail the run as well as filing the issue. The issue is the signal a human
+      # acts on; a red run is what makes it visible from the Actions tab alone.
+      - name: Fail when the token needs attention
+        if: steps.check.outputs.state == 'expiring' || steps.check.outputs.state == 'expired' || steps.check.outputs.state == 'invalid' || steps.check.outputs.state == 'unreachable'
+        run: |
+          case "${{ steps.check.outputs.state }}" in
+            expiring|expired)
+              echo "::error::AGENT_PAT ${{ steps.check.outputs.state }} — expires ${{ steps.check.outputs.expiry }} (${{ steps.check.outputs.days }} days)." ;;
+            invalid)
+              echo "::error::AGENT_PAT was rejected by GitHub (HTTP ${{ steps.check.outputs.http_code }}) — revoked or already expired." ;;
+            *)
+              echo "::error::Could not reach GitHub to check AGENT_PAT (HTTP ${{ steps.check.outputs.http_code }})." ;;
+          esac
+          exit 1

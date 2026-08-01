@@ -1116,8 +1116,12 @@ unexercised or outstanding:
   "no trusted feedback" refusal is implemented but untested.
 - **Shared-setup extraction still pending.** Four workflows now duplicate
   checkout → node → npm ci → install-Claude-Code. A composite action is the obvious cleanup.
-- **`AGENT_PAT` expiry is not tracked.** Set a reminder for the chosen expiry, or the loop dies
-  silently with a 401 when it lapses. Highest-priority loose end because it fails invisibly.
+- **`AGENT_PAT` expiry is now tracked, and the token expires 2026-08-21.** `token-expiry.yml` checks
+  it weekly and files a reusable issue plus a red run once it is inside 21 days. Its very first run
+  fired: 20 days remaining, which means this had roughly three weeks left when nobody was looking.
+  Rotating the token is still a manual act, and the check only removes the *silence*, not the
+  dependency — a GitHub App with per-run tokens (`parity.md` §9.4) retires the problem instead of
+  monitoring it.
 - The corpus is a **2.6% stride sample** (4,000 of 155,150) at one pinned SHA. Clean there is
   strong but not exhaustive evidence; a rule could still have a false positive on an unsampled
   manifest. Raising `MAX_PACKAGES` or bumping the pinned SHA are the levers, at the cost of CI

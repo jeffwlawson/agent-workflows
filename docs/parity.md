@@ -54,7 +54,7 @@ machine.
 | Refuses when a PR already targets the issue | ✅ | ✅ | |
 | Refuses a **sub-issue** / PRD-shaped issue | ✅ | ❌ | needs the PRD tier to be meaningful |
 | Issue body passed in by the runner (agent never calls `gh`) | ✅ | ✅ | |
-| **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed heredoc in the workflow. Re-rated 2026-08-01: this is the only channel an agent has for reporting a **non-code** finding, and #63 hit that limit — see §9.3 |
+| **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed heredoc in the workflow. Re-rated 2026-08-01: this is the only channel an agent has for reporting a **non-code** finding, and #63 hit that limit — see §9.2 |
 | **Auto-cascade: adds `agent:review` to the new PR** | ✅ | ✅ | needs `AGENT_PAT`; warns loudly if absent, since a `GITHUB_TOKEN` label add is a silent no-op |
 | `failure_reason.txt` → issue comment on failure | ✅ | ✅ | |
 | Opens the PR as a draft | ✅ | ✅ | |
@@ -73,7 +73,7 @@ machine.
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query; skips resolved threads |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ❌ | the *review* does not reply — but `agent:fix` does, and resolves what it settled (§4) |
-| **Marks the PR ready for review** when done | ✅ | ❌ | trivial to add |
+| **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10 |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
@@ -179,31 +179,30 @@ silently do nothing.
 
 Done since first written: **conversational replies + resolution** (#49/#50 — and ours also
 *resolves* threads, which CVM does not), **`agent-update-branch`** (#52, motivated by a real trap,
-not theory — see `friction.md`), and **implement → review auto-cascade**.
+not theory — see `friction.md`), **implement → review auto-cascade**, and **review marks the
+PR ready** (it had become a manual step on every agent PR).
 
 What remains is ranked by value per unit of risk, not by size. Anything that widens an agent's
 write access sits below everything that does not, regardless of how useful it looks.
 
 1. **Composite action for setup** (📋) — pure cleanup, now that four workflows duplicate
    checkout → node → ci → claude.
-2. **Mark PR ready after review** (❌, trivial). Not merely cosmetic: until it lands, a human marks
-   every agent PR ready by hand before it can be merged.
-3. **Agent-authored PR body** (❌, `write-pr`) — promoted from "cosmetic" on 2026-08-01. The body is
+2. **Agent-authored PR body** (❌, `write-pr`) — promoted from "cosmetic" on 2026-08-01. The body is
    a hardcoded heredoc in `agent-implement.yml`, so it is the one thing an agent **cannot** write —
    and therefore the missing channel for any finding that is not code. Issue #63 asked the agent to
    report a bug it was told not to fix; it had nowhere to put it but a comment inside a test file.
    Widens no write access: the workflow already authors the PR.
-4. **Auto-cascade fix → review** (📋) — deliberately still manual. implement → review is safe to
+3. **Auto-cascade fix → review** (📋) — deliberately still manual. implement → review is safe to
    automate because it fires *once per PR*; fix → review fires *every iteration*, and keeping a
    human on that leg is what makes "should we act on this feedback?" a decision rather than a
    reflex.
-5. **GitHub App identity** (📋, "D") — retires the untracked `AGENT_PAT` expiry via per-run tokens,
+4. **GitHub App identity** (📋, "D") — retires the untracked `AGENT_PAT` expiry via per-run tokens,
    and may occupy the Reviewers sidebar the way Copilot's App does.
-6. **Review self-improvement** (❌) — biggest capability gain, but flips review to
+5. **Review self-improvement** (❌) — biggest capability gain, but flips review to
    `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
    confidently-wrong claim is worse than one that can only say it (see #46).
-7. **PRD tier** (❌ ×3) — only pays off for multi-week features decomposed into sub-issues.
-8. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier.
+6. **PRD tier** (❌ ×3) — only pays off for multi-week features decomposed into sub-issues.
+7. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier.
 
 ## 10. Invariants
 
@@ -214,7 +213,7 @@ expensive to rediscover.
   adds no trigger label, so every round still needs a human `agent:fix`. Automating the return leg
   closes a true cycle with no gate.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
-  is what bounds the damage a wrong review can do. Adding self-improvement (§9.6) forfeits this
+  is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this
   and also requires moving review into the `agent-mutate-pr-*` concurrency group.
 - **Only `addressed` resolves a thread.** A `declined` thread keeps its reply and stays open, so a
   human can push back; auto-resolving a decline lets an agent bury a disagreement silently.
@@ -222,3 +221,9 @@ expensive to rediscover.
   collaborators or our own bot. `agent:fix` pushes code, so an ungated input there steers commits.
 - **Agents never hold the GitHub token.** Context is fetched before the agent starts and the token
   is scrubbed, so the no-push/no-label/no-comment boundary is technical rather than conventional.
+- **Draft means the pipeline has not finished, not that the agent is still typing.** Review marks
+  the PR ready, and only on `success()`. So a PR left in draft after a run is a PR whose automated
+  pipeline did not complete — a second signal that agrees with `agent:blocked` instead of
+  presenting an unreviewed PR as finished. Moving the mark-ready step earlier (into implement)
+  forfeits that, and fires "your turn" during a window when the review has not posted and there is
+  nothing yet to decide.

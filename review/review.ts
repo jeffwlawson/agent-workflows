@@ -59,7 +59,7 @@ try {
       LINKED_ISSUE: context.linkedIssue,
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
-      DIFF_TO_MAIN: context.diff,
+      PR_DIFF: context.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),

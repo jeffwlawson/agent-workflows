@@ -63,9 +63,11 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
     .filter(Boolean)
     .join("\n\n");
 
-  // The three-dot diff (changes since the merge-base) — never a two-dot
-  // fallback, which has different semantics and would silently mis-filter
-  // inline comments. Empty legitimately means "no changes", not an error.
+  // The three-dot diff against the PR's *base branch* (changes since the
+  // merge-base) — never a two-dot fallback, which has different semantics and
+  // would silently mis-filter inline comments. Empty legitimately means "no
+  // changes", not an error. See `diffCommandAgainstBase` for why the base must
+  // be the PR's real base rather than a hardcoded `main`.
   const diff = feedback.diff;
 
   return {

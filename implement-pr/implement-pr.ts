@@ -48,7 +48,7 @@ try {
       REVIEW_SUMMARIES: feedback.summaries || "(none)",
       INLINE_COMMENTS: feedback.inline || "(none)",
       CONVERSATION: feedback.conversation || "(none)",
-      DIFF_TO_MAIN: feedback.diff,
+      PR_DIFF: feedback.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: fixOutputSchema }),
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),

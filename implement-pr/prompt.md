@@ -16,10 +16,12 @@ You are on branch `{{BRANCH}}`, already checked out at the PR head.
 
 {{CONVERSATION}}
 
-# DIFF TO MAIN
+# PR DIFF
+
+The change under review — the PR's diff against its base branch, exactly what GitHub shows.
 
 ```diff
-{{DIFF_TO_MAIN}}
+{{PR_DIFF}}
 ```
 
 # HOW TO RESPOND TO FEEDBACK

@@ -11,7 +11,7 @@ export interface PullRequestFeedback {
   readonly all: string;
   /** Node ids of the unresolved threads shown to the agent, for reply/resolve. */
   readonly threadIds: readonly string[];
-  /** Diff of the branch against `main`. */
+  /** Diff of the branch against the PR's base branch merge-base (three-dot). */
   readonly diff: string;
   /** False when nothing trusted was found — callers should refuse rather than invent work. */
   readonly hasFeedback: boolean;
@@ -63,6 +63,34 @@ interface GqlThread {
   isResolved?: boolean;
   comments?: { nodes?: GqlThreadComment[] };
 }
+
+/**
+ * The `git diff` that defines the PR, as GitHub sees it. GitHub computes a PR's
+ * diff against the merge-base of its *base branch*, and the inline-comment
+ * allow-list (built from this same diff by `parseDiffLines`) must match exactly:
+ * too permissive and GitHub rejects the whole review, too restrictive and
+ * legitimate comments are dropped — both surface as a silent, empty review
+ * (issue #71). So the base is the PR's real base, not a hardcoded `main`.
+ *
+ * Three-dot on purpose: `<base>...HEAD` is changes since the merge-base, which
+ * is what GitHub shows. A two-dot diff has different semantics and would
+ * silently mis-filter; the fallback to it was deliberately removed once already
+ * (see review-context.ts) — do not reintroduce it.
+ *
+ * Defaults to `main` when the base ref is absent or empty, so nothing regresses
+ * on a path that has not plumbed the base through.
+ *
+ * `baseRef` is interpolated into a shell command (`sh` runs `/bin/sh`), so it
+ * must stay trusted input. Today it is: the base branch comes from
+ * `github.event.pull_request.base.ref`, and both creating that branch and
+ * labelling the PR `agent:review` require repo write access — the loop's trust
+ * boundary. A git ref may legally contain shell metacharacters, so do not
+ * repoint this at untrusted data without quoting/validating first.
+ */
+export const diffCommandAgainstBase = (baseRef: string | undefined): string => {
+  const base = (baseRef ?? "").trim() || "main";
+  return `git diff ${base}...HEAD`;
+};
 
 /**
  * Where a thread comment points, and whether that anchor is still live.
@@ -180,7 +208,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     conversation,
     all,
     threadIds: threads.map((t) => t.id),
-    diff: sh("git diff main...HEAD"),
+    diff: sh(diffCommandAgainstBase(process.env["BASE_REF"])),
     hasFeedback: all.length > 0,
   };
 };

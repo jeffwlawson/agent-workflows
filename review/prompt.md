@@ -39,10 +39,12 @@ merging a PR whose checks are failing.
 
 {{CI_STATUS}}
 
-# DIFF TO MAIN
+# PR DIFF
+
+The change under review — the PR's diff against its base branch, exactly what GitHub shows.
 
 ```diff
-{{DIFF_TO_MAIN}}
+{{PR_DIFF}}
 ```
 
 # WHAT TO CHECK

@@ -37,7 +37,7 @@ try {
 
   const result = await sandcastle.run({
     name: `implement-#${ISSUE_NUMBER}`,
-    agent: claudeAgent(),
+    agent: claudeAgent("implement"),
     // The ephemeral Actions runner IS the isolation. Running the agent directly
     // on it means the agent's environment and CI's environment are identical by
     // construction — no image drift, no "works in the sandbox, fails in CI".

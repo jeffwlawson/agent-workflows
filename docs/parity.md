@@ -23,18 +23,44 @@ row marked ❌.
 |---|:--:|:--:|---|
 | `agent-implement` — issue → branch → PR | ✅ | ✅ | |
 | `agent-review` — review a PR | ✅ | 🟡 | review-only; see §3 |
-| `agent-implement-pr` — act on PR feedback | ✅ | 🟡 | ours is `agent:fix`; see §4 |
+| `agent-implement-pr` — act on PR feedback | ✅ | 🟡 | ours is `agent-fix`, label `agent:fix`; see §4 |
 | `agent-update-branch` — refresh a stale PR branch | ✅ | ✅ | ours merges mechanically and only calls the agent on conflicts |
-| `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | PRD tier. Backlog is flat, uniform rule issues |
-| `agent-implement-prd` — work sub-issues in sequence | ✅ | ❌ | PRD tier; includes run-chaining |
+| `agent-explore` — read-only triage pass on an issue | — | ❌ | **upstream only**, not in CVM. Superseded by local planning skills *in this repo's usage* — see below, and the scope note |
+| `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | PRD tier. Superseded locally by `wayfinder` |
+| `agent-implement-prd` — work sub-issues in sequence | ✅ | ❌ | PRD tier; run-chaining. Nothing to sequence — the backlog is flat and independent |
 | `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | needs dependency chains we don't have |
-| `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring |
+| `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
+| `token-expiry` — warn before `AGENT_PAT` lapses | — | ➕ | weekly; #70 |
 
-**4 of CVM's 8 agent workflows.** The four omitted are the PRD/autonomy tier, which handoff
-Decision 4 deferred on purpose: live with one workflow, then two, before building a label state
-machine.
+**4 of CVM's 8 agent workflows** — but measured against `mattpocock/sandcastle`, which ships five,
+it is **4 of 5**, and the one missing is `agent-explore`. CVM and upstream diverge here on purpose,
+and the divergence is the useful part: upstream has `explore` and no PRD tier, CVM has the PRD tier
+and no `explore`. They are two answers to the same question — *how does a well-specified issue come
+to exist?* Upstream assesses a spec that already exists and that you may not have written; CVM
+generates the spec itself, top-down.
+
+**Both are superseded by local skills — as standing practice, not as a current accident.** Issues
+here are authored by the owner and planned with `wayfinder` (charts a large effort into decision
+tickets on the tracker — the same job as `to-issues-prd`, better specified) and `grilling` /
+`grill-with-docs` (relentless interview on one plan, and it looks facts up in the environment
+rather than asking). That is the intended way in to every applicable issue going forward, which is
+what makes these ❌ rather than 📋: the need does not return as the backlog grows.
+
+**Scope of that decision.** It is about *how issues reach this repo*, not about the workflow set
+being complete. If these workflows are ever packaged for another repo (see `docs/ADOPTING.md`), the
+calculus is per-adopter: a repo that takes community issues has no owner-authored guarantee and no
+local planning skill in the loop, and `agent-explore` is the upstream answer to exactly that. Do not
+read these rows as "the template does not need explore."
+
+The residual, and the qualifier that matters: `wayfinder` applies to a large effort, so **a small
+issue written quickly and confidently** falls beneath the threshold at which anyone invokes it. All
+six of the pilot's spec errors came from exactly there. `agent-explore` only half-addresses it — its
+prompt verifies an issue's claims *against the code*, and three of the six were wrong about
+**winget**, not about this repo. So the gap is real but a fifth workflow is not the fix; `explore`
+is advisory too, and nothing would force reading it before labelling `agent:implement`. Grounding
+claims in primary sources at authoring time is what actually closed it before (#36/#37).
 
 > **Keeping this file honest.** It drifted once already — §4 still marked thread replies ❌ after
 > #50 shipped them, while §9 listed the same feature as done. A parity doc that contradicts itself
@@ -81,7 +107,7 @@ machine.
 
 ---
 
-## 4. `agent-implement-pr` (ours: `agent:fix`)
+## 4. `agent-implement-pr` (ours: `agent-fix`, label `agent:fix`)
 
 | Feature | CVM | Ours | Note |
 |---|:--:|:--:|---|
@@ -98,6 +124,14 @@ machine.
 | **Resolves the threads it addressed** | ❌ | ➕ | declines stay **open** so a human can push back |
 | **Posts new inline comments** | ✅ | ❌ | it answers existing threads; it does not open new ones |
 | **Posts top-level comments** | ✅ | ❌ | |
+
+**On the name.** CVM calls this `agent-implement-pr` and triggers it with `agent:implement`,
+disambiguated only by event type. Ours is `agent-fix.yml`, triggered by `agent:fix`. Two reasons:
+labelling a *PR* `agent:implement` here would silently do nothing, since `agent-implement.yml`
+listens on `issues:` only; and every other workflow in this repo holds **file name == display name
+== trigger label**, so `agent-implement-pr` + `agent:fix` was the one pair you had to remember. The
+`-pr` suffix is redundant besides — it triggers on `pull_request_target` and refuses on a closed or
+merged PR, so it cannot run on anything else.
 
 Ours converses in-thread and closes what it settled; CVM replies but never resolves, so its
 threads accumulate until a human clears them. What ours still cannot do is *raise* something new —
@@ -118,7 +152,7 @@ it answers what it was asked, and anything else goes in the commit message.
 | Shared **feedback fetch** used by more than one workflow | ❌ | ➕ | CVM duplicates fetch logic per workflow |
 | Composite action for the repeated setup steps | ❌ | 📋 | both currently duplicate checkout→node→ci→install |
 | `Dockerfile` + local-loop `main.ts` | ✅ | ❌ | N/A by design: `noSandbox()` on the runner (Decision 2) |
-| Project skills (`.claude/skills/`) | ✅ | ❌ | CVM has 7; ours relies on `CLAUDE.md` + `CONTEXT.md` |
+| Project skills (`.claude/skills/`) | ✅ | ❌ | CVM has 7, checked into the repo so its CI agents can load them. Ours relies on `CLAUDE.md` + `CONTEXT.md`, plus **user-level** skills (`wayfinder`, `grilling`) that are available to a human driving Claude Code locally but *not* to a CI agent. That split is deliberate: planning happens with a human in the loop, execution happens in CI |
 | `docs/agents/` platform spec + backlog + label docs | ✅ | 🟡 | ours: `CONTEXT.md`, `CLAUDE.md`, this file, `friction.md` |
 | `CODING_STANDARDS.md` referenced from prompts | ✅ | 🟡 | folded into `CLAUDE.md` |
 
@@ -165,7 +199,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `agent:blocked` | ✅ | ✅ |
 | `agent:queued` | ✅ | ❌ needs `promote-queued` |
 | `agent:to-issues` | ✅ | ❌ PRD tier |
-| `agent:update-branch` | ✅ | 📋 with that workflow |
+| `agent:update-branch` | ✅ | ✅ |
 | `Sandcastle` (triage: "ready for an AFK agent") | ✅ | ❌ no triage step yet |
 
 **Why `agent:fix` rather than overloading `agent:implement`:** CVM disambiguates by event type,
@@ -201,8 +235,11 @@ write access sits below everything that does not, regardless of how useful it lo
 5. **Review self-improvement** (❌) — biggest capability gain, but flips review to
    `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
    confidently-wrong claim is worse than one that can only say it (see #46).
-6. **PRD tier** (❌ ×3) — only pays off for multi-week features decomposed into sub-issues.
-7. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier.
+6. **PRD tier** (❌ ×3) — only pays off for multi-week features decomposed into sub-issues, and the
+   planning half is already covered locally by `wayfinder` (§1). Off the list rather than low on it.
+7. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier, and the only
+   *scheduled agent* in either upstream repo. Note it depends on the PRD tier (it publishes via
+   `/to-prd-project`) and on project skills, so it is three pieces of work, not one.
 
 ## 10. Invariants
 

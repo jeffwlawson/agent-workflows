@@ -37,8 +37,8 @@ try {
   const before = sh("git rev-parse HEAD").trim();
 
   const result = await runWithExtraction({
-    name: `implement-pr-${PR_NUMBER}`,
-    agent: claudeAgent(),
+    name: `fix-${PR_NUMBER}`,
+    agent: claudeAgent("fix"),
     sandbox: noSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

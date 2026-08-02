@@ -1094,6 +1094,111 @@ exercises a CLI flag's exit code. Worth a proper entry from whoever ran it.
 
 ---
 
+## 2026-08-02 — Stacking three PRs, and everything it broke
+
+A day of workflow-side work — mark-ready, an `AGENT_PAT` expiry check, configurable models, a
+rename — delivered as a stack of dependent PRs. The features were fine. **The stack was the
+expensive part, and it was entirely my doing.**
+
+### Squash-merging a base branch closes its dependents, permanently
+
+PRs #67 → #68 → #70, each based on the one below. Merging #67 with `--delete-branch` did three
+things at once, only one of which was intended:
+
+1. Merged it. Fine.
+2. **Closed #68**, because GitHub closes any PR whose base branch is deleted.
+3. Made #68 **unreopenable** — `Could not open the pull request`, because the base no longer
+   exists. Not recoverable; #68 was recreated from the same commit as #72.
+
+Then squash-merging bit a second time: #67's commits were rewritten into one new commit on `main`,
+so both stacked branches still carried their own copies and went `CONFLICTING/DIRTY`. Each needed
+`git rebase --onto origin/main <old-base-commit>` to drop the duplicates.
+
+The order that works, and which nothing warned about:
+
+1. **Retarget every downstream PR to `main` first**, while its base still exists
+2. Rebase each stacked branch onto the new `main` to drop the squashed commits
+3. Only then merge and delete
+
+I caught #70 in time by retargeting it before deleting its base. #68 I did not. The generalisable
+part is that `--delete-branch` is not a cleanup flag when anything is stacked — it is a
+side-effecting operation on other pull requests, and the side effect is irreversible.
+
+### Stacking then exposed a bug that nothing else would have
+
+`pr-feedback.ts` diffed `main...HEAD`, hardcoded. Every agent PR in the pilot's history had branched
+from `main`, so that was indistinguishable from correct — for six weeks.
+
+On a stacked PR it is not. GitHub computes a PR's diff against its **real** base, so the runner's
+allow-list would have included the intermediate branch's lines, GitHub would have rejected the
+**entire** review, and the result would have looked exactly like a review that found nothing. The
+same silent-failure shape as #65, from a different cause.
+
+The first stacked PRs in this repo's history were created about twenty minutes before that would
+have fired. Worth recording as a category: **a change in working *practice* surfaced a latent code
+bug**, and no test, corpus run or review would have found it, because none of them knew the practice
+was about to change. Fixed in #73, which threads the real base ref through both workflows and tests
+the base *selection* rather than re-testing the base-agnostic parser.
+
+### The review predicted a failure that had a live victim
+
+Reviewing #74 (which renamed `agent-implement-pr` → `agent-fix`), the review agent flagged something
+that is not a defect in the diff at all:
+
+> after this merges the base-branch `agent-fix.yml` will run
+> `.sandcastle/agent-workflows/fix/fix.ts` against branches that still only have `implement-pr/`.
+> The run dies on module resolution *before* anything writes `failure_reason.txt`
+
+It named the mechanism (`pull_request_target` takes YAML from base, code from head), the
+consequence, and the mitigation. **PR #73 was open at that moment with `implement-pr/` on its
+branch** — a real victim, not a hypothetical. Merging #73 first made the problem never exist.
+
+This is a new *kind* of finding for the loop. Every prior review said "this code is wrong." This one
+said "this correct change will break something else when it lands," which requires reasoning about
+merge order and repository state rather than about the diff. Nothing in the prompt asks for it.
+
+The same review also caught that `parity.md` §8 still marked `agent:update-branch` as 📋 while §1
+marked the workflow ✅ and `ADOPTING.md` told adopters the label must exist — reasoning across three
+files, only one of which was in the diff, **in the PR whose stated subject was keeping that file
+honest**. Third drift in `parity.md`, third time it was caught by something other than the author.
+
+### First Opus 5 run, and a design decision that paid immediately
+
+The model was hardcoded in `claudeAgent()`. It is now `AGENT_MODEL_<WORKFLOW>` → `AGENT_MODEL` →
+per-workflow default → global default, with Opus 5 everywhere except `update-branch` (Sonnet 5 — the
+one job that reconciles two known texts rather than designing anything).
+
+The default deliberately lives in **code**, not in the four workflow files. That paid off on the
+first run: `pull_request_target` took the YAML from `main`, which had no `AGENT_MODEL` wiring yet, so
+the env var arrived unset and the runner fell through to its own default. The review ran on Opus 5
+**because** the default was not in the YAML. The stale-YAML/fresh-code split that has bitten twice
+before worked in our favour for once.
+
+That first Opus 5 review produced four findings, `4 kept of 4 produced`, and all four verified true
+on independent checking. Recorded because the pilot's headline result — nine implement runs, agent
+code correct every time — was measured on Opus 4.8, and the record should not silently blend two
+models.
+
+### The reframe that reordered the backlog
+
+Stated plainly for the first time today: **the linter is the testbed; the agent loop is the
+deliverable.** Ranking gaps by "does this repo need it" had been the wrong question.
+
+Re-ranked accordingly: the composite action went from "pure cleanup" to the seam that makes the
+toolchain swappable; agent-authored PR bodies went from "cosmetic" to the only channel an agent has
+for a non-code finding; and the hardcoded `main` went from a latent bug to a hard blocker. The
+output is `docs/ADOPTING.md` — the install checklist, ordered so the silent failures come first,
+because all three of the setup traps this pilot hit announce themselves as something else.
+
+### A small discipline that keeps working
+
+Issue #75 asserts that git permits shell metacharacters in ref names. Rather than write that from
+memory — the habit that produced six spec errors — `git check-ref-format --branch` settled it:
+`$(id)`, `a;id`, `a|id`, `a&b` and backticks are all **permitted**; space, `:` and `~` are not. The
+table went into the issue. Cost: one command.
+
+---
+
 ## Pending — not yet exercised
 
 The full cycle is proven, including replies, resolution, and conflict resolution. Still
@@ -1136,9 +1241,19 @@ unexercised or outstanding:
   spelling for the other on the grounds it exercises a different code path; it does not, since both
   are members of the same `TRUSTED_BOT_LOGINS` set. Left open on purpose, per §10: the person
   declining should not also be the person closing the argument.
-- **`agent-explore` is missing from `docs/parity.md` entirely.** Upstream `mattpocock/sandcastle`
-  @ 0.12.0 ships it (label `agent:explore`, `issues: write` and nothing else) and CVM does not, so
-  it fell through a table built from CVM's workflow list. It is the only upstream feature aimed at
-  *verifying an issue's claims before implementation* — its prompt asks the agent to check "whether
-  assertions the issue makes are actually true" — which is the failure class that has produced every
-  real defect in this pilot. Against upstream we are at 4 of 5 workflows, not 4 of 8.
+- **`agent-explore` and the PRD tier are recorded as superseded, not deferred** (`parity.md` §1,
+  added in #74). Both are answers to *how does a well-specified issue come to exist?* — upstream
+  assesses a spec you may not have written, CVM generates one top-down — and both are covered here
+  by local planning skills, as standing practice rather than a temporary state. The residual neither
+  covers is **a small issue written quickly and confidently**, which is where all six spec errors
+  came from and which is below the threshold at which anyone invokes a planning skill. `explore`
+  only half-addresses it: its prompt verifies claims *against the code*, and three of the six were
+  wrong about winget, not about this repo.
+- **Variables reaching `git` still go through `/bin/sh`** (#75). Not exploitable — the fork guard
+  and write-access boundary both hold — but the repo already made the argv-over-string decision once
+  for `gh`, and #73 was the first time a variable entered a `git` command. It got a doc-comment
+  instead. A comment depends on the next reader; `execFileSync` does not.
+- **The `agent-fix` rename can strand branches created before 2026-08-02.** A PR whose branch still
+  has `.sandcastle/agent-workflows/implement-pr/` dies on module resolution before
+  `failure_reason.txt` is written, so the comment reads "(no reason file written)". Recovery is
+  `agent:update-branch`, whose runner the rename did not touch. No such branches remain open today.

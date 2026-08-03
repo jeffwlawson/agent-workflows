@@ -99,7 +99,7 @@ claims in primary sources at authoring time is what actually closed it before (#
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query; skips resolved threads |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ❌ | the *review* does not reply — but `agent:fix` does, and resolves what it settled (§4) |
-| **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10 |
+| **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
@@ -264,3 +264,10 @@ expensive to rediscover.
   presenting an unreviewed PR as finished. Moving the mark-ready step earlier (into implement)
   forfeits that, and fires "your turn" during a window when the review has not posted and there is
   nothing yet to decide.
+
+  **This invariant depends on `AGENT_PAT`.** `GITHUB_TOKEN` cannot convert a draft PR at all —
+  `Resource not accessible by integration (markPullRequestReadyForReview)` — so without the PAT
+  every reviewed PR stays in draft and "still draft" stops meaning anything. It was silently false
+  for the first three PRs after it was written, because the step swallowed the error with
+  `|| true`. An invariant that depends on a secret being set is only as true as the setup, which is
+  why the step now warns loudly rather than failing quietly.

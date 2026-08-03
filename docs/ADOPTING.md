@@ -8,7 +8,7 @@ checklist, and it is ordered so the things that fail *silently* come first.
 
 ---
 
-## 1. The three failures that look like something else
+## 1. The four failures that look like something else
 
 Read these before setting anything up. Each cost a run to diagnose, and none of them says what is
 actually wrong.
@@ -29,6 +29,15 @@ the PR simply sits there with no checks, and you verify by hand forever.
 
 This is a deliberate GitHub anti-recursion rule. The only fix is pushing under a user identity — the
 PAT again.
+
+### `GITHUB_TOKEN` cannot mark a pull request ready for review
+
+`gh pr ready` fails with `GraphQL: Resource not accessible by integration
+(markPullRequestReadyForReview)` **even with `pull-requests: write` granted**. The Actions bot is an
+App installation, and this mutation is not in its permission set regardless of the permissions block.
+
+So every agent PR stays a draft — and a draft cannot be merged — until a human runs `gh pr ready`.
+The permission being granted and the operation being refused is what makes this one hard to spot.
 
 ### A label added with `GITHUB_TOKEN` is a silent no-op
 

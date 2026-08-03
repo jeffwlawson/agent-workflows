@@ -136,6 +136,29 @@ export const gh = (args: string[]): string =>
   execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
+ * Run `git` with argv (no shell) — the same decision as `gh`, for the same
+ * reason. Use this whenever a **variable** reaches git: `execFileSync` passes
+ * each element as one argument and never spawns `/bin/sh`, so a value cannot be
+ * re-parsed as syntax. Git ref names may legally contain `` ` ``, `$()`, `;`,
+ * `|` and `&` (`git check-ref-format --branch` permits all five), so "it's only
+ * a branch name" is not a reason to skip it.
+ *
+ * Literal `sh("git ...")` calls elsewhere are fine and deliberately left alone:
+ * the rule is *variables go through argv*, not *never use `sh`* (issue #75).
+ *
+ * Known gap, recorded rather than implied-clean: `fetchTrustedIssue` and
+ * `fetchTrustedComments` below still interpolate variables into
+ * ``safeSh(`gh api ...`)``. They are safe today only because of what those
+ * variables happen to be — `GH_REPO` is `github.repository`, and the issue
+ * number is a `\d+` capture in review-context.ts — not because of an argv
+ * boundary. Closing that needs a `safeGh(args)` wrapper, not a call-site swap:
+ * `safeSh` swallows non-zero exits and `gh()` throws, and both callers rely on
+ * the swallowing via `|| "{}"` / `|| "[]"`. Tracked as issue #80.
+ */
+export const git = (args: readonly string[]): string =>
+  execFileSync("git", [...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+/**
  * Remove the GitHub token from this process's environment. The agent runs
  * unsandboxed (`noSandbox` merges `process.env`) and its Bash tool can read the
  * environment, so a prompt-injected agent could use `gh` to act on the repo or

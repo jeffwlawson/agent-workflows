@@ -1,4 +1,4 @@
-import { gh, isTrustedAuthor, sh } from "./common.js";
+import { gh, git, isTrustedAuthor } from "./common.js";
 
 export interface PullRequestFeedback {
   /** Bodies of submitted reviews (the reviewer's overall note). */
@@ -80,16 +80,16 @@ interface GqlThread {
  * Defaults to `main` when the base ref is absent or empty, so nothing regresses
  * on a path that has not plumbed the base through.
  *
- * `baseRef` is interpolated into a shell command (`sh` runs `/bin/sh`), so it
- * must stay trusted input. Today it is: the base branch comes from
- * `github.event.pull_request.base.ref`, and both creating that branch and
- * labelling the PR `agent:review` require repo write access — the loop's trust
- * boundary. A git ref may legally contain shell metacharacters, so do not
- * repoint this at untrusted data without quoting/validating first.
+ * Returns argv for `git`, not a command string: `git()` runs `execFileSync`, so
+ * `baseRef` arrives as one argument and is never shell-parsed. That matters
+ * because a git ref may legally contain `` ` ``, `$()`, `;`, `|` and `&`. This
+ * previously carried a "must stay trusted input" warning instead (issue #75) —
+ * write access is still the loop's trust boundary, but it is no longer the only
+ * thing standing between a ref name and `/bin/sh`.
  */
-export const diffCommandAgainstBase = (baseRef: string | undefined): string => {
+export const diffCommandAgainstBase = (baseRef: string | undefined): readonly string[] => {
   const base = (baseRef ?? "").trim() || "main";
-  return `git diff ${base}...HEAD`;
+  return ["diff", `${base}...HEAD`];
 };
 
 /**
@@ -208,7 +208,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     conversation,
     all,
     threadIds: threads.map((t) => t.id),
-    diff: sh(diffCommandAgainstBase(process.env["BASE_REF"])),
+    diff: git(diffCommandAgainstBase(process.env["BASE_REF"])),
     hasFeedback: all.length > 0,
   };
 };

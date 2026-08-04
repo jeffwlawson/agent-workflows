@@ -9,7 +9,7 @@ the **first line**.
 ```json
 <output>
 {
-  "comment": "Merged `main` into this branch, resolving 2 conflicts.\n\n- `src/rules/index.ts` — both sides registered a new rule; kept both entries in id order.\n- `src/manifest.ts` — `main` moved `isArchiveType` while this branch edited its doc comment; took the moved version and reapplied the edit.\n\n`npm run verify` passes (105 tests)."
+  "comment": "Merged `main` into this branch, resolving 2 conflicts.\n\n- `src/registry.ts` — both sides added an entry to the same list; kept both, in the file's existing order.\n- `src/helpers.ts` — `main` moved a function while this branch edited its doc comment; took the moved version and reapplied the edit.\n\n`npm run verify` passes (105 tests)."
 }
 </output>
 ```

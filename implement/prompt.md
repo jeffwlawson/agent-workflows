@@ -26,9 +26,8 @@ Explore the existing rules and their tests before editing. Match what is there.
 3. Add `tests/rules/<rule-id>.test.ts` with at least one passing and one failing manifest.
 4. New fixtures go under `tests/fixtures/`, following the existing layout.
 
-Rules must be pure — no I/O, no network, no clock. They return `Diagnostic[]`; they never
-print, throw, or exit. Use `positionOf(file, path)` for positions rather than computing
-line numbers by hand.
+`CLAUDE.md` holds the rule contract — purity, return type, positions, registration. Follow it
+there rather than from memory.
 
 # EXECUTION
 

@@ -1,16 +1,26 @@
 import { gh, git, isTrustedAuthor } from "./common.js";
+import { isAgentTopLevelComment } from "./fix-output.js";
 
 export interface PullRequestFeedback {
   /** Bodies of submitted reviews (the reviewer's overall note). */
   readonly summaries: string;
   /** Comments in *unresolved* review threads, anchored to file + line, replies included. */
   readonly inline: string;
-  /** Top-level conversation comments on the PR. */
+  /**
+   * Top-level conversation comments on the PR, **excluding** the ones
+   * `agent:fix` posted itself (see `TOP_LEVEL_COMMENT_MARKER`).
+   */
   readonly conversation: string;
   /** All of the above rendered as one block, or "" when there is none. */
   readonly all: string;
   /** Node ids of the unresolved threads shown to the agent, for reply/resolve. */
   readonly threadIds: readonly string[];
+  /**
+   * Bodies of the top-level comments `agent:fix` already posted on this PR —
+   * kept out of every rendered surface above, and returned only so a new run
+   * can avoid posting the same note twice.
+   */
+  readonly priorTopLevelComments: readonly string[];
   /** Diff of the branch against the PR's base branch merge-base (three-dot). */
   readonly diff: string;
   /** False when nothing trusted was found — callers should refuse rather than invent work. */
@@ -160,7 +170,24 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     pr = undefined;
   }
 
-  const conversation = render(pr?.comments?.nodes, (n, login) => `**@${login}:**\n${(n.body ?? "").trim()}`);
+  // Our own top-level comments are split off before rendering rather than
+  // filtered by author: `github-actions` is trusted on purpose (that is what
+  // makes the review → fix handoff work), so an author-based filter would be
+  // both too blunt and, on the `reviews` surface, actively wrong. The marker
+  // names exactly the comments this workflow wrote. Feeding them back would put
+  // the agent's own "worth a follow-up issue" note under a prompt heading that
+  // says to decide whether to address or decline it — which is the invariant in
+  // docs/parity.md §10 closed by a different door.
+  const commentNodes = pr?.comments?.nodes ?? [];
+  const priorTopLevelComments = commentNodes
+    .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined))
+    .filter((n) => isAgentTopLevelComment(n.body))
+    .map((n) => n.body ?? "");
+
+  const conversation = render(
+    commentNodes.filter((n) => !isAgentTopLevelComment(n.body)),
+    (n, login) => `**@${login}:**\n${(n.body ?? "").trim()}`,
+  );
 
   const summaries = render(
     pr?.reviews?.nodes,
@@ -208,7 +235,11 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     conversation,
     all,
     threadIds: threads.map((t) => t.id),
+    priorTopLevelComments,
     diff: git(diffCommandAgainstBase(process.env["BASE_REF"])),
+    // Deliberately computed from `all`, which no longer contains our own
+    // top-level comments: a PR with every thread resolved and no human input
+    // must still refuse, rather than find "feedback" the agent wrote itself.
     hasFeedback: all.length > 0,
   };
 };

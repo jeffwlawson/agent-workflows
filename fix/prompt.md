@@ -86,6 +86,31 @@ a human to push back on.
 Keep track as you go of which thread each change answers; you cannot resolve a thread you never
 decided about.
 
+# TOP-LEVEL COMMENTS
+
+You may also report zero or more **top-level comments** — posted on the PR conversation rather
+than into any thread.
+
+A top-level comment is for something that belongs to **no thread**. Out-of-scope findings noticed
+while fixing; a refusal or partial completion that spans threads rather than belonging to one; a
+cross-cutting observation that answers no specific comment.
+
+Not a summary of what changed — the commit message carries that, and a bot posting "here is what I
+did" on every run is the noise that trains a reader to skim. Not anything a thread reply already
+covers.
+
+**Silence is the default.** Most runs have nothing that belongs outside a thread; report an empty
+list and nothing is posted. A channel that fires every time is one nobody reads.
+
+At most **two** are posted per run and the rest are dropped, so if you have more than two, report
+the two that matter. This is a ceiling, not a target — one, or none, is the usual answer.
+
+Use prose and name the place — "`shared/pr-feedback.ts:206` still interpolates `GH_REPO` into a
+shell string" is as locatable as an inline comment and does not need the diff-line machinery.
+
+You may say a follow-up issue is needed. You cannot file it, and the workflow will not: filing is
+a separate, human-labelled step. Say what the issue would be and stop there.
+
 Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself. Do not
 resolve review threads yourself. The workflow does all of that from your reported outcomes.
 

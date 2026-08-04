@@ -122,8 +122,8 @@ claims in primary sources at authoring time is what actually closed it before (#
 | Pushes with `--force-with-lease` pinned to the run's head SHA | ✅ | ✅ | |
 | **Posts thread replies back** | ✅ | ✅ | one reply per thread, `addressed` or `declined`, with the reason |
 | **Resolves the threads it addressed** | ❌ | ➕ | declines stay **open** so a human can push back |
-| **Posts new inline comments** | ✅ | ❌ | it answers existing threads; it does not open new ones |
-| **Posts top-level comments** | ✅ | ❌ | |
+| **Posts new inline comments** | ✅ | ❌ | **decision, not omission** — see below |
+| **Posts top-level comments** | ✅ | ✅ | ours states in the prompt what the channel is *for*; CVM has the field and no guidance anywhere |
 
 **On the name.** CVM calls this `agent-implement-pr` and triggers it with `agent:implement`,
 disambiguated only by event type. Ours is `agent-fix.yml`, triggered by `agent:fix`. Two reasons:
@@ -134,8 +134,23 @@ listens on `issues:` only; and every other workflow in this repo holds **file na
 merged PR, so it cannot run on anything else.
 
 Ours converses in-thread and closes what it settled; CVM replies but never resolves, so its
-threads accumulate until a human clears them. What ours still cannot do is *raise* something new —
-it answers what it was asked, and anything else goes in the commit message.
+threads accumulate until a human clears them. Since #78 it can also *raise* something that belongs
+to no thread, as a top-level comment on the PR conversation — the channel that was missing when
+#63's documented bug ended up buried in a test-file comment, and when #77 offered an option
+(`open a follow-up and reference it`) the agent had no way to take.
+
+**Why we post top-level but not inline comments.** Inline comments need the diff-line allow-list,
+and that machinery produced two silent-failure bugs in three days: #65 (a phantom line past the end
+of the last file) and #71 (the wrong diff base on a stacked PR). Both fail identically — the review
+posts nothing and looks clean. A second producer doubles the exposure to a failure class whose
+whole signature is invisibility, for marginal value: a top-level comment can name
+`shared/pr-feedback.ts:206` in prose. Secondarily, `agent:fix` is the *author* of the diff by then,
+and an author annotating their own lines inverts the review-raises / fix-answers split.
+
+**And why the channel has a stated purpose.** CVM has `topLevelComments` and — verified by grepping
+`implement-pr/prompt.md` — no guidance for when to use it. A channel with no stated purpose either
+goes unused or gets used arbitrarily, and "arbitrarily" on a PR conversation is noise. Ours says
+what it is for, what it is not (a summary of what changed), and that silence is the default.
 
 ---
 
@@ -222,10 +237,12 @@ write access sits below everything that does not, regardless of how useful it lo
 1. **Composite action for setup** (📋) — pure cleanup, now that four workflows duplicate
    checkout → node → ci → claude.
 2. **Agent-authored PR body** (❌, `write-pr`) — promoted from "cosmetic" on 2026-08-01. The body is
-   a hardcoded heredoc in `agent-implement.yml`, so it is the one thing an agent **cannot** write —
-   and therefore the missing channel for any finding that is not code. Issue #63 asked the agent to
-   report a bug it was told not to fix; it had nowhere to put it but a comment inside a test file.
-   Widens no write access: the workflow already authors the PR.
+   a hardcoded heredoc in `agent-implement.yml`, so it is the one thing an agent **cannot** write.
+   Issue #63 asked the agent to report a bug it was told not to fix; it had nowhere to put it but a
+   comment inside a test file. Top-level comments (#78) now give `agent:fix` somewhere to put such
+   a finding, so this is no longer the *only* non-code channel — but `agent:implement` still has
+   none, and the body is still the first thing a human reads. Widens no write access: the workflow
+   already authors the PR.
 3. **Auto-cascade fix → review** (📋) — deliberately still manual. implement → review is safe to
    automate because it fires *once per PR*; fix → review fires *every iteration*, and keeping a
    human on that leg is what makes "should we act on this feedback?" a decision rather than a
@@ -258,6 +275,34 @@ expensive to rediscover.
   collaborators or our own bot. `agent:fix` pushes code, so an ungated input there steers commits.
 - **Agents never hold the GitHub token.** Context is fetched before the agent starts and the token
   is scrubbed, so the no-push/no-label/no-comment boundary is technical rather than conventional.
+  Top-level comments (§4) do not weaken this: the agent *reports* them in its structured output and
+  the workflow posts them, which is the same shape as thread replies.
+- **An agent that raises work never files it.** `agent:fix` may say a follow-up is needed; it
+  cannot create the issue. Filing is a separate, human-labelled step. `architecture-review`
+  upstream has the same shape — it files a PRD and stops, and a human labels it `agent:implement`.
+  Collapsing the two closes a cycle with no gate, the same failure "never auto-cascade review →
+  fix" above already guards against. Concretely: `agent-fix.yml` gets no `issues: write`, and
+  harvesting those comments into issues (#79) is a separate workflow behind its own label.
+- **No agent reads its own output back as input.** The invariant above closes by a different door
+  if it does. `gh pr comment` posts as `github-actions[bot]`, which `isTrustedAuthor` trusts on
+  purpose — so without a filter the agent's own "worth a follow-up issue" note returns next run as
+  `# CONVERSATION`, under a prompt heading that says to address or decline it. The agent raises the
+  follow-up and the agent, one label later, does it, with no human in between; the quieter variant
+  is worse, where it simply addresses the note and expands scope in exactly the way the note existed
+  to avoid. So every top-level comment carries `<!-- agent-fix:top-level -->` and
+  `pr-feedback.ts` drops marked comments from the `conversation` surface. Narrowing that surface
+  costs nothing: the review → fix handoff runs through `reviews`/`reviewThreads`, not `comments`.
+  It also keeps `hasFeedback` honest — a PR with every thread resolved and no human input still
+  refuses, rather than finding "feedback" the agent wrote itself.
+- **A channel the prompt bounds is also bounded mechanically.** Prompt guidance sets intent; it is
+  not a control. `filterOutcomes` drops invented thread ids because a model invents them, and
+  `filterTopLevelComments` caps a run at two comments and drops verbatim repeats of ones already
+  posted, because "silence is the default" is otherwise aspirational — three `agent:fix` rounds
+  would leave three copies of the same note, and three issues once #79 harvests them.
+- **An optional channel never has veto power over the mandatory one.** A malformed top-level
+  comment is dropped with a warning, not thrown on: throwing would burn both extraction retries and
+  take every thread reply and resolve down with it. A malformed *thread outcome* still throws — that
+  is the payload the run exists to produce.
 - **Draft means the pipeline has not finished, not that the agent is still typing.** Review marks
   the PR ready, and only on `success()`. So a PR left in draft after a run is a PR whose automated
   pipeline did not complete — a second signal that agrees with `agent:blocked` instead of

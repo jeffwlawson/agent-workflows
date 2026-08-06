@@ -50,7 +50,7 @@ from a false premise produces a tidy patch that is still wrong.
 changed. Its line numbers point at the old state, so re-read the current code before deciding
 whether the point still stands. It often already has been addressed.
 
-Feedback that asks you to *verify* something (for example "confirm the corpus job stays green")
+Feedback that asks you to *verify* something (for example "confirm the other checks stay green")
 is a request to check and report in your commit message, not necessarily to change code.
 
 # CONSTRAINTS
@@ -58,8 +58,8 @@ is a request to check and report in your commit message, not necessarily to chan
 Stay within the scope of this PR and its linked issue. If a comment asks for something that
 belongs in a separate change, say so rather than expanding the PR.
 
-Rules are pure (no I/O, no network, no clock — the clock is injected via `RuleContext`), return
-`Diagnostic[]`, and are registered in `src/rules/index.ts` ordered by id.
+`CLAUDE.md` holds the conventions any change here must follow. Follow them there rather than
+from memory.
 
 Run `npm run verify` before committing. It must pass.
 
@@ -74,9 +74,9 @@ If nothing genuinely needs changing, make no commit and say so.
 # REPLYING TO THREADS
 
 After the work, you will be asked to report one outcome per review thread you were shown —
-whether you **addressed** it or **declined** it, and a short reply explaining which. Those
-replies are posted publicly into the threads, and addressed threads are then resolved, so write
-them for the person who left the comment.
+whether you **addressed** it or **declined** it, and a reply under 100 words explaining which.
+Those replies are posted publicly into the threads, and addressed threads are then resolved, so
+write them for the person who left the comment.
 
 The test is **"is anything still outstanding?"**, not "did I personally change something?". A
 comment that an earlier commit already satisfied is **addressed** — say so and let it close. Use

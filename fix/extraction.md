@@ -13,7 +13,8 @@ Omit threads you did not consider.
 - `declined` — you disagree, or are deliberately not acting. The thread stays **open** so a human
   can push back. Say plainly why, in the reply.
 
-The reply is posted publicly into the thread, so write it to the person who left the comment.
+Every reply is **under 100 words**, written to the person who left the comment: what you did, then
+why, then the commit if there is one. The examples below are the shape, not a length target.
 
 Then report `topLevelComments` — comments posted on the PR conversation rather than into a thread.
 One is warranted only for something that belongs to **no** thread: an out-of-scope finding noticed
@@ -24,6 +25,8 @@ Not anything a thread reply already says.
 **Default to an empty array.** Most runs have nothing that belongs outside a thread, and a channel
 that fires every time is one nobody reads. At most two are posted; anything past the second is
 dropped, so list the two that matter rather than everything you could say.
+
+Each body is **under 120 words**: name the thing, say where it is, say why it matters.
 
 ```json
 <output>

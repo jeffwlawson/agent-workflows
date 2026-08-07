@@ -28,7 +28,7 @@ row marked ❌.
 | `agent-explore` — read-only triage pass on an issue | — | ❌ | **upstream only**, not in CVM. Superseded by local planning skills *in this repo's usage* — see below, and the scope note |
 | `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | PRD tier. Superseded locally by `wayfinder` |
 | `agent-implement-prd` — work sub-issues in sequence | ✅ | ❌ | PRD tier; run-chaining. Nothing to sequence — the backlog is flat and independent |
-| `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | needs dependency chains we don't have |
+| `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | the workflow is absent, and it is the only missing piece now: the label is declared (`docs/agents/triage-labels.md`, §8) and `/wayfinder` records blockers as native issue dependencies |
 | `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
@@ -170,7 +170,7 @@ what it is for, what it is not (a summary of what changed), and that silence is 
 | Composite action for the repeated setup steps | ❌ | 📋 | both currently duplicate checkout→node→ci→install |
 | `Dockerfile` + local-loop `main.ts` | ✅ | ❌ | N/A by design: `noSandbox()` on the runner (Decision 2) |
 | Project skills (`.claude/skills/`) | ✅ | ❌ | CVM has 7, checked into the repo so its CI agents can load them. Ours relies on `CLAUDE.md` + `CONTEXT.md`, plus **user-level** skills (`wayfinder`, `grilling`) that are available to a human driving Claude Code locally but *not* to a CI agent. That split is deliberate: planning happens with a human in the loop, execution happens in CI |
-| `docs/agents/` platform spec + backlog + label docs | ✅ | 🟡 | ours: `CONTEXT.md`, `CLAUDE.md`, this file, `friction.md` |
+| `docs/agents/` platform spec + backlog + label docs | ✅ | 🟡 | ours has `docs/agents/` since #89, but only the per-repo config the local skills read — label docs, issue tracker, a domain pointer. No platform spec or backlog: `CONTEXT.md`, `CLAUDE.md`, this file and `friction.md` cover that ground |
 | `CODING_STANDARDS.md` referenced from prompts | ✅ | 🟡 | folded into `CLAUDE.md` |
 
 ---
@@ -214,15 +214,19 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `agent:review` | ✅ | ✅ |
 | `agent:in-progress` | ✅ | ✅ |
 | `agent:blocked` | ✅ | ✅ |
-| `agent:queued` | ✅ | ❌ needs `promote-queued` |
+| `agent:queued` | ✅ | 🟡 declared in `docs/agents/triage-labels.md` and inert — nothing reads it without `promote-queued` (§1) |
 | `agent:to-issues` | ✅ | ❌ PRD tier |
 | `agent:update-branch` | ✅ | ✅ |
-| `Sandcastle` (triage: "ready for an AFK agent") | ✅ | ❌ no triage step yet |
+| `Sandcastle` (triage: "ready for an AFK agent") | ✅ | 🟡 ours is `ready-for-agent`, written by the local `/triage` and `/to-tickets` skills; no workflow reads it |
 
 **Why `agent:fix` rather than overloading `agent:implement`:** CVM disambiguates by event type,
 so the same label means two things depending on where you put it. Here that would be a footgun —
 `agent-implement.yml` triggers on `issues:` only, so labelling a PR `agent:implement` would
 silently do nothing.
+
+**Two further vocabularies sit alongside this table**, neither of which any workflow triggers on:
+the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`. `docs/agents/triage-labels.md`
+(#89) maps all three and records why `ready-for-agent` → `agent:implement` stays a human hand.
 
 ---
 

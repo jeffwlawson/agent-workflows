@@ -132,6 +132,15 @@ gh label create "agent:blocked"     --color B60205 --description "A run failed o
 the label deliberately. `agent:in-progress` is held for the duration and removed by an `always()`
 step; `agent:blocked` is applied on failure alongside a comment carrying the reason.
 
+**Where the labels come from is a separate question.** These six are *workflow state*. If you also
+run a triage step — a human or a planning skill deciding an issue is well enough specified to hand
+over — that is a second vocabulary, and joining the two is a decision you have to make explicitly.
+`docs/agents/triage-labels.md` records this repo's answer: the five canonical triage roles, the
+seventh `agent:*` label (`agent:queued`, declared but inert), the `wayfinder:*` planning labels
+that never trigger a workflow, and why `ready-for-agent` → `agent:implement` stays a human hand
+rather than an automation. Take it alongside the workflows and edit the mapping — in the order §4
+gives, since the file is also a skill's output path — and the reasoning survives the rename.
+
 ---
 
 ## 4. Files to copy
@@ -145,6 +154,12 @@ step; `agent:blocked` is applied on failure alongside a comment carrying the rea
 ```
 
 Optional, and repo-agnostic: `.github/workflows/token-expiry.yml`.
+
+Optional, and needs its mapping rewritten for your labels: `docs/agents/triage-labels.md` (§3).
+Run `/setup-matt-pocock-skills` **first** — it writes all three files in `docs/agents/`, including
+`triage-labels.md` at that same path — then copy this repo's version on top of what it generated.
+The reverse order silently loses everything below the mapping table, because the skill rewrites
+the file with its own default five-row version.
 
 **Do not copy** `corpus.yml` or `scripts/lint-corpus.ts` — they lint a pinned `microsoft/winget-pkgs`
 snapshot. The *pattern* is worth stealing and is discussed in §7.

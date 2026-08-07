@@ -167,13 +167,13 @@ The workflows are not yet parameterised. These are the couplings to edit by hand
 
 | Assumption | Where | Notes |
 |---|---|---|
-| Default branch is `main` | `agent-implement.yml` (×3), `implement/prompt.md`, `implement/implement.ts`, `ci.yml`; plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` | `implement` branches from `main` and opens its PR against it, unconditionally — that is the one that is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch |
+| Default branch is `main` | `agent-implement.yml` (×3), `implement/prompt.md`, `implement/implement.ts`, `ci.yml`; plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | `implement` branches from `main` and opens its PR against it, unconditionally — that is the one that is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch |
 | `npm ci`, `npm run verify`, `.nvmrc` | four workflows, and `implement` / `fix` / `update-branch` prompts | the whole toolchain assumption; a non-Node repo replaces all of it |
 | `CONTEXT.md` and `CLAUDE.md` exist | every prompt reads them first | see §6 |
 | Project domain | `implement/prompt.md` has an "IF THIS ISSUE ADDS A RULE" section; it and `review/prompt.md` cite this repo's domain model (role vs. `ManifestType`, the rule classes); `fix/prompt.md` and `update-branch/prompt.md` cite `src/rules/index.ts` | roughly half of `implement/prompt.md` is this repo's domain. The extraction prompts and the rest of `review/prompt.md` are already domain-neutral |
 
-Nothing above will error — it will produce agents confidently doing the wrong project's
-conventions. Budget real time for the prompts specifically.
+With the one exception called out above, nothing here will error — it will produce agents
+confidently doing the wrong project's conventions. Budget real time for the prompts specifically.
 
 ---
 

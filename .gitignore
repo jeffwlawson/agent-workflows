@@ -6,3 +6,6 @@ coverage/
 # Local agent scratch — noSandbox() runs write to the working tree.
 .sandcastle/**/output/
 failure_reason.txt
+
+# `/to-tickets` writes drafts here in local-file mode.
+.scratch/

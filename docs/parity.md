@@ -281,8 +281,11 @@ expensive to rediscover.
   cannot create the issue. Filing is a separate, human-labelled step. `architecture-review`
   upstream has the same shape — it files a PRD and stops, and a human labels it `agent:implement`.
   Collapsing the two closes a cycle with no gate, the same failure "never auto-cascade review →
-  fix" above already guards against. Concretely: `agent-fix.yml` gets no `issues: write`, and
-  harvesting those comments into issues (#79) is a separate workflow behind its own label.
+  fix" above already guards against. Concretely: no workflow gets `issues: write` unless filing is
+  its job — `tests/workflows.test.ts` holds every workflow to that, exempting only
+  `agent-implement.yml` and `token-expiry.yml` by name, so a new one is covered on arrival
+  (`agent-review.yml` had been granted it unused, #101) — and harvesting those comments into issues
+  (#79) is a separate workflow behind its own label.
 - **No agent reads its own output back as input.** The invariant above closes by a different door
   if it does. `gh pr comment` posts as `github-actions[bot]`, which `isTrustedAuthor` trusts on
   purpose — so without a filter the agent's own "worth a follow-up issue" note returns next run as

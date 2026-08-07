@@ -1,7 +1,7 @@
 # TASK
 
-PR #{{PR_NUMBER}} (branch `{{BRANCH}}`) conflicts with `main`. A
-`git merge origin/main --no-edit` has already been run and left the working tree conflicted.
+PR #{{PR_NUMBER}} (branch `{{BRANCH}}`) conflicts with its base branch, `{{BASE_REF}}`. A
+`git merge origin/{{BASE_REF}} --no-edit` has already been run and left the working tree conflicted.
 Resolve every conflict, commit the merge, and describe what you did.
 
 # THE PR

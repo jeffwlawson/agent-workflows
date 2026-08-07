@@ -123,7 +123,7 @@ without erroring.
 gh label create "agent:implement"   --color 0E8A16 --description "Ready for the implement workflow to run"
 gh label create "agent:review"      --color 1D76DB --description "PR is ready for the automated review workflow"
 gh label create "agent:fix"         --color 1D76DB --description "Address review feedback on this PR"
-gh label create "agent:update-branch" --color 5319E7 --description "Refresh this PR branch from main"
+gh label create "agent:update-branch" --color 5319E7 --description "Refresh this PR branch from its base branch"
 gh label create "agent:in-progress" --color FBCA04 --description "An agent run is currently active"
 gh label create "agent:blocked"     --color B60205 --description "A run failed or was refused; needs human attention"
 ```
@@ -167,7 +167,7 @@ The workflows are not yet parameterised. These are the couplings to edit by hand
 
 | Assumption | Where | Notes |
 |---|---|---|
-| Default branch is `main` | ~11 sites across all four workflows, plus `shared/pr-feedback.ts` | if yours is `master`/`develop`, every diff and base is wrong |
+| Default branch is `main` | `agent-implement.yml` (×3), `implement/prompt.md`, `implement/implement.ts`, `ci.yml`; plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` | `implement` branches from `main` and opens its PR against it, unconditionally — that is the one that is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch |
 | `npm ci`, `npm run verify`, `.nvmrc` | four workflows, and `implement` / `fix` / `update-branch` prompts | the whole toolchain assumption; a non-Node repo replaces all of it |
 | `CONTEXT.md` and `CLAUDE.md` exist | every prompt reads them first | see §6 |
 | Project domain | `implement/prompt.md` has an "IF THIS ISSUE ADDS A RULE" section; it and `review/prompt.md` cite this repo's domain model (role vs. `ManifestType`, the rule classes); `fix/prompt.md` and `update-branch/prompt.md` cite `src/rules/index.ts` | roughly half of `implement/prompt.md` is this repo's domain. The extraction prompts and the rest of `review/prompt.md` are already domain-neutral |

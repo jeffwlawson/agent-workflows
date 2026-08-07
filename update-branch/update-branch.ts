@@ -21,6 +21,14 @@ const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
 
 /**
+ * The branch the workflow merged in. Not `required`: it defaults to `main` the
+ * same way the workflow's own `${BASE_REF:-main}` does, so the prompt describes
+ * the merge that actually happened rather than a `main` the PR may not be
+ * based on (#100).
+ */
+const BASE_REF = (process.env["BASE_REF"] ?? "").trim() || "main";
+
+/**
  * Only the *comment* is structured. The resolution itself is the working tree,
  * which the workflow pushes — there is nothing useful to extract about it that
  * the diff does not already say.
@@ -30,7 +38,7 @@ const commentSchema = standardSchema<{ comment: string }>((value) => ({
 }));
 
 try {
-  // The workflow has already run `git merge origin/main` and left the tree
+  // The workflow has already run `git merge origin/<base>` and left the tree
   // conflicted; this script exists only for that case.
   const conflicted = sh("git diff --name-only --diff-filter=U").trim();
   if (!conflicted) {
@@ -53,6 +61,7 @@ try {
     promptArgs: {
       PR_NUMBER,
       BRANCH,
+      BASE_REF,
       PR_CONTEXT: prContext,
       CONFLICTED_FILES: conflicted,
       MERGE_STATUS: sh("git status --short").trim(),

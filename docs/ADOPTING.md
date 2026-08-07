@@ -237,6 +237,14 @@ access. Copy these controls with the workflows — they are not decoration.
 | **Scrub the GitHub token** from the agent's environment after fetching context | the agent runs unsandboxed; it has no legitimate `gh` use once context is read |
 | **`contents: read`** on review | the one agent structurally unable to mutate the branch |
 
+**The trigger is weaker than the trust boundary.** Every control above gates an *input*; the
+**trigger** is a label, and GitHub's **Triage** role can add labels with no push access at all. So a
+triage-role collaborator can add `agent:fix` and cause an agent to push code — below the write
+boundary the rest of the design assumes. Moot while you are the only collaborator, and a real
+escalation path the day that changes. Two ways out, and it is a decision rather than a defect: check
+`github.event.sender`'s permission level in the job-level `if:`, or treat "never grant Triage on a
+repo running this loop" as part of the setup. Pick one before you add a collaborator (#102).
+
 The residual you cannot cheaply close: the agent runs unsandboxed with a model token readable in its
 environment and unrestricted network egress. Every *injection source* is behind the write boundary,
 so the exposure is "a compromised collaborator or a poisoned dependency could exfiltrate a scoped,

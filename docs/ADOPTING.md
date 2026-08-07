@@ -130,7 +130,9 @@ gh label create "agent:blocked"     --color B60205 --description "A run failed o
 
 **Trigger labels are consumed on entry.** That is what makes a retry idempotent — a human re-adds
 the label deliberately. `agent:in-progress` is held for the duration and removed by an `always()`
-step; `agent:blocked` is applied on failure alongside a comment carrying the reason.
+step; `agent:blocked` is applied on failure alongside a comment carrying the reason — and by
+`agent-implement` when it refuses an issue's *shape* (a sub-issue, a PRD-shaped parent, or a
+`wayfinder:*` planning ticket), since re-labelling would only reproduce the same refusal.
 
 **Where the labels come from is a separate question.** These six are *workflow state*. If you also
 run a triage step — a human or a planning skill deciding an issue is well enough specified to hand

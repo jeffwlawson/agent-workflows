@@ -79,7 +79,8 @@ claims in primary sources at authoring time is what actually closed it before (#
 | Deterministic branch name `agent/issue-<n>-<slug>` | ✅ | ✅ | |
 | Refuses when a PR already targets the issue | ✅ | ✅ | |
 | Refuses a **closed** issue | ✅ | ✅ | added #102. Must precede the PR check, which lists *open* PRs only — so a merged-and-closed issue otherwise looks untouched |
-| Refuses a **sub-issue** / PRD-shaped issue | ✅ | ❌ | needs the PRD tier to be meaningful |
+| Refuses a **sub-issue** / PRD-shaped issue | ✅ | ✅ | added #90. One GraphQL query settles the shape; a sub-issue is refused outright — its parent drives it — and a PRD-shaped parent until the sequencing path exists (#92) |
+| Refuses a `wayfinder:*` **planning artifact** | ❌ | ➕ | maps and decision tickets describe work rather than being it. CVM has no equivalent because its PRDs *are* issues on the tracker; ours are planned in a skill (§1) and land labelled |
 | Issue body passed in by the runner (agent never calls `gh`) | ✅ | ✅ | |
 | **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed heredoc in the workflow. Re-rated 2026-08-01: this is the only channel an agent has for reporting a **non-code** finding, and #63 hit that limit — see §9.2 |
 | **Auto-cascade: adds `agent:review` to the new PR** | ✅ | ✅ | needs `AGENT_PAT`; warns loudly if absent, since a `GITHUB_TOKEN` label add is a silent no-op |

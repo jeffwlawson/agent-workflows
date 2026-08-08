@@ -272,14 +272,30 @@ jobs:
         continue-on-error: true
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # Anchored: a repo check genuinely named `fixtures` is not an agent.
-          AGENT_CHECKS: ^(review|fix|update-branch|implement)$
-          # This job's own check run, which the extraction renamed: a called
-          # workflow's job appears as `<caller job id> / <this job's id>`, so
-          # the anchored pattern above stops matching it and the wait would
-          # spend its whole timeout on itself. Compared as a literal via jq's
-          # `env`, not folded into that regex — a job id is not a regex, and a
-          # `.` in one would quietly match a neighbouring check too.
+          # The sibling agent jobs, which the conversion renamed too: a called
+          # workflow's job appears as `<caller job id> / <this workflow's job
+          # id>`, so `agent-fix.yml` now produces `fix / fix`. The pattern
+          # matches a name whose *either* half is an agent job, because the two
+          # halves are owned by different people — the second is a job id in
+          # one of these reusable files and cannot change under an adopter, the
+          # first is whatever they called their caller job. `^(…)$` alone
+          # stopped matching every sibling the moment the loop was split, which
+          # put a queued `fix` back in the wait: review would burn the full
+          # 900 s on a job that cannot start until review ends, then review on
+          # the degraded evidence #48 exists to prevent.
+          #
+          # Still bounded at both ends, which is the point of anchoring at all:
+          # `fixtures`, `CI / fix-lint` and `build / fixtures` are repo checks,
+          # not agents, and none of them match.
+          AGENT_CHECKS: '(^|/ )(review|fix|update-branch|implement-prd|implement)( / |$)'
+          # This job's own check run, named the same way. Overlapping with the
+          # pattern above is deliberate, not redundant: that one is a heuristic
+          # over names nobody declares, and this is the exact answer the caller
+          # was made to state. Self-exclusion is the case with no error to read
+          # when it is wrong, so it does not get to depend on a regex. Compared
+          # as a literal via jq's `env`, never folded into that regex — a job
+          # id is not a regex, and a `.` in one would quietly match a
+          # neighbouring check too.
           SELF_CHECK: ${{ inputs.self-check }}
           WAIT_SECONDS: "900"
         run: |

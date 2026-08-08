@@ -1,7 +1,8 @@
 # Adopting this agent loop in another repo
 
-Four GitHub Actions workflows that let a labelled issue become a reviewed pull request without a
-human in the middle. This is what it takes to install them somewhere else.
+Five GitHub Actions workflows that let a labelled issue become a reviewed pull request without a
+human in the middle — four for a single issue, and one that works a parent issue's sub-issues in
+sequence onto one branch. This is what it takes to install them somewhere else.
 
 Everything below was learned by hitting it. `docs/friction.md` has the narrative; this file is the
 checklist, and it is ordered so the things that fail *silently* come first.
@@ -49,6 +50,11 @@ never runs.
 dead while looking alive. The workflow emits a `::warning::` when `AGENT_PAT` is unset for exactly
 this reason.
 
+`agent-implement-prd` has it worse: it *chains itself* by re-adding `agent:implement` to the parent
+issue, so without the PAT the chain stops after one sub-issue with the trigger label sitting on the
+parent, which reads as work in progress forever. It warns too, and names how many sub-issues are
+left so the manual remedy is one remove-and-re-add.
+
 ---
 
 ## 2. Secrets
@@ -83,7 +89,7 @@ Defaults live in `shared/common.ts`, and **most specific wins**:
 
 | Source | Scope |
 |---|---|
-| `AGENT_MODEL_<WORKFLOW>` variable | that workflow only — `AGENT_MODEL_REVIEW`, `AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_FIX` |
+| `AGENT_MODEL_<WORKFLOW>` variable | that workflow only — `AGENT_MODEL_REVIEW`, `AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_MODEL_FIX` |
 | `AGENT_MODEL` variable | every workflow, **including** ones with their own default — "run everything on X" is the point of setting it |
 | per-workflow default in code | `update-branch` → `claude-sonnet-5` |
 | global default in code | everything else → `claude-opus-5` |
@@ -130,9 +136,14 @@ gh label create "agent:blocked"     --color B60205 --description "A run failed o
 
 **Trigger labels are consumed on entry.** That is what makes a retry idempotent — a human re-adds
 the label deliberately. `agent:in-progress` is held for the duration and removed by an `always()`
-step; `agent:blocked` is applied on failure alongside a comment carrying the reason — and by
-`agent-implement` when it refuses an issue's *shape* (a sub-issue, a PRD-shaped parent, or a
+step; `agent:blocked` is applied on failure alongside a comment carrying the reason — and by either
+`implement` workflow when it refuses an issue's *shape* (a sub-issue, a nested PRD, or a
 `wayfinder:*` planning ticket), since re-labelling would only reproduce the same refusal.
+
+**The one exception is the PRD chain**, which re-adds `agent:implement` to the parent itself after
+each sub-issue closes, and stops by *not* re-adding it. So on a parent issue the label is a cursor
+rather than a one-shot: seeing it there means the next slice is due, and seeing it there with no run
+happening means the PAT is missing (§1).
 
 **Where the labels come from is a separate question.** These six are *workflow state*. If you also
 run a triage step — a human or a planning skill deciding an issue is well enough specified to hand
@@ -149,11 +160,18 @@ gives, since the file is also a skill's output path — and the reasoning surviv
 
 ```
 .github/workflows/agent-implement.yml
+.github/workflows/agent-implement-prd.yml
 .github/workflows/agent-fix.yml
 .github/workflows/agent-review.yml
 .github/workflows/agent-update-branch.yml
 .sandcastle/agent-workflows/            # runners, prompts, shared helpers
 ```
+
+`agent-implement-prd.yml` is optional but **not independent**: it shares the `agent:implement`
+label with `agent-implement.yml`, and the two partition every label event by issue shape. Take
+both or neither. Copying only the PRD one leaves ordinary issues unhandled; copying only
+`agent-implement` is fine, but then delete its `defer` branch — otherwise a PRD-shaped issue is
+silently ignored by both a workflow that is not there and one that stepped aside for it.
 
 Optional, and repo-agnostic: `.github/workflows/token-expiry.yml`.
 
@@ -184,10 +202,11 @@ The workflows are not yet parameterised. These are the couplings to edit by hand
 
 | Assumption | Where | Notes |
 |---|---|---|
-| Default branch is `main` | `agent-implement.yml` (×3), `implement/prompt.md`, `implement/implement.ts`, `ci.yml`; plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | `implement` branches from `main` and opens its PR against it, unconditionally — that is the one that is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch |
-| `npm ci`, `npm run verify`, `.nvmrc` | four workflows, and `implement` / `fix` / `update-branch` prompts | the whole toolchain assumption; a non-Node repo replaces all of it |
+| Default branch is `main` | `agent-implement.yml` (×3), `agent-implement-prd.yml` (×3), `implement/prompt.md`, `implement-prd/prompt.md`, `implement/implement.ts`, `ci.yml`; plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | the two `implement` workflows branch from `main` and open their PR against it, unconditionally — that is what is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch |
+| `npm ci`, `npm run verify`, `.nvmrc` | five workflows, and `implement` / `implement-prd` / `fix` / `update-branch` prompts | the whole toolchain assumption; a non-Node repo replaces all of it |
 | `CONTEXT.md` and `CLAUDE.md` exist | every prompt reads them first | see §6 |
-| Project domain | `implement/prompt.md` has an "IF THIS ISSUE ADDS A RULE" section; it and `review/prompt.md` cite this repo's domain model (role vs. `ManifestType`, the rule classes); `fix/prompt.md` and `update-branch/prompt.md` cite `src/rules/index.ts` | roughly half of `implement/prompt.md` is this repo's domain. The extraction prompts and the rest of `review/prompt.md` are already domain-neutral |
+| Project domain | `implement/prompt.md` and `implement-prd/prompt.md` have an "IF THIS ISSUE ADDS A RULE" section; they and `review/prompt.md` cite this repo's domain model (role vs. `ManifestType`, the rule classes); `fix/prompt.md` and `update-branch/prompt.md` cite `src/rules/index.ts` | roughly half of each `implement` prompt is this repo's domain. The extraction prompts and the rest of `review/prompt.md` are already domain-neutral |
+| Sub-issues are created blockers-first | `agent-implement-prd.yml` only | it walks sub-issues **API order** and never reads `blocker` edges, so whatever publishes the sub-issues owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a) |
 
 With the one exception called out above, nothing here will error — it will produce agents
 confidently doing the wrong project's conventions. Budget real time for the prompts specifically.

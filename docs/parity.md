@@ -26,16 +26,17 @@ row marked ❌.
 | `agent-implement-pr` — act on PR feedback | ✅ | 🟡 | ours is `agent-fix`, label `agent:fix`; see §4 |
 | `agent-update-branch` — refresh a stale PR branch | ✅ | ✅ | ours merges mechanically and only calls the agent on conflicts |
 | `agent-explore` — read-only triage pass on an issue | — | ❌ | **upstream only**, not in CVM. Superseded by local planning skills *in this repo's usage* — see below, and the scope note |
-| `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | PRD tier. Superseded locally by `wayfinder` |
-| `agent-implement-prd` — work sub-issues in sequence | ✅ | ❌ | PRD tier; run-chaining. Nothing to sequence — the backlog is flat and independent |
+| `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | PRD tier. Superseded locally by `wayfinder` — which now also owes the chain below an **ordering contract**: sub-issues must be *created* blockers-first (§2a) |
+| `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | #92. Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
 | `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | the workflow is absent, and it is the only missing piece now: the label is declared (`docs/agents/triage-labels.md`, §8) and `/wayfinder` records blockers as native issue dependencies |
 | `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
 | `token-expiry` — warn before `AGENT_PAT` lapses | — | ➕ | weekly; #70 |
 
-**4 of CVM's 8 agent workflows** — but measured against `mattpocock/sandcastle`, which ships five,
-it is **4 of 5**, and the one missing is `agent-explore`. CVM and upstream diverge here on purpose,
+**5 of CVM's 8 agent workflows** since #92 — but measured against `mattpocock/sandcastle`, which
+ships five and has no PRD tier at all, it is still **4 of 5**: `agent-implement-prd` is not one of
+the five, and the one missing there is `agent-explore`. CVM and upstream diverge here on purpose,
 and the divergence is the useful part: upstream has `explore` and no PRD tier, CVM has the PRD tier
 and no `explore`. They are two answers to the same question — *how does a well-specified issue come
 to exist?* Upstream assesses a spec that already exists and that you may not have written; CVM
@@ -79,13 +80,101 @@ claims in primary sources at authoring time is what actually closed it before (#
 | Deterministic branch name `agent/issue-<n>-<slug>` | ✅ | ✅ | |
 | Refuses when a PR already targets the issue | ✅ | ✅ | |
 | Refuses a **closed** issue | ✅ | ✅ | added #102. Must precede the PR check, which lists *open* PRs only — so a merged-and-closed issue otherwise looks untouched |
-| Refuses a **sub-issue** / PRD-shaped issue | ✅ | ✅ | added #90. One GraphQL query settles the shape; a sub-issue is refused outright — its parent drives it — and a PRD-shaped parent until the sequencing path exists (#92) |
+| Refuses a **sub-issue** / PRD-shaped issue | ✅ | ✅ | added #90, narrowed in #92. One GraphQL query settles the shape; a sub-issue is refused outright — its parent drives it — while a PRD-shaped parent is now **deferred** to `agent-implement-prd` rather than refused. §2a says why a deferral has to touch nothing at all |
 | Refuses a `wayfinder:*` **planning artifact** | ❌ | ➕ | maps and decision tickets describe work rather than being it. CVM has no equivalent because its PRDs *are* issues on the tracker; ours are planned in a skill (§1) and land labelled |
 | Issue body passed in by the runner (agent never calls `gh`) | ✅ | ✅ | |
 | **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed heredoc in the workflow. Re-rated 2026-08-01: this is the only channel an agent has for reporting a **non-code** finding, and #63 hit that limit — see §9.2 |
 | **Auto-cascade: adds `agent:review` to the new PR** | ✅ | ✅ | needs `AGENT_PAT`; warns loudly if absent, since a `GITHUB_TOKEN` label add is a silent no-op |
 | `failure_reason.txt` → issue comment on failure | ✅ | ✅ | |
 | Opens the PR as a draft | ✅ | ✅ | |
+
+---
+
+## 2a. `agent-implement-prd`
+
+Lettered rather than numbered so the cross-references in the rest of this file keep working. #92.
+
+Labelling a **parent** issue `agent:implement` implements its sub-issues one at a time — one per
+run — accumulating onto a single branch and a single PR, and requesting review once, at the end.
+
+| Feature | CVM | Ours | Note |
+|---|:--:|:--:|---|
+| Triggered by `agent:implement` on a parent issue | ✅ | ✅ | |
+| Refuses a **nested** PRD (a PRD that is itself a sub-issue) | ✅ | ✅ | two owners of one ordering, neither able to see the other's chain |
+| Refuses a PRD whose sub-issues have **all closed** | ✅ | ✅ | and *without* `agent:blocked` — a finished PRD is a success state, and the label would be the stale one §10 warns about |
+| Refuses a `wayfinder:*` planning artifact | ❌ | ➕ | the same refusal `agent-implement` carries, for the map that has sub-issues and so reaches this workflow instead |
+| Targets the **first still-open** sub-issue, in sub-issues API order | ✅ | ✅ | see the ordering note below |
+| One branch `agent/prd-<n>-<slug>`, reused across the chain | ✅ | ✅ | found on the remote by `agent/prd-<n>-*`, never by the whole recomputed name — the slug comes from the parent's *title* and a title is editable, so a retitle mid-chain would otherwise fork slice N off `main` and open a second PR. Two matches is ambiguous and fails the run rather than guessing |
+| Plain `git push`, never force | ✅ | ✅ | the branch carries every earlier slice; a force push is a chain eating its own history |
+| One PR, opened once and reused | ✅ | ✅ | draft until the last slice |
+| Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ✅ | the only record tying a closed sub-issue to its code while the PR is still growing |
+| Chains by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | warns loudly when the PAT is absent — a `GITHUB_TOKEN` label add is a silent no-op, and here it stops the chain dead while looking like work in progress |
+| Adds `agent:review` to the PR only when no sub-issues remain | ✅ | ✅ | the trade below |
+| Both label adds run under `set -e` | — | ➕ | each step ends with the warn-if-no-PAT `if`, which returns 0 when the PAT *is* set; without `-e` a failed add exits the step green, `failure()` never fires, and the chain halts unlabelled or the PR sits finished in draft |
+| `failure_reason.txt` → issue comment, `agent:blocked`, `agent:in-progress` held | ✅ | ✅ | on the **parent**; the failure comment names which sub-issue stopped the chain, and — when there is one — the PR to hand `agent:review` to if the chain died *after* closing that sub-issue |
+| Agent-authored PR title + body | ✅ | ❌ | same gap as §2, same fixed heredoc |
+
+**Ordering comes from creation order, not from the edges.** The chain walks sub-issues API order
+and never reads `blocked-by`. That is safe only because sub-issues are *created* in dependency
+order, blockers first — the topological sort happens once, at publish time, which is the ordering
+contract §1 now records against `to-issues-prd` and `wayfinder`. Do not add edge-reading here; fix
+the publish order instead. The edges exist as the record of why the order is what it is.
+
+**Two workflows, one label, and exactly one of them speaks.** `agent-implement` and
+`agent-implement-prd` share `agent:implement` on `issues: [labeled]`, so both jobs start on every
+label event and partition the work by issue *shape*: sub-issues present → the PRD path, anything
+else → `agent-implement`. Whichever does not own the shape calls `defer` and exits having touched
+nothing:
+
+- **no comment**, or a human sees two bot comments about one event saying opposite things;
+- **no label edit**, and this is the load-bearing half — the chain re-adds `agent:implement` to the
+  parent to start the next slice, and a second job racing to remove it eats the chain silently.
+
+The partition is therefore settled *before* either preflight says anything, which is why the shape
+query moved above the state check in `agent-implement`: a closed PRD parent would otherwise collect
+the same "this issue is not open" comment twice, seconds apart, from two runs that cannot see each
+other. A nested PRD routes to the PRD path deliberately — it is the one shape both could claim, and
+the PRD path is the one that can explain what is wrong with it.
+
+**One count is computed rather than read.** After closing its sub-issue the run re-reads the
+parent's sub-issues — so a slice added or closed by hand mid-run still counts — but subtracts the
+one it just closed regardless of what the API reports. That read is not guaranteed to have caught
+up with the close, and reading it back as still open is the one wrong answer with no recovery: the
+chain re-labels, the next run's preflight finds nothing open and refuses "the PRD is finished", and
+`agent:review` is only ever added on the *other* leg. The PR would sit finished, in draft, reviewed
+by nobody.
+
+**The same state is still reachable by failing, so both messages name the way out.** Every step
+after `Close the finished sub-issue` fails with that sub-issue already closed — so on the *last*
+slice, the failure comment's own remedy ("re-apply `agent:implement`") lands on the finished-PRD
+refusal instead of retrying anything, and the run has walked a human into the
+remedy-that-refuses-again trap `agent-implement.yml` warns about. Neither end of that loop can fix
+it alone, so both say the other thing: the failure comment names the PR and asks for `agent:review`
+on it by hand, and the finished-PRD refusal names the still-draft PR on `agent/prd-<n>-*`. The
+alternative — making `agent:review` reachable from a second place — is a second owner of the one
+handoff, which is what §10's residual race is already about.
+
+### The trade: review is once per PR, not once per slice
+
+Verified against CVM on 2026-08-07. Its handoff step is gated on the remaining count being zero, so
+`agent:review` is applied **only** when no open sub-issues remain. Intermediate iterations close
+their sub-issue with a commit-SHA comment and nothing else — no review agent, no review label, not
+even as an addition. Adopted deliberately.
+
+The PR is the unit of review because it is the unit of merge. A per-slice review would critique code
+the next slice is about to rewrite, with inline comments going outdated as the branch advances —
+the stale-anchor problem #102/#105 spent two rounds fixing at the workflow level.
+
+**The cost, stated plainly:** a design error in slice 1 is not caught until slice N is written on
+top of it. Partly covered already — `corpus.yml` runs per push on `src/**` and `verify` runs per
+slice, so behavioural regressions surface at the slice that caused them. Only *design* feedback is
+deferred.
+
+**If that ever bites, do not add a per-slice review workflow.** The cheap fix is a prompt line
+telling the implement agent to run its own review pass over the slice before committing — which is
+what a human's local `/implement` … `/code-review` loop does anyway. `implement-prd/prompt.md`
+already carries that line ("BEFORE YOU COMMIT"), which pulls correctness feedback earlier while
+keeping one review per PR. Escalating it into a workflow is the thing to resist.
 
 ---
 
@@ -210,7 +299,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 
 | Label | CVM | Ours |
 |---|:--:|:--:|
-| `agent:implement` | ✅ issues **and** PRs | ✅ issues only |
+| `agent:implement` | ✅ issues **and** PRs | ✅ issues only — two workflows, partitioned by shape (§2a) |
 | `agent:fix` | ❌ | ➕ PRs — CVM overloads `agent:implement` instead |
 | `agent:review` | ✅ | ✅ |
 | `agent:in-progress` | ✅ | ✅ |
@@ -225,6 +314,13 @@ so the same label means two things depending on where you put it. Here that woul
 `agent-implement.yml` triggers on `issues:` only, so labelling a PR `agent:implement` would
 silently do nothing.
 
+**And why overloading it by issue *shape* is not the same footgun.** Since #92, `agent:implement`
+on an issue does start two workflows — but they disambiguate on something the labeller can see on
+the issue in front of them (does it have sub-issues?), not on where they put the label, and the one
+that does not own the shape leaves nothing behind. The event-type version fails silently in the
+labeller's face; this one cannot, because whichever workflow owns the shape always acts and always
+says so.
+
 **Two further vocabularies sit alongside this table**, neither of which any workflow triggers on:
 the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`. `docs/agents/triage-labels.md`
 (#89) maps all three and records why `ready-for-agent` → `agent:implement` stays a human hand.
@@ -235,14 +331,16 @@ the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`. `doc
 
 Done since first written: **conversational replies + resolution** (#49/#50 — and ours also
 *resolves* threads, which CVM does not), **`agent-update-branch`** (#52, motivated by a real trap,
-not theory — see `friction.md`), **implement → review auto-cascade**, and **review marks the
-PR ready** (it had become a manual step on every agent PR).
+not theory — see `friction.md`), **implement → review auto-cascade**, **review marks the
+PR ready** (it had become a manual step on every agent PR), and **`agent-implement-prd`** (#92 —
+the execution half of item 6 below, which had been off the list entirely).
 
 What remains is ranked by value per unit of risk, not by size. Anything that widens an agent's
 write access sits below everything that does not, regardless of how useful it looks.
 
-1. **Composite action for setup** (📋) — pure cleanup, now that four workflows duplicate
-   checkout → node → ci → claude.
+1. **Composite action for setup** (📋) — pure cleanup, now that five workflows duplicate
+   checkout → node → ci → claude. #92 added the fifth copy without changing a line of it, which is
+   the argument.
 2. **Agent-authored PR body** (❌, `write-pr`) — promoted from "cosmetic" on 2026-08-01. The body is
    a hardcoded heredoc in `agent-implement.yml`, so it is the one thing an agent **cannot** write.
    Issue #63 asked the agent to report a bug it was told not to fix; it had nowhere to put it but a
@@ -259,11 +357,16 @@ write access sits below everything that does not, regardless of how useful it lo
 5. **Review self-improvement** (❌) — biggest capability gain, but flips review to
    `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
    confidently-wrong claim is worse than one that can only say it (see #46).
-6. **PRD tier** (❌ ×3) — only pays off for multi-week features decomposed into sub-issues, and the
-   planning half is already covered locally by `wayfinder` (§1). Off the list rather than low on it.
+6. **PRD tier** — no longer one item. It was written off as ❌ ×3 on the grounds that nothing here
+   needed sequencing; #87 was the multi-week feature decomposed into sub-issues that made it need
+   sequencing, so the **execution** half landed as `agent-implement-prd` (#92, §2a). What remains
+   is the *planning* half (`to-issues-prd`, `promote-queued`), still covered locally by `wayfinder`
+   — which now owes the chain the ordering contract in §2a, since `agent-implement-prd` trusts
+   creation order and never reads the blocker edges.
 7. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier, and the only
-   *scheduled agent* in either upstream repo. Note it depends on the PRD tier (it publishes via
-   `/to-prd-project`) and on project skills, so it is three pieces of work, not one.
+   *scheduled agent* in either upstream repo. It publishes via `/to-prd-project`, so it depends on
+   the planning half above and on project skills — still more than one piece of work, though #92
+   removed the piece that would have had nothing to run the result.
 
 ## 10. Invariants
 
@@ -325,14 +428,29 @@ expensive to rediscover.
   nothing inside these workflows can observe or report it — and the alternative is the separate
   group whose race this invariant exists to close.
 
-  **Residual, recorded against #92 (PRD tier).** Once `agent-implement-prd` lands it pushes to a
-  PR's branch under `agent-implement-prd-issue-<parent>` while review and fix use
-  `agent-pr-<prNumber>` — different groups, so the same read-during-write race exists one level up.
-  Group keys cannot close it: an `issues` event carries no PR number, so the two cannot compute a
-  shared key. The happy path does not overlap (the chain adds `agent:review` itself only after the
-  last sub-issue closes), but a human labelling `agent:review` mid-chain would hit it. If it ever
-  bites, the fix is a preflight refusal in review when the linked issue has an active PRD chain —
-  not a concurrency change.
+  **Residual, live since #92 (PRD tier).** `agent-implement-prd` pushes to a PR's branch under
+  `agent-implement-prd-issue-<parent>` while review and fix use `agent-pr-<prNumber>` — different
+  groups, so the same read-during-write race exists one level up. Group keys cannot close it: an
+  `issues` event carries no PR number, so the two cannot compute a shared key. The happy path does
+  not overlap (the chain adds `agent:review` itself only after the last sub-issue closes), but a
+  human labelling `agent:review` mid-chain would hit it. Accepted knowingly rather than fixed; if
+  it ever bites, the fix is a preflight refusal in review when the linked issue has an active PRD
+  chain — not a concurrency change.
+- **Review is requested once per PR, never once per slice.** `agent-implement-prd` adds
+  `agent:review` only when its parent has no open sub-issues left; every intermediate run closes its
+  sub-issue with a commit SHA and stops. The PR is the unit of review because it is the unit of
+  merge, and a per-slice review critiques code the next slice is about to rewrite from inline
+  comments that go outdated as the branch advances — the stale-anchor problem #102/#105 spent two
+  rounds fixing. The cost is real and is stated in §2a: a design error in slice 1 waits for slice N.
+  If it bites, the fix is a prompt line asking the implement agent to review its own slice — which
+  `implement-prd/prompt.md` already carries — **not** a per-slice review workflow.
+- **Two workflows may share a trigger label only if exactly one of them speaks.** `agent-implement`
+  and `agent-implement-prd` both fire on `agent:implement`, and partition by issue shape. Whichever
+  does not own the shape defers: no comment, no label edit, `exit 0`. A comment there is a second
+  voice contradicting the run that *is* handling the event; a label edit is a race — and the one
+  label at stake is `agent:implement` itself, which the PRD chain re-adds to start its next slice.
+  So the partition is settled before either preflight says anything at all, ahead of even the
+  closed-issue refusal. See §2a; `tests/workflows.test.ts` holds both `defer` bodies to it.
 - **Every workflow refuses a terminal target before it does any work.** A closed or merged PR, a
   closed issue: the guard is the first step, it is itself ungated, and it runs before checkout,
   before `npm ci`, and before the label transitions — so a refused run never claims
@@ -341,8 +459,10 @@ expensive to rediscover.
   in full, then fail at `gh pr ready` under a warning blaming a missing `AGENT_PAT`, which is a
   wrong diagnosis of a real problem. Each refusal says which state it refused; two refusals that
   read alike are two states a human cannot tell apart from the comment. `tests/workflows.test.ts`
-  holds all four workflows to all three properties — guard first, guard ungated, no
-  `agent:in-progress` on a refused run.
+  holds all five workflows to all three properties — guard first, guard ungated, no
+  `agent:in-progress` on a refused run. In `agent-implement-prd` the third covers a *deferral* as
+  well as a refusal, which is the same property for a stronger reason: a run that stepped aside for
+  its sibling must not have claimed the issue on the way past.
 
   One difference is not yet reconciled: review adds `agent:blocked` when it refuses (#102 asked for
   it), while fix, update-branch and implement leave only a comment. That is a difference in what a

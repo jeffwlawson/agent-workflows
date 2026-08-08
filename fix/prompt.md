@@ -61,7 +61,7 @@ belongs in a separate change, say so rather than expanding the PR.
 `CLAUDE.md` holds the conventions any change here must follow. Follow them there rather than
 from memory.
 
-Run `npm run verify` before committing. It must pass.
+Run the verify command `CLAUDE.md` names before committing. It must pass.
 
 # COMMIT
 
@@ -105,8 +105,8 @@ list and nothing is posted. A channel that fires every time is one nobody reads.
 At most **two** are posted per run and the rest are dropped, so if you have more than two, report
 the two that matter. This is a ceiling, not a target — one, or none, is the usual answer.
 
-Use prose and name the place — "`shared/pr-feedback.ts:206` still interpolates `GH_REPO` into a
-shell string" is as locatable as an inline comment and does not need the diff-line machinery.
+Use prose and name the place — "`src/queue.ts:206` still interpolates the repo name into a shell
+string" is as locatable as an inline comment and does not need the diff-line machinery.
 
 You may say a follow-up issue is needed. You cannot file it, and the workflow will not: filing is
 a separate, human-labelled step. Say what the issue would be and stop there.

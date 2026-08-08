@@ -39,13 +39,13 @@ For each conflict:
    them — go back to step 1. If it still holds, take the smallest defensible option and flag the
    uncertainty prominently.
 
-Watch for conflicts that are textually trivial but semantically real: two rules registered in
-`src/rules/index.ts`, or the same helper moved on one side and edited on the other. Taking "both"
+Watch for conflicts that are textually trivial but semantically real: two entries added to the
+same registry, or the same helper moved on one side and edited on the other. Taking "both"
 compiles and is still wrong.
 
 # VERIFY
 
-Run `npm run verify` after resolving. It must pass before you commit.
+Run the verify command `CLAUDE.md` names after resolving. It must pass before you commit.
 
 If it cannot pass, fix what you can, commit anyway so the work is not lost, and make the failure
 the **first line** of your comment — a silently broken merge is far worse than a declared one.

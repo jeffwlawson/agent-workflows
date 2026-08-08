@@ -216,13 +216,19 @@ The workflows are not yet parameterised. These are the couplings to edit by hand
 | Assumption | Where | Notes |
 |---|---|---|
 | Default branch is `main` | `agent-implement.yml` (×3), `agent-implement-prd.yml` (×3), `implement/prompt.md`, `implement-prd/prompt.md`, `implement/implement.ts`, `ci.yml`; plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | the two `implement` workflows branch from `main` and open their PR against it, unconditionally — that is what is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch |
-| `npm ci`, `npm run verify`, `.nvmrc` | five workflows, and `implement` / `implement-prd` / `fix` / `update-branch` prompts | the whole toolchain assumption; a non-Node repo replaces all of it |
+| `npm ci`, `npm run verify`, `.nvmrc` | five workflows | the whole toolchain assumption; a non-Node repo replaces all of it. The prompts are **not** in this list: each says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of the prompt side |
 | `CONTEXT.md` and `CLAUDE.md` exist | every prompt reads them first | see §6 |
-| Project domain | `implement/prompt.md` and `implement-prd/prompt.md` have an "IF THIS ISSUE ADDS A RULE" section; they and `review/prompt.md` cite this repo's domain model (role vs. `ManifestType`, the rule classes); `fix/prompt.md` and `update-branch/prompt.md` cite `src/rules/index.ts` | roughly half of each `implement` prompt is this repo's domain. The extraction prompts and the rest of `review/prompt.md` are already domain-neutral |
+| Project domain | nothing under `.sandcastle/` | **no longer a coupling** (#95). The prompts name no domain of their own; they send the agent to `CONTEXT.md` and `CLAUDE.md`, which are yours. A test walks every file under `.sandcastle/` and fails on this repo's vocabulary, so it stays that way |
 | Sub-issues are created blockers-first | `agent-implement-prd.yml` only | it walks sub-issues **API order** and never reads `blocker` edges, so whatever publishes the sub-issues owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a). The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |
 
 With the one exception called out above, nothing here will error — it will produce agents
-confidently doing the wrong project's conventions. Budget real time for the prompts specifically.
+confidently doing the wrong project's conventions.
+
+The prompts used to be the row that took longest, and they are now the row that takes none: the
+work moved to §6, where it belongs. An agent is only as good as the `CONTEXT.md` and `CLAUDE.md`
+it is pointed at, and a de-domained prompt makes that dependency total rather than partial —
+there is no longer a second copy of anyone's conventions to fall back on when those two files are
+thin.
 
 ---
 

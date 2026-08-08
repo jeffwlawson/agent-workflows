@@ -12,22 +12,15 @@ You are on branch `{{BRANCH}}`, already created from `main`.
 
 Read these before changing code:
 
-- `CONTEXT.md` — the domain model. Pay attention to the difference between a file's
-  **role** (from its name) and its `ManifestType` field (a claim inside it), and to the
-  three rule classes.
-- `CLAUDE.md` — commands and conventions.
+- `CONTEXT.md` — the domain model: the concepts this project is built from, the distinctions
+  it holds between them, and where the seams are. Reason from it, not from what the code
+  appears to do.
+- `CLAUDE.md` — the commands, the conventions, and the contract anything you add here has to
+  satisfy, including any step-by-step it gives for the kind of change this issue asks for.
+  Follow it there rather than from memory: it is the copy that is kept current, and anything
+  restating it — this prompt included — would be a second copy already drifting from it.
 
-Explore the existing rules and their tests before editing. Match what is there.
-
-# IF THIS ISSUE ADDS A RULE
-
-1. Create `src/rules/<rule-id>.ts` with a default export of `defineRule({ ... })`.
-2. Register it in `src/rules/index.ts`, keeping the array ordered by rule id.
-3. Add `tests/rules/<rule-id>.test.ts` with at least one passing and one failing manifest.
-4. New fixtures go under `tests/fixtures/`, following the existing layout.
-
-`CLAUDE.md` holds the rule contract — purity, return type, positions, registration. Follow it
-there rather than from memory.
+Explore the code the issue touches, and its tests, before editing. Match what is there.
 
 # EXECUTION
 
@@ -41,7 +34,7 @@ Do red-green-refactor where a test seam already exists:
 Do not improvise new test seams — for example, extracting a function purely so it can be
 tested in isolation. That creates spaghetti tests.
 
-Run `npm run verify` before committing. It must pass.
+Run the verify command `CLAUDE.md` names before committing. It must pass.
 
 # COMMIT
 

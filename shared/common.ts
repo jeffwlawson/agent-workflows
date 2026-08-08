@@ -278,13 +278,17 @@ export const writeText = (filename: string, value: string): void => {
  * `sandcastle.Output.object({ schema })` without pulling in a schema library.
  * On a thrown error the message is surfaced as a validation issue, which the
  * extraction retry loop feeds back to the agent.
+ *
+ * `vendor` names the library implementing the schema, so it is these runners —
+ * not whichever repo they happen to be installed in. It read as the host repo's
+ * name while the two were the same thing (#95).
  */
 export const standardSchema = <T>(
   validate: (value: unknown) => T,
 ): StandardSchemaV1<unknown, T> => ({
   "~standard": {
     version: 1,
-    vendor: "winget-manifest-lint",
+    vendor: "agent-workflows",
     validate: (value: unknown) => {
       try {
         return { value: validate(value) };

@@ -49,10 +49,12 @@ precondition of recommending merge.
 Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in context.
 
 1. **Correctness against the issue** — does the change do what the linked issue asked?
-2. **Conventions** — the rule contract in `CLAUDE.md`. Flag any deviation.
-3. **Domain correctness** — does it respect the role-vs-`ManifestType` distinction and the rule
-   classes in `CONTEXT.md`? A rule whose spec is narrower or wider than the real winget rule is
-   the most valuable thing to catch, and the **oracle** is what settles it.
+2. **Conventions** — the contract `CLAUDE.md` states for a change of this kind. Flag any
+   deviation.
+3. **Domain correctness** — does it hold the distinctions `CONTEXT.md` draws, or has it
+   collapsed two concepts the model keeps apart? A change whose behaviour is narrower or wider
+   than the thing it claims to implement is the most valuable catch here, and the **oracle** is
+   what settles it.
 4. **Tests** — at least one passing and one failing case, with realistic fixtures.
 5. **Clarity and edge cases** worth a second look.
 

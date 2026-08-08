@@ -4,8 +4,10 @@ A feature-by-feature comparison between this repo's agent loop and CVM's, the re
 modelled on. The point is to make every gap **a visible decision** rather than an accident.
 
 **Baseline:** CVM clone dated **2026-07-21** (`mattpocock/course-video-manager`), cross-checked
-against `mattpocock/sandcastle` @ `0.12.0`. CVM may have moved since; re-pull before trusting a
-row marked ❌.
+against `mattpocock/sandcastle` @ `0.12.0` (last pushed 2026-06-29). CVM may have moved since;
+re-pull before trusting a row marked ❌. sandcastle is compared twice over: as the workflow set
+§1 measures against, and — for its `init` templates, which are a different thing entirely — as the
+third execution model in §2b.
 
 | | Meaning |
 |---|---|
@@ -57,6 +59,10 @@ the contract is written down instead — `docs/agents/ticket-shape.md` (#93): a 
 native sub-issues, published blockers-first — and §10 carries the invariants. The failure it guards
 is silent in both directions: a batch of flat peers is a PRD the chain cannot walk at all, and a
 batch in the wrong order is one it walks confidently through the wrong slice first.
+
+There is a third answer upstream, which discharges the same obligation by not having it: sandcastle's
+planner templates infer the ordering from issue text every round and read no tracker relation at all.
+§2b records it, and records why it stays recorded rather than adopted.
 
 **Scope of that decision.** It is about *how issues reach this repo*, not about the workflow set
 being complete. If these workflows are ever packaged for another repo (see `docs/ADOPTING.md`), the
@@ -185,6 +191,63 @@ telling the implement agent to run its own review pass over the slice before com
 what a human's local `/implement` … `/code-review` loop does anyway. `implement-prd/prompt.md`
 already carries that line ("BEFORE YOU COMMIT"), which pulls correctness feedback earlier while
 keeping one review per PR. Escalating it into a workflow is the thing to resist.
+
+---
+
+## 2b. A third execution model: `sandcastle`'s parallel planner
+
+Lettered for the same reason §2a is. **Recorded, not adopted** — nothing below proposes a change.
+
+`mattpocock/sandcastle` ships five `sandcastle init` templates — `blank`, `simple-loop`,
+`sequential-reviewer`, `parallel-planner`, `parallel-planner-with-review`. The last two build a
+dependency graph, and they build it in a way neither model compared elsewhere in this file uses.
+Verified against `@ai-hero/sandcastle@0.12.0` on 2026-08-08, reading the published templates
+directly.
+
+**The graph is inferred by an LLM from issue text, not read from native relations.**
+`plan-prompt.md` hands an opus agent the open-issue list and asks it to decide, per pair, whether B
+is blocked by A:
+
+> - B requires code or infrastructure that A introduces
+> - B and A modify overlapping files or modules, making concurrent work likely to produce merge conflicts
+> - B's requirements depend on a decision or API shape that A will establish
+
+There is no tracker relation behind any of that. Grepping the package for `sub_issue`, `subIssues`,
+`blocked_by`, `blockedBy`, `--parent`, `parent_issue` and `dependencies/` across every `.ts`,
+`.mts`, `.md` and `.json` returns **zero matches** — no parent/child concept exists in sandcastle at
+all. (Grepping the bundled `dist/*.js` too returns only an HTTP status constant from a vendored
+dependency.) The issue list itself arrives through a configurable `{{LIST_TASKS_COMMAND}}`, so the
+planner does not know what a GitHub issue *is*, let alone that one can have a parent.
+
+**It also inverts the execution model.** `main.mts` runs three phases in a loop of up to ten
+iterations: plan → N implementers **in parallel**, one branch each → one merge agent. Each
+implementer gets `sandcastle/issue-{id}`, deterministic *by design* so that re-planning the same
+issue lands on the same branch and accumulated progress survives. `Promise.allSettled` keeps one
+failing agent from cancelling the others, and only branches that actually produced commits reach
+the merge phase, where a single agent merges each in turn, resolves conflicts by reading both
+sides, runs typecheck and tests, and closes the issues. Newly-unblocked work is picked up next
+round.
+
+| | dependency source | execution | collision handling | runs where |
+|---|---|---|---|---|
+| sandcastle planner | LLM infers from issue text | parallel, N branches | dedicated merge agent | local, docker |
+| CVM PRD tier (ours, §2a) | sub-issue creation order | sequential, one branch | avoided by serialising | GitHub Actions |
+| `/to-tickets` flat (upstream skill) | native `blocked_by` | *(no executor)* | — | — |
+
+**Why it is worth recording.** It needs no native relations, so it sidesteps the `/to-tickets`
+prose-vs-native defect (`mattpocock/skills` #513/#262) entirely — the defect that cost #109 three
+review rounds and that the *Verify natively* section of `docs/agents/ticket-shape.md` exists to
+catch by hand. If publishing real batches keeps hitting it, this is the escape hatch, and reaching
+for a model that already exists upstream beats inventing one.
+
+**Why it is not adopted.** The PRD tier is built, proven end to end (#87), and matches CVM, which is
+the actively-maintained reference. sandcastle is local-only and tracker-agnostic, its templates
+still pin `claude-opus-4-8` / `claude-sonnet-4-6`, and the repo was last pushed 2026-06-29. Two of
+its properties are also live costs rather than free wins here: an inferred graph can be wrong with
+no edge to check it against, and a merge agent resolving conflicts is a second writer on work no
+human has reviewed — which is the shape §10's "never auto-cascade review → fix" invariant exists to
+keep out. What it buys is parallelism this repo has never needed; every ordering that has actually
+come up was *inside* one PRD.
 
 ---
 

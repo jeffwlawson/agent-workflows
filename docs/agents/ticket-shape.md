@@ -23,8 +23,10 @@ Two relationships, doing different jobs:
   `agent-implement-prd` walks.
 - **`blocked-by`** — ordering, and the machine-readable record of *why* the order is what it is.
 
-Both are **native** GitHub relations, not prose in a body. A `Blocked by: #12` line is invisible to
-every consumer: the API does not report it, the UI does not draw it, and no workflow can act on it.
+Both are **native** GitHub relations, not prose in a body. Why that distinction is load-bearing —
+what a consumer can and cannot see — is in
+[`issue-tracker.md`](./issue-tracker.md#native-relations-sub-issues-and-blocking), with the
+mechanics for setting both.
 
 Upstream carries both relationships, but **as body prose, not natively**. #93 checked
 `mattpocock/course-video-manager` on 2026-08-07 — its newest feature at the time, #1514–#1518 —
@@ -51,9 +53,10 @@ instead*.)
 
 **What the API returns is a position, not a timestamp.** Each sub-issue holds a place in the
 parent's list; creating one appends it, which is why publishing in order is enough. But the place
-is editable — by dragging in the parent's UI, or through
-`PATCH /repos/{owner}/{repo}/issues/{n}/sub_issues/priority`. So the order is also *reorderable
-after the fact*, which is the repair below, and the hazard: dragging a sub-issue in the parent
+is editable — by dragging in the parent's UI, or through the sub-issue priority endpoint
+([`issue-tracker.md`](./issue-tracker.md#native-relations-sub-issues-and-blocking)). So the order
+is also *reorderable after the fact*, which is the repair below, and the hazard: dragging a
+sub-issue in the parent
 rewrites the execution order of a chain that has not run yet, silently and with no other effect
 visible anywhere.
 
@@ -81,9 +84,9 @@ already carried by creation order, and the chain does not need to be told to wai
 ## Publishing
 
 `gh issue create` prints the new issue's URL as its last line; everything below keys off that.
-`--parent` and `--blocked-by` need **`gh` >= 2.94.0** (the release that added issue types,
-sub-issues and relationships to `gh issue`; verified present in 2.96.0). On an older `gh` the same
-two relations are REST endpoints — below.
+`--parent` and `--blocked-by` need a recent `gh`; on an older one the same two relations are REST
+endpoints. Both forms, and the database-id trap that comes with the endpoints, are in
+[`issue-tracker.md`](./issue-tracker.md#native-relations-sub-issues-and-blocking).
 
 ```bash
 new() { basename "$(gh issue create "$@" | tail -n1)"; }
@@ -101,33 +104,18 @@ s3=$(new --parent "$prd" --label "ready-for-agent" --blocked-by "$s2" \
         --title "Slice 3: …" --body-file slice-3.md)
 ```
 
-A slice that blocks on more than one earlier slice takes them all:
-`--blocked-by "$s1,$s2"`. Edges only ever point *backwards*, at slices already created — a forward
-edge means the order is wrong.
+A slice may take more than one blocker. Edges only ever point *backwards*, at slices already
+created — a forward edge means the order is wrong.
 
-**Without those flags**, create each slice plainly and attach it afterwards, still one slice at a
-time. Both relations are REST endpoints, and every id in either one is the issue's numeric
-**database id**, not its `#number`. That is the trap, and it is silent: an issue number is a valid
-database id for some *other* issue, so the call does not fail — it attaches something you did not
-mean, or nothing.
+**Without those flags**, create each slice plainly and attach it with the two `POST` endpoints in
+`issue-tracker.md`, still one slice at a time. Two consequences of that path belong here rather than
+there:
 
-```bash
-id() { gh api "repos/jeffwlawson/winget-manifest-lint/issues/$1" --jq .id; }
-
-# Stands in for --parent, and this is the one that matters: it is the relation the chain walks.
-# Miss it and the PRD has zero sub-issues — the chain defers, agent-implement takes the parent
-# as a standalone issue, and one run implements the whole spec.
-gh api --method POST "repos/jeffwlawson/winget-manifest-lint/issues/$prd/sub_issues" \
-  -F sub_issue_id="$(id "$s1")"
-
-# Stands in for --blocked-by. Same endpoint /wayfinder uses; see
-# issue-tracker.md#wayfinding-operations.
-gh api --method POST "repos/jeffwlawson/winget-manifest-lint/issues/$s2/dependencies/blocked_by" \
-  -F issue_id="$(id "$s1")"
-```
-
-Attaching a sub-issue this way appends it to the parent's list exactly as `--parent` does, so
-calling the endpoint slice by slice, blockers first, still gives execution order.
+- The **sub-issue** attach is the one that matters — it is the relation the chain walks. Miss it
+  and the PRD has zero sub-issues: the chain defers, `agent-implement` takes the parent as a
+  standalone issue, and one run implements the whole spec.
+- Attaching a sub-issue **appends** it to the parent's list exactly as `--parent` does, so calling
+  the endpoint slice by slice, blockers first, still gives execution order.
 
 **Only publish slices you intend this chain to run.** The chain implements *every* open sub-issue,
 so a slice parked as "maybe later" is a slice the chain will build. #91 had to be detached from #87
@@ -183,14 +171,9 @@ What to check, in order of how expensive it is to get wrong:
    top-level issue and link the map from its body.
 
 If the order is wrong, move the slice rather than recreating it — `gh` has no flag for this, so it
-is the REST endpoint, and every id in it is a **database id**, not a `#number` (the same trap as
-the fallback endpoints under *Publishing*, and the same `id()` helper):
-
-```bash
-id() { gh api "repos/jeffwlawson/winget-manifest-lint/issues/$1" --jq .id; }
-gh api --method PATCH "repos/jeffwlawson/winget-manifest-lint/issues/$prd/sub_issues/priority" \
-  -F sub_issue_id="$(id "$s3")" -F after_id="$(id "$s1")"
-```
+is the sub-issue **priority** endpoint
+([`issue-tracker.md`](./issue-tracker.md#native-relations-sub-issues-and-blocking), same database-id
+trap): move the misplaced slice to sit after the one it should follow.
 
 Then re-read the list and check it, because that is the only place the change shows up. Do this
 before `agent:implement` reaches the parent; afterwards you are reordering a queue that is already

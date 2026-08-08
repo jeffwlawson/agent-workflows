@@ -163,9 +163,11 @@ gives, since the file is also a skill's output path — and the reasoning surviv
 .github/workflows/agent-implement.yml
 .github/workflows/agent-implement-prd.yml
 .github/workflows/agent-fix.yml
-.github/workflows/agent-review.yml
 .github/workflows/agent-update-branch.yml
 ```
+
+…plus `agent-review.yml`, which you **write** rather than copy: a trigger, a `uses:`, and four
+lines of wiring. The shape is below.
 
 The runners themselves are **not copied**. They are an npm package —
 `@jeffwlawson/agent-workflows` — and each workflow invokes one subcommand of it at a version pinned
@@ -179,6 +181,55 @@ Prompts ship inside the package, so there is nothing to copy and nothing to keep
 **exact** version, never a range or a dist-tag, for the reason `.nvmrc` exists — and because the pin
 being in the workflow is what closes §9's first trap. Pinning it through your own `package.json`
 instead would look equivalent and close nothing (§9).
+
+### `agent-review.yml` is a caller, not a copy
+
+Review is the first workflow split in two (#97). The job — the fork guard, the permissions, the
+concurrency group, every step — lives in `agent-review-reusable.yml` here, and what you write is the
+trigger and the facts about your repo it cannot know:
+
+```yaml
+name: Agent Review
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+jobs:
+  review:
+    uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-review-reusable.yml@<commit sha>
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      self-check: review / review    # `<this job's id> / review`
+      # default-branch: main         # these three default to what is shown;
+      # node-version-file: .nvmrc    # a non-Node repo passes '' for the last
+      # setup: npm ci                # two and still gets a review
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}
+```
+
+Four things about that shape are worth knowing before you paste it:
+
+- **`self-check` is required and is a fact about *your* file.** A called workflow's job appears on
+  the PR as `<caller job id> / <called job id>`, and nothing inside the called workflow can read the
+  caller's job id. Review polls every check on the head commit and waits for the ones still running;
+  a name it does not recognise as its own is a job waiting for itself — 15 of its 20 minutes, then a
+  review with degraded evidence and no error anywhere. Rename the job, change the input.
+- **`permissions` has to be on your job too.** The called workflow can only *downgrade* the token it
+  is handed, so it cannot grant itself the `pull-requests: write` its label edits spend. On a repo
+  whose default `GITHUB_TOKEN` is read-only, omitting this block gives you a review that runs, costs
+  a full agent pass, and silently transitions nothing.
+- **Pin the `@ref`.** Same reasoning as the runner version above, and the same trap: a floating
+  `@main` is a workflow that changes under a pull request nobody touched.
+- **Name the workflow `Agent Review`, or something else beginning `Agent`.** A called workflow
+  contributes no run of its own, so the run is yours — and review's failure-log collector skips
+  runs whose name starts with `Agent ` on the grounds that a failed agent job is not evidence about
+  the diff.
+
+The other four are still copied verbatim; converting them is the next slice of #88.
 
 `agent-implement-prd.yml` is optional but **not independent**: it shares the `agent:implement`
 label with `agent-implement.yml`, and the two partition every label event by issue shape. Take
@@ -227,12 +278,13 @@ TS6059 the moment a file lives outside it. The package has its own build config 
 
 ## 5. What you must change
 
-The workflows are not yet parameterised. These are the couplings to edit by hand.
+Most of the workflows are not yet parameterised. These are the couplings to edit by hand — with
+`agent-review` now the exception rather than a row, since #97 gave it inputs; the rest follow.
 
 | Assumption | Where | Notes |
 |---|---|---|
-| Default branch is `main` | `agent-implement.yml` (×3), `agent-implement-prd.yml` (×3), `ci.yml` — and, **inside the package where you cannot edit them**, `implement/prompt.md`, `implement-prd/prompt.md`, `implement/implement.ts`, plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | the two `implement` workflows branch from `main` and open their PR against it, unconditionally — that is what is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch. **The runner-side sites are now a hard blocker on a non-`main` repo, not a hand edit**: packaging them (#96) removed the file you used to patch, and giving them an input surface is the next slice of #88 |
-| `npm ci`, `npm run verify`, `.nvmrc` | five workflows | the whole toolchain assumption; a non-Node repo replaces all of it. The prompts are **not** in this list: each says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of the prompt side |
+| Default branch is `main` | **not `agent-review`** — it takes a `default-branch` input (#97), the first of these to be parameterised rather than patched. Still hand-edited in `agent-implement.yml` (×3), `agent-implement-prd.yml` (×3), `ci.yml` — and, **inside the package where you cannot edit them**, `implement/prompt.md`, `implement-prd/prompt.md`, `implement/implement.ts`, plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | the two `implement` workflows branch from `main` and open their PR against it, unconditionally — that is what is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch — which for `review` is now exactly what `default-branch` decides. **The runner-side sites are now a hard blocker on a non-`main` repo, not a hand edit**: packaging them (#96) removed the file you used to patch, and giving them an input surface is the next slice of #88 |
+| `npm ci`, `npm run verify`, `.nvmrc` | the four copied workflows | the whole toolchain assumption; a non-Node repo replaces all of it. `agent-review` is again the exception: `setup` and `node-version-file` are inputs, and empty strings skip both steps (§4). The prompts are **not** in this list either: each says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of the prompt side |
 | `CONTEXT.md` and `CLAUDE.md` exist | every prompt reads them first | see §6 |
 | Project domain | nothing under `.sandcastle/` | **no longer a coupling** (#95). The prompts name no domain of their own; they send the agent to `CONTEXT.md` and `CLAUDE.md`, which are yours. A test walks every file under `.sandcastle/` and fails on this repo's vocabulary, so it stays that way |
 | Sub-issues are created blockers-first | `agent-implement-prd.yml` only | it walks sub-issues **API order** and never reads `blocker` edges, so whatever publishes the sub-issues owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a). The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |

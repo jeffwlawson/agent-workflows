@@ -106,6 +106,10 @@ jobs:
     # label at all.
     permissions:
       contents: read
+      # Installing the runner package. GitHub Packages has no anonymous install,
+      # so this is needed even though the package is public — and, being a
+      # bound, it grants nothing without the caller's own `packages: read`.
+      packages: read
       pull-requests: write
 
     env:
@@ -357,10 +361,42 @@ jobs:
           echo "--- collected CI context ---"
           cat "$out"
 
+      # The runner package is published to **GitHub Packages**, not npmjs, so the
+      # `npx` below resolves from `https://npm.pkg.github.com` and needs a token.
+      # `actions/setup-node` writes the `.npmrc` rather than this file doing it by
+      # hand — a hand-written one is a second place for the scope to be wrong, and
+      # the way it is wrong is a 401 that reads like a bad token.
+      #
+      # Two properties to keep if you edit this. The registry entry is scoped to
+      # `@jeffwlawson` **only**, so a caller's own `npm ci` still resolves
+      # everything else from npmjs untouched. And `NODE_AUTH_TOKEN` is
+      # unconditional: GitHub Packages has no anonymous install *even for a public
+      # package*, so the caller's `packages: read` is a grant this step cannot do
+      # without, rather than a consequence of the package's visibility.
+      #
+      # No `node-version-file` here on purpose: this is the registry half of
+      # `setup-node`, not the toolchain half, so it still runs on a repo that
+      # passed `node-version-file: ''`. It comes *after* the toolchain step for
+      # the same reason — both write the same `.npmrc`, and the last one wins.
+      #
+      # This is also the one step in the loop that reaches across repositories. A
+      # package published from this repo is not automatically readable by another
+      # repo's `GITHUB_TOKEN`; that follows from the package's own access settings
+      # (docs/ADOPTING.md §4).
+      - name: Authenticate to GitHub Packages
+        if: steps.state.outputs.proceed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+
       - name: Run review agent
         if: steps.state.outputs.proceed == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Reads the `.npmrc` the step above wrote. `GITHUB_TOKEN`, carrying the
+          # `packages: read` the caller granted — there is no anonymous install.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Unset variable interpolates to "", and the runner falls back to its
           # own default. Change the model in Settings -> Variables, no commit.
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}

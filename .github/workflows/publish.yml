@@ -1,0 +1,120 @@
+name: Publish agent-workflows
+
+# Publishes `.sandcastle/agent-workflows` to **GitHub Packages** as
+# `@jeffwlawson/agent-workflows`, the package every workflow in the loop pins a
+# version of and resolves with `npx`.
+#
+# ## Why a tag push, and not `workflow_dispatch`
+#
+# This is load-bearing rather than taste. `workflow_dispatch` only registers for
+# workflows present on the **default branch**, so a dispatch-triggered publish
+# added by a pull request cannot be run until that pull request merges — and the
+# pull request that first pins a version cannot merge until that version
+# resolves, because merging it would take every agent run down at `npx`. A tag
+# push runs the workflow **from the tagged commit**, so tagging a branch head
+# publishes from it and breaks the deadlock without a hand-run `npm publish` or a
+# separate PR to the default branch.
+#
+# ## Why not `on: release`
+#
+# The package is a subdirectory of a repo whose headline artifact is the linter.
+# Repo-global GitHub Releases would conflate two version lines that move
+# independently; the `agent-workflows-v*` tag prefix keeps them separate.
+on:
+  push:
+    tags:
+      - "agent-workflows-v*"
+
+# Two tags pushed close together must not race the registry. `cancel-in-progress:
+# false` on purpose — a half-cancelled publish is worse than a queued one.
+concurrency:
+  group: publish-agent-workflows
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # No `environment:` gate. An `environment: publish` job gate is real practice
+    # *once required reviewers are configured in repo settings*, and nothing in a
+    # workflow file can configure them — an environment with no protection rules
+    # is inert, so adding one here would ship the appearance of a gate.
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO: require the tagged commit to be reachable from the default branch —
+      #   git fetch origin "$DEFAULT_BRANCH"
+      #   git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
+      # That is the guard that makes tag-triggered publishing safe long-term: it
+      # is what stops a publish from a commit nobody reviewed, which the trigger
+      # above otherwise permits by construction.
+      #
+      # Deliberately absent *here*: it is exactly the guard that would block the
+      # `agent-workflows-v0.1.0` bootstrap tag, which has to be pushed on the head
+      # of the pull request introducing this file — the whole reason the trigger
+      # is a tag push rather than a dispatch. Add it once that first publish has
+      # happened. docs/ADOPTING.md §4 records the same debt, because a deferred
+      # guard remembered in only one place is a guard that never lands.
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          # Scoped to `@jeffwlawson` alone, so the `npm ci` below still resolves
+          # every other dependency from npmjs.
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+
+      # The package has no `node_modules` of its own — its build resolves `tsc`
+      # from the hoisted root install, the same way `npm run typecheck` does.
+      - name: Install dependencies
+        run: npm ci
+
+      # The first of two guards, and they catch different mistakes. This one
+      # catches a tag naming a version the package does not claim: publishing
+      # under it would put a version on the registry that no commit here
+      # describes, which is unfindable afterwards. Fail loudly rather than
+      # publish whatever the manifest happened to say.
+      - name: Check the tag and the manifest agree
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tagged="${TAG#agent-workflows-v}"
+          declared=$(node -p "require('./.sandcastle/agent-workflows/package.json').version")
+          if [ "$tagged" != "$declared" ]; then
+            echo "::error::Tag ${TAG} names version ${tagged}, but .sandcastle/agent-workflows/package.json declares ${declared}. Retag, or bump the manifest — a published version that disagrees with its tag cannot be traced back to a commit."
+            exit 1
+          fi
+          echo "version=${declared}" >> "$GITHUB_OUTPUT"
+          echo "Publishing ${declared}, which tag ${TAG} agrees with."
+
+      # The second, and it runs *after* the first rather than instead of it: this
+      # one catches a tag naming a version the registry already has. Re-pushing a
+      # moved tag is the likely accident, and it should be a no-op rather than a
+      # 409 from the registry surfacing as a red run nobody can act on.
+      - name: Skip if already published
+        id: preflight
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if npm view "@jeffwlawson/agent-workflows@${VERSION}" version >/dev/null 2>&1; then
+            echo "already-published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::@jeffwlawson/agent-workflows@${VERSION} is already published; nothing to do."
+          else
+            echo "already-published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # `prepack` runs the build, so this cannot ship a stale `dist/`.
+      - name: Publish
+        if: steps.preflight.outputs.already-published == 'false'
+        working-directory: .sandcastle/agent-workflows
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish

@@ -64,6 +64,12 @@ left so the manual remedy is one remove-and-re-add.
 | `CLAUDE_CODE_OAUTH_TOKEN` | **yes** | every agent workflow fails immediately |
 | `AGENT_PAT` | effectively yes | all three failures in §1 |
 
+Two secrets, and there is deliberately no third. The runner package is installed from **GitHub
+Packages**, which needs a token — but that token is the built-in `GITHUB_TOKEN`, so what a
+consuming repo owes is a **permission**, `packages: read` in each caller (§4), not another secret
+to mint and rotate. Miss it and the run dies at `npx` with a 401; see §4 for why that reads like
+the wrong thing.
+
 `AGENT_PAT` is a **fine-grained** personal access token scoped to the repo. Permissions:
 
 | Permission | Why |
@@ -188,6 +194,29 @@ still matters when you pin the `@ref` below: an **exact** version, never a range
 the reason `.nvmrc` exists, and because the pin being in base-controlled YAML is what closes §9's
 first trap. Pinning through your own `package.json` would look equivalent and close nothing (§9).
 
+### The install is authenticated
+
+The package is published to **GitHub Packages** (`https://npm.pkg.github.com`), not to npmjs. Two
+consequences, and the second is the one that surprises people:
+
+- The reusable workflow writes a **scoped** `.npmrc` with `actions/setup-node`'s `registry-url` and
+  `scope` inputs, so only `@jeffwlawson` resolves there. Your own `npm ci` is untouched — it still
+  goes to npmjs for everything else.
+- **GitHub Packages has no anonymous install, even for a public package.** The token is
+  unconditional rather than a consequence of visibility, which is why every caller below grants
+  `packages: read` and why omitting it is not a "make the package public" problem.
+
+Nothing here asks you for a secret: the token is `GITHUB_TOKEN`, and `packages: read` is what turns
+it into one that can install (§2).
+
+> **The cross-repo caveat.** A package published from *this* repo is not automatically readable by
+> `GITHUB_TOKEN` in a *different* repo — that depends on the package's own access settings, which
+> live with the package rather than with either workflow. When it is missing, the failure is a 401
+> at `npx` time. A 401 reads like a bad token, so the first thing you will check is the secret you
+> did not set and the permission you did — and both will be right. If your caller grants
+> `packages: read` and `npx` still 401s, the grant is not the problem: the package needs this repo
+> listed under its access settings. This is exactly the silent-until-confusing shape §1 exists for.
+
 ### What a caller looks like
 
 Four of the five are this, with the name, the job id, the label's workflow and the permissions
@@ -205,6 +234,7 @@ jobs:
     uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-fix-reusable.yml@<commit sha>
     permissions:
       contents: write
+      packages: read            # install the runner package; see above
       pull-requests: write
     # with:
     #   default-branch: main       # all three default to what is shown; a
@@ -217,13 +247,16 @@ jobs:
 
 The permissions per workflow, which are what each job actually spends:
 
-| Caller | `contents` | `issues` | `pull-requests` |
-|---|---|---|---|
-| `agent-implement` | write | write | write |
-| `agent-implement-prd` | write | write | write |
-| `agent-review` | **read** | — | write |
-| `agent-fix` | write | — | write |
-| `agent-update-branch` | write | — | write |
+| Caller | `contents` | `issues` | `packages` | `pull-requests` |
+|---|---|---|---|---|
+| `agent-implement` | write | write | read | write |
+| `agent-implement-prd` | write | write | read | write |
+| `agent-review` | **read** | — | read | write |
+| `agent-fix` | write | — | read | write |
+| `agent-update-branch` | write | — | read | write |
+
+`packages: read` is the one row that is the same everywhere, because it is not about what the job
+does — it is about installing the runner it runs.
 
 Four things about that shape are worth knowing before you paste it:
 
@@ -254,6 +287,7 @@ jobs:
     uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-review-reusable.yml@<commit sha>
     permissions:
       contents: read
+      packages: read
       pull-requests: write
     with:
       self-check: review / review    # `<this job's id> / review`
@@ -310,6 +344,19 @@ Its `tsconfig.json` includes `.sandcastle/**/*.ts` so `npm run typecheck` covers
 Keep `rootDir` out of the base config — put it in a separate build config — or `tsc` fails with
 TS6059 the moment a file lives outside it. The package has its own build config doing exactly that
 (`npm run build:agent-workflows`), and `prepack` runs it so a publish cannot ship a stale `dist/`.
+
+Publishing is `publish-agent-workflows.yml`, triggered by pushing an `agent-workflows-v<version>`
+tag. The trigger is a tag push rather than a `workflow_dispatch` on purpose: dispatch only registers
+for workflows on the default branch, so the first publish of a version could not run until the pull
+request pinning it had merged — and that pull request cannot merge until the version resolves.
+
+> **Owed: the ancestor guard.** That workflow does not yet require the tagged commit to be reachable
+> from the default branch (`git merge-base --is-ancestor "$GITHUB_SHA" origin/<default>`). It is the
+> guard that makes tag-triggered publishing safe long-term, and it is absent for one reason: it
+> would have blocked the `agent-workflows-v0.1.0` bootstrap tag, which had to be pushed on a pull
+> request's head. Add it once that first publish has happened. It is recorded here as well as in a
+> `TODO` in the workflow, because a deferred guard remembered in only one place is one that never
+> lands.
 
 ---
 

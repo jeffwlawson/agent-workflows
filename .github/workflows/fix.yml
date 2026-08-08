@@ -83,6 +83,10 @@ jobs:
     # `gh` call below 403s on a repo whose default `GITHUB_TOKEN` is read-only.
     permissions:
       contents: write
+      # Installing the runner package. GitHub Packages has no anonymous install,
+      # so this is needed even though the package is public — and, being a
+      # bound, it grants nothing without the caller's own `packages: read`.
+      packages: read
       pull-requests: write
 
     env:
@@ -177,12 +181,25 @@ jobs:
         if: steps.state.outputs.proceed == 'true'
         run: npm install -g @anthropic-ai/claude-code
 
+      # The runner package lives on GitHub Packages, which has no anonymous
+      # install even for a public package — see the long note on the same step in
+      # agent-review-reusable.yml. Short version: the scoped `.npmrc` is written
+      # for `@jeffwlawson` only so a caller's own `npm ci` is untouched, and
+      # `packages: read` in the caller is what makes the token below work.
+      - name: Authenticate to GitHub Packages
+        if: steps.state.outputs.proceed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+
       # The runner refuses (non-zero) when there is no trusted feedback, so the
       # "nothing to act on" case surfaces through the normal failure path.
       - name: Run fix agent
         if: steps.state.outputs.proceed == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Unset variable interpolates to "", and the runner falls back to its
           # own default. Change the model in Settings -> Variables, no commit.
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}

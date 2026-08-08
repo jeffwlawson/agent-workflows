@@ -15,6 +15,26 @@ Each runner takes its whole input from the environment the workflow step sets �
 branch, `CLAUDE_CODE_OAUTH_TOKEN`, model overrides, `OUTPUT_DIR`. None of them takes an argument,
 and passing one is refused rather than ignored.
 
+## Installing it
+
+Published to **GitHub Packages**, so `npx` needs a scoped registry and a token:
+
+```yaml
+- uses: actions/setup-node@v4
+  with:
+    registry-url: https://npm.pkg.github.com
+    scope: "@jeffwlawson"
+- run: npx --yes @jeffwlawson/agent-workflows@<version> review
+  env:
+    NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The scope matters: it keeps the entry to `@jeffwlawson`, so the consuming repo's own install still
+resolves everything else from npmjs. The token is **unconditional** — GitHub Packages has no
+anonymous install even for a public package — so the workflow granting it needs `packages: read`.
+That is a permission rather than a secret, and it has to be granted in the *calling* workflow, since
+a called one can only downgrade the token it is handed.
+
 ## Pin the version in the workflow, not in `package.json`
 
 `pull_request_target` takes the workflow YAML from the **base** branch and checks out the **PR
@@ -54,6 +74,11 @@ this package to fall back on.
 npm run build     # tsc, then copy each runner's prompt into dist/ beside it
 npm publish       # prepack runs the build first
 ```
+
+`publishConfig.registry` points at GitHub Packages, so `npm publish` needs no `--registry` flag and
+cannot reach npmjs by accident. In practice it runs from CI on an `agent-workflows-v<version>` tag
+push, behind two guards: the tag and this manifest must name the same version, and a version already
+on the registry is a no-op rather than a 409.
 
 `prepack` is what stops a publish shipping a stale `dist/`. The prompts are copied rather than
 compiled: every runner resolves its prompt relative to its own directory, and `tsc` emits `.js` and

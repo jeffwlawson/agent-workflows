@@ -157,44 +157,98 @@ gives, since the file is also a skill's output path — and the reasoning surviv
 
 ---
 
-## 4. Files to copy
+## 4. Files to write
+
+**Nothing in the loop is copied any more.** As of #98 all five workflows are split in two: a
+`*-reusable.yml` here holding the job — the fork guard, the permissions ceiling, the concurrency
+group, the preflight, every step — and a **caller** in your repo holding the trigger, the token
+grant and the secrets. You write the callers; you reference the jobs.
+
+That is the difference between installing this loop and forking it. A control you copy is a control
+that drifts; a control behind a pinned `uses:` is one you get fixes to.
 
 ```
 .github/workflows/agent-implement.yml
 .github/workflows/agent-implement-prd.yml
+.github/workflows/agent-review.yml
 .github/workflows/agent-fix.yml
 .github/workflows/agent-update-branch.yml
 ```
 
-…plus `agent-review.yml`, which you **write** rather than copy: a trigger, a `uses:`, and four
-lines of wiring. The shape is below.
-
-The runners themselves are **not copied**. They are an npm package —
-`@jeffwlawson/agent-workflows` — and each workflow invokes one subcommand of it at a version pinned
-in the YAML:
+The runners are **not copied either**. They are an npm package — `@jeffwlawson/agent-workflows` —
+and the reusable workflow invokes one subcommand of it at a version pinned in *its* YAML:
 
 ```yaml
 run: npx --yes @jeffwlawson/agent-workflows@0.1.0 review
 ```
 
-Prompts ship inside the package, so there is nothing to copy and nothing to keep in step. Pin an
-**exact** version, never a range or a dist-tag, for the reason `.nvmrc` exists — and because the pin
-being in the workflow is what closes §9's first trap. Pinning it through your own `package.json`
-instead would look equivalent and close nothing (§9).
+Prompts ship inside the package, so there is nothing to copy and nothing to keep in step. That pin
+is ours rather than yours now, which is one fewer thing for you to get wrong — but the reasoning
+still matters when you pin the `@ref` below: an **exact** version, never a range or a dist-tag, for
+the reason `.nvmrc` exists, and because the pin being in base-controlled YAML is what closes §9's
+first trap. Pinning through your own `package.json` would look equivalent and close nothing (§9).
 
-### `agent-review.yml` is a caller, not a copy
+### What a caller looks like
 
-Review is the first workflow split in two (#97). The job — the fork guard, the permissions, the
-concurrency group, every step — lives in `agent-review-reusable.yml` here, and what you write is the
-trigger and the facts about your repo it cannot know:
+Four of the five are this, with the name, the job id, the label's workflow and the permissions
+changed:
 
 ```yaml
-name: Agent Review
+name: Agent Fix
 
 on:
-  pull_request_target:
+  pull_request_target:      # `issues:` for the two implement workflows
     types: [labeled]
 
+jobs:
+  fix:
+    uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-fix-reusable.yml@<commit sha>
+    permissions:
+      contents: write
+      pull-requests: write
+    # with:
+    #   default-branch: main       # all three default to what is shown; a
+    #   node-version-file: .nvmrc  # non-Node repo passes '' for the last two
+    #   setup: npm ci              # and still gets the loop
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}
+```
+
+The permissions per workflow, which are what each job actually spends:
+
+| Caller | `contents` | `issues` | `pull-requests` |
+|---|---|---|---|
+| `agent-implement` | write | write | write |
+| `agent-implement-prd` | write | write | write |
+| `agent-review` | **read** | — | write |
+| `agent-fix` | write | — | write |
+| `agent-update-branch` | write | — | write |
+
+Four things about that shape are worth knowing before you paste it:
+
+- **`permissions` has to be on your job too.** The called workflow can only *downgrade* the token it
+  is handed, so it cannot grant itself the `pull-requests: write` its label edits spend. On a repo
+  whose default `GITHUB_TOKEN` is read-only, omitting this block gives you a run that costs a full
+  agent pass and silently transitions nothing. The two blocks say the same thing for opposite
+  reasons — yours grants, ours bounds — which is why `contents: read` on review stays an invariant
+  no caller can widen.
+- **Pin the `@ref`.** Same reasoning as the runner version above, and the same trap: a floating
+  `@main` is a workflow that changes under a pull request nobody touched.
+- **Name each workflow `Agent …`.** A called workflow contributes no run of its own, so the run is
+  yours — and review's failure-log collector skips runs whose name starts with `Agent ` on the
+  grounds that a failed agent job is not evidence about the diff.
+- **Name the secrets rather than `secrets: inherit`.** Inheriting hands the called workflow every
+  secret your repository holds. `AGENT_PAT` is declared optional, so passing an unset one is fine —
+  it arrives as the empty string, which is what the fallbacks in §1 expect.
+
+### `agent-review` needs one input more
+
+Review polls every check on the head commit and waits for the ones still running, so it has to
+recognise its own — and a called workflow's job appears as `<caller job id> / <called job id>`,
+which nothing inside the called workflow can read. Hence `self-check`, required:
+
+```yaml
 jobs:
   review:
     uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-review-reusable.yml@<commit sha>
@@ -203,41 +257,24 @@ jobs:
       pull-requests: write
     with:
       self-check: review / review    # `<this job's id> / review`
-      # default-branch: main         # these three default to what is shown;
-      # node-version-file: .nvmrc    # a non-Node repo passes '' for the last
-      # setup: npm ci                # two and still gets a review
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
 ```
 
-Four things about that shape are worth knowing before you paste it:
+Rename the job, change the input. A name review does not recognise as its own is a job waiting for
+itself — 15 of its 20 minutes, then a review with degraded evidence and no error anywhere.
 
-- **`self-check` is required and is a fact about *your* file.** A called workflow's job appears on
-  the PR as `<caller job id> / <called job id>`, and nothing inside the called workflow can read the
-  caller's job id. Review polls every check on the head commit and waits for the ones still running;
-  a name it does not recognise as its own is a job waiting for itself — 15 of its 20 minutes, then a
-  review with degraded evidence and no error anywhere. Rename the job, change the input.
-- **`permissions` has to be on your job too.** The called workflow can only *downgrade* the token it
-  is handed, so it cannot grant itself the `pull-requests: write` its label edits spend. On a repo
-  whose default `GITHUB_TOKEN` is read-only, omitting this block gives you a review that runs, costs
-  a full agent pass, and silently transitions nothing.
-- **Pin the `@ref`.** Same reasoning as the runner version above, and the same trap: a floating
-  `@main` is a workflow that changes under a pull request nobody touched.
-- **Name the workflow `Agent Review`, or something else beginning `Agent`.** A called workflow
-  contributes no run of its own, so the run is yours — and review's failure-log collector skips
-  runs whose name starts with `Agent ` on the grounds that a failed agent job is not evidence about
-  the diff.
+`agent-implement-prd` is optional but **not independent**: it shares the `agent:implement` label
+with `agent-implement`, and the two partition every label event by issue shape. Take both or
+neither. Taking only the PRD one leaves ordinary issues unhandled; taking only `agent-implement` is
+fine in itself, but a PRD-shaped issue then reaches a job that *defers* to a workflow you did not
+install, and nothing happens at all.
 
-The other four are still copied verbatim; converting them is the next slice of #88.
-
-`agent-implement-prd.yml` is optional but **not independent**: it shares the `agent:implement`
-label with `agent-implement.yml`, and the two partition every label event by issue shape. Take
-both or neither. Copying only the PRD one leaves ordinary issues unhandled; copying only
-`agent-implement` is fine, but then delete its `defer` branch — otherwise a PRD-shaped issue is
-silently ignored by both a workflow that is not there and one that stepped aside for it.
-
-Optional, and repo-agnostic: `.github/workflows/token-expiry.yml`.
+Optional, and the one file still copied verbatim: `.github/workflows/token-expiry.yml`. It is
+offered as-is because it is already repo-agnostic — no branch names, no toolchain, no paths, just
+`AGENT_PAT` and the GitHub API — so there is nothing for a `workflow_call` surface to parameterise.
+Splitting it would add a file and a pin to save nobody an edit.
 
 Optional, and needs its mapping rewritten for your labels: `docs/agents/triage-labels.md` (§3).
 Run `/setup-matt-pocock-skills` **first** — it writes all three files in `docs/agents/`, including
@@ -278,25 +315,33 @@ TS6059 the moment a file lives outside it. The package has its own build config 
 
 ## 5. What you must change
 
-Most of the workflows are not yet parameterised. These are the couplings to edit by hand — with
-`agent-review` now the exception rather than a row, since #97 gave it inputs; the rest follow.
+Nothing in the loop, any more. Every coupling this table used to list is an **input** you set in
+your caller — or, in three cases, was never a coupling to begin with and is recorded here so the
+next person does not go looking for it.
 
-| Assumption | Where | Notes |
+| Assumption | Now | Notes |
 |---|---|---|
-| Default branch is `main` | **not `agent-review`** — it takes a `default-branch` input (#97), the first of these to be parameterised rather than patched. Still hand-edited in `agent-implement.yml` (×3), `agent-implement-prd.yml` (×3), `ci.yml` — and, **inside the package where you cannot edit them**, `implement/prompt.md`, `implement-prd/prompt.md`, `implement/implement.ts`, plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | the two `implement` workflows branch from `main` and open their PR against it, unconditionally — that is what is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch — which for `review` is now exactly what `default-branch` decides. **The runner-side sites are now a hard blocker on a non-`main` repo, not a hand edit**: packaging them (#96) removed the file you used to patch, and giving them an input surface is the next slice of #88 |
-| `npm ci`, `npm run verify`, `.nvmrc` | the four copied workflows | the whole toolchain assumption; a non-Node repo replaces all of it. `agent-review` is again the exception: `setup` and `node-version-file` are inputs, and empty strings skip both steps (§4). The prompts are **not** in this list either: each says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of the prompt side |
-| `CONTEXT.md` and `CLAUDE.md` exist | every prompt reads them first | see §6 |
-| Project domain | nothing under `.sandcastle/` | **no longer a coupling** (#95). The prompts name no domain of their own; they send the agent to `CONTEXT.md` and `CLAUDE.md`, which are yours. A test walks every file under `.sandcastle/` and fails on this repo's vocabulary, so it stays that way |
-| Sub-issues are created blockers-first | `agent-implement-prd.yml` only | it walks sub-issues **API order** and never reads `blocker` edges, so whatever publishes the sub-issues owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a). The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |
+| Default branch is `main` | `default-branch`, on all five | It means two different things by event, and both are right. On `review`, `fix` and `update-branch` the base comes from the pull request (#71, #100) and this is only the fallback for an event carrying none — which never happens on a real PR, but degrades *silently* when it does. On the two `implement` workflows there is no event field to read: an `issues` event says nothing about branches, so this **is** the branch they cut from and open the PR against. It reaches the runners as `BASE_REF` too, so the prompts name a branch that exists (#98) — `implement/implement.ts` used to count commits against a literal `main`, which was the one site here that *hard-errored* rather than misbehaving quietly |
+| `npm ci` and `.nvmrc` | `setup` and `node-version-file`, on all five | the whole toolchain assumption, and both are skippable: pass `''` and a repo whose toolchain is not Node still gets the loop, running on the image's own Node. Only `npm install -g @anthropic-ai/claude-code` is unconditional, and that is the agent's own runtime rather than yours |
+| The gate command (`npm run verify` here) | not an input, and not a coupling | each prompt says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of it. It cannot become an input: `runWithExtraction` drops prompt arguments before the extraction pass, so a placeholder would reach one prompt literal |
+| `CONTEXT.md` and `CLAUDE.md` exist | still yours to write | see §6. This is the coupling the others turned into — a de-domained prompt makes it total rather than partial |
+| Project domain | **not a coupling** (#95) | the prompts name no domain of their own. A test walks every file under `.sandcastle/` and fails on this repo's vocabulary, so it stays that way |
+| Sub-issues are created blockers-first | **not an input, by design** | `agent-implement-prd` walks sub-issues in **API order** and never reads `blocker` edges, so whatever publishes them owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a). The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |
 
-With the one exception called out above, nothing here will error — it will produce agents
-confidently doing the wrong project's conventions.
+Your own CI is the one place a branch name is still yours to write, and it always was: `ci.yml`
+here triggers on `branches: [main]`. A workflow's *trigger* cannot come from a `workflow_call`
+input — that is the same limitation that keeps the trigger in your caller rather than in the
+reusable half — and your CI is not part of this loop anyway. Nothing about the conversion changes
+it; it is named here only because the row it used to share is gone.
 
-The prompts used to be the row that took longest, and they are now the row that takes none: the
-work moved to §6, where it belongs. An agent is only as good as the `CONTEXT.md` and `CLAUDE.md`
-it is pointed at, and a de-domained prompt makes that dependency total rather than partial —
-there is no longer a second copy of anyone's conventions to fall back on when those two files are
-thin.
+Nothing above will error if you get it wrong — with one exception worth knowing, because it is the
+exception on purpose. An empty base ref used to default to `main` inside the runners; since #98 it
+fails the run with a message naming the input, on the grounds that a review silently diffing
+against the wrong branch is worse than a run that stops and says so.
+
+This table used to be the longest section in the file, and the work did not disappear — it moved to
+§6, where it belongs. An agent is only as good as the `CONTEXT.md` and `CLAUDE.md` it is pointed at,
+and every coupling turned into an input is one less place to look when the output is wrong.
 
 ---
 
@@ -363,8 +408,11 @@ built on for the length of the PRD before anybody reads it.
 
 ## 8. If your repo is public
 
-`agent-review` and `agent-fix` use `pull_request_target`, which runs with secrets and write
-access. Copy these controls with the workflows — they are not decoration.
+`agent-review`, `agent-fix` and `agent-update-branch` use `pull_request_target`, which runs with
+secrets and write access. These controls are not decoration — and since #98 you no longer copy any
+of them: every one lives in a `*-reusable.yml` you reference, where a caller can skip the job but
+cannot loosen it. Read them anyway. Not to install them, but because a control you cannot see is
+one you cannot reason about, and the paragraph after the table is a decision only you can make.
 
 | Control | Why |
 |---|---|
@@ -379,8 +427,12 @@ access. Copy these controls with the workflows — they are not decoration.
 triage-role collaborator can add `agent:fix` and cause an agent to push code — below the write
 boundary the rest of the design assumes. Moot while you are the only collaborator, and a real
 escalation path the day that changes. Two ways out, and it is a decision rather than a defect: check
-`github.event.sender`'s permission level in the job-level `if:`, or treat "never grant Triage on a
-repo running this loop" as part of the setup. Pick one before you add a collaborator (#102).
+`github.event.sender`'s permission level, or treat "never grant Triage on a repo running this loop"
+as part of the setup. Pick one before you add a collaborator (#102).
+
+If you take the first, it goes in **your caller's** job-level `if:`. That is the one direction the
+seam allows — a caller's `if:` can narrow what runs, never widen it — and it is why the trade is
+still yours to make after the conversion rather than ours to make for everyone.
 
 The residual you cannot cheaply close: the agent runs unsandboxed with a model token readable in its
 environment and unrestricted network egress. Every *injection source* is behind the write boundary,
@@ -402,6 +454,10 @@ That holds **only** because the pin is in the YAML. Depending on the package fro
 `package.json` and invoking it from `node_modules` puts the version back on the PR-head side of the
 split — the same trap, wearing the fix's clothes. A test asserts no workflow runs a runner out of
 the checkout.
+
+The conversion in §4 widens the same property from the runner to the whole job: your caller is
+base-controlled, so the `@ref` it pins is, so every step behind it is. Nothing a pull request can
+write reaches a control any more — only the working tree the agent reads, below.
 
 What is still PR-head-controlled is your `CONTEXT.md` and `CLAUDE.md`: an agent on an old branch
 applies superseded *conventions*. That is a weaker failure than running the wrong code, and the

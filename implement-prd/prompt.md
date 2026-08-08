@@ -35,7 +35,8 @@ Read these before changing code:
   Follow it there rather than from memory: it is the copy that is kept current, and anything
   restating it — this prompt included — would be a second copy already drifting from it.
 
-Then read what the earlier slices already did: `git log main..HEAD` and `git diff main...HEAD`.
+Then read what the earlier slices already did: `git log {{BASE_REF}}..HEAD` and
+`git diff {{BASE_REF}}...HEAD`.
 Build on that rather than beside it — matching a convention an earlier slice established matters
 more here than in a standalone issue, because the whole PRD lands as one PR and is reviewed once.
 

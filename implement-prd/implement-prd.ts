@@ -22,6 +22,14 @@ const SUB_TITLE = required("SUB_TITLE");
 const BRANCH = required("BRANCH");
 
 /**
+ * The branch the chain is based on. Only the prompt uses it — it is what the
+ * agent diffs to see the slices already on this branch — and it is the
+ * workflow's `default-branch` input rather than a literal, so the instruction
+ * names a ref that exists on a repo whose default branch is not `main` (#98).
+ */
+const BASE_REF = required("BASE_REF");
+
+/**
  * Read an issue and its collaborator comments into one prompt section.
  *
  * SECURITY: title/body and comments are author-gated to repo collaborators —
@@ -76,6 +84,7 @@ try {
       SUB_NUMBER,
       SUB_TITLE,
       BRANCH,
+      BASE_REF,
       PRD_CONTEXT: prdContext,
       SUB_CONTEXT: subContext,
     },

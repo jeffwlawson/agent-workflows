@@ -87,8 +87,13 @@ interface GqlThread {
  * silently mis-filter; the fallback to it was deliberately removed once already
  * (see review-context.ts) — do not reintroduce it.
  *
- * Defaults to `main` when the base ref is absent or empty, so nothing regresses
- * on a path that has not plumbed the base through.
+ * Refuses an absent or empty base rather than defaulting to one. It defaulted
+ * to `main` until #98, which is the same silent wrong-branch failure one level
+ * down: on a `master` repo every review diffed against a ref that did not
+ * exist, and on one that had a stale `main` it diffed against that instead.
+ * Every workflow in the loop now sets `BASE_REF` from the pull-request event
+ * with the `default-branch` input behind it, so an empty value is a
+ * misconfiguration to say out loud — and `fail()` puts the message on the PR.
  *
  * Returns argv for `git`, not a command string: `git()` runs `execFileSync`, so
  * `baseRef` arrives as one argument and is never shell-parsed. That matters
@@ -98,7 +103,12 @@ interface GqlThread {
  * thing standing between a ref name and `/bin/sh`.
  */
 export const diffCommandAgainstBase = (baseRef: string | undefined): readonly string[] => {
-  const base = (baseRef ?? "").trim() || "main";
+  const base = (baseRef ?? "").trim();
+  if (!base) {
+    throw new Error(
+      "BASE_REF is empty. The workflow sets it from the pull request's base ref, falling back to its `default-branch` input; without it this diff would have to guess a branch, and a wrong guess is a review that silently comments on the wrong lines (#71).",
+    );
+  }
   return ["diff", `${base}...HEAD`];
 };
 

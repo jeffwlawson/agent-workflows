@@ -21,12 +21,16 @@ const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
 
 /**
- * The branch the workflow merged in. Not `required`: it defaults to `main` the
- * same way the workflow's own `${BASE_REF:-main}` does, so the prompt describes
- * the merge that actually happened rather than a `main` the PR may not be
- * based on (#100).
+ * The branch the workflow merged in, rendered into the prompt so the agent is
+ * reconciling the merge that actually happened (#100).
+ *
+ * `required`, where it used to default to `main`: the workflow sets it from the
+ * pull-request event with its `default-branch` input behind it (#98), so an
+ * empty value here means the prompt would describe a different merge from the
+ * one in the working tree — and being wrong about that quietly is worse than
+ * refusing before the agent starts.
  */
-const BASE_REF = (process.env["BASE_REF"] ?? "").trim() || "main";
+const BASE_REF = required("BASE_REF");
 
 /**
  * Only the *comment* is structured. The resolution itself is the working tree,

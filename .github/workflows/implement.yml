@@ -1,0 +1,377 @@
+name: Agent Implement (reusable)
+
+# The implement job itself. `agent-implement.yml` is the caller — a trigger and
+# two wires — and every guard, permission and step stays here, in a file an
+# adopting repo *references* rather than copies (#98).
+#
+# Unlike the three PR workflows, this one has no event field to take a base
+# branch from: an `issues` event carries no pull request, so the branch to cut
+# from and the branch to open the PR against are a *choice*. `default-branch` is
+# that choice, made by the adopter once instead of hand-edited in three places
+# and in two prompts they cannot reach (docs/ADOPTING.md §5).
+on:
+  workflow_call:
+    inputs:
+      default-branch:
+        description: >-
+          The branch the agent's work is cut from and the PR is opened against.
+          Not a fallback, unlike the PR workflows' input of the same name —
+          nothing in an `issues` event says which branch the work belongs on, so
+          this is the only answer there is.
+        type: string
+        default: main
+      node-version-file:
+        description: >-
+          The file `actions/setup-node` reads the version from. Empty skips the
+          setup step entirely: a repo whose toolchain is not Node still gets its
+          issue implemented, running on the image's own Node.
+        type: string
+        default: .nvmrc
+      setup:
+        description: >-
+          Commands that install the repository's dependencies in the checkout,
+          before the agent starts. Empty skips the step. This is a *command*, so
+          it is executed by construction — pass a literal from your workflow
+          file, never an expression that reads the event, or an issue title
+          becomes a shell script.
+        type: string
+        default: npm ci
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: OAuth token the implementation agent runs under.
+        required: true
+      AGENT_PAT:
+        description: >-
+          User PAT. Three things need it and each fails differently without it:
+          the push (no CI on the resulting PR), `gh pr create` (the Actions bot
+          is forbidden from creating PRs), and the `agent:review` label add
+          (a label added with `GITHUB_TOKEN` triggers no workflow, so the
+          cascade dies silently). See docs/ADOPTING.md §1. Optional, and every
+          site warns rather than failing.
+        required: false
+
+jobs:
+  implement:
+    # Job-level, deliberately. A job-level `if:` skips without provisioning a
+    # runner and costs nothing; a step-level guard has already booted a runner
+    # and bills a full rounded-up minute for every unrelated label event.
+    #
+    # On this side of the seam, like every other guard in the loop: a caller's
+    # own `if:` can skip this job, it cannot loosen this one.
+    if: github.event.label.name == 'agent:implement'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: agent-implement-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    # Granted by the caller, bounded here. A called workflow can only downgrade
+    # the token it is handed, so this block is the ceiling and the caller's
+    # identical one is the grant — without it every `gh` call below 403s on a
+    # repo whose default `GITHUB_TOKEN` is read-only.
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_TITLE: ${{ github.event.issue.title }}
+      ISSUE_STATE: ${{ github.event.issue.state }}
+      # The branch this run works from, end to end: checked out, branched from,
+      # opened against, and handed to the runner so the agent's prompt names the
+      # branch its own was actually cut from. One value, one input, so the three
+      # can never disagree.
+      BASE_REF: ${{ inputs.default-branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      # Four refusals and one deferral, in order, all of them here rather than
+      # in the agent: this step runs before checkout and the dependency install,
+      # so neither costs more than one API call.
+      #
+      # The **partition** has to come first (#92). `agent-implement-prd` shares
+      # this trigger label and owns every issue that has sub-issues, so both jobs
+      # start on every label event and exactly one of them may speak. This step
+      # settles which before it says anything at all — including about a closed
+      # issue, which would otherwise collect the same "not open" comment twice,
+      # seconds apart, from two runs that cannot see each other.
+      #
+      # Then state. The PR query below lists open PRs only, so an issue whose PR
+      # has already merged looks exactly like an issue nobody has started. It
+      # then checks out the base branch, finds the work already there, and
+      # usually dies at "no commits were made" — or, worse, invents a change and
+      # opens a duplicate PR (#102).
+      #
+      # Then the rest of the shape (#90), before the PR query rather than after:
+      # an issue that must never be implemented should not be handed "close that
+      # PR, then re-add the label", a remedy that leads straight back to a
+      # refusal.
+      #
+      # Distinct messages throughout, on purpose. "Someone is already on this",
+      # "this is finished" and "this is not implementable as labelled" call for
+      # different things from the human reading them, and the comment is all
+      # they get without opening the run log.
+      - name: Preflight
+        id: preflight
+        run: |
+          set -euo pipefail
+
+          # The trigger label is consumed by every refusal, which is what makes
+          # a retry a deliberate human act rather than a re-run.
+          refuse() {
+            echo "refused=true" >> "$GITHUB_OUTPUT"
+            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+            gh issue comment "$ISSUE_NUMBER" --body "$1"
+            exit 0
+          }
+
+          # A shape refusal also marks the issue blocked. The other two are
+          # transient — reopen the issue, close the PR, and the same run would
+          # now proceed — whereas a shape refusal will repeat verbatim until
+          # somebody restructures the work. `agent:blocked` is what records
+          # that on the issue itself; the transition step below clears it when a
+          # run does start.
+          refuse_shape() {
+            gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
+            refuse "$1"
+          }
+
+          # Not a refusal, and deliberately touching nothing: the PRD workflow
+          # owns this shape and is running right now on the same event. A
+          # comment here would sit beside its comment saying the opposite, and a
+          # label edit would race the re-label its chain depends on.
+          defer() {
+            echo "refused=true" >> "$GITHUB_OUTPUT"
+            echo "$1"
+            exit 0
+          }
+
+          # One query for the whole shape — parent, sub-issues and labels
+          # together. Asking separately is two chances to see a different
+          # answer, and every branch below reads the same snapshot.
+          #
+          # Deliberately not `|| true`. Every other guard in these workflows
+          # proceeds when an API call comes back empty, on the grounds that a
+          # blip is not evidence; this one is the exception, because "no answer"
+          # read as "standalone" is exactly the isolated sub-issue run the guard
+          # exists to prevent. A failed query fails the step, which leaves the
+          # trigger label in place and the run visibly red.
+          issue=$(gh api graphql \
+            -f owner="${GH_REPO%/*}" -f name="${GH_REPO#*/}" -F number="$ISSUE_NUMBER" \
+            -f query='
+              query($owner: String!, $name: String!, $number: Int!) {
+                repository(owner: $owner, name: $name) {
+                  issue(number: $number) {
+                    parent { number }
+                    subIssues(first: 1) { totalCount }
+                    labels(first: 100) { nodes { name } }
+                  }
+                }
+              }' \
+            --jq '.data.repository.issue')
+
+          parent=$(jq -r '.parent.number // ""' <<< "$issue")
+          subs=$(jq -r '.subIssues.totalCount' <<< "$issue")
+          # Separator carries the backticks so two wayfinder labels render as
+          # two code spans in the comment, not one span holding a comma.
+          wayfinder=$(jq -r '[.labels.nodes[].name | select(startswith("wayfinder:"))] | join("`, `")' <<< "$issue")
+
+          # Sub-issue count first, so a *nested* PRD — sub-issues and a parent —
+          # is `has-sub-issues` and goes to the PRD workflow. That is the one
+          # shape both workflows could plausibly claim, and the PRD path is the
+          # one that can explain what is wrong with it.
+          if [ "$subs" -gt 0 ]; then
+            shape=has-sub-issues
+          elif [ -n "$parent" ]; then
+            shape=has-parent
+          else
+            shape=standalone
+          fi
+          echo "shape=$shape" >> "$GITHUB_OUTPUT"
+
+          if [ "$shape" = "has-sub-issues" ]; then
+            defer "#${ISSUE_NUMBER} has ${subs} sub-issue(s), so agent-implement-prd owns this label event."
+          fi
+
+          if [ "$ISSUE_STATE" != "open" ]; then
+            refuse "Refused to run: this issue is not open. Reopen it first, then re-add \`agent:implement\`."
+          fi
+
+          # Checked before the hierarchy, since a wayfinder ticket is refused
+          # whichever shape it happens to have. The PRD workflow carries the
+          # same refusal, for the wayfinder map that has sub-issues.
+          if [ -n "$wayfinder" ]; then
+            refuse_shape "Refused to run: this issue carries \`${wayfinder}\`. Wayfinder maps and decision tickets are planning artifacts, not implementable work — they describe what to build and where the decisions are. Label the issues they produce instead."
+          fi
+
+          if [ "$shape" = "has-parent" ]; then
+            refuse_shape "Refused to run: this issue is a sub-issue of #${parent}. Sub-issues are driven by their parent, never labelled directly — implemented alone, this one loses the ordering and the shared context the parent holds. Label #${parent} instead: the PRD workflow works its sub-issues in order, one per run."
+          fi
+
+          existing=$(gh pr list --state open --json number,url,body \
+            --jq "[.[] | select(.body | test(\"(?i)(closes|fixes|resolves)\\\\s+#${ISSUE_NUMBER}\\\\b\"))] | .[0].url // empty")
+          if [ -n "$existing" ]; then
+            refuse "Refused to run: $existing already targets this issue. Close it first, then re-add \`agent:implement\`."
+          fi
+          echo "refused=false" >> "$GITHUB_OUTPUT"
+
+      # The trigger label is consumed, not left in place. That is what makes a
+      # retry idempotent: a human re-adds it deliberately.
+      - name: Transition labels
+        if: steps.preflight.outputs.refused == 'false'
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:blocked" || true
+          gh issue edit "$ISSUE_NUMBER" --add-label "agent:in-progress"
+
+      - name: Checkout the base branch
+        if: steps.preflight.outputs.refused == 'false'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.default-branch }}
+          fetch-depth: 0
+          # AGENT_PAT is optional. When absent this falls back to GITHUB_TOKEN,
+          # which works — except that pushes made with it do not trigger CI
+          # on the resulting PR. Add the secret later and this starts using it
+          # with no change to the workflow.
+          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Compute branch name
+        if: steps.preflight.outputs.refused == 'false'
+        id: branch
+        run: |
+          slug=$(echo "$ISSUE_TITLE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-50)
+          echo "name=agent/issue-${ISSUE_NUMBER}-${slug}" >> "$GITHUB_OUTPUT"
+
+      - name: Create branch
+        if: steps.preflight.outputs.refused == 'false'
+        env:
+          BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          git config user.name "sandcastle-agent[bot]"
+          git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+      # Both setup steps are the adopter's toolchain, so both are skippable.
+      # `npm install -g @anthropic-ai/claude-code` below is not: that is the
+      # agent's own runtime, and every runner image already has the Node it
+      # needs for it.
+      - name: Setup Node.js
+        if: steps.preflight.outputs.refused == 'false' && inputs.node-version-file != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ${{ inputs.node-version-file }}
+          cache: npm
+
+      # The one place a caller's text becomes a script. That is what the input
+      # *is* — a command — so the boundary to hold is where the value comes
+      # from: a literal in a workflow file, never an expression reading the
+      # issue event.
+      - name: Install dependencies
+        if: steps.preflight.outputs.refused == 'false' && inputs.setup != ''
+        run: |
+          ${{ inputs.setup }}
+
+      - name: Install Claude Code
+        if: steps.preflight.outputs.refused == 'false'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run implementation agent
+        if: steps.preflight.outputs.refused == 'false'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Unset variable interpolates to "", and the runner falls back to its
+          # own default. Change the model in Settings -> Variables, no commit.
+          AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+          AGENT_MODEL_IMPLEMENT: ${{ vars.AGENT_MODEL_IMPLEMENT }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+          OUTPUT_DIR: ${{ runner.temp }}
+        run: npx --yes @jeffwlawson/agent-workflows@0.1.0 implement
+
+      - name: Push branch
+        if: steps.preflight.outputs.refused == 'false' && success()
+        env:
+          BRANCH: ${{ steps.branch.outputs.name }}
+        run: git push --force origin "$BRANCH"
+
+      - name: Open draft PR
+        if: steps.preflight.outputs.refused == 'false' && success()
+        id: open_pr
+        env:
+          BRANCH: ${{ steps.branch.outputs.name }}
+          # gh reads GH_TOKEN from the env. The job-level GH_TOKEN is the
+          # built-in GITHUB_TOKEN, and the Actions bot is forbidden from
+          # creating PRs ("GitHub Actions is not permitted to create or approve
+          # pull requests"). A user PAT is not the Actions bot, so it bypasses
+          # that restriction. Fall back to GITHUB_TOKEN so the step still runs
+          # in forks/setups without the secret — it will fail the same way, but
+          # the workflow shape stays identical.
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          title="Fix #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+          body_file="${RUNNER_TEMP}/pr-body.md"
+          {
+            echo "Closes #${ISSUE_NUMBER}"
+            echo
+            echo "Implemented by the \`agent:implement\` workflow."
+          } > "$body_file"
+          pr_url=$(gh pr create --draft --base "$BASE_REF" --head "$BRANCH" \
+            --title "${title:0:256}" --body-file "$body_file" | tail -n1)
+          echo "number=$(basename "$pr_url")" >> "$GITHUB_OUTPUT"
+          echo "Opened $pr_url"
+
+      # Cascade: every agent PR gets reviewed without a human labelling it.
+      #
+      # Safe because it is exactly one hop — agent-review adds no trigger label
+      # of its own, so this cannot cycle. The corresponding invariant (never
+      # auto-cascade review -> fix) is recorded in docs/parity.md §10; breaking
+      # it would close the loop with no human gate.
+      #
+      # MUST use AGENT_PAT: a label added with GITHUB_TOKEN does not trigger
+      # further workflows, so the label would appear and nothing would happen —
+      # a silent no-op. Warn loudly rather than pretend it worked.
+      - name: Request review
+        if: steps.preflight.outputs.refused == 'false' && success()
+        env:
+          NEW_PR: ${{ steps.open_pr.outputs.number }}
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          gh pr edit "$NEW_PR" --add-label "agent:review"
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${NEW_PR}."
+          fi
+
+      # `!= 'true'`, not `== 'false'` like every other gate here. A preflight
+      # that fails hard — the shape query erroring on a schema or permissions
+      # mismatch — exits before writing the output at all, and `''` is not
+      # `'false'`, so an equality gate skipped this step precisely when the
+      # issue most needed the comment: nothing on the issue, `agent:implement`
+      # still attached, and a red run nobody is watching. Refusals exit 0, so
+      # `failure()` keeps them out of here regardless.
+      - name: Mark blocked on failure
+        if: steps.preflight.outputs.refused != 'true' && failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          reason="(no reason file written; check workflow logs)"
+          if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
+            reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+          fi
+          body_file="${RUNNER_TEMP}/failure-comment.md"
+          # "Re-apply", not "re-add", and the removal clause is load-bearing. This
+          # step now also covers a preflight that failed *before* `Transition
+          # labels` ran, where `agent:implement` is still attached — and adding a
+          # label that is already present fires no `labeled` event, so a literal
+          # "re-add" is inert on exactly the path this gate was widened to catch
+          # (docs/ADOPTING.md §1). One wording is correct on both paths: consumed,
+          # and never consumed.
+          printf '`agent:implement` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-apply `agent:implement` to retry. If it is still attached, remove it first — adding a label that is already present fires no event.\n' "$reason" "$RUN_URL" > "$body_file"
+          gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
+          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
+
+      - name: Always remove in-progress
+        if: always() && steps.preflight.outputs.refused == 'false'
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:in-progress" || true

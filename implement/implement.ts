@@ -6,14 +6,26 @@ import {
   fail,
   fetchTrustedComments,
   fetchTrustedIssue,
+  git,
   required,
   scrubGitHubTokens,
-  sh,
 } from "../shared/common.js";
 
 const ISSUE_NUMBER = required("ISSUE_NUMBER");
 const ISSUE_TITLE = required("ISSUE_TITLE");
 const BRANCH = required("BRANCH");
+/**
+ * The branch `BRANCH` was cut from, this run, in the step before this one. Two
+ * uses: the prompt says what the agent's branch is based on, and the commit
+ * count below measures against it.
+ *
+ * `required`, and an input rather than the literal `main` it was until #98 —
+ * this was the only unconditional `main` in a runner rather than in YAML, and
+ * the only one that *hard-errored*: a repo whose default branch is `master` got
+ * all the way through the agent run and then aborted on a ref that does not
+ * exist (docs/ADOPTING.md §5).
+ */
+const BASE_REF = required("BASE_REF");
 
 try {
   // Read the issue here and pass it in, rather than letting the agent shell out
@@ -48,12 +60,17 @@ try {
       ISSUE_NUMBER,
       ISSUE_TITLE,
       BRANCH,
+      BASE_REF,
       ISSUE_CONTEXT: issueContext,
     },
     maxIterations: 1,
   });
 
-  const commitsAhead = Number(sh("git rev-list --count main..HEAD").trim());
+  // argv, not a command string: a ref may legally contain `` ` ``, `$()`, `;`,
+  // `|` and `&`, and `git()` runs `execFileSync` so this one arrives unparsed
+  // (#75). It used to be an `sh()` call with the base branch written into it as
+  // a literal, where the question could not arise.
+  const commitsAhead = Number(git(["rev-list", "--count", `${BASE_REF}..HEAD`]).trim());
   if (!Number.isFinite(commitsAhead) || commitsAhead === 0) {
     fail("Agent finished but no commits were made on the branch.");
   }

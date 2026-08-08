@@ -81,7 +81,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # One group per PR, shared with agent-fix.yml and agent-update-branch.yml.
+    # One group per PR, shared with agent-fix and agent-update-branch.
     # Review is `contents: read` and cannot push, but that is not what the group
     # protects against: the hazard is review *reading* a branch while a fix is
     # writing to it, which produces a confident review of a tree state that
@@ -93,8 +93,8 @@ jobs:
     # `contents: read` is the invariant that bounds what a wrong review can do
     # (docs/parity.md §10). No `issues: write`: review files nothing, and the
     # `gh pr edit --add-label` steps below need only `pull-requests: write` —
-    # that scope covers labels on a PR, which is why agent-fix.yml and
-    # agent-update-branch.yml already label unguarded without it.
+    # that scope covers labels on a PR, which is why agent-fix and
+    # agent-update-branch already label unguarded without it.
     #
     # The caller declares the same two, and that is not the duplication it
     # looks like — the two blocks do opposite jobs. A called workflow can only
@@ -124,7 +124,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
-      # Same guard as agent-fix.yml and agent-update-branch.yml. Review had none
+      # Same guard as agent-fix and agent-update-branch. Review had none
       # until #102, so labelling a merged PR ran a full agent pass over merged
       # work and then died at `gh pr ready` — which cannot convert a merged PR —
       # under a warning that blames a missing AGENT_PAT. That is a real failure

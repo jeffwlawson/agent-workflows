@@ -164,8 +164,8 @@ by nobody.
 after `Close the finished sub-issue` fails with that sub-issue already closed — so on the *last*
 slice, the failure comment's own remedy ("re-apply `agent:implement`") lands on the finished-PRD
 refusal instead of retrying anything, and the run has walked a human into the
-remedy-that-refuses-again trap `agent-implement.yml` warns about. Neither end of that loop can fix
-it alone, so both say the other thing: the failure comment names the PR and asks for `agent:review`
+remedy-that-refuses-again trap the single-issue preflight warns about. Neither end of that loop can
+fix it alone, so both say the other thing: the failure comment names the PR and asks for `agent:review`
 on it by hand, and the finished-PRD refusal names the still-draft PR on `agent/prd-<n>-*`. The
 alternative — making `agent:review` reachable from a second place — is a second owner of the one
 handoff, which is what §10's residual race is already about.
@@ -422,7 +422,7 @@ write access sits below everything that does not, regardless of how useful it lo
    checkout → node → ci → claude. #92 added the fifth copy without changing a line of it, which is
    the argument.
 2. **Agent-authored PR body** (❌, `write-pr`) — promoted from "cosmetic" on 2026-08-01. The body is
-   a hardcoded heredoc in `agent-implement.yml`, so it is the one thing an agent **cannot** write.
+   a hardcoded heredoc in the implement workflow, so it is the one thing an agent **cannot** write.
    Issue #63 asked the agent to report a bug it was told not to fix; it had nowhere to put it but a
    comment inside a test file. Top-level comments (#78) now give `agent:fix` somewhere to put such
    a finding, so this is no longer the *only* non-code channel — but `agent:implement` still has
@@ -610,9 +610,9 @@ expensive to rediscover.
   Collapsing the two closes a cycle with no gate, the same failure "never auto-cascade review →
   fix" above already guards against. Concretely: no workflow gets `issues: write` unless filing is
   its job — `tests/workflows.test.ts` holds every workflow to that, exempting only
-  `agent-implement.yml` and `token-expiry.yml` by name, so a new one is covered on arrival
-  (`agent-review.yml` had been granted it unused, #101) — and harvesting those comments into issues
-  (#79) is a separate workflow behind its own label.
+  the two `implement` workflows — both halves of each pair since #98 — and `token-expiry.yml` by
+  name, so a new one is covered on arrival (`agent-review` had been granted it unused, #101) — and
+  harvesting those comments into issues (#79) is a separate workflow behind its own label.
 - **No agent reads its own output back as input.** The invariant above closes by a different door
   if it does. `gh pr comment` posts as `github-actions[bot]`, which `isTrustedAuthor` trusts on
   purpose — so without a filter the agent's own "worth a follow-up issue" note returns next run as

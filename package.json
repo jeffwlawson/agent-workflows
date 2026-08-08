@@ -1,0 +1,32 @@
+{
+  "name": "@jeffwlawson/agent-workflows",
+  "version": "0.1.0",
+  "description": "Runners for a GitHub Actions agent loop: implement, implement-prd, review, fix, update-branch",
+  "type": "module",
+  "license": "MIT",
+  "author": "jeffwlawson",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "agent-workflows": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node dist/scripts/copy-assets.js",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "0.12.0"
+  },
+  "devDependencies": {
+    "@standard-schema/spec": "^1.0.0",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

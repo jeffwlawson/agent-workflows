@@ -85,7 +85,8 @@ structural.
 
 ## 2b. Choosing the model
 
-Defaults live in `shared/common.ts`, and **most specific wins**:
+Defaults are baked into the runner package (`shared/common.ts` in its sources), and **most specific
+wins**:
 
 | Source | Scope |
 |---|---|
@@ -164,8 +165,20 @@ gives, since the file is also a skill's output path — and the reasoning surviv
 .github/workflows/agent-fix.yml
 .github/workflows/agent-review.yml
 .github/workflows/agent-update-branch.yml
-.sandcastle/agent-workflows/            # runners, prompts, shared helpers
 ```
+
+The runners themselves are **not copied**. They are an npm package —
+`@jeffwlawson/agent-workflows` — and each workflow invokes one subcommand of it at a version pinned
+in the YAML:
+
+```yaml
+run: npx --yes @jeffwlawson/agent-workflows@0.1.0 review
+```
+
+Prompts ship inside the package, so there is nothing to copy and nothing to keep in step. Pin an
+**exact** version, never a range or a dist-tag, for the reason `.nvmrc` exists — and because the pin
+being in the workflow is what closes §9's first trap. Pinning it through your own `package.json`
+instead would look equivalent and close nothing (§9).
 
 `agent-implement-prd.yml` is optional but **not independent**: it shares the `agent:implement`
 label with `agent-implement.yml`, and the two partition every label event by issue shape. Take
@@ -197,15 +210,18 @@ Read the hierarchy back through the API before labelling anything.
 **Do not copy** `corpus.yml` or `scripts/lint-corpus.ts` — they lint a pinned `microsoft/winget-pkgs`
 snapshot. The *pattern* is worth stealing and is discussed in §7.
 
-Dev dependencies the runners need:
+The runners bring their own dependencies, so an adopting repo needs none of them. The list below is
+what **this** repo needs to develop the package, since its sources live here in
+`.sandcastle/agent-workflows/`:
 
 ```
 @ai-hero/sandcastle  @standard-schema/spec  tsx  typescript
 ```
 
-Your `tsconfig.json` must include `.sandcastle/**/*.ts` so `npm run typecheck` covers the runner
-code. Keep `rootDir` out of the base config — put it in a separate build config — or `tsc` fails
-with TS6059 the moment a file lives outside it.
+Its `tsconfig.json` includes `.sandcastle/**/*.ts` so `npm run typecheck` covers the runner code.
+Keep `rootDir` out of the base config — put it in a separate build config — or `tsc` fails with
+TS6059 the moment a file lives outside it. The package has its own build config doing exactly that
+(`npm run build:agent-workflows`), and `prepack` runs it so a publish cannot ship a stale `dist/`.
 
 ---
 
@@ -215,7 +231,7 @@ The workflows are not yet parameterised. These are the couplings to edit by hand
 
 | Assumption | Where | Notes |
 |---|---|---|
-| Default branch is `main` | `agent-implement.yml` (×3), `agent-implement-prd.yml` (×3), `implement/prompt.md`, `implement-prd/prompt.md`, `implement/implement.ts`, `ci.yml`; plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | the two `implement` workflows branch from `main` and open their PR against it, unconditionally — that is what is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch |
+| Default branch is `main` | `agent-implement.yml` (×3), `agent-implement-prd.yml` (×3), `ci.yml` — and, **inside the package where you cannot edit them**, `implement/prompt.md`, `implement-prd/prompt.md`, `implement/implement.ts`, plus the `main` defaults in `shared/pr-feedback.ts` and `update-branch/update-branch.ts` (`implement/implement.ts`'s `git rev-list --count main..HEAD` is the only unconditional `main` in a runner rather than in YAML, and the only site here that *hard-errors* — `sh` is `execSync`, so a missing `main` ref aborts the run) | the two `implement` workflows branch from `main` and open their PR against it, unconditionally — that is what is wrong on a `master`/`develop` repo. `review`, `fix` and `update-branch` take the base from the PR event (#71, #100), so their `main` is a fallback that never fires on a real PR; change it anyway, or an absent `base.ref` degrades to the wrong branch. **The runner-side sites are now a hard blocker on a non-`main` repo, not a hand edit**: packaging them (#96) removed the file you used to patch, and giving them an input surface is the next slice of #88 |
 | `npm ci`, `npm run verify`, `.nvmrc` | five workflows | the whole toolchain assumption; a non-Node repo replaces all of it. The prompts are **not** in this list: each says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of the prompt side |
 | `CONTEXT.md` and `CLAUDE.md` exist | every prompt reads them first | see §6 |
 | Project domain | nothing under `.sandcastle/` | **no longer a coupling** (#95). The prompts name no domain of their own; they send the agent to `CONTEXT.md` and `CLAUDE.md`, which are yours. A test walks every file under `.sandcastle/` and fails on this repo's vocabulary, so it stays that way |
@@ -324,10 +340,20 @@ long-lived secrets, you need a sandbox with egress control, which means self-hos
 
 ## 9. Two traps once it is running
 
-**Stale runner scripts, silently.** `pull_request_target` takes the workflow YAML from the *base*
-branch but checks out the **PR head** — so `.sandcastle/` scripts come from the PR branch. A PR
-opened before a runner change keeps executing the old scripts with no error. After any
-`.sandcastle/` change, refresh in-flight agent PRs (`agent:update-branch`) before trusting a run.
+**Stale runner scripts, silently — closed, and worth understanding anyway.** `pull_request_target`
+takes the workflow YAML from the *base* branch but checks out the **PR head**, so anything a run
+reads out of the working tree comes from the pull request. While the runners were scripts in the
+repo, a PR opened before a runner change kept executing the old ones with no error.
+
+The version pin in §4 closes it: the workflow file is base-controlled, so the runner version is too.
+That holds **only** because the pin is in the YAML. Depending on the package from your own
+`package.json` and invoking it from `node_modules` puts the version back on the PR-head side of the
+split — the same trap, wearing the fix's clothes. A test asserts no workflow runs a runner out of
+the checkout.
+
+What is still PR-head-controlled is your `CONTEXT.md` and `CLAUDE.md`: an agent on an old branch
+applies superseded *conventions*. That is a weaker failure than running the wrong code, and the
+remedy is the same — refresh in-flight agent PRs with `agent:update-branch`.
 
 **Silence is ambiguous.** GitHub rejects an **entire** review if one inline comment anchors outside
 the diff, so a broken line filter posts nothing — identical to a review that found nothing. The

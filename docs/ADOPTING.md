@@ -181,6 +181,19 @@ Run `/setup-matt-pocock-skills` **first** — it writes all three files in `docs
 The reverse order silently loses everything below the mapping table, because the skill rewrites
 the file with its own default five-row version.
 
+**If you take `agent-implement-prd.yml`, take `docs/agents/ticket-shape.md` with it.** The workflow
+reads a hierarchy it does not create: a parent issue with **native sub-issues**, created in
+dependency order. That file is the publishing side of the contract, and it is the half nothing
+enforces — whoever writes the tickets, a skill or a human, owns the topological sort (§5).
+
+Publishing it natively needs **`gh` >= 2.94.0**, the release that added sub-issues and issue
+relationships to `gh issue` — `gh issue create --parent <n>` and `--blocked-by <n>` (verified on
+2.96.0). On an older `gh`, use the REST sub-issue endpoints instead, where every id is the issue's
+numeric **database id** rather than its `#number`. What you must not do is settle for a
+`Blocked by: #12` line in the body: the sub-issues API does not report it, no UI draws it, and the
+chain cannot see it, so a batch that reads perfectly to a human is one the workflow finds empty.
+Read the hierarchy back through the API before labelling anything.
+
 **Do not copy** `corpus.yml` or `scripts/lint-corpus.ts` — they lint a pinned `microsoft/winget-pkgs`
 snapshot. The *pattern* is worth stealing and is discussed in §7.
 
@@ -206,7 +219,7 @@ The workflows are not yet parameterised. These are the couplings to edit by hand
 | `npm ci`, `npm run verify`, `.nvmrc` | five workflows, and `implement` / `implement-prd` / `fix` / `update-branch` prompts | the whole toolchain assumption; a non-Node repo replaces all of it |
 | `CONTEXT.md` and `CLAUDE.md` exist | every prompt reads them first | see §6 |
 | Project domain | `implement/prompt.md` and `implement-prd/prompt.md` have an "IF THIS ISSUE ADDS A RULE" section; they and `review/prompt.md` cite this repo's domain model (role vs. `ManifestType`, the rule classes); `fix/prompt.md` and `update-branch/prompt.md` cite `src/rules/index.ts` | roughly half of each `implement` prompt is this repo's domain. The extraction prompts and the rest of `review/prompt.md` are already domain-neutral |
-| Sub-issues are created blockers-first | `agent-implement-prd.yml` only | it walks sub-issues **API order** and never reads `blocker` edges, so whatever publishes the sub-issues owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a) |
+| Sub-issues are created blockers-first | `agent-implement-prd.yml` only | it walks sub-issues **API order** and never reads `blocker` edges, so whatever publishes the sub-issues owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a). The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |
 
 With the one exception called out above, nothing here will error — it will produce agents
 confidently doing the wrong project's conventions. Budget real time for the prompts specifically.
@@ -257,6 +270,20 @@ the build, warnings are counted and printed) or warning-severity rules become st
 impossible; and **ground every spec claim in a primary source** before filing the issue. Every spec
 error here came from a confidently-written issue, and the corrections that landed clean were the
 ones citing the upstream schema or source directly.
+
+**Concretely: every acceptance criterion cites the primary source it came from** — the upstream
+schema, the spec section, the API doc, the file and line. Not the issue that proposed it and not
+the plan that decomposed it. This is where it has to land because an acceptance criterion is the
+one part of an issue the agent treats as a contract: prose above it is context to be weighed, a
+checkbox is a thing to be made true. An uncited criterion is therefore a belief that gets
+*implemented*, then encoded in a test, then confirmed by review reasoning from the same belief —
+the three-way agreement the table above is about, with the citation being the cheapest place to
+break it. It is cheap in the other direction too: a criterion nobody can find a source for is
+usually the one that was wrong, and noticing that while writing the ticket costs a sentence.
+
+The PRD tier raises the stakes rather than changing the rule. A chain implements its slices
+unattended and reviews once at the end (docs/parity.md §2a), so an uncited criterion in slice 1 is
+built on for the length of the PRD before anybody reads it.
 
 ---
 

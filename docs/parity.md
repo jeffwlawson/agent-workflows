@@ -26,9 +26,9 @@ row marked ❌.
 | `agent-implement-pr` — act on PR feedback | ✅ | 🟡 | ours is `agent-fix`, label `agent:fix`; see §4 |
 | `agent-update-branch` — refresh a stale PR branch | ✅ | ✅ | ours merges mechanically and only calls the agent on conflicts |
 | `agent-explore` — read-only triage pass on an issue | — | ❌ | **upstream only**, not in CVM. Superseded by local planning skills *in this repo's usage* — see below, and the scope note |
-| `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | PRD tier. Superseded locally by `wayfinder` — which now also owes the chain below an **ordering contract**: sub-issues must be *created* blockers-first (§2a) |
-| `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | #92. Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
-| `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | the workflow is absent, and it is the only missing piece now: the label is declared (`docs/agents/triage-labels.md`, §8) and `/wayfinder` records blockers as native issue dependencies |
+| `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | **the planning half of the PRD tier**, superseded locally by `/wayfinder` → `/to-spec` → `/to-tickets`. The **ordering contract** it owes the chain below — sub-issues *created* blockers-first (§2a) — is no longer owed but written down: `docs/agents/ticket-shape.md` (#93) is where a batch's shape and publish order are settled |
+| `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | **the execution half, shipped** (#92). Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
+| `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | **deferred: nothing to sequence between PRDs yet.** #91, detached from #87 so the chain would not build a slice nobody wanted. Not blocked on missing edges — `/wayfinder` records blockers as native dependencies, and on a `/to-tickets` batch `docs/agents/ticket-shape.md` requires them (upstream's skill writes a prose line, so they are added and verified by hand) — the point is that this tier sequences **top-level** issues, and ordering *within* a PRD is already carried by creation order (§2a). Its label exists and is human-written (§8) |
 | `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
@@ -43,11 +43,20 @@ to exist?* Upstream assesses a spec that already exists and that you may not hav
 generates the spec itself, top-down.
 
 **Both are superseded by local skills — as standing practice, not as a current accident.** Issues
-here are authored by the owner and planned with `wayfinder` (charts a large effort into decision
-tickets on the tracker — the same job as `to-issues-prd`, better specified) and `grilling` /
-`grill-with-docs` (relentless interview on one plan, and it looks facts up in the environment
-rather than asking). That is the intended way in to every applicable issue going forward, which is
-what makes these ❌ rather than 📋: the need does not return as the backlog grows.
+here are authored by the owner and planned with `/wayfinder` → `/to-spec` → `/to-tickets` (charts a
+large effort into decision tickets, then a spec, then sliced tickets on the tracker — the same job
+as `to-issues-prd`, better specified) and `grilling` / `grill-with-docs` (relentless interview on
+one plan, and it looks facts up in the environment rather than asking). That is the intended way in
+to every applicable issue going forward, which is what makes these ❌ rather than 📋: the need does
+not return as the backlog grows.
+
+**The seam that pipeline inherits.** `to-issues-prd` was not only a decomposer; it also *published*
+the result in the shape its own chain reads back. Handing decomposition to a skill hands that
+obligation over with it, and a skill run by a human on a laptop is not held to it by anything. So
+the contract is written down instead — `docs/agents/ticket-shape.md` (#93): a parent PRD with
+native sub-issues, published blockers-first — and §10 carries the invariants. The failure it guards
+is silent in both directions: a batch of flat peers is a PRD the chain cannot walk at all, and a
+batch in the wrong order is one it walks confidently through the wrong slice first.
 
 **Scope of that decision.** It is about *how issues reach this repo*, not about the workflow set
 being complete. If these workflows are ever packaged for another repo (see `docs/ADOPTING.md`), the
@@ -116,9 +125,10 @@ run — accumulating onto a single branch and a single PR, and requesting review
 
 **Ordering comes from creation order, not from the edges.** The chain walks sub-issues API order
 and never reads `blocked-by`. That is safe only because sub-issues are *created* in dependency
-order, blockers first — the topological sort happens once, at publish time, which is the ordering
-contract §1 now records against `to-issues-prd` and `wayfinder`. Do not add edge-reading here; fix
-the publish order instead. The edges exist as the record of why the order is what it is.
+order, blockers first — the topological sort happens once, at publish time. Since #93 that is a
+written contract rather than an assumption about whoever publishes: `docs/agents/ticket-shape.md`
+holds the publish order, the verification steps, and the repair. Do not add edge-reading here; fix
+the publish order instead. The edges exist as the record of why the order is what it is (§10).
 
 **Two workflows, one label, and exactly one of them speaks.** `agent-implement` and
 `agent-implement-prd` share `agent:implement` on `issues: [labeled]`, so both jobs start on every
@@ -260,7 +270,7 @@ what it is for, what it is not (a summary of what changed), and that silence is 
 | Composite action for the repeated setup steps | ❌ | 📋 | both currently duplicate checkout→node→ci→install |
 | `Dockerfile` + local-loop `main.ts` | ✅ | ❌ | N/A by design: `noSandbox()` on the runner (Decision 2) |
 | Project skills (`.claude/skills/`) | ✅ | ❌ | CVM has 7, checked into the repo so its CI agents can load them. Ours relies on `CLAUDE.md` + `CONTEXT.md`, plus **user-level** skills (`wayfinder`, `grilling`) that are available to a human driving Claude Code locally but *not* to a CI agent. That split is deliberate: planning happens with a human in the loop, execution happens in CI |
-| `docs/agents/` platform spec + backlog + label docs | ✅ | 🟡 | ours has `docs/agents/` since #89, but only the per-repo config the local skills read — label docs, issue tracker, a domain pointer. No platform spec or backlog: `CONTEXT.md`, `CLAUDE.md`, this file and `friction.md` cover that ground |
+| `docs/agents/` platform spec + backlog + label docs | ✅ | 🟡 | ours has `docs/agents/` since #89 and four files in it — `triage-labels.md`, `issue-tracker.md`, `domain.md` (a pointer to `CONTEXT.md`, not a second copy) and `ticket-shape.md` (#93). All of it is per-repo config for the **local** skills; no workflow loads any of it, and the one file a workflow depends on the *output* of is `ticket-shape.md` (§2a). Still no platform spec or backlog: `CONTEXT.md`, `CLAUDE.md`, this file and `friction.md` cover that ground |
 | `CODING_STANDARDS.md` referenced from prompts | ✅ | 🟡 | folded into `CLAUDE.md` |
 
 ---
@@ -304,8 +314,8 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `agent:review` | ✅ | ✅ |
 | `agent:in-progress` | ✅ | ✅ |
 | `agent:blocked` | ✅ | ✅ |
-| `agent:queued` | ✅ | 🟡 declared in `docs/agents/triage-labels.md` and inert — nothing reads it without `promote-queued` (§1) |
-| `agent:to-issues` | ✅ | ❌ PRD tier |
+| `agent:queued` | ✅ | 🟡 declared in `docs/agents/triage-labels.md`, written by a human, read by nothing — `promote-queued` is deferred (§1). 🟡 and not ✅ on this file's own legend: the label is present, the tier it belongs to is not |
+| `agent:to-issues` | ✅ | ❌ PRD tier — and the string is double-booked on the tracker: #79 (harvest agent comments into issues, §10) proposes the same label for an unrelated job. Neither exists here yet, so it costs nothing to settle, but #79 is the one that has to move — this row is upstream's name for upstream's workflow |
 | `agent:update-branch` | ✅ | ✅ |
 | `Sandcastle` (triage: "ready for an AFK agent") | ✅ | 🟡 ours is `ready-for-agent`, written by the local `/triage` and `/to-tickets` skills; no workflow reads it |
 
@@ -325,6 +335,11 @@ says so.
 the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`. `docs/agents/triage-labels.md`
 (#89) maps all three and records why `ready-for-agent` → `agent:implement` stays a human hand.
 
+**No ticket a skill publishes carries a label from this table.** `/to-tickets` gives every ticket in
+a batch `ready-for-agent` and nothing else, parent and slices alike (`docs/agents/ticket-shape.md`,
+#93). The promotion to `agent:implement` is one deliberate human action on **one** issue — the
+parent — and §10 records why the sub-issues stay out of it.
+
 ---
 
 ## 9. If we closed the gaps, in order
@@ -332,8 +347,10 @@ the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`. `doc
 Done since first written: **conversational replies + resolution** (#49/#50 — and ours also
 *resolves* threads, which CVM does not), **`agent-update-branch`** (#52, motivated by a real trap,
 not theory — see `friction.md`), **implement → review auto-cascade**, **review marks the
-PR ready** (it had become a manual step on every agent PR), and **`agent-implement-prd`** (#92 —
-the execution half of item 6 below, which had been off the list entirely).
+PR ready** (it had become a manual step on every agent PR), **`agent-implement-prd`** (#92 — the
+execution half of the PRD tier, which had been off this list entirely), and **the publish contract
+it reads back** (#93, `docs/agents/ticket-shape.md` — not a workflow, and the reason the item below
+is one line rather than three).
 
 What remains is ranked by value per unit of risk, not by size. Anything that widens an agent's
 write access sits below everything that does not, regardless of how useful it looks.
@@ -357,16 +374,27 @@ write access sits below everything that does not, regardless of how useful it lo
 5. **Review self-improvement** (❌) — biggest capability gain, but flips review to
    `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
    confidently-wrong claim is worse than one that can only say it (see #46).
-6. **PRD tier** — no longer one item. It was written off as ❌ ×3 on the grounds that nothing here
-   needed sequencing; #87 was the multi-week feature decomposed into sub-issues that made it need
-   sequencing, so the **execution** half landed as `agent-implement-prd` (#92, §2a). What remains
-   is the *planning* half (`to-issues-prd`, `promote-queued`), still covered locally by `wayfinder`
-   — which now owes the chain the ordering contract in §2a, since `agent-implement-prd` trusts
-   creation order and never reads the blocker edges.
+6. **`agent-promote-queued`** (❌, **deferred** — #91) — all that is left of what this list once
+   carried as "PRD tier, ❌ ×3". Written off originally because nothing here needed sequencing;
+   #87 then needed it, and the answer was `agent-implement-prd` (#92) plus a publish contract
+   (#93), neither of which is this workflow. This one sequences **top-level** issues, and every
+   ordering that has actually come up was *inside* one PRD, where creation order already carries it.
+   Ranked here rather than higher because the numerator is currently zero: what would raise it is a
+   second PRD that cannot start until a first one merges. #91 is open, unscheduled, and was detached
+   from #87 precisely so this chain would not build it. The label is already declared (§8), so the
+   remaining cost is the workflow alone.
+
+   Its former companion, `to-issues-prd`, has **left this list**: superseded rather than deferred
+   (§1). What kept it here as a gap was the ordering obligation it used to discharge by publishing
+   the sub-issues itself; that is now written down and verified by hand (#93), so nothing is
+   outstanding.
 7. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier, and the only
-   *scheduled agent* in either upstream repo. It publishes via `/to-prd-project`, so it depends on
-   the planning half above and on project skills — still more than one piece of work, though #92
-   removed the piece that would have had nothing to run the result.
+   *scheduled agent* in either upstream repo. Upstream publishes via `/to-prd-project`; here the
+   equivalent is filing a PRD and stopping, with a human running `/to-tickets` on it to get the
+   sub-issue shape the chain reads — which §10 requires anyway ("an agent that raises work never
+   files it" applies at the *decomposition* step just as much). So what it now waits on is project
+   skills, not the missing planning workflows: #92 and #93 between them removed the piece that would
+   have had nothing to run the result.
 
 ## 10. Invariants
 
@@ -451,6 +479,33 @@ expensive to rediscover.
   label at stake is `agent:implement` itself, which the PRD chain re-adds to start its next slice.
   So the partition is settled before either preflight says anything at all, ahead of even the
   closed-issue refusal. See §2a; `tests/workflows.test.ts` holds both `defer` bodies to it.
+- **The parent is the control point; a sub-issue is never labelled directly.** A batch carries
+  `ready-for-agent` on every ticket and `agent:*` on none of them; one human adds `agent:implement`
+  to the parent and that starts the whole chain (`docs/agents/ticket-shape.md`, §8). The chain is
+  the only thing that schedules a slice, so hand-labelling one is a second scheduler with no view of
+  the first — it would branch that slice off `main` while the chain accumulates onto
+  `agent/prd-<n>-*`, giving one PRD two PRs. `agent-implement` refuses any issue with a parent
+  (#90), so today that attempt is caught rather than obeyed, but the refusal is a backstop and not
+  the rule: the rule is that nothing labels a sub-issue in the first place.
+- **Creation order is execution order, and the edges are the record rather than the schedule.**
+  `agent-implement-prd` walks sub-issues in API order and never reads `blocked-by`; the topological
+  sort happens once, at publish time (§2a, `docs/agents/ticket-shape.md`). Two consequences that
+  only look like details. **Publish sequentially, blockers first** — a parallel publish has no
+  defined order, which is the same bug arriving by accident. And **a wrong order is repaired by
+  moving the sub-issue**, through the parent's ordering, not by teaching the chain to read edges: an
+  edge-reading chain has to decide what to do with a cycle, a missing edge and an edge pointing out
+  of the PRD, and each of those answers is a scheduler nobody asked for. The hazard the rule buys is
+  worth naming: dragging a sub-issue in the parent's UI silently rewrites the execution order of a
+  chain that has not run yet, with no other visible effect anywhere.
+- **`agent:queued` is written by a human, never by a workflow.** It is the one `agent:*` label no
+  workflow touches at all (§8) — `agent:in-progress` and `agent:blocked` have no consumer either,
+  but a workflow applies and clears them — and until `promote-queued` exists (§1, §9.6) nothing
+  removes it either, so a workflow applying it would be manufacturing a state only a human can
+  clear. It also does not
+  belong *inside* a PRD: every slice after the first is queued by construction, and a label saying
+  so is one more thing that can go stale against an ordering the chain already holds. If
+  `promote-queued` ever ships, this becomes "written by a human or by that workflow, on top-level
+  issues only" — and not before.
 - **Every workflow refuses a terminal target before it does any work.** A closed or merged PR, a
   closed issue: the guard is the first step, it is itself ungated, and it runs before checkout,
   before `npm ci`, and before the label transitions — so a refused run never claims

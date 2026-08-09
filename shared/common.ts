@@ -136,6 +136,26 @@ export const gh = (args: string[]): string =>
   execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
+ * `gh` with argv, returning "" instead of throwing when it exits non-zero —
+ * `safeSh`'s swallowing without `safeSh`'s shell.
+ *
+ * Both halves are load-bearing. The argv half is the same rule as `gh` and
+ * `git`: a variable reaching a subprocess must arrive as one argument, not as
+ * text a shell re-parses. The swallowing half is what `fetchTrustedIssue` and
+ * `fetchTrustedComments` need — for them a missing issue is an ordinary outcome
+ * absorbed by `|| "{}"` / `|| "[]"`, so `gh()`'s throw would turn an absence
+ * into an exception mid-run. That mismatch is why this is a wrapper rather than
+ * a call-site swap (issue #2).
+ */
+export const safeGh = (args: readonly string[]): string => {
+  try {
+    return gh([...args]);
+  } catch {
+    return "";
+  }
+};
+
+/**
  * Run `git` with argv (no shell) — the same decision as `gh`, for the same
  * reason. Use this whenever a **variable** reaches git: `execFileSync` passes
  * each element as one argument and never spawns `/bin/sh`, so a value cannot be
@@ -145,15 +165,6 @@ export const gh = (args: string[]): string =>
  *
  * Literal `sh("git ...")` calls elsewhere are fine and deliberately left alone:
  * the rule is *variables go through argv*, not *never use `sh`* (issue #75).
- *
- * Known gap, recorded rather than implied-clean: `fetchTrustedIssue` and
- * `fetchTrustedComments` below still interpolate variables into
- * ``safeSh(`gh api ...`)``. They are safe today only because of what those
- * variables happen to be — `GH_REPO` is `github.repository`, and the issue
- * number is a `\d+` capture in review-context.ts — not because of an argv
- * boundary. Closing that needs a `safeGh(args)` wrapper, not a call-site swap:
- * `safeSh` swallows non-zero exits and `gh()` throws, and both callers rely on
- * the swallowing via `|| "{}"` / `|| "[]"`. Tracked as issue #80.
  */
 export const git = (args: readonly string[]): string =>
   execFileSync("git", [...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -226,7 +237,7 @@ export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
     user?: { login?: string };
   } = {};
   try {
-    parsed = JSON.parse(safeSh(`gh api repos/${ghRepo}/issues/${issueNumber}`) || "{}");
+    parsed = JSON.parse(safeGh(["api", `repos/${ghRepo}/issues/${issueNumber}`]) || "{}");
   } catch {
     parsed = {};
   }
@@ -252,7 +263,7 @@ export const fetchTrustedComments = (number: string): string => {
   const ghRepo = process.env["GH_REPO"] ?? "";
   let comments: { body?: string; author_association?: string; user?: { login?: string } }[] = [];
   try {
-    comments = JSON.parse(safeSh(`gh api repos/${ghRepo}/issues/${number}/comments`) || "[]");
+    comments = JSON.parse(safeGh(["api", `repos/${ghRepo}/issues/${number}/comments`]) || "[]");
   } catch {
     comments = [];
   }

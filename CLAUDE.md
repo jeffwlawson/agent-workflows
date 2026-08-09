@@ -17,27 +17,37 @@ that `verify` cannot cover — see *Releasing*.
 See [CONTEXT.md](./CONTEXT.md). Read it before changing a workflow — especially the *three layers*
 section, which decides where a change belongs.
 
-## This repo runs its own loop
+## This repo does not yet run its own loop
 
-It is an adopter of itself. The five callers in `.github/workflows/` are the same shape any other
-repo installs, so a change to the loop is exercised here first, on the next labelled issue.
+**No callers are installed here.** All five loop workflows in `.github/workflows/` declare
+`on: workflow_call` and nothing else, so no label in this repository triggers anything. The loop
+runs in consuming repos — `jeffwlawson/winget-manifest-lint` is the first — and changes here are
+exercised there, after a release.
 
-Two consequences worth holding on to:
+Wiring it up means adding caller stubs, and there is a decision to make first, because the callers
+cannot simply be copied from `examples/callers/`: those are named `review.yml`, `fix.yml` and so on,
+which **collide with the reusable workflows of the same name**. They would need a prefix, and then:
 
-- **A change to a reusable workflow affects the run that is applying it.** The YAML comes from the
-  base branch and the runner from the published package, so an in-flight PR is running the *old*
-  loop against your *new* code. That asymmetry is the split-brain problem in CONTEXT.md; the pin is
-  what contains it.
-- **Do not break the gate.** If `npm run verify` stops working, every agent run in every consuming
-  repo loses the instruction the prompts depend on.
+- **`uses: ./.github/workflows/<name>.yml`** exercises the working tree, so a change is dogfooded
+  the moment it lands. It also removes the pin, and the pin is what stops a change to the loop from
+  breaking the run that is applying it — the split-brain problem in CONTEXT.md, self-inflicted.
+- **`uses: jeffwlawson/agent-workflows/...@<tag>`** keeps the pin and matches exactly what an
+  adopter runs, at the cost of only ever dogfooding the *last released* loop.
+
+Not decided. Until it is, this file and CONTEXT.md exist so the prompts have something to read when
+the loop *is* pointed here.
+
+**Do not break the gate** either way. If `npm run verify` stops working, every agent run in every
+consuming repo loses the instruction the prompts depend on.
 
 ## Changing a workflow
 
 1. Decide the layer first (CONTEXT.md). A guard belongs in the **reusable** half — an adopter
    references that and gets fixes for free; anything in the caller has to be copied by hand.
 2. Edit `.github/workflows/<name>.yml`. Never add a step to a caller.
-3. If a caller must change too, update **both** the file in `examples/callers/` and the matching one
-   in `.github/workflows/` — this repo's own callers are separate copies.
+3. If a caller must change too, update `examples/callers/` — that is the reference set adopters
+   copy, and it is what `tests/workflows.test.ts` reads. There are no callers in
+   `.github/workflows/` to keep in step (see above).
 4. `tests/workflows.test.ts` asserts over both halves. Add the assertion in the same change; a
    workflow defect has no unit test to catch it and usually no error message either.
 

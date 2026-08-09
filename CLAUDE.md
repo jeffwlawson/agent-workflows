@@ -17,37 +17,43 @@ that `verify` cannot cover — see *Releasing*.
 See [CONTEXT.md](./CONTEXT.md). Read it before changing a workflow — especially the *three layers*
 section, which decides where a change belongs.
 
-## This repo does not yet run its own loop
+## This repo runs its own loop, on the last release
 
-**No callers are installed here.** All five loop workflows in `.github/workflows/` declare
-`on: workflow_call` and nothing else, so no label in this repository triggers anything. The loop
-runs in consuming repos — `jeffwlawson/winget-manifest-lint` is the first — and changes here are
-exercised there, after a release.
+Five callers are installed in `.github/workflows/`, prefixed `agent-` so they do not collide by
+filename with the reusable workflows they call. Job ids stay unprefixed — `self-check` is built from
+job ids, not filenames, so `agent-review.yml` keeps `review / review`.
 
-Wiring it up means adding caller stubs, and there is a decision to make first, because the callers
-cannot simply be copied from `examples/callers/`: those are named `review.yml`, `fix.yml` and so on,
-which **collide with the reusable workflows of the same name**. They would need a prefix, and then:
+They use a **pinned remote** reference, `jeffwlawson/agent-workflows/...@v0.1.1`, rather than a
+local `./` path. That is a deliberate choice with one decisive reason and one supporting one.
 
-- **`uses: ./.github/workflows/<name>.yml`** exercises the working tree, so a change is dogfooded
-  the moment it lands. It also removes the pin, and the pin is what stops a change to the loop from
-  breaking the run that is applying it — the split-brain problem in CONTEXT.md, self-inflicted.
-- **`uses: jeffwlawson/agent-workflows/...@<tag>`** keeps the pin and matches exactly what an
-  adopter runs, at the cost of only ever dogfooding the *last released* loop.
+**The runner version is baked into the reusable workflow** (`npx …@<version>`, held equal to
+`package.json` by a test), so the `uses:` ref selects the runner too. A pinned remote therefore
+takes YAML and runner from the *same release*, always. A local `./` path takes YAML from the **base
+branch** instead — and the moment `npm version` lands on `main`, that YAML names a version the
+registry does not have yet. Every agent run in this repo would die at `npx` until the tag is pushed
+and the publish finishes. A window that opens on every release.
 
-Not decided. Until it is, this file and CONTEXT.md exist so the prompts have something to read when
-the loop *is* pointed here.
+**And a bad merge would break the loop you would use to fix it.** With a local path the base branch
+supplies the workflow, so merging a broken reusable leaves no good version running. Pinned, a bad
+merge is inert until you tag; the loop keeps working on the last good release while you repair
+`main`.
 
-**Do not break the gate** either way. If `npm run verify` stops working, every agent run in every
-consuming repo loses the instruction the prompts depend on.
+The cost is real: **a change is not exercised by this repo's own loop until it is released.** That
+is covered elsewhere — `npm run verify` and CI gate the working tree, and consuming repos exercise
+the released loop. Dogfooding here answers "does the loop function end to end", not "does my
+unreleased change work".
+
+**Do not break the gate.** If `npm run verify` stops working, every agent run in every consuming
+repo loses the instruction the prompts depend on.
 
 ## Changing a workflow
 
 1. Decide the layer first (CONTEXT.md). A guard belongs in the **reusable** half — an adopter
    references that and gets fixes for free; anything in the caller has to be copied by hand.
 2. Edit `.github/workflows/<name>.yml`. Never add a step to a caller.
-3. If a caller must change too, update `examples/callers/` — that is the reference set adopters
-   copy, and it is what `tests/workflows.test.ts` reads. There are no callers in
-   `.github/workflows/` to keep in step (see above).
+3. If a caller must change too, update **both** sets: `examples/callers/` is what adopters copy,
+   and `.github/workflows/agent-*.yml` is what this repo runs. `tests/workflows.test.ts` reads both
+   — deliberately, so a change to one cannot silently leave the other behind.
 4. `tests/workflows.test.ts` asserts over both halves. Add the assertion in the same change; a
    workflow defect has no unit test to catch it and usually no error message either.
 
@@ -71,9 +77,14 @@ git push && git push --tags
 `v*` on a commit reachable from `main` triggers `publish.yml`. It refuses a tag on an unmerged
 commit, and no-ops if the version is already on the registry.
 
-Then **bump the pin in `examples/callers/`** — `PIN` in `tests/workflows.test.ts` is read from
-`package.json`, so a release that leaves the reference callers stale fails the build. That is
-deliberate: a stale example is an adopter running last release's runners.
+Then **bump the pin in both caller sets** — `examples/callers/*.yml` and
+`.github/workflows/agent-*.yml`. `PIN` in `tests/workflows.test.ts` is derived from `package.json`
+and checked against both, so a release that leaves either behind fails the build by name. A stale
+example is an adopter running last release's runners; a stale local caller is *this* repo running
+them.
+
+Bump the `npx …@<version>` line in the five reusable workflows too — a test holds it equal to
+`package.json`, so the build tells you.
 
 > **`bin` must never start with `./`.** `npm publish` silently drops such an entry and exits 0,
 > producing a package whose commands cannot be run. `ci.yml` runs `npm publish --dry-run` and fails

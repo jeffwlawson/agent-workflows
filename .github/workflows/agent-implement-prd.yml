@@ -1,0 +1,39 @@
+name: Agent Implement PRD
+
+# The trigger, the token grant and the secrets. Everything else — the label
+# guard, the partition, the chain and every step — is in
+# agent-implement-prd-reusable.yml, which an adopting repo references instead of
+# copying (#98), and which is also where the design notes for this path live.
+#
+# This workflow and `agent-implement.yml` share the `agent:implement` label:
+# both jobs start on every label event and partition the work by issue shape.
+# Take both or neither.
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  implement-prd:
+    uses: jeffwlawson/agent-workflows/.github/workflows/implement-prd.yml@v0.1.1
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs:
+    # `contents: write` to push, `issues: write` to transition the parent's
+    # labels and close each finished sub-issue, `pull-requests: write` to open
+    # and label the one accumulating PR, and the `packages: read` explained
+    # below.
+    permissions:
+      contents: write
+      issues: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and the run dies at `npx`
+      # with a 401 that reads like a bad token rather than a missing grant.
+      packages: read
+      pull-requests: write
+    # No `with:`. The three inputs (`default-branch`, `node-version-file`,
+    # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}

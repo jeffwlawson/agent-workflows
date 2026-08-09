@@ -214,10 +214,27 @@ const RUNNER_COMMANDS = ["fix", "implement", "implement-prd", "review", "update-
 /** Both halves of the loop: what a caller grants and what the called job bounds. */
 const agentWorkflows = (): readonly string[] => [...callerWorkflows, ...runnerWorkflows];
 const runnerWorkflows = RUNNER_COMMANDS.map((c) => path.join(WORKFLOW_DIR, `${c}.yml`));
-const callerWorkflows = fs
-  .readdirSync(CALLER_DIR)
-  .filter((f) => f.endsWith(".yml"))
-  .map((f) => path.join(CALLER_DIR, f));
+
+/**
+ * Every caller under test, from **both** places they live.
+ *
+ * `examples/callers/` is the reference set an adopter copies. This repository
+ * also installs its own, prefixed `agent-` so they do not collide by filename
+ * with the reusable workflows they call — the job ids stay unprefixed, since
+ * `self-check` is built from job ids and not from filenames.
+ *
+ * Both sets are read here rather than just the examples, because otherwise a
+ * release could bump `package.json` and `examples/callers/`, pass, and leave
+ * this repo's own callers on the previous tag. Silently — which is the exact
+ * failure the version-derived `PIN` exists to prevent, reintroduced one
+ * directory over.
+ */
+const callersIn = (dir: string, prefix = ""): readonly string[] =>
+  fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(".yml") && f.startsWith(prefix))
+    .map((f) => path.join(dir, f));
+const callerWorkflows = [...callersIn(CALLER_DIR), ...callersIn(WORKFLOW_DIR, "agent-")];
 
 /** The runner half a caller hands over to. */
 const targetOf = (file: string): string =>
@@ -554,9 +571,18 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // on — which `^(review|fix|update-branch|implement)$` did while matching
     // none of the names below, so it stayed green over a review that would
     // queue behind a labelled `fix` and burn its whole 900 s on it.
-    const checkRuns = callerWorkflows.map(
-      (file) => `${Object.keys(workflowOf(file).jobs)[0]} / ${Object.keys(workflowOf(targetOf(file)).jobs)[0]}`,
-    );
+    //
+    // Deduplicated because there are two caller sets — the reference copies and
+    // this repo's own — and they deliberately share job ids, so both produce
+    // the same five names. The property is about the names the loop emits, not
+    // how many files happen to emit them.
+    const checkRuns = [
+      ...new Set(
+        callerWorkflows.map(
+          (file) => `${Object.keys(workflowOf(file).jobs)[0]} / ${Object.keys(workflowOf(targetOf(file)).jobs)[0]}`,
+        ),
+      ),
+    ];
 
     expect(checkRuns).toHaveLength(5);
     for (const name of checkRuns) expect(name).toMatch(excluded);
@@ -718,13 +744,21 @@ describe("every workflow in the loop is called rather than copied", () => {
    */
   it("splits every agent workflow into a caller and a runner", () => {
     expect(callerWorkflows.map((f) => path.basename(f)).sort()).toEqual([
+      "agent-fix.yml",
+      "agent-implement-prd.yml",
+      "agent-implement.yml",
+      "agent-review.yml",
+      "agent-update-branch.yml",
       "fix.yml",
       "implement-prd.yml",
       "implement.yml",
       "review.yml",
       "update-branch.yml",
     ]);
-    expect(callerWorkflows.map(targetOf).sort()).toEqual(runnerWorkflows.slice().sort());
+    // Both caller sets point at the same five reusables, so dedupe before
+    // comparing: what matters is that every runner has a caller and every
+    // caller reaches a runner, not the multiplicity.
+    expect([...new Set(callerWorkflows.map(targetOf))].sort()).toEqual(runnerWorkflows.slice().sort());
   });
 
   /**

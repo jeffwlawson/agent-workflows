@@ -1621,6 +1621,102 @@ emptiness. One `gh run list`, one `git fetch --prune`.
 
 ---
 
+## 2026-08-09 (self-hosting) — Twenty minutes to find what the testbed could not
+
+The loop was wired to run in its own repository — five callers pinned to the last release — and
+inside twenty minutes it hit a bug that `winget-manifest-lint` is structurally incapable of
+producing. That is the whole argument for the migration, and it is now evidence rather than
+reasoning.
+
+`npx --yes @jeffwlawson/agent-workflows@0.1.1 implement` → `sh: 1: agent-workflows: not found`,
+exit 127, before any runner code ran. The published package was fine; the same command works in
+winget. **Here the checkout *is* the package.** `cwd` held a `package.json` with that name at that
+version, which satisfies the spec, so npx used what was already present — and that copy has no
+`dist/`, because CI installs without building. A name collision between a repository and its own
+artifact.
+
+The lesson is not the flag that fixed it. It is that **a testbed in another repository cannot
+exercise the one configuration where the tool and its subject are the same thing**, and that is
+precisely the configuration this project now ships to itself.
+
+### Diagnosis worked because the reproduction was cheap
+
+The candidates could not be tested against the real package without GitHub Packages auth. Making a
+throwaway directory whose `package.json` claimed the name and version of a *public* package
+reproduced the failure exactly, in seconds, and made the matrix runnable:
+
+| | npm 10.9.7 | npm 11.16.0 |
+|---|---|---|
+| `npx --yes --ignore-existing pkg@ver` | reuses local | reuses local |
+| `npx --yes --package=pkg@ver -- cmd` | reuses local | — |
+| `npm exec --prefix "$RUNNER_TEMP" …` | **fetches** | **fetches** |
+
+`--ignore-existing` is the answer the documentation suggests and it is a no-op on both. Two further
+properties were checked rather than argued, because both would have failed silently: `--prefix`
+moves the *install* and not the process `cwd`, so the runner still does its git work in the
+checkout; and where no colliding package exists — every consuming repo — the new form behaves
+identically to the old. That second check mattered more than it looked: the invocation lives in the
+**reusable** workflow, so it could not be scoped to this repository even in principle. Fixing one
+repo's problem shipped a change to every consumer.
+
+## The failures here are packaging, never logic
+
+Two versions were burned in one day and neither was a code defect.
+
+- **0.1.0** published with its `bin` entry silently stripped, because the path began with `./`.
+  `npm publish` drops it, reports it among four other warnings, and exits 0.
+- **0.1.2** published the entire test suite — 32 files and 68.8 kB against 24 and 31.0 kB, including
+  an 89 kB workflow test — because the tests moved into the repository while `tsconfig.json` still
+  said `include: ["**/*.ts"]`.
+
+Three times now the build has swallowed a sibling directory that did not exist when it was written:
+`.sandcastle/` when the package moved to a repo root, `docs/` when `copy-assets` began walking from
+that root, and `tests/` when they arrived. **Every one is the same mistake — defining the output as
+"everything except", then adding an exception each time something new appears.**
+
+The runner code has not been the weak part once. That should decide where the next guard goes: the
+suite is 432 tests over behaviour and had, until today, nothing that looked at what actually ships.
+
+## A guard nobody has watched fail is not a guard
+
+The tarball check written for the second of those defects reported **"clean" on the broken build**.
+A shell-escaping slip in the harness produced an invalid regex, node exited non-zero, the captured
+output was empty — and empty is exactly what "nothing leaked" looks like.
+
+It would have been committed as verified. What caught it was extracting the step from the YAML and
+running it against a deliberately broken build, where it must exit 1 and name the files. The real
+regex had been correct all along; the *harness* was lying, which is worse, because the harness is
+what produces the confidence.
+
+This is the third form of the pattern in one day, after a label read as absent when the workflow had
+consumed it and a rejected `--force-with-lease` read as a concurrent push when the branch had been
+deleted. The earlier entry framed it as *never done versus already done*. Add a third: **or never
+actually ran.** When a check comes back empty, the question is not only what the emptiness means —
+it is whether the check executed at all.
+
+## Two smaller things
+
+**The loop was wired and completely inert**, because none of the `agent:*` labels existed in the new
+repository. Everything else was in place: callers, secrets, pinned refs. A label must exist before it
+can be applied — `ADOPTING.md` §1's own trap, sprung on the person who wrote it. The strongest
+argument yet for `doctor` (#6), which would have said so in one command.
+
+**The six moved issues were recreated, not transferred.** GitHub's transfer copies a body verbatim,
+and every one needed rewording: stale line numbers (`common.ts:206` had become `:229`), blockers
+that had since closed, and in two cases work the migration had already done. Transfer preserves
+history at the cost of accuracy; for issues nobody had commented on, accuracy won.
+
+## Recorded elsewhere, deliberately not repeated here
+
+- Why the callers pin a remote tag rather than a local path, and what that costs — `CLAUDE.md`.
+- The three layers, the trust boundary, and the invariants with no runtime symptom — `CONTEXT.md`.
+- The `npx` collision and its fix — the comment above the invocation in each reusable workflow, and
+  issue #8.
+- What the tarball may contain, and why the `bin` check could not catch it — `ci.yml`.
+- The release order, and which pins move together — `CLAUDE.md` §Releasing.
+
+---
+
 ## Pending — not yet exercised
 
 The full cycle is proven, including replies, resolution, and conflict resolution. Still

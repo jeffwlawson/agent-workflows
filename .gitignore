@@ -1,11 +1,7 @@
 node_modules/
 dist/
-coverage/
 *.tsbuildinfo
 
 # Local agent scratch — noSandbox() runs write to the working tree.
-.sandcastle/**/output/
+**/output/
 failure_reason.txt
-
-# `/to-tickets` writes drafts here in local-file mode.
-.scratch/

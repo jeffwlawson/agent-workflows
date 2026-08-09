@@ -69,8 +69,10 @@ jobs:
           fi
 
           # GitHub returns this header for any PAT that carries an expiry date.
-          # Fine-grained tokens always do; a classic token set to "no expiration"
-          # omits it.
+          # Absent means the token was deliberately created without one — which
+          # fine-grained tokens now permit, contrary to what this comment used to
+          # claim. So `no-expiry` is a *choice*, not a token class, and it exits
+          # green because there is genuinely nothing to count down.
           expiry=$(tr -d '\r' < "$headers_file" \
             | awk -F': ' 'tolower($1)=="github-authentication-token-expiration"{print $2}')
 

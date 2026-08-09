@@ -17,8 +17,18 @@ import { fileURLToPath } from "node:url";
  * file nobody would remember to add to a list.
  */
 
-/** Build output and scratch: never inputs, and `output/` is gitignored. */
-const SKIPPED_DIRS = new Set(["dist", "node_modules", "output"]);
+/**
+ * Build output and scratch: never inputs, and `output/` is gitignored.
+ *
+ * `docs` is here because the package moved to its own repository root. While it
+ * lived at `.sandcastle/agent-workflows/`, the repo's `docs/` was outside the
+ * package and could not be reached by this walk; now it is a sibling of the
+ * runner directories and looks exactly like one. Without this the tarball ships
+ * `friction.md`, `ADOPTING.md` and `parity.md` to every consumer — 30 kB to
+ * 102 kB — and the walk that exists so a new prompt is never forgotten quietly
+ * becomes a walk that publishes the internal log.
+ */
+const SKIPPED_DIRS = new Set(["dist", "node_modules", "output", "docs"]);
 
 /**
  * Relative paths of every asset under `packageDir` that a runner may resolve.

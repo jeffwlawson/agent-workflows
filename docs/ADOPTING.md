@@ -95,14 +95,24 @@ consuming repo owes is a **permission**, `packages: read` in each caller (§4), 
 to mint and rotate. Miss it and the run dies at `npx` with a 401; see §4 for why that reads like
 the wrong thing.
 
-`AGENT_PAT` is a **fine-grained** personal access token scoped to the repo. Permissions:
+`AGENT_PAT` is a **fine-grained** personal access token. Use **one token with every repo running
+the loop in its access list**, not one token per repo: rotation is manual and a lapse is silent, so
+N tokens means N chances to forget. Permissions:
 
 | Permission | Why |
 |---|---|
 | Contents: **write** | push the agent's branch |
 | Pull requests: **write** | open the PR, add labels to it |
 | Issues: **write** | label transitions on issues |
-| Workflows: **write** | only if agents may modify `.github/workflows/**` — a push touching those paths is rejected without it, *after* the agent has done all its work |
+| Workflows: **write** | required wherever agents may touch `.github/workflows/**`, which in *this* repo is unconditional — the workflows are the product. A push touching those paths is rejected without it, *after* the agent has done all its work |
+
+> **On expiry.** A fine-grained token can be set to *No expiration*, and this one should not be.
+> `Contents: write` together with `Workflows: write` is the pair that lets a holder push a workflow
+> into a repo whose runs carry secrets — which means printing every other secret, including
+> `CLAUDE_CODE_OAUTH_TOKEN`, from your own CI. Expiry is the only control that bounds that window
+> without depending on you noticing the leak. Take the longest custom date offered — roughly a year —
+> and let `token-expiry.yml` give you three weeks of warning. That monitor is what makes a long
+> expiry safe rather than reckless.
 
 The workflows fall back to `GITHUB_TOKEN` when `AGENT_PAT` is absent, so they still run — they just
 hit §1. That fallback is deliberate: the shape stays identical, and the failure is loud rather than
@@ -368,17 +378,19 @@ Read the hierarchy back through the API before labelling anything.
 snapshot. The *pattern* is worth stealing and is discussed in §7.
 
 The runners bring their own dependencies, so an adopting repo needs none of them. The list below is
-what **this** repo needs to develop the package, since its sources live here in
-`.sandcastle/agent-workflows/`:
+what **this** repo needs to develop the package, whose sources are this repository:
 
 ```
 @ai-hero/sandcastle  @standard-schema/spec  tsx  typescript
 ```
 
-Its `tsconfig.json` includes `.sandcastle/**/*.ts` so `npm run typecheck` covers the runner code.
-Keep `rootDir` out of the base config — put it in a separate build config — or `tsc` fails with
-TS6059 the moment a file lives outside it. The package has its own build config doing exactly that
-(`npm run build:agent-workflows`), and `prepack` runs it so a publish cannot ship a stale `dist/`.
+`prepack` runs the build, so a publish cannot ship a stale `dist/`.
+
+> **A note for anyone reading the history.** Until the package moved to its own repository it lived
+> at `.sandcastle/agent-workflows/` inside the linter, was **not** an npm workspace, and declared
+> `typescript` without ever installing it — the build resolved `tsc` by walking up into the parent's
+> `node_modules`, and was green only because the two pins matched. Commits before the move describe
+> that layout and are accurate about it.
 
 Publishing is `publish-agent-workflows.yml`, triggered by pushing an `agent-workflows-v<version>`
 tag. The trigger is a tag push rather than a `workflow_dispatch` on purpose: dispatch only registers
@@ -407,7 +419,7 @@ next person does not go looking for it.
 | `npm ci` and `.nvmrc` | `setup` and `node-version-file`, on all five | the whole toolchain assumption, and both are skippable: pass `''` and a repo whose toolchain is not Node still gets the loop, running on the image's own Node. Only `npm install -g @anthropic-ai/claude-code` is unconditional, and that is the agent's own runtime rather than yours |
 | The gate command (`npm run verify` here) | not an input, and not a coupling | each prompt says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of it. It cannot become an input: `runWithExtraction` drops prompt arguments before the extraction pass, so a placeholder would reach one prompt literal |
 | `CONTEXT.md` and `CLAUDE.md` exist | still yours to write | see §6. This is the coupling the others turned into — a de-domained prompt makes it total rather than partial |
-| Project domain | **not a coupling** (#95) | the prompts name no domain of their own. A test walks every file under `.sandcastle/` and fails on this repo's vocabulary, so it stays that way |
+| Project domain | **not a coupling** (#95) | the prompts name no domain of their own. A test walks every prompt and runner file and fails on any adopting repo's vocabulary, so it stays that way |
 | Sub-issues are created blockers-first | **not an input, by design** | `agent-implement-prd` walks sub-issues in **API order** and never reads `blocker` edges, so whatever publishes them owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a). The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |
 
 Your own CI is the one place a branch name is still yours to write, and it always was: `ci.yml`

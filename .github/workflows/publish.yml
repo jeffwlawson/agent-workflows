@@ -1,34 +1,35 @@
-name: Publish agent-workflows
+name: Publish
 
-# Publishes `.sandcastle/agent-workflows` to **GitHub Packages** as
-# `@jeffwlawson/agent-workflows`, the package every workflow in the loop pins a
-# version of and resolves with `npx`.
+# Publishes this package to **GitHub Packages** as `@jeffwlawson/agent-workflows`,
+# the version every workflow in the loop pins and resolves with `npx`.
 #
-# ## Why a tag push, and not `workflow_dispatch`
+# ## Why a tag push
 #
-# This is load-bearing rather than taste. `workflow_dispatch` only registers for
-# workflows present on the **default branch**, so a dispatch-triggered publish
-# added by a pull request cannot be run until that pull request merges — and the
-# pull request that first pins a version cannot merge until that version
-# resolves, because merging it would take every agent run down at `npx`. A tag
-# push runs the workflow **from the tagged commit**, so tagging a branch head
-# publishes from it and breaks the deadlock without a hand-run `npm publish` or a
-# separate PR to the default branch.
+# Simplicity, and nothing more load-bearing than that — which is worth stating
+# because the previous version of this file argued a `workflow_dispatch`
+# deadlock and a "the package is a subdirectory" case, and **both died with the
+# migration**. Dispatch could not bootstrap a publish from a pull request while
+# this lived in the linter repo; here the workflow is on the default branch from
+# the first commit, so that constraint is gone. The package is now the whole
+# repository, so there is no second version line to keep tags away from either.
 #
-# ## Why not `on: release`
+# `on: release` is the reasonable alternative and was considered: it buys release
+# notes and a visible artifact list, at the cost of a second manual step. One
+# maintainer, one package — the tag is enough. Revisit if this ever grows an
+# audience that reads changelogs.
 #
-# The package is a subdirectory of a repo whose headline artifact is the linter.
-# Repo-global GitHub Releases would conflate two version lines that move
-# independently; the `agent-workflows-v*` tag prefix keeps them separate.
+# The tag is a bare `v*` rather than the old `agent-workflows-v*`: the prefix
+# existed to separate this package's versions from the linter's, and there is
+# nothing left to separate it from.
 on:
   push:
     tags:
-      - "agent-workflows-v*"
+      - "v*"
 
 # Two tags pushed close together must not race the registry. `cancel-in-progress:
 # false` on purpose — a half-cancelled publish is worse than a queued one.
 concurrency:
-  group: publish-agent-workflows
+  group: publish
   cancel-in-progress: false
 
 jobs:
@@ -43,21 +44,33 @@ jobs:
       packages: write
 
     steps:
+      # `fetch-depth: 0` for the ancestor check below: the default shallow clone
+      # has no merge-base to compute against, and `--is-ancestor` on a truncated
+      # history answers confidently and wrongly.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # TODO: require the tagged commit to be reachable from the default branch —
-      #   git fetch origin "$DEFAULT_BRANCH"
-      #   git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
-      # That is the guard that makes tag-triggered publishing safe long-term: it
-      # is what stops a publish from a commit nobody reviewed, which the trigger
-      # above otherwise permits by construction.
+      # The guard that makes tag-triggered publishing safe: a tag can be pushed
+      # from any commit on any branch, so without this, publishing from code
+      # nobody reviewed is one `git tag` away and leaves no trace afterwards.
       #
-      # Deliberately absent *here*: it is exactly the guard that would block the
-      # `agent-workflows-v0.1.0` bootstrap tag, which has to be pushed on the head
-      # of the pull request introducing this file — the whole reason the trigger
-      # is a tag push rather than a dispatch. Add it once that first publish has
-      # happened. docs/ADOPTING.md §4 records the same debt, because a deferred
-      # guard remembered in only one place is a guard that never lands.
+      # It was deliberately absent while this file lived in the linter repo,
+      # because the bootstrap tag had to be pushed on a pull request head — the
+      # one commit it would have rejected. That constraint left with the
+      # migration, so it lands here at the first opportunity rather than staying
+      # a TODO with nothing to force it.
+      - name: Require the tagged commit to be on the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/${DEFAULT_BRANCH}"; then
+            echo "::error::${GITHUB_SHA} is not reachable from origin/${DEFAULT_BRANCH}. Publishing from an unmerged commit would put code on the registry that never landed on the default branch. Merge first, then tag the merge commit."
+            exit 1
+          fi
+          echo "Tagged commit is on ${DEFAULT_BRANCH}."
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -69,26 +82,27 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"
 
-      # The package has no `node_modules` of its own — its build resolves `tsc`
-      # from the hoisted root install, the same way `npm run typecheck` does.
+      # The package now owns its dependencies outright. While it was nested in
+      # the linter repo it declared `typescript` but never installed it, and the
+      # build resolved `tsc` by walking up into the root's `node_modules` — green
+      # only because the two pins happened to match.
       - name: Install dependencies
         run: npm ci
 
       # The first of two guards, and they catch different mistakes. This one
       # catches a tag naming a version the package does not claim: publishing
       # under it would put a version on the registry that no commit here
-      # describes, which is unfindable afterwards. Fail loudly rather than
-      # publish whatever the manifest happened to say.
+      # describes, which is unfindable afterwards.
       - name: Check the tag and the manifest agree
         id: version
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tagged="${TAG#agent-workflows-v}"
-          declared=$(node -p "require('./.sandcastle/agent-workflows/package.json').version")
+          tagged="${TAG#v}"
+          declared=$(node -p "require('./package.json').version")
           if [ "$tagged" != "$declared" ]; then
-            echo "::error::Tag ${TAG} names version ${tagged}, but .sandcastle/agent-workflows/package.json declares ${declared}. Retag, or bump the manifest — a published version that disagrees with its tag cannot be traced back to a commit."
+            echo "::error::Tag ${TAG} names version ${tagged}, but package.json declares ${declared}. Retag, or bump the manifest — a published version that disagrees with its tag cannot be traced back to a commit."
             exit 1
           fi
           echo "version=${declared}" >> "$GITHUB_OUTPUT"
@@ -114,7 +128,6 @@ jobs:
       # `prepack` runs the build, so this cannot ship a stale `dist/`.
       - name: Publish
         if: steps.preflight.outputs.already-published == 'false'
-        working-directory: .sandcastle/agent-workflows
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm publish

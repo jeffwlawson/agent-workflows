@@ -7,9 +7,9 @@ import {
   asString,
   claudeAgent,
   fail,
+  fetchPullRequestHeading,
   outputDir,
   required,
-  safeSh,
   scrubGitHubTokens,
   sh,
   standardSchema,
@@ -50,9 +50,7 @@ try {
   }
 
   // Read the PR before the token goes away; the agent has no `gh` afterwards.
-  const prContext =
-    safeSh(`gh pr view ${PR_NUMBER} --json title,body --jq '"# " + .title + "\n\n" + (.body // "")'`) ||
-    `PR #${PR_NUMBER}`;
+  const prContext = fetchPullRequestHeading(PR_NUMBER);
 
   scrubGitHubTokens();
 

@@ -1964,6 +1964,47 @@ describe("the runner package is published from a tag push", () => {
 });
 
 /**
+ * Every `gh` in the shipped surface arrives as argv, never as text a shell
+ * re-parses. Same rule as `git` (issue #75), and the same reason: a value that
+ * reaches a subprocess as syntax is a value someone else can write.
+ *
+ * This test is the record, and the record is the point. Three sites once
+ * interpolated into a shell string; #9 fixed two and deleted the comment in
+ * `shared/common.ts` that had described the whole class — correctly, since the
+ * sites it named were gone, except that the third one (`update-branch.ts`'s
+ * `gh pr view`) went from documented to invisible in the same change (#10). A
+ * prose note only covers the sites its author knew about on the day. A grep
+ * covers the fourth.
+ *
+ * Comment lines are excluded on purpose, so that this class can go on being
+ * described in prose — including in the doc comment on `safeSh`, which is where
+ * a reader reaching for a shell actually arrives.
+ */
+describe("every gh call reaches argv, never a shell", () => {
+  // `sh(`, `safeSh(` or `execSync(` opening a string that names `gh` before it
+  // closes. Deliberately not anchored to a command name after `gh`: the defect
+  // is the shell, whatever is being run through it.
+  const SHELLED_GH = /\b(?:safeSh|sh|execSync)\(\s*[`'"][^`'"]*\bgh\b/;
+  const sources = sandcastleFiles.filter((file) => file.endsWith(".ts"));
+
+  it("finds sources to check", () => {
+    expect(sources.length).toBeGreaterThan(0);
+  });
+
+  it.each(sources)("%s: reaches gh through argv", (file: string) => {
+    const offenders = fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      .filter(({ line }) => !line.startsWith("*") && !line.startsWith("//"))
+      .filter(({ line }) => SHELLED_GH.test(line))
+      .map(({ line, n }) => `${file}:${n} ${line}`);
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+/**
  * `.sandcastle/` is the agent loop, and the loop is the deliverable (#88) — it
  * ships to other repos rather than living in this one. So nothing in it may name
  * this repo's domain, and nothing in it may name this repo's toolchain.

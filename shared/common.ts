@@ -30,6 +30,18 @@ export const fail = (message: string): never => {
 export const sh = (cmd: string): string =>
   execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
+/**
+ * `sh`, returning "" instead of throwing on a non-zero exit. Left in place for
+ * the shell commands it is for, with **no caller at all today** — every one it
+ * had was a `gh` call, and that is the point of the note below.
+ *
+ * Nothing reaching a **GitHub** surface belongs here: `gh` goes through `gh()`
+ * or `safeGh()`, which pass argv and never spawn a shell. That is not a style
+ * preference — three call sites used to interpolate into a command string, and
+ * the only thing keeping a crafted issue reference out of `/bin/sh` was a regex
+ * three files away (issues #2 and #10). A test walks the whole runner surface
+ * for the shape, so a fourth is caught on arrival rather than by review.
+ */
 export const safeSh = (cmd: string): string => {
   try {
     return sh(cmd);

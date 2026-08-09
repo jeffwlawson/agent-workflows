@@ -1526,6 +1526,42 @@ but the version number that can never be used again.
 
 ---
 
+## 2026-08-09 (later still) — The last unknown, answered in eight seconds
+
+The migration had exactly one open question that no amount of reading could settle: GitHub Packages
+refuses anonymous installs even for public packages, so a token is always required — but does a
+*consuming* repository's own `GITHUB_TOKEN`, holding nothing but `packages: read`, suffice for a
+package owned by a *different* repository? Or does that need a package-level grant, or a PAT?
+
+The answer decides a line in `ADOPTING.md` that every adopter follows, and getting it wrong costs
+them a 401 that reads like a bad credential rather than a missing grant. **It suffices.** A probe
+in `winget-manifest-lint` — one job, `packages: read`, `NODE_AUTH_TOKEN` from `GITHUB_TOKEN`, a
+single `npx --yes @jeffwlawson/agent-workflows@0.1.1 --help` — printed the CLI usage and exited 0.
+Eight seconds of runner time.
+
+### Two things it settled that it was not designed to settle
+
+`--help` was chosen over a real subcommand because it needs no inputs. It also happens to exercise
+**`bin` resolution**, which is exactly what `0.1.0` shipped broken: a package whose `bin` was
+stripped resolves fine and then has no command to run. A clean usage banner is proof of the
+registry read *and* the packaging fix, from one command.
+
+And the probe did not need the scratch repository the plan called for. `winget-manifest-lint` is
+already a different repository, already holds the secrets, and is the actual first adopter — so
+probing there tested the real configuration rather than a proxy for it. The plan's reason for a
+scratch repo was that a failure must not take down the loop, and that reason applies to *rewriting
+the five callers*, not to a read-only workflow on a branch that touches nothing. Reaching for the
+isolated environment out of habit would have tested something less true, more slowly.
+
+### The shape worth keeping
+
+A push-triggered workflow on a branch, run once, then reverted. `workflow_dispatch` could not do it
+— dispatch only registers on the default branch, so answering the question would have meant merging
+the probe first. The whole exchange left no trace beyond this entry and two force-pushes on a branch
+that was already disposable.
+
+---
+
 ## Pending — not yet exercised
 
 The full cycle is proven, including replies, resolution, and conflict resolution. Still

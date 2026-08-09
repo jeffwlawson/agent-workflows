@@ -95,6 +95,13 @@ consuming repo owes is a **permission**, `packages: read` in each caller (§4), 
 to mint and rotate. Miss it and the run dies at `npx` with a 401; see §4 for why that reads like
 the wrong thing.
 
+> **Verified cross-repo, not assumed.** GitHub Packages has no anonymous install even for a public
+> package, so it was an open question whether a *consuming* repository's own `GITHUB_TOKEN` would
+> be accepted for a package owned by a *different* repository, or whether an explicit package grant
+> or a PAT would be needed. A probe run from `jeffwlawson/winget-manifest-lint` — nothing but
+> `packages: read` and `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` — installed and ran
+> `@jeffwlawson/agent-workflows` successfully. The permission is genuinely all an adopter owes.
+
 `AGENT_PAT` is a **fine-grained** personal access token. Use **one token with every repo running
 the loop in its access list**, not one token per repo: rotation is manual and a lapse is silent, so
 N tokens means N chances to forget. Permissions:

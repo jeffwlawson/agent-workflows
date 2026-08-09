@@ -9,7 +9,7 @@ checklist, and it is ordered so the things that fail *silently* come first.
 
 ---
 
-## 1. The four failures that look like something else
+## 1. The five failures that look like something else
 
 Read these before setting anything up. Each cost a run to diagnose, and none of them says what is
 actually wrong.
@@ -54,6 +54,31 @@ this reason.
 issue, so without the PAT the chain stops after one sub-issue with the trigger label sitting on the
 parent, which reads as work in progress forever. It warns too, and names how many sub-issues are
 left so the manual remedy is one remove-and-re-add.
+
+### A label set when the issue is *created* fires no `labeled` event
+
+The one failure here that has nothing to do with `GITHUB_TOKEN`, and the only one a correct PAT does
+not fix.
+
+Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`.
+Labels passed in the **create** call produce only `issues.opened` — they ride along in that
+payload, but no `labeled` event is emitted and `github.event.label` does not exist on `opened`. The
+label is really on the issue, and the workflow correctly never saw an event.
+
+So **label in a separate call from creation**, always. This bites the moment anything publishes
+issues programmatically — a script, a planning skill, an agent seeding its own backlog — and it
+looks exactly like the `GITHUB_TOKEN` no-op above, so it gets misdiagnosed as a missing PAT.
+
+Recovery on an issue that already carries the label is **remove, then re-add**: adding a label that
+is already present is a no-op and fires nothing.
+
+> **A warning about diagnosing all five.** These share a signature with a GitHub Actions platform
+> incident — label present, no run, no error, nothing in any log. During one such incident a label
+> add was misread here as a *sixth*, structural rule (that a GitHub App's label adds are suppressed
+> like `GITHUB_TOKEN`'s), which would have written off the App-identity path in `parity.md` §9.4.
+> Re-running the same label add hours later dispatched normally. The rules above are documented and
+> **retestable**; an outage is neither. Before concluding a trigger is structurally dead, do it
+> twice.
 
 ---
 
@@ -151,6 +176,16 @@ step; `agent:blocked` is applied on failure alongside a comment carrying the rea
 each sub-issue closes, and stops by *not* re-adding it. So on a parent issue the label is a cursor
 rather than a one-shot: seeing it there means the next slice is due, and seeing it there with no run
 happening means the PAT is missing (§1).
+
+**Amend the issue before you label it, never after.** The runner reads the issue body when the run
+starts, so an edit made afterwards describes work the agent was never asked to do — the PR then
+answers a spec that no longer exists, and the mismatch surfaces as a review finding rather than as
+anything obviously a timing problem.
+
+The PRD chain widens this. A parent's body is read fresh **by every slice**, so editing it mid-chain
+changes the brief under the slices that have not run yet, and the same PR ends up built against two
+different specs. If something has to change after labelling, say so on the PR instead: that reaches
+the review and fix agents, which the issue body no longer does.
 
 **Where the labels come from is a separate question.** These six are *workflow state*. If you also
 run a triage step — a human or a planning skill deciding an issue is well enough specified to hand

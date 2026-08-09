@@ -1199,6 +1199,276 @@ table went into the issue. Cost: one command.
 
 ---
 
+## 2026-08-07 — Two PRs improving the same doc, and a tiebreaker that only points one way
+
+#100 and #101 were deliberately paired as the one genuinely parallel-safe batch: disjoint file
+sets, no shared code. They ran concurrently and both produced clean, reviewed PRs. Then both
+review agents independently flagged the *same* stale row in `docs/ADOPTING.md` §5, both fix agents
+acted on it, and the two PRs collided on a file neither issue was about.
+
+### The mechanism, because it will recur
+
+The conflict did not come from either issue's scope. It came from **review judgement calls**. #101
+was told to add a missing site to the coupling table; its review found the added sentence factually
+wrong and the fix corrected it. #104's review noticed the whole row had gone stale after #71, as a
+side observation, and its fix re-derived the entire inventory. Two agents, two different tickets,
+one table cell.
+
+So the parallel-safety check that mattered was not "do these issues touch the same files" — that
+was true and still insufficient. It was "**can the review agents reach the same file**", and every
+review can reach every doc. Disjoint scopes do not imply disjoint diffs once reviews are in the
+loop. On a repo where `parity.md` and `ADOPTING.md` are consulted by every ticket, they are the
+registry, and they behave exactly like `src/rules/index.ts`.
+
+### Which is why the update-branch tiebreaker matters here
+
+`update-branch/prompt.md` resolves incompatible sides by favouring **the one matching this PR's
+stated goal**. That is a *directional* rule, not a quality one, and the asymmetry is real:
+
+- Refreshing #103 against a merged #104: #103's goal *is* improving that row, so goal-alignment and
+  quality point the same way.
+- Refreshing #104 against a merged #103: #104's goal is the base-ref fix. Its better, re-derived row
+  arrived from a review side-note, so under the stated rule the stronger text has the *weaker*
+  claim.
+
+Two things make this worse than an ordinary conflict. `npm run verify` is **blind** to it — it
+typechecks and runs tests, and cannot evaluate a Markdown table, so the gate that catches a bad
+`src/rules/index.ts` merge gives zero signal here. And "preserve both wherever possible" is
+actively wrong for a prose inventory: two merged site-lists produce a row that reads fine and
+double-counts. The prompt warns about textually-trivial-but-semantically-real conflicts using the
+*code* example; the prose case is the same failure with no test behind it.
+
+**Recorded, not fixed.** This is one predicted collision, not an observed bad resolution — building
+a new tiebreaker now would be designing against a hypothesis, the same reasoning that left stale-script
+detection unbuilt. The levers if it does resolve badly, in order: merge the fuller PR first;
+raise `AGENT_MODEL_UPDATE_BRANCH` (`common.ts:56-62` already nominates this row as the first thing
+to suspect); resolve one table cell by hand. Only after a real failure is there a ticket worth
+writing.
+
+**Outcome, same day:** #104 merged first and #103 was refreshed with `agent:update-branch`. Sonnet
+resolved it correctly — kept `main`'s re-derived row wholesale and folded this branch's
+hard-error correction into the same parenthetical. The part worth recording is what it noticed
+unprompted: line 175's "with the one exception called out above" was **not** in the conflict, but
+depends on the conflicted row to supply that exception. Taking the incoming row wholesale — the
+obvious move — would have left that sentence pointing at nothing, and neither `verify` nor a human
+skim would have caught it. It reasoned about a non-conflicted line's dependency on a conflicted
+one, which is more than the prompt asks for. Note this does **not** exercise the asymmetry above:
+the two sides were compatible corrections to one sentence, so "preserve both wherever possible"
+applied and the goal-alignment tiebreaker was never reached. The gap is still open; it just needs
+genuinely incompatible sides to appear.
+
+**And the tiebreaker is inherited, not local.** Checked on 2026-08-07 against Matt Pocock's
+`resolving-merge-conflicts` skill, added upstream since this loop was written: its policy is ours
+point for point — preserve both intents where possible, fall back to the side matching the merge's
+stated goal, record what was traded, never invent behaviour, always resolve rather than `--abort`,
+read commit messages and linked issues for intent, then verify. So `update-branch/prompt.md` needs
+no revision, and the asymmetry above is a property of the upstream policy rather than a defect
+here. If it ever costs something real, the finding belongs upstream. Ours remains a superset: it
+adds the semantic-versus-textual warning naming `src/rules/index.ts`, the "commit anyway and make
+the failure the first line" rule, and the no-push/no-label/no-comment boundary.
+
+### The fix agents were the best output of the round
+
+Six threads across the two PRs, all addressed, all resolved, no declines — and none of the six was
+a compliant application of the suggestion.
+
+- #103 took the blocking suggestion but *narrowed* it, writing "the only **unconditional** `main` in
+  a runner" because `pr-feedback.ts:101` hardcodes one too, as a fallback the reviewer's wording had
+  flattened.
+- #103 chose the harder of two offered options — deriving the `issues: write` check from
+  `workflowFiles` minus an exempt set, rather than narrowing the `parity.md` sentence to match the
+  weaker check — and proved it by planting `issues: write` in `ci.yml`, a file the old allowlist
+  never covered.
+- #104, asked to either widen a test's pattern or rename it to match, widened — and found that
+  `runBlockLines` only tracked `run: |` block scalars, so `agent-review.yml:74`'s inline `run:`
+  fetch, *the exact line #71 fixed*, was exempt from all three workflow tests. Including the
+  empty-expression guard that exists because `agent-fix.yml` was down for two days.
+- #104 re-derived the coupling inventory rather than patching it and added a site the reviewer had
+  missed, `implement/implement.ts:56`.
+
+The pattern worth keeping: **neither agent took a reviewer's premise on trust**, and both verified
+by injecting a regression and watching it fail rather than by asserting. #104 explicitly checked
+that `runWithExtraction` drops `promptArgs` before agreeing that templating could not reach
+`extraction.md`.
+
+### The first decline, and it was the right one
+
+#105 (concurrency + preflight parity) produced the pilot's first `declined` thread. Worth recording
+because the decline mechanism has existed since #49/#50 and had never fired — every prior round
+addressed everything.
+
+The review argued that `refuse()` adds `agent:blocked` for the stale-head case too, labelling a PR
+whose fix had just succeeded: healthy, green, and wearing the label the pipeline uses for failure.
+Plausible, specific, and wrong on its premise — `ADOPTING.md:128` defines the label as "A run failed
+**or was refused**; needs human attention", so a refusal is inside its stated meaning.
+
+The agent declined on three grounds, and the second is the one that matters: `refuse()` also
+*consumes* `agent:review`, so dropping the `agent:blocked` add leaves a PR with no trigger label, no
+review, and nothing saying either — the exact silent-failure shape the ticket exists to close. A red
+label on a green PR is noise; an unreviewed PR that looks finished is the failure. It also inverted
+the reviewer's stickiness worry correctly: this refusal is self-clearing, because the remedy it
+prints is re-adding `agent:review` and `Transition labels` strips `agent:blocked` on entry. The
+closed/merged refusal is the sticky one.
+
+A fourth argument neither side made settles it: consuming `agent:review` is what makes recovery work
+at all. Because the label was removed, re-adding it fires a fresh `labeled` event — had the workflow
+left it in place, recovery would need remove-then-re-add, the trap #100 hit the same day.
+
+What makes this a good decline rather than a lucky one: the same round *addressed* the two findings
+that were correct, including a real regression the collapse had introduced. It declined the
+plausible one and acted on the sound ones, which is the discrimination the channel was built for.
+Per §10 the thread stayed open, and both arguments went into `parity.md` §10 rather than living only
+in a review thread.
+
+### A silent failure that was not the one it looked like
+
+Fifteen issues were published for the loop's own backlog, two of them carrying `agent:implement` in
+the create call. Nothing ran.
+
+**The real cause, and it is permanent.** `agent-implement.yml` triggers on `issues: types:
+[labeled]` and gates on `github.event.label.name`. Labels supplied in the *create* call produce only
+`issues.opened` — they ride along in that payload, but no `labeled` event is emitted and
+`github.event.label` does not exist on `opened`. So the label is genuinely on the issue, and the
+workflow correctly never saw an event. This is a **fifth member of the §1 family** in
+`ADOPTING.md`, alongside the four `GITHUB_TOKEN` traps, and it has the same signature: the label
+appears, everything looks right, nothing happens. Anything publishing issues programmatically must
+label in a **separate call** from creation.
+
+**The cause that was not real.** Removing and re-adding the label through the same tool did not
+dispatch either, which looked like a second, independent trap — an app identity's label adds being
+suppressed the way `GITHUB_TOKEN`'s are. That got stated as a finding, with the corollary that
+`parity.md` §9.4's GitHub App plan would break the cascade rather than fix it.
+
+Wrong. GitHub Actions was having a platform incident during that window. Retested at 19:39 the same
+day by labelling #90 from the identical identity: run 41 dispatched normally, and the agent worked
+the issue. §9.4 is unaffected.
+
+**The lesson is about diagnosis, not about labels.** A platform incident and the documented
+anti-recursion rule produce an *identical* signature from inside the repo — label present, no run,
+no error, nothing in any log. One observation cannot separate them, and the wrong conclusion is the
+more expensive one, because it invents a structural constraint that then shapes design decisions
+(here, nearly writing off the GitHub App path). The discipline that keeps working elsewhere in this
+log applies: the anti-recursion rule is documented and *retestable*; an outage is neither, so
+re-running the experiment later is the cheap check that separates them. It cost one relabel.
+
+### A human error the loop caught
+
+The `implement.ts` line number in #101 was written as `:58` from memory. It is `:56`. #104's fix
+agent re-derived it and got it right. Same lesson as the `git check-ref-format` entry above, failed
+rather than passed this time: one `grep` would have settled it, and the cost of not running it was
+a wrong line number published in an issue body that an agent then implemented from.
+
+---
+
+## 2026-08-08 — The first PRD chain, and the trap it set for itself
+
+PRD #88 ran its slices into a single branch as designed. Slice 5 (#112) died immediately at
+`required("BASE_REF")`, and the PR comment read `(no reason file written)`.
+
+The cause is the seam this loop has now been bitten by twice, arriving from the opposite
+direction. `agent-implement-prd` takes its **workflow YAML from `main`** and its **runner code from
+the PR branch**. Slice 3 had just added `BASE_REF` to the reusable workflow and made
+`implement-prd.ts` require it. So the branch's runner demanded an input that `main`'s workflow had
+never heard of, and every subsequent slice was dead on arrival.
+
+### The inversion matters more than the instance
+
+The stale-runner trap already in this log is *old scripts on the branch, new YAML on `main`*. This
+is *new scripts on the branch, old YAML on `main`* — the same split brain, reached by going
+forwards instead of backwards, and the existing framing does not cover it. There is no staleness
+here at all. Both halves are current; they are current *as of different commits*.
+
+That generalises to a rule the PRD tier makes unavoidable: **a PRD that refactors the runner
+executing it has a split brain by construction.** Not by accident, not by neglecting to rebase —
+by construction, because the contract between YAML and runner is being edited by the thing the
+contract is running. Every slice after the one that changes the interface is doomed, and the fix
+lives in a PR that cannot merge until those slices finish. A genuine deadlock, broken only by
+hand.
+
+Pinning the runner to a published version **in the workflow YAML** closes it, because then both
+halves move together and a branch cannot advance one without the other. That is what #113 does,
+and it is worth recording that the argument for the versioned package arrived here from a second,
+independent direction — it was adopted for extraction and turns out to be the only thing that
+makes the PRD tier safe on its own plumbing.
+
+### One signature, two causes
+
+`required()` exits 1 **without** writing `failure_reason.txt`, so the comment says
+`(no reason file written)`. That is the identical signature to the `agent-fix` rename stranding
+old branches, already in Pending below. Two unrelated causes, one indistinguishable symptom, and
+the symptom is precisely the absence of information. The cheap fix is for `required()` to write
+the reason file before exiting; until it does, that string means "look at the run log", not
+"module resolution failed".
+
+---
+
+## 2026-08-09 — Moving the loop out, and reversing a recommendation to get there
+
+The reframe at the top of this log — the linter is the testbed, the agent loop is the deliverable
+— became an actual repository decision (#114). Two findings settled it, and the first is the one
+that matters.
+
+**The remote path has never executed.** All five callers #113 produces read
+`uses: ./.github/workflows/agent-review-reusable.yml`. A local path. Every adopting repo will use
+`uses: jeffwlawson/agent-workflows/...@v1`, and a host repo can never exercise that, because it is
+not an adopter. So the extraction is complete and *entirely untested in the configuration anyone
+else will run*. Moving the loop out converts this repo from host into first adopter, which is not
+a downgrade of the testbed — it is the first time the testbed tests the real thing.
+
+**The seam is clean enough to move cheaply.** Across the 20 runner files, `winget` appears once,
+in a comment in `review/review.ts` explaining what the corpus check contributes. The cost of
+moving only rises with each consumer, and there is currently one.
+
+### The reversal
+
+The recommendation given was: merge #113, publish `0.1.0` from *here*, then migrate — on the
+grounds that publishing validates the workflow before also changing its address. The pushback was
+one line: does that have to happen here?
+
+It did not, and the argument did not survive being checked. `.sandcastle/agent-workflows` is
+**not an npm workspace** — the root lockfile has no entry for it. The publish workflow runs
+`npm ci` at the root and `npm publish` in the subdirectory, so the build resolves `tsc` by walking
+up into the root's `node_modules`. In the new repo the package is the root and installs its own
+dependencies. Publishing here would have exercised a resolution path that ceases to exist on
+migration: a green run producing **evidence for the wrong configuration**.
+
+The general form is worth stating because it will recur. *Validate before you move* is a sound
+instinct, and it inverts exactly when the move is what changes the thing being validated. Any
+pre-migration smoke test has to be checked against that, and the check is mechanical: name what
+the test exercises, then ask which of those survive the move.
+
+The deadlock reasoning was real but was pointed the wrong way. #113 and the publish are a package
+deal — its callers `npx` a version that does not exist, so merging without publishing takes the
+whole loop down. Which means "can the publish wait?" was only ever "can #113 stay unmerged?", and
+it can, indefinitely, because `main` still runs the runner from the checkout with `npx tsx`.
+
+### A dependency that resolves by coincidence
+
+Found while arguing about the above, not by any check. `.sandcastle/agent-workflows/package.json`
+declares `typescript: 5.9.3` in `devDependencies`. It is never installed. The build works because
+the root pins the same 5.9.3 and Node walks up to find it.
+
+Green today, wrong the day either version moves, and the failure would be a compile against a
+compiler nobody chose. **A declared dependency that is never installed is worse than an
+undeclared one**, because it reads as satisfied — `npm ci`, `npm run verify` and the publish
+workflow all pass without noticing. The migration fixes it as a side effect of the package moving
+to a repo root, which is the wrong reason for it to be fixed and no reason to leave it unrecorded.
+
+### Work parked on an unmerged branch nearly left with the repo
+
+197 lines — `ADOPTING.md` §1's fifth silent failure, the §3 amend-before-labelling note, and 161
+lines of this log — sat on a pushed branch with **no pull request**. The migration plan's
+`git filter-repo` reads #113's branch, which contains none of it. It would have succeeded and
+dropped all of it, silently, because that is what a successful filter does.
+
+An unmerged branch is invisible to every tool that reasons about "the repo", and to every person
+who assumes the default branch is the state of the work. What surfaced it was a three-way line
+count across `main`, this branch and #113's branch — run only because the migration forced the
+question *which ref does history come from?* Nothing in the ordinary loop asks that. Before any
+history-rewriting move, enumerate the refs that hold work, not the files.
+
+---
+
 ## Pending — not yet exercised
 
 The full cycle is proven, including replies, resolution, and conflict resolution. Still

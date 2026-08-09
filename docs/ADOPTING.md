@@ -230,7 +230,7 @@ The runners are **not copied either**. They are an npm package — `@jeffwlawson
 and the reusable workflow invokes one subcommand of it at a version pinned in *its* YAML:
 
 ```yaml
-run: npx --yes @jeffwlawson/agent-workflows@0.1.0 review
+run: npx --yes @jeffwlawson/agent-workflows@0.1.1 review
 ```
 
 Prompts ship inside the package, so there is nothing to copy and nothing to keep in step. That pin
@@ -393,17 +393,22 @@ what **this** repo needs to develop the package, whose sources are this reposito
 > that layout and are accurate about it.
 
 Publishing is `publish-agent-workflows.yml`, triggered by pushing an `agent-workflows-v<version>`
-tag. The trigger is a tag push rather than a `workflow_dispatch` on purpose: dispatch only registers
-for workflows on the default branch, so the first publish of a version could not run until the pull
-request pinning it had merged — and that pull request cannot merge until the version resolves.
+tag. The trigger is a bare `v*` tag push. It was originally chosen to work around a
+`workflow_dispatch` bootstrap deadlock that existed only while this package lived inside another
+repository; that reason is gone, and the trigger is kept now for simplicity rather than necessity.
+The ancestor guard that the bootstrap made impossible — `git merge-base --is-ancestor "$GITHUB_SHA"
+origin/<default>` — is in place, so a tag on an unmerged commit is refused.
 
-> **Owed: the ancestor guard.** That workflow does not yet require the tagged commit to be reachable
-> from the default branch (`git merge-base --is-ancestor "$GITHUB_SHA" origin/<default>`). It is the
-> guard that makes tag-triggered publishing safe long-term, and it is absent for one reason: it
-> would have blocked the `agent-workflows-v0.1.0` bootstrap tag, which had to be pushed on a pull
-> request's head. Add it once that first publish has happened. It is recorded here as well as in a
-> `TODO` in the workflow, because a deferred guard remembered in only one place is one that never
-> lands.
+> **`bin` paths must not start with `./`.** `npm publish` silently strips a `bin` entry written as
+> `./dist/cli.js`, logging `"bin[agent-workflows]" script name dist/cli.js was invalid and removed`
+> among its other warnings, and **publishes anyway**. The tarball still contains the file and the
+> manifest inside it still names it — only the registry manifest loses the entry, so nothing looks
+> wrong until `npx <package> <command>` resolves the package and finds no command to run. Version
+> 0.1.0 shipped exactly this.
+>
+> `npm pack` does not reproduce it and neither does npm 10, so a local check passes. `ci.yml` runs
+> `npm publish --dry-run` under the `.nvmrc` Node and fails on that string, which is the only signal
+> there is.
 
 ---
 

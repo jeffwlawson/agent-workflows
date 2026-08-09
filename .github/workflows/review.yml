@@ -403,7 +403,7 @@ jobs:
           AGENT_MODEL_REVIEW: ${{ vars.AGENT_MODEL_REVIEW }}
           OUTPUT_DIR: ${{ runner.temp }}
           CI_STATUS_FILE: ${{ runner.temp }}/ci_status.md
-        run: npx --yes @jeffwlawson/agent-workflows@0.1.0 review
+        run: npx --yes @jeffwlawson/agent-workflows@0.1.1 review
 
       - name: Post PR review
         if: steps.state.outputs.proceed == 'true' && success()

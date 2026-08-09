@@ -396,7 +396,7 @@ jobs:
           SUB_NUMBER: ${{ steps.preflight.outputs.sub }}
           SUB_TITLE: ${{ steps.preflight.outputs.sub_title }}
           OUTPUT_DIR: ${{ runner.temp }}
-        run: npx --yes @jeffwlawson/agent-workflows@0.1.0 implement-prd
+        run: npx --yes @jeffwlawson/agent-workflows@0.1.1 implement-prd
 
       # Plain push, deliberately. `agent-implement` force-pushes because it owns
       # a branch it created that run; this branch carries every earlier slice,

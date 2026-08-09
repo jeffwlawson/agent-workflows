@@ -1,6 +1,6 @@
 {
   "name": "@jeffwlawson/agent-workflows",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Runners for a GitHub Actions agent loop: implement, implement-prd, review, fix, update-branch",
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,7 @@
     "node": ">=24"
   },
   "bin": {
-    "agent-workflows": "./dist/cli.js"
+    "agent-workflows": "dist/cli.js"
   },
   "files": [
     "dist"

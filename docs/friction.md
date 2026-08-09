@@ -1469,6 +1469,63 @@ history-rewriting move, enumerate the refs that hold work, not the files.
 
 ---
 
+## 2026-08-09 (later) — A green publish that shipped a broken package
+
+`v0.1.0` published from the new repository in fourteen seconds, every step green, and the package
+it put on the registry could not be run.
+
+`npm publish` normalises the manifest before upload and **drops a `bin` entry whose path starts
+with `./`**. It says so — `"bin[agent-workflows]" script name dist/cli.js was invalid and removed`
+— in the middle of four other warnings, and then publishes successfully. Exit code 0. Green check.
+
+Every one of the five reusable workflows invokes `npx --yes @jeffwlawson/agent-workflows@<v> <cmd>`.
+Against `0.1.0` that resolves the package and finds no command. The entire loop would have failed
+at the same step in every consuming repo.
+
+### Why nothing caught it
+
+Four separate checks pass on a broken package, and each fails for a different reason:
+
+- **The tarball is correct.** `dist/cli.js` is present, and the `package.json` *inside* the tarball
+  still names it. Only the registry manifest loses the entry. Inspecting the artefact cannot find
+  this.
+- **`npm pack` does not reproduce it.** Packing keeps the entry; only `publish` normalises.
+- **npm 10 does not reproduce it.** The local check ran on Node 22 / npm 10.9.7, which accepts
+  `./`. CI runs `.nvmrc`'s Node 24 with npm 11, which does not.
+- **The local `npm pack --dry-run` had a stale `dist/`** from an earlier build, so even the shape
+  of the problem was hidden.
+
+The only signal that exists is a string in the publish output. So the guard is a CI step that runs
+`npm publish --dry-run` under the `.nvmrc` Node and greps for `invalid and removed` — verified to
+fail on the broken manifest and pass on the fixed one, because a guard nobody has seen fail is a
+guard nobody knows works.
+
+### The diagnosis was nearly wrong, and the cheap test settled it
+
+The log looked conclusive. `No bin file found at dist/cli.js` appears at 15:11:18.878 and `prepack`
+starts at 15:11:18.903 — so npm validated `bin` **before** the build created `dist/`, and the
+obvious conclusion was an ordering problem: the file genuinely did not exist yet.
+
+That conclusion was wrong, and it would have produced a wrong fix — committing a stub `dist/cli.js`,
+or restructuring the build to run before packing. A four-cell matrix over `{./dist/cli.js,
+dist/cli.js} × {dist present, dist absent}` took one command and showed the entry is removed
+whenever the path starts with `./`, **including when the file is present**. The "No bin file found"
+line was a red herring produced by the same absent directory, sitting next to the real error and
+pointing away from it.
+
+Same lesson as the `git check-ref-format` entry, and the opposite outcome to the `implement.ts:58`
+one: the difference between a right and a wrong fix here was a single command, run before writing
+anything.
+
+### What it says about the loop
+
+`0.1.0` cannot be reclaimed — GitHub Packages will not accept a republish of a published version —
+so the fix ships as `0.1.1` and the burned version stays on the registry as a permanent artefact of
+this. That is the cost of a green run that was not checked: not the bug, which was one character,
+but the version number that can never be used again.
+
+---
+
 ## Pending — not yet exercised
 
 The full cycle is proven, including replies, resolution, and conflict resolution. Still

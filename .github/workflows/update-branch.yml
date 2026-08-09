@@ -233,7 +233,7 @@ jobs:
           AGENT_MODEL_UPDATE_BRANCH: ${{ vars.AGENT_MODEL_UPDATE_BRANCH }}
           OUTPUT_DIR: ${{ runner.temp }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
-        run: npx --yes @jeffwlawson/agent-workflows@0.1.0 update-branch
+        run: npx --yes @jeffwlawson/agent-workflows@0.1.1 update-branch
 
       - name: Push branch
         if: steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts'

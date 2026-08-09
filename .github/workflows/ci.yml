@@ -1,0 +1,61 @@
+name: CI
+
+# The gate for this repository. It is deliberately small: the package has no
+# unit tests of its own yet, and the one failure that has actually shipped from
+# here was a *packaging* fault that no amount of source testing would have
+# caught.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # `.nvmrc` rather than a literal, and it matters here more than usual: the
+      # publish check below only reproduces on the npm that ships with Node 24.
+      # Pinning a different version would make this job pass while a publish
+      # from the same commit silently loses `bin` (see below).
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      # The regression guard for the 0.1.0 defect.
+      #
+      # `npm publish` normalises the manifest before upload and will DROP a
+      # `bin` entry whose path begins with `./`, logging it as a warning among
+      # several others and then **publishing successfully**. The tarball is
+      # unaffected — `dist/cli.js` is present and the packaged package.json
+      # still names it — so the only place the damage shows is the registry
+      # manifest, and the only symptom is `npx <pkg> <cmd>` finding no command.
+      #
+      # This cannot be checked by inspecting the tarball, and `npm pack` does
+      # not reproduce it. Grepping the publish dry-run's output is the entire
+      # available signal, which is why this step exists rather than a test.
+      - name: The published manifest must keep its bin entry
+        run: |
+          set -uo pipefail
+          out=$(npm publish --dry-run 2>&1) || true
+          echo "$out"
+          if printf '%s' "$out" | grep -q 'invalid and removed'; then
+            echo "::error::npm publish would strip an entry from package.json. A bin path beginning with './' is the known cause — write it as 'dist/cli.js', not './dist/cli.js'. Publishing in this state succeeds and produces a package whose commands cannot be run."
+            exit 1
+          fi
+          echo "Publish-time manifest normalisation removed nothing."

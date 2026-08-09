@@ -1562,6 +1562,65 @@ that was already disposable.
 
 ---
 
+## 2026-08-09 (last) — The loop runs on itself from another repository, and two absences read as failures
+
+`winget-manifest-lint` stopped hosting the loop and started consuming it (#116): five caller
+workflows pinned to `@v0.1.1`, the runner tree deleted, `+187/-8,298`. Then the whole chain ran
+unattended through the cross-repo path on the first attempt — issue labelled, implement resolved
+`jeffwlawson/agent-workflows/.github/workflows/implement.yml@v0.1.1`, `npx`'d the published
+package, opened a PR, CI passed, review cascaded and returned *"Merge. Clean, correctly scoped
+documentation fix with no findings."*
+
+That path could never be rehearsed. `pull_request_target` takes its YAML from the base branch, so
+a caller stub on a feature branch never fires: these files did nothing at all until they were on
+`main`. The only test available was the real one.
+
+The review verified the pin itself — *"a tag, not a branch"* — which is the property with no
+runtime symptom when wrong, and the one a test was written for the same afternoon. Two independent
+checks of the same invariant, neither aware of the other, is roughly the shape this loop is for.
+
+### An empty label set is not an unapplied label
+
+Between labelling the issue and checking on it, this session's worker restarted. The label read back
+as **absent**, which looked like a lost write, so it was applied again. It had not been lost: the
+implement workflow's *Transition labels* step **removes `agent:implement`** as part of running. The
+first run had already opened the PR while the check was happening.
+
+The second run refused correctly — *"Refused to run: …/pull/118 already targets this issue"* — which
+is exactly what that preflight exists for, and the cost was one wasted run and a confusing comment
+on a fresh issue. But the guard caught an error that should not have been made. **`agent:implement`
+absent means one of two things**: never applied, or applied and consumed. The distinguishing
+evidence is not the label — it is whether a run exists, or whether a PR already closes the issue.
+Check the runs, not the labels.
+
+### A rejected lease is not always a concurrent push
+
+An hour later, `git push --force-with-lease` rejected with `stale info` — twice, including once with
+the lease pinned explicitly. That message means "the remote moved under you", so the natural reading
+is that something else pushed.
+
+Nothing had. **GitHub had auto-deleted the branch when its pull request merged**, and
+`origin/<branch>` was a stale local tracking ref still naming the old commit. The lease was
+asserting against a ref that no longer existed. `git fetch --prune` made it visible immediately, and
+the push then needed no force at all — it was an ordinary branch creation.
+
+Reaching for plain `--force` at the first rejection would have worked, silently, and taught nothing.
+It would also have been the wrong habit: the two-failure sequence is what surfaced that the branch
+was gone.
+
+### The shape both share
+
+Two hours apart, the same error: **an absence read as a failure**. A missing label meant the
+workflow had consumed it. A missing remote branch meant the merge had cleaned up. In both cases the
+system had done something *correct* and left a gap where the evidence used to be, and in both cases
+the wrong inference was the one that assumed the gap meant nothing had happened.
+
+The cheap discipline is the one this log keeps arriving at from new directions: when a check comes
+back empty, establish whether the thing was never done or already done, before acting on the
+emptiness. One `gh run list`, one `git fetch --prune`.
+
+---
+
 ## Pending — not yet exercised
 
 The full cycle is proven, including replies, resolution, and conflict resolution. Still

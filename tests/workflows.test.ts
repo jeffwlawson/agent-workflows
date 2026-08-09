@@ -1964,17 +1964,20 @@ describe("the runner package is published from a tag push", () => {
 });
 
 /**
- * Every `gh` in the shipped surface arrives as argv, never as text a shell
- * re-parses. Same rule as `git` (issue #75), and the same reason: a value that
- * reaches a subprocess as syntax is a value someone else can write.
+ * Every `gh` in the shipped **runner** surface arrives as argv, never as text a
+ * shell re-parses. Same rule as `git` (issue #75), and the same reason: a value
+ * that reaches a subprocess as syntax is a value someone else can write. The
+ * workflow half ships too and reaches `gh` from bash; there the boundary is a
+ * quoted env var (`gh pr edit "$PR_NUMBER"`), not argv, and this test says
+ * nothing about it.
  *
  * This test is the record, and the record is the point. Three sites once
  * interpolated into a shell string; #9 fixed two and deleted the comment in
  * `shared/common.ts` that had described the whole class — correctly, since the
  * sites it named were gone, except that the third one (`update-branch.ts`'s
  * `gh pr view`) went from documented to invisible in the same change (#10). A
- * prose note only covers the sites its author knew about on the day. A grep
- * covers the fourth.
+ * prose note only covers the sites its author knew about on the day; a grep
+ * goes on reading the file after everyone has stopped.
  *
  * Comment lines are excluded on purpose, so that this class can go on being
  * described in prose — including in the doc comment on `safeSh`, which is where
@@ -1984,6 +1987,15 @@ describe("every gh call reaches argv, never a shell", () => {
   // `sh(`, `safeSh(` or `execSync(` opening a string that names `gh` before it
   // closes. Deliberately not anchored to a command name after `gh`: the defect
   // is the shell, whatever is being run through it.
+  //
+  // A grep, and priced as one. Matching is per line and `[^`'"]*` stops at the
+  // first quote, so at least three shapes pass: the call hand-wrapped so the
+  // string starts on the next line; the command built into a variable first
+  // (`const cmd = `gh …`; sh(cmd)`); and an env prefix that closes a quote on
+  // the way (`sh(`GH_TOKEN="x" gh …`)`). Catching those means parsing TypeScript,
+  // at which point this stops being a grep and starts being a thing to maintain.
+  // What it does catch is the shape that actually regressed, on arrival rather
+  // than at review — which is the whole of the claim.
   const SHELLED_GH = /\b(?:safeSh|sh|execSync)\(\s*[`'"][^`'"]*\bgh\b/;
   const sources = sandcastleFiles.filter((file) => file.endsWith(".ts"));
 

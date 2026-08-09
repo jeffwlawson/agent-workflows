@@ -1650,13 +1650,23 @@ describe("every workflow invokes the runners at a pinned version", () => {
    * a runner that changes under a PR nobody touched, which is the trap above
    * with a longer fuse.
    */
-  const PIN = new RegExp(`^npx --yes ${escaped}@(\\d+\\.\\d+\\.\\d+) ([a-z-]+)$`);
+  const PIN = new RegExp(
+    `^npm exec --prefix "\\$RUNNER_TEMP" --yes --package=${escaped}@(\\d+\\.\\d+\\.\\d+) -- agent-workflows ([a-z-]+)$`,
+  );
 
-  /** The one `npx` line in a workflow: the step that hands over to the runner. */
+  /**
+   * The one hand-over line in a workflow: the step that runs the published
+   * runner.
+   *
+   * `npm exec --prefix` and not a bare `npx`, because `npx pkg@version` reuses a
+   * package already in the working directory when it satisfies the spec — and in
+   * this repository the checkout *is* that package, with no `dist/` built, so the
+   * bin resolves to nothing (#8). The prefix moves the install, not the `cwd`.
+   */
   const invocation = (file: string): string => {
     const invocations = stepsOf(file)
       .map((step) => (step.run ?? "").trim())
-      .filter((run) => run.startsWith("npx"));
+      .filter((run) => run.startsWith("npm exec") || run.startsWith("npx "));
 
     expect(invocations).toHaveLength(1);
     return invocations[0] as string;
@@ -1783,8 +1793,16 @@ describe("the runner package is installed from GitHub Packages", () => {
 
   const authStep = (file: string): Step | undefined => stepsOf(file)[authIndex(file)];
 
+  /**
+   * The hand-over step. Matches `npm exec` as well as `npx`, because the
+   * invocation moved to `npm exec --prefix` to stop npx reusing this
+   * repository's own checkout as the package (#8).
+   */
   const runnerStepIndex = (file: string): number =>
-    stepsOf(file).findIndex((s) => (s.run ?? "").trim().startsWith("npx"));
+    stepsOf(file).findIndex((s) => {
+      const run = (s.run ?? "").trim();
+      return run.startsWith("npm exec") || run.startsWith("npx ");
+    });
 
   /**
    * Scoped, so a caller's own `npm ci` still resolves everything else from

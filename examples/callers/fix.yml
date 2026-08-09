@@ -23,7 +23,7 @@ on:
 
 jobs:
   fix:
-    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.1.1
+    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.1.2
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs.
     permissions:

@@ -233,7 +233,19 @@ jobs:
           AGENT_MODEL_UPDATE_BRANCH: ${{ vars.AGENT_MODEL_UPDATE_BRANCH }}
           OUTPUT_DIR: ${{ runner.temp }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
-        run: npx --yes @jeffwlawson/agent-workflows@0.1.1 update-branch
+        # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
+        # whole point. `npx pkg@version` reuses a package already present in the
+        # working directory when it satisfies the spec — and in the repository
+        # that *publishes* this package, the checkout is such a package. It has
+        # no `dist/` (CI installs, it does not build), so the bin resolves to
+        # nothing and the step dies `command not found` before any runner code
+        # runs (#8). Installing into RUNNER_TEMP sidesteps the name collision.
+        #
+        # A no-op for every consuming repo, which has no package of this name to
+        # collide with — verified against npm 10 and 11, both of which ignore
+        # `--ignore-existing` here. `--prefix` moves the *install*, not the
+        # process `cwd`: the runner still does its git work in the checkout.
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.1.2 -- agent-workflows update-branch
 
       - name: Push branch
         if: steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts'

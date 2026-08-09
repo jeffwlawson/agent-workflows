@@ -1,0 +1,39 @@
+name: Agent Implement
+
+# The trigger, the token grant and the secrets — the facts about *this* repo the
+# implement job cannot read for itself. Everything else — the label guard, the
+# preflight's four refusals, the permissions ceiling, the concurrency group,
+# every step — is in agent-implement-reusable.yml, which an adopting repo
+# references instead of copying (#98).
+#
+# Take this workflow and `agent-implement-prd.yml` together or take neither:
+# they share the `agent:implement` label and partition every label event by
+# issue shape. See the note at the top of the PRD one.
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  implement:
+    uses: jeffwlawson/agent-workflows/.github/workflows/implement.yml@v0.1.1
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs:
+    # `contents: write` to push, `issues: write` for the label transitions on
+    # the issue, `pull-requests: write` to label the PR it opens, and the
+    # `packages: read` explained below.
+    permissions:
+      contents: write
+      issues: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and the run dies at `npx`
+      # with a 401 that reads like a bad token rather than a missing grant.
+      packages: read
+      pull-requests: write
+    # No `with:`. The three inputs (`default-branch`, `node-version-file`,
+    # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}

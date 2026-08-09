@@ -1,0 +1,55 @@
+name: Agent Review
+
+# The trigger, and the facts about *this* repo the review job cannot read for
+# itself: the check-run name this file's job id produces, the token it is
+# granted, and the secrets. Everything else — the guards, the permissions
+# ceiling, the concurrency group, every step — is in review.yml,
+# which an adopting repo references instead of copying (#97).
+#
+# Uses pull_request_target so the labeled event runs with repo secrets and write
+# access. On a PUBLIC repo that is a fork-code-execution path; the fork guard
+# that closes it is a job-level `if:` in the called workflow, where a caller can
+# skip it but cannot loosen it and an adopter cannot leave it behind.
+#
+# `pull_request_target` reads workflow YAML from the *base* branch, so a pull
+# request cannot alter this file to change what runs. The called workflow is
+# equally out of a PR's reach — but now because of what the `uses:` below is
+# **pinned to**, not because it is local. Pin a tag or a SHA, never a branch:
+# `@main` would hand a job that runs with your secrets to whatever currently
+# sits on another repository's default branch (docs/ADOPTING.md §9).
+on:
+  pull_request_target:
+    types: [labeled]
+
+jobs:
+  # The job id is load-bearing: it is the first half of the check-run name
+  # `review / review` passed below. Rename it and the CI wait stops recognising
+  # itself. A test compares the two, so the pair cannot drift silently.
+  review:
+    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.1.1
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs —
+    # `contents: read` is the invariant, `pull-requests: write` is what every
+    # `gh pr edit` in it spends, and `packages: read` is explained below.
+    permissions:
+      contents: read
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and the run dies at `npx`
+      # with a 401 that reads like a bad token rather than a missing grant.
+      packages: read
+      pull-requests: write
+    with:
+      # `<caller job id> / <called job id>`. The other three inputs
+      # (`default-branch`, `node-version-file`, `setup`) default to this repo's
+      # values — `main`, `.nvmrc`, `npm ci` — so there is nothing to say here.
+      self-check: review / review
+    # Named rather than `secrets: inherit`, which would hand the called
+    # workflow every secret this repository holds. Both are declared in it;
+    # AGENT_PAT is optional and an absent one arrives as the empty string,
+    # which the mark-ready step already falls back from with a warning.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}

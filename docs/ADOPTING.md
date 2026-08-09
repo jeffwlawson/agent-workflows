@@ -271,8 +271,19 @@ it into one that can install (§2).
 
 ### What a caller looks like
 
-Four of the five are this, with the name, the job id, the label's workflow and the permissions
-changed:
+**Copy them from [`examples/callers/`](../examples/callers/).** Five files, one per workflow,
+already carrying the correct trigger, permissions, `self-check` and pinned `uses:`. Drop them into
+your `.github/workflows/` and rename if you like — the job id is the only thing you cannot rename
+freely, for the reason below.
+
+They are real files rather than a block quoted here, and that is load-bearing twice over. What you
+install is the thing that was checked: `tests/workflows.test.ts` reads those files and asserts the
+trigger, the permissions on both halves, the pin, and the `self-check` coupling. And the coupling
+*needs* both halves present to be verified at all — while the callers were a code block, the
+reusable half lived in this repo and the caller half lived in whichever repo had adopted the loop,
+so the pair could only ever be checked by hand, in a repository this one cannot see.
+
+For orientation, a caller is a trigger and two wires:
 
 ```yaml
 name: Agent Fix
@@ -283,7 +294,7 @@ on:
 
 jobs:
   fix:
-    uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-fix-reusable.yml@<commit sha>
+    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.1.1
     permissions:
       contents: write
       packages: read            # install the runner package; see above
@@ -296,6 +307,14 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
 ```
+
+> **Pin a tag or a SHA, never a branch.** `pull_request_target` reads workflow YAML from the base
+> branch, so a pull request cannot edit your caller to change what runs. That protection used to
+> cover the called workflow for free, when the `uses:` was a local path resolving against the same
+> commit. Remote, the reference is what decides: `@main` hands a job holding `contents: write` and
+> your secrets to whatever currently sits on this repository's default branch, and nothing anywhere
+> reports it. A test enforces the tag-or-SHA shape on the reference callers.
+
 
 The permissions per workflow, which are what each job actually spends:
 

@@ -1,0 +1,12 @@
+{
+  // What ships. `tsconfig.json` includes the tests so `npm run typecheck` and
+  // the editor cover them; this one must not, because `files: ["dist"]` in
+  // package.json publishes whatever `tsc` emits.
+  //
+  // 0.1.2 shipped `dist/tests/` — 32 files and 68.8 kB against 24 and 31.0 kB —
+  // because the tests moved into this repository while `include` still said
+  // `**/*.ts`. Same shape as `docs/` reaching `copy-assets`: a build defined as
+  // "everything except" quietly grows when a sibling directory appears.
+  "extends": "./tsconfig.json",
+  "exclude": ["dist", "tests", "vitest.config.ts"]
+}

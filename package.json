@@ -1,6 +1,6 @@
 {
   "name": "@jeffwlawson/agent-workflows",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Runners for a GitHub Actions agent loop: implement, implement-prd, review, fix, update-branch",
   "type": "module",
   "license": "MIT",
@@ -18,7 +18,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node dist/scripts/copy-assets.js",
+    "build": "tsc -p tsconfig.build.json && node dist/scripts/copy-assets.js",
     "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",

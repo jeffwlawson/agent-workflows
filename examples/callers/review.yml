@@ -26,7 +26,7 @@ jobs:
   # `review / review` passed below. Rename it and the CI wait stops recognising
   # itself. A test compares the two, so the pair cannot drift silently.
   review:
-    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.1.2
+    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.1.3
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs —
     # `contents: read` is the invariant, `pull-requests: write` is what every

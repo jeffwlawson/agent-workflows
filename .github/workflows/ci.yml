@@ -40,6 +40,34 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The regression guard for the 0.1.2 defect, and the one that checks the
+      # artefact rather than a log line.
+      #
+      # 0.1.2 shipped `dist/tests/` — 32 files and 68.8 kB against 24 and 31.0 kB,
+      # including an 89 kB workflow test — because the tests moved into this repo
+      # while `tsconfig.json` still said `include: ["**/*.ts"]`, and
+      # `files: ["dist"]` publishes whatever `tsc` emits. Nothing caught it: the
+      # `bin` guard below greps a warning string, and `copy-assets` only skips
+      # Markdown.
+      #
+      # `--ignore-scripts` because the Build step above already produced `dist/`,
+      # and letting `prepack` run again prints to stdout and corrupts the JSON.
+      - name: The tarball ships the runner and nothing else
+        run: |
+          set -euo pipefail
+          leaked=$(npm pack --dry-run --json --ignore-scripts \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+                console.log(JSON.parse(s)[0].files.map(f=>f.path)
+                  .filter(p=>/(^|\/)tests?\//.test(p)||/\.test\./.test(p)||/vitest/.test(p))
+                  .join('\n'));});")
+          if [ -n "$leaked" ]; then
+            echo "::error::These files would be published and should not be:"
+            printf '%s\n' "$leaked"
+            echo "::error::Build with tsconfig.build.json, which excludes tests/ and vitest.config.ts."
+            exit 1
+          fi
+          echo "Tarball carries no test files."
+
       # The regression guard for the 0.1.0 defect.
       #
       # `npm publish` normalises the manifest before upload and will DROP a

@@ -118,6 +118,7 @@ run — accumulating onto a single branch and a single PR, and requesting review
 | Refuses a **nested** PRD (a PRD that is itself a sub-issue) | ✅ | ✅ | two owners of one ordering, neither able to see the other's chain |
 | Refuses a PRD whose sub-issues have **all closed** | ✅ | ✅ | and *without* `agent:blocked` — a finished PRD is a success state, and the label would be the stale one §10 warns about |
 | Refuses a `wayfinder:*` planning artifact | ❌ | ➕ | the same refusal `agent-implement` carries, for the map that has sub-issues and so reaches this workflow instead |
+| Refuses a parent with open `blocked_by` edges | ❌ | ➕ | #14, and the one place this workflow reads an edge — see the ordering note below. Being a coordinator exempts nothing, and the cost of running anyway is larger than the flat case's one wasted run: a single label lands every slice on one branch, as one PR, built on work that does not exist yet. **Last** of the refusals, after the finished one: a finished PRD can still carry an open edge, and read first it would collect the `agent:blocked` the row above withholds, on an issue no later run can clear it from |
 | Targets the **first still-open** sub-issue, in sub-issues API order | ✅ | ✅ | see the ordering note below |
 | One branch `agent/prd-<n>-<slug>`, reused across the chain | ✅ | ✅ | found on the remote by `agent/prd-<n>-*`, never by the whole recomputed name — the slug comes from the parent's *title* and a title is editable, so a retitle mid-chain would otherwise fork slice N off `main` and open a second PR. Two matches is ambiguous and fails the run rather than guessing |
 | Plain `git push`, never force | ✅ | ✅ | the branch carries every earlier slice; a force push is a chain eating its own history |
@@ -135,6 +136,17 @@ order, blockers first — the topological sort happens once, at publish time. Si
 written contract rather than an assumption about whoever publishes: `docs/agents/ticket-shape.md`
 holds the publish order, the verification steps, and the repair. Do not add edge-reading here; fix
 the publish order instead. The edges exist as the record of why the order is what it is (§10).
+
+**The preflight reads one edge, and it is not the walk.** Since #14 it asks whether the **parent**
+is `blocked_by` anything still open, and refuses the whole run if so. That is not the edge-reading
+the rule above forbids: it is one question, asked once, about whether the chain starts at all —
+about a deliverable whose blocker sits outside the PRD entirely — and it decides nothing about
+*order*. Sequencing within the walk is still creation order, still edge-free. The distinction is
+also why the refusal belongs on the parent and nowhere else: slices are pieces of one feature
+landing on one branch, so a slice that needs outside work blocks the whole PRD rather than itself
+(you cannot merge four of five and wait), and a mid-walk read would in any case refuse every slice
+after the first — `docs/agents/ticket-shape.md` has each one `blocked-by` its predecessor by
+construction.
 
 **Two workflows, one label, and exactly one of them speaks.** `agent-implement` and
 `agent-implement-prd` share `agent:implement` on `issues: [labeled]`, so both jobs start on every

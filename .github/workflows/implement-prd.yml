@@ -25,6 +25,12 @@ name: Agent Implement PRD (reusable)
 # edge-reading here; fix the publish order instead. The edges exist as the
 # record of why the order is what it is.
 #
+# The preflight does read `blocked_by`, on the **parent** and only there, and
+# that is not the edge-reading this section forbids (#14). It settles whether
+# the chain starts at all — one question, asked once, about a deliverable whose
+# blocker is outside the PRD entirely. Sequencing *within* the walk stays
+# creation order, untouched.
+#
 # ## Review is once per PR, not once per slice
 #
 # `Request review` is gated on there being no open sub-issues left, so an
@@ -250,6 +256,58 @@ jobs:
           # agent-implement-reusable.yml's preflight warns about.
           if [ -z "$next" ]; then
             refuse "Refused to run: #${ISSUE_NUMBER} has no open sub-issues left — all ${subs} of them are closed, so the PRD is finished. Nothing was re-labelled; if there is more to do, add a sub-issue first. If instead a run stopped *after* closing the last sub-issue, its PR — the open one whose branch starts \`agent/prd-${ISSUE_NUMBER}-\` — is still in draft and was never handed over: add \`agent:review\` to that PR by hand. Re-labelling here only returns this message."
+          fi
+
+          # The same blocked-by refusal `agent-implement` carries, for the same
+          # reason: a blocker is a *separate* deliverable with its own PR and
+          # its own reviewer, so labelling the thing downstream must not
+          # authorise it, transitively. Being a coordinator exempts this issue
+          # from nothing — a PRD parent is a deliverable like any other — and
+          # here the cost of running anyway is larger than the flat case's one
+          # wasted run: a single label starts a chain that lands every slice on
+          # one branch, as one PR, built on work that does not exist yet.
+          #
+          # **Last, after every shape refusal above, including the finished
+          # PRD's.** Those shapes can never run at all; this one is only *not
+          # yet*, and it is the one that must give way when they collide. A
+          # finished PRD carrying a still-open edge — a blocker reopened, or an
+          # edge added once the chain was done — would otherwise take this arm
+          # and be handed `agent:blocked`, the one label `refuse_shape` above
+          # deliberately withholds from a success state, on an issue no later
+          # run can ever clear it from. The message would misdirect as well:
+          # re-adding `agent:implement` once the blocker closes lands on the
+          # finished refusal, not on a slice. Ordered this way each refusal is
+          # the one whose remedy is the real one.
+          #
+          # **The parent, and never the sub-issues.** The chain walks them in
+          # sub-issues API order and reads `blocked_by` nowhere: whatever
+          # publishes the batch owns the topological sort
+          # (docs/agents/ticket-shape.md), and reading the edges mid-walk is a
+          # deliberate non-goal (docs/parity.md §2a, and the header of this
+          # file). Underneath the doctrine is a design reason — slices are
+          # pieces of *one* feature landing on *one* branch, so a slice that
+          # needs outside work blocks the whole PRD, not itself; you cannot
+          # merge four of five and wait. That dependency belongs as an edge on
+          # the parent, which is the one edge this reads.
+          #
+          # REST rather than the shape query above, deliberately: this endpoint
+          # is purpose-built and its response was verified against a real edge.
+          # A GraphQL equivalent may exist and would save the call, but an
+          # unverified field name here fails the entire preflight, and the
+          # ~0.3 s is not worth guessing for.
+          blockers=$(gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/dependencies/blocked_by" \
+            --jq '[.[] | select(.state == "open") | "#\(.number)"] | join(", ")' 2>/dev/null || echo "")
+          # `refuse_shape` rather than `refuse`, the same deliberate exception
+          # `agent-implement` makes. By the durable/transient rule above this is
+          # transient — the blocker closes and the same run proceeds, with
+          # nothing restructured — but `agent:blocked` is the only way to find
+          # work that is waiting, and until #5 promotes these automatically
+          # nothing else will surface them. A plain `refuse` would strip the
+          # trigger label and leave the PRD carrying nothing at all.
+          #
+          # Revisit when #5 lands: `agent:queued` becomes the right marker.
+          if [ -n "$blockers" ]; then
+            refuse_shape "Refused to run: this PRD is blocked by ${blockers}, still open — and labelling it here would not waste one run but start the whole chain, landing every slice on one branch as one PR built on work that does not exist yet. Label the blocker instead, then re-add \`agent:implement\` here once it closes — remove and re-add if the label is still attached, since adding one already present fires no event. If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges on this parent, never prose and never the sub-issues, so deleting the edge is how you say so."
           fi
 
           # Heredoc form for the title: an issue title cannot contain a newline

@@ -1393,8 +1393,8 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 
   /**
-   * Three refusals, three messages, and each one names a different thing to do
-   * about it. `agent:blocked` on the two durable shapes only: a PRD whose
+   * Four refusals, four messages, and each one names a different thing to do
+   * about it. `agent:blocked` on every shape but the finished one: a PRD whose
    * sub-issues have all closed is *finished*, and labelling a completed parent
    * blocked leaves exactly the stale label docs/parity.md §10 warns about.
    */
@@ -1402,8 +1402,93 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     ["a nested PRD", "nested"],
     ["a wayfinder ticket", "planning artifact"],
     ["a PRD with nothing left to do", "closed"],
+    ["a parent with open blockers", "blocked by"],
   ])("refuses %s with its own message", (_case: string, phrase: string) => {
     expect(runOf(PRD, "preflight")).toContain(phrase);
+  });
+
+  /**
+   * The blocked-by refusal, mirrored from `agent-implement` (#14). Being a
+   * coordinator exempts the parent from nothing — it is a deliverable like any
+   * other, and here getting it wrong costs more than the flat case does: one
+   * label starts a chain that lands every slice on one branch as one PR, built
+   * on work that does not exist yet.
+   *
+   * Only **open** blockers refuse. A closed one has been satisfied, and treating
+   * it otherwise would make every PRD in a finished chain permanently unrunnable.
+   */
+  it("refuses a blocked parent on open blockers only", () => {
+    const run = runOf(PRD, "preflight");
+
+    expect(run).toContain("/dependencies/blocked_by");
+    expect(run).toContain('select(.state == "open")');
+    expect(armOf(run, '-n "$blockers"')).toContain("refuse_shape");
+  });
+
+  /**
+   * **Last of the refusals**, after every shape above it — the nested PRD, the
+   * truncated list, and above all the *finished* one. Those shapes can never run
+   * at all; this one is only *not yet*, so it is the one that gives way when
+   * they collide.
+   *
+   * The collision is real: a PRD whose sub-issues have all closed can still
+   * carry an open `blocked_by` edge — the blocker reopened, or the edge added
+   * after the chain finished. Read first, that parent takes `refuse_shape` and
+   * is handed `agent:blocked`, which is exactly the label the finished case
+   * withholds (`docs/parity.md` §10) and which nothing then removes: `Transition
+   * labels` is gated on `refused == 'false'`, and no later run can reach it. The
+   * message would misdirect too — re-adding `agent:implement` once the blocker
+   * closes lands on the finished refusal, not on a slice.
+   *
+   * Pinned by *position*, because the sibling test below ("the finished PRD
+   * not") reads only the `no open sub-issues` arm and stays green with the
+   * behaviour reachable around it.
+   */
+  it("settles the finished PRD before it reads the parent's blockers", () => {
+    const run = runOf(PRD, "preflight");
+    const read = run.indexOf("/dependencies/blocked_by");
+
+    expect(run.indexOf("nested PRDs have no single owner")).toBeLessThan(read);
+    expect(run.indexOf("no open sub-issues")).toBeLessThan(read);
+  });
+
+  /**
+   * **The parent, and never the sub-issues.** The chain walks them in sub-issues
+   * API order and reads `blocked_by` nowhere: whatever publishes the batch owns
+   * the topological sort (`docs/agents/ticket-shape.md`), and reading edges
+   * mid-walk is a recorded non-goal (`docs/parity.md` §2a, and this file's own
+   * header). Teaching the walk to check blockers would contradict both.
+   *
+   * Underneath the doctrine is a design reason: slices are pieces of *one*
+   * feature landing on *one* branch, so a slice needing outside work blocks the
+   * whole PRD — you cannot merge four of five and wait. The dependency belongs
+   * as an edge on the parent, which is the one this reads.
+   */
+  it("reads blocked_by for the parent only, and says why", () => {
+    const run = runOf(PRD, "preflight");
+    const calls = run
+      .split("\n")
+      .filter((l) => l.includes("dependencies/blocked_by") && !l.trimStart().startsWith("#"));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("${ISSUE_NUMBER}");
+    expect(calls[0]).not.toContain("sub");
+    expect(run).toContain("docs/agents/ticket-shape.md");
+    expect(run).toContain("docs/parity.md §2a");
+  });
+
+  /**
+   * The remedy names both halves, as the flat refusal does. Re-adding a label
+   * that is still attached fires no event (`docs/ADOPTING.md` §1), so "re-add"
+   * alone is inert on the path the refusal leaves it on — and a human who
+   * believes the work *can* proceed has to be told the edge is the thing to
+   * remove, or they fight the preflight in a loop.
+   */
+  it("tells the reader to remove and re-add, and that the edge is the source of truth", () => {
+    const run = runOf(PRD, "preflight");
+
+    expect(run).toMatch(/remove and re-add/i);
+    expect(run).toMatch(/blocking relation is the thing to remove/i);
   });
 
   /**

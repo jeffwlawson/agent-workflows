@@ -23,15 +23,19 @@ Five callers are installed in `.github/workflows/`, prefixed `agent-` so they do
 filename with the reusable workflows they call. Job ids stay unprefixed — `self-check` is built from
 job ids, not filenames, so `agent-review.yml` keeps `review / review`.
 
-They use a **pinned remote** reference, `jeffwlawson/agent-workflows/...@v0.1.1`, rather than a
-local `./` path. That is a deliberate choice with one decisive reason and one supporting one.
+They use a **pinned remote** reference, `jeffwlawson/agent-workflows/...@v<tag>`, rather than a
+local `./` path. The tag is not written out here on purpose — prose is the one copy of it no test
+reads, and it sat two releases behind before anyone noticed. The five callers carry the live pin
+and are checked against `package.json`; read it there.
 
-**The runner version is baked into the reusable workflow** (`npx …@<version>`, held equal to
+That is a deliberate choice with one decisive reason and one supporting one.
+
+**The runner version is baked into the reusable workflow** (`npm exec …@<version>`, held equal to
 `package.json` by a test), so the `uses:` ref selects the runner too. A pinned remote therefore
 takes YAML and runner from the *same release*, always. A local `./` path takes YAML from the **base
 branch** instead — and the moment `npm version` lands on `main`, that YAML names a version the
-registry does not have yet. Every agent run in this repo would die at `npx` until the tag is pushed
-and the publish finishes. A window that opens on every release.
+registry does not have yet. Every agent run in this repo would die at the install step until the tag
+is pushed and the publish finishes. A window that opens on every release.
 
 **And a bad merge would break the loop you would use to fix it.** With a local path the base branch
 supplies the workflow, so merging a broken reusable leaves no good version running. Pinned, a bad

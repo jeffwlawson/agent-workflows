@@ -1874,6 +1874,47 @@ describe("every workflow invokes the runners at a pinned version", () => {
     expect(Object.values(manifest.bin ?? {})).toEqual(["dist/cli.js"]);
     expect(manifest.files).toContain("dist");
   });
+
+  /**
+   * **And the documentation writes no version down at all.**
+   *
+   * Every pin in YAML is checked against `package.json` by the tests above, so
+   * the two that matter cannot drift. Prose was the third copy, read by nothing:
+   * `CLAUDE.md` and `docs/ADOPTING.md` still said `@v0.1.1` two releases later,
+   * and `ADOPTING.md` additionally showed the bare `npx` form that #8 replaced —
+   * a reader following it would install the pattern the loop stopped using, at a
+   * version it stopped publishing. Neither was noticed by a release that
+   * otherwise renames the version in seventeen places.
+   *
+   * The rule is *no literal*, not *the right literal*: a correct copy is still a
+   * copy, and the next release makes it wrong again. Docs say `@v<tag>` and
+   * point at the callers, which carry the live one.
+   *
+   * `docs/friction.md` is exempt because it is a dated narrative log — its
+   * `0.1.1` lines are records of what was true that day, and CLAUDE.md forbids
+   * editing history into it.
+   *
+   * Walked rather than listed, for the reason `copy-assets.ts` walks: a doc
+   * added next release is the one file nobody adds to a list.
+   */
+  it("names no version in prose, only in the pins under test", () => {
+    const PIN_IN_PROSE = /agent-workflows\S*@v?\d+\.\d+\.\d+/g;
+    const EXEMPT = new Set(["docs/friction.md"]);
+    const SKIPPED = new Set(["node_modules", "dist", "output", ".git"]);
+
+    const docsUnder = (dir: string): readonly string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const rel = dir === "." ? entry.name : `${dir}/${entry.name}`;
+        if (entry.isDirectory()) return SKIPPED.has(entry.name) ? [] : docsUnder(rel);
+        return entry.name.endsWith(".md") && !EXEMPT.has(rel) ? [rel] : [];
+      });
+
+    const offenders = docsUnder(".").flatMap((doc) =>
+      (fs.readFileSync(doc, "utf8").match(PIN_IN_PROSE) ?? []).map((hit) => `${doc}: ${hit}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
 });
 
 /**

@@ -237,8 +237,14 @@ The runners are **not copied either**. They are an npm package — `@jeffwlawson
 and the reusable workflow invokes one subcommand of it at a version pinned in *its* YAML:
 
 ```yaml
-run: npx --yes @jeffwlawson/agent-workflows@0.1.1 review
+run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@<version> -- agent-workflows review
 ```
+
+`--prefix "$RUNNER_TEMP"` rather than a bare `npx`, and that is not a flourish: `npx` will reuse a
+local package that satisfies the spec, which in the repository that *is* the package means the
+checkout runs instead of the pinned release. `--ignore-existing` does not prevent it. The version is
+shown as a placeholder here because the real one lives in the workflow and is held equal to
+`package.json` by a test — a literal in this file would only be a copy that goes stale.
 
 Prompts ship inside the package, so there is nothing to copy and nothing to keep in step. That pin
 is ours rather than yours now, which is one fewer thing for you to get wrong — but the reasoning
@@ -283,7 +289,9 @@ trigger, the permissions on both halves, the pin, and the `self-check` coupling.
 reusable half lived in this repo and the caller half lived in whichever repo had adopted the loop,
 so the pair could only ever be checked by hand, in a repository this one cannot see.
 
-For orientation, a caller is a trigger and two wires:
+For orientation, a caller is a trigger and two wires — copy the real ones from
+[`examples/callers/`](../examples/callers/), which carry the live pin where this sketch has a
+placeholder:
 
 ```yaml
 name: Agent Fix
@@ -294,7 +302,7 @@ on:
 
 jobs:
   fix:
-    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.1.1
+    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v<latest tag>
     permissions:
       contents: write
       packages: read            # install the runner package; see above

@@ -14,7 +14,7 @@ on:
 
 jobs:
   implement-prd:
-    uses: jeffwlawson/agent-workflows/.github/workflows/implement-prd.yml@v0.1.3
+    uses: jeffwlawson/agent-workflows/.github/workflows/implement-prd.yml@v0.1.4
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs:
     # `contents: write` to push, `issues: write` to transition the parent's

@@ -466,7 +466,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.1.3 -- agent-workflows implement-prd
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.1.4 -- agent-workflows implement-prd
 
       # Plain push, deliberately. `agent-implement` force-pushes because it owns
       # a branch it created that run; this branch carries every earlier slice,

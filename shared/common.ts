@@ -27,6 +27,15 @@ export const fail = (message: string): never => {
   process.exit(1);
 };
 
+/**
+ * Run a **literal** command through a shell, throwing on a non-zero exit. The
+ * rule is *variables go through argv*, not *never use `sh`* (#75): anything
+ * holding a value goes to `git()`, and anything reaching a GitHub surface to
+ * `gh()` or `safeGh()`, neither of which spawns a shell. Three `gh` calls were
+ * once built as text for this, and the only thing keeping a crafted issue
+ * reference out of `/bin/sh` was a regex three files away (#2, #10). A test
+ * walks the runner surface for that shape, so a fourth is caught on arrival.
+ */
 export const sh = (cmd: string): string =>
   execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 

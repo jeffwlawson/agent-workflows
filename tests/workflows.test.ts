@@ -1114,8 +1114,45 @@ describe("agent-implement refuses issue shapes it cannot handle", () => {
   it.each([
     ["a sub-issue", "sub-issue of"],
     ["a wayfinder ticket", "planning artifact"],
+    ["an issue with open blockers", "blocked by"],
   ])("refuses %s with its own message", (_shape: string, phrase: string) => {
     expect(preflightRun()).toContain(phrase);
+  });
+
+  /**
+   * The blocked-by refusal, and why it is a refusal rather than a chain.
+   *
+   * A PRD parent **contains** its sub-issues, so authorising the parent
+   * authorises the slices — that is what lets one label drive a five-run chain
+   * onto one branch. `blocked_by` is **sequencing**: the blocker is a separate
+   * deliverable with its own PR, and implementing it because somebody labelled
+   * the issue downstream would authorise work nobody asked for, transitively.
+   * Some blockers are decision tickets that are not implementable at all, which
+   * is the same reason the wayfinder refusal above exists.
+   *
+   * Only **open** blockers refuse. A closed one has been satisfied, and treating
+   * it otherwise would make every issue in a finished chain permanently
+   * unrunnable.
+   */
+  it("refuses on open blockers only, read from the native edges", () => {
+    const run = preflightRun();
+
+    expect(run).toContain("/dependencies/blocked_by");
+    expect(run).toContain('select(.state == "open")');
+  });
+
+  /**
+   * The remedy has to name both halves. Re-adding a label that is still attached
+   * fires no event (`docs/ADOPTING.md` §1), so "re-add" alone is inert on the
+   * path where the refusal left it in place — and a human who believes the work
+   * *can* proceed needs to be told the edge is the thing to remove, not the
+   * label, or they will fight the preflight in a loop.
+   */
+  it("tells the reader to remove and re-add, and that the edge is the source of truth", () => {
+    const run = preflightRun();
+
+    expect(run).toMatch(/remove and re-add/i);
+    expect(run).toMatch(/blocking relation is the thing to remove/i);
   });
 
   /**

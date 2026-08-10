@@ -213,6 +213,27 @@ jobs:
             refuse_shape "Refused to run: this issue is a sub-issue of #${parent}. Sub-issues are driven by their parent, never labelled directly — implemented alone, this one loses the ordering and the shared context the parent holds. Label #${parent} instead: the PRD workflow works its sub-issues in order, one per run."
           fi
 
+          # Blocked-by is *sequencing*, not containment, and that distinction is
+          # the whole reason this is a refusal rather than a chain. A PRD parent
+          # contains its sub-issues — the parent's body is the spec and the
+          # slices are pieces of it — so authorising the parent authorises them,
+          # which is what lets one label drive five runs onto one branch. A
+          # blocker is a separate deliverable with its own PR and its own
+          # reviewer. Implementing it because somebody labelled the thing
+          # downstream would authorise work nobody asked for, transitively, and
+          # some blockers are decision tickets that are not implementable at all.
+          #
+          # REST rather than the shape query above, deliberately: this endpoint
+          # is purpose-built and its response was verified against a real edge.
+          # A GraphQL equivalent may exist and would save the call, but an
+          # unverified field name here fails the entire preflight, and the
+          # ~0.3 s is not worth guessing for.
+          blockers=$(gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/dependencies/blocked_by" \
+            --jq '[.[] | select(.state == "open") | "#\(.number)"] | join(", ")' 2>/dev/null || echo "")
+          if [ -n "$blockers" ]; then
+            refuse_shape "Refused to run: blocked by ${blockers}, still open. Label the blocker instead, then re-add \`agent:implement\` here once it closes — remove and re-add if the label is still attached, since adding one already present fires no event. If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges, never prose, so deleting the edge is how you say so."
+          fi
+
           existing=$(gh pr list --state open --json number,url,body \
             --jq "[.[] | select(.body | test(\"(?i)(closes|fixes|resolves)\\\\s+#${ISSUE_NUMBER}\\\\b\"))] | .[0].url // empty")
           if [ -n "$existing" ]; then

@@ -234,6 +234,30 @@ jobs:
             refuse_shape "Refused to run: this PRD is itself a sub-issue of #${parent}, and nested PRDs have no single owner of the ordering — #${parent}'s chain and this one would run over each other. Flatten the hierarchy, then label the outermost parent."
           fi
 
+          # The query pages at 100, and `totalCount` does not. Past that, `next`
+          # can come back empty while open sub-issues sit off the end of the
+          # page — and the refusal below would then report a PRD as *finished*
+          # when it is not, which is the plausible-wrong-answer class every
+          # other guard in this file exists to prevent. Refuse loudly instead.
+          if [ "$subs" -gt 100 ]; then
+            refuse_shape "Refused to run: #${ISSUE_NUMBER} has ${subs} sub-issues and this workflow reads the first 100, so it cannot see the whole chain. Split the PRD — that is the remedy on your side, since the page size lives in the reusable workflow this repo calls rather than in a file here."
+          fi
+
+          # The whole scheduling policy, in one filter: keep the open ones in
+          # the order the API returned them, take the head. No sort, no edge
+          # read — see the note at the top of this file.
+          next=$(jq -c '[.subIssues.nodes[] | select(.state == "OPEN")] | .[0] // empty' <<< "$issue")
+          # The PR clause is load-bearing, not padding. A run that dies after
+          # `Close the finished sub-issue` but before `Request review` leaves
+          # the PRD finished on the tracker and the PR in draft with no
+          # `agent:review` — and re-labelling the parent, which is exactly what
+          # the failure comment asks for, lands here. Naming the other way in
+          # makes this a recovery rather than the remedy-that-refuses-again trap
+          # agent-implement-reusable.yml's preflight warns about.
+          if [ -z "$next" ]; then
+            refuse "Refused to run: #${ISSUE_NUMBER} has no open sub-issues left — all ${subs} of them are closed, so the PRD is finished. Nothing was re-labelled; if there is more to do, add a sub-issue first. If instead a run stopped *after* closing the last sub-issue, its PR — the open one whose branch starts \`agent/prd-${ISSUE_NUMBER}-\` — is still in draft and was never handed over: add \`agent:review\` to that PR by hand. Re-labelling here only returns this message."
+          fi
+
           # The same blocked-by refusal `agent-implement` carries, for the same
           # reason: a blocker is a *separate* deliverable with its own PR and
           # its own reviewer, so labelling the thing downstream must not
@@ -243,8 +267,17 @@ jobs:
           # wasted run: a single label starts a chain that lands every slice on
           # one branch, as one PR, built on work that does not exist yet.
           #
-          # Placed after the nested-PRD refusal, so the shapes that can never
-          # run at all are settled before the one that is only *not yet*.
+          # **Last, after every shape refusal above, including the finished
+          # PRD's.** Those shapes can never run at all; this one is only *not
+          # yet*, and it is the one that must give way when they collide. A
+          # finished PRD carrying a still-open edge — a blocker reopened, or an
+          # edge added once the chain was done — would otherwise take this arm
+          # and be handed `agent:blocked`, the one label `refuse_shape` above
+          # deliberately withholds from a success state, on an issue no later
+          # run can ever clear it from. The message would misdirect as well:
+          # re-adding `agent:implement` once the blocker closes lands on the
+          # finished refusal, not on a slice. Ordered this way each refusal is
+          # the one whose remedy is the real one.
           #
           # **The parent, and never the sub-issues.** The chain walks them in
           # sub-issues API order and reads `blocked_by` nowhere: whatever
@@ -275,30 +308,6 @@ jobs:
           # Revisit when #5 lands: `agent:queued` becomes the right marker.
           if [ -n "$blockers" ]; then
             refuse_shape "Refused to run: this PRD is blocked by ${blockers}, still open — and labelling it here would not waste one run but start the whole chain, landing every slice on one branch as one PR built on work that does not exist yet. Label the blocker instead, then re-add \`agent:implement\` here once it closes — remove and re-add if the label is still attached, since adding one already present fires no event. If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges on this parent, never prose and never the sub-issues, so deleting the edge is how you say so."
-          fi
-
-          # The query pages at 100, and `totalCount` does not. Past that, `next`
-          # can come back empty while open sub-issues sit off the end of the
-          # page — and the refusal below would then report a PRD as *finished*
-          # when it is not, which is the plausible-wrong-answer class every
-          # other guard in this file exists to prevent. Refuse loudly instead.
-          if [ "$subs" -gt 100 ]; then
-            refuse_shape "Refused to run: #${ISSUE_NUMBER} has ${subs} sub-issues and this workflow reads the first 100, so it cannot see the whole chain. Split the PRD — that is the remedy on your side, since the page size lives in the reusable workflow this repo calls rather than in a file here."
-          fi
-
-          # The whole scheduling policy, in one filter: keep the open ones in
-          # the order the API returned them, take the head. No sort, no edge
-          # read — see the note at the top of this file.
-          next=$(jq -c '[.subIssues.nodes[] | select(.state == "OPEN")] | .[0] // empty' <<< "$issue")
-          # The PR clause is load-bearing, not padding. A run that dies after
-          # `Close the finished sub-issue` but before `Request review` leaves
-          # the PRD finished on the tracker and the PR in draft with no
-          # `agent:review` — and re-labelling the parent, which is exactly what
-          # the failure comment asks for, lands here. Naming the other way in
-          # makes this a recovery rather than the remedy-that-refuses-again trap
-          # agent-implement-reusable.yml's preflight warns about.
-          if [ -z "$next" ]; then
-            refuse "Refused to run: #${ISSUE_NUMBER} has no open sub-issues left — all ${subs} of them are closed, so the PRD is finished. Nothing was re-labelled; if there is more to do, add a sub-issue first. If instead a run stopped *after* closing the last sub-issue, its PR — the open one whose branch starts \`agent/prd-${ISSUE_NUMBER}-\` — is still in draft and was never handed over: add \`agent:review\` to that PR by hand. Re-labelling here only returns this message."
           fi
 
           # Heredoc form for the title: an issue title cannot contain a newline

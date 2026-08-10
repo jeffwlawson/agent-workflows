@@ -1393,8 +1393,8 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 
   /**
-   * Three refusals, three messages, and each one names a different thing to do
-   * about it. `agent:blocked` on the two durable shapes only: a PRD whose
+   * Four refusals, four messages, and each one names a different thing to do
+   * about it. `agent:blocked` on every shape but the finished one: a PRD whose
    * sub-issues have all closed is *finished*, and labelling a completed parent
    * blocked leaves exactly the stale label docs/parity.md §10 warns about.
    */
@@ -1414,21 +1414,42 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * label starts a chain that lands every slice on one branch as one PR, built
    * on work that does not exist yet.
    *
-   * After the nested-PRD refusal, so the two shapes that can never run at all
-   * are settled before this one, which is only *not yet*.
-   *
    * Only **open** blockers refuse. A closed one has been satisfied, and treating
    * it otherwise would make every PRD in a finished chain permanently unrunnable.
    */
-  it("refuses a blocked parent on open blockers only, after the nested-PRD refusal", () => {
+  it("refuses a blocked parent on open blockers only", () => {
     const run = runOf(PRD, "preflight");
 
     expect(run).toContain("/dependencies/blocked_by");
     expect(run).toContain('select(.state == "open")');
-    expect(run.indexOf("nested PRDs have no single owner")).toBeLessThan(
-      run.indexOf("/dependencies/blocked_by"),
-    );
     expect(armOf(run, '-n "$blockers"')).toContain("refuse_shape");
+  });
+
+  /**
+   * **Last of the refusals**, after every shape above it — the nested PRD, the
+   * truncated list, and above all the *finished* one. Those shapes can never run
+   * at all; this one is only *not yet*, so it is the one that gives way when
+   * they collide.
+   *
+   * The collision is real: a PRD whose sub-issues have all closed can still
+   * carry an open `blocked_by` edge — the blocker reopened, or the edge added
+   * after the chain finished. Read first, that parent takes `refuse_shape` and
+   * is handed `agent:blocked`, which is exactly the label the finished case
+   * withholds (`docs/parity.md` §10) and which nothing then removes: `Transition
+   * labels` is gated on `refused == 'false'`, and no later run can reach it. The
+   * message would misdirect too — re-adding `agent:implement` once the blocker
+   * closes lands on the finished refusal, not on a slice.
+   *
+   * Pinned by *position*, because the sibling test below ("the finished PRD
+   * not") reads only the `no open sub-issues` arm and stays green with the
+   * behaviour reachable around it.
+   */
+  it("settles the finished PRD before it reads the parent's blockers", () => {
+    const run = runOf(PRD, "preflight");
+    const read = run.indexOf("/dependencies/blocked_by");
+
+    expect(run.indexOf("nested PRDs have no single owner")).toBeLessThan(read);
+    expect(run.indexOf("no open sub-issues")).toBeLessThan(read);
   });
 
   /**

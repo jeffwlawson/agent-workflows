@@ -31,26 +31,6 @@ export const sh = (cmd: string): string =>
   execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
- * `sh`, returning "" instead of throwing on a non-zero exit. Left in place for
- * the shell commands it is for, with **no caller at all today** — every one it
- * had was a `gh` call, and that is the point of the note below.
- *
- * Nothing reaching a **GitHub** surface belongs here: `gh` goes through `gh()`
- * or `safeGh()`, which pass argv and never spawn a shell. That is not a style
- * preference — three call sites used to interpolate into a command string, and
- * the only thing keeping a crafted issue reference out of `/bin/sh` was a regex
- * three files away (issues #2 and #10). A test walks the whole runner surface
- * for the shape, so a fourth is caught on arrival rather than by review.
- */
-export const safeSh = (cmd: string): string => {
-  try {
-    return sh(cmd);
-  } catch {
-    return "";
-  }
-};
-
-/**
  * The model agents run on unless something overrides it. Pinned deliberately
  * rather than floating: the same reasoning as `.nvmrc` — the runner, CI and a
  * local run must not silently drift onto different versions. Bumping it is a
@@ -148,8 +128,7 @@ export const gh = (args: string[]): string =>
   execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
- * `gh` with argv, returning "" instead of throwing when it exits non-zero —
- * `safeSh`'s swallowing without `safeSh`'s shell.
+ * `gh` with argv, returning "" instead of throwing when it exits non-zero.
  *
  * Both halves are load-bearing. The argv half is the same rule as `gh` and
  * `git`: a variable reaching a subprocess must arrive as one argument, not as

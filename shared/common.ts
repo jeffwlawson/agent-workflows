@@ -30,6 +30,18 @@ export const fail = (message: string): never => {
 export const sh = (cmd: string): string =>
   execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
+/**
+ * `sh`, returning "" instead of throwing on a non-zero exit. Left in place for
+ * the shell commands it is for, with **no caller at all today** — every one it
+ * had was a `gh` call, and that is the point of the note below.
+ *
+ * Nothing reaching a **GitHub** surface belongs here: `gh` goes through `gh()`
+ * or `safeGh()`, which pass argv and never spawn a shell. That is not a style
+ * preference — three call sites used to interpolate into a command string, and
+ * the only thing keeping a crafted issue reference out of `/bin/sh` was a regex
+ * three files away (issues #2 and #10). A test walks the whole runner surface
+ * for the shape, so a fourth is caught on arrival rather than by review.
+ */
 export const safeSh = (cmd: string): string => {
   try {
     return sh(cmd);
@@ -273,6 +285,34 @@ export const fetchTrustedComments = (number: string): string => {
     .filter((text) => text.trim().length > 0)
     .join("\n\n---\n\n");
 };
+
+/**
+ * Renders a pull request as a Markdown heading and its description, in jq
+ * because `gh` will do it in one call and there is nothing to parse on this
+ * side. The `\n\n` here is a real newline pair, not a backslash and an `n`:
+ * as argv it reaches jq exactly as written, and re-escaping it would put a
+ * literal `\n` into the middle of the prompt.
+ *
+ * `// ""` is load-bearing — `gh` reports an empty PR description as JSON null,
+ * and `string + null` is an error in jq rather than an empty string.
+ */
+const PR_HEADING_JQ = `"# " + .title + "\n\n" + (.body // "")`;
+
+/**
+ * The PR's title and body as one block of Markdown, for a runner that needs the
+ * PR's own words as context.
+ *
+ * Read through `safeGh` on both counts. Argv, because a command string is where
+ * the value of a variable becomes syntax — `PR_NUMBER` is a GitHub-produced
+ * integer, but "safe because of what it happens to hold" is the argument the
+ * argv boundary exists to stop making (#10). And swallowing, because the caller
+ * is `update-branch`, which the workflow only reaches once git has left the tree
+ * conflicted: an unreadable `gh pr view` is an API blip, not a reason to abandon
+ * a merge resolution, so the fallback is the reference itself.
+ */
+export const fetchPullRequestHeading = (prNumber: string): string =>
+  safeGh(["pr", "view", prNumber, "--json", "title,body", "--jq", PR_HEADING_JQ]) ||
+  `PR #${prNumber}`;
 
 export const writeJson = (filename: string, value: unknown): void => {
   fs.mkdirSync(outputDir(), { recursive: true });

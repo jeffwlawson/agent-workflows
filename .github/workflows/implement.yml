@@ -230,6 +230,16 @@ jobs:
           # ~0.3 s is not worth guessing for.
           blockers=$(gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/dependencies/blocked_by" \
             --jq '[.[] | select(.state == "open") | "#\(.number)"] | join(", ")' 2>/dev/null || echo "")
+          # `refuse_shape` rather than `refuse`, against the distinction those two
+          # verbs draw above — and the exception is deliberate. By that rule this
+          # is *transient*: the blocker closes and the same run proceeds, with
+          # nothing restructured. But `agent:blocked` is the only way to find
+          # work that is waiting, and until #5 promotes these automatically,
+          # nothing else will surface them. A plain `refuse` would strip the
+          # trigger label and leave the issue carrying nothing at all.
+          #
+          # Revisit when #5 lands: `agent:queued` becomes the right marker, and
+          # this stops being an exception.
           if [ -n "$blockers" ]; then
             refuse_shape "Refused to run: blocked by ${blockers}, still open. Label the blocker instead, then re-add \`agent:implement\` here once it closes — remove and re-add if the label is still attached, since adding one already present fires no event. If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges, never prose, so deleting the edge is how you say so."
           fi

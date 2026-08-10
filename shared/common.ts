@@ -27,28 +27,17 @@ export const fail = (message: string): never => {
   process.exit(1);
 };
 
+/**
+ * Run a **literal** command through a shell, throwing on a non-zero exit. The
+ * rule is *variables go through argv*, not *never use `sh`* (#75): anything
+ * holding a value goes to `git()`, and anything reaching a GitHub surface to
+ * `gh()` or `safeGh()`, neither of which spawns a shell. Three `gh` calls were
+ * once built as text for this, and the only thing keeping a crafted issue
+ * reference out of `/bin/sh` was a regex three files away (#2, #10). A test
+ * walks the runner surface for that shape, so a fourth is caught on arrival.
+ */
 export const sh = (cmd: string): string =>
   execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-
-/**
- * `sh`, returning "" instead of throwing on a non-zero exit. Left in place for
- * the shell commands it is for, with **no caller at all today** — every one it
- * had was a `gh` call, and that is the point of the note below.
- *
- * Nothing reaching a **GitHub** surface belongs here: `gh` goes through `gh()`
- * or `safeGh()`, which pass argv and never spawn a shell. That is not a style
- * preference — three call sites used to interpolate into a command string, and
- * the only thing keeping a crafted issue reference out of `/bin/sh` was a regex
- * three files away (issues #2 and #10). A test walks the whole runner surface
- * for the shape, so a fourth is caught on arrival rather than by review.
- */
-export const safeSh = (cmd: string): string => {
-  try {
-    return sh(cmd);
-  } catch {
-    return "";
-  }
-};
 
 /**
  * The model agents run on unless something overrides it. Pinned deliberately
@@ -148,8 +137,7 @@ export const gh = (args: string[]): string =>
   execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
- * `gh` with argv, returning "" instead of throwing when it exits non-zero —
- * `safeSh`'s swallowing without `safeSh`'s shell.
+ * `gh` with argv, returning "" instead of throwing when it exits non-zero.
  *
  * Both halves are load-bearing. The argv half is the same rule as `gh` and
  * `git`: a variable reaching a subprocess must arrive as one argument, not as

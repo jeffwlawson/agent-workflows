@@ -197,8 +197,8 @@ describe("agentModel — precedence", () => {
 /**
  * `safeGh` exists so the two trusted-fetch helpers can reach `gh` the way
  * everything else does — argv, never `/bin/sh` — without giving up the one
- * behaviour they took from `safeSh`: a non-zero exit is an ordinary "no such
- * issue", not an error (issue #2).
+ * behaviour they took from `safeSh`, the since-deleted shell helper (#12): a
+ * non-zero exit is an ordinary "no such issue", not an error (issue #2).
  *
  * Those helpers used to interpolate into ``safeSh(`gh api …`)``, and the only
  * thing keeping `Closes #1;id` out of a shell was a `\d+` capture in
@@ -207,7 +207,7 @@ describe("agentModel — precedence", () => {
  * one element of an argv array, and `execSync` — the shell path — is not used at
  * all. Metacharacters are then just characters, whatever produced them.
  */
-describe("safeGh — argv, with safeSh's swallowing", () => {
+describe("safeGh — argv, with the swallowing safeSh had", () => {
   beforeEach(() => {
     spawned.mockReset();
     shelled.mockReset();

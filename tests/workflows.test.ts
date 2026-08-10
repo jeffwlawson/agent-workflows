@@ -1965,28 +1965,38 @@ describe("the runner package is published from a tag push", () => {
 
 /**
  * Every `gh` in the shipped **runner** surface arrives as argv, never as text a
- * shell re-parses. Same rule as `git` (issue #75), and the same reason: a value
- * that reaches a subprocess as syntax is a value someone else can write. The
- * workflow half ships too and reaches `gh` from bash; there the boundary is a
- * quoted env var (`gh pr edit "$PR_NUMBER"`), not argv, and this test says
+ * shell re-parses: `gh()` or `safeGh()`, both of which pass an argv array and
+ * never spawn a shell. Same rule as `git` (issue #75), and the same reason: a
+ * value that reaches a subprocess as syntax is a value someone else can write.
+ * The workflow half ships too and reaches `gh` from bash; there the boundary is
+ * a quoted env var (`gh pr edit "$PR_NUMBER"`), not argv, and this test says
  * nothing about it.
  *
  * This test is the record, and the record is the point. Three sites once
- * interpolated into a shell string; #9 fixed two and deleted the comment in
- * `shared/common.ts` that had described the whole class — correctly, since the
- * sites it named were gone, except that the third one (`update-branch.ts`'s
- * `gh pr view`) went from documented to invisible in the same change (#10). A
- * prose note only covers the sites its author knew about on the day; a grep
- * goes on reading the file after everyone has stopped.
+ * interpolated into a shell string, and the only thing keeping a crafted issue
+ * reference out of `/bin/sh` was a `\d+` capture in review-context.ts — a
+ * control three files from the interpolation it protected (#2). #9 fixed two of
+ * them and deleted the comment in `shared/common.ts` that had described the
+ * whole class — correctly, since the sites it named were gone, except that the
+ * third one (`update-branch.ts`'s `gh pr view`) went from documented to
+ * invisible in the same change (#10). A prose note only covers the sites its
+ * author knew about on the day; a grep goes on reading the file after everyone
+ * has stopped.
  *
  * Comment lines are excluded on purpose, so that this class can go on being
- * described in prose — including in the doc comment on `safeSh`, which is where
- * a reader reaching for a shell actually arrives.
+ * described in prose. It was described on `safeSh` — the helper a reader
+ * reaching for a swallowing shell command arrived at, and by then the only
+ * caller of it was a `gh` call. #12 deleted the helper rather than leave a
+ * documented, blessed-looking invitation to write the fourth site, and this
+ * comment is where its note landed — with a short one on `sh`, which is where a
+ * reader reaching for a shell arrives now that the swallowing wrapper is gone.
  */
 describe("every gh call reaches argv, never a shell", () => {
   // `sh(`, `safeSh(` or `execSync(` opening a string that names `gh` before it
   // closes. Deliberately not anchored to a command name after `gh`: the defect
-  // is the shell, whatever is being run through it.
+  // is the shell, whatever is being run through it. `safeSh` names nothing that
+  // exists since #12 and stays here anyway — a re-introduction under the old
+  // name is the exact shape this is for, and dropping it would exempt it.
   //
   // A grep, and priced as one. Matching is per line and `[^`'"]*` stops at the
   // first quote, so at least three shapes pass: the call hand-wrapped so the
@@ -1999,18 +2009,65 @@ describe("every gh call reaches argv, never a shell", () => {
   const SHELLED_GH = /\b(?:safeSh|sh|execSync)\(\s*[`'"][^`'"]*\bgh\b/;
   const sources = sandcastleFiles.filter((file) => file.endsWith(".ts"));
 
+  // The whole scan, not just the pattern — trim, then drop comment lines, then
+  // match. The controls below go through this rather than calling the regex, so
+  // that the exclusion is under the same guard the pattern is: widening it to
+  // `line.includes("//")` exempts every offender carrying a trailing comment,
+  // and a regex-only control would stay green while it did.
+  const offendersIn = (text: string): { line: string; n: number }[] =>
+    text
+      .split("\n")
+      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      .filter(({ line }) => !line.startsWith("*") && !line.startsWith("//"))
+      .filter(({ line }) => SHELLED_GH.test(line));
+
   it("finds sources to check", () => {
     expect(sources.length).toBeGreaterThan(0);
   });
 
+  /**
+   * "Matched nothing" is only a result if the pattern can match something, and
+   * after #12 nothing in the tree exercises it any more — the three sites are
+   * fixed and the helper that carried two of them is deleted. Without a control
+   * the grep could be narrowed to nothing at all, by an edit as small as pruning
+   * a name that no longer resolves, and every file would still report clean.
+   */
+  it.each([
+    "return safeSh(`gh api repos/${ghRepo}/issues/${n}`);",
+    "const body = sh(`gh pr view ${prNumber} --json body`);",
+    'execSync("gh issue comment 1 --body-file -")',
+    "    const body = sh(`gh pr view ${prNumber} --json body`); // trusted, honest",
+  ])("catches %s", (offender: string) => {
+    expect(offendersIn(offender)).toHaveLength(1);
+  });
+
+  // The forms that are the point of the rule, plus a literal `git` through `sh`
+  // — live across the runner surface and deliberately untouched (#12), so a
+  // pattern that started failing them would be reported as a defect here rather
+  // than once per call site.
+  it.each([
+    'safeGh(["pr", "view", prNumber, "--json", "title,body"])',
+    "gh([`api`, `repos/${ghRepo}/issues/${n}`])",
+    'sh("git rev-parse HEAD")',
+  ])("passes %s, which reaches argv", (allowed: string) => {
+    expect(offendersIn(allowed)).toEqual([]);
+  });
+
+  // The exclusion is the other half, and it is deliberate: this class has to be
+  // describable in prose, including in the doc comment on `sh` that now carries
+  // the note. Indented, because that is how a doc comment arrives — dropping the
+  // trim would report every file that explains the rule as breaking it.
+  it.each([
+    " * or `safeSh(`gh api …`)`, which is the shape this forbids",
+    "    // was `const body = sh(`gh pr view …`)` before #9",
+  ])("exempts %s, which only describes it", (prose: string) => {
+    expect(offendersIn(prose)).toEqual([]);
+  });
+
   it.each(sources)("%s: reaches gh through argv", (file: string) => {
-    const offenders = fs
-      .readFileSync(file, "utf8")
-      .split("\n")
-      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
-      .filter(({ line }) => !line.startsWith("*") && !line.startsWith("//"))
-      .filter(({ line }) => SHELLED_GH.test(line))
-      .map(({ line, n }) => `${file}:${n} ${line}`);
+    const offenders = offendersIn(fs.readFileSync(file, "utf8")).map(
+      ({ line, n }) => `${file}:${n} ${line}`,
+    );
 
     expect(offenders).toEqual([]);
   });

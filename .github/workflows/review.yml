@@ -105,6 +105,12 @@ jobs:
     # review that runs, costs a full agent pass, and silently transitions no
     # label at all.
     permissions:
+      # Reading the check runs the CI wait below polls. On a **public**
+      # repository they are readable without this scope, which is why every
+      # repo in the pilot worked without it; on a private one the same call
+      # 403s `Resource not accessible by integration`. Latent since v0.1.0 and
+      # found by the first private adopter.
+      checks: read
       contents: read
       # Installing the runner package. GitHub Packages has no anonymous install,
       # so this is needed even though the package is public — and, being a
@@ -307,16 +313,38 @@ jobs:
           out="${RUNNER_TEMP}/ci_status.md"
           : > "$out"
 
+          # Prints a count, or nothing at all when the API call fails. The
+          # distinction matters: swallowing a failure into `0` reads as "no
+          # checks pending" and reviews blind, while folding the error body
+          # into the count reads as a number that is not one — `-eq` then
+          # errors on every iteration and the loop spins out its full budget.
+          # Both were the same bug: a 403 from a private repository, whose
+          # check runs need `checks: read` (granted above since v0.1.5).
           pending_count() {
             gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate \
               --jq "[.check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\")] | length" \
-              2>/dev/null || echo 0
+              2>/dev/null
           }
 
           deadline=$(( $(date +%s) + WAIT_SECONDS ))
           while :; do
             pending=$(pending_count)
-            [ "${pending:-0}" -eq 0 ] && break
+
+            # Not a number — the API call failed rather than returning a
+            # count. Say so once, loudly, and stop: waiting cannot fix a
+            # permission error, and spinning to the deadline turns a
+            # diagnosable 403 into fifteen quiet minutes. The step stays
+            # `continue-on-error`, so the review still runs; what changes is
+            # that both the log and the agent's evidence say it is blind.
+            case "$pending" in
+              "" | *[!0-9]*)
+                echo "::error::Could not read check runs for ${HEAD_SHA}. On a private repository this is a missing \`checks: read\` grant in the caller and the called workflow — see docs/ADOPTING.md §4. Reviewing without CI evidence."
+                echo "_Could not read this commit's check runs, so the review below has no CI evidence._" >> "$out"
+                break
+                ;;
+            esac
+
+            [ "$pending" -eq 0 ] && break
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "_Timed out waiting for ${pending} check(s); results below may be incomplete._" >> "$out"
               break

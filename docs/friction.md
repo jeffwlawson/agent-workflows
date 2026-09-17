@@ -1782,3 +1782,38 @@ unexercised or outstanding:
   has `.sandcastle/agent-workflows/implement-pr/` dies on module resolution before
   `failure_reason.txt` is written, so the comment reads "(no reason file written)". Recovery is
   `agent:update-branch`, whose runner the rename did not touch. No such branches remain open today.
+
+## 2026-09-17 — First private adopter: the CI wait was never granted `checks: read`
+
+`mealie-mcp-server` is the first repository to adopt this loop while **private**, and it found a
+grant missing since v0.1.0. `agent-review`'s CI wait polls the check-runs API; a public repository
+serves that endpoint without `checks: read`, so `winget-manifest-lint` and this repo both worked
+without ever declaring it. On a private repo the same call returns
+`403 Resource not accessible by integration`.
+
+The permission was the defect. What made it cost fifteen minutes instead of one was
+`pending_count`'s `|| echo 0`, and it is worth recording that the shape had **two** silent
+outcomes, not one:
+
+- a clean non-zero exit became `0`, read as "nothing pending", and the review ran blind immediately;
+- a 403 whose body reached stdout became `{"message":…}0`, which `-eq` rejects as non-numeric on
+  every iteration — so the loop never broke, spun the full `WAIT_SECONDS: 900`, and reviewed blind
+  at the end anyway.
+
+The observed symptom was the second: `Waiting for {"message":"Resource not accessible by
+integration",…}0 check(s)…` repeating every 20 seconds. It reads as a hang. It is not — it is a
+permission error wearing a counter's clothes, and the deadline would have ended it.
+
+Two things generalise from this.
+
+**A default over a failed call is not a fallback, it is a lie with a plausible value.** `|| echo 0`
+was written for a transient blip and did its job for every public repo; the first real failure it
+met, it converted into an answer. The count now returns nothing on failure and the loop matches
+non-numeric explicitly, says so with `::error::`, writes the absence into the evidence the agent
+reads, and breaks — waiting cannot fix a 403.
+
+**Public-only piloting hides every permission a public repo does not need.** Nothing in the test
+suite could have caught this: the YAML was valid, the halves agreed with each other, and the
+assertion held the pair equal rather than against a table of what the job actually calls. The
+permissions test now names `checks: read` explicitly for review, which is the one place a table
+beats an equality — the equality says the halves match, and both halves were wrong together.

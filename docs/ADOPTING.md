@@ -326,16 +326,25 @@ jobs:
 
 The permissions per workflow, which are what each job actually spends:
 
-| Caller | `contents` | `issues` | `packages` | `pull-requests` |
-|---|---|---|---|---|
-| `agent-implement` | write | write | read | write |
-| `agent-implement-prd` | write | write | read | write |
-| `agent-review` | **read** | — | read | write |
-| `agent-fix` | write | — | read | write |
-| `agent-update-branch` | write | — | read | write |
+| Caller | `checks` | `contents` | `issues` | `packages` | `pull-requests` |
+|---|---|---|---|---|---|
+| `agent-implement` | — | write | write | read | write |
+| `agent-implement-prd` | — | write | write | read | write |
+| `agent-review` | **read** | **read** | — | read | write |
+| `agent-fix` | — | write | — | read | write |
+| `agent-update-branch` | — | write | — | read | write |
 
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
+
+> **`checks: read` on review is the row that only a private repository needs — and it is not
+> optional there.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a
+> **public** repository serves without the scope. Every repo in this pilot was public, so the grant
+> was missing from v0.1.0 through v0.1.4 and nothing ever failed. The first private adopter got
+> `403 Resource not accessible by integration` on every poll, and — because the count was defaulted
+> over the error — the job spent its full 900-second budget before reviewing with no CI evidence at
+> all, the exact outcome #48 exists to prevent. Fixed in v0.1.5 on both halves; since a called
+> workflow can only *downgrade*, adding it to your caller alone changes nothing on an older pin.
 
 Four things about that shape are worth knowing before you paste it:
 

@@ -622,6 +622,40 @@ describe("every PR workflow shares one concurrency group per PR", () => {
   });
 
   /**
+   * An unreadable check-runs API must stop the wait, not extend it.
+   *
+   * `pending_count` used to end `|| echo 0`, which had two failure shapes and
+   * both were silent. A clean non-zero exit became `0` — "nothing pending" —
+   * and the review ran blind. A 403 whose body reached stdout became
+   * `{"message":…}0`, which `-eq` rejects as non-numeric on every iteration,
+   * so the loop spun out all 900 s and *then* reviewed blind. The trigger for
+   * both: check runs on a **private** repository need `checks: read`, and no
+   * public repo in the pilot ever needed the grant to read them.
+   *
+   * What is asserted is the property, not the shell: a non-numeric count is
+   * matched explicitly, it breaks rather than sleeps, and it says so in the
+   * log *and* in the evidence handed to the agent — a review with no CI
+   * behind it should never look like one that had it.
+   */
+  it("agent-review stops the CI wait when check runs cannot be read", () => {
+    const run = waitStep().run ?? "";
+
+    // The count is never defaulted over a failed call.
+    expect(run).not.toContain("|| echo 0");
+
+    // Non-numeric — including empty — is handled as its own case.
+    expect(run).toContain('case "$pending" in');
+    expect(run).toContain('"" | *[!0-9]*)');
+
+    // Loud in the run log, and named in the evidence the agent reads.
+    expect(run).toContain("::error::Could not read check runs");
+    expect(run).toMatch(/Could not read this commit's check runs[^\n]*>> "\$out"/);
+
+    // The grant that fixes it is named where someone hitting this will look.
+    expect(run).toContain("checks: read");
+  });
+
+  /**
    * A group declared at workflow level too would put the same job in two
    * groups, which GitHub rejects; a second job-level one would mean a second
    * job, which `jobOf` already refuses.
@@ -953,6 +987,10 @@ describe("agent-review tells its caller what it cannot know", () => {
     ["the called job bounds", REVIEW],
   ])("%s exactly the permissions the job uses", (_half: string, file: string) => {
     expect(jobOf(file).permissions).toEqual({
+      // The CI wait polls the check-runs API. A public repository serves it
+      // without this scope, so every repo in the pilot passed without it and
+      // the first private adopter got a 403 that spent the whole wait budget.
+      checks: "read",
       contents: "read",
       // Installing the runner package, not reading the PR — the one scope here
       // that is about the toolchain rather than about the review.

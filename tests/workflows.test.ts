@@ -1731,11 +1731,12 @@ describe("agent-implement-prd works one sub-issue per run", () => {
 });
 
 /**
- * The three blocker refusals in this file partition on a rule that, until #19,
- * lived only in a comment thread on an issue being closed — and #5's own author
- * predicted the idea would come back: left as "the same argument applies", the
- * natural reading is *check blockers everywhere*, which is the sub-issue loop
- * the two tests above exist to keep out.
+ * The two blocker refusals in this file — and the third place that
+ * deliberately has none — partition on a rule that, until #19, lived only in a
+ * comment thread on an issue being closed, and #5's own author predicted the
+ * idea would come back: left as "Same argument applies.", the natural reading
+ * is *check blockers everywhere*, which is the sub-issue loop the two tests
+ * above exist to keep out.
  *
  * So the rule is asserted where it is written rather than only where it is
  * obeyed. **Containment transfers authorisation; sequencing does not.** A PRD

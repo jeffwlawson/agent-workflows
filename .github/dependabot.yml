@@ -1,0 +1,26 @@
+# Keeps the five caller pins from rotting. This repo runs its own loop against a
+# pinned remote (`CLAUDE.md`), so a release leaves it exactly as stale as it
+# leaves an adopter — and `tests/workflows.test.ts` only sees the pins in *this*
+# tree. The reasoning, and the copy an adopter installs, is docs/ADOPTING.md §4;
+# a test holds this file equal to the block there.
+# It reads `.github/workflows` only, so `examples/callers/` still moves by hand at
+# release time — see CLAUDE.md, *Releasing*.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # One pull request per release, not five. Ungrouped, each caller is its own
+      # dependency — and a partially merged set is a repo calling two releases,
+      # which since the runner version is baked into the reusable half is two
+      # runner versions too.
+      agent-loop:
+        patterns: ["jeffwlawson/agent-workflows*"]
+      # The ecosystem is repository-wide, so `actions/checkout` and friends are
+      # in scope whether or not anything is said about them. The choice is a
+      # second group or a stray PR each.
+      actions:
+        patterns: ["*"]
+        exclude-patterns: ["jeffwlawson/agent-workflows*"]

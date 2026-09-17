@@ -87,6 +87,13 @@ and checked against both, so a release that leaves either behind fails the build
 example is an adopter running last release's runners; a stale local caller is *this* repo running
 them.
 
+`.github/dependabot.yml` is a **backstop for that bump, not the mechanism** — it exists because an
+adopter has no test that can see their pin (`docs/ADOPTING.md` §4, which holds the one copy of the
+config). It reads `.github/workflows` only, so it moves this repo's five callers and never
+`examples/callers/` or the `npm exec` lines; its PR is red until you move those by hand. Which is
+the useful part: a Dependabot PR here means a release step was missed, and the failure names the
+files.
+
 Bump the `npx …@<version>` line in the five reusable workflows too — a test holds it equal to
 `package.json`, so the build tells you.
 

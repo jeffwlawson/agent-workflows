@@ -1966,6 +1966,169 @@ describe("every workflow invokes the runners at a pinned version", () => {
 });
 
 /**
+ * …and nothing here can see the pin in a repository that adopted the loop.
+ *
+ * Both copies of the `@ref` in *this* tree are derived from `package.json` and
+ * checked by name, so a release cannot leave either behind. An adopter's five
+ * callers are outside that: a release moves nothing in their repository and
+ * tells nobody, so the pin sits where it was put. Measured with `v0.1.5`
+ * current, one of the three repositories running this loop was four releases
+ * behind — the one it was piloted on. That is the failure `cc997af` fixed for
+ * prose ("it sat two releases behind before anyone noticed") one layer out,
+ * where a test of ours cannot reach.
+ *
+ * Dependabot can: `package-ecosystem: github-actions` reads a `uses:` ref the
+ * same way it reads a dependency, compares it against the latest tag and opens
+ * a pull request. `docs/ADOPTING.md` §4 documents the config as an adoption
+ * step and this repository installs it, because it runs its own loop against a
+ * pinned remote and drifts exactly like an adopter.
+ *
+ * What is asserted here is the half with no symptom. A config that updates
+ * nothing is noticed the first time a release lands; a config whose *grouping*
+ * is wrong works — it just opens five pull requests per release instead of one,
+ * and a partially merged set is a repository running two releases at once.
+ */
+describe("Dependabot watches the caller pins no test here can reach", () => {
+  const DEPENDABOT = path.join(".github", "dependabot.yml");
+  const ADOPTING = path.join("docs", "ADOPTING.md");
+
+  interface Group {
+    readonly patterns?: readonly string[];
+    readonly "exclude-patterns"?: readonly string[];
+  }
+
+  interface Update {
+    readonly "package-ecosystem"?: string;
+    readonly directory?: string;
+    readonly schedule?: { readonly interval?: string };
+    readonly groups?: Record<string, Group>;
+  }
+
+  interface Dependabot {
+    readonly version?: number;
+    readonly updates?: readonly Update[];
+  }
+
+  const configOf = (file: string): Dependabot => parse(fs.readFileSync(file, "utf8")) as Dependabot;
+
+  /** The one `github-actions` block. Every grouping check below reads it. */
+  const actions = (): Update => {
+    const found = (configOf(DEPENDABOT).updates ?? []).filter(
+      (u) => u["package-ecosystem"] === "github-actions",
+    );
+
+    expect(found).toHaveLength(1);
+    return found[0] as Update;
+  };
+
+  /**
+   * A `patterns` entry is a glob over the dependency *name* — for a `uses:` ref,
+   * everything left of the `@` — and `*` is its only metacharacter.
+   */
+  const matches = (pattern: string, dependency: string): boolean =>
+    new RegExp(
+      `^${pattern
+        .split("*")
+        .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+        .join(".*")}$`,
+    ).test(dependency);
+
+  /**
+   * The groups a dependency actually lands in. Zero means a pull request of its
+   * own; two would be ambiguous, and both are the failure this describe exists
+   * for, since neither says anything until a release.
+   */
+  const groupsFor = (dependency: string): readonly string[] =>
+    Object.entries(actions().groups ?? {})
+      .filter(
+        ([, group]) =>
+          (group.patterns ?? []).some((p) => matches(p, dependency)) &&
+          !(group["exclude-patterns"] ?? []).some((p) => matches(p, dependency)),
+      )
+      .map(([name]) => name);
+
+  /**
+   * Every `uses:` in a set of workflow files, named the way Dependabot names it:
+   * the ref stripped off. Read from the files rather than listed, so the loop's
+   * own callers and the actions beside them are both whatever is really there.
+   */
+  const dependenciesIn = (files: readonly string[]): readonly string[] => [
+    ...new Set(
+      files.flatMap((file) =>
+        (fs.readFileSync(file, "utf8").match(/^\s*(?:- )?uses: \S+/gm) ?? []).map(
+          (line) => ((line.split("uses:")[1] ?? "").trim().split("@")[0] ?? ""),
+        ),
+      ),
+    ),
+  ];
+
+  const LOOP = "jeffwlawson/agent-workflows";
+
+  it("watches the directory the callers live in, on a schedule", () => {
+    expect(configOf(DEPENDABOT).version).toBe(2);
+    // `/` is the repository root for this ecosystem; Dependabot reads
+    // `.github/workflows` under it. Naming the workflow directory finds nothing.
+    expect(actions().directory).toBe("/");
+    expect(actions().schedule?.interval).toMatch(/^(daily|weekly|monthly)$/);
+  });
+
+  /**
+   * One pull request per release, not five. Ungrouped, each caller is its own
+   * dependency and gets its own PR — and five PRs is five chances to merge
+   * three, which leaves the repository calling two releases at once. The
+   * reusable half is base-controlled and the runner version is baked into it,
+   * so a half-merged set is two *runner* versions too.
+   *
+   * Both forms are asserted because the name Dependabot reports for a reusable
+   * workflow is the path, while the same repository's actions would be the
+   * `owner/repo`; a pattern that covers only one of them is a pattern that
+   * stops covering on the day that changes.
+   */
+  it("moves every caller pin in one pull request", () => {
+    const callers = dependenciesIn(callerWorkflows).filter((d) => d.startsWith(LOOP));
+
+    expect(callers.length).toBeGreaterThan(0);
+    for (const dependency of [...callers, LOOP]) {
+      expect(groupsFor(dependency)).toEqual([groupsFor(callers[0] as string)[0]]);
+    }
+  });
+
+  /**
+   * …and the ordinary pins are grouped too, rather than filtered out. The
+   * ecosystem is repository-wide: `actions/checkout` and `actions/setup-node`
+   * are in scope whether or not anything is said about them, so the choice is
+   * between a second group and a stray PR each. They are kept out of the loop
+   * group by `exclude-patterns`, because "the pins moved" and "the loop moved"
+   * are different reviews.
+   */
+  it("groups the ordinary action pins separately", () => {
+    const actionsUsed = dependenciesIn(workflowFiles).filter((d) => !d.startsWith(LOOP));
+    const loopGroup = groupsFor(LOOP)[0];
+
+    expect(actionsUsed.length).toBeGreaterThan(0);
+    for (const dependency of actionsUsed) {
+      expect(groupsFor(dependency)).toHaveLength(1);
+      expect(groupsFor(dependency)).not.toContain(loopGroup);
+    }
+  });
+
+  /**
+   * The documented config and the installed one are the same text, which is the
+   * point of documenting it at all: an adopter-side issue asking for Dependabot
+   * links §4 rather than restating the YAML, and a second copy is what makes
+   * that link worth less than the copy beside it.
+   */
+  it("runs the config docs/ADOPTING.md tells an adopter to write", () => {
+    const blocks = [...fs.readFileSync(ADOPTING, "utf8").matchAll(/```yaml\n([\s\S]*?)```/g)]
+      .map((m) => m[1] as string)
+      .filter((block) => block.includes("package-ecosystem"));
+
+    expect(blocks).toHaveLength(1);
+    expect(parse(blocks[0] as string)).toEqual(configOf(DEPENDABOT));
+  });
+});
+
+/**
  * …and the registry it is pinned *on* is GitHub Packages, not npmjs.
  *
  * That choice adds one thing to every workflow and one thing to every caller,

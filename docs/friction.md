@@ -1817,3 +1817,16 @@ suite could have caught this: the YAML was valid, the halves agreed with each ot
 assertion held the pair equal rather than against a table of what the job actually calls. The
 permissions test now names `checks: read` explicitly for review, which is the one place a table
 beats an equality — the equality says the halves match, and both halves were wrong together.
+
+**The first fix widened the arm it was narrowing, and review caught it.** Replacing the default
+with "anything non-numeric is a failure" quietly took in a second input: `gh api --paginate --jq`
+applies the filter *per page*, so a commit with more than one page of check runs (>30) prints
+`0\n0` — several counts and no total. That is not a failure, but it is not a number either, so the
+new arm classified it as one and would have skipped the CI wait outright while printing a
+`checks: read` diagnosis at a repo whose permissions were fine. The old code got this input wrong
+too — `-eq` rejected it and the loop spun — but it spun to the deadline and the listing below still
+collected results, so the regression would have been *more* wrong, on a bigger repo, in a way that
+again says something confident and false. `--slurp` makes the filter run once over every page, so
+the pattern means what its comment says. The general shape: replacing a lie with a classification
+only helps if the classification's boundaries are the real ones, and "not a number" was never the
+same set as "no answer".

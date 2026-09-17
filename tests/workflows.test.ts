@@ -647,6 +647,16 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     expect(run).toContain('case "$pending" in');
     expect(run).toContain('"" | *[!0-9]*)');
 
+    // …and the count is one number, so that arm means what it says. `gh api
+    // --paginate --jq` applies the filter per page, so a commit with more
+    // than one page of check runs (>30) prints `0\n0` — which the arm above
+    // would classify as an API failure and diagnose as a missing grant, on a
+    // repo whose permissions are fine. Slurped, the filter runs once over
+    // every page. Asserting the shape of the call, because the property is
+    // not observable from the pattern it feeds.
+    expect(run).toContain("--paginate --slurp");
+    expect(run).toContain("[.[].check_runs[]");
+
     // Loud in the run log, and named in the evidence the agent reads.
     expect(run).toContain("::error::Could not read check runs");
     expect(run).toMatch(/Could not read this commit's check runs[^\n]*>> "\$out"/);

@@ -343,7 +343,8 @@ does — it is about installing the runner it runs.
 > was missing from v0.1.0 through v0.1.4 and nothing ever failed. The first private adopter got
 > `403 Resource not accessible by integration` on every poll, and — because the count was defaulted
 > over the error — the job spent its full 900-second budget before reviewing with no CI evidence at
-> all, the exact outcome #48 exists to prevent. Fixed in v0.1.5 on both halves; since a called
+> all, the exact outcome #48 exists to prevent. Fixed on both halves — the pin in
+> [`examples/callers/`](../examples/callers/) carries the release that has it; since a called
 > workflow can only *downgrade*, adding it to your caller alone changes nothing on an older pin.
 
 Four things about that shape are worth knowing before you paste it:

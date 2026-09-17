@@ -1,10 +1,14 @@
-# Keeps the five caller pins from rotting. This repo runs its own loop against a
-# pinned remote (`CLAUDE.md`), so a release leaves it exactly as stale as it
-# leaves an adopter — and `tests/workflows.test.ts` only sees the pins in *this*
-# tree. The reasoning, and the copy an adopter installs, is docs/ADOPTING.md §4;
-# a test holds this file equal to the block there.
-# It reads `.github/workflows` only, so `examples/callers/` still moves by hand at
-# release time — see CLAUDE.md, *Releasing*.
+# Installed here for the *ordinary* action pins — `actions/checkout`,
+# `actions/setup-node` — which nothing else in this repository tracks. The five
+# loop pins are not the reason: a release moves all ten caller files, and `PIN`
+# in `tests/workflows.test.ts` is derived from `package.json` and enforced
+# against both sets, so the `agent-loop` group finds nothing to do here and an
+# `agent-loop` pull request means a release step was missed. It is in an
+# *adopter's* repository that the group earns its place, because nothing there
+# bumps a pin at all. The reasoning, and the copy an adopter installs, is
+# docs/ADOPTING.md §4; a test holds this file equal to the block there.
+# It reads `.github/workflows` only, so it never sees `examples/callers/` — the
+# release covers those, see CLAUDE.md, *Releasing*.
 version: 2
 updates:
   - package-ecosystem: "github-actions"

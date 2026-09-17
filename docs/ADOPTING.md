@@ -461,9 +461,9 @@ origin/<default>` — is in place, so a tag on an unmerged commit is refused.
 
 Everything above is an **exact** pin in five files, and a pin is a thing that goes stale silently. A
 release here moves nothing in your repository and tells nobody: no check fails, no run changes, the
-loop keeps working — on the version you installed. Measured across the three repositories running
-this loop, one of them was **four releases behind** and nobody had noticed. It was the repository
-the loop was piloted on.
+loop keeps working — on the version you installed. Measured in September 2026 across the three
+repositories running this loop, one of them was **four releases behind** and nobody had noticed. It
+was the repository the loop was piloted on.
 
 Nothing in this repository can see that. The `@ref` in the reference callers is derived from
 `package.json` and checked by name, and the same check covers this repo's own callers — it covers no
@@ -489,7 +489,15 @@ updates:
 ```
 
 to `.github/dependabot.yml`. That is the config this repository runs, held equal to the block above
-by a test, so it is one copy rather than two.
+by a test, so it is one copy rather than two — but not for the same reason you run it, and the
+asymmetry is worth a line:
+
+| | the loop pins | the ordinary action pins |
+|---|---|---|
+| **here** | moved by the release and held to `package.json` by a test, so `agent-loop` is inert — a pull request from it means a release step was missed | nothing else tracks them; Dependabot is the only thing that does |
+| **your repo** | nothing moves them, which is the whole reason this section exists | same as here |
+
+So the group you need most is the one that never fires here.
 
 `directory: "/"` is the repository root — for this ecosystem Dependabot looks under it for
 `.github/workflows` itself, and naming the workflow directory finds nothing.
@@ -512,11 +520,14 @@ Two things it does **not** do.
   someone. The failure mode changes from a stale pin — invisible — to a stale *open pull request*,
   which at least appears in a list you already read. If a repository has three of them open, it is
   three releases behind and now says so.
-- **The agent loop does not run on these.** Runs Dependabot itself triggers get a read-only
-  `GITHUB_TOKEN` and no access to your Actions secrets, so `CI` runs and nothing else does — the
-  loop is label-triggered anyway, and its author gate does not trust `dependabot[bot]`
-  (§8). That is the right outcome rather than a gap: a version bump is a diff you can read, and
-  reviewing it is not worth an agent pass.
+- **The agent loop does not start itself on these.** Runs Dependabot itself triggers get a
+  read-only `GITHUB_TOKEN` and no access to your Actions secrets, so `CI` runs and nothing else
+  does — and the loop is label-triggered, so nothing else starts one either. Label one `agent:fix`
+  by hand and it *will* run, with your secrets: the branch is in your repository, so the fork guard
+  passes, and the run's actor is you. The author gate (§8) does not trust `dependabot[bot]`, but
+  that gates the text the agent reads, not whether the job runs. Leaving them alone is the right
+  outcome rather than a gap: a version bump is a diff you can read, and reviewing it is not worth
+  an agent pass.
 
 **Why this and not a workflow here that bumps every adopter.** A fleet-bump would be easy — the PAT
 already knows which repositories have adopted the loop — and it inverts the relationship this

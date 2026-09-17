@@ -1971,17 +1971,19 @@ describe("every workflow invokes the runners at a pinned version", () => {
  * Both copies of the `@ref` in *this* tree are derived from `package.json` and
  * checked by name, so a release cannot leave either behind. An adopter's five
  * callers are outside that: a release moves nothing in their repository and
- * tells nobody, so the pin sits where it was put. Measured with `v0.1.5`
- * current, one of the three repositories running this loop was four releases
- * behind — the one it was piloted on. That is the failure `cc997af` fixed for
- * prose ("it sat two releases behind before anyone noticed") one layer out,
- * where a test of ours cannot reach.
+ * tells nobody, so the pin sits where it was put. Measured in September 2026,
+ * one of the three repositories running this loop was four releases behind —
+ * the one it was piloted on. That is the failure `cc997af` fixed for prose
+ * ("it sat two releases behind before anyone noticed") one layer out, where a
+ * test of ours cannot reach.
  *
  * Dependabot can: `package-ecosystem: github-actions` reads a `uses:` ref the
  * same way it reads a dependency, compares it against the latest tag and opens
  * a pull request. `docs/ADOPTING.md` §4 documents the config as an adoption
- * step and this repository installs it, because it runs its own loop against a
- * pinned remote and drifts exactly like an adopter.
+ * step, and this repository runs the same file — for the *ordinary* action
+ * pins, which nothing here tracks. Its `agent-loop` group is inert here, since
+ * the release moves both caller sets and `PIN` above holds them to
+ * `package.json`; it is an adopter, with no such test, who needs that group.
  *
  * What is asserted here is the half with no symptom. A config that updates
  * nothing is noticed the first time a release lands; a config whose *grouping*

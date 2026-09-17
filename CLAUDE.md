@@ -75,17 +75,30 @@ Publishing is a **tag push**, and the version in the tag and in `package.json` m
 
 ```bash
 npm version patch          # or minor / major
-git push && git push --tags
+git push --follow-tags
 ```
 
 `v*` on a commit reachable from `main` triggers `publish.yml`. It refuses a tag on an unmerged
 commit, and no-ops if the version is already on the registry.
 
-Then **bump the pin in both caller sets** — `examples/callers/*.yml` and
-`.github/workflows/agent-*.yml`. `PIN` in `tests/workflows.test.ts` is derived from `package.json`
-and checked against both, so a release that leaves either behind fails the build by name. A stale
-example is an adopter running last release's runners; a stale local caller is *this* repo running
-them.
+**That first command is the whole release.** The version appears in seventeen files and `npm
+version` bumps two of them; `scripts/sync-version.ts` writes the other fifteen — the `npm exec`
+pin in each of the five reusable workflows, and the `uses:` ref in each of the two caller sets. It
+runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
+*before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
+propagates and never decides: the version is read from `package.json`, never passed in, and nothing
+there commits or tags — `npm version` does both, and a second tagging path is a second way to
+publish.
+
+It refuses rather than doing part of the job. All fifteen sites must exist and each must carry
+exactly one recognisable pin, so a sixth workflow whose caller or example is missing stops the
+release instead of quietly propagating to fifteen of eighteen.
+
+The checks that made this a chore rather than a hazard are still the backstop, and are what a
+rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and
+checked against **both caller sets** — `examples/callers/*.yml` and `.github/workflows/agent-*.yml`
+— so a release that leaves either behind fails the build by name. A stale example is an adopter
+running last release's runners; a stale local caller is *this* repo running them.
 
 `.github/dependabot.yml` is **not** the mechanism for that bump, and is not installed here for the
 loop pins at all — `PIN` already holds both caller sets to `package.json`, so they cannot go stale.
@@ -98,8 +111,8 @@ second signal that a release step was missed — it reads `.github/workflows` on
 five callers and never `examples/callers/` or the `npm exec` lines, and its PR stays red until you
 move those by hand.
 
-Bump the `npx …@<version>` line in the five reusable workflows too — a test holds it equal to
-`package.json`, so the build tells you.
+The `npx …@<version>` line in the five reusable workflows moves with the same run — a test holds it
+equal to `package.json`, so the build tells you if it did not.
 
 > **`bin` must never start with `./`.** `npm publish` silently drops such an entry and exits 0,
 > producing a package whose commands cannot be run. `ci.yml` runs `npm publish --dry-run` and fails

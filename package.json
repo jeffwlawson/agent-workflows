@@ -22,6 +22,7 @@
     "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "version": "node scripts/sync-version.ts && git add -A",
     "verify": "npm run typecheck && npm run test"
   },
   "dependencies": {

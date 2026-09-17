@@ -204,6 +204,53 @@ what a human's local `/implement` … `/code-review` loop does anyway. `implemen
 already carries that line ("BEFORE YOU COMMIT"), which pulls correctness feedback earlier while
 keeping one review per PR. Escalating it into a workflow is the thing to resist.
 
+### Containment transfers authorisation. Sequencing does not.
+
+Two blocker checks exist, one per implement workflow, and a third place that deliberately has none.
+The rule sorting them is not "check blockers wherever you can" — it is which *relationship* the
+check would sit on.
+Written down here (#19) because it had been derived twice without ever being recorded — once when
+`36cdc47` shipped the flat check, again when #14 argued the parent one — and the clearest statement
+of it lived in a comment thread on an issue being closed. A rule that has to be re-derived each
+time it is questioned is not written down yet.
+
+A PRD parent **contains** its sub-issues: the body is the spec, the slices are pieces of it, so
+authorising the parent authorises them. That is what makes one label safe to drive five runs onto
+one branch, reviewed once — the whole of §2a rests on it, and so does §10's "the parent is the
+control point".
+
+`blocked_by` is **sequencing**. The blocker is a separate deliverable with its own PR and its own
+reviewer. Chaining through it would authorise work nobody asked for, transitively — A→B→C means
+labelling C implements three things — and some blockers are decision tickets that are not
+implementable at all, which is the same reason the `wayfinder:` refusal exists.
+
+So a blocker check belongs wherever the thing being labelled is the thing being authorised, and
+nowhere else:
+
+| | check blockers? | |
+|---|:--:|---|
+| flat issue | ✅ | shipped, `36cdc47` |
+| PRD **parent** | ✅ | #14, and the cost of running anyway is a whole chain, not one wasted run |
+| PRD **sub-issue** | ❌ | contradicts the ordering contract — see below |
+
+**The sub-issue row is the load-bearing one, and it is a decision rather than an omission.** The
+chain walks sub-issues in API order and reads `blocked_by` **nowhere**:
+[`docs/agents/ticket-shape.md`](./agents/ticket-shape.md#creation-order-is-execution-order) puts
+the topological sort on whoever publishes the batch, and the ordering note above records reading
+edges mid-walk as a deliberate non-goal (§10 too, and `implement-prd.yml`'s own header). Underneath
+the contract is the design reason it exists: slices are pieces of one feature landing on one branch,
+so a slice that needs outside work means the *whole PRD* is blocked — you cannot merge four of five
+and wait. That dependency belongs as an edge on the parent, which is the one the preflight reads.
+And by construction every slice after the first is `blocked-by` its predecessor, so a mid-walk read
+would refuse the chain at slice two, every time.
+
+**The distinction is easy to lose while holding it**, which is the argument for a section rather
+than an aside. `36cdc47` states it in full and then defers the second check with "same argument
+applies" — true of the parent, and at three words the natural reading is *check blockers
+everywhere*, which walks straight into the sub-issue row above and stops the chain at slice two.
+The author who drew the line wrote that sentence, and #5's thread is where it was caught; this
+section is what was caught.
+
 ---
 
 ## 2b. A third execution model: `sandcastle`'s parallel planner
@@ -572,6 +619,17 @@ expensive to rediscover.
   of the PRD, and each of those answers is a scheduler nobody asked for. The hazard the rule buys is
   worth naming: dragging a sub-issue in the parent's UI silently rewrites the execution order of a
   chain that has not run yet, with no other visible effect anywhere.
+- **Containment transfers authorisation; sequencing does not.** One `agent:implement` on a PRD
+  parent authorises every slice, because the parent *contains* them — the body is the spec and the
+  slices are pieces of it. `blocked_by` is the other relationship: it orders separate deliverables,
+  each with its own PR and its own reviewer, so chaining through it would authorise work nobody
+  asked for, transitively (A→B→C: labelling C implements three things), and some blockers are
+  decision tickets `wayfinder:` already refuses. That is why a blocker check belongs on a flat issue
+  and on a PRD parent (#14) but never on a sub-issue, where it would contradict the ordering
+  contract and refuse the chain at slice two. The table and the sub-issue row's reasoning are in
+  §2a, under
+  [*Containment transfers authorisation*](#containment-transfers-authorisation-sequencing-does-not);
+  it is there rather than only here because the rule keeps being re-derived when it is questioned.
 - **`agent:queued` is written by a human, never by a workflow.** It is the one `agent:*` label no
   workflow touches at all (§8) — `agent:in-progress` and `agent:blocked` have no consumer either,
   but a workflow applies and clears them — and until `promote-queued` exists (§1, §9.6) nothing

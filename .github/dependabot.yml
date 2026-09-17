@@ -1,0 +1,30 @@
+# Installed here for the *ordinary* action pins — `actions/checkout`,
+# `actions/setup-node` — which nothing else in this repository tracks. The five
+# loop pins are not the reason: a release moves all ten caller files, and `PIN`
+# in `tests/workflows.test.ts` is derived from `package.json` and enforced
+# against both sets, so the `agent-loop` group finds nothing to do here and an
+# `agent-loop` pull request means a release step was missed. It is in an
+# *adopter's* repository that the group earns its place, because nothing there
+# bumps a pin at all. The reasoning, and the copy an adopter installs, is
+# docs/ADOPTING.md §4; a test holds this file equal to the block there.
+# It reads `.github/workflows` only, so it never sees `examples/callers/` — the
+# release covers those, see CLAUDE.md, *Releasing*.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # One pull request per release, not five. Ungrouped, each caller is its own
+      # dependency — and a partially merged set is a repo calling two releases,
+      # which since the runner version is baked into the reusable half is two
+      # runner versions too.
+      agent-loop:
+        patterns: ["jeffwlawson/agent-workflows*"]
+      # The ecosystem is repository-wide, so `actions/checkout` and friends are
+      # in scope whether or not anything is said about them. The choice is a
+      # second group or a stray PR each.
+      actions:
+        patterns: ["*"]
+        exclude-patterns: ["jeffwlawson/agent-workflows*"]

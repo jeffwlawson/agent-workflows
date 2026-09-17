@@ -231,6 +231,7 @@ that drifts; a control behind a pinned `uses:` is one you get fixes to.
 .github/workflows/agent-review.yml
 .github/workflows/agent-fix.yml
 .github/workflows/agent-update-branch.yml
+.github/dependabot.yml                      # not part of the loop; see the end of this section
 ```
 
 The runners are **not copied either**. They are an npm package — `@jeffwlawson/agent-workflows` —
@@ -356,7 +357,9 @@ Four things about that shape are worth knowing before you paste it:
   reasons — yours grants, ours bounds — which is why `contents: read` on review stays an invariant
   no caller can widen.
 - **Pin the `@ref`.** Same reasoning as the runner version above, and the same trap: a floating
-  `@main` is a workflow that changes under a pull request nobody touched.
+  `@main` is a workflow that changes under a pull request nobody touched. An exact pin is a pin
+  that goes stale, which nothing in this repository can see from here — *Keeping the pins fresh*,
+  at the end of this section, is the other half of the instruction.
 - **Name each workflow `Agent …`.** A called workflow contributes no run of its own, so the run is
   yours — and review's failure-log collector skips runs whose name starts with `Agent ` on the
   grounds that a failed agent job is not evidence about the diff.
@@ -453,6 +456,90 @@ origin/<default>` — is in place, so a tag on an unmerged commit is refused.
 > `npm pack` does not reproduce it and neither does npm 10, so a local check passes. `ci.yml` runs
 > `npm publish --dry-run` under the `.nvmrc` Node and fails on that string, which is the only signal
 > there is.
+
+### Keeping the pins fresh
+
+Everything above is an **exact** pin in five files, and a pin is a thing that goes stale silently. A
+release here moves nothing in your repository and tells nobody: no check fails, no run changes, the
+loop keeps working — on the version you installed. Measured in September 2026 across the three
+repositories running this loop, one of them was **four releases behind** and nobody had noticed. It
+was the repository the loop was piloted on.
+
+Nothing in this repository can see that. The `@ref` in the reference callers is derived from
+`package.json` and checked by name, and the same check covers this repo's own callers — it covers no
+copy in a tree we cannot read.
+
+[Dependabot can, and has read reusable-workflow refs since March 2023][dependabot-reusable]. With
+the `github-actions` ecosystem it reads every `uses:` under `.github/workflows`, compares each
+against the latest tag, and opens a pull request. Write this:
+
+```yaml
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      agent-loop:
+        patterns: ["jeffwlawson/agent-workflows*"]
+      actions:
+        patterns: ["*"]
+        exclude-patterns: ["jeffwlawson/agent-workflows*"]
+```
+
+to `.github/dependabot.yml`. That is the config this repository runs, held equal to the block above
+by a test, so it is one copy rather than two — but not for the same reason you run it, and the
+asymmetry is worth a line:
+
+| | the loop pins | the ordinary action pins |
+|---|---|---|
+| **here** | moved by the release and held to `package.json` by a test, so `agent-loop` is inert — a pull request from it means a release step was missed | nothing else tracks them; Dependabot is the only thing that does |
+| **your repo** | nothing moves them, which is the whole reason this section exists | same as here |
+
+So the group you need most is the one that never fires here.
+
+`directory: "/"` is the repository root — for this ecosystem Dependabot looks under it for
+`.github/workflows` itself, and naming the workflow directory finds nothing.
+
+**The grouping is the part worth reading.** Ungrouped, each caller is its own dependency, so a
+release opens **five** pull requests and five is enough to merge three of them. A repository whose
+callers name two different tags is calling two releases at once — and since the runner version is
+baked into the reusable half, that is two *runner* versions too, which is the split-brain the pin
+exists to close. Grouped, it is one pull request moving all five or none.
+
+The second group is why `actions/checkout` and `astral-sh/setup-uv` do not each arrive on their own.
+The ecosystem is repository-wide: those pins are in scope whether or not you say anything about
+them, so the choice is a second group or a stray pull request each — not "covered" or "ignored".
+Keeping them out of `agent-loop` is deliberate; "the loop moved" and "the actions moved" are
+different reviews.
+
+Two things it does **not** do.
+
+- **It is better, not free.** One pull request per repository per release still has to be merged by
+  someone. The failure mode changes from a stale pin — invisible — to a stale *open pull request*,
+  which at least appears in a list you already read. If a repository has three of them open, it is
+  three releases behind and now says so.
+- **The agent loop does not start itself on these.** Runs Dependabot itself triggers get a
+  read-only `GITHUB_TOKEN` and no access to your Actions secrets, so `CI` runs and nothing else
+  does — and the loop is label-triggered, so nothing else starts one either. Label one `agent:fix`
+  by hand and it *will* run, with your secrets: the branch is in your repository, so the fork guard
+  passes, and the run's actor is you. The author gate (§8) does not trust `dependabot[bot]`, but
+  that gates the text the agent reads, not whether the job runs. Leaving them alone is the right
+  outcome rather than a gap: a version bump is a diff you can read, and reviewing it is not worth
+  an agent pass.
+
+**Why this and not a workflow here that bumps every adopter.** A fleet-bump would be easy — the PAT
+already knows which repositories have adopted the loop — and it inverts the relationship this
+document describes. You reference a control and receive fixes; this repository does not reach into
+your tree. Dependabot keeps that direction: you still decide when to take a version, you just stop
+having to notice one exists.
+
+**And a moving `@v0` tag is not the answer either**, for §9's reason. `pull_request_target` hands
+the called workflow `contents: write` and your secrets, so a ref that moves is a job that changes
+under a pull request nobody touched. A pull request you can read is the cost of a pin you can trust.
+
+[dependabot-reusable]: https://github.blog/changelog/2023-03-13-dependabot-updates-support-reusable-workflows-for-github-actions/
 
 ---
 

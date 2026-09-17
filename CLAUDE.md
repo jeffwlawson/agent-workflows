@@ -87,6 +87,17 @@ and checked against both, so a release that leaves either behind fails the build
 example is an adopter running last release's runners; a stale local caller is *this* repo running
 them.
 
+`.github/dependabot.yml` is **not** the mechanism for that bump, and is not installed here for the
+loop pins at all — `PIN` already holds both caller sets to `package.json`, so they cannot go stale.
+It is here for the ordinary action pins (`actions/checkout` and friends), which nothing else tracks;
+it exists as a documented adoption step because an adopter has no test that can see their pin
+(`docs/ADOPTING.md` §4, which holds the one copy of the config).
+
+Its `agent-loop` group should therefore never open a pull request here, and one that does is a
+second signal that a release step was missed — it reads `.github/workflows` only, so it moves the
+five callers and never `examples/callers/` or the `npm exec` lines, and its PR stays red until you
+move those by hand.
+
 Bump the `npx …@<version>` line in the five reusable workflows too — a test holds it equal to
 `package.json`, so the build tells you.
 

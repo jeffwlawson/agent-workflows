@@ -60,6 +60,9 @@ repo loses the instruction the prompts depend on.
    — deliberately, so a change to one cannot silently leave the other behind.
 4. `tests/workflows.test.ts` asserts over both halves. Add the assertion in the same change; a
    workflow defect has no unit test to catch it and usually no error message either.
+5. A **new** workflow is three files carrying a version pin — the reusable, the local caller and
+   the reference caller — and `scripts/sync-version.ts` refuses the next release until all three
+   exist. That refusal is the point: two of the three is a release that pins what it found.
 
 ## Changing a runner
 
@@ -94,6 +97,10 @@ It refuses rather than doing part of the job. All fifteen sites must exist and e
 exactly one recognisable pin, so a sixth workflow whose caller or example is missing stops the
 release instead of quietly propagating to fifteen of eighteen.
 
+The commit's message is `.npmrc`'s `message=v%s`, the `v` matching the tag `publish.yml` fires on.
+That is the whole file: the registry and the token live in the `.npmrc` `actions/setup-node` writes
+under `RUNNER_TEMP`, and a second copy of the scope here is a second place for it to be wrong.
+
 The checks that made this a chore rather than a hazard are still the backstop, and are what a
 rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and
 checked against **both caller sets** — `examples/callers/*.yml` and `.github/workflows/agent-*.yml`
@@ -111,8 +118,10 @@ second signal that a release step was missed — it reads `.github/workflows` on
 five callers and never `examples/callers/` or the `npm exec` lines, and its PR stays red until you
 move those by hand.
 
-The `npx …@<version>` line in the five reusable workflows moves with the same run — a test holds it
-equal to `package.json`, so the build tells you if it did not.
+Changing what a pin looks like — a new workflow, a renamed one, a different invocation — is a
+change to `scripts/sync-version.ts` and `tests/sync-version.test.ts` in the same commit. It knows
+two forms, `@<version>` for the npm spec and `@v<version>` for the `uses:` ref, and a third would
+be a site it skips.
 
 > **`bin` must never start with `./`.** `npm publish` silently drops such an entry and exits 0,
 > producing a package whose commands cannot be run. `ci.yml` runs `npm publish --dry-run` and fails

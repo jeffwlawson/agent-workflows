@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,11 +17,18 @@ import { fileURLToPath } from "node:url";
  * `npm version` does both, and `publish.yml` fires on the tag push, so a second
  * tagging path here would be a second way to publish a release.
  *
- * It is a module with a thin CLI on the end rather than a script, because it has
- * a second caller coming: `init` (#6) writes callers into an adopter's repo and
- * has to pin them to this package's own version — the same rewrite, a different
- * root. Reimplemented there, the two drift the first time a sixth workflow is
- * added, which is precisely the failure `expectedNames` below exists to catch.
+ * It is a module with a thin CLI on the end rather than a script so the tests
+ * can point it at a scratch copy of the tree. A propagator that can only run
+ * against the checkout it lives in is one whose refusals — the half that matters
+ * — can only be exercised by breaking this repository on purpose.
+ *
+ * It is **not** the shared half `init` (#6) needs, and calling it from there
+ * would not work: `syncVersion` refuses an adopter's root, because the
+ * three-directory cross-check below is *this* repository's shape, and it reads
+ * the package name from the root it is pointed at — which for `init` is the
+ * adopter's, not this package's. The genuinely common unit is narrower than the
+ * whole function: `rewritten` plus the `uses:` pin. Extracting it belongs to #6,
+ * where the second caller exists to be shaped around rather than guessed at.
  */
 
 /** Forward slashes on purpose: these are paths *inside* YAML, not on disk. */
@@ -165,8 +173,11 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
   }
 
   /**
-   * Not anchored to the workflow the file calls — `init` writes these into a
-   * repository whose filenames are its own, and the ref is the same pin there.
+   * Matched by shape rather than anchored to the workflow the file is expected
+   * to call. The count check in `rewritten` is what catches a missing pin, and
+   * anchoring here would turn a caller that names the *wrong* reusable into
+   * "no pin found" — a true refusal with a misleading message, for a mismatch
+   * `tests/workflows.test.ts` already reports by name.
    */
   const refPin = new RegExp(
     `(${escapeRe(slug)}/${escapeRe(WORKFLOW_DIR)}/[A-Za-z0-9._-]+\\.yml@)v\\d+\\.\\d+\\.\\d+`,
@@ -216,6 +227,13 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
  * version comes from the manifest npm has already bumped, which is the copy
  * `publish.yml` cross-checks against the tag. A version passed in would be a
  * second source of truth for the one value the release is about.
+ *
+ * It stages, because npm does not: the hook runs before the commit and npm adds
+ * only the manifest and the lockfile. Staging happens **by path**, from what
+ * `syncVersion` returned. `npm version` blocks a dirty tree only for *tracked*
+ * modifications, so a `git add -A` here would sweep any untracked file lying
+ * around into the release commit and the tag `publish.yml` fires on — an
+ * eighteenth file inside a release, which nothing in the suite can see.
  */
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const packageDir = path.resolve(import.meta.dirname, "..");
@@ -232,8 +250,25 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     readonly version?: string;
   };
 
+  /** argv, not a shell string — the convention every variable reaching git follows. */
+  const stage = (files: readonly string[]): void => {
+    try {
+      execFileSync("git", ["add", "--", ...files], {
+        cwd: packageDir,
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+    } catch (error) {
+      const { stderr } = error as { readonly stderr?: Buffer | string };
+      throw new Error(
+        `Rewrote ${files.length} pin(s) but could not stage them: ${String(stderr ?? error).trim()}. ` +
+          `They are in the working tree; the release commit would not have contained them.`,
+      );
+    }
+  };
+
   try {
     const sites = syncVersion(version ?? "", packageDir);
+    stage(sites.map((site) => site.file));
     console.log(`Synced ${sites.length} version pin(s) to ${version}.`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

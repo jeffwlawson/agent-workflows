@@ -59,37 +59,50 @@ const read = (root: string, rel: string): string =>
 const write = (root: string, rel: string, text: string): void =>
   fs.writeFileSync(path.join(root, ...rel.split("/")), text);
 
+/** `git` in a scratch tree, loud on failure: a silent one would read as a pass. */
+const git = (root: string, args: readonly string[]): string => {
+  const result = spawnSync("git", [...args], { cwd: root, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} in ${root}: ${result.stderr}`);
+  return result.stdout;
+};
+
 /** The version written by every rewrite test: recognisable, and no repo's own. */
 const TARGET = "9.9.9";
 
+/**
+ * Fifteen sites, named. The count is the acceptance criterion's own number and
+ * the list is what the release used to be: five reusables, five local callers,
+ * five reference callers.
+ *
+ * Written out rather than derived, so that it is also the answer to "what
+ * belongs in the release commit" — which is what the staging check below reads
+ * it as.
+ */
+const EVERY_SITE = [
+  ".github/workflows/agent-fix.yml",
+  ".github/workflows/agent-implement-prd.yml",
+  ".github/workflows/agent-implement.yml",
+  ".github/workflows/agent-review.yml",
+  ".github/workflows/agent-update-branch.yml",
+  ".github/workflows/fix.yml",
+  ".github/workflows/implement-prd.yml",
+  ".github/workflows/implement.yml",
+  ".github/workflows/review.yml",
+  ".github/workflows/update-branch.yml",
+  "examples/callers/fix.yml",
+  "examples/callers/implement-prd.yml",
+  "examples/callers/implement.yml",
+  "examples/callers/review.yml",
+  "examples/callers/update-branch.yml",
+] as const;
+
 describe("the version propagator rewrites every pin", () => {
-  /**
-   * Fifteen sites, named. The count is the acceptance criterion's own number and
-   * the list is what the release used to be: five reusables, five local callers,
-   * five reference callers.
-   */
   it("reports every site it rewrote", () => {
     const root = fixture();
 
     const files = syncVersion(TARGET, root).map((site) => site.file).sort();
 
-    expect(files).toEqual([
-      ".github/workflows/agent-fix.yml",
-      ".github/workflows/agent-implement-prd.yml",
-      ".github/workflows/agent-implement.yml",
-      ".github/workflows/agent-review.yml",
-      ".github/workflows/agent-update-branch.yml",
-      ".github/workflows/fix.yml",
-      ".github/workflows/implement-prd.yml",
-      ".github/workflows/implement.yml",
-      ".github/workflows/review.yml",
-      ".github/workflows/update-branch.yml",
-      "examples/callers/fix.yml",
-      "examples/callers/implement-prd.yml",
-      "examples/callers/implement.yml",
-      "examples/callers/review.yml",
-      "examples/callers/update-branch.yml",
-    ]);
+    expect(files).toEqual([...EVERY_SITE]);
   });
 
   it("leaves no site still naming the version it replaced", () => {
@@ -295,10 +308,10 @@ describe("the version propagator refuses an unexpected set of pins", () => {
  * seventeen-file commit on its own.
  *
  * npm runs `version` after the manifest is bumped and before the commit is
- * created, and stages nothing itself — so the hook both propagates and stages,
- * and npm commits and tags. It must not do either of those last two: `npm
- * version` already does both, and `publish.yml` fires on the tag push. A second
- * tagging path is a second way to publish a release.
+ * created, and stages only the manifest and the lockfile itself — so the hook
+ * both propagates and stages, and npm commits and tags. It must not do either of
+ * those last two: `npm version` already does both, and `publish.yml` fires on
+ * the tag push. A second tagging path is a second way to publish a release.
  */
 describe("the release is one command", () => {
   const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
@@ -308,19 +321,6 @@ describe("the release is one command", () => {
 
   it("runs the propagator from the `version` lifecycle script", () => {
     expect(hook).toContain("scripts/sync-version.ts");
-  });
-
-  /**
-   * Staged inside the hook, or npm commits the bump alone and the fifteen
-   * rewritten files are left in the working tree — the exact state the hand edit
-   * produced, minus the knowledge that they are there.
-   */
-  it("stages what it rewrote, so the bump and the pins are one commit", () => {
-    expect(hook).toMatch(/git add/);
-  });
-
-  it("neither commits nor tags", () => {
-    expect(hook).not.toMatch(/git commit|git tag/);
   });
 
   /**
@@ -348,7 +348,7 @@ describe("the release is one command", () => {
    * tag.
    */
   it("passes no version to the propagator", () => {
-    expect((hook.split("&&")[0] ?? "").trim()).toBe("node scripts/sync-version.ts");
+    expect(hook.trim()).toBe("node scripts/sync-version.ts");
   });
 
   /**
@@ -369,5 +369,68 @@ describe("the release is one command", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("9.9.9");
+  });
+
+  /**
+   * And the rest of the hook, run the way `npm version` runs it: over a scratch
+   * repository already committed at its current version, with the manifest
+   * bumped in the working tree and a stray untracked file lying beside it.
+   *
+   * The stray is the point. `npm version` refuses a tree with *tracked*
+   * modifications and lets untracked files straight through, so a `git add -A`
+   * in this hook carries whatever happens to be there into the release commit
+   * and the tag `publish.yml` fires on — an eighteenth file inside a release,
+   * which `PIN` cannot see and no check downstream reads.
+   */
+  const released = (): string => {
+    const root = fixture();
+    fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+    fs.copyFileSync("scripts/sync-version.ts", path.join(root, "scripts", "sync-version.ts"));
+
+    git(root, ["init", "-b", "main"]);
+    git(root, ["config", "user.email", "scratch@example.invalid"]);
+    git(root, ["config", "user.name", "scratch"]);
+    git(root, ["config", "commit.gpgsign", "false"]);
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-m", "the tree at its current version"]);
+
+    // What npm has already done by the time the hook runs: the manifest bumped,
+    // unstaged. npm stages that one and the lockfile itself, afterwards.
+    write(root, "package.json", read(root, "package.json").replace(/"version": "[^"]+"/, `"version": "${TARGET}"`));
+    write(root, "STRAY-NOTES.md", "left lying around\n");
+
+    const result = spawnSync(process.execPath, [path.join(root, "scripts", "sync-version.ts")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`Synced ${EVERY_SITE.length} version pin(s) to ${TARGET}.`);
+
+    return root;
+  };
+
+  /**
+   * Staged inside the hook, or npm commits the bump alone and the fifteen
+   * rewritten files are left in the working tree — the exact state the hand edit
+   * produced, minus the knowledge that they are there. By path, and only the
+   * paths it wrote.
+   */
+  it("stages the fifteen files it rewrote, and nothing else in the tree", () => {
+    const root = released();
+
+    const staged = git(root, ["diff", "--cached", "--name-only"]).split("\n").filter(Boolean).sort();
+
+    expect(staged).toEqual([...EVERY_SITE]);
+  });
+
+  /**
+   * `npm version` makes the commit and the tag, and `publish.yml` fires on the
+   * tag push. A second one here would be a second way to publish a release.
+   */
+  it("makes no commit and no tag of its own", () => {
+    const root = released();
+
+    expect(git(root, ["rev-list", "--count", "HEAD"]).trim()).toBe("1");
+    expect(git(root, ["tag", "--list"]).trim()).toBe("");
   });
 });

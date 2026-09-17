@@ -89,9 +89,11 @@ version` bumps two of them; `scripts/sync-version.ts` writes the other fifteen �
 pin in each of the five reusable workflows, and the `uses:` ref in each of the two caller sets. It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
-propagates and never decides: the version is read from `package.json`, never passed in, and nothing
-there commits or tags — `npm version` does both, and a second tagging path is a second way to
-publish.
+stages **by path** — the fifteen it wrote, never `-A`: npm's dirty-tree check passes untracked
+files, so `-A` would carry a stray one into the tag `publish.yml` fires on, and nothing here would
+see it. It propagates and never decides: the version is read from `package.json`, never passed in,
+and nothing there commits or tags — `npm version` does both, and a second tagging path is a second
+way to publish.
 
 It refuses rather than doing part of the job. All fifteen sites must exist and each must carry
 exactly one recognisable pin, so a sixth workflow whose caller or example is missing stops the

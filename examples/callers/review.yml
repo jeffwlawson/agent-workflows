@@ -32,6 +32,9 @@ jobs:
     # `contents: read` is the invariant, `pull-requests: write` is what every
     # `gh pr edit` in it spends, and `packages: read` is explained below.
     permissions:
+      # Reading the check runs the CI wait polls. Public repositories expose
+      # them without this scope; a private one 403s without it.
+      checks: read
       contents: read
       # Installing the runner package, which the called job does with `npx` from
       # GitHub Packages. Granted here because a called workflow can only

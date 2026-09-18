@@ -316,13 +316,16 @@ jobs:
       # install even for a public package — see the long note on the same step in
       # agent-review-reusable.yml. Short version: the scoped `.npmrc` is written
       # for `@jeffwlawson` only so a caller's own `npm ci` is untouched, and
-      # `packages: read` in the caller is what makes the token below work.
+      # `packages: read` in the caller is what makes the token below work. The
+      # cache opt-out belongs to the same note: this half declares no toolchain,
+      # so it must not infer one.
       - name: Authenticate to GitHub Packages
         if: steps.preflight.outputs.refused == 'false'
         uses: actions/setup-node@v4
         with:
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"
+          package-manager-cache: false
 
       - name: Run implementation agent
         if: steps.preflight.outputs.refused == 'false'

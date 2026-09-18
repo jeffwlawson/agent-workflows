@@ -2213,6 +2213,35 @@ describe("the runner package is installed from GitHub Packages", () => {
   });
 
   /**
+   * And it says so in the one place `setup-node` would otherwise infer it.
+   * From v5 the action caches automatically when the repository's
+   * `package.json` carries a `packageManager` field, and from v7
+   * `package-manager-cache` defaults to `true` — so the registry half of
+   * `setup-node` starts doing toolchain work the step above was written to own.
+   *
+   * For an adopter whose manifest names npm with **no root lockfile**, the
+   * restore throws `Dependencies lock file is not found` and the step fails
+   * before the runner starts, which means no `failure_reason.txt` and a run
+   * reporting `(no reason file written)` — a signature `CLAUDE.md` already has
+   * two unrelated causes for. It would also add a cache save to a
+   * `pull_request_target` job. This repository cannot reproduce either: it
+   * declares only `engines`, never `packageManager`, so the caching never
+   * fires here and the setting is inert on the `@v4` pin, which has no such
+   * input at all.
+   *
+   * Both halves in one test on purpose. The input alone would stay green if
+   * someone later gave the auth step a toolchain, at which point it is
+   * redundant and describes nothing. The pair is the invariant: *this step does
+   * no toolchain work, and says so.*
+   */
+  it.each(runnerWorkflows)("%s: opts out of the implicit toolchain cache", (file) => {
+    const step = authStep(file);
+
+    expect(step?.with?.["package-manager-cache"]).toBe(false);
+    expect(step?.with?.["node-version-file"]).toBeUndefined();
+  });
+
+  /**
    * Gated exactly as the run it exists for. An ungated auth step would run on
    * every refusal — cheap, but it is the same `setup-node` the refusal checks
    * elsewhere in this file assert a refused run never reaches.

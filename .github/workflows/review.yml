@@ -417,6 +417,18 @@ jobs:
       # passed `node-version-file: ''`. It comes *after* the toolchain step for
       # the same reason — both write the same `.npmrc`, and the last one wins.
       #
+      # `package-manager-cache: false` states that same thing to the action.
+      # From v5 it caches on its own when the repository's `package.json`
+      # carries a `packageManager` field, and from v7 the input defaults to
+      # `true` — so a step written to do no toolchain work starts doing some. On
+      # an adopter whose manifest names npm with no root lockfile, the restore
+      # throws `Dependencies lock file is not found` and fails this step before
+      # the runner exists to write `failure_reason.txt`, leaving a run that says
+      # only `(no reason file written)`. It would also add a cache *save* to a
+      # `pull_request_target` job. The input does not exist on the `@v4` pin
+      # above, and this repo declares no `packageManager`, so it is inert here
+      # and on purpose: it is the guard the bump lands on, not a response to it.
+      #
       # This is also the one step in the loop that reaches across repositories. A
       # package published from this repo is not automatically readable by another
       # repo's `GITHUB_TOKEN`; that follows from the package's own access settings
@@ -427,6 +439,7 @@ jobs:
         with:
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"
+          package-manager-cache: false
 
       - name: Run review agent
         if: steps.state.outputs.proceed == 'true'

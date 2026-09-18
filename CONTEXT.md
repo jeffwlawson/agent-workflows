@@ -99,6 +99,12 @@ The ones worth knowing because nothing fails when they break:
 - **A label set when an issue is *created* fires no `labeled` event.** Label in a separate call,
   always; recovery is remove-then-re-add.
 - **A label added with `GITHUB_TOKEN` is a silent no-op**, which is why `AGENT_PAT` exists.
+- **The *Authenticate to GitHub Packages* step is deliberately toolchain-free.** It is the registry
+  half of `setup-node` — it runs on repos that skipped the toolchain step entirely, so it declares
+  no `node-version-file` and passes `package-manager-cache: false` to stop the action inferring one
+  from a `packageManager` field (implicit from v5, defaulted on from v7). An input added there that
+  does toolchain work fails *before* the runner exists to write `failure_reason.txt`, and this repo
+  cannot reproduce it: it declares no `packageManager`, so the caching never fires here.
 
 ## The prompts name no domain
 

@@ -76,7 +76,8 @@ const TARGET = "9.9.9";
  *
  * Written out rather than derived, so that it is also the answer to "what
  * belongs in the release commit" — which is what the staging check below reads
- * it as.
+ * it as. That the propagator's own set is *not* a written-out fifteen is a
+ * separate property, and has its own test: the complete sixth trio below.
  */
 const EVERY_SITE = [
   ".github/workflows/agent-fix.yml",
@@ -169,6 +170,45 @@ describe("the version propagator rewrites every pin", () => {
 
     expect(read(root, "package.json")).toBe(manifest);
     expect(read(root, "package-lock.json")).toBe(lock);
+  });
+
+  /**
+   * Fifteen is today's count, not the rule. `EVERY_SITE` above is a written-out
+   * list, and so is every refusal below a *half*-landed sixth workflow — between
+   * them they would all still pass against an implementation holding fifteen
+   * hardcoded paths, which on the day a sixth workflow actually lands rewrites
+   * fifteen of eighteen and reports success.
+   *
+   * So this is the one that lands the whole trio: the reusable, the local caller
+   * and the reference caller. The site set is derived from what is on disk, and
+   * the number that proves it is eighteen.
+   */
+  it("derives the site set: a complete sixth workflow is eighteen sites, not fifteen", () => {
+    const root = fixture();
+    for (const [from, to] of [
+      [".github/workflows/review.yml", ".github/workflows/plan.yml"],
+      [".github/workflows/agent-review.yml", ".github/workflows/agent-plan.yml"],
+      ["examples/callers/review.yml", "examples/callers/plan.yml"],
+    ] as const) {
+      fs.copyFileSync(path.join(root, ...from.split("/")), path.join(root, ...to.split("/")));
+    }
+
+    const sites = syncVersion(TARGET, root);
+
+    expect(sites).toHaveLength(EVERY_SITE.length + 3);
+    expect(sites.filter((s) => s.form === "package")).toHaveLength(6);
+    expect(sites.filter((s) => s.form === "ref")).toHaveLength(12);
+    expect(sites.filter((s) => s.file.includes("plan")).map((s) => `${s.file} ${s.form}`).sort()).toEqual([
+      ".github/workflows/agent-plan.yml ref",
+      ".github/workflows/plan.yml package",
+      "examples/callers/plan.yml ref",
+    ]);
+    expect(read(root, ".github/workflows/plan.yml")).toContain(
+      `--package=@jeffwlawson/agent-workflows@${TARGET} --`,
+    );
+    for (const caller of [".github/workflows/agent-plan.yml", "examples/callers/plan.yml"]) {
+      expect(read(root, caller)).toContain(`.yml@v${TARGET}`);
+    }
   });
 
   /**

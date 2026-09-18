@@ -99,6 +99,15 @@ It refuses rather than doing part of the job. All fifteen sites must exist and e
 exactly one recognisable pin, so a sixth workflow whose caller or example is missing stops the
 release instead of quietly propagating to fifteen of eighteen.
 
+A refusal leaves no commit and no tag, but it does leave the **manifest and lockfile bumped** in
+the working tree — npm writes those before the hook runs and does not roll them back. Undo them
+before you retry, or the retry dies on npm's dirty-tree check instead of on the fault you were
+fixing:
+
+```bash
+git checkout -- package.json package-lock.json
+```
+
 The commit's message is `.npmrc`'s `message=v%s`, the `v` matching the tag `publish.yml` fires on.
 That is the whole file: the registry and the token live in the `.npmrc` `actions/setup-node` writes
 under `RUNNER_TEMP`, and a second copy of the scope here is a second place for it to be wrong.

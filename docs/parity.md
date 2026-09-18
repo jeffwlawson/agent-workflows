@@ -144,11 +144,12 @@ about a deliverable whose blocker sits outside the PRD entirely — and it decid
 *order*. Sequencing within the walk is still creation order, still edge-free. The distinction is
 also why the refusal belongs on the parent and nowhere else: slices are pieces of one feature
 landing on one branch, so a slice that needs outside work blocks the whole PRD rather than itself
-(you cannot merge four of five and wait), and a mid-walk read would in any case tell the walk
-nothing it does not already know. `docs/agents/ticket-shape.md` has each slice `blocked-by` its
-predecessor by construction, and the chain closes each slice before targeting the next, so those
-edges are satisfied by the time such a read would see them. The rule is below, under *Containment
-transfers authorisation*.
+(you cannot merge four of five and wait), and on a correctly published batch a mid-walk read would
+in any case tell the walk nothing it does not already know. `docs/agents/ticket-shape.md` has each
+slice `blocked-by` its predecessor by construction, and the chain closes each slice before targeting
+the next, so those edges are satisfied by the time such a read would see them. What an out-of-order
+publish does to that, and why it is still not an argument for reading edges per slice, is below
+under *Containment transfers authorisation*.
 
 **Two workflows, one label, and exactly one of them speaks.** `agent-implement` and
 `agent-implement-prd` share `agent:implement` on `issues: [labeled]`, so both jobs start on every
@@ -243,12 +244,18 @@ edges mid-walk as a deliberate non-goal (§10 too, and `implement-prd.yml`'s own
 the contract is the design reason it exists: slices are pieces of one feature landing on one branch,
 so a slice that needs outside work means the *whole PRD* is blocked — you cannot merge four of five
 and wait. That dependency belongs as an edge on the parent, which is the one the preflight reads.
-And a mid-walk read would not reliably catch it anyway. Every slice after the first is `blocked-by`
-its predecessor by construction, but the chain closes each slice before targeting the next, and both
-existing checks refuse on *open* blockers only — `select(.state == "open")` — so a per-slice read
-mirroring them passes on every in-PRD edge, spending a call per slice to re-derive the order the
-walk already has. The only edge it could ever refuse on points *outside* the PRD, and that is
-precisely the edge that belongs on the parent: read once, before anything lands, rather than
+And a mid-walk read is in any case the wrong place to catch it. Every slice after the first is
+`blocked-by` its predecessor by construction, but the chain closes each slice before targeting the
+next, and both existing checks refuse on *open* blockers only — `select(.state == "open")` — so a
+per-slice read mirroring them passes on every in-PRD edge a correct publish gives, spending a call
+per slice to re-derive the order the walk already has. **One case does make it refuse on an in-PRD
+edge**, and it is the strongest argument for reading per slice: a batch published out of dependency
+order, which is the hazard `ticket-shape.md` names, in the section linked above, as the one nothing
+catches. It is still the wrong shape of answer. The refusal lands mid-walk, after however many
+slices are already committed to the branch — the hazard arriving late rather than a repair for it,
+and the repair is the publish order, which is where `ticket-shape.md` and `implement-prd.yml`'s
+header both put it. Every other edge such a read could refuse on points *outside* the PRD, and that
+is precisely the edge that belongs on the parent: read once, before anything lands, rather than
 discovered four slices in with the branch already carrying them and the PR left in draft.
 
 **The distinction is easy to lose while holding it**, which is the argument for a section rather

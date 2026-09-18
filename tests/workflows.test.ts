@@ -1747,10 +1747,11 @@ describe("agent-implement-prd works one sub-issue per run", () => {
  * Two failures with no symptom, which is why this is a test and not a comment.
  * A section deleted or reworded away leaves `implement-prd.yml`'s preflight
  * citing `docs/parity.md §2a` for a rule that is no longer there — the citation
- * is a string, and nothing dereferences it. And the link from
- * `docs/agents/ticket-shape.md`, which states the ordering contract this
- * explains, is an anchor: renaming the heading breaks it silently, since no
- * Markdown here is ever rendered by a build that could complain.
+ * is a string, and nothing dereferences it. And the links between this section
+ * and `docs/agents/ticket-shape.md`, which states the ordering contract this
+ * explains, are anchors in both directions: renaming either heading breaks one
+ * silently, since no Markdown here is ever rendered by a build that could
+ * complain.
  */
 describe("why blocker edges do not chain is written down, not re-derived", () => {
   const PARITY = path.join("docs", "parity.md");
@@ -1773,7 +1774,10 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
       .trim()
       .replace(/\s+/g, "-");
 
-  const anchors = new Set((parity.match(/^#{2,6} .+$/gm) ?? []).map(slugOf));
+  const headingsOf = (doc: string): string[] => doc.match(/^#{2,6} .+$/gm) ?? [];
+
+  const anchors = new Set(headingsOf(parity).map(slugOf));
+  const ticketShapeAnchors = new Set(headingsOf(ticketShape).map(slugOf));
 
   /** The section itself: from its heading to the next one at any level. */
   const sectionNamed = (match: RegExp): string => {
@@ -1812,16 +1816,26 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
    * topological sort is placed on whoever publishes the batch; a reader who
    * asks *why the chain does not just read the edges* is reading that file.
    *
-   * Both directions of the link are checked against the headings that exist,
-   * since §10 points at the section too and an anchor renamed out from under
-   * either one still renders as a link and still goes nowhere.
+   * Every direction is checked against the headings that exist: inbound from
+   * `ticket-shape.md`, internal (§10 points at the section too), and outbound —
+   * the sub-issue row cites the ordering contract by anchor, and that heading
+   * lives in a file this one does not otherwise constrain. An anchor renamed out
+   * from under any of them still renders as a link and still goes nowhere.
+   *
+   * The outbound pair is deliberately "the citation exists" plus "every one
+   * resolves", not the slug spelled out again: renaming that heading and moving
+   * the link with it is a legitimate edit, and only the half-done version — one
+   * moved, the other not — is the silent failure worth failing on.
    */
-  it("is reachable from the ordering contract, by a link that resolves", () => {
+  it("is reachable from the ordering contract, by links that resolve both ways", () => {
     const inbound = [...ticketShape.matchAll(/\]\(\.\.\/parity\.md#([^)]+)\)/g)].map((m) => m[1] ?? "");
     const internal = [...parity.matchAll(/\]\(#([^)]+)\)/g)].map((m) => m[1] ?? "");
+    const outbound = [...parity.matchAll(/\]\(\.\/agents\/ticket-shape\.md#([^)]+)\)/g)].map((m) => m[1] ?? "");
 
     expect(inbound).toContain(slugOf(doctrine.split("\n")[0] ?? ""));
+    expect(doctrine).toMatch(/\]\(\.\/agents\/ticket-shape\.md#[^)]+\)/);
     for (const anchor of [...inbound, ...internal]) expect(anchors).toContain(anchor);
+    for (const anchor of outbound) expect(ticketShapeAnchors).toContain(anchor);
   });
 });
 

@@ -178,8 +178,10 @@ export const git = (args: readonly string[]): string =>
  * commenting happens in separate workflow steps.
  *
  * Scope and limits: this affects only the current Node process and its
- * children, not later workflow steps. It does NOT remove git credentials that
- * `actions/checkout` persists in `.git/config`; preventing `git push` is a
+ * children, not later workflow steps. It does NOT remove the git credentials
+ * `actions/checkout` persists — from v6 in a `$RUNNER_TEMP` file that
+ * `.git/config` includes rather than in `.git/config` itself, which changes
+ * where they are and not that `git` finds them. Preventing `git push` is a
  * separate control (`contents: read`, or `persist-credentials: false`).
  */
 export const scrubGitHubTokens = (): void => {

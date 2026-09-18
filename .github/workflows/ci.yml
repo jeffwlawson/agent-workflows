@@ -18,13 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `.nvmrc` rather than a literal, and it matters here more than usual: the
       # publish check below only reproduces on the npm that ships with Node 24.
       # Pinning a different version would make this job pass while a publish
       # from the same commit silently loses `bin` (see below).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm

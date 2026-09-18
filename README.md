@@ -20,10 +20,14 @@ and passing one is refused rather than ignored.
 Published to **GitHub Packages**, so `npx` needs a scoped registry and a token:
 
 ```yaml
-- uses: actions/setup-node@v4
+- uses: actions/setup-node@v7
   with:
     registry-url: https://npm.pkg.github.com
     scope: "@jeffwlawson"
+    # This is the registry half of `setup-node`, not the toolchain half. From
+    # v5 it also caches npm on its own when `package.json` names a package
+    # manager, which fails a repo with no root lockfile.
+    package-manager-cache: false
 - run: npx --yes @jeffwlawson/agent-workflows@<version> review
   env:
     NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

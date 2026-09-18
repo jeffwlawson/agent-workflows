@@ -126,7 +126,7 @@ jobs:
 
       - name: Checkout PR head
         if: steps.state.outputs.proceed == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -163,7 +163,7 @@ jobs:
       # needs for it.
       - name: Setup Node.js
         if: steps.state.outputs.proceed == 'true' && inputs.node-version-file != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: ${{ inputs.node-version-file }}
           cache: npm
@@ -190,7 +190,7 @@ jobs:
       # so it must not infer one.
       - name: Authenticate to GitHub Packages
         if: steps.state.outputs.proceed == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"

@@ -1819,6 +1819,11 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
    * walk is API order and reads no edge) and the design reason underneath —
    * slices are pieces of one feature on one branch, so a slice needing outside
    * work blocks the whole PRD.
+   *
+   * The row's own cell is asserted, not just the paragraph it points at: a row
+   * gutted to `| PRD **sub-issue** | ❌ | no |` is the verdicts-only table this
+   * section exists to prevent, and the paragraph below would still satisfy
+   * every section-scoped assertion here while it sat there unreferenced.
    */
   it("keeps the three-row table, and the sub-issue row's reasoning with it", () => {
     const rows = (doctrine.match(/^\|.*\|$/gm) ?? []).filter((r) => /✅|❌/.test(r));
@@ -1826,6 +1831,7 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
     expect(rows).toHaveLength(3);
     expect(rows.filter((r) => r.includes("❌"))).toHaveLength(1);
     expect(rows.find((r) => r.includes("❌"))).toMatch(/sub-issue/i);
+    expect(rows.find((r) => r.includes("❌"))).toMatch(/ordering contract/i);
     expect(doctrine).toContain("docs/agents/ticket-shape.md");
     expect(doctrine).toMatch(/whole PRD/i);
   });

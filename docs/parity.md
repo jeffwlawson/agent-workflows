@@ -248,15 +248,19 @@ And a mid-walk read is in any case the wrong place to catch it. Every slice afte
 `blocked-by` its predecessor by construction, but the chain closes each slice before targeting the
 next, and both existing checks refuse on *open* blockers only — `select(.state == "open")` — so a
 per-slice read mirroring them passes on every in-PRD edge a correct publish gives, spending a call
-per slice to re-derive the order the walk already has. **One case does make it refuse on an in-PRD
-edge**, and it is the strongest argument for reading per slice: a batch published out of dependency
-order, which is the hazard `ticket-shape.md` names, in the section linked above, as the one nothing
-catches. It is still the wrong shape of answer. The refusal lands mid-walk, after however many
-slices are already committed to the branch — the hazard arriving late rather than a repair for it,
-and the repair is the publish order, which is where `ticket-shape.md` and `implement-prd.yml`'s
-header both put it. Every other edge such a read could refuse on points *outside* the PRD, and that
-is precisely the edge that belongs on the parent: read once, before anything lands, rather than
-discovered four slices in with the branch already carrying them and the PR left in draft.
+per slice to re-derive the order the walk already has. **Two cases do make it refuse on an in-PRD
+edge**, and together they are the strongest argument for reading per slice. They are one defect
+wearing two faces — the walk order and the edges disagree — and this file names both: a batch
+published out of dependency order, which `ticket-shape.md` calls, in the section linked above, the
+one nothing catches; and a batch published correctly and *then* reordered by a drag in the parent's
+UI, which §10 names as the hazard the ordering rule buys. It is still the wrong shape of answer. The
+refusal lands mid-walk, after however many slices are already committed to the branch — the hazard
+arriving late rather than a repair for it, and the repair in both cases is the order itself, fixed
+where it is set: the publish sequence, or the sub-issue moved back through the parent's ordering
+(§10). That is where `ticket-shape.md` and `implement-prd.yml`'s header both put it. Every *other*
+edge such a read could refuse on points outside the PRD, and that is precisely the edge that belongs
+on the parent: read once, before anything lands, rather than discovered four slices in with the
+branch already carrying them and the PR left in draft.
 
 **The distinction is easy to lose while holding it**, which is the argument for a section rather
 than an aside. `36cdc47` states it in full and then defers the second check with "same argument

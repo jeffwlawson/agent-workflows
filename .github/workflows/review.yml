@@ -419,15 +419,23 @@ jobs:
       #
       # `package-manager-cache: false` states that same thing to the action.
       # From v5 it caches on its own when the repository's `package.json`
-      # carries a `packageManager` field, and from v7 the input defaults to
-      # `true` — so a step written to do no toolchain work starts doing some. On
-      # an adopter whose manifest names npm with no root lockfile, the restore
-      # throws `Dependencies lock file is not found` and fails this step before
-      # the runner exists to write `failure_reason.txt`, leaving a run that says
-      # only `(no reason file written)`. It would also add a cache *save* to a
-      # `pull_request_target` job. The input does not exist on the `@v4` pin
-      # above, and this repo declares no `packageManager`, so it is inert here
-      # and on purpose: it is the guard the bump lands on, not a response to it.
+      # carries a `packageManager` field, and the input that switches that off
+      # has defaulted to `true` since that same release; v6 and v7 only widen
+      # the detection to `devEngines.packageManager`. So a step written to do no
+      # toolchain work starts doing some. On an adopter whose manifest names npm
+      # with no root lockfile, the restore throws `Dependencies lock file is not
+      # found` and fails this step before the runner exists to write
+      # `failure_reason.txt`, leaving a run that says only `(no reason file
+      # written)`. It would also add a cache *save* to a `pull_request_target`
+      # job.
+      #
+      # The input does not exist on the `@v4` pin above, and this repo declares
+      # no `packageManager`, so it changes no behaviour here — but the runner
+      # does not ignore an undeclared input quietly: expect one annotation,
+      # `Unexpected input(s) 'package-manager-cache'`, on this step of every run
+      # until the pin moves to v5 or later, and expect the bump to clear it.
+      # Inert and on purpose: it is the guard the bump lands on, not a response
+      # to it.
       #
       # This is also the one step in the loop that reaches across repositories. A
       # package published from this repo is not automatically readable by another

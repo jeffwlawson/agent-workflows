@@ -2215,9 +2215,11 @@ describe("the runner package is installed from GitHub Packages", () => {
   /**
    * And it says so in the one place `setup-node` would otherwise infer it.
    * From v5 the action caches automatically when the repository's
-   * `package.json` carries a `packageManager` field, and from v7
-   * `package-manager-cache` defaults to `true` — so the registry half of
-   * `setup-node` starts doing toolchain work the step above was written to own.
+   * `package.json` carries a `packageManager` field, and
+   * `package-manager-cache` has defaulted to `true` since that same release
+   * (v6 and v7 only widen detection to `devEngines.packageManager`) — so the
+   * registry half of `setup-node` starts doing toolchain work the step above
+   * was written to own.
    *
    * For an adopter whose manifest names npm with **no root lockfile**, the
    * restore throws `Dependencies lock file is not found` and the step fails

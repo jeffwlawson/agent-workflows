@@ -102,9 +102,10 @@ The ones worth knowing because nothing fails when they break:
 - **The *Authenticate to GitHub Packages* step is deliberately toolchain-free.** It is the registry
   half of `setup-node` — it runs on repos that skipped the toolchain step entirely, so it declares
   no `node-version-file` and passes `package-manager-cache: false` to stop the action inferring one
-  from a `packageManager` field (implicit from v5, defaulted on from v7). An input added there that
-  does toolchain work fails *before* the runner exists to write `failure_reason.txt`, and this repo
-  cannot reproduce it: it declares no `packageManager`, so the caching never fires here.
+  from a `packageManager` field (automatic and defaulted on from v5; v6/v7 also read
+  `devEngines.packageManager`). An input added there that does toolchain work fails *before* the
+  runner exists to write `failure_reason.txt`, and this repo cannot reproduce it: it declares no
+  `packageManager`, so the caching never fires here.
 
 ## The prompts name no domain
 

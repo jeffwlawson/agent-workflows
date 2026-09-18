@@ -1785,12 +1785,25 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
     return headings.find((s) => match.test(s.split("\n")[0] ?? "")) ?? "";
   };
 
+  /**
+   * Which top-level section it has to sit in, and the one thing here written
+   * out rather than derived. Both citations name it by **number**, not by
+   * anchor — `implement-prd.yml`'s preflight and `ticket-shape.md`'s link text
+   * each say `docs/parity.md §2a` — and a number is what no link checker and no
+   * anchor test can follow. Move the section to §2b or §10 (§10 already
+   * restates the rule) and every other assertion below still passes, the
+   * anchor still resolves, and both citations quietly point at a section that
+   * no longer holds the rule.
+   */
+  const SECTION = "## 2a.";
+
   const doctrine = sectionNamed(/containment transfers authorisation/i);
 
   it("states the rule in full where the PRD chain's reader already is", () => {
     expect(doctrine).not.toBe("");
     expect(doctrine).toMatch(/sequencing does not/i);
     expect(doctrine).toMatch(/transitively/i);
+    expect(parity.split(/^(?=## )/m).find((s) => s.startsWith(SECTION))).toContain(doctrine);
   });
 
   /**

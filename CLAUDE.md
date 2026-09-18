@@ -60,6 +60,9 @@ repo loses the instruction the prompts depend on.
    — deliberately, so a change to one cannot silently leave the other behind.
 4. `tests/workflows.test.ts` asserts over both halves. Add the assertion in the same change; a
    workflow defect has no unit test to catch it and usually no error message either.
+5. A **new** workflow is three files carrying a version pin — the reusable, the local caller and
+   the reference caller — and `scripts/sync-version.ts` refuses the next release until all three
+   exist. That refusal is the point: two of the three is a release that pins what it found.
 
 ## Changing a runner
 
@@ -75,17 +78,45 @@ Publishing is a **tag push**, and the version in the tag and in `package.json` m
 
 ```bash
 npm version patch          # or minor / major
-git push && git push --tags
+git push --follow-tags
 ```
 
 `v*` on a commit reachable from `main` triggers `publish.yml`. It refuses a tag on an unmerged
 commit, and no-ops if the version is already on the registry.
 
-Then **bump the pin in both caller sets** — `examples/callers/*.yml` and
-`.github/workflows/agent-*.yml`. `PIN` in `tests/workflows.test.ts` is derived from `package.json`
-and checked against both, so a release that leaves either behind fails the build by name. A stale
-example is an adopter running last release's runners; a stale local caller is *this* repo running
-them.
+**That first command is the whole release.** The version appears in seventeen files and `npm
+version` bumps two of them; `scripts/sync-version.ts` writes the other fifteen — the `npm exec`
+pin in each of the five reusable workflows, and the `uses:` ref in each of the two caller sets. It
+runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
+*before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
+stages **by path** — the fifteen it wrote, never `-A`: npm's dirty-tree check passes untracked
+files, so `-A` would carry a stray one into the tag `publish.yml` fires on, and nothing here would
+see it. It propagates and never decides: the version is read from `package.json`, never passed in,
+and nothing there commits or tags — `npm version` does both, and a second tagging path is a second
+way to publish.
+
+It refuses rather than doing part of the job. All fifteen sites must exist and each must carry
+exactly one recognisable pin, so a sixth workflow whose caller or example is missing stops the
+release instead of quietly propagating to fifteen of eighteen.
+
+A refusal leaves no commit and no tag, but it does leave the **manifest and lockfile bumped** in
+the working tree — npm writes those before the hook runs and does not roll them back. Undo them
+before you retry, or the retry dies on npm's dirty-tree check instead of on the fault you were
+fixing:
+
+```bash
+git checkout -- package.json package-lock.json
+```
+
+The commit's message is `.npmrc`'s `message=v%s`, the `v` matching the tag `publish.yml` fires on.
+That is the whole file: the registry and the token live in the `.npmrc` `actions/setup-node` writes
+under `RUNNER_TEMP`, and a second copy of the scope here is a second place for it to be wrong.
+
+The checks that made this a chore rather than a hazard are still the backstop, and are what a
+rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and
+checked against **both caller sets** — `examples/callers/*.yml` and `.github/workflows/agent-*.yml`
+— so a release that leaves either behind fails the build by name. A stale example is an adopter
+running last release's runners; a stale local caller is *this* repo running them.
 
 `.github/dependabot.yml` is **not** the mechanism for that bump, and is not installed here for the
 loop pins at all — `PIN` already holds both caller sets to `package.json`, so they cannot go stale.
@@ -98,8 +129,10 @@ second signal that a release step was missed — it reads `.github/workflows` on
 five callers and never `examples/callers/` or the `npm exec` lines, and its PR stays red until you
 move those by hand.
 
-Bump the `npx …@<version>` line in the five reusable workflows too — a test holds it equal to
-`package.json`, so the build tells you.
+Changing what a pin looks like — a new workflow, a renamed one, a different invocation — is a
+change to `scripts/sync-version.ts` and `tests/sync-version.test.ts` in the same commit. It knows
+two forms, `@<version>` for the npm spec and `@v<version>` for the `uses:` ref, and a third would
+be a site it skips.
 
 > **`bin` must never start with `./`.** `npm publish` silently drops such an entry and exits 0,
 > producing a package whose commands cannot be run. `ci.yml` runs `npm publish --dry-run` and fails

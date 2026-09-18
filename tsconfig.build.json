@@ -7,6 +7,14 @@
   // because the tests moved into this repository while `include` still said
   // `**/*.ts`. Same shape as `docs/` reaching `copy-assets`: a build defined as
   // "everything except" quietly grows when a sibling directory appears.
+  //
+  // `scripts/sync-version.ts` is the same shape one release later: release-time
+  // tooling with no runtime role, which `npm version` runs from *source* through
+  // Node's type stripping and never from `dist`. Compiled it is a 25th file in
+  // the tarball, and one that would be wrong if anyone ran it — its package root
+  // is `import.meta.dirname/..`, which from `dist/scripts/` is `dist/`, the very
+  // reason `copy-assets.ts` says `"..", ".."`. `copy-assets.js` stays because
+  // `npm run build` invokes it from there.
   "extends": "./tsconfig.json",
-  "exclude": ["dist", "tests", "vitest.config.ts"]
+  "exclude": ["dist", "tests", "vitest.config.ts", "scripts/sync-version.ts"]
 }

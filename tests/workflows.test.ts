@@ -1731,6 +1731,150 @@ describe("agent-implement-prd works one sub-issue per run", () => {
 });
 
 /**
+ * The two blocker refusals in this file — and the third place that
+ * deliberately has none — partition on a rule that, until #19, lived only in a
+ * comment thread on an issue being closed, and #5's own author predicted the
+ * idea would come back: left as "Same argument applies.", the natural reading
+ * is *check blockers everywhere*, which is the sub-issue loop the two tests
+ * above exist to keep out.
+ *
+ * So the rule is asserted where it is written rather than only where it is
+ * obeyed. **Containment transfers authorisation; sequencing does not.** A PRD
+ * parent contains its sub-issues, so one label on the parent authorises every
+ * slice; `blocked_by` sequences separate deliverables, and chaining through it
+ * would authorise work nobody asked for, transitively.
+ *
+ * Two failures with no symptom, which is why this is a test and not a comment.
+ * A section deleted or reworded away leaves `implement-prd.yml`'s preflight
+ * citing `docs/parity.md §2a` for a rule that is no longer there — the citation
+ * is a string, and nothing dereferences it. And the links between this section
+ * and `docs/agents/ticket-shape.md`, which states the ordering contract this
+ * explains, are anchors in both directions: renaming either heading breaks one
+ * silently, since no Markdown here is ever rendered by a build that could
+ * complain.
+ */
+describe("why blocker edges do not chain is written down, not re-derived", () => {
+  const PARITY = path.join("docs", "parity.md");
+  const TICKET_SHAPE = path.join("docs", "agents", "ticket-shape.md");
+
+  const parity = fs.readFileSync(PARITY, "utf8");
+  const ticketShape = fs.readFileSync(TICKET_SHAPE, "utf8");
+
+  /**
+   * GitHub's heading slug, close enough for the anchors this repo writes:
+   * lowercased, punctuation dropped, spaces hyphenated. Computed from the
+   * headings rather than hardcoded, so the check is "the link resolves" rather
+   * than "the link matches a second copy of the heading".
+   */
+  const slugOf = (heading: string): string =>
+    heading
+      .replace(/^#+\s+/, "")
+      .toLowerCase()
+      .replace(/[^\w\- ]/g, "")
+      .trim()
+      .replace(/\s+/g, "-");
+
+  const headingsOf = (doc: string): string[] => doc.match(/^#{2,6} .+$/gm) ?? [];
+
+  const anchors = new Set(headingsOf(parity).map(slugOf));
+  const ticketShapeAnchors = new Set(headingsOf(ticketShape).map(slugOf));
+
+  /** The section itself: from its heading to the next one at any level. */
+  const sectionNamed = (match: RegExp): string => {
+    const headings = parity.split(/^(?=#{2,6} )/m);
+    return headings.find((s) => match.test(s.split("\n")[0] ?? "")) ?? "";
+  };
+
+  /**
+   * Which top-level section it has to sit in, and the one thing here written
+   * out rather than derived. Both citations name it by **number**, not by
+   * anchor — `implement-prd.yml`'s preflight and `ticket-shape.md`'s link text
+   * each say `docs/parity.md §2a` — and a number is what no link checker and no
+   * anchor test can follow. Move the section to §2b or §10 (§10 already
+   * restates the rule) and every other assertion below still passes, the
+   * anchor still resolves, and both citations quietly point at a section that
+   * no longer holds the rule.
+   */
+  const SECTION = "## 2a.";
+
+  /** Where §10 restates the rule and delegates the table back to §2a. */
+  const INVARIANTS = "## 10.";
+
+  const topLevel = (prefix: string): string =>
+    parity.split(/^(?=## )/m).find((s) => s.startsWith(prefix)) ?? "";
+
+  const doctrine = sectionNamed(/containment transfers authorisation/i);
+
+  it("states the rule in full where the PRD chain's reader already is", () => {
+    expect(doctrine).not.toBe("");
+    expect(doctrine).toMatch(/sequencing does not/i);
+    expect(doctrine).toMatch(/transitively/i);
+    expect(topLevel(SECTION)).toContain(doctrine);
+  });
+
+  /**
+   * The verdicts alone are the version that gets re-litigated. The sub-issue
+   * row is the load-bearing one and the only one whose reasoning is not
+   * self-evident, so it carries both halves: the contract it contradicts (the
+   * walk is API order and reads no edge) and the design reason underneath —
+   * slices are pieces of one feature on one branch, so a slice needing outside
+   * work blocks the whole PRD.
+   *
+   * The row's own cell is asserted, not just the paragraph it points at: a row
+   * gutted to `| PRD **sub-issue** | ❌ | no |` is the verdicts-only table this
+   * section exists to prevent, and the paragraph below would still satisfy
+   * every section-scoped assertion here while it sat there unreferenced.
+   */
+  it("keeps the three-row table, and the sub-issue row's reasoning with it", () => {
+    const rows = (doctrine.match(/^\|.*\|$/gm) ?? []).filter((r) => /✅|❌/.test(r));
+
+    expect(rows).toHaveLength(3);
+    expect(rows.filter((r) => r.includes("❌"))).toHaveLength(1);
+    expect(rows.find((r) => r.includes("❌"))).toMatch(/sub-issue/i);
+    expect(rows.find((r) => r.includes("❌"))).toMatch(/ordering contract/i);
+    expect(doctrine).toContain("docs/agents/ticket-shape.md");
+    expect(doctrine).toMatch(/whole PRD/i);
+  });
+
+  /**
+   * Reachable from the contract it explains. `ticket-shape.md` is where the
+   * topological sort is placed on whoever publishes the batch; a reader who
+   * asks *why the chain does not just read the edges* is reading that file.
+   *
+   * Every direction is checked against the headings that exist: inbound from
+   * `ticket-shape.md`, internal from §10, and outbound — the sub-issue row cites
+   * the ordering contract by anchor, and that heading lives in a file this one
+   * does not otherwise constrain. An anchor renamed out from under any of them
+   * still renders as a link and still goes nowhere.
+   *
+   * Each direction gets both halves, existence and resolution, because the
+   * half-done edit is the silent one. §10 states the rule and then delegates
+   * the table and the sub-issue row's reasoning here; degrading that pointer to
+   * plain italics leaves §10 delegating to a section it no longer names, which
+   * no resolution check can see. It is asserted against §10's own text rather
+   * than against every internal link, since the ordering note earlier in §2a
+   * now carries the same anchor and would satisfy a bare search on its own.
+   *
+   * Existence is deliberately "a citation exists" rather than the slug spelled
+   * out a second time: renaming a heading and moving its links with it is a
+   * legitimate edit, and only the half-done version fails here.
+   */
+  it("is reachable from the ordering contract, by links that resolve both ways", () => {
+    const inbound = [...ticketShape.matchAll(/\]\(\.\.\/parity\.md#([^)]+)\)/g)].map((m) => m[1] ?? "");
+    const internal = [...parity.matchAll(/\]\(#([^)]+)\)/g)].map((m) => m[1] ?? "");
+    const outbound = [...parity.matchAll(/\]\(\.\/agents\/ticket-shape\.md#([^)]+)\)/g)].map((m) => m[1] ?? "");
+
+    const slug = slugOf(doctrine.split("\n")[0] ?? "");
+
+    expect(inbound).toContain(slug);
+    expect(topLevel(INVARIANTS)).toContain(`](#${slug})`);
+    expect(doctrine).toMatch(/\]\(\.\/agents\/ticket-shape\.md#[^)]+\)/);
+    for (const anchor of [...inbound, ...internal]) expect(anchors).toContain(anchor);
+    for (const anchor of outbound) expect(ticketShapeAnchors).toContain(anchor);
+  });
+});
+
+/**
  * The runner contract, held to by every workflow in the set: fetch the context
  * before the agent starts, scrub the token, and leave every tracker mutation to
  * the workflow. `implement-prd` is the first runner handed *two* issues — the

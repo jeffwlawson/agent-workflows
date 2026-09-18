@@ -144,9 +144,12 @@ about a deliverable whose blocker sits outside the PRD entirely — and it decid
 *order*. Sequencing within the walk is still creation order, still edge-free. The distinction is
 also why the refusal belongs on the parent and nowhere else: slices are pieces of one feature
 landing on one branch, so a slice that needs outside work blocks the whole PRD rather than itself
-(you cannot merge four of five and wait), and a mid-walk read would in any case refuse every slice
-after the first — `docs/agents/ticket-shape.md` has each one `blocked-by` its predecessor by
-construction.
+(you cannot merge four of five and wait), and on a correctly published batch a mid-walk read would
+in any case tell the walk nothing it does not already know. `docs/agents/ticket-shape.md` has each
+slice `blocked-by` its predecessor by construction, and the chain closes each slice before targeting
+the next, so those edges are satisfied by the time such a read would see them. What an out-of-order
+publish does to that, and why it is still not an argument for reading edges per slice, is below under
+[*Containment transfers authorisation*](#containment-transfers-authorisation-sequencing-does-not).
 
 **Two workflows, one label, and exactly one of them speaks.** `agent-implement` and
 `agent-implement-prd` share `agent:implement` on `issues: [labeled]`, so both jobs start on every
@@ -203,6 +206,67 @@ telling the implement agent to run its own review pass over the slice before com
 what a human's local `/implement` … `/code-review` loop does anyway. `implement-prd/prompt.md`
 already carries that line ("BEFORE YOU COMMIT"), which pulls correctness feedback earlier while
 keeping one review per PR. Escalating it into a workflow is the thing to resist.
+
+### Containment transfers authorisation. Sequencing does not.
+
+Two blocker checks exist, one per implement workflow, and a third place that deliberately has none.
+The rule sorting them is not "check blockers wherever you can" — it is which *relationship* the
+check would sit on.
+Written down here (#19) because it had been derived twice without ever being recorded — once when
+`36cdc47` shipped the flat check, again when #14 argued the parent one — and the clearest statement
+of it lived in a comment thread on an issue being closed. A rule that has to be re-derived each
+time it is questioned is not written down yet.
+
+A PRD parent **contains** its sub-issues: the body is the spec, the slices are pieces of it, so
+authorising the parent authorises them. That is what makes one label safe to drive five runs onto
+one branch, reviewed once — the whole of §2a rests on it, and so does §10's "the parent is the
+control point".
+
+`blocked_by` is **sequencing**. The blocker is a separate deliverable with its own PR and its own
+reviewer. Chaining through it would authorise work nobody asked for, transitively — A→B→C means
+labelling C implements three things — and some blockers are decision tickets that are not
+implementable at all, which is the same reason the `wayfinder:` refusal exists.
+
+So a blocker check belongs wherever the thing being labelled is the thing being authorised, and
+nowhere else:
+
+| | check blockers? | |
+|---|:--:|---|
+| flat issue | ✅ | shipped, `36cdc47` |
+| PRD **parent** | ✅ | #14, and the cost of running anyway is a whole chain, not one wasted run |
+| PRD **sub-issue** | ❌ | contradicts the ordering contract — see below |
+
+**The sub-issue row is the load-bearing one, and it is a decision rather than an omission.** The
+chain walks sub-issues in API order and reads `blocked_by` **nowhere**:
+[`docs/agents/ticket-shape.md`](./agents/ticket-shape.md#creation-order-is-execution-order) puts
+the topological sort on whoever publishes the batch, and the ordering note above records reading
+edges mid-walk as a deliberate non-goal (§10 too, and `implement-prd.yml`'s own header). Underneath
+the contract is the design reason it exists: slices are pieces of one feature landing on one branch,
+so a slice that needs outside work means the *whole PRD* is blocked — you cannot merge four of five
+and wait. That dependency belongs as an edge on the parent, which is the one the preflight reads.
+And a mid-walk read is in any case the wrong place to catch it. Every slice after the first is
+`blocked-by` its predecessor by construction, but the chain closes each slice before targeting the
+next, and both existing checks refuse on *open* blockers only — `select(.state == "open")` — so a
+per-slice read mirroring them passes on every in-PRD edge a correct publish gives, spending a call
+per slice to re-derive the order the walk already has. **Two cases do make it refuse on an in-PRD
+edge**, and together they are the strongest argument for reading per slice. They are one defect
+wearing two faces — the walk order and the edges disagree — and this file names both: a batch
+published out of dependency order, which `ticket-shape.md` calls, in the section linked above, the
+one nothing catches; and a batch published correctly and *then* reordered by a drag in the parent's
+UI, which §10 names as the hazard the ordering rule buys. It is still the wrong shape of answer. The
+refusal lands mid-walk, after however many slices are already committed to the branch — the hazard
+arriving late rather than a repair for it, and the repair in both cases is the order itself, fixed
+where it is set: the publish sequence, or the sub-issue moved back through the parent's ordering
+(§10). That is where `ticket-shape.md` and `implement-prd.yml`'s header both put it. Every *other*
+edge such a read could refuse on points outside the PRD, and that is precisely the edge that belongs
+on the parent: read once, before anything lands, rather than discovered four slices in with the
+branch already carrying them and the PR left in draft.
+
+**The distinction is easy to lose while holding it**, which is the argument for a section rather
+than an aside. `36cdc47` states it in full and then defers the second check with "same argument
+applies" — true of the parent, and at three words the natural reading is *check blockers
+everywhere*, which walks straight into the sub-issue row above. The author who drew the line wrote
+that sentence, and #5's thread is where it was caught; this section is what was caught.
 
 ---
 
@@ -572,6 +636,17 @@ expensive to rediscover.
   of the PRD, and each of those answers is a scheduler nobody asked for. The hazard the rule buys is
   worth naming: dragging a sub-issue in the parent's UI silently rewrites the execution order of a
   chain that has not run yet, with no other visible effect anywhere.
+- **Containment transfers authorisation; sequencing does not.** One `agent:implement` on a PRD
+  parent authorises every slice, because the parent *contains* them — the body is the spec and the
+  slices are pieces of it. `blocked_by` is the other relationship: it orders separate deliverables,
+  each with its own PR and its own reviewer, so chaining through it would authorise work nobody
+  asked for, transitively (A→B→C: labelling C implements three things), and some blockers are
+  decision tickets `wayfinder:` already refuses. That is why a blocker check belongs on a flat issue
+  and on a PRD parent (#14) but never on a sub-issue, where it would contradict the ordering
+  contract and discover mid-chain what belongs on the parent. The table and the sub-issue row's
+  reasoning are in §2a, under
+  [*Containment transfers authorisation*](#containment-transfers-authorisation-sequencing-does-not);
+  it is there rather than only here because the rule keeps being re-derived when it is questioned.
 - **`agent:queued` is written by a human, never by a workflow.** It is the one `agent:*` label no
   workflow touches at all (§8) — `agent:in-progress` and `agent:blocked` have no consumer either,
   but a workflow applies and clears them — and until `promote-queued` exists (§1, §9.6) nothing

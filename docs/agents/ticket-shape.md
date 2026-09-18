@@ -51,6 +51,12 @@ defined order, which is the same bug arriving by accident. (The other direction 
 `agent-implement-prd.yml` says, in its header, *do not add edge-reading here; fix the publish order
 instead*.)
 
+**Why the chain does not simply read the edges**, and why the two blocker checks that *do* exist
+sit where they do, is
+[`docs/parity.md` §2a](../parity.md#containment-transfers-authorisation-sequencing-does-not):
+containment transfers authorisation, sequencing does not. Read it before proposing that the chain
+check blockers per slice — it has come up before, once from the author of the rule itself.
+
 **What the API returns is a position, not a timestamp.** Each sub-issue holds a place in the
 parent's list; creating one appends it, which is why publishing in order is enough. But the place
 is editable — by dragging in the parent's UI, or through the sub-issue priority endpoint

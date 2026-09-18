@@ -891,11 +891,18 @@ describe("every workflow in the loop is called rather than copied", () => {
   });
 
   /**
-   * …and from `actions/checkout@v7`, that same guard is enforced a second time
-   * inside the action. v7's headline change refuses to check a **fork** PR head
-   * out under `pull_request_target` or `workflow_run` unless
-   * `allow-unsafe-pr-checkout: true` says otherwise — and that input is a total
-   * opt-out, the first branch of the helper, not a narrowing of it.
+   * …and `actions/checkout` enforces that same guard a second time inside the
+   * action: it refuses to check a **fork** PR head out under
+   * `pull_request_target` or `workflow_run` unless the step sets
+   * `allow-unsafe-pr-checkout: true` — a total opt-out, the first branch of the
+   * helper, not a narrowing of it.
+   *
+   * Not something the `@v7` bump bought. The refusal was backported as a
+   * breaking change into `v6.1.0`, `v5.1.0`, `v4.4.0` and the two lines older
+   * than those, and the moving `@v4` tag this repo sat on resolves to `v4.4.0`
+   * — so the pin before the bump enforced it too. This check is therefore no
+   * more tied to `@v7` than the pin is: it is about the input, which every
+   * version reachable from here has.
    *
    * Nothing sets it and the job-level guard above means nothing needs to: only
    * a same-repo head reaches a checkout here, which the action lets through
@@ -912,6 +919,34 @@ describe("every workflow in the loop is called rather than copied", () => {
   it.each(workflowFiles)("%s: never opts out of checkout's own fork guard", (file) => {
     for (const step of stepsOf(file).filter((s) => (s.uses ?? "").startsWith("actions/checkout@"))) {
       expect(step.with?.["allow-unsafe-pr-checkout"]).toBeUndefined();
+    }
+  });
+
+  /**
+   * …and the action's half of that guard is contingent on this `ref:`, which is
+   * why it is asserted rather than assumed. From `v7.0.1` — and from the same
+   * backports — `src/input-helper.ts` reads
+   *
+   *     const isDefaultCheckout = isWorkflowRepository && !core.getInput('ref')
+   *     if (!isDefaultCheckout) { assertSafePrCheckout({ … }) }
+   *
+   * so the action skips its own check entirely for a default self-checkout, on
+   * the reasoning that GitHub already resolved that ref for the event. The
+   * second guard is thus a property of the *step* as much as of the version:
+   * drop the `ref:` here and the count silently goes back to one, with the
+   * job-level `if:` above reading exactly as it does today.
+   *
+   * The `ref:` is load-bearing before any of that — `pull_request_target`
+   * checks the base branch out without it, and every run would then act on the
+   * wrong tree. Two reasons, one line, and the weaker of them was the one with
+   * no check.
+   */
+  it.each(PR_WORKFLOWS)("%s: checks the PR head out by explicit ref", (file) => {
+    const checkout = stepsOf(file).filter((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+
+    expect(checkout).not.toHaveLength(0);
+    for (const step of checkout) {
+      expect(step.with?.["ref"]).toBe("${{ github.event.pull_request.head.sha }}");
     }
   });
 
@@ -2481,9 +2516,9 @@ describe("the runner package is installed from GitHub Packages", () => {
 
   /**
    * `setup-node` writes `_authToken=${NODE_AUTH_TOKEN}` into the `.npmrc`
-   * literally, so the variable is not optional — without it npm resolves it to
-   * the empty string and the install fails against GitHub Packages, which has
-   * no anonymous read.
+   * literally, so the variable is not optional — without it npm leaves the
+   * `${NODE_AUTH_TOKEN}` unexpanded (only `${NAME?}` falls back to empty) and
+   * sends that literal to GitHub Packages, which has no anonymous read.
    *
    * v7 removed the dummy `NODE_AUTH_TOKEN` export v4 emitted
    * (`XXXXX-XXXXX-XXXXX-XXXXX`), so the symptom moved: it used to be a token

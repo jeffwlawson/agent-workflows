@@ -58,10 +58,15 @@ exactly how they drift.
 repo: it runs with repo secrets and write access. Three things close it, and none is cosmetic.
 
 1. **The fork guard** — `head.repo.full_name == github.repository` as a job-level `if:`, in the
-   *reusable* half. A caller can skip the job; it cannot loosen the guard. From `actions/checkout@v7`
-   the action refuses a fork head under `pull_request_target` too, so the guard now holds twice —
-   but `allow-unsafe-pr-checkout: true` turns the action's half off outright, and that input lives
-   in the reusable half where no caller can see it. A test asserts no checkout step sets it.
+   *reusable* half. A caller can skip the job; it cannot loosen the guard. `actions/checkout`
+   refuses a fork head under `pull_request_target` on its own too, so the guard holds twice — but
+   only where the step passes an explicit `ref:`, which makes the second half a property of *this
+   step* as much as of the version: the action skips its check on a default self-checkout, GitHub
+   having resolved that ref itself. A test asserts the `ref:` alongside the `if:`. Not something the
+   `@v7` bump bought, either — the refusal was backported into `v6.1.0`, `v5.1.0` and `v4.4.0`, and
+   `@v4` floats to the last of those. What matters here is the opt-out:
+   `allow-unsafe-pr-checkout: true` turns the action's half off outright, and that input lives in
+   the reusable half where no caller can see it. A test asserts no checkout step sets it.
 2. **The author gate** — `isTrustedAuthor` in `shared/`. Every PR feedback surface is
    world-writable, and `fix` acts on that feedback with `contents: write` and pushes. An injection
    would steer *committed code*, so the gate is read by the workflow, not by the agent, whose GitHub

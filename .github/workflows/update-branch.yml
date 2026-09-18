@@ -121,7 +121,7 @@ jobs:
 
       - name: Checkout PR head
         if: steps.state.outputs.proceed == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -189,7 +189,7 @@ jobs:
       # toolchain besides, so both are also skippable by input.
       - name: Setup Node.js
         if: steps.merge.outputs.status == 'conflicts' && inputs.node-version-file != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: ${{ inputs.node-version-file }}
           cache: npm
@@ -219,7 +219,7 @@ jobs:
       # invokes no runner, so it needs no registry either.
       - name: Authenticate to GitHub Packages
         if: steps.merge.outputs.status == 'conflicts'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"

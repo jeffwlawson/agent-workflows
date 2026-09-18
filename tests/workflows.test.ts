@@ -891,6 +891,31 @@ describe("every workflow in the loop is called rather than copied", () => {
   });
 
   /**
+   * …and from `actions/checkout@v7`, that same guard is enforced a second time
+   * inside the action. v7's headline change refuses to check a **fork** PR head
+   * out under `pull_request_target` or `workflow_run` unless
+   * `allow-unsafe-pr-checkout: true` says otherwise — and that input is a total
+   * opt-out, the first branch of the helper, not a narrowing of it.
+   *
+   * Nothing sets it and the job-level guard above means nothing needs to: only
+   * a same-repo head reaches a checkout here, which the action lets through
+   * untouched. What this asserts is that it stays that way. The input sits in
+   * the **reusable** half, where an adopter cannot see it and their caller
+   * cannot countermand it, so one line added here would hand fork code a job
+   * holding `contents: write` and every secret — with the caller's `if:` still
+   * reading exactly as it does today.
+   *
+   * Over every workflow rather than the three `pull_request_target` ones,
+   * because the cost is one line and the file it would be added to next is the
+   * one that is not in the list.
+   */
+  it.each(workflowFiles)("%s: never opts out of checkout's own fork guard", (file) => {
+    for (const step of stepsOf(file).filter((s) => (s.uses ?? "").startsWith("actions/checkout@"))) {
+      expect(step.with?.["allow-unsafe-pr-checkout"]).toBeUndefined();
+    }
+  });
+
+  /**
    * Permissions are declared **twice** — for opposite reasons, which is why this
    * is not the duplication it looks like.
    *
@@ -2275,6 +2300,63 @@ describe("Dependabot watches the caller pins no test here can reach", () => {
 });
 
 /**
+ * …and neither can it see the one `actions/*` pin this repository does not run.
+ *
+ * `README.md` shows the install snippet an adopter copies into a workflow of
+ * their own, and Dependabot reads `.github/workflows` only — so that pin is
+ * outside everything above. It sat on `@v4` while the workflows moved to `@v7`,
+ * two majors, with `npm run verify` green throughout: the same shape as the
+ * prose pin `cc997af` fixed, and the reason both are checked rather than
+ * remembered.
+ *
+ * The snippet is also *the auth step*. It declares a registry and no toolchain,
+ * which is exactly the step the `package-manager-cache: false` guard exists
+ * for — a reader copying it onto `@v5` or later gets the implicit npm cache the
+ * reusable half spends thirty lines turning off. So the check is equality with
+ * the real step rather than a version match: a documented snippet that differs
+ * from what the loop runs is worth less than no snippet.
+ */
+describe("the README's action pins are the ones this repository runs", () => {
+  const README = "README.md";
+
+  /** Every fenced `yaml` block, parsed as the step list it is written as. */
+  const stepBlocks = (): readonly Step[] =>
+    [...fs.readFileSync(README, "utf8").matchAll(/```yaml\n([\s\S]*?)```/g)]
+      .flatMap((m) => {
+        const parsed: unknown = parse(m[1] as string);
+        return Array.isArray(parsed) ? (parsed as readonly Step[]) : [];
+      })
+      .filter((step) => (step.uses ?? "").startsWith("actions/"));
+
+  it("pins every documented action at the major the workflows use", () => {
+    const documented = stepBlocks().map((step) => step.uses as string);
+    const run = new Set(
+      workflowFiles.flatMap((file) =>
+        stepsOf(file)
+          .map((step) => step.uses ?? "")
+          .filter((uses) => uses.startsWith("actions/")),
+      ),
+    );
+
+    expect(documented.length).toBeGreaterThan(0);
+    for (const uses of documented) expect([...run]).toContain(uses);
+  });
+
+  /** The registry half of `setup-node`, in either place: it names a registry. */
+  const authStepsIn = (steps: readonly Step[]): readonly Step[] =>
+    steps.filter((step) => step.with?.["registry-url"] !== undefined);
+
+  it("documents the auth step the reusable half actually runs", () => {
+    const documented = authStepsIn(stepBlocks());
+    const real = authStepsIn(stepsOf(REVIEW));
+
+    expect(documented).toHaveLength(1);
+    expect(real).toHaveLength(1);
+    expect(documented[0]?.with).toEqual(real[0]?.with);
+  });
+});
+
+/**
  * …and the registry it is pinned *on* is GitHub Packages, not npmjs.
  *
  * That choice adds one thing to every workflow and one thing to every caller,
@@ -2370,10 +2452,11 @@ describe("the runner package is installed from GitHub Packages", () => {
    * before the runner starts, which means no `failure_reason.txt` and a run
    * reporting `(no reason file written)` — a signature `CLAUDE.md` already has
    * two unrelated causes for. It would also add a cache save to a
-   * `pull_request_target` job. This repository cannot reproduce either: it
-   * declares only `engines`, never `packageManager`, so the caching never
-   * fires here and the setting is inert on the `@v4` pin, which has no such
-   * input at all.
+   * `pull_request_target` job. This repository cannot reproduce it: it declares
+   * only `engines`, never `packageManager`, so the caching never fires here and
+   * the setting changes no behaviour in this repo's own runs. It was written at
+   * the `@v4` pin, which had no such input; from `@v7` the input exists and is
+   * honoured, so the guard is live for an adopter and still silent here.
    *
    * Both halves in one test on purpose. The input alone would stay green if
    * someone later gave the auth step a toolchain, at which point it is
@@ -2397,9 +2480,15 @@ describe("the runner package is installed from GitHub Packages", () => {
   });
 
   /**
-   * `setup-node` writes `_authToken=${NODE_AUTH_TOKEN}` into the `.npmrc` and
-   * exports a placeholder value, so the variable is not optional — without it
-   * the install fails against a token that was never a token.
+   * `setup-node` writes `_authToken=${NODE_AUTH_TOKEN}` into the `.npmrc`
+   * literally, so the variable is not optional — without it npm resolves it to
+   * the empty string and the install fails against GitHub Packages, which has
+   * no anonymous read.
+   *
+   * v7 removed the dummy `NODE_AUTH_TOKEN` export v4 emitted
+   * (`XXXXX-XXXXX-XXXXX-XXXXX`), so the symptom moved: it used to be a token
+   * that was never a token, and is now an unresolved `${NODE_AUTH_TOKEN}` and a
+   * plain 401. Neither reads as "nobody set the env".
    */
   it.each(runnerWorkflows)("%s: hands the runner step a token", (file) => {
     const step = stepsOf(file)[runnerStepIndex(file)];

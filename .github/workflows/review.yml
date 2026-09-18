@@ -429,13 +429,14 @@ jobs:
       # written)`. It would also add a cache *save* to a `pull_request_target`
       # job.
       #
-      # The input does not exist on the `@v4` pin above, and this repo declares
-      # no `packageManager`, so it changes no behaviour here — but the runner
-      # does not ignore an undeclared input quietly: expect one annotation,
-      # `Unexpected input(s) 'package-manager-cache'`, on this step of every run
-      # until the pin moves to v5 or later, and expect the bump to clear it.
-      # Inert and on purpose: it is the guard the bump lands on, not a response
-      # to it.
+      # It was written at the `@v4` pin, which had no such input, and was inert
+      # on purpose — the guard the bump lands on rather than a response to it.
+      # At the `@v7` pin above the input exists and is honoured. It still
+      # changes no behaviour *here*: this repo declares only `engines`, never
+      # `packageManager`, so the caching it switches off would never have fired.
+      # The step this protects is an adopter's, and this repo cannot reproduce
+      # the failure — which is the reason it is asserted rather than observed
+      # (`tests/workflows.test.ts`).
       #
       # This is also the one step in the loop that reaches across repositories. A
       # package published from this repo is not automatically readable by another

@@ -1797,13 +1797,19 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
    */
   const SECTION = "## 2a.";
 
+  /** Where §10 restates the rule and delegates the table back to §2a. */
+  const INVARIANTS = "## 10.";
+
+  const topLevel = (prefix: string): string =>
+    parity.split(/^(?=## )/m).find((s) => s.startsWith(prefix)) ?? "";
+
   const doctrine = sectionNamed(/containment transfers authorisation/i);
 
   it("states the rule in full where the PRD chain's reader already is", () => {
     expect(doctrine).not.toBe("");
     expect(doctrine).toMatch(/sequencing does not/i);
     expect(doctrine).toMatch(/transitively/i);
-    expect(parity.split(/^(?=## )/m).find((s) => s.startsWith(SECTION))).toContain(doctrine);
+    expect(topLevel(SECTION)).toContain(doctrine);
   });
 
   /**
@@ -1830,22 +1836,32 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
    * asks *why the chain does not just read the edges* is reading that file.
    *
    * Every direction is checked against the headings that exist: inbound from
-   * `ticket-shape.md`, internal (§10 points at the section too), and outbound —
-   * the sub-issue row cites the ordering contract by anchor, and that heading
-   * lives in a file this one does not otherwise constrain. An anchor renamed out
-   * from under any of them still renders as a link and still goes nowhere.
+   * `ticket-shape.md`, internal from §10, and outbound — the sub-issue row cites
+   * the ordering contract by anchor, and that heading lives in a file this one
+   * does not otherwise constrain. An anchor renamed out from under any of them
+   * still renders as a link and still goes nowhere.
    *
-   * The outbound pair is deliberately "the citation exists" plus "every one
-   * resolves", not the slug spelled out again: renaming that heading and moving
-   * the link with it is a legitimate edit, and only the half-done version — one
-   * moved, the other not — is the silent failure worth failing on.
+   * Each direction gets both halves, existence and resolution, because the
+   * half-done edit is the silent one. §10 states the rule and then delegates
+   * the table and the sub-issue row's reasoning here; degrading that pointer to
+   * plain italics leaves §10 delegating to a section it no longer names, which
+   * no resolution check can see. It is asserted against §10's own text rather
+   * than against every internal link, since the ordering note earlier in §2a
+   * now carries the same anchor and would satisfy a bare search on its own.
+   *
+   * Existence is deliberately "a citation exists" rather than the slug spelled
+   * out a second time: renaming a heading and moving its links with it is a
+   * legitimate edit, and only the half-done version fails here.
    */
   it("is reachable from the ordering contract, by links that resolve both ways", () => {
     const inbound = [...ticketShape.matchAll(/\]\(\.\.\/parity\.md#([^)]+)\)/g)].map((m) => m[1] ?? "");
     const internal = [...parity.matchAll(/\]\(#([^)]+)\)/g)].map((m) => m[1] ?? "");
     const outbound = [...parity.matchAll(/\]\(\.\/agents\/ticket-shape\.md#([^)]+)\)/g)].map((m) => m[1] ?? "");
 
-    expect(inbound).toContain(slugOf(doctrine.split("\n")[0] ?? ""));
+    const slug = slugOf(doctrine.split("\n")[0] ?? "");
+
+    expect(inbound).toContain(slug);
+    expect(topLevel(INVARIANTS)).toContain(`](#${slug})`);
     expect(doctrine).toMatch(/\]\(\.\/agents\/ticket-shape\.md#[^)]+\)/);
     for (const anchor of [...inbound, ...internal]) expect(anchors).toContain(anchor);
     for (const anchor of outbound) expect(ticketShapeAnchors).toContain(anchor);

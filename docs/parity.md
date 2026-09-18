@@ -148,8 +148,8 @@ landing on one branch, so a slice that needs outside work blocks the whole PRD r
 in any case tell the walk nothing it does not already know. `docs/agents/ticket-shape.md` has each
 slice `blocked-by` its predecessor by construction, and the chain closes each slice before targeting
 the next, so those edges are satisfied by the time such a read would see them. What an out-of-order
-publish does to that, and why it is still not an argument for reading edges per slice, is below
-under *Containment transfers authorisation*.
+publish does to that, and why it is still not an argument for reading edges per slice, is below under
+[*Containment transfers authorisation*](#containment-transfers-authorisation-sequencing-does-not).
 
 **Two workflows, one label, and exactly one of them speaks.** `agent-implement` and
 `agent-implement-prd` share `agent:implement` on `issues: [labeled]`, so both jobs start on every

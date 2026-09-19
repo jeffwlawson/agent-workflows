@@ -348,6 +348,11 @@ does — it is about installing the runner it runs.
 > [`examples/callers/`](../examples/callers/) carries the release that has it; since a called
 > workflow can only *downgrade*, adding it to your caller alone changes nothing on an older pin.
 
+> **The same wait needs `jq` on the runner**, which every GitHub-hosted image ships and a
+> self-hosted one may not. Without it the wait reports itself blind in exactly the words above —
+> and that message names `checks: read`, because a missing grant is overwhelmingly the likelier
+> cause. If the grant is already there, check `jq` before anything else.
+
 Four things about that shape are worth knowing before you paste it:
 
 - **`permissions` has to be on your job too.** The called workflow can only *downgrade* the token it

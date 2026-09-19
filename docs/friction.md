@@ -1830,3 +1830,74 @@ again says something confident and false. `--slurp` makes the filter run once ov
 the pattern means what its comment says. The general shape: replacing a lie with a classification
 only helps if the classification's boundaries are the real ones, and "not a number" was never the
 same set as "no answer".
+
+## 2026-09-19 — Three changes verified by reading them, and the one that never ran at all
+
+`gh api --paginate --slurp --jq` is not a valid invocation. gh rejects the combination at
+flag-parse time — *the `--slurp` option is not supported with `--jq` or `--template`* — before it
+makes a request. `pending_count` in `review.yml` was written that way in #16, shipped in v0.1.5, and
+had therefore never once returned a count when #28 was filed a day later. Every review in between
+ran with no CI evidence, and said so in its own words: *"No checks reported"*, *"Because CI reported
+no checks, I ran the packaging guard by hand"*, *"no CI check is reported on this PR at all, though
+`ci.yml` triggers on PRs to `main`."* The last of those was checkable and false — `ci.yml` had
+passed on that exact head commit minutes earlier. The reviewer was not wrong about what it could
+see. It could see nothing.
+
+### The chain is the interesting part, because every link was a correct fix
+
+1. v0.1.0–v0.1.4: `checks: read` missing. Public repos serve the endpoint anyway, so nothing failed
+   until the first private adopter (2026-09-17, above).
+2. #16 added the grant and replaced `|| echo 0` with an explicit non-numeric arm, so a failed call
+   would stop loudly instead of spinning out the 900-second budget.
+3. The review on #16 found that arm too wide: `--paginate --jq` filters per page, so >30 check runs
+   prints `0\n0`, which the arm would misread as a failure.
+4. The fix for *that* was `--slurp` — correct about pagination, and an invocation gh refuses.
+
+Step 4 was never executed against anything. The review verified the *pattern*, the tests asserted
+the *shape of the command string*, and `npm run verify` cannot run `gh`. Nothing in the loop invokes
+it. **The only thing that worked was the loud failure from step 2** — without it, `|| echo 0` would
+have made `pending` a plausible `0` and the blindness would have been silent. Instead every review
+announced it, for a day, which is how it was found.
+
+### Executing the step found two things reading it had not
+
+The fix is one filter pass over all pages, which is what #16's review asked for, written as gh
+actually accepts it: `--paginate --slurp` piped into standalone `jq`. Standing the step up against a
+recorded `gh` (`tests/review-ci-wait.test.ts`) turned up two more defects that no amount of reading
+had — including reading by the person writing the fix, who had both of them wrong in the first
+draft.
+
+**A `run:` block with no `shell:` runs under `bash -e`.** So `pending=$(pending_count)` does not
+merely record a failure, it *ends the step* — before the arm that exists to report it. That is why
+the affected reviews said "no checks reported" (the runner's wording for an empty file) rather than
+the "could not read this commit's check runs" sentence the arm writes into the evidence. The
+diagnosis #16 added had been unreachable since the day it was added, and the issue describing this
+bug assumed, reasonably, that it was firing.
+
+**Under `--slurp`, a failed request still writes JSON to stdout.** A 403 prints its error body
+inside the outer array; a connection failure prints `[]`. Through this filter `[]` is a count of
+zero — "nothing pending" — which is precisely the lie with a plausible value that the 2026-09-17
+entry above was written about, arriving by a route that entry could not have anticipated. The count
+is now gated on gh's exit status and never on what it printed.
+
+### The finding that outlives the bug
+
+Three times in two days a change was verified by reading it rather than running it, and twice that
+was not enough: the `checks: read` grant (caught by a private adopter, not by us) and `--slurp
+--jq` (caught by its own victims). In both cases the assertions matched **text**, so they were green
+against a command that could not run.
+
+The tests here are unusually good at holding two files in agreement, and that is most of what this
+suite is for. They cannot tell whether a shell command is valid, and the review step is almost
+entirely shell. `tests/review-ci-wait.test.ts` closes that for the one step where the cost of being
+wrong is a review that reasons from the diff alone: it writes the real `run:` block to a file, hands
+it to `bash -e`, and puts a **replay** of `gh` on `PATH` — recorded behaviour, refusing outright any
+invocation it holds no recording for, so a stub that improvises cannot become the second thing
+nobody ran. The rule everything rests on, gh's refusal of `--slurp` beside `--jq`, is re-verified
+against the installed binary rather than trusted to the replay; a second check runs the composed
+commands through the real `gh` pointed at an unreachable host, where reaching the connection error
+*is* the assertion that the flags parsed.
+
+The generalisation, for the next shell block that gets a guard: a test that matches the text of a
+command is a statement about intent, and worth keeping as one. It is not evidence the command runs,
+and no amount of review turns it into that.

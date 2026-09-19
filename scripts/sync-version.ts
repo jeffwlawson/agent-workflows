@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PinForm, Pinning } from "../shared/pins.ts";
+import { assertPinnable, rewritePins, WORKFLOW_DIR } from "../shared/pins.ts";
 
 /**
  * The half of `npm version` npm will not do.
@@ -22,22 +24,21 @@ import { fileURLToPath } from "node:url";
  * against the checkout it lives in is one whose refusals — the half that matters
  * — can only be exercised by breaking this repository on purpose.
  *
- * `syncVersion` itself is the **release** half and nothing else can use it: the
+ * `syncVersion` is the **release** half and nothing else can use it: the
  * three-directory cross-check below is *this* repository's shape, and an
  * unexpected count is an error here precisely because a missed site is a broken
  * release. `init` (#6) does the same rewrite for the opposite reason — this
  * package's name and version, written into *someone else's* repository, over
  * whatever subset of the callers an adopter took.
  *
- * What the two share is `rewritePins`: one file's text in, the rewritten text
- * and the forms found out. Both callers bring their own file discovery, their
- * own version source and their own policy on a surprising count — which is why
- * that one is the seam, and why it carries the package name and the version as
- * **parameters** rather than reading either from the root it is pointed at.
+ * What the two share is `rewritePins`, and it lives in `shared/pins.ts` rather
+ * than here: this file is deliberately kept out of the published tarball, and an
+ * `exclude` does not survive being imported. Both callers bring their own file
+ * discovery, their own version source and their own policy on a surprising
+ * count — which is why that one is the seam.
  */
 
 /** Forward slashes on purpose: these are paths *inside* YAML, not on disk. */
-const WORKFLOW_DIR = ".github/workflows";
 const CALLER_DIR = "examples/callers";
 
 /**
@@ -46,48 +47,11 @@ const CALLER_DIR = "examples/callers";
  */
 const CALLER_PREFIX = "agent-";
 
-/**
- * A pin is an exact `major.minor.patch`, in both forms. `tests/workflows.test.ts`
- * matches no `^`, no `~` and no dist-tag in the `npm exec` line, and a `uses:`
- * ref has to be a tag `publish.yml` would accept. So a version that cannot be
- * written as a valid pin is refused before any file is opened, rather than
- * distributed to fifteen of them for the suite to reject one at a time.
- */
-const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
-
-/** Which of the two pin forms a site carries. They are not interchangeable. */
-export type PinForm = "package" | "ref";
-
-/**
- * What a rewrite is written *for*: the package the pins name, and the version to
- * write into them.
- *
- * Both are parameters and neither is read from the tree being rewritten. For the
- * release the two happen to coincide with the target root's manifest; for `init`
- * they are this package's and the root is an adopter's, whose `package.json`
- * names an unrelated project or is not there at all.
- */
-export interface Pinning {
-  /** The npm name of the package a pin names — `@owner/repo`. */
-  readonly packageName: string;
-  /** Exact `major.minor.patch`; anything else is refused. */
-  readonly version: string;
-}
-
-export interface PinRewrite {
-  /** The text with every pin found rewritten. Unchanged if none was. */
-  readonly text: string;
-  /** One entry per pin rewritten, `package` pins first. */
-  readonly found: readonly PinForm[];
-}
-
 export interface VersionSite {
   /** Repo-relative, forward-slashed — the path as a human would write it. */
   readonly file: string;
   readonly form: PinForm;
 }
-
-const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const ymlIn = (root: string, dir: string): readonly string[] => {
   const full = path.join(root, ...dir.split("/"));
@@ -111,70 +75,6 @@ const sameSet = (a: readonly string[], b: readonly string[]): boolean => {
   return left.length === right.length && left.every((name, i) => name === right[i]);
 };
 
-const assertPinnable = (version: string): void => {
-  if (!EXACT_VERSION.test(version)) {
-    throw new Error(
-      `Refusing to propagate the version ${JSON.stringify(version)}: a pin is an exact ` +
-        `major.minor.patch version, with no range, no dist-tag and no \`v\`.`,
-    );
-  }
-};
-
-/** How each form is found and how each is written. The two are not interchangeable. */
-const pinForms = ({ packageName, version }: Pinning): readonly {
-  readonly form: PinForm;
-  readonly pin: RegExp;
-  readonly replacement: string;
-}[] => [
-  {
-    form: "package",
-    pin: new RegExp(`(--package=${escapeRe(packageName)}@)\\d+\\.\\d+\\.\\d+`, "g"),
-    replacement: `$1${version}`,
-  },
-  {
-    /**
-     * Matched by shape rather than anchored to the workflow the file is expected
-     * to call. The count check in `syncVersion` is what catches a missing pin,
-     * and anchoring here would turn a caller that names the *wrong* reusable into
-     * "no pin found" — a true refusal with a misleading message, for a mismatch
-     * `tests/workflows.test.ts` already reports by name.
-     *
-     * `@owner/repo` on npm is `owner/repo` on GitHub — one literal, not two. And
-     * the directory is *this* package's layout, which is where an adopter's
-     * caller points however their own repository is arranged.
-     */
-    form: "ref",
-    pin: new RegExp(
-      `(${escapeRe(packageName.replace(/^@/, ""))}/${escapeRe(WORKFLOW_DIR)}/[A-Za-z0-9._-]+\\.yml@)v\\d+\\.\\d+\\.\\d+`,
-      "g",
-    ),
-    replacement: `$1v${version}`,
-  },
-];
-
-/**
- * The shared core: rewrite every pin in one file's text, and say which form each
- * one was.
- *
- * Text in and text out — it opens nothing, so it assumes nothing about which
- * directories a root has. It also rules on nothing except the version it is
- * asked to write: a count is *reported*, and what an unexpected one means is the
- * caller's to decide. `syncVersion` refuses anything but one site of the form it
- * expected, because a missed site is a broken release; `init` expects the count
- * to vary, because an adopter takes a subset.
- */
-export const rewritePins = (text: string, pinning: Pinning): PinRewrite => {
-  assertPinnable(pinning.version);
-
-  let rewritten = text;
-  const found: PinForm[] = [];
-  for (const { form, pin, replacement } of pinForms(pinning)) {
-    found.push(...(rewritten.match(pin) ?? []).map(() => form));
-    rewritten = rewritten.replace(pin, replacement);
-  }
-  return { text: rewritten, found };
-};
-
 /**
  * One site, with the count as the assertion.
  *
@@ -190,7 +90,9 @@ const pinnedOnce = (rel: string, text: string, form: PinForm, pinning: Pinning):
   if (found.length !== 1 || found[0] !== form) {
     throw new Error(
       `${rel}: expected exactly 1 version pin of the ${form} form, found ${found.length} ` +
-        `[${found.join(", ")}]. A pin this does not recognise is one the release would leave behind.`,
+        `[${found.join(", ")}]. A site carries one pin, of one form: none means a pin this does ` +
+        `not recognise and the release would leave behind, and any other set means a file whose ` +
+        `shape the release does not know how to pin.`,
     );
   }
   return rewritten;
@@ -289,8 +191,8 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
 };
 
 /**
- * Run as npm's `version` lifecycle script, not when imported by a test or by
- * `init` — the same realpath guard `scripts/copy-assets.ts` uses.
+ * Run as npm's `version` lifecycle script, not when imported by a test — the
+ * same realpath guard `scripts/copy-assets.ts` uses.
  *
  * Invoked from the source tree (`node scripts/sync-version.ts`, type-stripped by
  * Node 24), so the package root is one level up. **It takes no arguments**: the

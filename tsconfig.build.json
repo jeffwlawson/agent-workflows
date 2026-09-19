@@ -10,11 +10,26 @@
   //
   // `scripts/sync-version.ts` is the same shape one release later: release-time
   // tooling with no runtime role, which `npm version` runs from *source* through
-  // Node's type stripping and never from `dist`. Compiled it is a 25th file in
+  // Node's type stripping and never from `dist`. Compiled it is an extra file in
   // the tarball, and one that would be wrong if anyone ran it — its package root
   // is `import.meta.dirname/..`, which from `dist/scripts/` is `dist/`, the very
   // reason `copy-assets.ts` says `"..", ".."`. `copy-assets.js` stays because
   // `npm run build` invokes it from there.
+  //
+  // Naming it here is only half of keeping it out. `exclude` trims the *entry*
+  // set; a file something in the build imports is pulled back in and emitted
+  // regardless, CLI side effects included. So the rewrite both this and `init`
+  // need lives in `shared/pins.ts`, which ships on purpose, and a test asserts
+  // nothing built imports the script.
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Off for everything that is emitted. `tsconfig.json` enables it for the
+    // release hook, which runs from source under Node's type stripping and has
+    // to name `../shared/pins.ts` literally; a file that *ships* writing a `.ts`
+    // specifier would emit an import nothing can resolve, so it fails here
+    // instead. Also what makes this config legal at all — the option is refused
+    // outright when emit is on.
+    "allowImportingTsExtensions": false
+  },
   "exclude": ["dist", "tests", "vitest.config.ts", "scripts/sync-version.ts"]
 }

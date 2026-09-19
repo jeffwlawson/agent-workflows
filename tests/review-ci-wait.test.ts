@@ -144,6 +144,13 @@ const runWaitStep = (options: {
   readonly pages?: readonly unknown[];
   readonly waitSeconds?: string;
   readonly unreadable?: "403" | "unreachable";
+  /**
+   * The check-runs call at which `unreadable` starts biting, 1-based and
+   * counted across the whole step. The count polls that endpoint once per
+   * iteration and the listing hits it once more with identical argv, so this
+   * is the only way to express "the count answered and the listing did not".
+   */
+  readonly unreadableFrom?: number;
   readonly failedRuns?: readonly { readonly id: number; readonly name: string }[];
   readonly gh?: string;
   readonly extraEnv?: Record<string, string>;
@@ -172,7 +179,9 @@ const runWaitStep = (options: {
       RUNNER_TEMP: temp,
       GH_REPLAY_PAGES: pages,
       GH_REPLAY_RUNS: runs,
+      GH_REPLAY_COUNTER: path.join(temp, "check-runs.calls"),
       ...(options.unreadable === undefined ? {} : { GH_REPLAY_FAILURE: options.unreadable }),
+      ...(options.unreadableFrom === undefined ? {} : { GH_REPLAY_FAILURE_AT: String(options.unreadableFrom) }),
       PATH: `${ghDir}${path.delimiter}${process.env["PATH"] ?? ""}`,
       ...options.extraEnv,
     },
@@ -216,14 +225,20 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   });
 
   /**
-   * …and the same binary accepts every call the step actually composes. The
-   * real `gh` is put on PATH behind a wrapper that keeps its stderr (the step
-   * sends it to `/dev/null`, which is how an invalid invocation stayed
-   * invisible for a release) and pointed at `localhost`, where the connection
-   * is refused the moment a request is attempted. Reaching *that* error is the
-   * assertion: it means the flags parsed.
+   * …and the same binary accepts every call the *wait* composes. The real `gh`
+   * is put on PATH behind a wrapper that keeps its stderr (the step sends it
+   * to `/dev/null`, which is how an invalid invocation stayed invisible for a
+   * release) and pointed at `localhost`, where the connection is refused the
+   * moment a request is attempted. Reaching *that* error is the assertion: it
+   * means the flags parsed.
+   *
+   * Three of the step's five calls, and it cannot be more than three: an
+   * unreachable host fails the runs listing, so `for rid in $(gh api …)`
+   * iterates nothing and the two calls in its body are never composed at all.
+   * Those two are the sibling test below — they are otherwise seen only by the
+   * replay, which is the thing that can drift from the binary.
    */
-  it.skipIf(!onPath("gh"))("every gh call the step composes is one gh accepts", () => {
+  it.skipIf(!onPath("gh"))("every gh call the wait composes is one gh accepts", () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-gh-"));
     const log = path.join(temp, "gh-stderr.log");
     const real = execFileSync("bash", ["-c", "command -v gh"], { encoding: "utf8" }).trim();
@@ -237,6 +252,42 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(stderr).not.toContain("is not supported with");
     // Unreachable host, so the step still reports itself blind — loudly.
     expect(outcome.stdout).toContain("::error::Could not read check runs");
+  });
+
+  /**
+   * The failure-log tail's two calls, which no run of the step above can put
+   * in front of the real binary: they live inside a loop whose own `gh api`
+   * has already failed against the dead host. Spawned directly instead, at the
+   * same `localhost`, where reaching the connection error is again the
+   * assertion that the flags parsed.
+   *
+   * Each form is asserted to be *the step's* first. A call composed only here
+   * would be a test of a command nothing runs — which is the failure mode this
+   * whole file exists to answer, one level up.
+   */
+  it.skipIf(!onPath("gh"))("gh accepts the two calls the failure-log tail composes", () => {
+    const run = waitStep().run ?? "";
+    const tail = [
+      { inStep: 'gh api "repos/${GH_REPO}/actions/runs/${rid}" --jq .name', argv: ["api", `repos/${GH_REPO}/actions/runs/101`, "--jq", ".name"] },
+      { inStep: 'gh run view "$rid" --log-failed', argv: ["run", "view", "101", "--log-failed"] },
+    ] as const;
+
+    for (const { inStep, argv } of tail) {
+      expect(run).toContain(inStep);
+
+      const attempt = spawnSync("gh", [...argv], {
+        encoding: "utf8",
+        // `GH_REPO` is gh's own repo override, and it is what makes the bare
+        // `gh run view` above resolve a repo at all: the step runs it with no
+        // `-R` and from a checkout of a different repository.
+        env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
+      });
+
+      expect(attempt.status).not.toBe(0);
+      expect(attempt.stderr).not.toContain("unknown flag");
+      expect(attempt.stderr).not.toContain("is not supported with");
+      expect(attempt.stderr).toContain("connection refused");
+    }
   });
 
   /**
@@ -333,6 +384,30 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     // has. What tells them apart is gh's own stderr, which reaches the log
     // only because the step stopped sending it to `/dev/null`.
     expect(outcome.stdout).toContain(said);
+  });
+
+  /**
+   * The listing is its own call and can fail on its own — a transient 5xx, a
+   * secondary rate limit, a later change to that filter alone — on a run where
+   * the count answered and the arm above therefore never fires. It used to
+   * discard its stderr, so that run handed the agent `- (could not read check
+   * runs)` and left the log with nothing to say about why.
+   *
+   * Failing from the *second* check-runs call is what expresses it: the count
+   * polls the same endpoint with the same argv, so only the ordinal separates
+   * them.
+   */
+  it("says why when the listing fails on a commit whose count was read", () => {
+    const outcome = runWaitStep({ waitSeconds: "0", unreadable: "unreachable", unreadableFrom: 2 });
+
+    expect(outcome.status).toBe(0);
+    // The count succeeded, so the wait's own arm is silent — this is the one
+    // path on which the listing is the only thing that can report anything.
+    expect(outcome.stdout).not.toContain("::error::Could not read check runs");
+    expect(outcome.evidence).toContain("- (could not read check runs)");
+
+    expect(outcome.stdout).toContain("::warning::Could not list check runs");
+    expect(outcome.stdout).toContain("connection refused");
   });
 
   /**

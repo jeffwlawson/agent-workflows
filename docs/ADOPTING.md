@@ -351,7 +351,8 @@ does — it is about installing the runner it runs.
 > **The same wait needs `jq` on the runner**, which every GitHub-hosted image ships and a
 > self-hosted one may not. Without it the wait reports itself blind in exactly the words above —
 > and that message names `checks: read`, because a missing grant is overwhelmingly the likelier
-> cause. If the grant is already there, check `jq` before anything else.
+> cause. What separates them is the line printed underneath it: the step echoes whatever `gh` or
+> `jq` wrote to stderr, so a runner without `jq` says `jq: command not found` outright.
 
 Four things about that shape are worth knowing before you paste it:
 

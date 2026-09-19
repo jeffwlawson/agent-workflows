@@ -24,12 +24,14 @@
  *   run view {id} --log-failed                     — the log is unavailable
  *
  * Environment:
- *   GH_REPLAY_PAGES    path to a JSON array of page bodies, in page order
- *   GH_REPLAY_FAILURE  `403` or `unreachable`: how the check-runs call fails
- *   GH_REPLAY_RUNS     path to a JSON array of workflow runs; default none
+ *   GH_REPLAY_PAGES       path to a JSON array of page bodies, in page order
+ *   GH_REPLAY_FAILURE     `403` or `unreachable`: how the check-runs call fails
+ *   GH_REPLAY_FAILURE_AT  1-based check-runs call to start failing at; default 1
+ *   GH_REPLAY_COUNTER     path this process counts check-runs calls in
+ *   GH_REPLAY_RUNS        path to a JSON array of workflow runs; default none
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 
@@ -109,8 +111,28 @@ const emit = (body) => {
   }
 };
 
+/**
+ * Which check-runs call this is, counted across processes in a file because
+ * every invocation is its own process. The step composes this endpoint twice —
+ * once per poll for the count, once for the listing — with byte-identical
+ * argv, so *when* is the only thing that can tell them apart. Without that,
+ * `GH_REPLAY_FAILURE` fails both together and "the count answered and the
+ * listing did not" is not a scenario that can be written.
+ */
+const nthCheckRunsCall = () => {
+  const file = process.env["GH_REPLAY_COUNTER"];
+
+  if (file === undefined) return 1;
+
+  const n = (existsSync(file) ? Number(readFileSync(file, "utf8")) : 0) + 1;
+
+  writeFileSync(file, String(n));
+  return n;
+};
+
 if (/\/commits\/[^/]+\/check-runs$/.test(endpoint)) {
-  const failure = process.env["GH_REPLAY_FAILURE"];
+  const failsFrom = Number(process.env["GH_REPLAY_FAILURE_AT"] ?? "1");
+  const failure = nthCheckRunsCall() >= failsFrom ? process.env["GH_REPLAY_FAILURE"] : undefined;
 
   // A failed request under `--slurp` still writes JSON to **stdout**, and the
   // two shapes differ. Recorded 2026-09-19 against gh 2.100.0:

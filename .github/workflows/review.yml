@@ -311,10 +311,11 @@ jobs:
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP}/ci_status.md"
-          # Whatever the count's last attempt wrote to stderr. Kept out of the
-          # evidence — the agent cannot act on it — and out of the log too
-          # until the failure arm fires, at which point it is the only thing
-          # that separates the causes that arm now has.
+          # Whatever the last `gh`/`jq` attempt wrote to stderr — the count's,
+          # and then the listing's, each truncating it before it runs. Kept out
+          # of the evidence — the agent cannot act on it — and out of the log
+          # too until a failure arm fires, at which point it is the only thing
+          # that separates the causes those arms now have.
           err="${RUNNER_TEMP}/ci_status.err"
           : > "$out"
 
@@ -411,10 +412,31 @@ jobs:
           # match what gh's own `--jq` does with a string result: print it
           # unquoted. Without `-r` every line reaches the agent wrapped in
           # quotes it would have to read past.
+          #
+          # Stderr goes to `$err` here for the same reason it does in the
+          # count, and it is a separate failure: this call can fail on a run
+          # where the count succeeded — a transient 5xx, a secondary rate
+          # limit, a later change to this filter alone — and the count's arm
+          # never fires to explain it. Without this the agent would be handed
+          # `- (could not read check runs)` and the log would say nothing at
+          # all about why. Discarding the stderr is the habit that hid #28 for
+          # a release; it does not get to survive three lines below the fix.
+          #
+          # `if !`, not `|| { …; [ -s … ] && cat …; }`, on the same grounds as
+          # the arm above: under `bash -e` a test as the last command of the
+          # arm ends the step, which is the defect this block was rewritten to
+          # stop doing.
           echo "Checks on this commit:" >> "$out"
-          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>/dev/null \
+          : > "$err"
+          if ! gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
             | jq -r ".[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | \"- \(.name): \(.conclusion // .status)\"" \
-            >> "$out" || echo "- (could not read check runs)" >> "$out"
+            2>>"$err" >> "$out"; then
+            echo "- (could not read check runs)" >> "$out"
+            echo "::warning::Could not list check runs for ${HEAD_SHA}, so the review's check list is empty. If the count above succeeded this is not the \`checks: read\` grant — see what \`gh\`/\`jq\` said below."
+            if [ -s "$err" ]; then
+              cat "$err"
+            fi
+          fi
 
           # Tail the failing steps so the agent sees *what* failed, not merely
           # that something did. Capped so a noisy failure cannot swamp the prompt.

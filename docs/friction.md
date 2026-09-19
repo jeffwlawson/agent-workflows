@@ -1921,3 +1921,21 @@ executed, and a harness that can only reach three of a step's four collectors is
 intent too. `GH_REPLAY_RUNS` and one recording of `run view --log-failed` closed it; what suggested
 looking was a human-shaped question — *where else does this exact sentence apply?* — asked against
 a fix that had just been written.
+
+### Second addendum, same day: the third `2>/dev/null`, three lines below the fix
+
+The review of that fix asked the same question once more, of the call the fix had walked past. The
+count stopped discarding gh's stderr because *discarding it is how the invocation gh refuses stayed
+invisible for a release* — and the check **listing**, three lines down, still ended `2>/dev/null`.
+It is a separate call that can fail on its own (a transient 5xx, a secondary rate limit, a change to
+that filter alone) on a run where the count answered and the count's arm therefore never fires. The
+agent got `- (could not read check runs)` and the log said nothing at all about why. Same discard,
+same consequence, one call over; the fix is the same `if`-shaped arm, with its own `::warning::`
+that says the count succeeded so this is probably *not* the grant.
+
+The scenario could not be written before it could be run. Both calls compose byte-identical argv,
+so `GH_REPLAY_FAILURE` failed them together and "the count answered and the listing did not" was
+not expressible — the replay now counts check-runs calls across processes and takes an ordinal to
+start failing at. Worth noting as its own kind of gap: a harness can be unable to *state* a defect
+as well as unable to catch one, and the second is much harder to notice, because every test in it
+passes.

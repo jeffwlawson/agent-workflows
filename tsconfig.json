@@ -12,6 +12,24 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
 
+    // For `scripts/sync-version.ts` alone, which is the one file here that is
+    // **run from source and never emitted**: `npm version` executes it through
+    // Node's type stripping, and Node resolves a relative specifier literally —
+    // it does not map `.js` back to `.ts` the way `tsc` does. So the release
+    // hook must import `../shared/pins.ts` by its real name or die at module
+    // resolution, which is what it did before this was set.
+    //
+    // Everything else keeps the `.js` extension NodeNext wants, and
+    // `tsconfig.build.json` turns this back off so that a `.ts` specifier in a
+    // file that *is* emitted fails the build rather than shipping unresolvable.
+    "allowImportingTsExtensions": true,
+    // Which the option above requires, and which this configuration is anyway:
+    // `npm run typecheck` passes `--noEmit` and `npm run build` uses the other
+    // file, so nothing has ever emitted from here. Saying so is what keeps a
+    // bare `tsc -p tsconfig.json` — an editor, or a hand-run check — reporting
+    // the code rather than exiting 2 on TS5096 about the config.
+    "noEmit": true,
+
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
 

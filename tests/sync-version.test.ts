@@ -213,8 +213,9 @@ describe("the version propagator rewrites every pin", () => {
 
   /**
    * Run twice, the second run writes nothing. The hook is one command in a
-   * release, but `init` (#6) is the other caller, and a rewrite that is not a
-   * fixed point is one that cannot be re-run to check itself.
+   * release, but `init` (#6) is the other caller of the core this shares
+   * (`tests/pins.test.ts`), and a rewrite that is not a fixed point is one that
+   * cannot be re-run to check itself.
    */
   it("is a fixed point: a second run over its own output changes nothing", () => {
     const root = fixture();
@@ -262,6 +263,24 @@ describe("the version propagator refuses an unexpected set of pins", () => {
     );
 
     expect(() => syncVersion(TARGET, root)).toThrow(/examples\/callers\/fix\.yml/);
+  });
+
+  /**
+   * A site carrying a *second* recognised pin, which the count check refuses
+   * along with the rest. The message is asserted rather than just the filename,
+   * because this is the one refusal whose cause the count alone misdescribes:
+   * both pins here are recognised, so "a pin this does not recognise" would send
+   * the reader hunting for one that does not exist.
+   */
+  it("refuses a site carrying a second pin, and says which forms it found", () => {
+    const root = fixture();
+    write(
+      root,
+      ".github/workflows/review.yml",
+      `${read(root, ".github/workflows/review.yml")}\n# jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.1.7\n`,
+    );
+
+    expect(() => syncVersion(TARGET, root)).toThrow(/found 2 \[package, ref\]/);
   });
 
   /**
@@ -341,6 +360,106 @@ describe("the version propagator refuses an unexpected set of pins", () => {
       expect(() => syncVersion(version, root)).toThrow(/version/i);
     },
   );
+});
+
+/**
+ * The exclusion that keeps this file out of the tarball, and the one condition
+ * under which it works.
+ *
+ * `tsconfig.build.json` names `scripts/sync-version.ts` in `exclude`, because
+ * compiled it is a file with no runtime role and one that would be *wrong* if
+ * anyone ran it — its package root is `import.meta.dirname/..`, which from
+ * `dist/scripts/` is `dist/`. But `exclude` only trims the entry set: a file
+ * something in the build **imports** is pulled back in and emitted anyway, side
+ * effects and all, and this one's side effect is a CLI that stages and rewrites.
+ *
+ * Nothing downstream would report it. `ci.yml`'s tarball guard filters `tests/`,
+ * `.test.` and `vitest` — a `dist/scripts/sync-version.js` matches none of
+ * those, and the release hook would simply ship. Hence the rule this asserts:
+ * the shared core lives in `shared/pins.ts`, which ships on purpose, and the
+ * release half is imported by tests only.
+ *
+ * Put to `tsc` rather than reconstructed from the config, because the two ways
+ * this breaks have one symptom and the compiler is what decides it: drop the
+ * `exclude` entry and the hook is an entry file again; import it from anything
+ * built and it comes back regardless. Both were run against this repo's own
+ * `tsc`, in both directions. Restating the source directories here instead
+ * would be a second copy of the build's entry set, and a sixth runner directory
+ * — a routine change, per `CLAUDE.md` — would be compiled and unread.
+ */
+/**
+ * `tsc` against `tsconfig.build.json`, which is the only configuration that
+ * describes what ships — `tsconfig.json` includes the tests and the release hook
+ * and turns emit off. Both checks below are the compiler's to answer, and
+ * neither has a symptom this suite could see any other way, so both spawn it
+ * rather than reconstruct it from the config.
+ */
+const buildTsc = (flag: string): { readonly status: number | null; readonly output: string } => {
+  const tsc = path.join("node_modules", "typescript", "bin", "tsc");
+  const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.build.json", flag], {
+    encoding: "utf8",
+  });
+
+  return { status: result.status, output: result.stderr || result.stdout };
+};
+
+describe("the release hook stays out of what ships", () => {
+  /**
+   * The program `tsconfig.build.json` defines: its entry files and everything
+   * they import, which is exactly the set `tsc` would emit. `--listFilesOnly`
+   * prints that set and stops, so it neither typechecks nor writes `dist/`.
+   */
+  const compiled = (): readonly string[] => {
+    const { status, output } = buildTsc("--listFilesOnly");
+
+    expect(status, output).toBe(0);
+    return output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .map((file) => path.relative(".", file))
+      // The lib and `@types` files every program carries, and anything outside
+      // this checkout: neither is what ships, and neither can be this hook.
+      .filter((file) => !file.startsWith("..") && !file.startsWith(`node_modules${path.sep}`));
+  };
+
+  it("is in no build of this package: not as an entry file, and not through an import", () => {
+    const program = compiled();
+
+    // The other half of the same question, and the reason the first assertion
+    // is not vacuous: the build this is being asked about is the real one, and
+    // it carries both the CLI and the core the hook shares with `init`.
+    expect(program).toContain("cli.ts");
+    expect(program).toContain(path.join("shared", "pins.ts"));
+
+    expect(program).not.toContain(path.join("scripts", "sync-version.ts"));
+  });
+});
+
+/**
+ * The `.js` specifier convention, put back inside the gate.
+ *
+ * `allowImportingTsExtensions` is on in `tsconfig.json` for the one file that is
+ * **run from source**: `scripts/sync-version.ts`, which Node resolves literally
+ * and so has to name `../shared/pins.ts`. But both halves of `npm run verify`
+ * read that config — `tsc --noEmit` and vitest — so with it on, a file that
+ * *ships* may name a `.ts` specifier and the gate stays green while the emitted
+ * import resolves to nothing. Spelling `review/review.ts`'s `../shared/common`
+ * with `.ts` leaves typecheck at 0 and the suite passing; only
+ * `tsconfig.build.json`, where the option is off again, reports it (TS5097).
+ *
+ * `--listFilesOnly` above does not answer this — it prints the program and stops
+ * without typechecking it — so this is the same configuration asked the other
+ * question. CI's Build step catches it too, one red round trip later; asking it
+ * here is what makes the convention `CLAUDE.md` states checkable by the command
+ * `CLAUDE.md` calls the gate.
+ */
+describe("what ships typechecks under the configuration that emits it", () => {
+  it("names no `.ts` specifier outside the file that is never emitted", () => {
+    const { status, output } = buildTsc("--noEmit");
+
+    expect(status, output).toBe(0);
+  });
 });
 
 /**
@@ -424,8 +543,13 @@ describe("the release is one command", () => {
    */
   const released = (): string => {
     const root = fixture();
+    // Both files: the hook imports the shared core from `shared/`, and a scratch
+    // copy missing it fails at module resolution — which is the one failure
+    // `CLAUDE.md` calls indistinguishable from a bare `exit 1`.
     fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(root, "shared"), { recursive: true });
     fs.copyFileSync("scripts/sync-version.ts", path.join(root, "scripts", "sync-version.ts"));
+    fs.copyFileSync("shared/pins.ts", path.join(root, "shared", "pins.ts"));
 
     git(root, ["init", "-b", "main"]);
     git(root, ["config", "user.email", "scratch@example.invalid"]);

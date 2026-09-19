@@ -130,9 +130,16 @@ five callers and never `examples/callers/` or the `npm exec` lines, and its PR s
 move those by hand.
 
 Changing what a pin looks like — a new workflow, a renamed one, a different invocation — is a
-change to `scripts/sync-version.ts` and `tests/sync-version.test.ts` in the same commit. It knows
+change to `shared/pins.ts` and `tests/pins.test.ts` in the same commit, and to
+`scripts/sync-version.ts` and its tests if the *set* of sites changed too. `shared/pins.ts` knows
 two forms, `@<version>` for the npm spec and `@v<version>` for the `uses:` ref, and a third would
 be a site it skips.
+
+The split is not cosmetic. `shared/pins.ts` is the rewrite itself and **ships**, because `init`
+(#6) performs the same rewrite into an adopter's tree; `scripts/sync-version.ts` is the release
+policy around it and is excluded from the tarball. That exclusion holds only while nothing built
+imports the script — `tsc` emits an excluded file the moment something pulls it in — so put shared
+code in `shared/`, never in `scripts/`. A test in `tests/sync-version.test.ts` asserts it.
 
 > **`bin` must never start with `./`.** `npm publish` silently drops such an entry and exits 0,
 > producing a package whose commands cannot be run. `ci.yml` runs `npm publish --dry-run` and fails
@@ -155,7 +162,13 @@ be a site it skips.
 - TypeScript is strict, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. With
   the latter, build optional properties conditionally (`...(x === undefined ? {} : { x })`) rather
   than assigning `undefined`.
-- Relative imports use the `.js` extension — NodeNext ESM, even in `.ts` source.
+- Relative imports use the `.js` extension — NodeNext ESM, even in `.ts` source. The one
+  exception is `scripts/sync-version.ts`, which is **run from source and never emitted**: `npm
+  version` executes it through Node's type stripping, and Node resolves a relative specifier
+  literally rather than mapping `.js` back to `.ts`. It names `../shared/pins.ts` for that reason.
+  `allowImportingTsExtensions` is on in `tsconfig.json` and back off in `tsconfig.build.json`, so
+  the same spelling in a file that ships fails the build — and `tests/sync-version.test.ts` runs
+  that build's typecheck, so it fails the gate too rather than only CI.
 - Prefer `execFileSync` argv over shell strings for anything holding a variable. A git ref may
   legally contain `` ` ``, `$()`, `;`, `|` and `&`.
 - Test files live in `tests/`, mirroring the source.

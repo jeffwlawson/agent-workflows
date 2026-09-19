@@ -158,6 +158,11 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
    re-run that does not find theirs writes a second copy beside it.
 2. `init` copies `examples/callers/`; it does not generate. A generator is a second description of a
    caller, and the release after it drifts is one where an adopter installs a file nothing tested.
+   It copies **once**: a caller already installed has its pin moved in the adopter's own text and
+   nothing else touched, and one they do not have is named rather than written back. A caller is
+   what an adopter owns, so a re-run that re-copied would silently revert their `with:` inputs,
+   their job id and their extra permissions — the silent-failure class this command exists to
+   remove. Drift in the caller *body* is `doctor`'s to report, not `init`'s to overwrite.
 3. The rewrite is `shared/pins.ts` — the same one the release performs. See *Releasing*.
 4. `doctor` is two halves: `gatherFacts` asks `gh` what a checkout cannot answer, and `diagnose`
    rules on callers and facts and nothing else. Keep the second one pure — every check is exercised

@@ -49,9 +49,15 @@ takes its whole input from the environment; passing an argument is refused rathe
 
 `init` and `doctor` (`setup/`) are two more subcommands of the same binary, run by a human rather
 than by a workflow. They are not a fourth layer so much as the thing that *puts* the first one in
-place and then checks it: `init` copies the reference callers in with the pin and `self-check`
-substituted, and `doctor` looks for the failures `docs/ADOPTING.md` §1 is about — every one of which
-is a condition with no runtime symptom, which is why looking has to be deliberate.
+place and then checks it: `init` copies the reference callers in with the pin substituted, and
+`doctor` looks for the failures `docs/ADOPTING.md` §1 is about — every one of which is a condition
+with no runtime symptom, which is why looking has to be deliberate.
+
+The boundary between them follows the one above: the caller is the adopter's, so a re-run of `init`
+moves the pin in the files they have and changes nothing else about them. Everything a later
+release changed *inside* a caller is `doctor`'s to name, with the fix, rather than `init`'s to
+overwrite — a scaffolder that silently reverted a `with:` input would be manufacturing exactly the
+failure class the pair exists to remove.
 
 They ship in the same package as the runners on purpose. The version that writes a pin has to be the
 version that pin names, and the version that diagnoses a loop has to be the one whose guards it

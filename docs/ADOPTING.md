@@ -21,11 +21,16 @@ npx --yes @jeffwlawson/agent-workflows@<version> doctor    # once you have done 
 ```
 
 `init` copies the five reference callers out of [`examples/callers/`](../examples/callers/) into
-`.github/workflows/`, substituting the two things that are per-repo — the version pin, and
-`self-check` (§4) — and writes a `SETUP.md` listing what is left: the two secrets (§2), the
-repository setting (§1), the labels (§3), and the two documents §6 is about. It **updates on a
-re-run** rather than refusing, so it is also how you take a release: a job you renamed survives, and
-`self-check` is recomposed around the name you chose. A `SETUP.md` it did not write is left alone.
+`.github/workflows/`, substituting the one thing that is per-repo — the version pin — and writes a
+`SETUP.md` listing what is left: the two secrets (§2), the repository setting (§1), the labels (§3),
+and the two documents §6 is about. A `SETUP.md` it did not write is left alone.
+
+It **updates on a re-run** rather than refusing, so it is also how you take a release — and an
+update moves the pin in the files you have and changes nothing else. A caller is yours (§4): the
+`with:` inputs below, a job you renamed, your own `permissions:` additions, a second job in the same
+file. So a re-run pins what is installed, leaves a caller you deleted deleted, and names anything it
+did not touch rather than writing it back. What it therefore does **not** do is carry across a
+change a later release made to a caller itself — `doctor` reports those, with the fix.
 
 `doctor` exits non-zero on every §1 failure detectable from repo state, and names the fix for each:
 
@@ -319,7 +324,7 @@ it into one that can install (§2).
 ### What a caller looks like
 
 **Copy them from [`examples/callers/`](../examples/callers/)** — or let `init` (§0) do it, which is
-the same copy with the pin and `self-check` substituted. Five files, one per workflow, already
+the same copy with the pin substituted. Five files, one per workflow, already
 carrying the correct trigger, permissions, `self-check` and pinned `uses:`. Drop them into your
 `.github/workflows/` and rename if you like — the job id is the only thing you cannot rename
 freely, for the reason below.

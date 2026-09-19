@@ -318,14 +318,54 @@ export const diagnose = (
   return findings;
 };
 
-/** One `gh` answer, or `undefined` when `gh` could not give one. */
+/**
+ * One scalar `gh` answer, or `undefined` when `gh` could not give one.
+ *
+ * Safe for a scalar precisely because the two answers this is used for —
+ * `.visibility` and `.can_approve_pull_request_reviews` — have no empty value:
+ * a repository is `PUBLIC` or `PRIVATE`, the setting is `true` or `false`, and
+ * nothing prints an empty line but a `gh` that failed.
+ */
 const answer = (args: readonly string[], cwd: string): string | undefined => {
   const out = safeGh(args, { cwd }).trim();
   return out === "" ? undefined : out;
 };
 
-const lines = (text: string | undefined): readonly string[] | undefined =>
-  text === undefined ? undefined : text.split("\n").map((line) => line.trim()).filter(Boolean);
+/**
+ * A **list** `gh` answered with — which is the one place empty output must not
+ * mean "could not read".
+ *
+ * `--jq '.secrets[].name'` over `{"total_count":0,"secrets":[]}` prints nothing
+ * and exits 0, and `safeGh` prints nothing when `gh` is absent, unauthenticated
+ * or not an admin here. Read as lines, those two collapse into one answer and
+ * lead to opposite actions: a repository `init` has just scaffolded — the exact
+ * moment `SETUP.md` §5 says to run this — has no secrets at all, and reporting
+ * that as "unknown" passes the run it exists to fail.
+ *
+ * So the query asks for a shape whose *empty* answer is still output. `@json`
+ * renders the array as a string, which `gh` prints raw, so `[]` comes back as
+ * two characters and only a failure comes back as none.
+ *
+ * Exported as the reading half on its own, because the distinction it draws is
+ * the whole point and a test of it must not need a `gh` on the path.
+ */
+export const parseList = (out: string): readonly string[] | undefined => {
+  if (out.trim() === "") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(out);
+    return Array.isArray(parsed) ? parsed.map(String) : undefined;
+  } catch {
+    // Output that is not the JSON that was asked for is not an answer either —
+    // a `gh` old enough not to know `@json`, or one that printed a warning.
+    return undefined;
+  }
+};
+
+const list = (
+  args: readonly string[],
+  jq: string,
+  cwd: string,
+): readonly string[] | undefined => parseList(safeGh([...args, "--jq", `[${jq}] | @json`], { cwd }));
 
 /**
  * Ask GitHub the four questions a checkout cannot answer. Every call goes
@@ -345,16 +385,16 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
   );
 
   return {
-    secrets: lines(answer(["api", "repos/{owner}/{repo}/actions/secrets", "--jq", ".secrets[].name"], dir)),
+    secrets: list(["api", "repos/{owner}/{repo}/actions/secrets"], ".secrets[].name", dir),
     canCreatePullRequests: canCreate === undefined ? undefined : canCreate === "true",
-    labels: lines(answer(["label", "list", "--limit", "200", "--json", "name", "--jq", ".[].name"], dir)),
+    labels: list(["label", "list", "--limit", "200", "--json", "name"], ".[].name", dir),
     visibility:
       visibility === "PUBLIC" || visibility === "public"
         ? "public"
         : visibility === "PRIVATE" || visibility === "private" || visibility === "INTERNAL"
           ? "private"
           : undefined,
-    releases: lines(answer(["api", `repos/${repoSlug(packageName)}/tags`, "--jq", ".[].name"], dir)),
+    releases: list(["api", `repos/${repoSlug(packageName)}/tags`], ".[].name", dir),
   };
 };
 

@@ -23,10 +23,11 @@ npx --yes @jeffwlawson/agent-workflows@<version> doctor    # check what fails si
 ```
 
 `init` copies the reference callers from [`examples/callers/`](./examples/callers/) into
-`.github/workflows/`, substituting the two things that are per-repo — the version pin, and
-`self-check`, which is `<caller job id> / <called job id>` — and writes a `SETUP.md` naming the work
-it cannot do: the two secrets, the repository setting, the labels, and the two documents below. It
-**updates** on a re-run rather than refusing, which is how you take a release.
+`.github/workflows/`, substituting the one thing that is per-repo — the version pin — and writes a
+`SETUP.md` naming the work it cannot do: the two secrets, the repository setting, the labels, and
+the two documents below. It **updates** on a re-run rather than refusing, which is how you take a
+release: the pin moves in the callers you have, and nothing else about them changes, a caller being
+the half an adopter owns.
 
 `doctor` exits non-zero on every failure `docs/ADOPTING.md` §1 describes as announcing itself as
 something else — a missing secret, a caller without `packages: read`, a private repo's review caller

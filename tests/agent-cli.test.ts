@@ -4,8 +4,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
-import { init } from "../setup/init.js";
-import { runDoctor, type RepoFacts } from "../setup/doctor.js";
+import { init, STATE_LABELS, TRIGGER_LABELS } from "../setup/init.js";
+import { parseList, runDoctor, type RepoFacts } from "../setup/doctor.js";
 
 /**
  * The runners ship as one versioned package with one binary (#96), so the entry
@@ -315,11 +315,12 @@ describe("init installs the reference callers into an adopting repo", () => {
   });
 
   /**
-   * `self-check` is `<caller job id> / <called job id>` and is the one value in
-   * a caller that nothing can read from the other side — so `init` composes it
-   * from the job id it is actually writing rather than copying the reference's.
+   * `self-check` is `<caller job id> / <called job id>` and is the one coupling
+   * in a caller with no runtime symptom, so nothing is written without it
+   * naming the job it sits in — `assertCoupled` reads the result back rather
+   * than trusting that a rewrite was applied.
    */
-  it("composes self-check from the job id it writes", async () => {
+  it("writes a self-check naming the job it sits in", async () => {
     const root = adopted();
 
     await init({ dir: root });
@@ -333,26 +334,78 @@ describe("init installs the reference callers into an adopting repo", () => {
    * Re-run updates rather than refusing (the opposite of upstream's `init`,
    * which tells you to remove it first): the commonest reason to run this twice
    * is a new release, and a scaffolder that refuses the second run is one an
-   * adopter works around by hand. Their own edits to the job id survive it,
-   * which is what makes an update safe to take — and `self-check` is recomposed
-   * around the id they chose rather than reset to ours.
+   * adopter works around by hand.
+   *
+   * But an update is the **pin and nothing else**. A caller is the half an
+   * adopter owns, and everything in this scenario is something they really do
+   * set: the `with:` inputs `docs/ADOPTING.md` §4 ships commented out — a pnpm
+   * repo whose `setup:` were reverted here dies at `npm ci` with nothing saying
+   * why — a renamed job, and a permission of their own. A re-run that rewrote
+   * the file from the reference would revert all of it and report `updated`,
+   * which is the failure class this command exists to remove.
    */
-  it("updates on a re-run, keeping a renamed job id and recomposing self-check", async () => {
+  it("moves the pin on a re-run and changes nothing else in a caller", async () => {
     const root = adopted();
     await init({ dir: root });
-    const renamed = read(root, ".github/workflows/agent-review.yml")
+    const theirs = read(root, ".github/workflows/agent-review.yml")
       .replace(/^  review:$/m, "  agent_review:")
       .replace(/self-check: review \/ review/, "self-check: agent_review / review")
+      .replace(/^(    with:)$/m, "$1\n      default-branch: trunk\n      node-version-file: .tool-versions\n      setup: pnpm i --frozen-lockfile")
+      .replace(/^      pull-requests: write$/m, "      pull-requests: write\n      issues: write")
       .replace(`@v${manifest.version}`, "@v0.0.1");
-    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), renamed);
+    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), theirs);
 
     const changes = await init({ dir: root });
 
     const text = read(root, ".github/workflows/agent-review.yml");
+    expect(text).toBe(theirs.replace("@v0.0.1", `@v${manifest.version}`));
+    // Named as well as compared, so an edit above that silently matched
+    // nothing cannot leave this asserting that two identical files are equal.
+    expect(text).toContain("setup: pnpm i --frozen-lockfile");
+    expect(text).toContain("default-branch: trunk");
+    expect(text).toContain("issues: write");
     expect(text).toMatch(/^  agent_review:$/m);
-    expect(text).toMatch(/^\s*self-check: agent_review \/ review$/m);
-    expect(text).toContain(`@v${manifest.version}`);
     expect(changes.find((c) => c.file.endsWith("agent-review.yml"))?.action).toBe("updated");
+  });
+
+  /**
+   * A caller an adopter deleted is a subset they chose — §4 says to take the
+   * ones you want — and a re-run is how you take a release, not how you get the
+   * loop's opinion about your workflows back. It is named rather than written,
+   * so the same report also tells an adopter that a workflow added in a later
+   * release exists at all, instead of a `pull_request_target` trigger appearing
+   * in their tree behind them.
+   */
+  it("does not put back a caller the adopter deleted, and says it did not", async () => {
+    const root = adopted();
+    await init({ dir: root });
+    fs.rmSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"));
+
+    const changes = await init({ dir: root });
+
+    expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"))).toBe(
+      false,
+    );
+    const change = changes.find((c) => c.file.endsWith("agent-update-branch.yml"));
+    expect(change?.action).toBe("kept");
+    expect(change?.note ?? "").toContain("examples/callers/update-branch.yml");
+  });
+
+  /**
+   * The filename is ours by convention only. A workflow of an adopter's own
+   * that happens to be called `agent-fix.yml` is a file this never wrote, and
+   * overwriting it is the same act the re-run above refuses — with worse
+   * consequences, since nothing in it was ever a caller.
+   */
+  it("refuses to write over a file of the same name that is not a caller", async () => {
+    const root = adopted();
+    const theirs = "name: Our own fix job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
+    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-fix.yml"), theirs);
+
+    const changes = await init({ dir: root });
+
+    expect(read(root, ".github/workflows/agent-fix.yml")).toBe(theirs);
+    expect(changes.find((c) => c.file.endsWith("agent-fix.yml"))?.action).toBe("kept");
   });
 
   it("reports an unchanged caller rather than rewriting it", async () => {
@@ -418,6 +471,37 @@ describe("init installs the reference callers into an adopting repo", () => {
 
     expect(code).toBe(2);
     expect(err).toContain("--force");
+  });
+
+  /**
+   * The label table in `setup/init.ts` is a **second copy** of `docs/ADOPTING.md`
+   * §3: the doc is what a human reads, the table is what `SETUP.md` tells them
+   * to run and what `doctor` demands exists. Nothing else holds the two in step,
+   * and a rename in either place — or in the `if:` a workflow filters on — would
+   * leave `init` scaffolding one string and the loop waiting for another, which
+   * is a transition that no-ops rather than anything that errors.
+   *
+   * So this is `PIN`'s trick for labels: parse the block the doc actually ships
+   * and compare it, colour and description included.
+   */
+  it("scaffolds exactly the labels docs/ADOPTING.md §3 documents", () => {
+    const documented = [
+      ...fs
+        .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
+        .matchAll(/^gh label create +"([^"]+)" +--color +(\S+) +--description +"([^"]+)"$/gm),
+    ].map(([, name, color, description]) => ({
+      name: name ?? "",
+      color: color ?? "",
+      description: description ?? "",
+    }));
+
+    // The block itself has to still be there: a doc restructure that moved it
+    // would otherwise make this pass by comparing nothing.
+    expect(documented).toHaveLength(6);
+
+    const byName = (labels: readonly { name: string }[]) =>
+      [...labels].sort((a, b) => a.name.localeCompare(b.name));
+    expect(byName([...TRIGGER_LABELS, ...STATE_LABELS])).toEqual(byName(documented));
   });
 });
 
@@ -674,6 +758,27 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(0);
     expect(out).toMatch(/could not/i);
+  });
+
+  /**
+   * The other side of that, and the one the shape of `gh`'s output decides: a
+   * repository with **no** secrets is a fact, not a silence, and it is the state
+   * a repository is in at exactly the moment `SETUP.md` §5 says to run this.
+   * Asked for as lines, `[]` and "could not read" are both empty output and the
+   * first run would pass on the first day. So the query asks for a JSON array,
+   * and only a `gh` that answered nothing at all is unknown.
+   */
+  it("reads an empty list as empty rather than as unreadable", async () => {
+    expect(parseList('["AGENT_PAT"]')).toEqual(["AGENT_PAT"]);
+    expect(parseList("[]")).toEqual([]);
+    expect(parseList("")).toBeUndefined();
+
+    const fresh = await check(await installed(), { ...healthy(), secrets: [], labels: [] });
+
+    expect(fresh.code).toBe(1);
+    expect(fresh.err).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(fresh.err).toContain("AGENT_PAT");
+    expect(fresh.err).toContain("agent:implement");
   });
 
   /**

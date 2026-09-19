@@ -1830,3 +1830,133 @@ again says something confident and false. `--slurp` makes the filter run once ov
 the pattern means what its comment says. The general shape: replacing a lie with a classification
 only helps if the classification's boundaries are the real ones, and "not a number" was never the
 same set as "no answer".
+
+## 2026-09-19 — Three changes verified by reading them, and the one that never ran at all
+
+`gh api --paginate --slurp --jq` is not a valid invocation. gh rejects the combination at
+flag-parse time — *the `--slurp` option is not supported with `--jq` or `--template`* — before it
+makes a request. `pending_count` in `review.yml` was written that way in #16, shipped in v0.1.5, and
+had therefore never once returned a count when #28 was filed a day later. Every review in between
+ran with no CI evidence, and said so in its own words: *"No checks reported"*, *"Because CI reported
+no checks, I ran the packaging guard by hand"*, *"no CI check is reported on this PR at all, though
+`ci.yml` triggers on PRs to `main`."* The last of those was checkable and false — `ci.yml` had
+passed on that exact head commit minutes earlier. The reviewer was not wrong about what it could
+see. It could see nothing.
+
+### The chain is the interesting part, because every link was a correct fix
+
+1. v0.1.0–v0.1.4: `checks: read` missing. Public repos serve the endpoint anyway, so nothing failed
+   until the first private adopter (2026-09-17, above).
+2. #16 added the grant and replaced `|| echo 0` with an explicit non-numeric arm, so a failed call
+   would stop loudly instead of spinning out the 900-second budget.
+3. The review on #16 found that arm too wide: `--paginate --jq` filters per page, so >30 check runs
+   prints `0\n0`, which the arm would misread as a failure.
+4. The fix for *that* was `--slurp` — correct about pagination, and an invocation gh refuses.
+
+Step 4 was never executed against anything. The review verified the *pattern*, the tests asserted
+the *shape of the command string*, and `npm run verify` cannot run `gh`. Nothing in the loop invokes
+it. **The only thing that worked was the loud failure from step 2** — without it, `|| echo 0` would
+have made `pending` a plausible `0` and the blindness would have been silent. Instead every review
+announced it, for a day, which is how it was found.
+
+### Executing the step found two things reading it had not
+
+The fix is one filter pass over all pages, which is what #16's review asked for, written as gh
+actually accepts it: `--paginate --slurp` piped into standalone `jq`. Standing the step up against a
+recorded `gh` (`tests/review-ci-wait.test.ts`) turned up two more defects that no amount of reading
+had — including reading by the person writing the fix, who had both of them wrong in the first
+draft.
+
+**A `run:` block with no `shell:` runs under `bash -e`.** So `pending=$(pending_count)` does not
+merely record a failure, it *ends the step* — before the arm that exists to report it. That is why
+the affected reviews said "no checks reported" (the runner's wording for an empty file) rather than
+the "could not read this commit's check runs" sentence the arm writes into the evidence. The
+diagnosis #16 added had been unreachable since the day it was added, and the issue describing this
+bug assumed, reasonably, that it was firing.
+
+**Under `--slurp`, a failed request still writes JSON to stdout.** A 403 prints its error body
+inside the outer array; a connection failure prints `[]`. Through this filter `[]` is a count of
+zero — "nothing pending" — which is precisely the lie with a plausible value that the 2026-09-17
+entry above was written about, arriving by a route that entry could not have anticipated. The count
+is now gated on gh's exit status and never on what it printed.
+
+### The finding that outlives the bug
+
+Three times in two days a change was verified by reading it rather than running it, and twice that
+was not enough: the `checks: read` grant (caught by a private adopter, not by us) and `--slurp
+--jq` (caught by its own victims). In both cases the assertions matched **text**, so they were green
+against a command that could not run.
+
+The tests here are unusually good at holding two files in agreement, and that is most of what this
+suite is for. They cannot tell whether a shell command is valid, and the review step is almost
+entirely shell. `tests/review-ci-wait.test.ts` closes that for the one step where the cost of being
+wrong is a review that reasons from the diff alone: it writes the real `run:` block to a file, hands
+it to `bash -e`, and puts a **replay** of `gh` on `PATH` — recorded behaviour, refusing outright any
+invocation it holds no recording for, so a stub that improvises cannot become the second thing
+nobody ran. The rule everything rests on, gh's refusal of `--slurp` beside `--jq`, is re-verified
+against the installed binary rather than trusted to the replay; a second check runs the composed
+commands through the real `gh` pointed at an unreachable host, where reaching the connection error
+*is* the assertion that the flags parsed.
+
+The generalisation, for the next shell block that gets a guard: a test that matches the text of a
+command is a statement about intent, and worth keeping as one. It is not evidence the command runs,
+and no amount of review turns it into that.
+
+### Addendum, same day: the review of the fix found a third one
+
+The `bash -e` hazard above was fixed where the count reads it, and the review on that PR pointed at
+the *next* block down, where it was untouched: `gh run view "$rid" --log-failed | sed … | tail -60`
+inside a group already redirected to the evidence file. `gh run view` exits non-zero whenever a
+failed run's logs cannot be had, `pipefail` makes that the pipeline's status, and `-e` ends the step
+there — mid-file, with `continue-on-error: true` keeping the job green and every later run's tail,
+plus the `cat "$out"` dump, simply absent. Not a lie this time, but a truncation with nothing
+marking where it stopped.
+
+Worth recording because of *how* it was found. The first two defects were found by executing the
+step; this one was found by reading it — by someone who had just read the argument for why reading
+was not enough, and who therefore knew the shape to look for. The coverage did not catch it: the
+suite had no scenario with a failed run in it, because the tail "was not what this suite covers".
+So the generalisation above needs its other half. Executing a thing tells you about the paths you
+executed, and a harness that can only reach three of a step's four collectors is a statement about
+intent too. `GH_REPLAY_RUNS` and one recording of `run view --log-failed` closed it; what suggested
+looking was a human-shaped question — *where else does this exact sentence apply?* — asked against
+a fix that had just been written.
+
+### Second addendum, same day: the third `2>/dev/null`, three lines below the fix
+
+The review of that fix asked the same question once more, of the call the fix had walked past. The
+count stopped discarding gh's stderr because *discarding it is how the invocation gh refuses stayed
+invisible for a release* — and the check **listing**, three lines down, still ended `2>/dev/null`.
+It is a separate call that can fail on its own (a transient 5xx, a secondary rate limit, a change to
+that filter alone) on a run where the count answered and the count's arm therefore never fires. The
+agent got `- (could not read check runs)` and the log said nothing at all about why. Same discard,
+same consequence, one call over; the fix is the same `if`-shaped arm, with its own `::warning::`
+that says the count succeeded so this is probably *not* the grant.
+
+The scenario could not be written before it could be run. Both calls compose byte-identical argv,
+so `GH_REPLAY_FAILURE` failed them together and "the count answered and the listing did not" was
+not expressible — the replay now counts check-runs calls across processes and takes an ordinal to
+start failing at. Worth noting as its own kind of gap: a harness can be unable to *state* a defect
+as well as unable to catch one, and the second is much harder to notice, because every test in it
+passes.
+
+### Third addendum, same day: the harness inherited the budget it was built to assert on
+
+The review of *that* fix found the hazard one level up, in the test file rather than the workflow.
+The two `reports itself blind` scenarios deliberately do not override `WAIT_SECONDS`, so they run at
+the step's real 900 — that is the whole force of `expect(stdout).not.toContain("Waiting for")`, which
+means "the arm stopped" only because there was a fifteen-minute budget available to spin. So the
+regression those two exist to catch — a `break` lost out of the error arm — did not fail them. It
+*hung* them, for 900 seconds each, and vitest's own five-second timeout cannot interrupt a
+synchronous `spawnSync`: it notices afterwards. A red build that takes half an hour to go red is not
+meaningfully different from a stuck one.
+
+Fixed by bounding the spawn itself (`timeout: 60_000`), and measured rather than argued: with the
+`break` deleted, both cases now fail in about sixty seconds each on `expected null to be +0` — the
+`null` status of a child killed by SIGTERM — instead of running to the budget.
+
+The generalisation is the other half of this entry's own argument. Executing a step is what makes a
+test able to catch a shell defect; it also hands the test every timeout, retry and sleep the step
+owns. A harness that runs real code needs its own bound on that code, or the sharper coverage buys
+itself a new failure mode — one that reads as infrastructure flakiness rather than as the defect it
+actually is.

@@ -1,0 +1,205 @@
+#!/usr/bin/env node
+/*
+ * A replay of `gh api`, standing in for the real binary so that
+ * `tests/review-ci-wait.test.ts` can *execute* the review workflow's CI
+ * collection instead of pattern-matching its text.
+ *
+ * Every behaviour below was recorded from a real `gh` (2.100.0, 2026-09-19) and
+ * is quoted where it is implemented. This file is a *replay*, not a model: an
+ * invocation it holds no recording for exits 2 with a loud message rather than
+ * guessing, because a stub that improvises is the thing that let
+ * `--paginate --slurp --jq` — an invocation gh refuses outright — pass review,
+ * the tests and CI for a whole release (#28).
+ *
+ * The one rule that has to stay true of the real binary is the `--slurp`
+ * refusal below, and it is not trusted to this file: `review-ci-wait.test.ts`
+ * re-verifies it against whatever `gh` is installed before using the replay.
+ *
+ * Endpoints recorded:
+ *   repos/{owner}/{repo}/commits/{sha}/check-runs  — pages from GH_REPLAY_PAGES
+ *   repos/{owner}/{repo}/actions/runs?…            — runs from GH_REPLAY_RUNS
+ *   repos/{owner}/{repo}/actions/runs/{id}         —  "     "    "
+ *
+ * Subcommands recorded:
+ *   run view {id} --log-failed                     — the log is unavailable
+ *
+ * Environment:
+ *   GH_REPLAY_PAGES       path to a JSON array of page bodies, in page order
+ *   GH_REPLAY_FAILURE     `403` or `unreachable`: how the check-runs call fails
+ *   GH_REPLAY_FAILURE_AT  1-based check-runs call to start failing at; default 1
+ *   GH_REPLAY_COUNTER     path this process counts check-runs calls in
+ *   GH_REPLAY_RUNS        path to a JSON array of workflow runs; default none
+ */
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+
+const die = (message, code) => {
+  process.stderr.write(`${message}\n`);
+  process.exit(code);
+};
+
+/** An invocation with no recording. Exit 2, distinct from gh's own failures. */
+const unrecorded = () => die(`gh-replay: no recording for \`gh ${argv.join(" ")}\``, 2);
+
+/** The workflow runs on the commit. Empty unless a scenario supplies some. */
+const runs = () => {
+  const file = process.env["GH_REPLAY_RUNS"];
+
+  return file === undefined ? [] : JSON.parse(readFileSync(file, "utf8"));
+};
+
+// `gh run view <id> --log-failed`, recorded for a run whose log cannot be had.
+// That is the only recording here, and it is the case that matters: gh exits
+// **1 with nothing on stdout**, which inside the step's redirected group is a
+// failing pipeline, which under `bash -e` ends the step. Recorded 2026-09-19
+// against gh 2.100.0, pointed at an unreachable host so no token was needed:
+//
+//   $ GH_HOST=localhost gh run view 12345 --log-failed -R acme/widgets
+//   failed to get run: Get "https://localhost/api/v3/repos/acme/widgets/…":
+//     dial tcp [::1]:443: connect: connection refused   ← stderr, exit 1
+//
+// A *successful* `--log-failed` is deliberately not replayed: its output is
+// job/step/timestamp-prefixed log text that nothing here has recorded, and
+// inventing it is exactly the improvisation this file exists to refuse.
+if (argv[0] === "run") {
+  if (argv[1] !== "view" || !argv.includes("--log-failed")) unrecorded();
+  die(`failed to get run: Get "https://localhost/api/v3/repos/…/actions/runs/${argv[2]}": dial tcp [::1]:443: connect: connection refused`, 1);
+}
+
+if (argv[0] !== "api") unrecorded();
+
+const endpoint = argv[1] ?? "";
+const flags = argv.slice(2);
+const has = (...names) => names.some((name) => flags.includes(name));
+const valueOf = (...names) => {
+  const i = flags.findIndex((flag) => names.includes(flag));
+  return i < 0 ? undefined : flags[i + 1];
+};
+
+// Recorded, and the whole reason this file exists. gh rejects the combination
+// at flag-parse time — before any request — with this line on stderr, a usage
+// dump after it, and exit 1:
+//
+//   $ gh api repos/o/r/commits/abc/check-runs --paginate --slurp --jq '.'
+//   the `--slurp` option is not supported with `--jq` or `--template`
+if (has("--slurp") && has("--jq", "-q", "--template", "-t")) {
+  die("the `--slurp` option is not supported with `--jq` or `--template`", 1);
+}
+
+const filter = valueOf("--jq", "-q");
+
+/**
+ * One response body, through `--jq` if one was passed. gh applies the filter to
+ * each page *separately* under `--paginate` — which is why a count filter over
+ * two pages prints two numbers — so this is called per page, and once for the
+ * single array `--slurp` wraps them in.
+ *
+ * Raw output: gh prints string results unquoted, as standalone `jq -r` does.
+ */
+const emit = (body) => {
+  const json = JSON.stringify(body);
+  if (filter === undefined) {
+    process.stdout.write(`${json}\n`);
+    return;
+  }
+  try {
+    process.stdout.write(execFileSync("jq", ["-r", filter], { input: json, encoding: "utf8" }));
+  } catch {
+    die("gh: failed to apply the jq filter", 1);
+  }
+};
+
+/**
+ * Which check-runs call this is, counted across processes in a file because
+ * every invocation is its own process. The step composes this endpoint twice —
+ * once per poll for the count, once for the listing — with byte-identical
+ * argv, so *when* is the only thing that can tell them apart. Without that,
+ * `GH_REPLAY_FAILURE` fails both together and "the count answered and the
+ * listing did not" is not a scenario that can be written.
+ */
+const nthCheckRunsCall = () => {
+  const file = process.env["GH_REPLAY_COUNTER"];
+
+  if (file === undefined) return 1;
+
+  const n = (existsSync(file) ? Number(readFileSync(file, "utf8")) : 0) + 1;
+
+  writeFileSync(file, String(n));
+  return n;
+};
+
+if (/\/commits\/[^/]+\/check-runs$/.test(endpoint)) {
+  const failsFrom = Number(process.env["GH_REPLAY_FAILURE_AT"] ?? "1");
+  const failure = nthCheckRunsCall() >= failsFrom ? process.env["GH_REPLAY_FAILURE"] : undefined;
+
+  // A failed request under `--slurp` still writes JSON to **stdout**, and the
+  // two shapes differ. Recorded 2026-09-19 against gh 2.100.0:
+  //
+  //   $ gh api repos/cli/cli/commits/000…/check-runs --paginate --slurp
+  //   [{ "message": "Bad credentials", "documentation_url": …, "status": … }]
+  //   gh: Bad credentials (HTTP 401)                           ← stderr, exit 1
+  //
+  //   $ gh api … --hostname localhost --paginate --slurp
+  //   []
+  //   Get "https://localhost/…": dial tcp [::1]:443: connect: …  ← stderr, exit 1
+  //
+  // That `[]` is why the count cannot be read off stdout: through the step's
+  // filter it is a perfectly plausible zero. The 403 body is the shape the
+  // first private adopter hit (docs/friction.md, 2026-09-17).
+  if (failure !== undefined) {
+    if (has("--slurp")) {
+      process.stdout.write(
+        failure === "403"
+          ? `${JSON.stringify([
+              {
+                message: "Resource not accessible by integration",
+                documentation_url: "https://docs.github.com/rest/checks/runs#list-check-runs-for-a-git-reference",
+                status: "403",
+              },
+            ])}\n`
+          : "[]",
+      );
+    }
+    die(
+      failure === "403"
+        ? "gh: Resource not accessible by integration (HTTP 403)"
+        : `Get "https://localhost/api/v3/${endpoint}": dial tcp [::1]:443: connect: connection refused`,
+      1,
+    );
+  }
+
+  if (!has("--paginate")) unrecorded();
+
+  const pages = JSON.parse(readFileSync(process.env["GH_REPLAY_PAGES"] ?? "", "utf8"));
+
+  // `--slurp` wraps every page into one outer array; without it the pages are
+  // printed one after another, each its own JSON document.
+  if (has("--slurp")) emit(pages);
+  else for (const page of pages) emit(page);
+
+  process.exit(0);
+}
+
+// The failure-log tail's two calls: the runs on the commit, then each one by
+// id for its name. Both come from GH_REPLAY_RUNS, which is empty for every
+// scenario that is not about the tail.
+if (/\/actions\/runs\?/.test(endpoint)) {
+  const workflowRuns = runs();
+
+  emit({ total_count: workflowRuns.length, workflow_runs: workflowRuns });
+  process.exit(0);
+}
+
+const byId = /\/actions\/runs\/([0-9]+)$/.exec(endpoint);
+
+if (byId !== null) {
+  const run = runs().find((candidate) => String(candidate.id) === byId[1]);
+
+  if (run === undefined) unrecorded();
+  emit(run);
+  process.exit(0);
+}
+
+unrecorded();

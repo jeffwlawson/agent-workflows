@@ -348,6 +348,15 @@ does — it is about installing the runner it runs.
 > [`examples/callers/`](../examples/callers/) carries the release that has it; since a called
 > workflow can only *downgrade*, adding it to your caller alone changes nothing on an older pin.
 
+> **The same wait needs `jq` on the runner**, which is new in this release — before it the only
+> filtering was gh's own embedded `--jq`. Nothing you configure here can take it away: this
+> workflow hard-codes `runs-on: ubuntu-latest`, an image that ships `jq`, and exposes no `runs-on`
+> input. So this is recorded for whoever changes that line, not as a step for you to take. Without
+> `jq` the wait reports itself blind in exactly the words above — and that message names
+> `checks: read`, because a missing grant is overwhelmingly the likelier cause. What separates them
+> is the line printed underneath it: the step echoes whatever `gh` or `jq` wrote to stderr, so a
+> runner without `jq` says `jq: command not found` outright.
+
 Four things about that shape are worth knowing before you paste it:
 
 - **`permissions` has to be on your job too.** The called workflow can only *downgrade* the token it

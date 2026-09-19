@@ -311,16 +311,30 @@ jobs:
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP}/ci_status.md"
+          # Whatever the last `gh`/`jq` attempt wrote to stderr — the count's,
+          # and then the listing's, each truncating it before it runs. Kept out
+          # of the evidence — the agent cannot act on it — and out of the log
+          # too until a failure arm fires, at which point it is the only thing
+          # that separates the causes those arms now have.
+          err="${RUNNER_TEMP}/ci_status.err"
           : > "$out"
 
           # Prints exactly one number, or nothing at all when the API call
-          # fails. Both halves of that are load-bearing.
+          # fails, and never fails itself. All three are load-bearing.
           #
           # `--slurp` is what makes it one number. `--paginate --jq` applies
           # the filter *per page*, so a commit with more than one page of
           # check runs (>30, the endpoint default) prints `0\n0` — several
           # counts, no total. Slurped, the pages arrive as one array and the
           # filter runs once over all of them.
+          #
+          # The filter is a **pipe into standalone jq**, not gh's `--jq`, and
+          # it has to be: gh refuses the two together — "the `--slurp` option
+          # is not supported with `--jq` or `--template`" — at flag-parse time,
+          # before any request. Written as one gh invocation it shipped in
+          # v0.1.5 and collected no evidence at all for a day (#28). Nothing
+          # caught it because everything checking it matched *text*; what
+          # covers it now runs the step (tests/review-ci-wait.test.ts).
           #
           # Printing nothing on failure is what makes the caller's
           # non-numeric arm mean "the API did not answer". This used to fall
@@ -330,10 +344,34 @@ jobs:
           # `{"message":…}0`, which `-eq` rejects every iteration until the
           # deadline. Both had the same trigger — check runs on a private
           # repository need `checks: read`, granted on this job above.
+          #
+          # Which is why the count is gated on gh's **exit status** and not on
+          # what it printed. Under `--slurp` a failed request still writes
+          # JSON: `[]` for a connection failure, and `[{"message":"Resource
+          # not accessible by integration",…}]` for that same 403 (recorded
+          # from gh 2.100.0). The first of those counts, through this filter,
+          # as a perfectly plausible zero — the old lie with a new source.
+          #
+          # `|| return 0` and `|| true` are both there because GitHub runs a
+          # `run:` block carrying no `shell:` under `bash -e`: a non-zero gh
+          # inside `$( )` ends the step where it stands, ahead of the arm
+          # below that exists to report exactly that. The agent then gets an
+          # empty file and reviews saying "no checks reported" — the same
+          # blindness, minus the diagnosis. That is what v0.1.5 did.
+          #
+          # Both halves send stderr to `$err` rather than `/dev/null`, because
+          # the arm below no longer has one cause. It fires for a non-zero gh,
+          # for a jq filter error, and for no `jq` on the runner at all — while
+          # its `::error::` names the missing grant, which is the likeliest of
+          # the three and was the only one when it was written. Discarding the
+          # stderr is how the invocation gh refuses stayed invisible for a
+          # release; the arm prints whatever landed here underneath it.
           pending_count() {
-            gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp \
-              --jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\")] | length" \
-              2>/dev/null
+            : > "$err"
+            body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err") || return 0
+            printf '%s' "$body" \
+              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\")] | length" \
+              2>>"$err" || true
           }
 
           deadline=$(( $(date +%s) + WAIT_SECONDS ))
@@ -349,6 +387,13 @@ jobs:
             case "$pending" in
               "" | *[!0-9]*)
                 echo "::error::Could not read check runs for ${HEAD_SHA}. On a private repository this is a missing \`checks: read\` grant in the caller and the called workflow — see jeffwlawson/agent-workflows docs/ADOPTING.md §4. Reviewing without CI evidence."
+                # `if`, not `[ -s … ] && …`: under `bash -e` a test that fails
+                # as the last command of this arm ends the step, which is the
+                # defect this whole block was rewritten to stop doing.
+                if [ -s "$err" ]; then
+                  echo "…and this is what \`gh\`/\`jq\` said, which is the part that tells the three apart:"
+                  cat "$err"
+                fi
                 echo "_Could not read this commit's check runs, so the review below has no CI evidence._" >> "$out"
                 break
                 ;;
@@ -363,10 +408,35 @@ jobs:
             sleep 20
           done
 
+          # Slurped and piped for the same reason as the count, and `jq -r` to
+          # match what gh's own `--jq` does with a string result: print it
+          # unquoted. Without `-r` every line reaches the agent wrapped in
+          # quotes it would have to read past.
+          #
+          # Stderr goes to `$err` here for the same reason it does in the
+          # count, and it is a separate failure: this call can fail on a run
+          # where the count succeeded — a transient 5xx, a secondary rate
+          # limit, a later change to this filter alone — and the count's arm
+          # never fires to explain it. Without this the agent would be handed
+          # `- (could not read check runs)` and the log would say nothing at
+          # all about why. Discarding the stderr is the habit that hid #28 for
+          # a release; it does not get to survive three lines below the fix.
+          #
+          # `if !`, not `|| { …; [ -s … ] && cat …; }`, on the same grounds as
+          # the arm above: under `bash -e` a test as the last command of the
+          # arm ends the step, which is the defect this block was rewritten to
+          # stop doing.
           echo "Checks on this commit:" >> "$out"
-          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate \
-            --jq ".check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | \"- \(.name): \(.conclusion // .status)\"" \
-            >> "$out" 2>/dev/null || echo "- (could not read check runs)" >> "$out"
+          : > "$err"
+          if ! gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
+            | jq -r ".[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | \"- \(.name): \(.conclusion // .status)\"" \
+            2>>"$err" >> "$out"; then
+            echo "- (could not read check runs)" >> "$out"
+            echo "::warning::Could not list check runs for ${HEAD_SHA}, so the review's check list is empty. If the count above succeeded this is not the \`checks: read\` grant — see what \`gh\`/\`jq\` said below."
+            if [ -s "$err" ]; then
+              cat "$err"
+            fi
+          fi
 
           # Tail the failing steps so the agent sees *what* failed, not merely
           # that something did. Capped so a noisy failure cannot swamp the prompt.
@@ -387,11 +457,21 @@ jobs:
                         --jq '.workflow_runs[] | select(.conclusion == "failure") | .id' 2>/dev/null); do
             rname=$(gh api "repos/${GH_REPO}/actions/runs/${rid}" --jq .name 2>/dev/null || echo "run ${rid}")
             case "$rname" in "Agent "*) continue ;; esac
+            # `|| echo` on the same grounds as the count above, and it is the
+            # same bug: `gh run view --log-failed` exits non-zero whenever a
+            # failed run's logs cannot be had — expired, still uploading, a
+            # token without `actions: read` — and with `pipefail` under
+            # `bash -e` that failing *pipeline* ends the step, inside a group
+            # already redirected to `$out`. The step is `continue-on-error`, so
+            # nothing goes red; the agent simply never gets the runs after this
+            # one, nor the `--- collected CI context ---` dump, and the
+            # truncation is silent. Same blindness as #28, one loop further on.
             {
               echo
               echo "### Failure output — ${rname}"
               echo '```'
-              gh run view "$rid" --log-failed 2>/dev/null | sed 's/^[^Z]*Z //' | tail -60
+              gh run view "$rid" --log-failed 2>/dev/null | sed 's/^[^Z]*Z //' | tail -60 \
+                || echo "(no failure log available for run ${rid})"
               echo '```'
             } >> "$out"
           done

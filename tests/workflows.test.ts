@@ -652,8 +652,15 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // than one page of check runs (>30) prints `0\n0` — which the arm above
     // would classify as an API failure and diagnose as a missing grant, on a
     // repo whose permissions are fine. Slurped, the filter runs once over
-    // every page. Asserting the shape of the call, because the property is
-    // not observable from the pattern it feeds.
+    // every page.
+    //
+    // These two lines match *text*, and text is all they have ever matched.
+    // They were green for a release over `--paginate --slurp --jq`, which gh
+    // refuses outright and which therefore collected nothing at all (#28) —
+    // the shape was right and the command could not run. What settles that
+    // question is `tests/review-ci-wait.test.ts`, which executes this step
+    // against a recorded `gh`; keep these as the cheap statement of intent
+    // and put any new claim about *behaviour* there.
     expect(run).toContain("--paginate --slurp");
     expect(run).toContain("[.[].check_runs[]");
 

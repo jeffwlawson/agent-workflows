@@ -372,40 +372,54 @@ describe("the version propagator refuses an unexpected set of pins", () => {
  * `dist/scripts/` is `dist/`. But `exclude` only trims the entry set: a file
  * something in the build **imports** is pulled back in and emitted anyway, side
  * effects and all, and this one's side effect is a CLI that stages and rewrites.
- * Verified against this repo's own `tsc`, not assumed.
  *
  * Nothing downstream would report it. `ci.yml`'s tarball guard filters `tests/`,
  * `.test.` and `vitest` — a `dist/scripts/sync-version.js` matches none of
  * those, and the release hook would simply ship. Hence the rule this asserts:
  * the shared core lives in `shared/pins.ts`, which ships on purpose, and the
  * release half is imported by tests only.
+ *
+ * Put to `tsc` rather than reconstructed from the config, because the two ways
+ * this breaks have one symptom and the compiler is what decides it: drop the
+ * `exclude` entry and the hook is an entry file again; import it from anything
+ * built and it comes back regardless. Both were run against this repo's own
+ * `tsc`, in both directions. Restating the source directories here instead
+ * would be a second copy of the build's entry set, and a sixth runner directory
+ * — a routine change, per `CLAUDE.md` — would be compiled and unread.
  */
 describe("the release hook stays out of what ships", () => {
-  /** What `tsconfig.build.json` compiles: the repo minus tests and this one file. */
-  const built = (dir: string): readonly string[] =>
-    fs
-      .readdirSync(dir, { withFileTypes: true })
-      .flatMap((entry) => {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) return entry.name === "tests" ? [] : built(full);
-        return entry.name.endsWith(".ts") && full !== path.join("scripts", "sync-version.ts") ? [full] : [];
-      });
+  /**
+   * The program `tsconfig.build.json` defines: its entry files and everything
+   * they import, which is exactly the set `tsc` would emit. `--listFilesOnly`
+   * prints that set and stops, so it neither typechecks nor writes `dist/`.
+   */
+  const compiled = (): readonly string[] => {
+    const tsc = path.join("node_modules", "typescript", "bin", "tsc");
+    const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.build.json", "--listFilesOnly"], {
+      encoding: "utf8",
+    });
 
-  const SOURCE_DIRS = ["cli.ts", "shared", "scripts", "fix", "implement", "implement-prd", "review", "update-branch"];
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    return result.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .map((file) => path.relative(".", file))
+      // The lib and `@types` files every program carries, and anything outside
+      // this checkout: neither is what ships, and neither can be this hook.
+      .filter((file) => !file.startsWith("..") && !file.startsWith(`node_modules${path.sep}`));
+  };
 
-  it("is imported by tests only: an import would put it in the tarball", () => {
-    const importers = SOURCE_DIRS.flatMap((entry) => (fs.statSync(entry).isDirectory() ? built(entry) : [entry]))
-      .filter((file) => file !== path.join("scripts", "sync-version.ts"))
-      .filter((file) => /from\s+"[^"]*sync-version\.js"/.test(fs.readFileSync(file, "utf8")));
+  it("is in no build of this package: not as an entry file, and not through an import", () => {
+    const program = compiled();
 
-    expect(importers).toEqual([]);
-  });
+    // The other half of the same question, and the reason the first assertion
+    // is not vacuous: the build this is being asked about is the real one, and
+    // it carries both the CLI and the core the hook shares with `init`.
+    expect(program).toContain("cli.ts");
+    expect(program).toContain(path.join("shared", "pins.ts"));
 
-  /** And the exclusion itself, which is the other half of the same property. */
-  it("is excluded from the build", () => {
-    const config = fs.readFileSync("tsconfig.build.json", "utf8");
-
-    expect(config).toContain("scripts/sync-version.ts");
+    expect(program).not.toContain(path.join("scripts", "sync-version.ts"));
   });
 });
 

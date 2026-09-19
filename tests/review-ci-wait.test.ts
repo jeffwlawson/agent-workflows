@@ -170,6 +170,14 @@ const runWaitStep = (options: {
 
   const result = spawnSync("bash", ["-e", script], {
     encoding: "utf8",
+    // Bounded, because vitest's own timeout cannot interrupt a synchronous
+    // spawn. The scenarios that do not override `waitSeconds` run at the
+    // workflow's real 900 on purpose — that is what makes `not.toContain
+    // ("Waiting for")` mean "stopped" rather than "was not given time to
+    // spin" — so an arm that regressed out of its `break` would hang CI for
+    // fifteen minutes per case instead of failing it. Well above every
+    // scenario's real cost: the rest pass `waitSeconds: "0"`.
+    timeout: 60_000,
     env: {
       ...process.env,
       ...resolved(waitStep().env ?? {}),
@@ -249,7 +257,13 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
 
     // Live rather than vacuous: gh got as far as building the request.
     expect(stderr).toContain("check-runs");
+    // Two ways a composed call can be one gh refuses, and only the first has
+    // ever happened here. The runs listing below the wait is seen by the real
+    // binary *only* through this test — the sibling below spawns the two calls
+    // inside its loop, not the listing that feeds it — so a bad flag added
+    // there has this assertion and nothing else.
     expect(stderr).not.toContain("is not supported with");
+    expect(stderr).not.toContain("unknown flag");
     // Unreachable host, so the step still reports itself blind — loudly.
     expect(outcome.stdout).toContain("::error::Could not read check runs");
   });

@@ -1939,3 +1939,24 @@ not expressible — the replay now counts check-runs calls across processes and 
 start failing at. Worth noting as its own kind of gap: a harness can be unable to *state* a defect
 as well as unable to catch one, and the second is much harder to notice, because every test in it
 passes.
+
+### Third addendum, same day: the harness inherited the budget it was built to assert on
+
+The review of *that* fix found the hazard one level up, in the test file rather than the workflow.
+The two `reports itself blind` scenarios deliberately do not override `WAIT_SECONDS`, so they run at
+the step's real 900 — that is the whole force of `expect(stdout).not.toContain("Waiting for")`, which
+means "the arm stopped" only because there was a fifteen-minute budget available to spin. So the
+regression those two exist to catch — a `break` lost out of the error arm — did not fail them. It
+*hung* them, for 900 seconds each, and vitest's own five-second timeout cannot interrupt a
+synchronous `spawnSync`: it notices afterwards. A red build that takes half an hour to go red is not
+meaningfully different from a stuck one.
+
+Fixed by bounding the spawn itself (`timeout: 60_000`), and measured rather than argued: with the
+`break` deleted, both cases now fail in about sixty seconds each on `expected null to be +0` — the
+`null` status of a child killed by SIGTERM — instead of running to the budget.
+
+The generalisation is the other half of this entry's own argument. Executing a step is what makes a
+test able to catch a shell defect; it also hands the test every timeout, retry and sleep the step
+owns. A harness that runs real code needs its own bound on that code, or the sharper coverage buys
+itself a new failure mode — one that reads as infrastructure flakiness rather than as the defect it
+actually is.

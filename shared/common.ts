@@ -132,9 +132,23 @@ export const claudeAgent = (workflow: string) => {
   });
 };
 
+/**
+ * Where `gh` should think it is. `gh` resolves `{owner}/{repo}` and every
+ * repo-scoped subcommand from the git remote of its working directory, so a
+ * command asked about *another* checkout — which is what `doctor --dir` is —
+ * answers about this one unless it is told otherwise, and answers confidently.
+ */
+export interface GhOptions {
+  readonly cwd?: string | undefined;
+}
+
 /** Run `gh` with argv (no shell), so arguments with spaces/quotes are safe. */
-export const gh = (args: string[]): string =>
-  execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+export const gh = (args: string[], options: GhOptions = {}): string =>
+  execFileSync("gh", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+  });
 
 /**
  * `gh` with argv, returning "" instead of throwing when it exits non-zero.
@@ -147,9 +161,9 @@ export const gh = (args: string[]): string =>
  * into an exception mid-run. That mismatch is why this is a wrapper rather than
  * a call-site swap (issue #2).
  */
-export const safeGh = (args: readonly string[]): string => {
+export const safeGh = (args: readonly string[], options: GhOptions = {}): string => {
   try {
-    return gh([...args]);
+    return gh([...args], options);
   } catch {
     return "";
   }

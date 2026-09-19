@@ -94,7 +94,7 @@ const SKIPPED_DIRS = new Set(["output", "dist", "node_modules", ".git"]);
  * *this file*, whose `DOMAIN` regex contains the very words it searches for, so
  * a whole-repo walk fails on itself.
  */
-const RUNNER_SURFACE = ["cli.ts", "shared", "scripts", "fix", "implement", "implement-prd", "review", "update-branch"];
+const RUNNER_SURFACE = ["cli.ts", "shared", "scripts", "setup", "fix", "implement", "implement-prd", "review", "update-branch"];
 
 const filesUnder = (dir: string): readonly string[] =>
   fs

@@ -22,13 +22,18 @@ import { fileURLToPath } from "node:url";
  * against the checkout it lives in is one whose refusals — the half that matters
  * — can only be exercised by breaking this repository on purpose.
  *
- * It is **not** the shared half `init` (#6) needs, and calling it from there
- * would not work: `syncVersion` refuses an adopter's root, because the
- * three-directory cross-check below is *this* repository's shape, and it reads
- * the package name from the root it is pointed at — which for `init` is the
- * adopter's, not this package's. The genuinely common unit is narrower than the
- * whole function: `rewritten` plus the `uses:` pin. Extracting it belongs to #6,
- * where the second caller exists to be shaped around rather than guessed at.
+ * `syncVersion` itself is the **release** half and nothing else can use it: the
+ * three-directory cross-check below is *this* repository's shape, and an
+ * unexpected count is an error here precisely because a missed site is a broken
+ * release. `init` (#6) does the same rewrite for the opposite reason — this
+ * package's name and version, written into *someone else's* repository, over
+ * whatever subset of the callers an adopter took.
+ *
+ * What the two share is `rewritePins`: one file's text in, the rewritten text
+ * and the forms found out. Both callers bring their own file discovery, their
+ * own version source and their own policy on a surprising count — which is why
+ * that one is the seam, and why it carries the package name and the version as
+ * **parameters** rather than reading either from the root it is pointed at.
  */
 
 /** Forward slashes on purpose: these are paths *inside* YAML, not on disk. */
@@ -52,6 +57,29 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 
 /** Which of the two pin forms a site carries. They are not interchangeable. */
 export type PinForm = "package" | "ref";
+
+/**
+ * What a rewrite is written *for*: the package the pins name, and the version to
+ * write into them.
+ *
+ * Both are parameters and neither is read from the tree being rewritten. For the
+ * release the two happen to coincide with the target root's manifest; for `init`
+ * they are this package's and the root is an adopter's, whose `package.json`
+ * names an unrelated project or is not there at all.
+ */
+export interface Pinning {
+  /** The npm name of the package a pin names — `@owner/repo`. */
+  readonly packageName: string;
+  /** Exact `major.minor.patch`; anything else is refused. */
+  readonly version: string;
+}
+
+export interface PinRewrite {
+  /** The text with every pin found rewritten. Unchanged if none was. */
+  readonly text: string;
+  /** One entry per pin rewritten, `package` pins first. */
+  readonly found: readonly PinForm[];
+}
 
 export interface VersionSite {
   /** Repo-relative, forward-slashed — the path as a human would write it. */
@@ -83,24 +111,89 @@ const sameSet = (a: readonly string[], b: readonly string[]): boolean => {
   return left.length === right.length && left.every((name, i) => name === right[i]);
 };
 
-/**
- * One rewrite, with the count as the assertion.
- *
- * Every site holds **exactly one** pin, and that is the property that makes a
- * silent partial success impossible: a file whose pin has been reworded, moved
- * or written in a form this does not know matches zero times, and zero is an
- * error rather than a no-op. Returns the new text; nothing is written from here,
- * so a refusal later in the run leaves the tree untouched.
- */
-const rewritten = (rel: string, text: string, pin: RegExp, replacement: string): string => {
-  const found = text.match(pin) ?? [];
-  if (found.length !== 1) {
+const assertPinnable = (version: string): void => {
+  if (!EXACT_VERSION.test(version)) {
     throw new Error(
-      `${rel}: expected exactly 1 version pin matching ${pin.source}, found ${found.length}. ` +
-        `A pin this does not recognise is one the release would leave behind.`,
+      `Refusing to propagate the version ${JSON.stringify(version)}: a pin is an exact ` +
+        `major.minor.patch version, with no range, no dist-tag and no \`v\`.`,
     );
   }
-  return text.replace(pin, replacement);
+};
+
+/** How each form is found and how each is written. The two are not interchangeable. */
+const pinForms = ({ packageName, version }: Pinning): readonly {
+  readonly form: PinForm;
+  readonly pin: RegExp;
+  readonly replacement: string;
+}[] => [
+  {
+    form: "package",
+    pin: new RegExp(`(--package=${escapeRe(packageName)}@)\\d+\\.\\d+\\.\\d+`, "g"),
+    replacement: `$1${version}`,
+  },
+  {
+    /**
+     * Matched by shape rather than anchored to the workflow the file is expected
+     * to call. The count check in `syncVersion` is what catches a missing pin,
+     * and anchoring here would turn a caller that names the *wrong* reusable into
+     * "no pin found" — a true refusal with a misleading message, for a mismatch
+     * `tests/workflows.test.ts` already reports by name.
+     *
+     * `@owner/repo` on npm is `owner/repo` on GitHub — one literal, not two. And
+     * the directory is *this* package's layout, which is where an adopter's
+     * caller points however their own repository is arranged.
+     */
+    form: "ref",
+    pin: new RegExp(
+      `(${escapeRe(packageName.replace(/^@/, ""))}/${escapeRe(WORKFLOW_DIR)}/[A-Za-z0-9._-]+\\.yml@)v\\d+\\.\\d+\\.\\d+`,
+      "g",
+    ),
+    replacement: `$1v${version}`,
+  },
+];
+
+/**
+ * The shared core: rewrite every pin in one file's text, and say which form each
+ * one was.
+ *
+ * Text in and text out — it opens nothing, so it assumes nothing about which
+ * directories a root has. It also rules on nothing except the version it is
+ * asked to write: a count is *reported*, and what an unexpected one means is the
+ * caller's to decide. `syncVersion` refuses anything but one site of the form it
+ * expected, because a missed site is a broken release; `init` expects the count
+ * to vary, because an adopter takes a subset.
+ */
+export const rewritePins = (text: string, pinning: Pinning): PinRewrite => {
+  assertPinnable(pinning.version);
+
+  let rewritten = text;
+  const found: PinForm[] = [];
+  for (const { form, pin, replacement } of pinForms(pinning)) {
+    found.push(...(rewritten.match(pin) ?? []).map(() => form));
+    rewritten = rewritten.replace(pin, replacement);
+  }
+  return { text: rewritten, found };
+};
+
+/**
+ * One site, with the count as the assertion.
+ *
+ * Every site of a release holds **exactly one** pin, of one known form, and that
+ * is the property that makes a silent partial success impossible: a file whose
+ * pin has been reworded, moved or written in a form the core does not know
+ * matches zero times, and zero is an error rather than a no-op. Returns the new
+ * text; nothing is written from here, so a refusal later in the run leaves the
+ * tree untouched.
+ */
+const pinnedOnce = (rel: string, text: string, form: PinForm, pinning: Pinning): string => {
+  const { text: rewritten, found } = rewritePins(text, pinning);
+  if (found.length !== 1 || found[0] !== form) {
+    throw new Error(
+      `${rel}: expected exactly 1 version pin of the ${form} form, found ${found.length} ` +
+        `[${found.join(", ")}]. A pin this does not recognise is one the release would leave behind.`,
+    );
+  }
+  return rewritten;
 };
 
 /**
@@ -113,20 +206,15 @@ const rewritten = (rel: string, text: string, pin: RegExp, replacement: string):
  * carry its one pin — otherwise nothing is written at all.
  */
 export const syncVersion = (version: string, packageDir = "."): readonly VersionSite[] => {
-  if (!EXACT_VERSION.test(version)) {
-    throw new Error(
-      `Refusing to propagate the version ${JSON.stringify(version)}: a pin is an exact ` +
-        `major.minor.patch version, with no range, no dist-tag and no \`v\`.`,
-    );
-  }
+  // Before the first file is opened, rather than distributed to fifteen of them
+  // for the suite to reject one at a time.
+  assertPinnable(version);
 
   const manifest = JSON.parse(readFile(packageDir, "package.json")) as { readonly name?: string };
   const packageName = manifest.name;
   if (packageName === undefined) {
     throw new Error(`${packageDir}/package.json declares no name; there is no pin to look for.`);
   }
-  /** `@owner/repo` on npm is `owner/repo` on GitHub — one literal, not two. */
-  const slug = packageName.replace(/^@/, "");
 
   const workflows = ymlIn(packageDir, WORKFLOW_DIR);
 
@@ -141,8 +229,6 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
   if (expectedNames.length === 0) {
     throw new Error(`${WORKFLOW_DIR} holds no ${CALLER_PREFIX}*.yml caller; the pin set would be empty.`);
   }
-
-  const packagePin = new RegExp(`(--package=${escapeRe(packageName)}@)\\d+\\.\\d+\\.\\d+`, "g");
 
   /**
    * A reusable workflow is one that hands over to the published runner, found by
@@ -172,31 +258,15 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
     );
   }
 
-  /**
-   * Matched by shape rather than anchored to the workflow the file is expected
-   * to call. The count check in `rewritten` is what catches a missing pin, and
-   * anchoring here would turn a caller that names the *wrong* reusable into
-   * "no pin found" — a true refusal with a misleading message, for a mismatch
-   * `tests/workflows.test.ts` already reports by name.
-   */
-  const refPin = new RegExp(
-    `(${escapeRe(slug)}/${escapeRe(WORKFLOW_DIR)}/[A-Za-z0-9._-]+\\.yml@)v\\d+\\.\\d+\\.\\d+`,
-    "g",
-  );
-
-  const sites: readonly (VersionSite & { readonly pin: RegExp; readonly replacement: string })[] = [
+  const sites: readonly VersionSite[] = [
     ...expectedNames.map((name) => ({
       file: `${WORKFLOW_DIR}/${name}.yml`,
       form: "package" as const,
-      pin: packagePin,
-      replacement: `$1${version}`,
     })),
     ...expectedNames.flatMap((name) =>
       [`${WORKFLOW_DIR}/${CALLER_PREFIX}${name}.yml`, `${CALLER_DIR}/${name}.yml`].map((file) => ({
         file,
         form: "ref" as const,
-        pin: refPin,
-        replacement: `$1v${version}`,
       })),
     ),
   ];
@@ -205,13 +275,13 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
   // fifteen files as they were rather than some prefix of them rewritten.
   const pending = sites.map((site) => ({
     ...site,
-    text: rewritten(site.file, readFile(packageDir, site.file), site.pin, site.replacement),
+    text: pinnedOnce(site.file, readFile(packageDir, site.file), site.form, { packageName, version }),
   }));
 
   for (const site of pending) {
     const full = path.join(packageDir, ...site.file.split("/"));
-    // Write only on a real change: re-running over an already-pinned tree is how
-    // `init` and a repeated release both check themselves.
+    // Write only on a real change: the rewrite is a fixed point, so re-running
+    // over an already-pinned tree is how a release checks itself.
     if (fs.readFileSync(full, "utf8") !== site.text) fs.writeFileSync(full, site.text);
   }
 

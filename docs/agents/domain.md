@@ -80,4 +80,5 @@ and stops at the prompt files, where the constraint is the opposite one.
 If your output contradicts an existing ADR — or one of the invariants in `docs/parity.md` §10 —
 surface it explicitly rather than silently overriding:
 
-> _Contradicts ADR-0007 (event-sourced orders) — but worth reopening because…_
+> _Contradicts `docs/parity.md` §10 (creation order is execution order) — but worth reopening
+> because…_

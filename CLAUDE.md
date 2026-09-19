@@ -169,8 +169,9 @@ files that defeat it, and do not commit an `.editorconfig` that disagrees with i
 ## Agent skills
 
 Per-repo config for the `mattpocock/skills` engineering skills lives in `docs/agents/`. The three
-files below are **generated** by `/setup-matt-pocock-skills` — regenerating overwrites, so edit them
-directly for small changes rather than re-running the skill.
+files below were **generated** by `/setup-matt-pocock-skills` and then hand-extended — edit them
+directly, and do not re-run the skill to change one: it rewrites each file with its own defaults,
+and `triage-labels.md` would lose everything below its mapping table (`docs/ADOPTING.md` §4).
 [`ticket-shape.md`](./docs/agents/ticket-shape.md) is the exception: loop doctrine, hand-written,
 never regenerated.
 

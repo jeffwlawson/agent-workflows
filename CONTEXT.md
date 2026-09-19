@@ -132,6 +132,7 @@ This is why the loop can run anywhere. It is also why **this** repo needs its ow
 | [`docs/friction.md`](./docs/friction.md) | a dated log of every time a human reached into the loop, and why |
 | [`docs/parity.md`](./docs/parity.md) | how this compares to the upstream loops it was modelled on; §10 holds invariants |
 | [`docs/agents/ticket-shape.md`](./docs/agents/ticket-shape.md) | how a batch of tickets is published, and in what order |
+| [`docs/agents/triage-labels.md`](./docs/agents/triage-labels.md) | the triage vocabulary beside `agent:*`, and the only definition of the `wayfinder:*` labels two workflows refuse |
 
 `friction.md` is a **narrative log**, not a changelog: the commits are its timestamps, and entries
 describe what was true when written. Do not edit history into it.

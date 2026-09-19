@@ -57,11 +57,13 @@ Run `gh issue view <number> --comments`.
 Both relations are **native GitHub objects**, never prose in a body. That distinction is
 load-bearing, and it is the single thing most worth getting right here.
 
-**What a consumer can see.** `agent-implement-prd.yml` walks a parent's sub-issues through the
-GraphQL `subIssues` connection, and `agent-implement.yml` partitions on issue *shape* by asking the
-API for `parent` and sub-issue counts. Neither one reads a body. So a `Blocked by: #12` line, or a
-`## Parent` heading, is invisible to every workflow in this repo — it reads correctly to a human and
-carries nothing. A batch can look perfect in the bodies and have zero edges; only the API
+**What a consumer can see.** `implement-prd.yml` walks a parent's sub-issues through the GraphQL
+`subIssues` connection, and `implement.yml` partitions on issue *shape* by asking the API for
+`parent` and sub-issue counts. Both queries live in the **reusable** half; the `agent-`-prefixed
+callers that fire them hold trigger, permissions and secrets and no query at all, so a reusable
+workflow is the file to open. Neither query reads a body. So a `Blocked by: #12` line, or a
+`## Parent` heading, is invisible to every workflow in this repo — it reads correctly to a human
+and carries nothing. A batch can look perfect in the bodies and have zero edges; only the API
 distinguishes the two. Verify natively, always
 ([`ticket-shape.md`](./ticket-shape.md#verify-natively-before-labelling-anything)).
 

@@ -387,6 +387,22 @@ describe("the version propagator refuses an unexpected set of pins", () => {
  * would be a second copy of the build's entry set, and a sixth runner directory
  * — a routine change, per `CLAUDE.md` — would be compiled and unread.
  */
+/**
+ * `tsc` against `tsconfig.build.json`, which is the only configuration that
+ * describes what ships — `tsconfig.json` includes the tests and the release hook
+ * and turns emit off. Both checks below are the compiler's to answer, and
+ * neither has a symptom this suite could see any other way, so both spawn it
+ * rather than reconstruct it from the config.
+ */
+const buildTsc = (flag: string): { readonly status: number | null; readonly output: string } => {
+  const tsc = path.join("node_modules", "typescript", "bin", "tsc");
+  const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.build.json", flag], {
+    encoding: "utf8",
+  });
+
+  return { status: result.status, output: result.stderr || result.stdout };
+};
+
 describe("the release hook stays out of what ships", () => {
   /**
    * The program `tsconfig.build.json` defines: its entry files and everything
@@ -394,13 +410,10 @@ describe("the release hook stays out of what ships", () => {
    * prints that set and stops, so it neither typechecks nor writes `dist/`.
    */
   const compiled = (): readonly string[] => {
-    const tsc = path.join("node_modules", "typescript", "bin", "tsc");
-    const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.build.json", "--listFilesOnly"], {
-      encoding: "utf8",
-    });
+    const { status, output } = buildTsc("--listFilesOnly");
 
-    expect(result.status, result.stderr || result.stdout).toBe(0);
-    return result.stdout
+    expect(status, output).toBe(0);
+    return output
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line !== "")
@@ -420,6 +433,32 @@ describe("the release hook stays out of what ships", () => {
     expect(program).toContain(path.join("shared", "pins.ts"));
 
     expect(program).not.toContain(path.join("scripts", "sync-version.ts"));
+  });
+});
+
+/**
+ * The `.js` specifier convention, put back inside the gate.
+ *
+ * `allowImportingTsExtensions` is on in `tsconfig.json` for the one file that is
+ * **run from source**: `scripts/sync-version.ts`, which Node resolves literally
+ * and so has to name `../shared/pins.ts`. But both halves of `npm run verify`
+ * read that config — `tsc --noEmit` and vitest — so with it on, a file that
+ * *ships* may name a `.ts` specifier and the gate stays green while the emitted
+ * import resolves to nothing. Spelling `review/review.ts`'s `../shared/common`
+ * with `.ts` leaves typecheck at 0 and the suite passing; only
+ * `tsconfig.build.json`, where the option is off again, reports it (TS5097).
+ *
+ * `--listFilesOnly` above does not answer this — it prints the program and stops
+ * without typechecking it — so this is the same configuration asked the other
+ * question. CI's Build step catches it too, one red round trip later; asking it
+ * here is what makes the convention `CLAUDE.md` states checkable by the command
+ * `CLAUDE.md` calls the gate.
+ */
+describe("what ships typechecks under the configuration that emits it", () => {
+  it("names no `.ts` specifier outside the file that is never emitted", () => {
+    const { status, output } = buildTsc("--noEmit");
+
+    expect(status, output).toBe(0);
   });
 });
 

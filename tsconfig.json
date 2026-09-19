@@ -23,6 +23,12 @@
     // `tsconfig.build.json` turns this back off so that a `.ts` specifier in a
     // file that *is* emitted fails the build rather than shipping unresolvable.
     "allowImportingTsExtensions": true,
+    // Which the option above requires, and which this configuration is anyway:
+    // `npm run typecheck` passes `--noEmit` and `npm run build` uses the other
+    // file, so nothing has ever emitted from here. Saying so is what keeps a
+    // bare `tsc -p tsconfig.json` — an editor, or a hand-run check — reporting
+    // the code rather than exiting 2 on TS5096 about the config.
+    "noEmit": true,
 
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,

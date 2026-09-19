@@ -167,7 +167,8 @@ code in `shared/`, never in `scripts/`. A test in `tests/sync-version.test.ts` a
   version` executes it through Node's type stripping, and Node resolves a relative specifier
   literally rather than mapping `.js` back to `.ts`. It names `../shared/pins.ts` for that reason.
   `allowImportingTsExtensions` is on in `tsconfig.json` and back off in `tsconfig.build.json`, so
-  the same spelling in a file that ships fails the build.
+  the same spelling in a file that ships fails the build — and `tests/sync-version.test.ts` runs
+  that build's typecheck, so it fails the gate too rather than only CI.
 - Prefer `execFileSync` argv over shell strings for anything holding a variable. A git ref may
   legally contain `` ` ``, `$()`, `;`, `|` and `&`.
 - Test files live in `tests/`, mirroring the source.

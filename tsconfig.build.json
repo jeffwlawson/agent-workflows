@@ -29,7 +29,9 @@
     // specifier would emit an import nothing can resolve, so it fails here
     // instead. Also what makes this config legal at all — the option is refused
     // outright when emit is on.
-    "allowImportingTsExtensions": false
+    "allowImportingTsExtensions": false,
+    // Back on: this is the half that emits, and `tsconfig.json` turns it off.
+    "noEmit": false
   },
   "exclude": ["dist", "tests", "vitest.config.ts", "scripts/sync-version.ts"]
 }

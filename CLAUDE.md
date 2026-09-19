@@ -168,8 +168,28 @@ files that defeat it, and do not commit an `.editorconfig` that disagrees with i
 
 ## Agent skills
 
-Per-repo config for the `mattpocock/skills` engineering skills lives in `docs/agents/`. Only
-[`ticket-shape.md`](./docs/agents/ticket-shape.md) is present — it is loop doctrine and is never
-regenerated. The three files `/setup-matt-pocock-skills` writes (`issue-tracker.md`,
-`triage-labels.md`, `domain.md`) are **not** here yet; run the skill to generate them rather than
-writing them by hand, since regenerating overwrites.
+Per-repo config for the `mattpocock/skills` engineering skills lives in `docs/agents/`. The three
+files below were **generated** by `/setup-matt-pocock-skills` and then hand-extended — edit them
+directly, and do not re-run the skill to change one: it rewrites each file with its own defaults,
+and `triage-labels.md` would lose everything below its mapping table (`docs/ADOPTING.md` §4).
+[`ticket-shape.md`](./docs/agents/ticket-shape.md) is the exception: loop doctrine, hand-written,
+never regenerated.
+
+### Issue tracker
+
+GitHub Issues in this repo, via the `gh` CLI, with **native** sub-issue and blocking relations —
+prose in an issue body is invisible to every workflow here. See
+[`docs/agents/issue-tracker.md`](./docs/agents/issue-tracker.md).
+
+### Triage labels
+
+The five canonical triage roles at their default strings, kept as a **second vocabulary** beside
+`agent:*` workflow state rather than merged into it; the one join, `ready-for-agent` →
+`agent:implement`, stays a human hand. Also the only definition of the `wayfinder:*` planning
+labels, which two workflows refuse and nothing else describes. See
+[`docs/agents/triage-labels.md`](./docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root. See
+[`docs/agents/domain.md`](./docs/agents/domain.md).

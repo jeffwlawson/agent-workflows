@@ -162,11 +162,26 @@ export const diagnose = (
 
       // A called workflow can only *downgrade* the token it is handed, so a
       // grant missing from the caller cannot be made up for on the other side.
+      //
+      // Visibility is the one unreadable fact that changes a severity instead
+      // of adding a finding of its own, and unknown resolves to the private
+      // branch: a needless grant costs nothing and a missing one reviews blind.
+      // Erring that way is the call; presenting a guess as a determination is
+      // not, so the guess says so — otherwise an unauthenticated run against a
+      // public repository exits 1 with nothing admitting why.
+      const guessed = privateOnly && facts.visibility === undefined;
       add({
-        severity: privateOnly && facts.visibility !== "private" ? "warning" : "error",
+        severity: privateOnly && facts.visibility === "public" ? "warning" : "error",
         check: `${permission}: ${value}`,
-        problem: `${caller.file} grants the \`${caller.jobId}\` job no \`${permission}: ${value}\` — ${why}.`,
-        fix: `Add \`${permission}: ${value}\` to that job's \`permissions:\` block.`,
+        problem:
+          `${caller.file} grants the \`${caller.jobId}\` job no \`${permission}: ${value}\` — ${why}.` +
+          (guessed
+            ? ` This repository's visibility could not be read, so this is reported as an error on the assumption that it is private.`
+            : ``),
+        fix:
+          caller.permissionsFrom === "workflow"
+            ? `Add \`${permission}: ${value}\` to the workflow's top-level \`permissions:\` block. The \`${caller.jobId}\` job declares none of its own, and a job-level block replaces the top-level one rather than adding to it.`
+            : `Add \`${permission}: ${value}\` to that job's \`permissions:\` block.`,
       });
     }
   }
@@ -385,7 +400,18 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
   );
 
   return {
-    secrets: list(["api", "repos/{owner}/{repo}/actions/secrets"], ".secrets[].name", dir),
+    // A page size, not the default. The secrets endpoint serves 30 at a time,
+    // name-ascending, and a repository with more than that would truncate
+    // `CLAUDE_CODE_OAUTH_TOKEN` off the end — where `parseList` cannot tell a
+    // short page from a short list and the run fails a correctly configured
+    // repository. `--paginate` is not the fix: it applies the query per page and
+    // prints one array per page, which is not the single JSON document
+    // `parseList` reads — so every answer would come back unreadable instead.
+    secrets: list(
+      ["api", "repos/{owner}/{repo}/actions/secrets?per_page=100"],
+      ".secrets[].name",
+      dir,
+    ),
     canCreatePullRequests: canCreate === undefined ? undefined : canCreate === "true",
     labels: list(["label", "list", "--limit", "200", "--json", "name"], ".[].name", dir),
     visibility:

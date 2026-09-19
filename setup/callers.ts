@@ -31,8 +31,20 @@ export interface InstalledCaller {
   readonly jobId: string;
   /** Whatever follows the `@`: a tag, a SHA, or — the defect — a branch. */
   readonly ref: string;
-  /** The job's own grants. A called workflow can only downgrade these. */
+  /**
+   * The grants this job actually runs with: its own block, or the workflow's
+   * top-level one when it declares none. A called workflow can only downgrade
+   * these.
+   */
   readonly permissions: Readonly<Record<string, string>>;
+  /**
+   * Where those grants were written: its own block, the workflow's top-level
+   * one, or nowhere. The *fix* for a missing grant differs by which — a
+   * job-level block replaces the top-level one wholesale, so telling somebody
+   * to add one to a job that currently inherits would drop every grant it
+   * holds today.
+   */
+  readonly permissionsFrom: "job" | "workflow" | "none";
   /** `self-check`, on the one caller that takes it. */
   readonly selfCheck: string | undefined;
 }
@@ -54,6 +66,35 @@ const permissionsOf = (value: unknown): Record<string, string> =>
   typeof value === "string" ? { "*": value } : asStringMap(value);
 
 /**
+ * The block may also sit at the **workflow top level**, where GitHub applies it
+ * to every job — a `uses:` job included — and a job that declares its own
+ * replaces it *wholesale* rather than merging into it.
+ *
+ * So a caller granting `packages: read` above `jobs:` is correctly permissioned,
+ * and reading only the job's block reports it as granting nothing: two errors
+ * and a `fix:` that is a no-op, on a repository where nothing is wrong. That is
+ * the same wrong-diagnosis class the `write-all` handling exists to prevent, and
+ * a preflight cannot afford either.
+ *
+ * Presence of the key is what decides, not its contents: `permissions: {}` on
+ * the job is a deliberate "grant nothing" override and has to stay one.
+ */
+const grantsFor = (
+  job: object,
+  top: unknown,
+  topDeclared: boolean,
+): Pick<InstalledCaller, "permissions" | "permissionsFrom"> => {
+  if ("permissions" in job) {
+    return {
+      permissions: permissionsOf((job as { readonly permissions?: unknown }).permissions),
+      permissionsFrom: "job",
+    };
+  }
+  if (topDeclared) return { permissions: permissionsOf(top), permissionsFrom: "workflow" };
+  return { permissions: {}, permissionsFrom: "none" };
+};
+
+/**
  * Every job in one workflow file that calls this package's reusable half.
  *
  * Text in, callers out — it opens nothing, the same seam `shared/pins.ts` draws
@@ -70,11 +111,19 @@ export const callersIn = (
   );
 
   let jobs: Record<string, unknown> = {};
+  let top: unknown;
+  let topDeclared = false;
   try {
-    const document = parse(text) as { readonly jobs?: unknown } | null;
+    const document = parse(text) as
+      | { readonly jobs?: unknown; readonly permissions?: unknown }
+      | null;
     const held = document?.jobs;
     if (typeof held === "object" && held !== null && !Array.isArray(held)) {
       jobs = held as Record<string, unknown>;
+    }
+    if (document !== null && typeof document === "object" && "permissions" in document) {
+      top = document.permissions;
+      topDeclared = true;
     }
   } catch {
     // A workflow this cannot parse is one GitHub cannot run either, and saying
@@ -99,7 +148,7 @@ export const callersIn = (
         workflow: match[1] ?? "",
         jobId,
         ref: match[2] ?? "",
-        permissions: permissionsOf(job.permissions),
+        ...grantsFor(job, top, topDeclared),
         selfCheck,
       },
     ];

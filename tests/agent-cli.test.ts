@@ -529,6 +529,35 @@ describe("doctor names the failures that otherwise look like something else", ()
     return root;
   };
 
+  /**
+   * A caller written by hand rather than copied, for the shapes the reference
+   * set does not ship: it puts `permissions:` on the job, and what is worth
+   * exercising here is where else an adopter may legally put it.
+   */
+  const adoptedWith = (top: readonly string[], jobPermissions: readonly string[] = []): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".github", "workflows", "agent-review.yml"),
+      [
+        "name: Agent Review",
+        "on:",
+        "  pull_request_target:",
+        "    types: [labeled]",
+        ...top,
+        "jobs:",
+        "  review:",
+        `    uses: ${manifest.name.replace(/^@/, "")}/.github/workflows/review.yml@v${manifest.version}`,
+        ...jobPermissions,
+        "    with:",
+        "      self-check: review / review",
+        "",
+      ].join("\n"),
+    );
+    return root;
+  };
+
   /** Everything `gh` would have answered, on a correctly configured repository. */
   const healthy = (): RepoFacts => ({
     secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "AGENT_PAT"],
@@ -670,6 +699,82 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(err).not.toContain("packages: read");
     expect(code).toBe(0);
+  });
+
+  /**
+   * `permissions:` is equally legal at the **workflow top level**, where GitHub
+   * applies it to every job — a `uses:` job included — and an adopter who keeps
+   * one block above `jobs:` rather than repeating it per job is correctly
+   * permissioned. Reading only the job's own block reports every grant missing
+   * and offers a fix that changes nothing, which is the wrong-diagnosis class
+   * the `write-all` case above exists to prevent, on a shape far more common.
+   */
+  it("reads permissions declared above jobs: as the grants the job runs with", async () => {
+    const root = adoptedWith([
+      "permissions:",
+      "  checks: read",
+      "  contents: read",
+      "  packages: read",
+      "  pull-requests: write",
+    ]);
+
+    const { code, err } = await check(root, healthy());
+
+    expect(err).toBe("");
+    expect(code).toBe(0);
+  });
+
+  /**
+   * Which also decides what the *fix* says. A job that inherits and is told to
+   * add the grant to its own block would be told to create one — replacing the
+   * top-level block and losing every grant it currently holds. A preflight that
+   * hands out that instruction is worse than one that said nothing.
+   */
+  it("points a caller that inherits at the block it actually has", async () => {
+    const root = adoptedWith(["permissions:", "  checks: read", "  contents: read"]);
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toContain("packages: read");
+    expect(err).toMatch(/top-level `permissions:` block/);
+  });
+
+  /**
+   * And the other half of the same rule: a job's own block **replaces** the
+   * top-level one wholesale rather than merging into it, so a top-level grant
+   * the job then narrows past is genuinely gone at run time.
+   */
+  it("treats a job's own permissions as replacing the top-level block", async () => {
+    const root = adoptedWith(
+      ["permissions:", "  packages: read", "  pull-requests: write"],
+      ["    permissions:", "      checks: read", "      contents: read"],
+    );
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toContain("packages: read");
+  });
+
+  /**
+   * `checks: read` is the one row whose severity depends on a fact `gh` may not
+   * be able to read, and unknown resolves to the private branch on purpose — a
+   * needless grant costs nothing and a missing one reviews blind. What must not
+   * happen is the guess arriving as a determination: unlike the secrets, the
+   * setting and the labels, an unreadable visibility raises no finding of its
+   * own, so an unauthenticated run against a public repo would otherwise exit 1
+   * with nothing at all saying the severity was assumed.
+   */
+  it("says the private-only grant was failed on an assumption when visibility is unknown", async () => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) => text.replace(/^ *checks: read$/m, ""));
+
+    const { code, err } = await check(root, { ...healthy(), visibility: undefined });
+
+    expect(code).toBe(1);
+    expect(err).toContain("checks: read");
+    expect(err).toMatch(/could not be read[\s\S]*private/);
   });
 
   it("fails a caller pinned to a branch rather than a tag or a SHA", async () => {

@@ -64,12 +64,10 @@ const waitStep = (): Step => {
   return step as Step;
 };
 
-const onPath = (command: string): boolean => {
-  const found = spawnSync(process.platform === "win32" ? "where" : "command", ["-v", command], {
-    shell: process.platform !== "win32",
-  });
-  return found.status === 0;
-};
+const onPath = (command: string): boolean =>
+  process.platform === "win32"
+    ? spawnSync("where", [command]).status === 0
+    : spawnSync("sh", ["-c", `command -v ${command}`]).status === 0;
 
 const CAN_RUN = ["bash", "jq", "node"].every(onPath);
 
@@ -146,15 +144,18 @@ const runWaitStep = (options: {
   readonly pages?: readonly unknown[];
   readonly waitSeconds?: string;
   readonly unreadable?: "403" | "unreachable";
+  readonly failedRuns?: readonly { readonly id: number; readonly name: string }[];
   readonly gh?: string;
   readonly extraEnv?: Record<string, string>;
 }): Outcome => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-ci-"));
   const script = path.join(temp, "step.sh");
   const pages = path.join(temp, "check-runs.json");
+  const runs = path.join(temp, "runs.json");
 
   fs.writeFileSync(script, waitStep().run ?? "");
   fs.writeFileSync(pages, JSON.stringify(options.pages ?? [PAGE_ONE, page(PAGE_TWO)]));
+  fs.writeFileSync(runs, JSON.stringify((options.failedRuns ?? []).map((run) => ({ ...run, conclusion: "failure" }))));
 
   const ghDir = path.resolve(options.gh ?? REPLAY_DIR);
   // The checkout may not carry the execute bit (Windows, or an archive).
@@ -170,6 +171,7 @@ const runWaitStep = (options: {
       GH_TOKEN: "test-token",
       RUNNER_TEMP: temp,
       GH_REPLAY_PAGES: pages,
+      GH_REPLAY_RUNS: runs,
       ...(options.unreadable === undefined ? {} : { GH_REPLAY_FAILURE: options.unreadable }),
       PATH: `${ghDir}${path.delimiter}${process.env["PATH"] ?? ""}`,
       ...options.extraEnv,
@@ -244,12 +246,17 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * that nothing here looks like a failure at all.
    */
   it("waits for no check when every non-agent check has finished", () => {
-    const outcome = runWaitStep({});
+    const outcome = runWaitStep({ waitSeconds: "0" });
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain("::error::");
     expect(outcome.stdout).not.toContain("Waiting for");
     expect(outcome.evidence).not.toContain("no CI evidence");
+    // Zero seconds is how this scenario avoids hanging for the real 900 if the
+    // count ever regresses — so the count has to be asserted to be *zero*, not
+    // merely to have stopped. Without this a miscount would pass through the
+    // deadline branch and look exactly like nothing pending.
+    expect(outcome.evidence).not.toContain("Timed out");
   });
 
   /**
@@ -261,8 +268,10 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * could otherwise have asked for.
    */
   it("hands the agent every non-agent check on the commit", () => {
-    const { evidence } = runWaitStep({});
+    const { evidence } = runWaitStep({ waitSeconds: "0" });
     const lines = evidence.split("\n");
+
+    expect(evidence).not.toContain("Timed out");
 
     expect(lines).toContain("Checks on this commit:");
     expect(lines).toContain("- verify: success");
@@ -307,18 +316,57 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * exits non-zero inside a command substitution otherwise takes the whole
    * step with it, leaving the agent an empty file.
    */
-  it.each(["403", "unreachable"] as const)(
-    "reports itself blind when the check-runs endpoint fails (%s)",
-    (unreadable) => {
-      const outcome = runWaitStep({ unreadable });
+  it.each([
+    ["403", "Resource not accessible by integration"],
+    ["unreachable", "connection refused"],
+  ] as const)("reports itself blind when the check-runs endpoint fails (%s)", (unreadable, said) => {
+    const outcome = runWaitStep({ unreadable });
 
-      expect(outcome.status).toBe(0);
-      expect(outcome.stdout).toContain("::error::Could not read check runs");
-      expect(outcome.stdout).toContain("checks: read");
-      expect(outcome.evidence).toContain("Could not read this commit's check runs");
-      expect(outcome.evidence).toContain("- (could not read check runs)");
-      // It stops rather than spinning: one attempt, no sleep, no second count.
-      expect(outcome.stdout).not.toContain("Waiting for");
-    },
-  );
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).toContain("::error::Could not read check runs");
+    expect(outcome.stdout).toContain("checks: read");
+    expect(outcome.evidence).toContain("Could not read this commit's check runs");
+    expect(outcome.evidence).toContain("- (could not read check runs)");
+    // It stops rather than spinning: one attempt, no sleep, no second count.
+    expect(outcome.stdout).not.toContain("Waiting for");
+    // The `::error::` names the grant, which is one of three causes it now
+    // has. What tells them apart is gh's own stderr, which reaches the log
+    // only because the step stopped sending it to `/dev/null`.
+    expect(outcome.stdout).toContain(said);
+  });
+
+  /**
+   * The failure-log tail, which is the third thing this step collects and the
+   * one with the least to say when it breaks. `gh run view --log-failed` exits
+   * non-zero whenever a failed run's logs are unavailable — expired, still
+   * uploading, a token without `actions: read` — and `pipefail` makes that a
+   * failing pipeline inside a group already redirected to the evidence file.
+   * Under `bash -e` that ends the step: the runs after this one are never
+   * tailed, `cat "$out"` never runs, and `continue-on-error` keeps the job
+   * green while the agent reviews from a file that stops mid-sentence.
+   *
+   * Two failing runs, so the assertion is that the *second* is still reached
+   * rather than merely that the first did not kill the process.
+   */
+  it("keeps collecting when a failed run's log cannot be read", () => {
+    const outcome = runWaitStep({
+      waitSeconds: "0",
+      failedRuns: [
+        { id: 101, name: "CI" },
+        { id: 102, name: "Agent Review" },
+        { id: 103, name: "Corpus" },
+      ],
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.evidence).toContain("### Failure output — CI");
+    expect(outcome.evidence).toContain("### Failure output — Corpus");
+    expect(outcome.evidence).toContain("(no failure log available for run 101)");
+    // Excluded by the `Agent ` prefix, on the same grounds as AGENT_CHECKS.
+    expect(outcome.evidence).not.toContain("Agent Review");
+    // The end of the script, which is the whole point: reaching it means the
+    // step handed the agent everything rather than stopping where it stood.
+    expect(outcome.stdout).toContain("--- collected CI context ---");
+    expect(outcome.stdout).toContain("### Failure output — Corpus");
+  });
 });

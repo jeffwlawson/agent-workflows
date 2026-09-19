@@ -17,11 +17,16 @@
  *
  * Endpoints recorded:
  *   repos/{owner}/{repo}/commits/{sha}/check-runs  — pages from GH_REPLAY_PAGES
- *   repos/{owner}/{repo}/actions/runs?…            — no runs on the commit
+ *   repos/{owner}/{repo}/actions/runs?…            — runs from GH_REPLAY_RUNS
+ *   repos/{owner}/{repo}/actions/runs/{id}         —  "     "    "
+ *
+ * Subcommands recorded:
+ *   run view {id} --log-failed                     — the log is unavailable
  *
  * Environment:
  *   GH_REPLAY_PAGES    path to a JSON array of page bodies, in page order
  *   GH_REPLAY_FAILURE  `403` or `unreachable`: how the check-runs call fails
+ *   GH_REPLAY_RUNS     path to a JSON array of workflow runs; default none
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -35,6 +40,31 @@ const die = (message, code) => {
 
 /** An invocation with no recording. Exit 2, distinct from gh's own failures. */
 const unrecorded = () => die(`gh-replay: no recording for \`gh ${argv.join(" ")}\``, 2);
+
+/** The workflow runs on the commit. Empty unless a scenario supplies some. */
+const runs = () => {
+  const file = process.env["GH_REPLAY_RUNS"];
+
+  return file === undefined ? [] : JSON.parse(readFileSync(file, "utf8"));
+};
+
+// `gh run view <id> --log-failed`, recorded for a run whose log cannot be had.
+// That is the only recording here, and it is the case that matters: gh exits
+// **1 with nothing on stdout**, which inside the step's redirected group is a
+// failing pipeline, which under `bash -e` ends the step. Recorded 2026-09-19
+// against gh 2.100.0, pointed at an unreachable host so no token was needed:
+//
+//   $ GH_HOST=localhost gh run view 12345 --log-failed -R acme/widgets
+//   failed to get run: Get "https://localhost/api/v3/repos/acme/widgets/…":
+//     dial tcp [::1]:443: connect: connection refused   ← stderr, exit 1
+//
+// A *successful* `--log-failed` is deliberately not replayed: its output is
+// job/step/timestamp-prefixed log text that nothing here has recorded, and
+// inventing it is exactly the improvisation this file exists to refuse.
+if (argv[0] === "run") {
+  if (argv[1] !== "view" || !argv.includes("--log-failed")) unrecorded();
+  die(`failed to get run: Get "https://localhost/api/v3/repos/…/actions/runs/${argv[2]}": dial tcp [::1]:443: connect: connection refused`, 1);
+}
 
 if (argv[0] !== "api") unrecorded();
 
@@ -130,10 +160,23 @@ if (/\/commits\/[^/]+\/check-runs$/.test(endpoint)) {
   process.exit(0);
 }
 
-// The failure-log tail's first call. Recorded for a commit with no failed runs,
-// which is every scenario here: the tail itself is not what this suite covers.
+// The failure-log tail's two calls: the runs on the commit, then each one by
+// id for its name. Both come from GH_REPLAY_RUNS, which is empty for every
+// scenario that is not about the tail.
 if (/\/actions\/runs\?/.test(endpoint)) {
-  emit({ total_count: 0, workflow_runs: [] });
+  const workflowRuns = runs();
+
+  emit({ total_count: workflowRuns.length, workflow_runs: workflowRuns });
+  process.exit(0);
+}
+
+const byId = /\/actions\/runs\/([0-9]+)$/.exec(endpoint);
+
+if (byId !== null) {
+  const run = runs().find((candidate) => String(candidate.id) === byId[1]);
+
+  if (run === undefined) unrecorded();
+  emit(run);
   process.exit(0);
 }
 

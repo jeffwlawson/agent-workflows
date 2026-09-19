@@ -311,6 +311,11 @@ jobs:
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP}/ci_status.md"
+          # Whatever the count's last attempt wrote to stderr. Kept out of the
+          # evidence — the agent cannot act on it — and out of the log too
+          # until the failure arm fires, at which point it is the only thing
+          # that separates the causes that arm now has.
+          err="${RUNNER_TEMP}/ci_status.err"
           : > "$out"
 
           # Prints exactly one number, or nothing at all when the API call
@@ -352,11 +357,20 @@ jobs:
           # below that exists to report exactly that. The agent then gets an
           # empty file and reviews saying "no checks reported" — the same
           # blindness, minus the diagnosis. That is what v0.1.5 did.
+          #
+          # Both halves send stderr to `$err` rather than `/dev/null`, because
+          # the arm below no longer has one cause. It fires for a non-zero gh,
+          # for a jq filter error, and for no `jq` on the runner at all — while
+          # its `::error::` names the missing grant, which is the likeliest of
+          # the three and was the only one when it was written. Discarding the
+          # stderr is how the invocation gh refuses stayed invisible for a
+          # release; the arm prints whatever landed here underneath it.
           pending_count() {
-            body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>/dev/null) || return 0
+            : > "$err"
+            body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err") || return 0
             printf '%s' "$body" \
               | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\")] | length" \
-              || true
+              2>>"$err" || true
           }
 
           deadline=$(( $(date +%s) + WAIT_SECONDS ))
@@ -372,6 +386,13 @@ jobs:
             case "$pending" in
               "" | *[!0-9]*)
                 echo "::error::Could not read check runs for ${HEAD_SHA}. On a private repository this is a missing \`checks: read\` grant in the caller and the called workflow — see jeffwlawson/agent-workflows docs/ADOPTING.md §4. Reviewing without CI evidence."
+                # `if`, not `[ -s … ] && …`: under `bash -e` a test that fails
+                # as the last command of this arm ends the step, which is the
+                # defect this whole block was rewritten to stop doing.
+                if [ -s "$err" ]; then
+                  echo "…and this is what \`gh\`/\`jq\` said, which is the part that tells the three apart:"
+                  cat "$err"
+                fi
                 echo "_Could not read this commit's check runs, so the review below has no CI evidence._" >> "$out"
                 break
                 ;;
@@ -414,11 +435,21 @@ jobs:
                         --jq '.workflow_runs[] | select(.conclusion == "failure") | .id' 2>/dev/null); do
             rname=$(gh api "repos/${GH_REPO}/actions/runs/${rid}" --jq .name 2>/dev/null || echo "run ${rid}")
             case "$rname" in "Agent "*) continue ;; esac
+            # `|| echo` on the same grounds as the count above, and it is the
+            # same bug: `gh run view --log-failed` exits non-zero whenever a
+            # failed run's logs cannot be had — expired, still uploading, a
+            # token without `actions: read` — and with `pipefail` under
+            # `bash -e` that failing *pipeline* ends the step, inside a group
+            # already redirected to `$out`. The step is `continue-on-error`, so
+            # nothing goes red; the agent simply never gets the runs after this
+            # one, nor the `--- collected CI context ---` dump, and the
+            # truncation is silent. Same blindness as #28, one loop further on.
             {
               echo
               echo "### Failure output — ${rname}"
               echo '```'
-              gh run view "$rid" --log-failed 2>/dev/null | sed 's/^[^Z]*Z //' | tail -60
+              gh run view "$rid" --log-failed 2>/dev/null | sed 's/^[^Z]*Z //' | tail -60 \
+                || echo "(no failure log available for run ${rid})"
               echo '```'
             } >> "$out"
           done

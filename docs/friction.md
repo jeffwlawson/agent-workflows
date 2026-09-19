@@ -1901,3 +1901,23 @@ commands through the real `gh` pointed at an unreachable host, where reaching th
 The generalisation, for the next shell block that gets a guard: a test that matches the text of a
 command is a statement about intent, and worth keeping as one. It is not evidence the command runs,
 and no amount of review turns it into that.
+
+### Addendum, same day: the review of the fix found a third one
+
+The `bash -e` hazard above was fixed where the count reads it, and the review on that PR pointed at
+the *next* block down, where it was untouched: `gh run view "$rid" --log-failed | sed … | tail -60`
+inside a group already redirected to the evidence file. `gh run view` exits non-zero whenever a
+failed run's logs cannot be had, `pipefail` makes that the pipeline's status, and `-e` ends the step
+there — mid-file, with `continue-on-error: true` keeping the job green and every later run's tail,
+plus the `cat "$out"` dump, simply absent. Not a lie this time, but a truncation with nothing
+marking where it stopped.
+
+Worth recording because of *how* it was found. The first two defects were found by executing the
+step; this one was found by reading it — by someone who had just read the argument for why reading
+was not enough, and who therefore knew the shape to look for. The coverage did not catch it: the
+suite had no scenario with a failed run in it, because the tail "was not what this suite covers".
+So the generalisation above needs its other half. Executing a thing tells you about the paths you
+executed, and a harness that can only reach three of a step's four collectors is a statement about
+intent too. `GH_REPLAY_RUNS` and one recording of `run view --log-failed` closed it; what suggested
+looking was a human-shaped question — *where else does this exact sentence apply?* — asked against
+a fix that had just been written.

@@ -146,10 +146,34 @@ code in `shared/`, never in `scripts/`. A test in `tests/sync-version.test.ts` a
 > on the one log line that reveals it — `npm pack` does not reproduce it and neither does npm 10, so
 > a local check will pass. See CONTEXT.md.
 
+## Changing the install path
+
+`setup/` is `init` and `doctor` — the half a human runs, in somebody else's checkout. It is
+deliberately **not** shaped like a runner: a runner is `<name>/<name>.ts` plus a prompt and takes no
+arguments, and the walk in `tests/agent-cli.test.ts` derives "the runners" from exactly that shape,
+so a `setup/setup.ts` would quietly enrol these two in every rule written for the other five.
+
+1. `setup/callers.ts` is the half both use — reading a caller out of an adopter's tree. A caller is
+   recognised by **what it calls**, never by its filename: adopters rename files and job ids, and a
+   re-run that does not find theirs writes a second copy beside it.
+2. `init` copies `examples/callers/`; it does not generate. A generator is a second description of a
+   caller, and the release after it drifts is one where an adopter installs a file nothing tested.
+3. The rewrite is `shared/pins.ts` — the same one the release performs. See *Releasing*.
+4. `doctor` is two halves: `gatherFacts` asks `gh` what a checkout cannot answer, and `diagnose`
+   rules on callers and facts and nothing else. Keep the second one pure — every check is exercised
+   through it, and an unreadable fact must stay `undefined` rather than collapsing into a pass.
+   "No secrets are set" and "you are not an admin here" lead to opposite actions.
+5. `examples/callers/*.yml` and `setup/SETUP.md` are **assets**: `scripts/copy-assets.ts` puts them
+   under `dist/` at the same relative path, exactly as it does a prompt, because `tsc` emits `.js`
+   and nothing else. An asset that is not copied resolves in a checkout and is absent from the
+   tarball — a failure only a published version shows.
+
 ## Conventions
 
 - **Runners take no arguments.** Input comes from the environment the workflow step sets; an
-  argument is refused, not ignored.
+  argument is refused, not ignored. `init` and `doctor` are the exception and are not runners: they
+  are typed by a human, so `--dir <path>` is the interface rather than a misunderstanding of it. An
+  option they do not know is still refused.
 - **A failure must write `OUTPUT_DIR/failure_reason.txt`** before the process ends, so the workflow
   can post something a human can act on. A bare `exit 1` produces `(no reason file written)`, which
   is indistinguishable from the module-resolution failure a stale branch gives — one signature, two

@@ -9,6 +9,46 @@ checklist, and it is ordered so the things that fail *silently* come first.
 
 ---
 
+## 0. Two commands that do the mechanical half
+
+The runner package carries the install path as two more subcommands of the same binary. Neither
+replaces this file — most of what follows is judgement or a credential — but between them they do
+the part that is mechanical and check the part that is invisible:
+
+```bash
+npx --yes @jeffwlawson/agent-workflows@<version> init      # in the repo you are adopting into
+npx --yes @jeffwlawson/agent-workflows@<version> doctor    # once you have done the rest
+```
+
+`init` copies the five reference callers out of [`examples/callers/`](../examples/callers/) into
+`.github/workflows/`, substituting the two things that are per-repo — the version pin, and
+`self-check` (§4) — and writes a `SETUP.md` listing what is left: the two secrets (§2), the
+repository setting (§1), the labels (§3), and the two documents §6 is about. It **updates on a
+re-run** rather than refusing, so it is also how you take a release: a job you renamed survives, and
+`self-check` is recomposed around the name you chose. A `SETUP.md` it did not write is left alone.
+
+`doctor` exits non-zero on every §1 failure detectable from repo state, and names the fix for each:
+
+| What it checks | The failure it is for |
+|---|---|
+| both secrets are set | §2 — and `AGENT_PAT`'s absence is three of §1's five |
+| Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
+| every caller grants `packages: read` | §4 — a 401 at `npx` that reads like a bad token |
+| a **private** repo's review caller grants `checks: read` | §4 — a wait that spends its budget and reviews blind |
+| every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
+| `self-check` names the job it is in | §4 — a job that waits for itself for 15 of its 20 minutes |
+| the labels exist | §3 — a transition that is a silent no-op |
+| how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
+
+The one row it cannot have is §1's fifth: a label set at issue *creation* fires no `labeled` event,
+and nothing in a checkout records that it happened. That one stays prose, below.
+
+Everything `gh` could not answer — no auth, no admin — is reported as **unknown** rather than folded
+into a pass. Run it in the repository being adopted, or pass `--dir <path>`; it asks GitHub about
+whichever repository that directory is.
+
+---
+
 ## 1. The five failures that look like something else
 
 Read these before setting anything up. Each cost a run to diagnose, and none of them says what is
@@ -278,9 +318,10 @@ it into one that can install (§2).
 
 ### What a caller looks like
 
-**Copy them from [`examples/callers/`](../examples/callers/).** Five files, one per workflow,
-already carrying the correct trigger, permissions, `self-check` and pinned `uses:`. Drop them into
-your `.github/workflows/` and rename if you like — the job id is the only thing you cannot rename
+**Copy them from [`examples/callers/`](../examples/callers/)** — or let `init` (§0) do it, which is
+the same copy with the pin and `self-check` substituted. Five files, one per workflow, already
+carrying the correct trigger, permissions, `self-check` and pinned `uses:`. Drop them into your
+`.github/workflows/` and rename if you like — the job id is the only thing you cannot rename
 freely, for the reason below.
 
 They are real files rather than a block quoted here, and that is load-bearing twice over. What you
@@ -477,6 +518,12 @@ was the repository the loop was piloted on.
 Nothing in this repository can see that. The `@ref` in the reference callers is derived from
 `package.json` and checked by name, and the same check covers this repo's own callers — it covers no
 copy in a tree we cannot read.
+
+`doctor` (§0) can, on demand: it compares each caller's `@ref` against this package's tags and says
+how many releases behind it is. That is the other half of the same problem rather than a duplicate
+of what follows — Dependabot *fixes* drift going forward, `doctor` *reports* it now, including for
+a repository that never installed Dependabot, which is exactly the repository most likely to have
+drifted. It is a warning rather than a failure: an old pin is a working loop on an old version.
 
 [Dependabot can, and has read reusable-workflow refs since March 2023][dependabot-reusable]. With
 the `github-actions` ecosystem it reads every `uses:` under `.github/workflows`, compares each

@@ -45,6 +45,18 @@ a fix reaches them without them touching anything.
 **The runner** is TypeScript plus a prompt, invoked as one subcommand of one published binary. It
 takes its whole input from the environment; passing an argument is refused rather than ignored.
 
+### And the install path, which is none of the three
+
+`init` and `doctor` (`setup/`) are two more subcommands of the same binary, run by a human rather
+than by a workflow. They are not a fourth layer so much as the thing that *puts* the first one in
+place and then checks it: `init` copies the reference callers in with the pin and `self-check`
+substituted, and `doctor` looks for the failures `docs/ADOPTING.md` §1 is about — every one of which
+is a condition with no runtime symptom, which is why looking has to be deliberate.
+
+They ship in the same package as the runners on purpose. The version that writes a pin has to be the
+version that pin names, and the version that diagnoses a loop has to be the one whose guards it
+knows about; a separate installer is a second thing to keep in step with the release.
+
 ### Why reusable workflows and not a composite action
 
 A composite action cannot declare `on:`, `permissions:`, `concurrency:` or a job-level `if:` —
@@ -133,6 +145,7 @@ This is why the loop can run anywhere. It is also why **this** repo needs its ow
 | [`docs/parity.md`](./docs/parity.md) | how this compares to the upstream loops it was modelled on; §10 holds invariants |
 | [`docs/agents/ticket-shape.md`](./docs/agents/ticket-shape.md) | how a batch of tickets is published, and in what order |
 | [`docs/agents/triage-labels.md`](./docs/agents/triage-labels.md) | the triage vocabulary beside `agent:*`, and the only definition of the `wayfinder:*` labels two workflows refuse |
+| [`setup/SETUP.md`](./setup/SETUP.md) | the prompt `init` leaves in an adopter's tree for the judgement work it cannot do |
 
 `friction.md` is a **narrative log**, not a changelog: the commits are its timestamps, and entries
 describe what was true when written. Do not edit history into it.

@@ -1,0 +1,140 @@
+#!/usr/bin/env node
+/*
+ * A replay of `gh api`, standing in for the real binary so that
+ * `tests/review-ci-wait.test.ts` can *execute* the review workflow's CI
+ * collection instead of pattern-matching its text.
+ *
+ * Every behaviour below was recorded from a real `gh` (2.100.0, 2026-09-19) and
+ * is quoted where it is implemented. This file is a *replay*, not a model: an
+ * invocation it holds no recording for exits 2 with a loud message rather than
+ * guessing, because a stub that improvises is the thing that let
+ * `--paginate --slurp --jq` — an invocation gh refuses outright — pass review,
+ * the tests and CI for a whole release (#28).
+ *
+ * The one rule that has to stay true of the real binary is the `--slurp`
+ * refusal below, and it is not trusted to this file: `review-ci-wait.test.ts`
+ * re-verifies it against whatever `gh` is installed before using the replay.
+ *
+ * Endpoints recorded:
+ *   repos/{owner}/{repo}/commits/{sha}/check-runs  — pages from GH_REPLAY_PAGES
+ *   repos/{owner}/{repo}/actions/runs?…            — no runs on the commit
+ *
+ * Environment:
+ *   GH_REPLAY_PAGES    path to a JSON array of page bodies, in page order
+ *   GH_REPLAY_FAILURE  `403` or `unreachable`: how the check-runs call fails
+ */
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+
+const die = (message, code) => {
+  process.stderr.write(`${message}\n`);
+  process.exit(code);
+};
+
+/** An invocation with no recording. Exit 2, distinct from gh's own failures. */
+const unrecorded = () => die(`gh-replay: no recording for \`gh ${argv.join(" ")}\``, 2);
+
+if (argv[0] !== "api") unrecorded();
+
+const endpoint = argv[1] ?? "";
+const flags = argv.slice(2);
+const has = (...names) => names.some((name) => flags.includes(name));
+const valueOf = (...names) => {
+  const i = flags.findIndex((flag) => names.includes(flag));
+  return i < 0 ? undefined : flags[i + 1];
+};
+
+// Recorded, and the whole reason this file exists. gh rejects the combination
+// at flag-parse time — before any request — with this line on stderr, a usage
+// dump after it, and exit 1:
+//
+//   $ gh api repos/o/r/commits/abc/check-runs --paginate --slurp --jq '.'
+//   the `--slurp` option is not supported with `--jq` or `--template`
+if (has("--slurp") && has("--jq", "-q", "--template", "-t")) {
+  die("the `--slurp` option is not supported with `--jq` or `--template`", 1);
+}
+
+const filter = valueOf("--jq", "-q");
+
+/**
+ * One response body, through `--jq` if one was passed. gh applies the filter to
+ * each page *separately* under `--paginate` — which is why a count filter over
+ * two pages prints two numbers — so this is called per page, and once for the
+ * single array `--slurp` wraps them in.
+ *
+ * Raw output: gh prints string results unquoted, as standalone `jq -r` does.
+ */
+const emit = (body) => {
+  const json = JSON.stringify(body);
+  if (filter === undefined) {
+    process.stdout.write(`${json}\n`);
+    return;
+  }
+  try {
+    process.stdout.write(execFileSync("jq", ["-r", filter], { input: json, encoding: "utf8" }));
+  } catch {
+    die("gh: failed to apply the jq filter", 1);
+  }
+};
+
+if (/\/commits\/[^/]+\/check-runs$/.test(endpoint)) {
+  const failure = process.env["GH_REPLAY_FAILURE"];
+
+  // A failed request under `--slurp` still writes JSON to **stdout**, and the
+  // two shapes differ. Recorded 2026-09-19 against gh 2.100.0:
+  //
+  //   $ gh api repos/cli/cli/commits/000…/check-runs --paginate --slurp
+  //   [{ "message": "Bad credentials", "documentation_url": …, "status": … }]
+  //   gh: Bad credentials (HTTP 401)                           ← stderr, exit 1
+  //
+  //   $ gh api … --hostname localhost --paginate --slurp
+  //   []
+  //   Get "https://localhost/…": dial tcp [::1]:443: connect: …  ← stderr, exit 1
+  //
+  // That `[]` is why the count cannot be read off stdout: through the step's
+  // filter it is a perfectly plausible zero. The 403 body is the shape the
+  // first private adopter hit (docs/friction.md, 2026-09-17).
+  if (failure !== undefined) {
+    if (has("--slurp")) {
+      process.stdout.write(
+        failure === "403"
+          ? `${JSON.stringify([
+              {
+                message: "Resource not accessible by integration",
+                documentation_url: "https://docs.github.com/rest/checks/runs#list-check-runs-for-a-git-reference",
+                status: "403",
+              },
+            ])}\n`
+          : "[]",
+      );
+    }
+    die(
+      failure === "403"
+        ? "gh: Resource not accessible by integration (HTTP 403)"
+        : `Get "https://localhost/api/v3/${endpoint}": dial tcp [::1]:443: connect: connection refused`,
+      1,
+    );
+  }
+
+  if (!has("--paginate")) unrecorded();
+
+  const pages = JSON.parse(readFileSync(process.env["GH_REPLAY_PAGES"] ?? "", "utf8"));
+
+  // `--slurp` wraps every page into one outer array; without it the pages are
+  // printed one after another, each its own JSON document.
+  if (has("--slurp")) emit(pages);
+  else for (const page of pages) emit(page);
+
+  process.exit(0);
+}
+
+// The failure-log tail's first call. Recorded for a commit with no failed runs,
+// which is every scenario here: the tail itself is not what this suite covers.
+if (/\/actions\/runs\?/.test(endpoint)) {
+  emit({ total_count: 0, workflow_runs: [] });
+  process.exit(0);
+}
+
+unrecorded();

@@ -314,13 +314,21 @@ jobs:
           : > "$out"
 
           # Prints exactly one number, or nothing at all when the API call
-          # fails. Both halves of that are load-bearing.
+          # fails, and never fails itself. All three are load-bearing.
           #
           # `--slurp` is what makes it one number. `--paginate --jq` applies
           # the filter *per page*, so a commit with more than one page of
           # check runs (>30, the endpoint default) prints `0\n0` — several
           # counts, no total. Slurped, the pages arrive as one array and the
           # filter runs once over all of them.
+          #
+          # The filter is a **pipe into standalone jq**, not gh's `--jq`, and
+          # it has to be: gh refuses the two together — "the `--slurp` option
+          # is not supported with `--jq` or `--template`" — at flag-parse time,
+          # before any request. Written as one gh invocation it shipped in
+          # v0.1.5 and collected no evidence at all for a day (#28). Nothing
+          # caught it because everything checking it matched *text*; what
+          # covers it now runs the step (tests/review-ci-wait.test.ts).
           #
           # Printing nothing on failure is what makes the caller's
           # non-numeric arm mean "the API did not answer". This used to fall
@@ -330,10 +338,25 @@ jobs:
           # `{"message":…}0`, which `-eq` rejects every iteration until the
           # deadline. Both had the same trigger — check runs on a private
           # repository need `checks: read`, granted on this job above.
+          #
+          # Which is why the count is gated on gh's **exit status** and not on
+          # what it printed. Under `--slurp` a failed request still writes
+          # JSON: `[]` for a connection failure, and `[{"message":"Resource
+          # not accessible by integration",…}]` for that same 403 (recorded
+          # from gh 2.100.0). The first of those counts, through this filter,
+          # as a perfectly plausible zero — the old lie with a new source.
+          #
+          # `|| return 0` and `|| true` are both there because GitHub runs a
+          # `run:` block carrying no `shell:` under `bash -e`: a non-zero gh
+          # inside `$( )` ends the step where it stands, ahead of the arm
+          # below that exists to report exactly that. The agent then gets an
+          # empty file and reviews saying "no checks reported" — the same
+          # blindness, minus the diagnosis. That is what v0.1.5 did.
           pending_count() {
-            gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp \
-              --jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\")] | length" \
-              2>/dev/null
+            body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>/dev/null) || return 0
+            printf '%s' "$body" \
+              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\")] | length" \
+              || true
           }
 
           deadline=$(( $(date +%s) + WAIT_SECONDS ))
@@ -363,10 +386,14 @@ jobs:
             sleep 20
           done
 
+          # Slurped and piped for the same reason as the count, and `jq -r` to
+          # match what gh's own `--jq` does with a string result: print it
+          # unquoted. Without `-r` every line reaches the agent wrapped in
+          # quotes it would have to read past.
           echo "Checks on this commit:" >> "$out"
-          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate \
-            --jq ".check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | \"- \(.name): \(.conclusion // .status)\"" \
-            >> "$out" 2>/dev/null || echo "- (could not read check runs)" >> "$out"
+          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>/dev/null \
+            | jq -r ".[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | \"- \(.name): \(.conclusion // .status)\"" \
+            >> "$out" || echo "- (could not read check runs)" >> "$out"
 
           # Tail the failing steps so the agent sees *what* failed, not merely
           # that something did. Capped so a noisy failure cannot swamp the prompt.

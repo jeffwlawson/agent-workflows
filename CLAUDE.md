@@ -206,3 +206,22 @@ labels, which two workflows refuse and nothing else describes. See
 
 Single-context — `CONTEXT.md` + `docs/adr/` at the repo root. See
 [`docs/agents/domain.md`](./docs/agents/domain.md).
+
+## Asking me to decide
+
+**In a session with me in it.** A CI runner has no channel to ask: it decides, and records the
+decision in the surface its prompt gives it — a commit message, a review finding, a top-level
+comment. Same shape the prompts already use for a follow-up issue: say what the question was and
+what you chose, and stop there.
+
+- **Lead with the stake** — one sentence on what changes depending on my answer. Where nothing
+  changes, decide it and tell me what you decided.
+- **The question is sentence two**, then at most three sentences of body. Supporting evidence goes
+  after the question, where I can skip it.
+- **One recommendation, one reason.**
+- **Go long when the reasoning is the finding** — a risk I would miss if you compressed it — and
+  say that is why.
+
+## When a message doesn't land
+
+Also a session with me in it. When I say something is over my head, re-pitch it in plain English.

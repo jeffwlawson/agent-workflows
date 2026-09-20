@@ -58,9 +58,9 @@ the fix, and that table is the whole of what it rules on.
 |---|---|
 | both secrets are set — on the repository, or shared with it by its organization | §2 — and `AGENT_PAT`'s absence is three of §1's failures by itself |
 | Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
-| every caller grants `packages: read` | §4 — a 401 at `npx` that reads like a bad token |
+| every caller that declares a `permissions:` block grants each scope the job it calls spends — the whole of *The permissions per workflow* table below | §4 — a 401 at `npx` that reads like a bad token, a `git push` that 403s with the agent pass already spent, and label transitions written `\|\| true` that exit 0 and advance nothing |
 | a caller that declares no `permissions:` block at all | §4 — it runs with the default token, whose restricted setting is `contents` and `packages` read, so the install works and every write 403s |
-| a **private** repo's review caller grants `checks: read` | §4 — a wait that spends its budget and reviews blind |
+| the two scopes only a **private** repository needs — `checks: read` and `contents: read` on review | §4 — a wait that spends its budget and reviews blind, and a checkout that 403s before the diff is read |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
 | every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for 15 of its 20 minutes |

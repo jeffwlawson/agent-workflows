@@ -41,8 +41,8 @@ the half an adopter owns.
 
 `doctor` exits non-zero on every failure `docs/ADOPTING.md` §1 describes as announcing itself as
 something else — a missing secret, a caller that does not pass `AGENT_PAT` on to the workflow it
-calls, a caller without `packages: read`, a private repo's review caller without `checks: read`, a
-pin that is a branch rather than a tag, a `self-check` that does not name the check run its job
+calls, a caller whose `permissions:` block leaves out a grant the workflow it calls spends, a pin
+that is a branch rather than a tag, a `self-check` that does not name the check run its job
 produces, a label that does not exist — and names the fix for each. It also reports how many
 releases behind each pin is, which is a thing to know rather than a thing that is broken.
 

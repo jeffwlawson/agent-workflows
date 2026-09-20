@@ -111,18 +111,44 @@ const compareVersions = (a: string, b: string): number => {
 };
 
 /**
- * Which permission each reusable half needs from its caller, and why its absence
- * is not an error message. `packages: read` is universal — it is not about what
- * the job does but about installing the runner it runs — and `checks: read` is
- * the row only a private repository needs, which is exactly why it was missing
- * from v0.1.0 through v0.1.4 without anything failing.
+ * Which permission each reusable half needs from its caller, and why its
+ * absence is not an error message a human can act on.
+ *
+ * Every row is a cell of a table written twice already, and this is the third
+ * copy: the reusable half's own `permissions:` is the **ceiling** — the
+ * authoritative statement of what that job spends — and the reference caller's
+ * block is the **grant**, held equal to the ceiling in `tests/workflows.test.ts`
+ * because a called workflow can only downgrade the token it is handed. A third
+ * copy has to exist, because only `dist` ships and a preflight cannot read
+ * `examples/callers/` out of a tarball it is not in; what keeps it from drifting
+ * is `tests/agent-cli.test.ts`, which derives this table from those ceilings and
+ * fails by name when any of the three disagree.
+ *
+ * So the columns worth reading here are `why` and `absence`, which are the part
+ * no YAML states. For four releases this list held two of the eight rows, and
+ * the six it skipped failed the same way the two it caught did — after a full
+ * agent pass, and for most of them in a green run (#45).
  */
-const REQUIRED_PERMISSIONS: readonly {
+export const REQUIRED_PERMISSIONS: readonly {
   readonly permission: string;
   readonly value: string;
   readonly workflows: readonly string[] | "all";
   readonly why: string;
-  readonly privateOnly: boolean;
+  /**
+   * How the absence presents, which is the whole of the severity:
+   *
+   * - `"always"` — the job 403s wherever it runs. An error.
+   * - `"private"` — a public repository serves the call without the scope and a
+   *   private one 403s, so it is an error on a private repository and a warning
+   *   on a public one. An unreadable visibility resolves to the error and says
+   *   that it assumed: a needless grant costs nothing, and this is the class
+   *   that shipped undetected from v0.1.0 through v0.1.4.
+   * - `"advisory"` — nothing is known to fail without it. A warning everywhere:
+   *   the reference caller grants it deliberately and dropping it is a
+   *   configuration nothing here has ever run, which is worth saying and is not
+   *   worth failing a working loop over.
+   */
+  readonly absence: "always" | "private" | "advisory";
 }[] = [
   {
     permission: "packages",
@@ -131,7 +157,50 @@ const REQUIRED_PERMISSIONS: readonly {
     why:
       "the runner is installed from GitHub Packages, which has no anonymous install even for a " +
       "public package. Without the grant the run dies at `npx` with a 401 that reads like a bad token",
-    privateOnly: false,
+    absence: "always",
+  },
+  {
+    permission: "pull-requests",
+    value: "write",
+    workflows: "all",
+    why:
+      "the label transitions this loop advances on, the review or report the job posts and the " +
+      "reason it leaves behind when it stops are all `gh pr edit` and `gh pr comment`, and the " +
+      "transitions are written `|| true`. A 403 there exits 0: the run is green, the agent pass " +
+      "is spent, and the state machine simply stops advancing with nothing anywhere saying why",
+    absence: "always",
+  },
+  {
+    permission: "contents",
+    value: "write",
+    workflows: ["implement", "implement-prd", "fix", "update-branch"],
+    why:
+      "the branch this job produces is committed and pushed, and `git push` is not written " +
+      "`|| true`. The run fails at its last step, after the whole agent pass, and the work it did " +
+      "is discarded with it",
+    absence: "always",
+  },
+  {
+    permission: "issues",
+    value: "write",
+    workflows: ["implement", "implement-prd"],
+    why:
+      "the issue's labels are transitioned from this job and its outcome commented on it — " +
+      "`agent:in-progress` on the way in, `agent:blocked` and a reason on the way out. The " +
+      "removals are written `|| true` and pass silently, so what a 403 leaves is an issue that " +
+      "never moved — and, on the PRD chain, a sub-issue that stays open and is implemented again " +
+      "on the next run",
+    absence: "always",
+  },
+  {
+    permission: "issues",
+    value: "write",
+    workflows: ["follow-ups"],
+    why:
+      "this is the grant the workflow exists for: it files the review's recorded out-of-scope " +
+      "findings as issues, with the workflow token rather than the PAT. Without it a merge files " +
+      "nothing at all, on a run nobody is waiting for",
+    absence: "always",
   },
   {
     permission: "checks",
@@ -140,7 +209,28 @@ const REQUIRED_PERMISSIONS: readonly {
     why:
       "the CI wait polls the check-runs API, which a public repository serves without the scope " +
       "and a private one 403s. The poll then spends its whole budget and reviews with no CI evidence",
-    privateOnly: true,
+    absence: "private",
+  },
+  {
+    permission: "contents",
+    value: "read",
+    workflows: ["review"],
+    why:
+      "`actions/checkout` reads the repository, which a public one serves without the scope and a " +
+      "private one 403s. There is nothing to review then — the job dies at the checkout, before " +
+      "the diff it was labelled for is ever read",
+    absence: "private",
+  },
+  {
+    permission: "contents",
+    value: "read",
+    workflows: ["follow-ups"],
+    why:
+      "nothing in this job reads the repository and nothing is checked out, so no call here is " +
+      "known to 403 without it. The reference caller grants it all the same: a `permissions:` " +
+      "block replaces the token rather than adding to it, so leaving the line out sets " +
+      "`contents: none`, which is a configuration the runner install has never been run under",
+    absence: "advisory",
   },
 ];
 
@@ -190,7 +280,7 @@ export const diagnose = (
 
   const hasPat = facts.secrets?.includes("AGENT_PAT");
 
-  for (const { permission, value, workflows, why, privateOnly } of REQUIRED_PERMISSIONS) {
+  for (const { permission, value, workflows, why, absence } of REQUIRED_PERMISSIONS) {
     for (const caller of callers) {
       if (workflows !== "all" && !workflows.includes(caller.workflow)) continue;
       // A job with no `permissions:` block anywhere holds whatever the
@@ -212,9 +302,12 @@ export const diagnose = (
       // Erring that way is the call; presenting a guess as a determination is
       // not, so the guess says so — otherwise an unauthenticated run against a
       // public repository exits 1 with nothing admitting why.
-      const guessed = privateOnly && facts.visibility === undefined;
+      const guessed = absence === "private" && facts.visibility === undefined;
       add({
-        severity: privateOnly && facts.visibility === "public" ? "warning" : "error",
+        severity:
+          absence === "advisory" || (absence === "private" && facts.visibility === "public")
+            ? "warning"
+            : "error",
         check: `${permission}: ${value}`,
         problem:
           `${caller.file} grants the \`${caller.jobId}\` job no \`${permission}: ${value}\` — ${why}.` +

@@ -528,12 +528,12 @@ const list = (
  * same empty string, and the organization endpoint refuses a user-owned
  * repository outright — 422 Validation Failed, observed against this repository
  * with `gh` 2.101.0, and named as the instance rather than the rule because the
- * argument holds for whatever code a later API answers with. Trusting that as
- * "could not read" would make every org-less repository undiagnosable, which is
- * most of them. Knowing there is no organization is what turns that refusal
- * into the fact it is — *there are none* — while leaving a 403 on a repository
- * that has one as unknown, where absence cannot be concluded from a list that
- * was never served.
+ * argument holds for whatever code a later API answers with. Trusting that
+ * refusal as "could not read" would make every org-less repository
+ * undiagnosable, which is most of them. Knowing there is no organization is
+ * what turns that refusal into the fact it is — *there are none* — while
+ * leaving a 403 on a repository that has one as unknown, where absence cannot
+ * be concluded from a list that was never served.
  */
 export const availableSecrets = (
   repository: readonly string[] | undefined,

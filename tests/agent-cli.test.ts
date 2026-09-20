@@ -1348,7 +1348,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(availableSecrets(["CLAUDE_CODE_OAUTH_TOKEN"], [], true)).toEqual([
       "CLAUDE_CODE_OAUTH_TOKEN",
     ]);
-    // No organization to ask about: the refusal is the answer, not a silence.
+    // No organization to ask about: the absent list is the answer, not a silence.
     expect(availableSecrets([], undefined, false)).toEqual([]);
     // One that has an organization, whose list could not be read: absence
     // cannot be concluded from a list nobody was served.

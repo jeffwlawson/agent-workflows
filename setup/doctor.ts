@@ -13,11 +13,12 @@ import type { CliIo } from "../cli.js";
  *
  * Two halves, deliberately separated:
  *
- * - **`gatherFacts`** asks GitHub the four questions a checkout cannot answer —
- *   which secrets are set, whether Actions may open pull requests, which labels
- *   exist, and what this package's latest release is. Every one of them can
- *   come back unreadable (no `gh`, no auth, no admin), and an unreadable answer
- *   is reported as unknown rather than folded into a pass.
+ * - **`gatherFacts`** asks GitHub the questions a checkout cannot answer — which
+ *   secrets are set, whether Actions may open pull requests, what the default
+ *   `GITHUB_TOKEN` grants a job that asks for nothing, which labels exist, and
+ *   what this package's latest release is. Every one of them can come back
+ *   unreadable (no `gh`, no auth, no admin), and an unreadable answer is
+ *   reported as unknown rather than folded into a pass.
  * - **`diagnose`** rules on the callers and those facts and nothing else. It is
  *   pure for the reason `shared/pins.ts` is: the policy is the part worth
  *   holding still, and a diagnosis that can only be exercised against a live
@@ -46,6 +47,14 @@ export interface RepoFacts {
   readonly secrets: readonly string[] | undefined;
   /** Settings → Actions → General → Allow GitHub Actions to create … pull requests. */
   readonly canCreatePullRequests: boolean | undefined;
+  /**
+   * Settings → Actions → General → Workflow permissions: what a job that
+   * declares no `permissions:` block anywhere actually runs with. `"write"` is
+   * the permissive default — every scope, write — and `"read"` the restricted
+   * one, worded on that page as "read repository contents and packages
+   * permissions", which is the whole of it.
+   */
+  readonly defaultWorkflowPermissions: "read" | "write" | undefined;
   readonly labels: readonly string[] | undefined;
   readonly visibility: "public" | "private" | undefined;
   /** This package's tags, newest first — what a pin is measured against. */
@@ -158,6 +167,14 @@ export const diagnose = (
   for (const { permission, value, workflows, why, privateOnly } of REQUIRED_PERMISSIONS) {
     for (const caller of callers) {
       if (workflows !== "all" && !workflows.includes(caller.workflow)) continue;
+      // A job with no `permissions:` block anywhere holds whatever the
+      // repository's default token holds, which is a different question with a
+      // different answer and a different fix — ruled on once below rather than
+      // per scope. Reading it as "grants nothing" is how a working loop gets
+      // told to add a line it does not need: **both** defaults grant
+      // `packages: read`, and a job-level block naming only that would replace
+      // the inherited token and drop everything else it holds.
+      if (caller.permissionsFrom === "none") continue;
       if (!missingPermission(caller, permission, value)) continue;
 
       // A called workflow can only *downgrade* the token it is handed, so a
@@ -184,6 +201,48 @@ export const diagnose = (
             : `Add \`${permission}: ${value}\` to that job's \`permissions:\` block.`,
       });
     }
+  }
+
+  // The callers that write no `permissions:` block at all — neither on the job
+  // nor above `jobs:` — and so run with the repository's default `GITHUB_TOKEN`.
+  //
+  // Which of the two defaults is set decides everything here, and it is why the
+  // scope rows above skip these callers rather than reporting each grant
+  // missing. The permissive default is every scope at write, so there is
+  // genuinely nothing to say. The restricted one is `contents` and `packages`
+  // read, so the install works and every *write* the job makes does not — one
+  // finding about the block, not a list of scopes, because the fix is the whole
+  // block either way: a job-level one replaces the inherited token rather than
+  // adding to it, so naming a single scope is how an adopter loses the rest.
+  for (const caller of callers) {
+    if (caller.permissionsFrom !== "none") continue;
+    if (facts.defaultWorkflowPermissions === "write") continue;
+
+    // Unreadable is a warning rather than an error, unlike the visibility guess
+    // above: there the worst case was a needless grant, and here erring the
+    // other way would fail a repository whose default is permissive and whose
+    // loop works, on a fact nobody could read.
+    const unknown = facts.defaultWorkflowPermissions === undefined;
+    add({
+      severity: unknown ? "warning" : "error",
+      check: "permissions block",
+      problem:
+        `${caller.file} declares no \`permissions:\` block — neither on the \`${caller.jobId}\` ` +
+        `job nor above \`jobs:\` — so the job runs with this repository's default ` +
+        `\`GITHUB_TOKEN\`. The restricted default is \`contents\` and \`packages\` read and ` +
+        `nothing else, so the runner installs and then every write the job makes 403s: its push, ` +
+        `its comments, its label transitions, and on a private repository the check runs the CI ` +
+        `wait polls.` +
+        (unknown
+          ? ` This repository's default workflow permissions could not be read, so this is ` +
+            `reported as something to check rather than as a fault — if the setting is the ` +
+            `permissive one, every scope is granted and there is nothing to do.`
+          : ``),
+      fix:
+        `Give the \`${caller.jobId}\` job a \`permissions:\` block naming every scope it needs. ` +
+        `A block replaces the inherited token wholesale rather than adding to it, so copy the ` +
+        `whole one from examples/callers/${caller.workflow}.yml rather than adding a single line.`,
+    });
   }
 
   for (const caller of callers) {
@@ -336,10 +395,10 @@ export const diagnose = (
 /**
  * One scalar `gh` answer, or `undefined` when `gh` could not give one.
  *
- * Safe for a scalar precisely because the two answers this is used for —
- * `.visibility` and `.can_approve_pull_request_reviews` — have no empty value:
- * a repository is `PUBLIC` or `PRIVATE`, the setting is `true` or `false`, and
- * nothing prints an empty line but a `gh` that failed.
+ * Safe for a scalar precisely because the answer it is used for — `.visibility`
+ * — has no empty value: a repository is `PUBLIC` or `PRIVATE`, and nothing
+ * prints an empty line but a `gh` that failed. Anything whose *empty* answer is
+ * meaningful goes through `parseList` instead.
  */
 const answer = (args: readonly string[], cwd: string): string | undefined => {
   const out = safeGh(args, { cwd }).trim();
@@ -383,7 +442,28 @@ const list = (
 ): readonly string[] | undefined => parseList(safeGh([...args, "--jq", `[${jq}] | @json`], { cwd }));
 
 /**
- * Ask GitHub the four questions a checkout cannot answer. Every call goes
+ * `gh`'s answer for a repository's visibility, as the two cases the diagnosis
+ * distinguishes. An **internal** repository is private as far as every check
+ * here is concerned: the check-runs API 403s without the scope exactly as it
+ * does on a private one.
+ *
+ * Folded to one case rather than matched in two, because which case `gh` emits
+ * is version-dependent — `repo view --json visibility` has answered both
+ * `PUBLIC` and `public` across releases. Accepting one spelling of `INTERNAL`
+ * and both of the others is an asymmetry with a consequence: the fall-through is
+ * `undefined`, so an internal repository whose `gh` lowercased the field would
+ * get a correct severity with an untrue sentence attached, saying the visibility
+ * could not be read when it was read fine.
+ */
+export const asVisibility = (raw: string | undefined): "public" | "private" | undefined => {
+  const held = raw?.trim().toUpperCase();
+  if (held === "PUBLIC") return "public";
+  if (held === "PRIVATE" || held === "INTERNAL") return "private";
+  return undefined;
+};
+
+/**
+ * Ask GitHub the questions a checkout cannot answer. Every call goes
  * through `safeGh`, which returns `""` rather than throwing — an unauthenticated
  * `gh`, a missing one, or a token without admin are all ordinary outcomes here,
  * and the point is to report what could not be read rather than to abort.
@@ -394,10 +474,18 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
   // directory's git remote, so a `doctor --dir ../other` that did not say so
   // would check one repository's files against another repository's secrets.
   const visibility = answer(["repo", "view", "--json", "visibility", "--jq", ".visibility"], dir);
-  const canCreate = answer(
-    ["api", "repos/{owner}/{repo}/actions/permissions/workflow", "--jq", ".can_approve_pull_request_reviews"],
-    dir,
-  );
+
+  // One call, two facts: the default token's permissions and the create-pull-
+  // requests setting are two fields of the same response, they need the same
+  // admin to read, and so they are readable or unreadable together. Asked for as
+  // a two-element array for `parseList`'s reason — a field that is legally
+  // `false` must not come back looking like a `gh` that said nothing.
+  const [defaultPermissions, canCreate] =
+    list(
+      ["api", "repos/{owner}/{repo}/actions/permissions/workflow"],
+      ".default_workflow_permissions, .can_approve_pull_request_reviews",
+      dir,
+    ) ?? [];
 
   return {
     // A page size, not the default. The secrets endpoint serves 30 at a time,
@@ -412,14 +500,18 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
       ".secrets[].name",
       dir,
     ),
-    canCreatePullRequests: canCreate === undefined ? undefined : canCreate === "true",
+    // Both spellings named, so the third case stays `undefined`: a field a
+    // future API drops answers `null`, and reading anything-but-`true` as `false`
+    // would turn that into "the setting is off" — a finding about a fact nobody
+    // read.
+    canCreatePullRequests:
+      canCreate === "true" ? true : canCreate === "false" ? false : undefined,
+    defaultWorkflowPermissions:
+      defaultPermissions === "read" || defaultPermissions === "write"
+        ? defaultPermissions
+        : undefined,
     labels: list(["label", "list", "--limit", "200", "--json", "name"], ".[].name", dir),
-    visibility:
-      visibility === "PUBLIC" || visibility === "public"
-        ? "public"
-        : visibility === "PRIVATE" || visibility === "private" || visibility === "INTERNAL"
-          ? "private"
-          : undefined,
+    visibility: asVisibility(visibility),
     releases: list(["api", `repos/${repoSlug(packageName)}/tags`], ".[].name", dir),
   };
 };

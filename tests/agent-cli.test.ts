@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
 import { init, STATE_LABELS, TRIGGER_LABELS } from "../setup/init.js";
-import { parseList, runDoctor, type RepoFacts } from "../setup/doctor.js";
+import { asVisibility, parseList, runDoctor, type RepoFacts } from "../setup/doctor.js";
 
 /**
  * The runners ship as one versioned package with one binary (#96), so the entry
@@ -474,6 +474,46 @@ describe("init installs the reference callers into an adopting repo", () => {
   });
 
   /**
+   * A `--dir` that is not there is a typo rather than a request, and `put`
+   * mkdirs recursively: it would scaffold a whole repository under a directory
+   * nobody has — reporting the same repo-relative lines a correct run does,
+   * with the repository being adopted untouched. Refused as bad usage, which is
+   * what a mistyped path is, and on the same grounds as the `SETUP.md` and the
+   * filename this will not write over.
+   */
+  it("refuses a --dir that does not exist rather than scaffolding one", async () => {
+    const missing = path.join(os.tmpdir(), "agent-init-absent", "typo", "path");
+
+    const { code, err } = await invoke(["init", "--dir", missing]);
+
+    expect(code).toBe(2);
+    expect(err).toContain(missing);
+    expect(fs.existsSync(missing)).toBe(false);
+  });
+
+  /** And where it did work, since every other line it prints is repo-relative. */
+  it("names the directory it worked in", async () => {
+    const root = adopted();
+
+    const { out } = await invoke(["init", "--dir", root]);
+
+    expect(out).toContain(path.resolve(root));
+  });
+
+  /**
+   * Every `{{…}}` in the template has a substitution behind it. One added to
+   * `setup/SETUP.md` without a `replaceAll` for it ships as literal braces into
+   * an adopter's tree, inside a command they are told to run.
+   */
+  it("leaves no placeholder unsubstituted in the prompt it writes", async () => {
+    const root = adopted();
+
+    await init({ dir: root });
+
+    expect(read(root, "SETUP.md")).not.toMatch(/\{\{[A-Z_]+\}\}/);
+  });
+
+  /**
    * The label table in `setup/init.ts` is a **second copy** of `docs/ADOPTING.md`
    * §3: the doc is what a human reads, the table is what `SETUP.md` tells them
    * to run and what `doctor` demands exists. Nothing else holds the two in step,
@@ -562,6 +602,10 @@ describe("doctor names the failures that otherwise look like something else", ()
   const healthy = (): RepoFacts => ({
     secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "AGENT_PAT"],
     canCreatePullRequests: true,
+    // The restricted default, which is what a repository created since February
+    // 2023 has. Every reference caller declares its own block, so it is the
+    // callers that declare *none* the setting decides anything for.
+    defaultWorkflowPermissions: "read",
     labels: [
       "agent:implement",
       "agent:review",
@@ -777,6 +821,101 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(err).toMatch(/could not be read[\s\S]*private/);
   });
 
+  /**
+   * The third place a grant can come from is nowhere at all: a job with no
+   * `permissions:` block on it and none above `jobs:` runs with the repository's
+   * default `GITHUB_TOKEN`, and **both** defaults grant `packages: read` — the
+   * restricted one is worded "read repository contents and packages
+   * permissions". So the scope rows must not fire here, and above all the fix
+   * must not be "add `packages: read` to that job": a job-level block replaces
+   * the inherited token rather than adding to it, so following that instruction
+   * would drop `pull-requests: write` on a loop that was working.
+   */
+  it("does not demand packages: read of a caller that inherits the default token", async () => {
+    const { err } = await check(adoptedWith([]), healthy());
+
+    expect(err).not.toContain("packages: read");
+    expect(err).not.toMatch(/to that job's `permissions:` block/);
+  });
+
+  /**
+   * What is wrong with that caller is the block, not a scope. Under the
+   * restricted default it installs the runner and then 403s on every write it
+   * makes, so it is one finding whose fix is the whole reference block.
+   */
+  it("names the absent permissions block, and points at the whole reference block", async () => {
+    const { code, err } = await check(adoptedWith([]), healthy());
+
+    expect(code).toBe(1);
+    expect(err).toContain("declares no `permissions:` block");
+    expect(err).toContain("examples/callers/review.yml");
+  });
+
+  it("says nothing about a caller inheriting a permissive default token", async () => {
+    const { code, err } = await check(adoptedWith([]), {
+      ...healthy(),
+      defaultWorkflowPermissions: "write",
+    });
+
+    expect(err).toBe("");
+    expect(code).toBe(0);
+  });
+
+  /**
+   * And here the unreadable fact errs the *other* way from the visibility guess
+   * above, deliberately: there the cost of being wrong was a grant nobody
+   * needed, and here it would be exit 1 on a repository whose default is the
+   * permissive one and whose loop works.
+   */
+  it("reports an inherited token it could not read as something to check", async () => {
+    const { code, out } = await check(adoptedWith([]), {
+      ...healthy(),
+      defaultWorkflowPermissions: undefined,
+    });
+
+    expect(code).toBe(0);
+    expect(out).toContain("could not be read");
+  });
+
+  /**
+   * `gh repo view --json visibility` has answered both `PUBLIC` and `public`
+   * across releases, so the reader folds the case once rather than listing
+   * spellings. An internal repository whose `gh` lowercased the field would
+   * otherwise fall through to `undefined` and be failed with a sentence saying
+   * its visibility could not be read — severity right, sentence untrue. Internal
+   * counts as private because the check-runs API 403s on it just the same.
+   */
+  it("reads a visibility in whichever case gh answered it", () => {
+    expect(["PUBLIC", "public", "Public"].map((raw) => asVisibility(raw))).toEqual([
+      "public",
+      "public",
+      "public",
+    ]);
+    expect(["PRIVATE", "private", "INTERNAL", "internal"].map((raw) => asVisibility(raw))).toEqual([
+      "private",
+      "private",
+      "private",
+      "private",
+    ]);
+    expect(asVisibility("")).toBeUndefined();
+    expect(asVisibility(undefined)).toBeUndefined();
+  });
+
+  /**
+   * A mistyped `--dir` would otherwise be diagnosed as "no workflow here calls
+   * this package, run `init`" — a real finding about a directory that does not
+   * exist, with `gh` asked about whatever repository the shell happened to be
+   * in. Bad usage, like `init`'s.
+   */
+  it("refuses a --dir that does not exist rather than diagnosing it", async () => {
+    const missing = path.join(os.tmpdir(), "agent-doctor-absent", "typo");
+
+    const { code, err } = await invoke(["doctor", "--dir", missing]);
+
+    expect(code).toBe(2);
+    expect(err).toContain(missing);
+  });
+
   it("fails a caller pinned to a branch rather than a tag or a SHA", async () => {
     const root = await installed();
     edit(root, "agent-fix.yml", (text) => text.replace(`@v${manifest.version}`, "@main"));
@@ -856,6 +995,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     const { code, out } = await check(await installed(), {
       secrets: undefined,
       canCreatePullRequests: undefined,
+      defaultWorkflowPermissions: undefined,
       labels: undefined,
       visibility: undefined,
       releases: undefined,

@@ -66,6 +66,15 @@ const runner = (name: string, load: () => Promise<unknown>): Command => ({
  * flag is still refused rather than ignored, for the reason a runner refuses
  * every argument: a silently-dropped flag does the real thing while its author
  * believes it did not.
+ *
+ * A path that does not exist is refused on the same grounds. `init` writes
+ * through a recursive mkdir, so a mistyped `--dir` scaffolds a whole repository
+ * at a path nobody has — reporting the same repo-relative lines a correct run
+ * does, while the repository being adopted is untouched — and `doctor` reads the
+ * same typo as "no caller here, run `init`". The commands already refuse a
+ * `SETUP.md` they did not write and a filename they do not own; "this directory
+ * is not there" is the same refusal, and the answer is absolute so the report
+ * names where it is working.
  */
 const targetDir = (name: string, args: readonly string[]): string => {
   let dir = ".";
@@ -80,7 +89,12 @@ const targetDir = (name: string, args: readonly string[]): string => {
     }
     throw new UsageError(`\`${name}\` does not know the option ${arg}. The only one is \`--dir <path>\`.`);
   }
-  return dir;
+  if (!fs.existsSync(dir)) {
+    throw new UsageError(
+      `\`${name}\`: there is no directory ${JSON.stringify(dir)}. Give \`--dir\` the root of a checkout that already exists.`,
+    );
+  }
+  return path.resolve(dir);
 };
 
 export const COMMANDS: Readonly<Record<string, Command>> = {
@@ -88,7 +102,12 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
     summary: "Check an adopting repo for the setup failures that fail silently.",
     run: async (args, io) => {
       const { runDoctor } = await import("./setup/doctor.js");
-      return runDoctor({ dir: targetDir("doctor", args) }, io);
+      const dir = targetDir("doctor", args);
+      // Named, because every finding below is repo-relative and `gh` was asked
+      // about whichever repository this directory is — "which repo did that
+      // answer come from?" must not depend on remembering what `--dir` said.
+      io.stdout(`  in ${dir}\n`);
+      return runDoctor({ dir }, io);
     },
   },
   fix: runner("fix", () => import("./fix/fix.js")),
@@ -98,7 +117,9 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
     summary: "Install the caller workflows into this repo, and say what is left.",
     run: async (args, io) => {
       const { init } = await import("./setup/init.js");
-      for (const change of init({ dir: targetDir("init", args) })) {
+      const dir = targetDir("init", args);
+      io.stdout(`  in ${dir}\n`);
+      for (const change of init({ dir })) {
         io.stdout(`  ${change.action.padEnd(9)} ${change.file}${change.note ? ` (${change.note})` : ""}\n`);
       }
     },

@@ -95,7 +95,18 @@ const SKIPPED_DIRS = new Set(["output", "dist", "node_modules", ".git"]);
  * *this file*, whose `DOMAIN` regex contains the very words it searches for, so
  * a whole-repo walk fails on itself.
  */
-const RUNNER_SURFACE = ["cli.ts", "shared", "scripts", "setup", "fix", "implement", "implement-prd", "review", "update-branch"];
+const RUNNER_SURFACE = ["cli.ts", "shared", "scripts", "setup", "fix", "follow-ups", "implement", "implement-prd", "review", "update-branch"];
+
+/**
+ * A runner is a directory holding a file named after it — the same shape
+ * `tests/agent-cli.test.ts` derives "the runners" from. Read here only to hold
+ * the list above to it; see the check at the bottom of this file.
+ */
+const runnerDirs = fs
+  .readdirSync(".", { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(entry.name, `${entry.name}.ts`)))
+  .map((entry) => entry.name)
+  .sort();
 
 const filesUnder = (dir: string): readonly string[] =>
   fs
@@ -2899,6 +2910,16 @@ describe("every gh call reaches argv, never a shell", () => {
 describe(".sandcastle names no repo of its own", () => {
   it("finds files to check", () => {
     expect(sandcastleFiles.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * The surface is named rather than derived, for the reason given where it is
+   * defined — so a runner added later and left off the list is one both checks
+   * below skip, silently and green. That is the same omission the checks exist
+   * to catch, one level up, so it is a named failure here rather than a gap.
+   */
+  it("covers every runner directory", () => {
+    expect(runnerDirs.filter((dir) => !RUNNER_SURFACE.includes(dir))).toEqual([]);
   });
 
   /**

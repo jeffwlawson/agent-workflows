@@ -12,8 +12,8 @@ import { VERSION } from "./shared/manifest.js";
  * under `pull_request_target` and retires the stale-runner trap (#96).
  *
  * Dispatch is a table rather than separate bins because the package has two
- * surfaces: the five runners a workflow step invokes, and the install path
- * `init` and `doctor` are (#6). They belong to the same version as the runners
+ * surfaces: the runners a workflow step invokes, and the install path `init`
+ * and `doctor` are (#6). They belong to the same version as the runners
  * they set up — the version that writes a pin has to be the version that pin
  * names — so one install, one binary, one thing to keep in step. A table also
  * means adding a runner is one entry rather than a new bin, a new pin and a new
@@ -48,8 +48,11 @@ export interface Command {
  * a top-level script that does its work on load and exits non-zero through
  * `fail()`. So nothing may load before the argument check.
  */
-const runner = (name: string, load: () => Promise<unknown>): Command => ({
-  summary: `Run the ${name} agent (input comes from the environment).`,
+const runner = (name: string, load: () => Promise<unknown>, summary?: string): Command => ({
+  // Named where it is not "run the agent". `follow-ups` runs no model at all,
+  // and help that said it did would describe the one runner whose whole point
+  // is the opposite (#49).
+  summary: summary ?? `Run the ${name} agent (input comes from the environment).`,
   run: async (args) => {
     if (args.length > 0) {
       throw new UsageError(`\`${name}\` takes no arguments, but got: ${args.join(" ")}`);
@@ -116,6 +119,11 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
     },
   },
   fix: runner("fix", () => import("./fix/fix.js")),
+  "follow-ups": runner(
+    "follow-ups",
+    () => import("./follow-ups/follow-ups.js"),
+    "File a closed PR's recorded review findings as triageable issues (no model).",
+  ),
   implement: runner("implement", () => import("./implement/implement.js")),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
   init: {

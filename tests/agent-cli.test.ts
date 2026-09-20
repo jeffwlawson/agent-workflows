@@ -91,7 +91,14 @@ afterEach(() => {
 
 describe("the runner CLI dispatches on a subcommand", () => {
   it("finds the runners to check", () => {
-    expect(runnerDirs).toEqual(["fix", "implement", "implement-prd", "review", "update-branch"]);
+    expect(runnerDirs).toEqual([
+      "fix",
+      "follow-ups",
+      "implement",
+      "implement-prd",
+      "review",
+      "update-branch",
+    ]);
   });
 
   it.each(runnerDirs)("%s: is reachable as a subcommand", (name: string) => {
@@ -152,12 +159,36 @@ describe("the runner CLI dispatches on a subcommand", () => {
    * before the runner is reached: every run says which version it is on, for the
    * reason `shared/common.ts` echoes the model id.
    */
-  it("refuses arguments to a runner rather than ignoring them", async () => {
-    const { code, out, err } = await invoke(["review", "--dry-run"]);
+  it.each(runnerDirs)(
+    "%s: refuses arguments rather than ignoring them",
+    async (name: string) => {
+      const { code, out, err } = await invoke([name, "--dry-run"]);
 
-    expect(code).toBe(2);
-    expect(err).toContain("--dry-run");
-    expect(out).toContain(`agent-workflows ${manifest.version}: review`);
+      expect(code).toBe(2);
+      expect(err).toContain("--dry-run");
+      expect(out).toContain(`agent-workflows ${manifest.version}: ${name}`);
+    },
+  );
+
+  /**
+   * `follow-ups` (#49) is the one runner that runs no model, and that is a
+   * security property rather than an implementation detail: its workflow is the
+   * only one in the loop holding `issues: write`, and a model reading arbitrary
+   * issue bodies while holding it is a prompt-injection surface nothing here
+   * currently has. So no prompt, no extraction, no agent.
+   *
+   * Asserted over the source because nothing else can see it. The permissions
+   * half is the workflow's to state; this half is invisible until something
+   * imports `claudeAgent` and the loop quietly grows a sixth model call.
+   */
+  it("follow-ups runs no model and holds no prompt", () => {
+    const dir = path.join(PACKAGE_DIR, "follow-ups");
+
+    expect(fs.readdirSync(dir).filter((entry) => entry.endsWith(".md"))).toEqual([]);
+    const source = fs.readFileSync(path.join(dir, "follow-ups.ts"), "utf8");
+    expect(source).not.toContain("claudeAgent");
+    expect(source).not.toContain("sandcastle");
+    expect(source).not.toContain("runWithExtraction");
   });
 });
 

@@ -257,12 +257,14 @@ export const diagnose = (
     });
   }
 
-  // Both halves, because a check run whose name is wrong in either is a check
-  // run that does not exist — and the two mistakes are the same silence. A
+  // Compared literally, and in full: the wait filters with
+  // `select(.name != env.SELF_CHECK)`, so every byte of it counts. A
   // `self-check` naming only the caller's job is the shape somebody writes from
-  // memory; one naming the wrong called job is what a renamed reusable leaves
-  // behind. `selfCheckFor` is the name the job really produces, so it is also
-  // the whole of the fix.
+  // memory, `review/review` is the same thing with the spaces left out, and one
+  // naming the wrong called job is what a renamed reusable leaves behind. All
+  // three exclude nothing and none of them errors. `selfCheckFor` is the name
+  // the job really produces — the calling job's display name, not its id — so
+  // it is also the whole of the fix.
   for (const caller of callers) {
     if (selfCheckMatches(caller)) continue;
     add({
@@ -271,7 +273,8 @@ export const diagnose = (
       problem:
         `${caller.file} sets \`self-check: ${caller.selfCheck}\` on the \`${caller.jobId}\` job, ` +
         `which calls \`${caller.workflow}.yml\`. The check run that job produces is named ` +
-        `\`${selfCheckFor(caller)}\` — \`<caller job id> / <called job id>\` — so the wait does not ` +
+        `\`${selfCheckFor(caller)}\` — \`<calling job's name> / <called job's name>\`, matched ` +
+        `byte for byte — so the wait does not ` +
         `recognise its own and waits for itself before reviewing on degraded evidence.`,
       fix: `Set \`self-check: ${selfCheckFor(caller)}\`.`,
     });

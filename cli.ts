@@ -67,9 +67,9 @@ const runner = (name: string, load: () => Promise<unknown>): Command => ({
  * every argument: a silently-dropped flag does the real thing while its author
  * believes it did not.
  *
- * A path that does not exist is refused on the same grounds. `init` writes
- * through a recursive mkdir, so a mistyped `--dir` scaffolds a whole repository
- * at a path nobody has — reporting the same repo-relative lines a correct run
+ * A path that is not an existing directory is refused on the same grounds.
+ * `init` writes through a recursive mkdir, so a mistyped `--dir` scaffolds a
+ * whole repository at a path nobody has — reporting the same repo-relative lines a correct run
  * does, while the repository being adopted is untouched — and `doctor` reads the
  * same typo as "no caller here, run `init`". The commands already refuse a
  * `SETUP.md` they did not write and a filename they do not own; "this directory
@@ -89,9 +89,14 @@ const targetDir = (name: string, args: readonly string[]): string => {
     }
     throw new UsageError(`\`${name}\` does not know the option ${arg}. The only one is \`--dir <path>\`.`);
   }
-  if (!fs.existsSync(dir)) {
+  // Not a directory counts as not there. `init` writes through a recursive
+  // mkdir, which turns a path that is a file into an `ENOTDIR` thrown from
+  // somewhere inside the scaffolding — exit 1, with a message about a directory
+  // nobody asked for — and `doctor` reads it as "no caller here, run `init`",
+  // which is a finding about a repository that does not exist.
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
     throw new UsageError(
-      `\`${name}\`: there is no directory ${JSON.stringify(dir)}. Give \`--dir\` the root of a checkout that already exists.`,
+      `\`${name}\`: ${JSON.stringify(dir)} is not a directory. Give \`--dir\` the root of a checkout that already exists.`,
     );
   }
   return path.resolve(dir);

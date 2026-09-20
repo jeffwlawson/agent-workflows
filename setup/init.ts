@@ -183,13 +183,16 @@ const assertCoupled = (text: string, file: string): void => {
     throw new Error(`Refusing to write ${file}: it declares no job calling ${PACKAGE_NAME}.`);
   }
   // The same rule `doctor` rules on, from the same function rather than
-  // written out twice: both halves of the name, since a `self-check` naming the
-  // wrong called job is as invisible as one naming the wrong caller job.
+  // written out twice: the whole name, byte for byte, since a `self-check`
+  // naming the wrong called job — or the right two halves with the spaces
+  // around the slash left out — is as invisible as one naming the wrong caller
+  // job.
   if (!selfCheckMatches(written)) {
     throw new Error(
       `Refusing to write ${file}: \`self-check\` would be ${JSON.stringify(written.selfCheck)}, ` +
         `but the check run the \`${written.jobId}\` job produces is named ` +
-        `\`${selfCheckFor(written)}\` — \`<caller job id> / <called job id>\` — so the wait would ` +
+        `\`${selfCheckFor(written)}\` — \`<calling job's name> / <called job's name>\` — so the ` +
+        `wait would ` +
         `not recognise its own and would wait for itself.`,
     );
   }

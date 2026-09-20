@@ -153,6 +153,12 @@ interface Step {
 
 interface Job {
   readonly if?: string;
+  /**
+   * The job's display name, which GitHub writes into the check run in place of
+   * the id. Read here so a reusable half that grew one could not rename the
+   * second half of every adopter's `self-check` unnoticed.
+   */
+  readonly name?: string;
   readonly permissions?: Record<string, string>;
   readonly concurrency?: { readonly group?: string; readonly "cancel-in-progress"?: boolean };
   readonly steps?: readonly Step[];
@@ -1146,9 +1152,16 @@ describe("agent-review tells its caller what it cannot know", () => {
    * somebody else's repository, where no test of theirs could see it.
    */
   it.each(RUNNER_COMMANDS)("%s.yml declares a job of its own name", (command: string) => {
-    expect(Object.keys(workflowOf(path.join(WORKFLOW_DIR, `${command}.yml`)).jobs)).toEqual([
-      command,
-    ]);
+    const jobs = workflowOf(path.join(WORKFLOW_DIR, `${command}.yml`)).jobs;
+
+    expect(Object.keys(jobs)).toEqual([command]);
+    // And no `name:` on it, which is the other half of the same property:
+    // GitHub writes a job's display name into the check run and falls back to
+    // the id only where there is none. One added here would rename the second
+    // half of every adopter's `self-check` at once, and `doctor` — which
+    // composes it from the `uses:` filename, because that is all a caller
+    // states — would go on telling them the old one was right.
+    expect(jobs[command]?.name).toBeUndefined();
   });
 });
 

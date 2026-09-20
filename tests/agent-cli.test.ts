@@ -491,6 +491,25 @@ describe("init installs the reference callers into an adopting repo", () => {
     expect(fs.existsSync(missing)).toBe(false);
   });
 
+  /**
+   * And a `--dir` that exists but is a *file* is the same typo with a worse
+   * ending: `put`'s recursive mkdir throws `ENOTDIR` from inside the
+   * scaffolding, so the same mistake exits 1 with a message about a directory
+   * nobody named. Both commands take it, so both are checked.
+   */
+  it.each(["init", "doctor"])("refuses a --dir that is a file rather than a directory", async (command: string) => {
+    const file = path.join(os.tmpdir(), `agent-dir-file-${command}-${process.pid}`);
+    fs.writeFileSync(file, "");
+    try {
+      const { code, err } = await invoke([command, "--dir", file]);
+
+      expect(code).toBe(2);
+      expect(err).toContain(file);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
   /** And where it did work, since every other line it prints is repo-relative. */
   it("names the directory it worked in", async () => {
     const root = adopted();
@@ -1028,6 +1047,12 @@ describe("doctor names the failures that otherwise look like something else", ()
   it.each([
     ["names no called job at all", "self-check: review"],
     ["names the wrong called job", "self-check: review / reviewer"],
+    // And the whitespace, which is not whitespace: `review.yml` filters with
+    // `select(.name != env.SELF_CHECK)`, a byte comparison against the check
+    // run's own name, so ` / ` is part of the value rather than spacing around
+    // it. `review/review` is what somebody writes from memory and it excludes
+    // nothing — the same silence as a wrong job id, reached the other way.
+    ["leaves out the spaces around the slash", "self-check: review/review"],
   ])("fails a self-check that %s", async (_case: string, written: string) => {
     const root = await installed();
     edit(root, "agent-review.yml", (text) =>
@@ -1039,6 +1064,46 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(code).toBe(1);
     expect(err).toContain("self-check");
     expect(err).toContain("Set `self-check: review / review`");
+  });
+
+  /**
+   * The calling half is the job's **display name**, which is the id only when
+   * the job declares no `name:`. GitHub writes `jobs.<id>.name` into the check
+   * run where it has one, and `docs/ADOPTING.md` §4 invites exactly that
+   * rename — so composing the id here would fail a correctly-configured caller
+   * and hand it a `fix:` that breaks a loop which currently works. The one
+   * wrong finding a preflight cannot afford.
+   *
+   * The findings still name the job by **id**, because that is what an adopter
+   * greps their YAML for.
+   */
+  it("reads the calling job's display name, not its id, as the first half", async () => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) =>
+      text
+        .replace(/^  review:$/m, "  review:\n    name: Agent review")
+        .replace("self-check: review / review", "self-check: Agent review / review"),
+    );
+
+    const { code, err } = await check(root, healthy());
+
+    expect(err).toBe("");
+    expect(code).toBe(0);
+  });
+
+  /** …and the id-shaped one is now the wrong answer on that same caller. */
+  it("fails a named job whose self-check still states the job id", async () => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) =>
+      text.replace(/^  review:$/m, "  review:\n    name: Agent review"),
+    );
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toContain("Set `self-check: Agent review / review`");
+    // Named by id, since that is what they will search their YAML for.
+    expect(err).toContain("`review` job");
   });
 
   /** A fact `gh` could not answer is reported as unknown, never as a pass. */

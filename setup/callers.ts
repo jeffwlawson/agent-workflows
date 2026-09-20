@@ -29,6 +29,13 @@ export interface InstalledCaller {
   readonly workflow: string;
   /** First half of `self-check`, and the thing an adopter is free to rename. */
   readonly jobId: string;
+  /**
+   * That job's **display name** — `jobs.<id>.name` when it declares one, and
+   * the id otherwise. This is the half GitHub writes into the check-run name,
+   * so it is what `self-check` has to state; the id stays the thing findings
+   * name, because it is what an adopter greps their YAML for.
+   */
+  readonly jobName: string;
   /** Whatever follows the `@`: a tag, a SHA, or — the defect — a branch. */
   readonly ref: string;
   /**
@@ -51,13 +58,23 @@ export interface InstalledCaller {
 
 /**
  * The check-run name this caller's job actually produces, which is what
- * `self-check` has to be set to: `<caller job id> / <called job id>`.
+ * `self-check` has to be set to.
  *
- * **Both** halves are knowable from here. The first is the job the input sits
- * on. The second is the `uses:` filename — every reusable half in this package
- * declares one job whose id is its own filename, asserted in
- * `tests/workflows.test.ts` beside the pair the reference caller states — so
- * `workflow` is the called job id rather than a stand-in for it.
+ * **Both** halves are knowable from here, and neither is quite a job id.
+ *
+ * The first is the calling job's *display name*: GitHub writes `jobs.<id>.name`
+ * into the check run when the job declares one and falls back to the id only
+ * when it does not. The reference callers declare none, which is why the id
+ * reads as the answer — but `docs/ADOPTING.md` §4 invites an adopter to rename,
+ * and a caller carrying `name: Agent review` produces `Agent review / review`.
+ * Composing the id there would fail a correct caller and hand it a `fix:` that
+ * breaks a working loop, which is the one thing a preflight cannot do.
+ *
+ * The second is the `uses:` filename — every reusable half in this package
+ * declares one job whose id is its own filename and no `name:` of its own, both
+ * asserted in `tests/workflows.test.ts` beside the pair the reference caller
+ * states — so `workflow` is the called job's display name rather than a
+ * stand-in for it.
  *
  * Checking only the first half is how `self-check: agent_review` passes, and
  * `agent_review / reviewer` with it: neither names a check run that exists, so
@@ -65,20 +82,23 @@ export interface InstalledCaller {
  * then reviews on degraded evidence. Nothing errors at any point.
  */
 export const selfCheckFor = (caller: InstalledCaller): string =>
-  `${caller.jobId} / ${caller.workflow}`;
+  `${caller.jobName} / ${caller.workflow}`;
 
 /**
- * Whether a caller's `self-check` is that name. Compared past the whitespace
- * around the slash, which is spacing rather than a value, and true for a caller
- * that sets no `self-check` at all — four of the five take no such input, and
- * an absent one is not a wrong one.
+ * Whether a caller's `self-check` is that name, compared **literally**.
+ *
+ * `review.yml` filters with `select(.name != env.SELF_CHECK)`, which is a byte
+ * comparison against the check run's own name, so ` / ` is part of the value
+ * rather than spacing around it. `review/review` is the shape somebody writes
+ * from memory and it excludes nothing — the same silence a wrong job id gives,
+ * through the other half of the same string.
+ *
+ * True for a caller that sets no `self-check` at all: four of the five take no
+ * such input, and the one that does declares it `required: true`, so an absent
+ * one is refused by GitHub rather than being quietly wrong.
  */
 export const selfCheckMatches = (caller: InstalledCaller): boolean =>
-  caller.selfCheck === undefined ||
-  caller.selfCheck
-    .split("/")
-    .map((half) => half.trim())
-    .join(" / ") === selfCheckFor(caller);
+  caller.selfCheck === undefined || caller.selfCheck === selfCheckFor(caller);
 
 const asStringMap = (value: unknown): Record<string, string> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -166,6 +186,7 @@ export const callersIn = (
   return Object.entries(jobs).flatMap(([jobId, entry]) => {
     const job = (typeof entry === "object" && entry !== null ? entry : {}) as {
       readonly uses?: unknown;
+      readonly name?: unknown;
       readonly permissions?: unknown;
       readonly with?: unknown;
     };
@@ -178,6 +199,10 @@ export const callersIn = (
         file,
         workflow: match[1] ?? "",
         jobId,
+        // GitHub's own fallback, and the reason it is read at all: a caller
+        // that declares no `name:` puts its id in the check run, which is every
+        // caller in `examples/callers/` and none of the renamed ones.
+        jobName: typeof job.name === "string" ? job.name : jobId,
         ref: match[2] ?? "",
         ...grantsFor(job, top, topDeclared),
         selfCheck,

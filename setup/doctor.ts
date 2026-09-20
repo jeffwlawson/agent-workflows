@@ -525,12 +525,15 @@ const list = (
  * it — and `undefined` where either of them could not be read.
  *
  * The judgement is in the third argument. `safeGh` renders every failure as the
- * same empty string, and the organization endpoint 404s on a user-owned
- * repository: trusting that as "could not read" would make every org-less
- * repository undiagnosable, which is most of them. Knowing there is no
- * organization is what turns that 404 into the fact it is — *there are none* —
- * while leaving a 403 on a repository that has one as unknown, where absence
- * cannot be concluded from a list that was never served.
+ * same empty string, and the organization endpoint refuses a user-owned
+ * repository outright — 422 Validation Failed, observed against this repository
+ * with `gh` 2.101.0, and named as the instance rather than the rule because the
+ * argument holds for whatever code a later API answers with. Trusting that
+ * refusal as "could not read" would make every org-less repository
+ * undiagnosable, which is most of them. Knowing there is no organization is
+ * what turns that refusal into the fact it is — *there are none* — while
+ * leaving a 403 on a repository that has one as unknown, where absence cannot
+ * be concluded from a list that was never served.
  */
 export const availableSecrets = (
   repository: readonly string[] | undefined,
@@ -622,8 +625,8 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
   const inOrg = inOrganization === "true" ? true : inOrganization === "false" ? false : undefined;
   // Not asked where there is nothing to ask — an unreadable first list makes
   // the answer unknown whatever the second says, and on a user-owned
-  // repository the endpoint 404s, which `safeGh` renders as the same empty
-  // string a 403 gives.
+  // repository the endpoint refuses the request (422 against this repository's
+  // `gh`), which `safeGh` renders as the same empty string a 403 gives.
   const organizationSecrets =
     repositorySecrets === undefined || inOrg === false
       ? undefined

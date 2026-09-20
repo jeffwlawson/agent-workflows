@@ -281,7 +281,7 @@ and which value a label has is a **column**:
 | `agent:review`, `agent:fix`, `agent:update-branch` | **consumed on entry** | the run, as it starts |
 | `agent:implement` on an ordinary issue | **consumed on entry** | the run, as it starts |
 | `agent:implement` on a PRD parent | **cursor** | the chain, by *not* re-adding it after the last slice |
-| `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, and only on one that filed — or you, to opt out |
+| `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, on any run that reached a verdict — or you, to opt out |
 
 **Fill the column in when you add a label.** Written as prose this said "consumed on entry, except
 on a PRD parent, and also except for the marker" — which is read as "consumed on entry", and the
@@ -294,8 +294,9 @@ means the PAT is missing (§1).
 
 **The marker.** `agent:follow-ups` says *this pull request's latest review recorded out-of-scope
 findings*. The review half adds it on any run that recorded one and never removes it; removing it
-is how an author **opts out** before the merge, and the filing half removes it only on a run that
-actually filed — so a failed or partial run leaves the retry affordance where it was. Adding it
+is how an author **opts out** before the merge, and the filing half removes it on any run that
+reached a verdict — including one where every finding was suppressed, or where the latest review
+retracted them — so a failed or partial run leaves the retry affordance where it was. Adding it
 back to a **closed** pull request is the manual entry point, and it is the gesture
 [re-adding a label that is already there](#re-adding-a-label-that-is-already-there-fires-nothing)
 in §1 is about: you will reach for it on a pull request that already carries the label, where it
@@ -316,7 +317,7 @@ changes the brief under the slices that have not run yet, and the same PR ends u
 different specs. If something has to change after labelling, say so on the PR instead: that reaches
 the review and fix agents, which the issue body no longer does.
 
-**Where the labels come from is a separate question.** These six are *workflow state*. If you also
+**Where the labels come from is a separate question.** These are all *workflow state*. If you also
 run a triage step — a human or a planning skill deciding an issue is well enough specified to hand
 over — that is a second vocabulary, and joining the two is a decision you have to make explicitly.
 `docs/agents/triage-labels.md` records this repo's answer: the canonical triage roles, the

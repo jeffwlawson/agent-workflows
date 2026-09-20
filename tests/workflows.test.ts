@@ -3079,11 +3079,18 @@ describe("the adoption doc counts nothing a release can falsify", () => {
    * design decision (they partition every label event by issue shape), so the
    * number is part of what is being said rather than a tally of a set that
    * grows.
+   *
+   * The emphasis markers between the number and the noun are skipped, which is
+   * not cosmetic: *these six are \*workflow state\** is exactly the count this
+   * check was written for and exactly the one it let through (#54), because
+   * `\s+(workflows?)` wants the noun adjacent and Markdown had put an asterisk
+   * in front of it. A guard that reads as though it covers a site it cannot see
+   * is worse than one that never claimed to.
    */
   it("counts callers, workflows and files nowhere else", () => {
     const EXEMPT = ["two `implement` workflows", "two implement workflows"];
     const COUNTED = new RegExp(
-      `\\b(${Object.keys(NUMBERS).join("|")})\\b(?:\\s+[\\w\`*-]+){0,2}\\s+(callers?|workflows?|reusables?|files|pins?)\\b`,
+      `\\b(${Object.keys(NUMBERS).join("|")})\\b(?:\\s+[\\w\`*-]+){0,2}\\s+[*_\`]*(callers?|workflows?|reusables?|files|pins?)\\b`,
       "gi",
     );
 

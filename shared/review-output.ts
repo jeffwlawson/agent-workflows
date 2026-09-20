@@ -14,9 +14,35 @@ export interface InlineComment {
   readonly body: string;
 }
 
+/**
+ * A problem the review found and this pull request will not fix — a defect in a
+ * function the diff only calls, a missing test for behaviour it did not change.
+ * The third output channel, beside the summary and the inline comments (#47).
+ *
+ * It exists because both of the other two lose it. A finding in the summary is
+ * text on a review nobody reads once the PR has merged; an out-of-scope finding
+ * is *off-diff* by construction, and an off-diff inline comment is dropped
+ * before posting by `filterInlineComments` above.
+ */
+export interface FollowUp {
+  /** One line, as a human scans it in a triage list. */
+  readonly title: string;
+  /** `path` or `path:line` — where a reader starts. Not validated against the diff. */
+  readonly location: string;
+  /** Evidence it is real, then why this PR cannot fix it. */
+  readonly body: string;
+}
+
+/**
+ * At most this many per review. Enforced by `capFollowUps` and *never* by the
+ * schema — see the comment there.
+ */
+export const MAX_FOLLOW_UPS = 3;
+
 export interface ReviewOutput {
   readonly summary: string;
   readonly inlineComments: InlineComment[];
+  readonly followUps: FollowUp[];
 }
 
 const positiveInt = (value: unknown, label: string): number => {
@@ -50,12 +76,27 @@ const parseInlineComment = (value: unknown): InlineComment => {
   };
 };
 
+const parseFollowUp = (value: unknown): FollowUp => {
+  const record = asRecord(value, "follow-up");
+  return {
+    title: asString(record["title"], "follow-up title"),
+    location: asString(record["location"], "follow-up location"),
+    body: asString(record["body"], "follow-up body"),
+  };
+};
+
 export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
   const record = asRecord(value, "review output");
   return {
     summary: asString(record["summary"], "summary"),
     inlineComments: asArray(record["inlineComments"] ?? [], "inlineComments").map(
       parseInlineComment,
+    ),
+    // Absent is the ordinary case — most reviews find nothing out of scope —
+    // so it defaults rather than being required. Nothing here rejects a list
+    // longer than the cap: see `capFollowUps`.
+    followUps: asArray(record["followUps"] ?? record["follow_ups"] ?? [], "followUps").map(
+      parseFollowUp,
     ),
   };
 });
@@ -89,3 +130,97 @@ export const filterInlineComments = (
     }
     return true;
   });
+
+/**
+ * Apply the cap, and report what it cost.
+ *
+ * Truncation rather than a schema error, deliberately: throwing would fail
+ * extraction and lose the *whole* review — summary and inline comments with it
+ * — and a model that emitted a fourth follow-up has not produced a broken
+ * review. This sits beside `filterInlineComments` for that reason; both drop
+ * bad output rather than rejecting the run.
+ *
+ * The first three, not a re-ranked three. The extraction prompt states the
+ * ordering axis and states that anything past the third is dropped from the
+ * end, so the order is a contract the model can be held to; re-deriving one
+ * here would need a seriousness judgement nothing in this file can make.
+ */
+export const capFollowUps = (
+  followUps: readonly FollowUp[],
+): { kept: FollowUp[]; dropped: number } => ({
+  kept: followUps.slice(0, MAX_FOLLOW_UPS),
+  dropped: Math.max(0, followUps.length - MAX_FOLLOW_UPS),
+});
+
+/**
+ * What a reader selects the payload on, and nothing more than that. The
+ * marker is a **selector, not a control**: it says where the block is and
+ * contributes nothing to trusting it. Whatever reads this establishes that the
+ * review is the runner's own by checking who posted it and whether it was
+ * edited — never by the presence of this string, which anyone who can comment
+ * can type.
+ */
+export const FOLLOW_UPS_MARKER = "agent-follow-ups";
+
+/**
+ * The payload shape a reader gets back. Versioned because the review runner and
+ * whatever reads this are same-version at *install* time and not at *read*
+ * time: a review posted before a release is read after it. The field is the
+ * cheapest way for a reader to refuse a shape it does not know.
+ */
+export const FOLLOW_UPS_VERSION = 1;
+
+/** The label whose removal opts a pull request out of having these filed. */
+export const FOLLOW_UPS_LABEL = "agent:follow-ups";
+
+/**
+ * The block appended to the review body: one `<details>`, two readers.
+ *
+ * Visible and collapsed, because an opt-out the author cannot see is not an
+ * opt-out — and the question it asks of them (*do I want these filed?*) is
+ * answered by the titles alone. The bodies live only in the payload: a review
+ * body has a hard 65,536-character ceiling whose overflow is a 422 that takes
+ * the inline comments down with it, so the full stub text is not spent twice.
+ *
+ * Called with at least one finding. A review that recorded none appends nothing
+ * at all rather than an empty block — there is no opt-out to offer.
+ */
+export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number): string => {
+  // `<` and `>` escaped into the JSON rather than stripped: model prose may
+  // legitimately contain `-->`, which would end the comment early and truncate
+  // the payload to invalid JSON — a reader that files nothing rather than one
+  // that files three. `JSON.parse` decodes the escapes, so the round trip is
+  // exact.
+  const payload = JSON.stringify({
+    version: FOLLOW_UPS_VERSION,
+    dropped,
+    followUps: kept,
+  }).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+
+  // One line each. A title is meant to be one line; whitespace-collapsing it
+  // means a model that wrapped one cannot break the list it sits in.
+  const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+  const items = kept.map((f) => `- **${oneLine(f.title)}** — \`${oneLine(f.location)}\``);
+
+  // Said here as well as after the merge, because this is the half that is
+  // actionable: it reaches the author while the pull request is still open and
+  // raising the dropped finding by hand is still cheap.
+  const truncation =
+    dropped === 0
+      ? []
+      : [
+          "",
+          `Only the ${MAX_FOLLOW_UPS} most serious are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`,
+        ];
+
+  return [
+    "<details>",
+    `<summary>${kept.length} out-of-scope finding${kept.length === 1 ? "" : "s"} recorded to file when this pull request merges — remove the <code>${FOLLOW_UPS_LABEL}</code> label to skip them</summary>`,
+    "",
+    ...items,
+    ...truncation,
+    "",
+    `<!-- ${FOLLOW_UPS_MARKER} ${payload} -->`,
+    "</details>",
+  ].join("\n");
+};

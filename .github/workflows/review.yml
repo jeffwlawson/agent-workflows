@@ -563,6 +563,38 @@ jobs:
           PAYLOAD: ${{ runner.temp }}/review_payload.json
         run: gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" --input "$PAYLOAD"
 
+      # The marker for the filing half (#47): this PR's review recorded
+      # out-of-scope findings, and a human still has a say before they become
+      # issues. Removing the label is that say.
+      #
+      # **Added when, and only when, the run recorded at least one.** The runner
+      # writes `follow_ups.md` in no other case, so the file's existence is the
+      # whole condition — no parsing, and nothing here that can decide
+      # differently from what went into the body.
+      #
+      # **Never removed here**, which is the other half of the rule and is not
+      # symmetry. Removal is the human's opt-out gesture; a step that cleared a
+      # stale marker would be racing the person it exists to serve. A marker
+      # left behind by a later empty run costs nothing — the findings live in
+      # the review body, and a merge whose latest review carries no block is a
+      # silent no-op.
+      #
+      # After the review is posted, on purpose. The label points at a record
+      # that lives in the review body, so marking a PR whose review failed to
+      # post would point at nothing.
+      #
+      # Never fails the run. This label is newer than the six `docs/ADOPTING.md`
+      # §3 mandates, so an adopter can be up to date on the pin and not have it
+      # — and a posted review is worth more than a marker. A warning says so
+      # where `|| true` would not, the same call `Mark PR ready for review`
+      # makes below.
+      - name: Mark the PR as carrying follow-ups
+        if: steps.state.outputs.proceed == 'true' && success()
+        run: |
+          [ -f "${RUNNER_TEMP}/follow_ups.md" ] || exit 0
+          gh pr edit "$PR_NUMBER" --add-label "agent:follow-ups" \
+            || echo "::warning::Could not add \`agent:follow-ups\` to PR #${PR_NUMBER}. Its out-of-scope findings stay in the review body and nothing will file them. If the label does not exist in this repository, create it."
+
       # Draft means "the automated pipeline has not finished", not "the agent is
       # still writing code" — so this belongs here rather than at the end of
       # implement. The human's first real decision (act on the review, or merge)

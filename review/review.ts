@@ -12,7 +12,12 @@ import {
   writeText,
 } from "../shared/common.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
-import { filterInlineComments, reviewOutputSchema } from "../shared/review-output.js";
+import {
+  capFollowUps,
+  filterInlineComments,
+  renderFollowUpsBlock,
+  reviewOutputSchema,
+} from "../shared/review-output.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
@@ -70,10 +75,24 @@ try {
   const validComments = filterInlineComments(result.output.inlineComments, context.diffLines);
   const headSha = sh("git rev-parse HEAD").trim();
 
+  // The third channel, serialised into the body on the way out. It cannot stay
+  // a sibling of `summary` in the posted artifact: a review has one body, and
+  // the body is the only part of a review that is still readable — by a human
+  // or by anything else — after the pull request has merged.
+  //
+  // Capped here rather than in the schema. A fourth follow-up is not a broken
+  // review, and rejecting the output would lose the summary and every inline
+  // comment with it.
+  const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(result.output.followUps);
+  const followUpsBlock =
+    followUps.length === 0 ? "" : renderFollowUpsBlock(followUps, droppedFollowUps);
+  const body =
+    followUpsBlock === "" ? result.output.summary : `${result.output.summary}\n\n${followUpsBlock}`;
+
   writeJson("review_payload.json", {
     commit_id: headSha,
     event: "COMMENT",
-    body: result.output.summary,
+    body,
     comments: validComments.map((c) => ({
       path: c.path,
       line: c.line,
@@ -88,8 +107,16 @@ try {
   });
   writeText("summary.md", result.output.summary);
 
+  // How the workflow knows to mark the pull request: a step cannot read this
+  // process's memory, and the marker label has to go on when — and only when —
+  // this run recorded something. Written only in that case, so its *existence*
+  // is the whole condition and the step needs no parsing. The content is the
+  // block exactly as posted, which is what a human debugging the run wants.
+  if (followUpsBlock !== "") writeText("follow_ups.md", followUpsBlock);
+
   console.log("Review complete.");
   console.log(`Inline comments: ${validComments.length} kept of ${result.output.inlineComments.length} produced.`);
+  console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }

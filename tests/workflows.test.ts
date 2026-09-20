@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { FOLLOW_UPS_LABEL } from "../shared/review-output.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -792,6 +793,75 @@ describe("agent-review refuses a head that moved while it was queued", () => {
    */
   it("proceeds when the live head cannot be read", () => {
     expect(stepsOf(REVIEW)[0]?.run ?? "").toContain('[ -n "$current" ]');
+  });
+});
+
+/**
+ * The review's third output channel (#47). The findings themselves live in the
+ * review body, where a human reads them before merging; the label is what a
+ * later workflow selects on, and what removing opts a PR out of.
+ *
+ * Neither half of that has a runtime symptom when it breaks. A marker that
+ * never goes on leaves the findings visible and unfiled — indistinguishable
+ * from a review that found nothing out of scope — and a marker that goes on
+ * every review makes the whole channel noise.
+ */
+describe("agent-review marks a PR whose review recorded follow-ups", () => {
+  const markStep = (): Step | undefined =>
+    stepsOf(REVIEW).find((s) => (s.run ?? "").includes("--add-label \"agent:follow-ups\""));
+
+  it("adds the label the review body tells the author to remove", () => {
+    // Pinned as a literal on both sides of the seam: the block's opt-out line
+    // is rendered from this constant and the step spends the string, and a
+    // drift between them is an instruction naming a label nothing adds.
+    expect(FOLLOW_UPS_LABEL).toBe("agent:follow-ups");
+    expect(markStep()?.run ?? "").toContain(`--add-label "${FOLLOW_UPS_LABEL}"`);
+  });
+
+  /**
+   * When, and *only* when, the run recorded at least one. The runner writes
+   * that file in no other case, so the file's existence is the whole condition
+   * — nothing in the step can decide differently from what went into the body.
+   */
+  it("marks on a written record rather than on having run", () => {
+    expect(markStep()?.run ?? "").toContain('[ -f "${RUNNER_TEMP}/follow_ups.md" ] || exit 0');
+  });
+
+  /**
+   * And after the review is posted. The label points at a record that lives in
+   * the review body, so a marker on a PR whose review failed to post points at
+   * nothing — and `success()` is what makes the step's own position mean that.
+   */
+  it("runs after the review has posted, and only if it did", () => {
+    expect(markStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(names.indexOf(markStep()?.name ?? "")).toBeGreaterThan(names.indexOf("Post PR review"));
+  });
+
+  /**
+   * Never removed here. Removal is the human's opt-out gesture and, later, the
+   * filing step's on-success cleanup; a step that cleared a stale marker would
+   * be racing the person it exists to serve. A marker left by a later empty run
+   * costs nothing — a merge whose latest review carries no block is a no-op.
+   */
+  it("never removes the marker", () => {
+    expect(fs.readFileSync(REVIEW, "utf8")).not.toContain(`--remove-label "${FOLLOW_UPS_LABEL}"`);
+  });
+
+  /**
+   * A label add that fails must not fail the review. This label is newer than
+   * the six `docs/ADOPTING.md` §3 mandates, so an adopter can be current on the
+   * pin and not have it — and a posted review is worth more than its marker.
+   * A warning says so; `|| true` would leave a loop that silently files nothing
+   * and looks healthy.
+   */
+  it("warns rather than failing when the label cannot be added", () => {
+    const run = markStep()?.run ?? "";
+
+    expect(run).toContain("::warning::");
+    expect(run).not.toContain("|| true");
   });
 });
 

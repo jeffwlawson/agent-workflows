@@ -43,7 +43,8 @@ update moves the pin in the files you have and changes nothing else. A caller is
 `with:` inputs below, a job you renamed, your own `permissions:` additions, a second job in the same
 file. So a re-run pins what is installed, leaves a caller you deleted deleted, and names anything it
 did not touch rather than writing it back. What it therefore does **not** do is carry across a
-change a later release made to a caller itself — `doctor` reports those, with the fix.
+change a later release made to a caller itself — `doctor` reports the ones in the table below, with
+the fix, and that table is the whole of what it rules on.
 
 `doctor` exits non-zero on every §1 failure detectable from repo state, and names the fix for each:
 
@@ -55,7 +56,7 @@ change a later release made to a caller itself — `doctor` reports those, with 
 | a caller that declares no `permissions:` block at all | §4 — it runs with the default token, whose restricted setting is `contents` and `packages` read, so the install works and every write 403s |
 | a **private** repo's review caller grants `checks: read` | §4 — a wait that spends its budget and reviews blind |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
-| `self-check` names the job it is in | §4 — a job that waits for itself for 15 of its 20 minutes |
+| `self-check` names the check run its job produces — **both** halves of `<caller job id> / <called job id>` | §4 — a job that waits for itself for 15 of its 20 minutes |
 | the labels exist | §3 — a transition that is a silent no-op |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
 

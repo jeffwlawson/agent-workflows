@@ -54,10 +54,18 @@ place and then checks it: `init` copies the reference callers in with the pin su
 with no runtime symptom, which is why looking has to be deliberate.
 
 The boundary between them follows the one above: the caller is the adopter's, so a re-run of `init`
-moves the pin in the files they have and changes nothing else about them. Everything a later
-release changed *inside* a caller is `doctor`'s to name, with the fix, rather than `init`'s to
-overwrite — a scaffolder that silently reverted a `with:` input would be manufacturing exactly the
-failure class the pair exists to remove.
+moves the pin in the files they have and changes nothing else about them. What a later release
+changed *inside* a caller is `doctor`'s to name, with the fix, rather than `init`'s to overwrite —
+a scaffolder that silently reverted a `with:` input would be manufacturing exactly the failure
+class the pair exists to remove.
+
+`doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — the two
+grants, an absent `permissions:` block, the pin's shape and its freshness, `self-check`, the labels
+— and reads nothing out of `examples/callers/`, so a release that changes a caller *body* is a
+release that teaches `diagnose` about it in the same commit, exactly as a new pin site is a change
+to `shared/pins.ts` in the same commit. Diffing an adopter's caller against the reference is the
+other design and it is the wrong one here: most of what differs is a decision they made, and a
+preflight that reported those as faults would be read for about one release.
 
 They ship in the same package as the runners on purpose. The version that writes a pin has to be the
 version that pin names, and the version that diagnoses a loop has to be the one whose guards it

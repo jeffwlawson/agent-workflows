@@ -36,7 +36,7 @@ the half an adopter owns.
 `doctor` exits non-zero on every failure `docs/ADOPTING.md` §1 describes as announcing itself as
 something else — a missing secret, a caller without `packages: read`, a private repo's review caller
 without `checks: read`, a pin that is a branch rather than a tag, a `self-check` that does not name
-its own job, a label that does not exist — and names the fix for each. It also reports how many
+the check run its job produces, a label that does not exist — and names the fix for each. It also reports how many
 releases behind each pin is, which is a thing to know rather than a thing that is broken.
 
 They are subcommands of the same binary on purpose: the version that writes a pin has to be the

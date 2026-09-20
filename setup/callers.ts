@@ -49,6 +49,37 @@ export interface InstalledCaller {
   readonly selfCheck: string | undefined;
 }
 
+/**
+ * The check-run name this caller's job actually produces, which is what
+ * `self-check` has to be set to: `<caller job id> / <called job id>`.
+ *
+ * **Both** halves are knowable from here. The first is the job the input sits
+ * on. The second is the `uses:` filename — every reusable half in this package
+ * declares one job whose id is its own filename, asserted in
+ * `tests/workflows.test.ts` beside the pair the reference caller states — so
+ * `workflow` is the called job id rather than a stand-in for it.
+ *
+ * Checking only the first half is how `self-check: agent_review` passes, and
+ * `agent_review / reviewer` with it: neither names a check run that exists, so
+ * the wait excludes nothing, spends 15 of its 20 minutes waiting for itself and
+ * then reviews on degraded evidence. Nothing errors at any point.
+ */
+export const selfCheckFor = (caller: InstalledCaller): string =>
+  `${caller.jobId} / ${caller.workflow}`;
+
+/**
+ * Whether a caller's `self-check` is that name. Compared past the whitespace
+ * around the slash, which is spacing rather than a value, and true for a caller
+ * that sets no `self-check` at all — four of the five take no such input, and
+ * an absent one is not a wrong one.
+ */
+export const selfCheckMatches = (caller: InstalledCaller): boolean =>
+  caller.selfCheck === undefined ||
+  caller.selfCheck
+    .split("/")
+    .map((half) => half.trim())
+    .join(" / ") === selfCheckFor(caller);
+
 const asStringMap = (value: unknown): Record<string, string> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? Object.fromEntries(

@@ -1,7 +1,13 @@
 import { safeGh, writeText } from "../shared/common.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
-import { readInstalledCallers, repoSlug, type InstalledCaller } from "./callers.js";
-import { labelsFor } from "./init.js";
+import {
+  readInstalledCallers,
+  repoSlug,
+  selfCheckFor,
+  selfCheckMatches,
+  type InstalledCaller,
+} from "./callers.js";
+import { labelCommand, labelSpecsFor } from "./init.js";
 import type { CliIo } from "../cli.js";
 
 /**
@@ -9,7 +15,7 @@ import type { CliIo } from "../cli.js";
  * as announcing itself as something else. None of them errors on its own, which
  * is the whole reason to look for them on purpose — a missing `packages: read`
  * reads as a bad token, a missing `AGENT_PAT` reads as a working loop, and a
- * `self-check` that does not name its own job reads as a slow CI.
+ * `self-check` that names a check run the job does not produce reads as a slow CI.
  *
  * Two halves, deliberately separated:
  *
@@ -64,13 +70,6 @@ export interface RepoFacts {
 /** An exact release tag, or a full commit SHA. Nothing that can move. */
 const TAG = /^v?\d+\.\d+\.\d+$/;
 const SHA = /^[0-9a-f]{40}$/;
-
-/**
- * The fix for a missing label is the command that creates it — the same one
- * `init`'s `SETUP.md` already listed, so the two halves of the install path say
- * the same thing.
- */
-const labelCommand = (name: string): string => `gh label create "${name}"`;
 
 const semver = (tag: string): readonly number[] =>
   (/^v?(\d+)\.(\d+)\.(\d+)$/.exec(tag)?.slice(1) ?? ["0", "0", "0"]).map(Number);
@@ -258,18 +257,23 @@ export const diagnose = (
     });
   }
 
+  // Both halves, because a check run whose name is wrong in either is a check
+  // run that does not exist — and the two mistakes are the same silence. A
+  // `self-check` naming only the caller's job is the shape somebody writes from
+  // memory; one naming the wrong called job is what a renamed reusable leaves
+  // behind. `selfCheckFor` is the name the job really produces, so it is also
+  // the whole of the fix.
   for (const caller of callers) {
-    if (caller.selfCheck === undefined) continue;
-    const [job] = caller.selfCheck.split("/").map((half) => half.trim());
-    if (job === caller.jobId) continue;
+    if (selfCheckMatches(caller)) continue;
     add({
       severity: "error",
       check: "self-check",
       problem:
-        `${caller.file} sets \`self-check: ${caller.selfCheck}\` on a job whose id is ` +
-        `\`${caller.jobId}\`. The check run is named \`<caller job id> / <called job id>\`, so the ` +
-        `wait does not recognise its own and waits for itself before reviewing on degraded evidence.`,
-      fix: `Set \`self-check: ${caller.jobId} / ${caller.selfCheck.split("/").pop()?.trim() ?? caller.workflow}\`.`,
+        `${caller.file} sets \`self-check: ${caller.selfCheck}\` on the \`${caller.jobId}\` job, ` +
+        `which calls \`${caller.workflow}.yml\`. The check run that job produces is named ` +
+        `\`${selfCheckFor(caller)}\` — \`<caller job id> / <called job id>\` — so the wait does not ` +
+        `recognise its own and waits for itself before reviewing on degraded evidence.`,
+      fix: `Set \`self-check: ${selfCheckFor(caller)}\`.`,
     });
   }
 
@@ -323,23 +327,30 @@ export const diagnose = (
     });
   }
 
-  const needed = labelsFor(callers.map((caller) => caller.workflow));
+  // Specs rather than names, so the command offered here is the one `init`'s
+  // `SETUP.md` would have run — `labelCommand` is a single definition of it.
+  // Only the name decides anything at run time, but a fix that creates six
+  // labels with random colours and no descriptions leaves a repository that
+  // followed the advice looking different from one that ran `init`, over a
+  // difference nobody chose.
+  const needed = labelSpecsFor(callers.map((caller) => caller.workflow));
   if (facts.labels === undefined) {
     add({
       severity: "warning",
       check: "labels",
       problem: `Could not list this repository's labels.`,
-      fix: `Create them by hand: ${needed.map(labelCommand).join("; ")}.`,
+      fix: `Create them by hand:\n       ${needed.map(labelCommand).join("\n       ")}`,
     });
   } else {
-    const absent = needed.filter((label) => !facts.labels?.includes(label));
+    const absent = needed.filter((label) => !facts.labels?.includes(label.name));
     if (absent.length > 0) {
       add({
         severity: "error",
         check: "labels",
         problem:
-          `${absent.join(", ")} ${absent.length === 1 ? "does" : "do"} not exist. A missing label ` +
-          `makes its transition a no-op, so the state machine drifts without erroring.`,
+          `${absent.map((label) => label.name).join(", ")} ${absent.length === 1 ? "does" : "do"} ` +
+          `not exist. A missing label makes its transition a no-op, so the state machine drifts ` +
+          `without erroring.`,
         fix: absent.map(labelCommand).join("\n       "),
       });
     }

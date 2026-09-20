@@ -2,7 +2,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { PACKAGE_NAME, VERSION } from "../shared/manifest.js";
 import { rewritePins, WORKFLOW_DIR } from "../shared/pins.js";
-import { callersIn, readInstalledCallers, repoSlug } from "./callers.js";
+import {
+  callersIn,
+  readInstalledCallers,
+  repoSlug,
+  selfCheckFor,
+  selfCheckMatches,
+} from "./callers.js";
 
 /**
  * The install path: scaffold into an adopter's repository what nothing upstream
@@ -92,7 +98,7 @@ export interface LabelSpec {
 
 /**
  * The state labels every installation needs, whichever callers were taken.
- * The trigger labels are derived from the callers instead — see `labelsFor`.
+ * The trigger labels are derived from the callers instead — see `labelSpecsFor`.
  */
 export const STATE_LABELS: readonly LabelSpec[] = [
   { name: "agent:in-progress", color: "FBCA04", description: "An agent run is currently active" },
@@ -122,9 +128,18 @@ export const labelSpecsFor = (workflows: readonly string[]): readonly LabelSpec[
   ...STATE_LABELS,
 ];
 
-/** The same, by name — what `doctor` compares against the repository's labels. */
-export const labelsFor = (workflows: readonly string[]): readonly string[] =>
-  labelSpecsFor(workflows).map((label) => label.name);
+/**
+ * A label exactly as it has to be created, as one line of shell.
+ *
+ * One definition, used by both halves: `SETUP.md` tells an adopter to run these
+ * and `doctor` offers them as the fix for a label that does not exist. Only the
+ * name decides anything at run time, so a second copy of the form would not
+ * break a loop — it would just leave a repository that followed `doctor`'s
+ * advice carrying six differently-coloured, undescribed labels from one that
+ * ran `init`, and `docs/ADOPTING.md` §3 unable to be right about both.
+ */
+export const labelCommand = ({ name, color, description }: LabelSpec): string =>
+  `gh label create "${name}" --color ${color} --description "${description}"`;
 
 export interface InitChange {
   /** Repo-relative, forward-slashed. */
@@ -167,13 +182,15 @@ const assertCoupled = (text: string, file: string): void => {
   if (written === undefined) {
     throw new Error(`Refusing to write ${file}: it declares no job calling ${PACKAGE_NAME}.`);
   }
-  const named = written.selfCheck?.split("/")[0]?.trim();
-  if (written.selfCheck !== undefined && named !== written.jobId) {
+  // The same rule `doctor` rules on, from the same function rather than
+  // written out twice: both halves of the name, since a `self-check` naming the
+  // wrong called job is as invisible as one naming the wrong caller job.
+  if (!selfCheckMatches(written)) {
     throw new Error(
-      `Refusing to write ${file}: \`self-check\` would be ${JSON.stringify(written.selfCheck)} on a ` +
-        `job whose id is \`${written.jobId}\`. The check run is named ` +
-        `\`<caller job id> / <called job id>\`, so the wait would not recognise its own and would ` +
-        `wait for itself.`,
+      `Refusing to write ${file}: \`self-check\` would be ${JSON.stringify(written.selfCheck)}, ` +
+        `but the check run the \`${written.jobId}\` job produces is named ` +
+        `\`${selfCheckFor(written)}\` — \`<caller job id> / <called job id>\` — so the wait would ` +
+        `not recognise its own and would wait for itself.`,
     );
   }
 };
@@ -191,10 +208,7 @@ const put = (full: string, text: string): "created" | "updated" | "unchanged" =>
 };
 
 const renderSetup = (workflows: readonly string[], callers: readonly string[]): string => {
-  const labels = labelSpecsFor(workflows).map(
-    ({ name, color, description }) =>
-      `gh label create "${name}" --color ${color} --description "${description}"`,
-  );
+  const labels = labelSpecsFor(workflows).map(labelCommand);
 
   return fs
     .readFileSync(SETUP_TEMPLATE, "utf8")

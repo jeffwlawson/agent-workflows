@@ -168,7 +168,12 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
    rules on callers and facts and nothing else. Keep the second one pure — every check is exercised
    through it, and an unreadable fact must stay `undefined` rather than collapsing into a pass.
    "No secrets are set" and "you are not an admin here" lead to opposite actions.
-5. `examples/callers/*.yml` and `setup/SETUP.md` are **assets**: `scripts/copy-assets.ts` puts them
+5. `diagnose` rules on a **fixed list**, and nothing diffs an adopter's caller against
+   `examples/callers/`. So a release that changes a caller *body* — a new `with:` input, a changed
+   trigger, another grant — is a change to `diagnose` in the same commit, the way a new pin site is
+   a change to `shared/pins.ts` in the same commit. Neither half carries it otherwise, and a re-run
+   of `init` reports `unchanged` on a caller that is now wrong.
+6. `examples/callers/*.yml` and `setup/SETUP.md` are **assets**: `scripts/copy-assets.ts` puts them
    under `dist/` at the same relative path, exactly as it does a prompt, because `tsc` emits `.js`
    and nothing else. An asset that is not copied resolves in a checkout and is absent from the
    tarball — a failure only a published version shows.

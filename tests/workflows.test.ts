@@ -1132,6 +1132,24 @@ describe("agent-review tells its caller what it cannot know", () => {
 
     expect(caller().with?.["self-check"]).toBe(`${callerJob} / ${calledJob}`);
   });
+
+  /**
+   * …and the second half is knowable from outside this repository, which is a
+   * property rather than a coincidence: every reusable half declares one job
+   * whose id is its own filename, so `review.yml@v…` is enough to say that the
+   * check run ends in `/ review`.
+   *
+   * `setup/callers.ts` reads it exactly that way — an adopter's caller names
+   * the file it calls and nothing else — so `doctor` can rule on *both* halves
+   * of their `self-check` and name the whole of the fix. Rename a job here
+   * without renaming its file and that advice becomes confidently wrong in
+   * somebody else's repository, where no test of theirs could see it.
+   */
+  it.each(RUNNER_COMMANDS)("%s.yml declares a job of its own name", (command: string) => {
+    expect(Object.keys(workflowOf(path.join(WORKFLOW_DIR, `${command}.yml`)).jobs)).toEqual([
+      command,
+    ]);
+  });
 });
 
 /**

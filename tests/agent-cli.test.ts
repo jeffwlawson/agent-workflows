@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
-import { init, STATE_LABELS, TRIGGER_LABELS } from "../setup/init.js";
+import { init, labelCommand, STATE_LABELS, TRIGGER_LABELS } from "../setup/init.js";
 import { asVisibility, parseList, runDoctor, type RepoFacts } from "../setup/doctor.js";
 
 /**
@@ -976,6 +976,29 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * And it is the *same* command `init` told them to run, colour and
+   * description included. Only the name decides anything at run time, so this
+   * breaks no loop — but the two halves of one install path handing out two
+   * different definitions of a label is how `docs/ADOPTING.md` §3 stops being
+   * true of a repository that did what it was told.
+   */
+  it("offers the label command init's SETUP.md already listed", async () => {
+    const root = await installed();
+    const facts = healthy();
+    const command =
+      STATE_LABELS.filter((label) => label.name === "agent:blocked").map(labelCommand)[0] ?? "";
+
+    const { err } = await check(root, {
+      ...facts,
+      labels: (facts.labels ?? []).filter((name) => name !== "agent:blocked"),
+    });
+
+    expect(command).toContain("--color");
+    expect(err).toContain(command);
+    expect(fs.readFileSync(path.join(root, "SETUP.md"), "utf8")).toContain(command);
+  });
+
+  /**
    * `self-check` has no runtime symptom at all: a job that does not recognise
    * its own check run waits for itself, for 15 of its 20 minutes, and then
    * reviews on degraded evidence.
@@ -988,6 +1011,34 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(1);
     expect(err).toContain("self-check");
+  });
+
+  /**
+   * Both halves of the name, because a check run named wrongly in either is a
+   * check run that does not exist — and the consequence is identical. A
+   * `self-check` with no `/` in it is what somebody writes from memory; one
+   * naming the wrong called job is what a rename leaves behind. Neither says
+   * anything at run time, so a check that read only the first half passed both
+   * and left the wait counting its own job among the ones to wait for.
+   *
+   * The called half is the reusable's job id, which is its filename
+   * (`tests/workflows.test.ts`), so the fix can name the whole of it rather
+   * than re-emitting whichever wrong half was already there.
+   */
+  it.each([
+    ["names no called job at all", "self-check: review"],
+    ["names the wrong called job", "self-check: review / reviewer"],
+  ])("fails a self-check that %s", async (_case: string, written: string) => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) =>
+      text.replace(/self-check: review \/ review/, written),
+    );
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toContain("self-check");
+    expect(err).toContain("Set `self-check: review / review`");
   });
 
   /** A fact `gh` could not answer is reported as unknown, never as a pass. */

@@ -246,6 +246,30 @@ const callerWorkflows = [...callersIn(CALLER_DIR), ...callersIn(WORKFLOW_DIR, "a
 const targetOf = (file: string): string =>
   (jobOf(file).uses ?? "").replace(/^[^/]+\/[^/]+\//, "").replace(/@.*$/, "");
 
+/**
+ * What each caller's trigger fires on, keyed by filename (#46). Everything
+ * absent takes `TRIGGER_TYPES_DEFAULT` — which today is every caller there is,
+ * so the map is empty and the default is exactly the assertion it replaces.
+ *
+ * It exists ahead of the first entry on purpose. The assertion below ran over
+ * every caller with no list at all, which reads as *derived* — the good kind of
+ * check in this file — but it was carrying an undeclared premise: that every
+ * caller in the loop is label-triggered. The first one that legitimately needs
+ * a second event type turns that assertion red with no hint that the premise is
+ * what moved, and the cheapest way out of a red derived check is to weaken it.
+ * A list announces itself when you add an entry; the entry is where the reason
+ * goes.
+ *
+ * Exact equality survives, per file: `pull_request_target` reaching a job that
+ * holds write is a security surface, so a caller must not be able to widen its
+ * own trigger. The exception is declared here rather than dissolved into a
+ * subset check, which would let *any* caller grow *any* extra type unnoticed.
+ */
+const TRIGGER_TYPES_DEFAULT: readonly string[] = ["labeled"];
+const TRIGGER_TYPES: Readonly<Record<string, readonly string[]>> = {};
+const triggerTypesOf = (file: string): readonly string[] =>
+  TRIGGER_TYPES[path.basename(file)] ?? TRIGGER_TYPES_DEFAULT;
+
 /** The review job — the reusable half, where every step now lives (#97). */
 const REVIEW = path.join(WORKFLOW_DIR, "review.yml");
 /** …and the caller that triggers it. */
@@ -839,7 +863,7 @@ describe("every workflow in the loop is called rather than copied", () => {
     const doc = workflowOf(file);
     const trigger = doc.on?.pull_request_target ?? doc.on?.issues;
 
-    expect(trigger?.types).toEqual(["labeled"]);
+    expect(trigger?.types).toEqual(triggerTypesOf(file));
     expect(jobOf(file).steps).toBeUndefined();
     expect(jobOf(file).uses).toBe(
       `jeffwlawson/agent-workflows/${targetOf(file)}@${PIN}`,

@@ -69,6 +69,16 @@ starting over.
 npx --yes {{PACKAGE}}@{{VERSION}} doctor
 ```
 
+If that exits `404 Not Found`, the package resolved to npmjs: this registry has no anonymous
+install, even for a public package, and a terminal has no `.npmrc` written for it the way a workflow
+step does. Once, per machine:
+
+```bash
+gh auth refresh -h github.com -s read:packages     # if your gh token lacks the scope
+npm config set {{SCOPE}}:registry=https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
+```
+
 It exits non-zero on every §1 failure that is detectable from here — a missing secret, the
 repository setting, a caller missing `packages: read`, a pin that is a branch rather than a tag —
 and names the fix for each. Run it before you label the first issue, and again after any release

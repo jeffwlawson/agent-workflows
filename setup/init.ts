@@ -199,6 +199,10 @@ const renderSetup = (workflows: readonly string[], callers: readonly string[]): 
   return fs
     .readFileSync(SETUP_TEMPLATE, "utf8")
     .replaceAll("{{PACKAGE}}", PACKAGE_NAME)
+    // The npm scope on its own — `@owner` — which is what an `.npmrc` registry
+    // line is keyed on, and the one substitution that is a *part* of the name
+    // rather than the name.
+    .replaceAll("{{SCOPE}}", PACKAGE_NAME.split("/")[0] ?? PACKAGE_NAME)
     .replaceAll("{{VERSION}}", VERSION)
     .replaceAll("{{SLUG}}", repoSlug(PACKAGE_NAME))
     .replaceAll("{{CALLERS}}", callers.join("\n"))

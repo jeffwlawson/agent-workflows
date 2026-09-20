@@ -22,6 +22,10 @@ npx --yes @jeffwlawson/agent-workflows@<version> init      # scaffold the caller
 npx --yes @jeffwlawson/agent-workflows@<version> doctor    # check what fails silently
 ```
 
+Those two are typed at a terminal, so no workflow has written the scoped `.npmrc` for them — see
+*Installing it* below for the two `npm config set` lines. Without them the scope resolves to npmjs
+and `npx` exits `404 Not Found`, which reads as "no such package" rather than "not authenticated".
+
 `init` copies the reference callers from [`examples/callers/`](./examples/callers/) into
 `.github/workflows/`, substituting the one thing that is per-repo — the version pin — and writes a
 `SETUP.md` naming the work it cannot do: the two secrets, the repository setting, the labels, and
@@ -54,6 +58,15 @@ Published to **GitHub Packages**, so `npx` needs a scoped registry and a token:
 - run: npx --yes @jeffwlawson/agent-workflows@<version> review
   env:
     NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Run by hand rather than by a workflow — `init`, `doctor`, or a local invocation — nothing has
+written that `.npmrc`, so write it once per machine:
+
+```bash
+gh auth refresh -h github.com -s read:packages     # if your gh token lacks the scope
+npm config set @jeffwlawson:registry=https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
 ```
 
 The scope matters: it keeps the entry to `@jeffwlawson`, so the consuming repo's own install still

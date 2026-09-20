@@ -20,6 +20,19 @@ npx --yes @jeffwlawson/agent-workflows@<version> init      # in the repo you are
 npx --yes @jeffwlawson/agent-workflows@<version> doctor    # once you have done the rest
 ```
 
+**Configure the registry before either of them.** These two are the only `npx` lines in this file
+typed at your own terminal: every other one runs inside a workflow, where `actions/setup-node` has
+already written a scoped `.npmrc`. Nothing has written one here, so the scope resolves to npmjs and
+`npx` exits `404 Not Found` — which reads as "there is no such package" rather than "you are not
+authenticated", and `doctor` cannot diagnose its own absence. **GitHub Packages has no anonymous
+install, even for a public package** (§4, *The install is authenticated*). Once, per machine:
+
+```bash
+gh auth refresh -h github.com -s read:packages     # if your gh token lacks the scope
+npm config set @jeffwlawson:registry=https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
+```
+
 `init` copies the five reference callers out of [`examples/callers/`](../examples/callers/) into
 `.github/workflows/`, substituting the one thing that is per-repo — the version pin — and writes a
 `SETUP.md` listing what is left: the two secrets (§2), the repository setting (§1), the labels (§3),
@@ -39,6 +52,7 @@ change a later release made to a caller itself — `doctor` reports those, with 
 | both secrets are set | §2 — and `AGENT_PAT`'s absence is three of §1's five |
 | Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
 | every caller grants `packages: read` | §4 — a 401 at `npx` that reads like a bad token |
+| a caller that declares no `permissions:` block at all | §4 — it runs with the default token, whose restricted setting is `contents` and `packages` read, so the install works and every write 403s |
 | a **private** repo's review caller grants `checks: read` | §4 — a wait that spends its budget and reviews blind |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
 | `self-check` names the job it is in | §4 — a job that waits for itself for 15 of its 20 minutes |

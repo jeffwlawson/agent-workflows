@@ -4,8 +4,9 @@ Drafted for [#40](https://github.com/jeffwlawson/agent-workflows/issues/40) so t
 be *reacted to* rather than argued about. Three drafts: what the reviewer is told, what it emits,
 and what a stub reads like.
 
-Nothing here is settled. Every **⟨grill⟩** marks a choice made to make the draft concrete, not a
-decision.
+Grilled and settled on 2026-09-19 — every choice below is confirmed. The seams this draft does not
+cross are named where they fall: the trigger and the opt-out label are #39's, dedup at filing time
+is #41's.
 
 ---
 
@@ -19,10 +20,14 @@ posted artifact — the runner has to **serialise it into the body** on the way 
 Shape: a collapsed `<details>` a human can open, wrapping a fenced JSON payload the filing step
 parses. One block, two readers.
 
-⟨grill⟩ **Collapsed `<details>`, or a bare HTML comment no human ever sees?** `<details>` costs
-body length (#37: 65,536 chars, overflow is a 422 that takes the inline comments with it) and puts
-findings a human did not ask for on their PR. Against that: an opt-out the reader cannot see is
-not an opt-out. The draft assumes visible.
+**Settled — collapsed `<details>`, visible.** An opt-out the author cannot see is not an opt-out.
+The cost is body length (#37: 65,536 chars, overflow is a 422 that takes the inline comments with
+it), which the cap of 3 keeps near zero.
+
+**Settled — the human half renders titles and locations only**, with the JSON in an adjacent HTML
+comment. That is enough to answer the only question the block asks of a pre-merge reader — *do I
+want these filed* — and it does not duplicate the full stub bodies into a body with a hard
+ceiling.
 
 ---
 
@@ -48,7 +53,12 @@ Appended after the existing `startLine` paragraph, before the JSON example:
 > still stands, including ones you listed in an earlier review of this pull request. Only the most
 > recent list is read, so a finding you leave out is a finding dropped.
 >
-> **At most three.** If you have more, keep the three worst. More than three is truncated.
+> **Order them most serious first.** Most serious means the finding whose consequence is worst if
+> nobody ever fixes it — not the one that is hardest to fix, and not the one you are most confident
+> about.
+>
+> **At most three.** If you have more than three, list the three most serious. Anything past the
+> third is dropped from the end of your list — so the order you choose is the order that survives.
 >
 > Use an empty array when there are none — which is the ordinary case.
 
@@ -64,18 +74,29 @@ And the JSON example gains:
 ]
 ```
 
-⟨grill⟩ **`followUps` or `outOfScope`?** `followUps` names what happens to the finding; `outOfScope`
-names why it qualifies. The stub label is `pr-follow-up`, which argues for the former; the bar the
-agent is being held to is the latter.
+**Settled — `followUps`, not `outOfScope`.** It agrees with the settled `pr-follow-up` stub label.
+The bar lives in the prompt prose, where it is actually enforced, not in a field name read once.
 
-⟨grill⟩ **`location` as its own field, rather than prose inside `body`.** It costs a field. It buys
-a machine-readable anchor — which is the only thing
-[#41](https://github.com/jeffwlawson/agent-workflows/issues/41) has to key duplicate detection on,
-short of comparing prose.
+**Settled — `location` is its own field.** It costs a field and buys the only machine-readable
+anchor [#41](https://github.com/jeffwlawson/agent-workflows/issues/41) has to key duplicate
+detection on, short of comparing prose.
 
-⟨grill⟩ **Evidence and "why not here" as two prose beats inside one `body`, not two fields.** Two
-fields would enforce the bar structurally. One `body` keeps the schema close to `InlineComment`'s
-shape, which the agent already produces well.
+**Settled — evidence and "why not here" are two prose beats inside one `body`, not two fields.**
+Two fields would appear to enforce the bar structurally, but a required field is satisfied by a
+sentence of filler; the bar is a prompt problem either way. One `body` also keeps the shape close
+to `InlineComment`, which the agent already produces well.
+
+**Settled — the ordering instruction names its axis, and names the two it rejects.** *Difficulty*
+and *confidence* are the orderings a model reaches for unprompted, and both are wrong: a
+trivial-to-fix data-loss bug outranks a gnarly refactor. The word *worst* is gone — it can be read
+as worst-*quality*, which inverts the instruction. The summary channel can afford "worst first"
+because every finding there carries a **blocking** / **judgement call** label supplying the axis;
+`followUps` has no such label and must state it.
+
+**Settled — the truncation mechanism is stated to the model.** "Keep the three worst" describes a
+filter applied inside the model, where nothing can check it — the same unobservable-compliance
+failure as the "already tracked" clause below. "List the three most serious; anything past the
+third is dropped from the end" puts the whole operation in the output.
 
 ### The clause that has to go
 
@@ -145,18 +166,21 @@ export const capFollowUps = (
 });
 ```
 
-⟨grill⟩ **`slice(0, 3)` takes the first three, and the prompt says "keep the three worst".** That
-delegates ordering to the model. The alternative is no ordering contract and an arbitrary three.
+**Settled — `slice(0, 3)` takes the first three, delegating the ordering to the model.** The
+alternative is no ordering contract at all and three arbitrary findings. This is not a new house
+assumption: `extraction.md` already orders the summary's findings worst-first on the model's
+judgement. What §1 adds is the *axis* (most serious if never fixed) and the *consequence* (the tail
+is dropped), because neither was stated.
 
-### Where the truncation is *said*
-
-The draft has it said twice, in different places, for different readers:
+### Where the truncation is *said* — twice, deliberately
 
 1. **In the review body**, where the author sees it before merge and can still act:
    `> 2 further findings were truncated by the cap of 3.`
 2. **In the merge-time comment**, where the filing step reports what it did.
 
-⟨grill⟩ Is (1) worth the body length? It is the only one that arrives while the PR is still open.
+**Settled — both.** They reach different readers at different moments, and (1) is the only one
+that is *actionable*: it arrives while the PR is still open, so the author can raise the dropped
+finding themselves or widen the PR. (2) reports after the fact, when the finding is already gone.
 
 ---
 
@@ -181,11 +205,14 @@ Appended to `summary` before `writeJson("review_payload.json", …)`:
 </details>
 ```
 
-⟨grill⟩ **The opt-out label name is invented here.** Its real name, and whether it is opt-out at
+**Not this ticket's — the opt-out label name is invented here.** Its real name, and whether it is opt-out at
 all, is [#39](https://github.com/jeffwlawson/agent-workflows/issues/39)'s. This draft only shows
 that the review body is where a human first learns the label exists.
 
-⟨grill⟩ **`"version":1`.** One byte of forward compatibility, or premature?
+**Settled — keep `"version": 1`.** The pin makes the review runner and the filing step
+same-version at *install* time, not at *read* time: a review posted before a release is read by a
+filing step from after it. The version field is the cheapest way for the reader to refuse a shape
+it does not know.
 
 ---
 
@@ -193,9 +220,9 @@ that the review body is where a human first learns the label exists.
 
 **Title** — the agent's `title`, verbatim, truncated at 80 characters. No prefix.
 
-⟨grill⟩ **No prefix.** A `[PR #32]` prefix is provenance a human sees without opening the issue —
-but it eats the left edge of every title in a triage list, which is where a scanner's eye actually
-lands, and the `pr-follow-up` label already says the same thing in colour.
+**Settled — no prefix.** A `[PR #32]` prefix is provenance visible without opening the issue, but
+it eats the left edge of every title in a triage list — where a scanner's eye lands — and the
+`pr-follow-up` label already carries the same fact in colour.
 
 **Labels** — `needs-triage`, `pr-follow-up`. Settled on the map.
 
@@ -220,12 +247,13 @@ The reviewer restates its full list each run, so that review is where the findin
 necessarily where it was first raised.</sub>
 ```
 
-⟨grill⟩ **Provenance points at the review that was read — the latest one — and says so.** The
-honest alternative is to point at the PR alone and say nothing about reviews. Walking back through
-nine reviews to find the first occurrence is possible but matches on prose, and a finding the agent
-re-worded between rounds would look new.
+**Settled — the stub links the review that was *read* (the latest), and says plainly that this is
+where the finding was read, not necessarily first raised.** Walking back through nine reviews to
+find the first occurrence matches on prose, so a finding the agent re-worded between rounds would
+look new. Linking the PR alone discards a link that is exactly right for *show me the reasoning* —
+it only needed the caveat.
 
-⟨grill⟩ **The title is not repeated as an `H1` in the body.** GitHub already renders it.
+**Settled — the title is not repeated as an `H1` in the body.** GitHub already renders it.
 
 ---
 

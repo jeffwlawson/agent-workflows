@@ -174,6 +174,79 @@ export const FOLLOW_UPS_VERSION = 1;
 export const FOLLOW_UPS_LABEL = "agent:follow-ups";
 
 /**
+ * JSON that survives being put inside an HTML comment.
+ *
+ * `<` and `>` are escaped into the JSON rather than stripped: prose carried in
+ * the payload may legitimately contain `-->`, which would end the comment early
+ * and truncate what is left to invalid JSON — a reader that files nothing
+ * rather than one that files three. `JSON.parse` decodes the escapes, so the
+ * round trip is exact.
+ *
+ * Shared by both payloads deliberately. The block in a review body and the
+ * dedup payload on a filed stub are written by different halves of the feature
+ * and read by the same one, and this hazard is identical in both.
+ */
+export const embeddableJson = (value: unknown): string =>
+  JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+
+/**
+ * The block as written, found wherever it sits in a body.
+ *
+ * The **last** match wins. The block is appended after the summary, and the
+ * summary is model prose that may quote one — so a body holding two carries the
+ * real one last.
+ */
+const BLOCK = new RegExp(`<!-- ${FOLLOW_UPS_MARKER} (.*) -->`, "g");
+
+/** Cheap enough to run over every review on a pull request, and answers only "is one here". */
+export const hasFollowUpsBlock = (body: string): boolean =>
+  new RegExp(`<!-- ${FOLLOW_UPS_MARKER} `).test(body);
+
+/**
+ * Read a block back out of a review body: `undefined` when there is none, and a
+ * **throw** when there is one this cannot read.
+ *
+ * The split is the difference between the two failure modes a reader has to
+ * keep apart. No block is the ordinary case — most reviews find nothing out of
+ * scope — and is answered with silence. A block that cannot be read is a shape
+ * this version does not know, which is an ordinary consequence of a release
+ * rather than a defect, and the message is what says so out loud instead of
+ * guessing at fields that may have moved.
+ *
+ * Lives beside the renderer because the two are one format. A parser in the
+ * half that files would be a second description of it, drifting from the first
+ * on the release that changes either.
+ */
+export const parseFollowUpsBlock = (
+  body: string,
+): { followUps: FollowUp[]; dropped: number } | undefined => {
+  const matches = [...body.matchAll(BLOCK)];
+  const raw = matches[matches.length - 1]?.[1];
+  if (raw === undefined) return undefined;
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new Error("its payload is not readable JSON");
+  }
+
+  const record = asRecord(payload, "follow-ups payload");
+  const version = record["version"];
+  if (version !== FOLLOW_UPS_VERSION) {
+    throw new Error(
+      `it declares payload version ${JSON.stringify(version)}, and this version reads ${FOLLOW_UPS_VERSION}`,
+    );
+  }
+
+  const dropped = record["dropped"];
+  return {
+    followUps: asArray(record["followUps"] ?? [], "followUps").map(parseFollowUp),
+    dropped: typeof dropped === "number" && dropped > 0 ? Math.floor(dropped) : 0,
+  };
+};
+
+/**
  * The block appended to the review body: one `<details>`, two readers.
  *
  * Visible and collapsed, because an opt-out the author cannot see is not an
@@ -186,16 +259,11 @@ export const FOLLOW_UPS_LABEL = "agent:follow-ups";
  * at all rather than an empty block — there is no opt-out to offer.
  */
 export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number): string => {
-  // `<` and `>` escaped into the JSON rather than stripped: model prose may
-  // legitimately contain `-->`, which would end the comment early and truncate
-  // the payload to invalid JSON — a reader that files nothing rather than one
-  // that files three. `JSON.parse` decodes the escapes, so the round trip is
-  // exact.
-  const payload = JSON.stringify({
+  const payload = embeddableJson({
     version: FOLLOW_UPS_VERSION,
     dropped,
     followUps: kept,
-  }).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+  });
 
   // One line each. A title is meant to be one line; whitespace-collapsing it
   // means a model that wrapped one cannot break the list it sits in.

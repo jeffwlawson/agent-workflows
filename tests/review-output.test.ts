@@ -3,7 +3,9 @@ import {
   capFollowUps,
   filterInlineComments,
   FOLLOW_UPS_MARKER,
+  hasFollowUpsBlock,
   MAX_FOLLOW_UPS,
+  parseFollowUpsBlock,
   renderFollowUpsBlock,
   reviewOutputSchema,
   type FollowUp,
@@ -113,11 +115,12 @@ const followUps = (n: number): FollowUp[] =>
   Array.from({ length: n }, (_, i) => followUp({ title: `t${i}`, location: `src/${i}.ts` }));
 
 /**
- * What a reader of the block does, written out here rather than imported: the
- * half that parses is a different workflow and does not exist yet, and a
- * round-trip test that shares a helper with the renderer is a test of the
- * helper. The regex is the whole contract — a marker, a space, one line of
- * JSON — so pinning it here is pinning what the reader may assume.
+ * What a reader of the block does, written out here rather than imported.
+ * `parseFollowUpsBlock` is the real one and is exercised below, but a
+ * round-trip test that only ever reads through it cannot tell a format from a
+ * pair of functions that happen to agree. The regex is the whole contract — a
+ * marker, a space, one line of JSON — so pinning it here is pinning what any
+ * reader may assume.
  */
 const payloadOf = (block: string): { version: number; dropped: number; followUps: FollowUp[] } => {
   const match = new RegExp(`<!-- ${FOLLOW_UPS_MARKER} (.*) -->`).exec(block);
@@ -233,5 +236,70 @@ describe("renderFollowUpsBlock", () => {
 
   it("names the marker a reader selects on", () => {
     expect(FOLLOW_UPS_MARKER).toBe("agent-follow-ups");
+  });
+});
+
+/**
+ * The other end of the same format (#48). It lives beside the renderer because
+ * the two *are* one format: a parser written in the half that files would be a
+ * second description of it, drifting from the first on the release that changes
+ * either.
+ *
+ * Its two absences are different answers, which is the whole shape of it. No
+ * block is the ordinary case and is answered with silence. A block that cannot
+ * be read is a shape this version does not know, and it has to say so rather
+ * than guess at fields that may have moved.
+ */
+describe("parseFollowUpsBlock", () => {
+  it("reads back what the renderer wrote, findings and cap alike", () => {
+    const list = [followUp({ title: "Leak", location: "src/a.ts:12", body: "evidence" })];
+
+    expect(parseFollowUpsBlock(renderFollowUpsBlock(list, 2))).toEqual({
+      followUps: list,
+      dropped: 2,
+    });
+  });
+
+  it("finds the block wherever it sits in a review body", () => {
+    const body = `A summary, with prose above and below.\n\n${renderFollowUpsBlock(followUps(1), 0)}\n\nMore prose.`;
+
+    expect(parseFollowUpsBlock(body)?.followUps).toHaveLength(1);
+  });
+
+  /**
+   * The block is appended after the summary, and the summary is model prose
+   * that may quote one. A body holding two therefore carries the real one last.
+   */
+  it("takes the last block when a body somehow carries two", () => {
+    const body = [
+      renderFollowUpsBlock([followUp({ location: "src/quoted.ts" })], 0),
+      renderFollowUpsBlock([followUp({ location: "src/real.ts" })], 0),
+    ].join("\n\n");
+
+    expect(parseFollowUpsBlock(body)?.followUps.map((f) => f.location)).toEqual(["src/real.ts"]);
+  });
+
+  it("returns nothing at all for a body with no block", () => {
+    expect(parseFollowUpsBlock("A summary and nothing else.")).toBe(undefined);
+    expect(hasFollowUpsBlock("A summary and nothing else.")).toBe(false);
+  });
+
+  it("refuses a version it does not know, naming the one it found", () => {
+    const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":2,"dropped":0,"followUps":[]} -->`;
+
+    expect(hasFollowUpsBlock(body)).toBe(true);
+    expect(() => parseFollowUpsBlock(body)).toThrow(/2/);
+  });
+
+  it("refuses a payload it cannot parse", () => {
+    expect(() => parseFollowUpsBlock(`<!-- ${FOLLOW_UPS_MARKER} {"version":1, -->`)).toThrow(
+      /readable JSON/,
+    );
+  });
+
+  it("refuses a finding missing one of its three fields", () => {
+    const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[{"title":"t","body":"b"}]} -->`;
+
+    expect(() => parseFollowUpsBlock(body)).toThrow(/location/);
   });
 });

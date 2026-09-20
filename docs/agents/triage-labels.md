@@ -159,4 +159,6 @@ Child tickets close earlier and one at a time, as they are answered:
 [`issue-tracker.md`](./issue-tracker.md#wayfinding-operations)'s *Resolve* operation closes each one
 and appends a pointer to Decisions-so-far, and the **frontier query reads the map's open children**
 to find the next one. So issue state carries information here — an open child is an unanswered
-question, and an open map is a route that has not reached the loop yet.
+question, and an open map is a route that has not yet been sliced into a PRD. Neither reads on
+promotion: step 4 is a scheduling decision, and a map whose slices are waiting for one has already
+finished its own job.

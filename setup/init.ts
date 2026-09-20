@@ -129,6 +129,36 @@ export const labelSpecsFor = (workflows: readonly string[]): readonly LabelSpec[
 ];
 
 /**
+ * The labels a workflow **warns** about rather than failing on, keyed by the
+ * workflow that wants them — `docs/ADOPTING.md` §3's second block.
+ *
+ * Separate from the two tables above because the two halves that read them want
+ * opposite things. `SETUP.md` should name every label the callers it just
+ * installed will reach for, or an adopter gets a live feature whose only signal
+ * is a `::warning::` inside a green run — the filing half marks nothing, files
+ * its stubs unlabelled, and the next merge cannot see them. `doctor` should
+ * *not* fail over them: nothing here stops a loop, and a preflight that errors
+ * on a correctly-installed repository is one people learn to skip. So these
+ * reach `renderSetup` and never `labelSpecsFor`.
+ *
+ * Conditional on the caller, which is why it is a map rather than a list: the
+ * filing caller is the one file in the loop an adopter can decline (§4), and
+ * three labels prescribed to a repository that declined it are three labels
+ * nothing in it will ever read.
+ */
+export const ADVISORY_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
+  "follow-ups": [
+    { name: "agent:follow-ups", color: "0052CC", description: "This PR's review recorded out-of-scope findings" },
+    { name: "pr-follow-up", color: "D4C5F9", description: "Filed from a merged PR's review by the follow-ups workflow" },
+    { name: "needs-triage", color: "D93F0B", description: "Maintainer needs to evaluate this issue" },
+  ],
+};
+
+/** Those of them an installation of exactly these workflows should be told about. */
+export const advisoryLabelSpecsFor = (workflows: readonly string[]): readonly LabelSpec[] =>
+  workflows.flatMap((workflow) => ADVISORY_LABELS[workflow] ?? []);
+
+/**
  * A label exactly as it has to be created, as one line of shell.
  *
  * One definition, used by both halves: `SETUP.md` tells an adopter to run these
@@ -212,9 +242,31 @@ const put = (full: string, text: string): "created" | "updated" | "unchanged" =>
 
 const renderSetup = (workflows: readonly string[], callers: readonly string[]): string => {
   const labels = labelSpecsFor(workflows).map(labelCommand);
+  const advisory = advisoryLabelSpecsFor(workflows).map(labelCommand);
+
+  // Absent entirely rather than present and empty, placeholder line included:
+  // a heading over nothing reads as a step somebody forgot to finish, and a
+  // repository that declined the filing caller has no step here to finish.
+  const advisoryBlock =
+    advisory.length === 0
+      ? ""
+      : [
+          "",
+          "**Three more, for the `follow-ups` caller listed at the top of this file.** None of them is a",
+          "transition and nothing fails without them, which is why the check at the bottom does not",
+          "demand them — but a review then marks nothing, and a filed issue arrives unlabelled:",
+          "invisible to the triage queue it was filed for, and invisible to the duplicate check the",
+          "next merge runs.",
+          "",
+          "```bash",
+          ...advisory,
+          "```",
+          "",
+        ].join("\n");
 
   return fs
     .readFileSync(SETUP_TEMPLATE, "utf8")
+    .replace("\n{{ADVISORY_LABELS}}\n", advisoryBlock)
     .replaceAll("{{PACKAGE}}", PACKAGE_NAME)
     // The npm scope on its own — `@owner` — which is what an `.npmrc` registry
     // line is keyed on, and the one substitution that is a *part* of the name

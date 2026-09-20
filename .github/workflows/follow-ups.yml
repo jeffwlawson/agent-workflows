@@ -1,0 +1,205 @@
+name: Agent Follow-ups (reusable)
+
+# File the out-of-scope findings a review recorded, once the pull request has
+# closed (#50). `agent-follow-ups.yml` is the caller — a trigger and a grant,
+# with no inputs and no secrets to wire — and every control stays here, in a
+# file an adopting repo *references* rather than copies.
+#
+# This is the sixth workflow and the only one in the loop holding
+# `issues: write`, which is why most of what follows is about what it may not
+# do. It **runs no model**: installing Claude Code is a step this file simply
+# omits, so reading arbitrary issue bodies while holding that permission is not
+# a prompt-injection surface. The judgement is a pure function in the runner
+# instead, unit-tested from plain objects.
+#
+# **What fires it, and what each case does.** Per trigger and per state, here
+# rather than only in the ticket: the job condition below is the only other
+# statement of this, and a condition does not read as a table.
+#
+# | Event | PR state | Marker on the PR | What happens |
+# |---|---|---|---|
+# | `closed` | merged | present | the latest review's findings are filed, the PR is told what happened to each, the marker is removed |
+# | `closed` | merged | absent | the job starts and exits silently — no comment, no refusal, no label |
+# | `closed` | not merged | any | the job never starts; abandoned work does not populate the tracker |
+# | `labeled` `agent:follow-ups` | closed, merged or not | present, by construction | the same filing run — the manual entry point, for a missed close event, a reconsidered opt-out or a partial failure |
+# | `labeled` `agent:follow-ups` | open | any | the job never starts; filing round 3's findings would strand round 9's |
+# | `labeled` anything else | any | any | the job never starts |
+# | any of the above, from a fork | any | any | the job never starts |
+#
+# `pull_request_target` for two reasons that both belong in the file: it reads
+# workflow YAML from the base branch, so a pull request cannot alter what runs,
+# and it carries the write token unconditionally — a `pull_request` close from
+# a fork would arrive read-only, which is a filing run that silently files
+# nothing.
+#
+# **A job condition cannot make an API call**, and that shapes the run more
+# than anything else here. The marker is the opt-out, so it is re-read at
+# filing time rather than taken from the event payload — "remove the label,
+# then click merge" is precisely the race it exists for — which means it cannot
+# be part of the condition. So this job starts on *every* merge in the
+# repository and mostly ends having done nothing at all. A merge whose pull
+# request carries no marker is a **silent exit 0**: most merges have no
+# findings, and a comment on each of those is how a channel teaches people to
+# stop reading it.
+#
+# **The manual entry point does not override the edited-body refusal.** A
+# review body edited after submission refuses to file, says so on the pull
+# request, and leaves the marker in place; re-adding the label runs the same
+# refusal again. Stated here because it is invisible otherwise — a control with
+# a one-label bypass is not a control, and the escape hatch is the right one
+# already: a human who has read the finding opens the issue by hand.
+on:
+  # **Zero inputs, deliberately.** The caller is a trigger and a permissions
+  # grant and nothing else.
+  #
+  # No `setup`: nothing is checked out, and executing an adopter-supplied
+  # command is the sharpest edge in this reusable surface — declaring no input
+  # keeps it structurally impossible rather than merely absent. No
+  # `node-version-file`: its default names a file that does not exist without a
+  # checkout, so inheriting the review workflow's shape would fail every run at
+  # Node setup, and the image's own Node runs the runner perfectly well. No
+  # `default-branch`, because nothing is diffed, and no `self-check`, because
+  # nothing waits on CI.
+  #
+  # **And zero secrets.** No model credential, because no model runs — which is
+  # what keeps a `pull_request_target` workflow holding `issues: write` free of
+  # one — and no `AGENT_PAT`. The issues are created with the always-present
+  # workflow token: the PAT is optional loop-wide, so a filing step depending on
+  # it would, on a repository without one, silently file nothing, which is the
+  # exact failure class this feature exists to fix. Anti-recursion is a welcome
+  # second reason rather than the deciding one — issues created with the
+  # workflow token start no workflows, and a stub carries no trigger label
+  # either way.
+  workflow_call:
+
+jobs:
+  follow-ups:
+    # **The shape of this condition is a decision, not formatting.** It is the
+    # loop's first job-level condition mixing `&&` and `||`, and `&&` binds
+    # tighter: written flat, the fork guard would attach to the first disjunct
+    # only and a fork pull request would reach the labeled branch — on the one
+    # workflow in the loop holding `issues: write`. The broken form and this one
+    # contain identical substrings, which is why `tests/workflows.test.ts`
+    # compares the whole normalised string rather than looking for clauses in
+    # it. Fork guard hoisted, disjunction parenthesised.
+    #
+    # `merged == true` literally rather than truthily. The labeled clause never
+    # reads `merged` at all: that field is guaranteed on the `closed` action and
+    # unspecified on `labeled`, and the manual path accepts a closed-unmerged
+    # pull request anyway — so the clause that would have needed an unverified
+    # field is the one that does not need it.
+    #
+    # **This is the deliberate exception to the house rule that every pull
+    # request workflow refuses a merged PR.** That guard exists because
+    # labelling a merged PR once ran a full agent pass over merged work and then
+    # died. Here merged is the *normal* case, and copying the house pattern
+    # would make this workflow refuse exactly what it exists to do — silently,
+    # and with every check green.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        ( github.event.action == 'closed'  && github.event.pull_request.merged == true ) ||
+        ( github.event.action == 'labeled' && github.event.label.name == 'agent:follow-ups'
+          && github.event.pull_request.state == 'closed' )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The loop's existing per-pull-request group, for a specific reason rather
+    # than for conformity: two entry points mean a manual label add can race the
+    # merge-triggered run, and both would read the tracker *before* either filed
+    # — a read-then-write with no lock, whose result is two issues for one
+    # finding. The usual objection to this group is that a job waiting on CI
+    # deadlocks behind a queued sibling; this job waits on no checks at all.
+    concurrency:
+      group: agent-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    # Granted by the caller, bounded here — a called workflow can only downgrade
+    # the token it is handed, and a permission declared only here grants nothing.
+    #
+    # What is **withheld** is the security statement, and each absence is worth
+    # naming because nothing else says it: no `contents: write` (nothing is
+    # checked out and nothing is pushed), no `checks: read` (nothing waits on
+    # CI), and no `actions: write` (this workflow starts nothing).
+    permissions:
+      # Strictly unnecessary — nothing here reads the repository — and kept
+      # deliberately: a `permissions:` block is a replacement rather than an
+      # addition, so omitting this line sets `contents: none`, which is an
+      # untested configuration for the runner install.
+      contents: read
+      # Creating the stubs. This is the grant the whole feature is about, and
+      # the reason every other line in this file is about what it may not do.
+      issues: write
+      # Installing the runner package. GitHub Packages has no anonymous install,
+      # so this is needed even though the package is public — and, being a
+      # bound, it grants nothing without the caller's own `packages: read`.
+      packages: read
+      # Posting the report and removing the marker. A pull request's labels live
+      # under this scope, not under `issues`.
+      pull-requests: write
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # `gh` resolves the repository from this rather than from a git remote,
+      # which is load-bearing here rather than conventional: nothing is checked
+      # out, so there is no remote to resolve from.
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      # No state step and no shell guard: the merge gate is the job condition
+      # alone. A shell guard exists elsewhere to post a comment explaining a
+      # refusal; the case refused here is a pull request closed without merging,
+      # where nobody is waiting and a comment on a dead PR is noise.
+      #
+      # The registry half of `setup-node`, deliberately toolchain-free: it
+      # declares no `node-version-file` — there is no checkout for one to name —
+      # and passes `package-manager-cache: false` so the action does not infer a
+      # toolchain from a `packageManager` field and fail before the runner
+      # exists to write `failure_reason.txt`. See the long note on the same step
+      # in review.yml.
+      - name: Authenticate to GitHub Packages
+        uses: actions/setup-node@v7
+        with:
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
+
+      # No `npm install -g @anthropic-ai/claude-code` above this step, and that
+      # absence is the point: this is the runner subcommand that runs no model.
+      - name: File the recorded follow-ups
+        env:
+          # Reads the `.npmrc` the step above wrote. `GITHUB_TOKEN`, carrying the
+          # `packages: read` the caller granted — there is no anonymous install.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}
+        # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
+        # whole point — see the long note on the same line in review.yml. Short
+        # version: `npx pkg@version` would reuse this repository's own checkout
+        # as the package, which has no `dist/`, and the step would die
+        # `command not found` before any runner code ran (#8).
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.1.7 -- agent-workflows follow-ups
+
+      # A failure has to say what failed where a human will see it, or the run
+      # is indistinguishable from the silent no-op that is this job's ordinary
+      # outcome (`CLAUDE.md`, and the `(no reason file written)` signature it
+      # names).
+      #
+      # No `agent:blocked` here, unlike the three workflows that act on an open
+      # pull request: that label is the open pipeline's "a human has to look at
+      # this before the loop continues", and there is no pipeline left on a
+      # merged PR to block. The marker is what carries the state instead — the
+      # runner removes it only on success, so a failed run leaves it in place,
+      # and re-adding an already-present label fires no event
+      # (docs/ADOPTING.md §1). Hence the gesture named below.
+      - name: Report the failure on the PR
+        if: failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          reason="(no reason file written; check workflow logs)"
+          if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
+            reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+          fi
+          body_file="${RUNNER_TEMP}/failure-comment.md"
+          printf '`agent:follow-ups` filing run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nNothing was filed, or only part of it was; the run is safe to repeat either way. The marker was left in place, so remove `agent:follow-ups` and add it back to retry.\n' "$reason" "$RUN_URL" > "$body_file"
+          gh pr comment "$PR_NUMBER" --body-file "$body_file"

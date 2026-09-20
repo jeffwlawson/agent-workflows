@@ -7,7 +7,7 @@ the conventions, [README.md](./README.md) is for people installing the package, 
 ## What this is
 
 A **GitHub Actions agent loop**: a labelled issue becomes a reviewed pull request with no human in
-the middle. Five workflows, each a label transition.
+the middle. One workflow per label transition, near enough:
 
 | Label | Fires | Does |
 |---|---|---|
@@ -15,10 +15,18 @@ the middle. Five workflows, each a label transition.
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, mark ready |
 | `agent:fix` on a **PR** | `fix` | act on review feedback, reply, resolve threads |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts |
+| `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
 sub-issue per run onto one branch, and re-adds its own label to advance.
+
+`follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
+the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather
+than the normal path — and it is the one workflow an adopter can decline by not copying its caller
+(`docs/ADOPTING.md` §4). It is also the only one that runs **no model**: the review agent records
+the findings and cannot file them, and the workflow holding `issues: write` decides what to file
+with a pure function (`docs/parity.md` §10).
 
 ## The three layers, and what belongs in each
 
@@ -154,7 +162,7 @@ This is why the loop can run anywhere. It is also why **this** repo needs its ow
 
 | File | What |
 |---|---|
-| [`docs/ADOPTING.md`](./docs/ADOPTING.md) | installing the loop elsewhere; §1 is the five silent failures |
+| [`docs/ADOPTING.md`](./docs/ADOPTING.md) | installing the loop elsewhere; §1 is the silent failures |
 | [`docs/friction.md`](./docs/friction.md) | a dated log of every time a human reached into the loop, and why |
 | [`docs/parity.md`](./docs/parity.md) | how this compares to the upstream loops it was modelled on; §10 holds invariants |
 | [`docs/agents/ticket-shape.md`](./docs/agents/ticket-shape.md) | how a batch of tickets is published, and in what order |

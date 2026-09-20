@@ -7,7 +7,7 @@ import { syncVersion } from "../scripts/sync-version.js";
 
 /**
  * `npm version` bumps two files — the manifest and the lockfile — and there are
- * seventeen. The other fifteen are the version pins: one `--package=…@<version>`
+ * twenty. The other eighteen are the version pins: one `--package=…@<version>`
  * per reusable workflow, and one `…yml@v<version>` in each of the two caller
  * sets. Both `v0.1.4` and `v0.1.5` were cut by editing them by hand and folding
  * the result into the version commit.
@@ -21,9 +21,9 @@ import { syncVersion } from "../scripts/sync-version.js";
  * **"the propagation reached every site, and said so when it could not"**.
  *
  * Which is why the loud-failure checks below outnumber the rewrite checks. A
- * propagator that silently rewrites fourteen of fifteen sites is strictly worse
+ * propagator that silently rewrites all but one of the sites is strictly worse
  * than the hand edit it replaces: the hand edit is visible work that someone
- * knows to check, and a quiet partial success is fifteen files that were
+ * knows to check, and a quiet partial success is a set of files that were
  * *believed* to be done.
  */
 
@@ -70,27 +70,33 @@ const git = (root: string, args: readonly string[]): string => {
 const TARGET = "9.9.9";
 
 /**
- * Fifteen sites, named. The count is the acceptance criterion's own number and
- * the list is what the release used to be: five reusables, five local callers,
- * five reference callers.
+ * Every site, named: one reusable, one local caller and one reference caller per
+ * workflow in the loop.
  *
  * Written out rather than derived, so that it is also the answer to "what
  * belongs in the release commit" — which is what the staging check below reads
- * it as. That the propagator's own set is *not* a written-out fifteen is a
- * separate property, and has its own test: the complete sixth trio below.
+ * it as. That the propagator's own set is *not* a written-out list is a separate
+ * property, and has its own test: the complete extra trio below.
+ *
+ * It grew by three when `follow-ups` landed (#50), which is the point of writing
+ * it out: a sixth workflow is three new paths here, in the same commit as the
+ * three new files, or the release propagates to eighteen of twenty-one.
  */
 const EVERY_SITE = [
   ".github/workflows/agent-fix.yml",
+  ".github/workflows/agent-follow-ups.yml",
   ".github/workflows/agent-implement-prd.yml",
   ".github/workflows/agent-implement.yml",
   ".github/workflows/agent-review.yml",
   ".github/workflows/agent-update-branch.yml",
   ".github/workflows/fix.yml",
+  ".github/workflows/follow-ups.yml",
   ".github/workflows/implement-prd.yml",
   ".github/workflows/implement.yml",
   ".github/workflows/review.yml",
   ".github/workflows/update-branch.yml",
   "examples/callers/fix.yml",
+  "examples/callers/follow-ups.yml",
   "examples/callers/implement-prd.yml",
   "examples/callers/implement.yml",
   "examples/callers/review.yml",
@@ -148,12 +154,13 @@ describe("the version propagator rewrites every pin", () => {
 
     expect(sites.filter((s) => s.form === "package").map((s) => s.file).sort()).toEqual([
       ".github/workflows/fix.yml",
+      ".github/workflows/follow-ups.yml",
       ".github/workflows/implement-prd.yml",
       ".github/workflows/implement.yml",
       ".github/workflows/review.yml",
       ".github/workflows/update-branch.yml",
     ]);
-    expect(sites.filter((s) => s.form === "ref")).toHaveLength(10);
+    expect(sites.filter((s) => s.form === "ref")).toHaveLength(12);
   });
 
   /**
@@ -173,17 +180,19 @@ describe("the version propagator rewrites every pin", () => {
   });
 
   /**
-   * Fifteen is today's count, not the rule. `EVERY_SITE` above is a written-out
-   * list, and so is every refusal below a *half*-landed sixth workflow — between
-   * them they would all still pass against an implementation holding fifteen
-   * hardcoded paths, which on the day a sixth workflow actually lands rewrites
-   * fifteen of eighteen and reports success.
+   * Eighteen is today's count, not the rule. `EVERY_SITE` above is a written-out
+   * list, and so is every refusal below a *half*-landed extra workflow — between
+   * them they would all still pass against an implementation holding eighteen
+   * hardcoded paths, which on the day a seventh workflow lands rewrites eighteen
+   * of twenty-one and reports success.
    *
-   * So this is the one that lands the whole trio: the reusable, the local caller
+   * So this is the one that lands a whole trio: the reusable, the local caller
    * and the reference caller. The site set is derived from what is on disk, and
-   * the number that proves it is eighteen.
+   * the number that proves it is three more than there were. `follow-ups` (#50)
+   * is the landing this was written against a release ahead of, and it changed
+   * nothing here but the total.
    */
-  it("derives the site set: a complete sixth workflow is eighteen sites, not fifteen", () => {
+  it("derives the site set: a complete extra workflow is three more sites, not the same", () => {
     const root = fixture();
     for (const [from, to] of [
       [".github/workflows/review.yml", ".github/workflows/plan.yml"],
@@ -196,8 +205,8 @@ describe("the version propagator rewrites every pin", () => {
     const sites = syncVersion(TARGET, root);
 
     expect(sites).toHaveLength(EVERY_SITE.length + 3);
-    expect(sites.filter((s) => s.form === "package")).toHaveLength(6);
-    expect(sites.filter((s) => s.form === "ref")).toHaveLength(12);
+    expect(sites.filter((s) => s.form === "package")).toHaveLength(7);
+    expect(sites.filter((s) => s.form === "ref")).toHaveLength(14);
     expect(sites.filter((s) => s.file.includes("plan")).map((s) => `${s.file} ${s.form}`).sort()).toEqual([
       ".github/workflows/agent-plan.yml ref",
       ".github/workflows/plan.yml package",
@@ -239,8 +248,8 @@ describe("the version propagator rewrites every pin", () => {
  * machinery twice — a set defined by walking grows when the repo does, and a set
  * defined by a list does not. `copy-assets.ts` walks for that reason; so does
  * `tests/workflows.test.ts`. Here the walk alone is not enough, because the
- * three sites of a sixth workflow live in three directories and a walk of any
- * one of them is a walk that finds five when the truth is six.
+ * three sites of a new workflow live in three directories and a walk of any one
+ * of them is a walk that finds the old count when the truth is one more.
  */
 describe("the version propagator refuses an unexpected set of pins", () => {
   it("refuses a reusable workflow whose pin it cannot find", () => {
@@ -284,12 +293,12 @@ describe("the version propagator refuses an unexpected set of pins", () => {
   });
 
   /**
-   * The sixth workflow, arriving one file at a time. Each of the three
+   * An extra workflow, arriving one file at a time. Each of the three
    * directories can be the one that is ahead, and in each case the honest answer
-   * is "this release would rewrite fifteen sites and there are eighteen", not a
-   * count of what happened to be found.
+   * is "this release would rewrite every site it found and there is one more",
+   * not a count of what happened to be found.
    */
-  it("refuses a sixth caller with no reusable workflow behind it", () => {
+  it("refuses an extra caller with no reusable workflow behind it", () => {
     const root = fixture();
     fs.copyFileSync(
       path.join(root, ".github", "workflows", "agent-review.yml"),
@@ -299,7 +308,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
     expect(() => syncVersion(TARGET, root)).toThrow(/plan/);
   });
 
-  it("refuses a sixth reusable workflow with no callers in front of it", () => {
+  it("refuses an extra reusable workflow with no callers in front of it", () => {
     const root = fixture();
     fs.copyFileSync(
       path.join(root, ".github", "workflows", "review.yml"),
@@ -349,7 +358,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
    * `npm exec` check in `tests/workflows.test.ts` matches no `^`, no `~` and no
    * dist-tag, and the `uses:` ref must be a tag `publish.yml` would accept. So a
    * version this script cannot write as a valid pin is refused before it writes
-   * any of them, rather than distributed to fifteen files for the suite to
+   * any of them, rather than distributed to every file for the suite to
    * reject one at a time.
    */
   it.each(["0.2", "v0.2.0", "0.2.0-rc.1", "", "latest"])(
@@ -384,7 +393,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
  * `exclude` entry and the hook is an entry file again; import it from anything
  * built and it comes back regardless. Both were run against this repo's own
  * `tsc`, in both directions. Restating the source directories here instead
- * would be a second copy of the build's entry set, and a sixth runner directory
+ * would be a second copy of the build's entry set, and a new runner directory
  * — a routine change, per `CLAUDE.md` — would be compiled and unread.
  */
 /**
@@ -464,7 +473,7 @@ describe("what ships typechecks under the configuration that emits it", () => {
 
 /**
  * The hook, which is the whole point: `npm version patch` has to produce the
- * seventeen-file commit on its own.
+ * twenty-file commit on its own.
  *
  * npm runs `version` after the manifest is bumped and before the commit is
  * created, and stages only the manifest and the lockfile itself — so the hook
@@ -513,7 +522,7 @@ describe("the release is one command", () => {
   /**
    * And the entry point refuses one rather than ignoring it, for the reason the
    * runners do: a silently-dropped argument runs the real thing while its author
-   * believes it took effect — here, propagating the manifest's version to fifteen
+   * believes it took effect — here, propagating the manifest's version to every
    * files while the person who typed a different one watches it report success.
    *
    * Run for real, which also covers the one thing no unit test reaches: `npm
@@ -538,7 +547,7 @@ describe("the release is one command", () => {
    * The stray is the point. `npm version` refuses a tree with *tracked*
    * modifications and lets untracked files straight through, so a `git add -A`
    * in this hook carries whatever happens to be there into the release commit
-   * and the tag `publish.yml` fires on — an eighteenth file inside a release,
+   * and the tag `publish.yml` fires on — a twenty-first file inside a release,
    * which `PIN` cannot see and no check downstream reads.
    */
   const released = (): string => {
@@ -574,12 +583,12 @@ describe("the release is one command", () => {
   };
 
   /**
-   * Staged inside the hook, or npm commits the bump alone and the fifteen
-   * rewritten files are left in the working tree — the exact state the hand edit
-   * produced, minus the knowledge that they are there. By path, and only the
-   * paths it wrote.
+   * Staged inside the hook, or npm commits the bump alone and every rewritten
+   * file is left in the working tree — the exact state the hand edit produced,
+   * minus the knowledge that they are there. By path, and only the paths it
+   * wrote.
    */
-  it("stages the fifteen files it rewrote, and nothing else in the tree", () => {
+  it("stages every file it rewrote, and nothing else in the tree", () => {
     const root = released();
 
     const staged = git(root, ["diff", "--cached", "--name-only"]).split("\n").filter(Boolean).sort();

@@ -220,10 +220,25 @@ const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 // `github-actions[bot]`, GraphQL reports the same account as `github-actions`.
 // Listing only one silently drops our own review's comments on whichever path
 // uses the other.
-const TRUSTED_BOT_LOGINS = new Set(["github-actions[bot]", "github-actions"]);
+const WORKFLOW_BOT_LOGINS = new Set(["github-actions[bot]", "github-actions"]);
+
+/**
+ * The login half of the gate on its own, for the one caller that must **not**
+ * take the association half: filing issues from a review body asks "is this the
+ * review runner's own output", not "is this from someone trusted", and the
+ * wider question would admit a human collaborator's hand-written review.
+ *
+ * Named rather than re-listed there, so the two spellings above stay one fact.
+ *
+ * What this does not establish, stated so it is not mistaken for an oversight:
+ * the workflow bot is the identity of *every* workflow in a repository, so this
+ * says a workflow posted it and never *which* workflow did.
+ */
+export const isWorkflowBot = (login: string | undefined): boolean =>
+  WORKFLOW_BOT_LOGINS.has(login ?? "");
 
 export const isTrustedAuthor = (association: string | undefined, login: string | undefined): boolean =>
-  TRUSTED_ASSOCIATIONS.has(association ?? "") || TRUSTED_BOT_LOGINS.has(login ?? "");
+  TRUSTED_ASSOCIATIONS.has(association ?? "") || isWorkflowBot(login);
 
 export interface TrustedIssue {
   readonly title: string;

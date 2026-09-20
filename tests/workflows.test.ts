@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { FOLLOW_UPS_LABEL } from "../shared/review-output.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -59,6 +60,26 @@ const PR_WORKFLOWS = [
   "update-branch.yml",
 ].map((f) => path.join(WORKFLOW_DIR, f));
 
+/**
+ * The fourth `pull_request_target` reusable, which is in none of the sets above
+ * and gets its own describe at the bottom of this file (#50).
+ *
+ * It files a **closed** pull request's recorded findings, so five of the shared
+ * set's assertions are false of it — no base ref, no state environment, an
+ * *inverted* closed-PR guard, no checkout, no in-progress labelling — and two
+ * of those assert that a checkout step and an in-progress step *exist*, which
+ * the set's exemption idiom cannot express. Keeping it in would also make the
+ * set's own premise ("every one of them has to work against the PR's real
+ * base") false the moment a member has no base ref at all.
+ *
+ * Named as a set of one rather than as a lone constant because the partition
+ * test below is what makes leaving the shared set safe: a seventh
+ * `pull_request_target` reusable in neither set is a named failure there rather
+ * than a workflow that quietly gets no assertions.
+ */
+const FOLLOW_UPS = path.join(WORKFLOW_DIR, "follow-ups.yml");
+const MERGE_GATED: readonly string[] = [FOLLOW_UPS];
+
 const workflowFiles = fs
   .readdirSync(WORKFLOW_DIR)
   .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))
@@ -94,7 +115,18 @@ const SKIPPED_DIRS = new Set(["output", "dist", "node_modules", ".git"]);
  * *this file*, whose `DOMAIN` regex contains the very words it searches for, so
  * a whole-repo walk fails on itself.
  */
-const RUNNER_SURFACE = ["cli.ts", "shared", "scripts", "setup", "fix", "implement", "implement-prd", "review", "update-branch"];
+const RUNNER_SURFACE = ["cli.ts", "shared", "scripts", "setup", "fix", "follow-ups", "implement", "implement-prd", "review", "update-branch"];
+
+/**
+ * A runner is a directory holding a file named after it — the same shape
+ * `tests/agent-cli.test.ts` derives "the runners" from. Read here only to hold
+ * the list above to it; see the check at the bottom of this file.
+ */
+const runnerDirs = fs
+  .readdirSync(".", { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(entry.name, `${entry.name}.ts`)))
+  .map((entry) => entry.name)
+  .sort();
 
 const filesUnder = (dir: string): readonly string[] =>
   fs
@@ -132,6 +164,23 @@ const ISSUES_WRITE_EXEMPT = new Set([
   "implement-prd.yml",
   // Files the AGENT_PAT expiry issue. Acts on no PR at all.
   "token-expiry.yml",
+  // The first entry here that genuinely **creates** new issues — the others
+  // close, re-label or file one fixed issue about the loop itself — so it is the
+  // first that has to argue `docs/parity.md` §10's parity invariant rather than
+  // sidestep it (#50).
+  //
+  // The argument: the invariant's concern is an unattended cycle, and the gate
+  // has moved from *before filing* to *before building* — the stubs arrive
+  // `needs-triage`, never `agent:implement`, so a human still decides what gets
+  // built. Both halves of the invariant that carry the weight survive intact.
+  // **The agent that raises the finding still never files it**: the review
+  // agent emits the findings into its own review body under `contents: read`
+  // and no `issues:` scope. And **the workflow holding the permission runs no
+  // model** — this pair installs no Claude Code and invokes a runner whose
+  // judgement is a pure function, which is also what keeps reading arbitrary
+  // issue bodies with `issues: write` from being a prompt-injection surface.
+  "agent-follow-ups.yml",
+  "follow-ups.yml",
 ]);
 
 const issuesWriteChecked = workflowFiles.filter(
@@ -216,7 +265,7 @@ const stepsOf = (file: string): readonly Step[] => jobOf(file).steps ?? [];
  * put a file in the wrong bucket: the thing being asked is "does this file do
  * the work", and `uses:` is that question answered.
  */
-const RUNNER_COMMANDS = ["fix", "implement", "implement-prd", "review", "update-branch"];
+const RUNNER_COMMANDS = ["fix", "follow-ups", "implement", "implement-prd", "review", "update-branch"];
 /** Both halves of the loop: what a caller grants and what the called job bounds. */
 const agentWorkflows = (): readonly string[] => [...callerWorkflows, ...runnerWorkflows];
 const runnerWorkflows = RUNNER_COMMANDS.map((c) => path.join(WORKFLOW_DIR, `${c}.yml`));
@@ -245,6 +294,61 @@ const callerWorkflows = [...callersIn(CALLER_DIR), ...callersIn(WORKFLOW_DIR, "a
 /** The runner half a caller hands over to. */
 const targetOf = (file: string): string =>
   (jobOf(file).uses ?? "").replace(/^[^/]+\/[^/]+\//, "").replace(/@.*$/, "");
+
+/**
+ * The loop minus its merge-gated half, in both directions.
+ *
+ * Four of the checks below are about a **wire**: the three shared inputs, the
+ * toolchain they configure, the auth step's position relative to that toolchain,
+ * and the two secrets a caller hands over. `follow-ups.yml` declares no inputs
+ * and no secrets on purpose — nothing is checked out, so there is no toolchain
+ * to describe and no command to run, and it runs no model, so there is no
+ * credential to pass (#50). Asserting the absence is that workflow's own
+ * describe; what is excluded here is only the *presence*.
+ *
+ * Filtered rather than exempted by filename, because the question each of those
+ * four asks is "does this half carry the wire the other half declares", and a
+ * pair that declares none is out of that question rather than failing it.
+ */
+const wiredWorkflows = (): readonly string[] =>
+  runnerWorkflows.filter((file) => !MERGE_GATED.includes(file));
+const wiredCallers = (): readonly string[] =>
+  callerWorkflows.filter((file) => !MERGE_GATED.includes(targetOf(file)));
+
+/**
+ * What each caller's trigger fires on, keyed by filename (#46). Everything
+ * absent takes `TRIGGER_TYPES_DEFAULT` — which today is every caller there is,
+ * so the map is empty and the default is exactly the assertion it replaces.
+ *
+ * It exists ahead of the first entry on purpose. The assertion below ran over
+ * every caller with no list at all, which reads as *derived* — the good kind of
+ * check in this file — but it was carrying an undeclared premise: that every
+ * caller in the loop is label-triggered. The first one that legitimately needs
+ * a second event type turns that assertion red with no hint that the premise is
+ * what moved, and the cheapest way out of a red derived check is to weaken it.
+ * A list announces itself when you add an entry; the entry is where the reason
+ * goes.
+ *
+ * Exact equality survives, per file: `pull_request_target` reaching a job that
+ * holds write is a security surface, so a caller must not be able to widen its
+ * own trigger. The exception is declared here rather than dissolved into a
+ * subset check, which would let *any* caller grow *any* extra type unnoticed.
+ */
+const TRIGGER_TYPES_DEFAULT: readonly string[] = ["labeled"];
+const TRIGGER_TYPES: Readonly<Record<string, readonly string[]>> = {
+  /**
+   * The filing pair, in both caller sets (#50). `closed` is what the feature is
+   * *for* — findings become issues when the pull request merges — and it is
+   * **not** a default `pull_request_target` activity type, so a caller that
+   * listed only `labeled` would file nothing on a merge and read exactly like
+   * one that did. `labeled` is the manual entry point on an already-closed pull
+   * request: a missed close event, a reconsidered opt-out, a partial failure.
+   */
+  "agent-follow-ups.yml": ["closed", "labeled"],
+  "follow-ups.yml": ["closed", "labeled"],
+};
+const triggerTypesOf = (file: string): readonly string[] =>
+  TRIGGER_TYPES[path.basename(file)] ?? TRIGGER_TYPES_DEFAULT;
 
 /** The review job — the reusable half, where every step now lives (#97). */
 const REVIEW = path.join(WORKFLOW_DIR, "review.yml");
@@ -590,11 +694,17 @@ describe("every PR workflow shares one concurrency group per PR", () => {
       ),
     ];
 
-    expect(checkRuns).toHaveLength(5);
+    expect(checkRuns).toHaveLength(6);
     for (const name of checkRuns) expect(name).toMatch(excluded);
     // Bare job ids too — an adopter is free to inline a job rather than call
     // one, and the pattern predates the split.
-    for (const name of ["review", "fix", "update-branch", "implement", "implement-prd"]) {
+    //
+    // `follow-ups` is in the pattern even though excluding it is dead at
+    // runtime: this wait only runs on an open pull request and that workflow
+    // only fires on a closed one (#50). One word in one string, against a
+    // carve-out whose comment would have to justify a timing argument that
+    // could stop being true.
+    for (const name of ["review", "fix", "follow-ups", "update-branch", "implement", "implement-prd"]) {
       expect(name).toMatch(excluded);
     }
 
@@ -772,6 +882,376 @@ describe("agent-review refuses a head that moved while it was queued", () => {
 });
 
 /**
+ * The review's third output channel (#47). The findings themselves live in the
+ * review body, where a human reads them before merging; the label is what a
+ * later workflow selects on, and what removing opts a PR out of.
+ *
+ * Neither half of that has a runtime symptom when it breaks. A marker that
+ * never goes on leaves the findings visible and unfiled — indistinguishable
+ * from a review that found nothing out of scope — and a marker that goes on
+ * every review makes the whole channel noise.
+ */
+describe("agent-review marks a PR whose review recorded follow-ups", () => {
+  const markStep = (): Step | undefined =>
+    stepsOf(REVIEW).find((s) => (s.run ?? "").includes("--add-label \"agent:follow-ups\""));
+
+  it("adds the label the review body tells the author to remove", () => {
+    // Pinned as a literal on both sides of the seam: the block's opt-out line
+    // is rendered from this constant and the step spends the string, and a
+    // drift between them is an instruction naming a label nothing adds.
+    expect(FOLLOW_UPS_LABEL).toBe("agent:follow-ups");
+    expect(markStep()?.run ?? "").toContain(`--add-label "${FOLLOW_UPS_LABEL}"`);
+  });
+
+  /**
+   * When, and *only* when, the run recorded at least one. The runner writes
+   * that file in no other case, so the file's existence is the whole condition
+   * — nothing in the step can decide differently from what went into the body.
+   */
+  it("marks on a written record rather than on having run", () => {
+    expect(markStep()?.run ?? "").toContain('[ -f "${RUNNER_TEMP}/follow_ups.md" ] || exit 0');
+  });
+
+  /**
+   * And after the review is posted. The label points at a record that lives in
+   * the review body, so a marker on a PR whose review failed to post points at
+   * nothing — and `success()` is what makes the step's own position mean that.
+   */
+  it("runs after the review has posted, and only if it did", () => {
+    expect(markStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(names.indexOf(markStep()?.name ?? "")).toBeGreaterThan(names.indexOf("Post PR review"));
+  });
+
+  /**
+   * Never removed here. Removal is the human's opt-out gesture and, later, the
+   * filing step's on-success cleanup; a step that cleared a stale marker would
+   * be racing the person it exists to serve. A marker left by a later empty run
+   * costs nothing either: that run records an *empty* list, which is the latest
+   * list, so the merge files nothing and clears the marker itself.
+   */
+  it("never removes the marker", () => {
+    expect(fs.readFileSync(REVIEW, "utf8")).not.toContain(`--remove-label "${FOLLOW_UPS_LABEL}"`);
+  });
+
+  /**
+   * A label add that fails must not fail the review. This label is newer than
+   * the six `docs/ADOPTING.md` §3 mandates, so an adopter can be current on the
+   * pin and not have it — and a posted review is worth more than its marker.
+   * A warning says so; `|| true` would leave a loop that silently files nothing
+   * and looks healthy.
+   */
+  it("warns rather than failing when the label cannot be added", () => {
+    const run = markStep()?.run ?? "";
+
+    expect(run).toContain("::warning::");
+    expect(run).not.toContain("|| true");
+  });
+});
+
+/**
+ * The filing half (#50): the workflow that turns a merged pull request's
+ * recorded findings into triageable issues. Its own describe, and its own
+ * constant, because it is the one `pull_request_target` reusable that is **not**
+ * in `PR_WORKFLOWS` — see the comment on `MERGE_GATED` for why five of that
+ * set's assertions are false of it and two of them cannot be exempted at all.
+ *
+ * **The four properties below are restated, not inherited.** That is the cost of
+ * leaving the shared set, paid here explicitly: the single-file precedent in this
+ * file is *additive*, where this one gets none of the shared assertions, so the
+ * properties that do still hold would silently lapse. The shape diverges on the
+ * guard and on the checkout; it does not diverge on the fork guard or on the
+ * concurrency group, and both of those are exactly as load-bearing here as they
+ * are there — more so for the fork guard, since this is the one workflow in the
+ * loop holding `issues: write`.
+ *
+ * **The residual, named so nobody closes it with a test that cannot.** Every
+ * check here reads YAML: the trigger, the condition, the permissions, the
+ * concurrency group, the pin, and the absence of the house guard. Nothing here
+ * reaches *"GitHub really did dispatch this job on `merged == true`"* — that is
+ * a statement about the platform, and the research behind the condition is
+ * evidence rather than proof. It gets proven by this repository's own loop, one
+ * release later: the callers here run on the last release, this repo merges pull
+ * requests constantly, and the merged path is exercised on the first merge after
+ * the tag. An unstated gap invites someone to add a test that pretends to close
+ * it.
+ */
+describe("the follow-ups workflow files a merged PR rather than refusing it", () => {
+  /** Both halves of the pair, found the way every other check here finds them. */
+  const CALLERS = callerWorkflows.filter((file) => targetOf(file) === FOLLOW_UPS);
+
+  /**
+   * The file with its YAML comments dropped — what GitHub actually acts on.
+   *
+   * Needed because three of the absences below are *argued for in the header*,
+   * at length: the file says why it installs no Claude Code and why it reaches
+   * for no `AGENT_PAT`, and a raw-text search would then find the very strings
+   * whose absence it is checking. A prose-shaped assertion that fails on prose
+   * teaches the next editor to delete the explanation.
+   */
+  const declared = (file: string): string =>
+    fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+
+  it("has both caller sets pointing at it", () => {
+    expect(CALLERS.map((f) => path.basename(f)).sort()).toEqual([
+      "agent-follow-ups.yml",
+      "follow-ups.yml",
+    ]);
+  });
+
+  /**
+   * **The one assertion this workflow most needs, and the reason it is an exact
+   * string.**
+   *
+   * This is the loop's first job-level condition mixing `&&` and `||`, and `&&`
+   * binds tighter. Written flat — without the parentheses around the
+   * disjunction — the fork guard attaches to the first disjunct only, and a fork
+   * pull request reaches the `labeled` branch of the one workflow in the loop
+   * holding `issues: write`. The broken expression and this one contain
+   * **identical substrings**, so no amount of per-clause substring matching can
+   * tell them apart: only comparing the whole thing can.
+   *
+   * Normalised on whitespace alone, because the YAML shape is folded across
+   * lines and the newlines are not the property. Everything else — the hoisted
+   * fork guard, both trigger branches, the literal `true`, and which clause
+   * reads which field — is pinned byte for byte, so a rearrangement that changes
+   * the meaning cannot pass.
+   *
+   * The marker string in it is held to `FOLLOW_UPS_LABEL` by the review describe
+   * above, which is where the rendered opt-out line and the label step meet.
+   */
+  it("hoists the fork guard out of the disjunction, exactly", () => {
+    const condition = (jobOf(FOLLOW_UPS).if ?? "").replace(/\s+/g, " ").trim();
+
+    expect(condition).toBe(
+      "github.event.pull_request.head.repo.full_name == github.repository && " +
+        "( ( github.event.action == 'closed' && github.event.pull_request.merged == true ) || " +
+        "( github.event.action == 'labeled' && github.event.label.name == 'agent:follow-ups' " +
+        "&& github.event.pull_request.state == 'closed' ) )",
+    );
+  });
+
+  /**
+   * The tripwire the exact condition does **not** cover, and the one failure
+   * here that is silent and green.
+   *
+   * A first step refusing a non-open pull request can be added *alongside* an
+   * untouched condition — as a "consistency" fix, since the other three PR
+   * workflows all have one — and since a merged pull request is not open, it
+   * would refuse every single run. No failed job, no comment, nothing to
+   * notice: the feature simply stops, and the workflow still reads correct.
+   *
+   * So this is the inversion stated as a test: **this workflow requires what
+   * the other three refuse.** Merged is the normal case here, and the merge gate
+   * is the job condition alone — no state step, no shell guard. A shell guard
+   * exists elsewhere to explain a refusal in a comment; the case refused here is
+   * a pull request closed without merging, where nobody is waiting and a comment
+   * on a dead PR is noise.
+   */
+  it("carries neither the house state guard nor the environment that feeds it", () => {
+    const text = fs.readFileSync(FOLLOW_UPS, "utf8");
+
+    expect(stepsOf(FOLLOW_UPS).map((step) => step.id)).not.toContain("state");
+    expect(text).not.toContain('"$PR_STATE" != "open"');
+    expect(text).not.toContain("PR_MERGED");
+  });
+
+  /**
+   * Restated (1): the per-pull-request concurrency group. Not conformism — this
+   * workflow has **two entry points**, so a manual label add can race the
+   * merge-triggered run, and both would list the existing stubs *before* either
+   * filed: a read-then-write with no lock, whose result is two issues for one
+   * finding. The usual objection to this group — a job waiting on CI deadlocking
+   * behind a queued sibling — does not apply, because this job waits on no
+   * checks at all.
+   */
+  it("joins the loop's per-PR group, first-come", () => {
+    const { concurrency } = jobOf(FOLLOW_UPS);
+
+    expect(concurrency?.group).toBe("agent-pr-${{ github.event.pull_request.number }}");
+    expect(concurrency?.["cancel-in-progress"]).toBe(false);
+  });
+
+  /** Restated (2): one group, or GitHub rejects a job declared in two. */
+  it("declares exactly one group", () => {
+    const groups = [...fs.readFileSync(FOLLOW_UPS, "utf8").matchAll(/^\s*group:\s*(.+)$/gm)].map(
+      (m) => (m[1] ?? "").trim(),
+    );
+
+    expect(groups).toEqual(["agent-pr-${{ github.event.pull_request.number }}"]);
+  });
+
+  /**
+   * Restated (3): the fork guard, on this side of the seam. The exact-string
+   * check above already pins it, and it is restated as its own case because
+   * *this* is the property the shared set would have been asserting — losing it
+   * to a rearrangement of that string should fail as "the fork guard", not as
+   * "the condition changed".
+   */
+  it("guards the fork on this side of the seam", () => {
+    expect(jobOf(FOLLOW_UPS).if ?? "").toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+  });
+
+  /**
+   * Zero inputs and zero declared secrets, which is why the wire checks above
+   * skip this pair rather than exempting it.
+   *
+   * No `setup`: nothing is checked out, and executing an adopter-supplied
+   * command is the sharpest edge in the reusable surface — declaring no input
+   * keeps it structurally impossible rather than merely absent. No
+   * `node-version-file`, whose default names a file that does not exist without
+   * a checkout. No model credential, because no model runs, which is what keeps
+   * a `pull_request_target` job holding `issues: write` free of one. And no
+   * `AGENT_PAT`: the loop PAT is optional everywhere, so a filing step depending
+   * on it would file **nothing**, silently, on a repository without one — which
+   * is the exact failure class this feature exists to fix.
+   */
+  it("declares no inputs and no secrets, on either side", () => {
+    const call = workflowOf(FOLLOW_UPS).on?.workflow_call;
+
+    expect(call?.inputs).toBeUndefined();
+    expect(call?.secrets).toBeUndefined();
+    for (const file of CALLERS) {
+      expect(jobOf(file).with).toBeUndefined();
+      expect(jobOf(file).secrets).toBeUndefined();
+    }
+  });
+
+  /**
+   * …and no model, stated as the three things that would have to be there for
+   * one: a credential, the install, and a checkout for it to read.
+   */
+  it("installs no agent and checks nothing out", () => {
+    const text = declared(FOLLOW_UPS);
+
+    expect(text).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(text).not.toContain("@anthropic-ai/claude-code");
+    expect(stepsOf(FOLLOW_UPS).filter((s) => (s.uses ?? "").startsWith("actions/checkout@"))).toEqual(
+      [],
+    );
+  });
+
+  /**
+   * The half of the registry-auth ordering that survives having no toolchain.
+   *
+   * `%s: authenticates after the toolchain, before the run` runs over the wired
+   * set only, because it asserts a toolchain step *exists* and there is none
+   * here — but the reason that step is ordered at all is the second half of its
+   * name: both it and a toolchain `setup-node` write the same `.npmrc` and the
+   * last one wins, and the runner cannot install from GitHub Packages before the
+   * entry exists. That half still applies, so it is restated rather than
+   * dropped with the premise that carried it.
+   */
+  it("authenticates before the run, with no toolchain step to sit after", () => {
+    const steps = stepsOf(FOLLOW_UPS);
+    const auth = steps.findIndex((step) => (step.with ?? {})["registry-url"] !== undefined);
+    const run = steps.findIndex((step) => (step.run ?? "").trim().startsWith("npm exec"));
+
+    expect(auth).toBeGreaterThanOrEqual(0);
+    expect(auth).toBeLessThan(run);
+    expect(steps.filter((step) => step.with?.["node-version-file"] !== undefined)).toEqual([]);
+  });
+
+  /**
+   * The permissions, by value rather than by equality between the halves — the
+   * generic check already holds those equal to each other, and here the *values*
+   * are the decision.
+   *
+   * `issues: write` is the grant this feature is about. `pull-requests: write`
+   * posts the report and removes the marker, since a PR's labels live under that
+   * scope. `packages: read` installs the runner and is needed in both halves,
+   * because a called workflow can only downgrade. `contents: read` is strictly
+   * unnecessary and kept on purpose: the block is a *replacement*, so omitting
+   * it sets `contents: none`, an untested configuration for the install.
+   *
+   * What is absent is the security statement, which is why it is asserted rather
+   * than merely commented in the file: no `contents: write`, no `checks: read`,
+   * no `actions: write`.
+   */
+  it.each([
+    ["the called job bounds", FOLLOW_UPS],
+    ["agent-follow-ups.yml grants", path.join(WORKFLOW_DIR, "agent-follow-ups.yml")],
+    ["examples/callers/follow-ups.yml grants", path.join(CALLER_DIR, "follow-ups.yml")],
+  ])("%s exactly the four scopes the job spends", (_half: string, file: string) => {
+    expect(jobOf(file).permissions).toEqual({
+      contents: "read",
+      issues: "write",
+      packages: "read",
+      "pull-requests": "write",
+    });
+  });
+
+  /**
+   * The issues are created with the workflow token, and the file says which one
+   * it is: `GH_TOKEN` is what every `gh` call in the runner reads, and nothing
+   * here ever reaches for the PAT. A repository without `AGENT_PAT` files
+   * exactly as much as one with it.
+   */
+  it("files with the always-present workflow token", () => {
+    const text = declared(FOLLOW_UPS);
+
+    expect(text).toContain("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}");
+    expect(text).not.toContain("AGENT_PAT");
+  });
+
+  /**
+   * Three statements that live in the file's header because they are invisible
+   * anywhere else, and each of which someone would otherwise have to re-derive
+   * from a condition, an absence, and a thing that is not there at all.
+   *
+   * The behaviour table is the one artifact that says, per trigger and per pull
+   * request state, whether the job fires and what it does. The structural
+   * consequence is that a job condition cannot make an API call — so the marker
+   * is re-read in the runner, this job starts on *every* merge in the repository,
+   * and most runs end having done nothing and said nothing. And the manual entry
+   * point does **not** override the edited-body refusal, which is an absence: a
+   * control with a one-label bypass is not a control.
+   */
+  it("states the behaviour table, the silent exit and the absent bypass", () => {
+    const header = fs.readFileSync(FOLLOW_UPS, "utf8").split("\non:")[0] ?? "";
+    const rows = (header.match(/^# \|.*\|$/gm) ?? []).filter((row) => !/^# \|-+/.test(row));
+
+    // A header, a separator and one row per case the trigger can produce.
+    expect(rows.length).toBeGreaterThanOrEqual(7);
+    expect(header).toMatch(/job condition cannot make an API call/i);
+    expect(header).toMatch(/silent exit/i);
+    expect(header).toMatch(/does not override the edited-body refusal/i);
+  });
+
+  /**
+   * And the seam this describe sits on, made into a named failure rather than a
+   * silent gap.
+   *
+   * Leaving the shared set is safe exactly while the two sets **partition** the
+   * `pull_request_target` reusables. A seventh workflow in neither would get the
+   * general assertions at the top of this file and nothing else — the same
+   * silent-coverage failure this whole suite exists to catch, one level up. The
+   * file's stated preference is derived-not-listed, and this is what converts
+   * "someone forgot" into a test that says so by name.
+   */
+  it("partitions the pull_request_target reusables with the shared set", () => {
+    const triggered = [
+      ...new Set(
+        callerWorkflows
+          .filter((file) => workflowOf(file).on?.pull_request_target !== undefined)
+          .map(targetOf),
+      ),
+    ].sort();
+
+    expect(triggered).toEqual([...PR_WORKFLOWS, ...MERGE_GATED].sort());
+    expect(PR_WORKFLOWS.filter((file) => MERGE_GATED.includes(file))).toEqual([]);
+  });
+});
+
+/**
  * The whole loop is now callable (#98, slice 4 of #88; #97 proved the pattern on
  * review). The loop is the deliverable and it is installed in other repos, so
  * what an adopter writes per workflow has to be a trigger and two wires — every
@@ -793,26 +1273,33 @@ describe("every workflow in the loop is called rather than copied", () => {
   const callOf = (file: string) => workflowOf(file).on?.workflow_call;
 
   /**
-   * Five pairs, and *only* five: a workflow that is neither half of one is a
-   * workflow an adopter would have to copy. Derived from `uses:` rather than
-   * from the file names, so a half-done conversion — a `-reusable.yml` with no
-   * caller, or a caller left doing the work itself — lands here rather than
-   * being silently bucketed.
+   * Every workflow is half of a pair, and *only* those: a workflow that is
+   * neither half of one is a workflow an adopter would have to copy. Derived
+   * from `uses:` rather than from the file names, so a half-done conversion — a
+   * reusable with no caller, or a caller left doing the work itself — lands
+   * here rather than being silently bucketed.
+   *
+   * The list is written out because a release is what keeps it honest: a new
+   * workflow is three files carrying a version pin, and `scripts/sync-version.ts`
+   * refuses the release until all three exist. Adding an entry here is the same
+   * moment you add the third file.
    */
   it("splits every agent workflow into a caller and a runner", () => {
     expect(callerWorkflows.map((f) => path.basename(f)).sort()).toEqual([
       "agent-fix.yml",
+      "agent-follow-ups.yml",
       "agent-implement-prd.yml",
       "agent-implement.yml",
       "agent-review.yml",
       "agent-update-branch.yml",
       "fix.yml",
+      "follow-ups.yml",
       "implement-prd.yml",
       "implement.yml",
       "review.yml",
       "update-branch.yml",
     ]);
-    // Both caller sets point at the same five reusables, so dedupe before
+    // Both caller sets point at the same reusables, so dedupe before
     // comparing: what matters is that every runner has a caller and every
     // caller reaches a runner, not the multiplicity.
     expect([...new Set(callerWorkflows.map(targetOf))].sort()).toEqual(runnerWorkflows.slice().sort());
@@ -839,7 +1326,7 @@ describe("every workflow in the loop is called rather than copied", () => {
     const doc = workflowOf(file);
     const trigger = doc.on?.pull_request_target ?? doc.on?.issues;
 
-    expect(trigger?.types).toEqual(["labeled"]);
+    expect(trigger?.types).toEqual(triggerTypesOf(file));
     expect(jobOf(file).steps).toBeUndefined();
     expect(jobOf(file).uses).toBe(
       `jeffwlawson/agent-workflows/${targetOf(file)}@${PIN}`,
@@ -991,7 +1478,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * secret the repository holds, including the ones this loop has no use for —
    * and it is the form that reads as tidier, so the list is worth pinning.
    */
-  it.each(callerWorkflows)("%s: passes both secrets by name", (file) => {
+  it.each(wiredCallers())("%s: passes both secrets by name", (file) => {
     const declared = callOf(targetOf(file))?.secrets ?? {};
 
     expect(Object.keys(declared).sort()).toEqual(["AGENT_PAT", "CLAUDE_CODE_OAUTH_TOKEN"]);
@@ -1021,7 +1508,7 @@ describe("every workflow in the loop is called rather than copied", () => {
     ["setup", "npm ci"],
   ] as const;
 
-  it.each(runnerWorkflows)("%s: declares the three shared inputs, typed and described", (file) => {
+  it.each(wiredWorkflows())("%s: declares the three shared inputs, typed and described", (file) => {
     for (const [name, value] of SHARED_INPUTS) {
       const input = callOf(file)?.inputs?.[name];
 
@@ -1042,7 +1529,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * that is the agent's own runtime rather than the adopter's toolchain, and
    * every runner image already has the Node it needs for it.
    */
-  it.each(runnerWorkflows)("%s: takes the toolchain from the caller", (file) => {
+  it.each(wiredWorkflows())("%s: takes the toolchain from the caller", (file) => {
     const node = stepsOf(file).find((s) => (s.uses ?? "").startsWith("actions/setup-node@"));
     const install = stepsOf(file).find((s) => (s.run ?? "").includes("${{ inputs.setup }}"));
 
@@ -1973,6 +2460,76 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
 });
 
 /**
+ * The other half of `ISSUES_WRITE_EXEMPT`'s newest entry (#51).
+ *
+ * That list argues the parity invariant in a comment, because the pair it lets
+ * through is the first in the loop that genuinely **creates** issues. The
+ * invariant itself lives in `docs/parity.md` §10 — and until this slice it read
+ * "an agent that raises work never files it. Filing is a separate,
+ * human-labelled step", whose second clause the filing workflow overturns
+ * outright: nothing labels a merged pull request by hand.
+ *
+ * An invariant amended only where it is *obeyed* is one the next reader finds
+ * contradicted by the code citing it, and the citation is a string nothing
+ * dereferences — the same failure the blocker-edge describe above exists for.
+ * So the amendment is asserted where it is written: the two halves that survive
+ * intact, and the reason the change is a move of the gate rather than the
+ * removal of one.
+ */
+describe("the filing invariant is amended where it is written, not only where it is obeyed", () => {
+  const parity = fs.readFileSync(path.join("docs", "parity.md"), "utf8");
+
+  /** The bullet, from its bolded lede to the start of the next one. */
+  const invariant = (): string =>
+    parity
+      .split(/^(?=- \*\*)/m)
+      .find((bullet) => bullet.startsWith("- **An agent that raises work never files it.")) ?? "";
+
+  /**
+   * The headline survives the amendment and is not weakened to fit: the review
+   * agent emits its findings into its own review body under `contents: read`
+   * and no `issues:` scope, and the workflow that spends the permission runs no
+   * model at all. Those two are what the invariant was protecting; the
+   * human-labelled step was how it was protected, not what it was for.
+   */
+  it("restates the two halves that still hold", () => {
+    expect(invariant()).not.toBe("");
+    expect(invariant()).toMatch(/runs no model/);
+    expect(invariant()).toMatch(/contents: read/);
+    for (const file of MERGE_GATED) expect(invariant()).toContain(path.basename(file, ".yml"));
+  });
+
+  /**
+   * And says what stopped being true, in the words it used to be true in. A
+   * silently dropped clause reads as an oversight to whoever finds the
+   * workflow; named, it reads as a decision with a reason under it — the
+   * concern was an unattended cycle, and the gate has moved from before filing
+   * to before building, which is `needs-triage` rather than `agent:implement`
+   * on every stub.
+   */
+  it("names the clause it overturns, and the gate that replaced it", () => {
+    expect(invariant()).toMatch(/human-labelled/);
+    expect(invariant()).toMatch(/before building/);
+    expect(invariant()).toMatch(/needs-triage/);
+  });
+
+  /**
+   * And the comparison this file is *for* has a row for the workflow the
+   * amendment is about. `docs/parity.md` states its own rule in a blockquote —
+   * update the row in the same pull request that changes the behaviour, because
+   * it drifted once already and a parity doc that contradicts itself is worse
+   * than none — and nothing enforced it. This does, for the one table where the
+   * set is knowable from here.
+   */
+  it("gives every workflow in the loop a row in the comparison", () => {
+    const table = parity.split(/^(?=## )/m).find((s) => s.startsWith("## 1.")) ?? "";
+
+    expect(table).not.toBe("");
+    for (const command of RUNNER_COMMANDS) expect(table).toContain(`\`agent-${command}\``);
+  });
+});
+
+/**
  * The runner contract, held to by every workflow in the set: fetch the context
  * before the agent starts, scrub the token, and leave every tracker mutation to
  * the workflow. `implement-prd` is the first runner handed *two* issues — the
@@ -2093,6 +2650,7 @@ describe("every workflow invokes the runners at a pinned version", () => {
   it("finds the agent workflows", () => {
     expect(runnerWorkflows.map(subcommandOf).sort()).toEqual([
       "fix",
+      "follow-ups",
       "implement",
       "implement-prd",
       "review",
@@ -2373,6 +2931,180 @@ describe("Dependabot watches the caller pins no test here can reach", () => {
 });
 
 /**
+ * §3 of `docs/ADOPTING.md` is the only place a label's **lifecycle** is written
+ * down, and until #51 it was written as a rule with an exception after it. Two
+ * exceptions is not a rule with exceptions any more — it is a three-valued
+ * property, and prose reading "the rule is X, except here, and also except
+ * here" is read as "the rule is X" by everyone who is not currently editing it.
+ *
+ * So the lifecycle is a column, and this is what makes it one: a row that names
+ * a label and leaves the column blank — or fills it with a fourth lifecycle
+ * nobody has written the rules for — fails here rather than in whichever repo
+ * copied the loop and waited for the label to be cleared by something.
+ *
+ * The second check is the other direction. A label the workflows *write* and
+ * §3 never names is a label an adopter never creates, and a label that does not
+ * exist makes its transition a silent no-op — the failure §3 opens by naming.
+ */
+describe("the adoption doc gives every label a lifecycle, in a column", () => {
+  const ADOPTING = path.join("docs", "ADOPTING.md");
+  const TRIAGE = path.join("docs", "agents", "triage-labels.md");
+
+  /** §3, from its heading to the next top-level one. */
+  const labelSection = (): string =>
+    fs
+      .readFileSync(ADOPTING, "utf8")
+      .split(/^(?=## )/m)
+      .find((section) => section.startsWith("## 3.")) ?? "";
+
+  /**
+   * The lifecycles that exist, spelled as the column spells them. Written out
+   * rather than derived, because the point of the list is that adding a fourth
+   * is a decision — a new lifecycle is new behaviour somewhere in the loop, and
+   * it arrives here as a failing test rather than as a sentence in a table.
+   */
+  const LIFECYCLES = ["consumed on entry", "cursor", "marker, removed on success"];
+
+  const cellsOf = (row: string): readonly string[] =>
+    row
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.replace(/\*/g, "").trim());
+
+  /** Every row of the lifecycle table: the ones naming a label. */
+  const rows = (): readonly string[] =>
+    (labelSection().match(/^\|.*\|$/gm) ?? []).filter((row) => row.includes("`agent:"));
+
+  it("fills the column in on every row, from the lifecycles that exist", () => {
+    expect(rows().length).toBeGreaterThan(0);
+    expect([...new Set(rows().map((row) => cellsOf(row)[1]))].sort()).toEqual(
+      [...LIFECYCLES].sort(),
+    );
+  });
+
+  /**
+   * Comments count. A label named only in a `#` line is still a label somebody
+   * reading the file will reach for, and `agent:queued` — declared, inert, and
+   * named in two workflow comments — is exactly that case.
+   */
+  it("names every agent label the workflow files name", () => {
+    const used = [
+      ...new Set(
+        workflowFiles.flatMap((file) => fs.readFileSync(file, "utf8").match(/agent:[a-z-]+/g) ?? []),
+      ),
+    ].sort();
+
+    expect(used.length).toBeGreaterThan(0);
+    for (const label of used) expect(labelSection()).toContain(`\`${label}\``);
+  });
+
+  /**
+   * And the labels this repo's own tracker defines are defined once. `init`'s
+   * table is held to §3 by `tests/agent-cli.test.ts`; `docs/agents/triage-labels.md`
+   * is the third copy, and the first two labels the loop files a stub with come
+   * from *its* vocabulary rather than from the `agent:*` one. A colour is
+   * harmless to get wrong twice; the **name** is not, and it is the same line
+   * that carries both.
+   */
+  it("defines a label the same way wherever it is defined twice", () => {
+    const LABEL_COMMAND = /^gh label create +"([^"]+)" +--color +(\S+) +--description +"([^"]+)"$/gm;
+    const definitionsIn = (file: string): ReadonlyMap<string, string> =>
+      new Map(
+        [...fs.readFileSync(file, "utf8").matchAll(LABEL_COMMAND)].map(
+          ([, name, color, description]) => [name ?? "", `${color} — ${description}`],
+        ),
+      );
+
+    const adopting = definitionsIn(ADOPTING);
+    const triage = definitionsIn(TRIAGE);
+    const shared = [...adopting.keys()].filter((name) => triage.has(name));
+
+    expect(shared.length).toBeGreaterThan(0);
+    for (const name of shared) expect(triage.get(name)).toBe(adopting.get(name));
+  });
+});
+
+/**
+ * **A count no test reads is a count that goes stale.** The rule this repo
+ * already applies to the version tag — prose is the one copy nothing checks,
+ * and it sat two releases behind before anyone noticed — applied to the other
+ * thing `docs/ADOPTING.md` used to write down nine times: how many workflows
+ * there are. Adding the sixth (#50) made all nine wrong in one commit.
+ *
+ * One survives, and it is the one that is an **argument** rather than a fact:
+ * ungrouped, Dependabot opens a pull request per caller, and the point of the
+ * paragraph is that this is enough of them to merge some and leave the rest —
+ * a repository then calling two releases at once. That sentence needs the
+ * arithmetic, so the number stays and is derived here instead, from the
+ * callers themselves.
+ */
+describe("the adoption doc counts nothing a release can falsify", () => {
+  const ADOPTING = path.join("docs", "ADOPTING.md");
+  const DEPENDABOT = path.join(".github", "dependabot.yml");
+
+  const NUMBERS: Record<string, number> = {
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+  };
+
+  it("derives the one count it keeps from the callers it is counting", () => {
+    const written = /a\s+release opens \*\*(\w+)\*\* pull requests/.exec(
+      fs.readFileSync(ADOPTING, "utf8"),
+    );
+
+    expect(
+      written?.[1],
+      "the grouping paragraph must keep its `a release opens **N** pull requests` sentence",
+    ).toBeDefined();
+    expect(NUMBERS[(written?.[1] ?? "").toLowerCase()]).toBe(callersIn(CALLER_DIR).length);
+  });
+
+  /**
+   * Everywhere else is uncounted prose, in the adoption doc and in the
+   * Dependabot config's header beside it — that header is written for the same
+   * reader and goes stale in the same silence, and it is the file this repo
+   * actually runs.
+   *
+   * One phrase is exempt, and it is exempt for the reason the kept count is
+   * kept: *the two `implement` workflows* is a closed pair produced by one
+   * design decision (they partition every label event by issue shape), so the
+   * number is part of what is being said rather than a tally of a set that
+   * grows.
+   *
+   * The emphasis markers between the number and the noun are skipped, which is
+   * not cosmetic: *these six are \*workflow state\** is exactly the count this
+   * check was written for and exactly the one it let through (#54), because
+   * `\s+(workflows?)` wants the noun adjacent and Markdown had put an asterisk
+   * in front of it. A guard that reads as though it covers a site it cannot see
+   * is worse than one that never claimed to.
+   */
+  it("counts callers, workflows and files nowhere else", () => {
+    const EXEMPT = ["two `implement` workflows", "two implement workflows"];
+    const COUNTED = new RegExp(
+      `\\b(${Object.keys(NUMBERS).join("|")})\\b(?:\\s+[\\w\`*-]+){0,2}\\s+[*_\`]*(callers?|workflows?|reusables?|files|pins?)\\b`,
+      "gi",
+    );
+
+    const offenders = [ADOPTING, DEPENDABOT]
+      .flatMap((file) =>
+        [...fs.readFileSync(file, "utf8").matchAll(COUNTED)].map((hit) => `${file}: ${hit[0]}`),
+      )
+      .filter((hit) => !EXEMPT.some((phrase) => hit.includes(phrase)));
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+/**
  * …and neither can it see the one `actions/*` pin this repository does not run.
  *
  * `README.md` shows the install snippet an adopter copies into a workflow of
@@ -2499,7 +3231,7 @@ describe("the runner package is installed from GitHub Packages", () => {
    * one an adopter may skip entirely, which is why the auth step declares no
    * `node-version-file` of its own.
    */
-  it.each(runnerWorkflows)("%s: authenticates after the toolchain, before the run", (file) => {
+  it.each(wiredWorkflows())("%s: authenticates after the toolchain, before the run", (file) => {
     const auth = authIndex(file);
     const toolchain = stepsOf(file).findIndex(
       (s) => s.with?.["node-version-file"] !== undefined,
@@ -2805,6 +3537,16 @@ describe("every gh call reaches argv, never a shell", () => {
 describe(".sandcastle names no repo of its own", () => {
   it("finds files to check", () => {
     expect(sandcastleFiles.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * The surface is named rather than derived, for the reason given where it is
+   * defined — so a runner added later and left off the list is one both checks
+   * below skip, silently and green. That is the same omission the checks exist
+   * to catch, one level up, so it is a named failure here rather than a gap.
+   */
+  it("covers every runner directory", () => {
+    expect(runnerDirs.filter((dir) => !RUNNER_SURFACE.includes(dir))).toEqual([]);
   });
 
   /**

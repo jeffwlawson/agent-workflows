@@ -4,7 +4,14 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
-import { init, labelCommand, STATE_LABELS, TRIGGER_LABELS } from "../setup/init.js";
+import {
+  advisoryLabelSpecsFor,
+  init,
+  labelCommand,
+  labelSpecsFor,
+  STATE_LABELS,
+  TRIGGER_LABELS,
+} from "../setup/init.js";
 import {
   asVisibility,
   availableSecrets,
@@ -91,7 +98,14 @@ afterEach(() => {
 
 describe("the runner CLI dispatches on a subcommand", () => {
   it("finds the runners to check", () => {
-    expect(runnerDirs).toEqual(["fix", "implement", "implement-prd", "review", "update-branch"]);
+    expect(runnerDirs).toEqual([
+      "fix",
+      "follow-ups",
+      "implement",
+      "implement-prd",
+      "review",
+      "update-branch",
+    ]);
   });
 
   it.each(runnerDirs)("%s: is reachable as a subcommand", (name: string) => {
@@ -152,12 +166,36 @@ describe("the runner CLI dispatches on a subcommand", () => {
    * before the runner is reached: every run says which version it is on, for the
    * reason `shared/common.ts` echoes the model id.
    */
-  it("refuses arguments to a runner rather than ignoring them", async () => {
-    const { code, out, err } = await invoke(["review", "--dry-run"]);
+  it.each(runnerDirs)(
+    "%s: refuses arguments rather than ignoring them",
+    async (name: string) => {
+      const { code, out, err } = await invoke([name, "--dry-run"]);
 
-    expect(code).toBe(2);
-    expect(err).toContain("--dry-run");
-    expect(out).toContain(`agent-workflows ${manifest.version}: review`);
+      expect(code).toBe(2);
+      expect(err).toContain("--dry-run");
+      expect(out).toContain(`agent-workflows ${manifest.version}: ${name}`);
+    },
+  );
+
+  /**
+   * `follow-ups` (#49) is the one runner that runs no model, and that is a
+   * security property rather than an implementation detail: its workflow is the
+   * only one in the loop holding `issues: write`, and a model reading arbitrary
+   * issue bodies while holding it is a prompt-injection surface nothing here
+   * currently has. So no prompt, no extraction, no agent.
+   *
+   * Asserted over the source because nothing else can see it. The permissions
+   * half is the workflow's to state; this half is invisible until something
+   * imports `claudeAgent` and the loop quietly grows a sixth model call.
+   */
+  it("follow-ups runs no model and holds no prompt", () => {
+    const dir = path.join(PACKAGE_DIR, "follow-ups");
+
+    expect(fs.readdirSync(dir).filter((entry) => entry.endsWith(".md"))).toEqual([]);
+    const source = fs.readFileSync(path.join(dir, "follow-ups.ts"), "utf8");
+    expect(source).not.toContain("claudeAgent");
+    expect(source).not.toContain("sandcastle");
+    expect(source).not.toContain("runWithExtraction");
   });
 });
 
@@ -539,6 +577,30 @@ describe("init installs the reference callers into an adopting repo", () => {
   });
 
   /**
+   * Every `gh label create` block §3 ships, in the order it ships them: the
+   * labels it **mandates** first, then the ones it documents conditionally.
+   * Scoped to §3 so a block added to another section cannot become the first.
+   */
+  const documentedLabels = (): readonly { name: string; color: string; description: string }[][] =>
+    ((fs
+      .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
+      .split(/^(?=## )/m)
+      .find((section) => section.startsWith("## 3.")) ?? "").match(/```bash\n[\s\S]*?```/g) ?? [])
+      .map((block) =>
+        [
+          ...block.matchAll(/^gh label create +"([^"]+)" +--color +(\S+) +--description +"([^"]+)"$/gm),
+        ].map(([, name, color, description]) => ({
+          name: name ?? "",
+          color: color ?? "",
+          description: description ?? "",
+        })),
+      )
+      .filter((block) => block.length > 0);
+
+  const byName = (labels: readonly { name: string }[]) =>
+    [...labels].sort((a, b) => a.name.localeCompare(b.name));
+
+  /**
    * The label table in `setup/init.ts` is a **second copy** of `docs/ADOPTING.md`
    * §3: the doc is what a human reads, the table is what `SETUP.md` tells them
    * to run and what `doctor` demands exists. Nothing else holds the two in step,
@@ -547,26 +609,90 @@ describe("init installs the reference callers into an adopting repo", () => {
    * is a transition that no-ops rather than anything that errors.
    *
    * So this is `PIN`'s trick for labels: parse the block the doc actually ships
-   * and compare it, colour and description included.
+   * and compare it, colour and description included — **the mandated block**,
+   * which is the first of the two §3 now carries (#51).
    */
-  it("scaffolds exactly the labels docs/ADOPTING.md §3 documents", () => {
-    const documented = [
-      ...fs
-        .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
-        .matchAll(/^gh label create +"([^"]+)" +--color +(\S+) +--description +"([^"]+)"$/gm),
-    ].map(([, name, color, description]) => ({
-      name: name ?? "",
-      color: color ?? "",
-      description: description ?? "",
-    }));
+  it("scaffolds exactly the labels docs/ADOPTING.md §3 mandates", () => {
+    const mandated = documentedLabels()[0] ?? [];
 
     // The block itself has to still be there: a doc restructure that moved it
     // would otherwise make this pass by comparing nothing.
-    expect(documented).toHaveLength(6);
+    expect(mandated).toHaveLength(6);
+    expect(byName([...TRIGGER_LABELS, ...STATE_LABELS])).toEqual(byName(mandated));
+  });
 
-    const byName = (labels: readonly { name: string }[]) =>
-      [...labels].sort((a, b) => a.name.localeCompare(b.name));
-    expect(byName([...TRIGGER_LABELS, ...STATE_LABELS])).toEqual(byName(documented));
+  /**
+   * And scaffolds none of the ones it documents **conditionally**.
+   *
+   * `pr-follow-up` and `needs-triage` matter only to a repository that installed
+   * the filing caller, and `agent:follow-ups` is added by a step that warns
+   * rather than failing. Putting any of them in the tables above would put them
+   * in `SETUP.md` — which is fine — *and* in `doctor`'s missing-label check,
+   * which is not: a preflight that fails a correctly-installed loop over a label
+   * its workflows never look for is a preflight people learn to ignore.
+   *
+   * Asserted from the doc rather than from a list, so a fourth conditional label
+   * is covered by arriving in that block. The block has to exist for the same
+   * reason the one above does.
+   */
+  it("scaffolds none of the labels §3 documents conditionally", () => {
+    const conditional = documentedLabels().slice(1).flat();
+    const scaffolded = new Set([...TRIGGER_LABELS, ...STATE_LABELS].map((label) => label.name));
+    // The function `doctor` demands from, named rather than inferred from the
+    // tables: what must not happen is a preflight erroring over one of these.
+    const demanded = new Set(labelSpecsFor(referenceNames).map((label) => label.name));
+
+    expect(conditional.length).toBeGreaterThan(0);
+    for (const label of conditional) {
+      expect(scaffolded).not.toContain(label.name);
+      expect(demanded).not.toContain(label.name);
+    }
+  });
+
+  /**
+   * …and **names** them in the `SETUP.md` it writes, which is the other half of
+   * that decision rather than a contradiction of it (#54).
+   *
+   * `init` scaffolds the filing caller on a first run, so an adopter who ran it
+   * has a live feature whose three labels no artifact they hold mentions — the
+   * review marks nothing, the stubs file unlabelled, and the only signal is a
+   * `::warning::` inside a green run, which is §1's own signature. Telling them
+   * is free; failing them over it is what `doctor` still declines to do.
+   *
+   * Compared against the doc block rather than a list here too, so the third
+   * copy of these strings — `ADVISORY_LABELS` — cannot drift from §3 either.
+   */
+  it("names the conditional labels in the prompt when it installed the caller that wants them", async () => {
+    const root = adopted();
+    const conditional = documentedLabels().slice(1).flat();
+
+    await init({ dir: root });
+
+    expect(byName(advisoryLabelSpecsFor(referenceNames))).toEqual(byName(conditional));
+    for (const label of conditional) expect(read(root, "SETUP.md")).toContain(labelCommand(label));
+  });
+
+  /**
+   * And says nothing about them to a repository that declined that caller (§4).
+   * Three labels prescribed to a repository where nothing will ever read them
+   * is a setup list with a step that cannot be completed for a reason — which
+   * is how a checklist stops being worked through.
+   */
+  it("says nothing about them once the caller that wants them is gone", async () => {
+    const root = adopted();
+    await init({ dir: root });
+
+    fs.rmSync(path.join(root, ".github", "workflows", "agent-follow-ups.yml"));
+    await init({ dir: root });
+
+    const setup = read(root, "SETUP.md");
+    for (const label of documentedLabels().slice(1).flat()) {
+      expect(setup).not.toContain(label.name);
+    }
+    // The mandated six are untouched by any of that.
+    for (const label of [...TRIGGER_LABELS, ...STATE_LABELS]) {
+      expect(setup).toContain(labelCommand(label));
+    }
   });
 });
 
@@ -1139,6 +1265,32 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(err).toContain("AGENT_PAT");
     expect(err).toContain("agent-fix.yml");
     expect(err).toContain("secrets: inherit");
+  });
+
+  /**
+   * …and the caller that is *supposed* to hand over nothing (#50).
+   *
+   * `follow-ups.yml` declares no secrets at all: it runs no model, so there is
+   * no `CLAUDE_CODE_OAUTH_TOKEN` to take, and it creates its issues with the
+   * workflow token, so there is no `AGENT_PAT` either. The generic wiring check
+   * above reads a caller's `secrets:` block and not the workflow behind it, so
+   * without a fixed-list exemption it reports the reference caller this package
+   * ships — and its `fix:` would have an adopter add a secret GitHub refuses to
+   * pass to a workflow that does not declare it. A preflight whose advice breaks
+   * a working loop is worse than no preflight.
+   *
+   * Run against the caller `init` really wrote rather than a fixture, so this is
+   * the file an adopter would be handed the advice about. That it declares no
+   * `secrets:` block at all is the other half of the pair, and is asserted where
+   * the workflow shapes are — `tests/workflows.test.ts`, on both halves at once.
+   */
+  it("asks for no AGENT_PAT wire on the caller whose workflow takes no secrets", async () => {
+    const root = await installed();
+
+    const { code, out, err } = await check(root, healthy());
+
+    expect(`${out}${err}`).not.toContain("agent-follow-ups.yml");
+    expect(code).toBe(0);
   });
 
   /**

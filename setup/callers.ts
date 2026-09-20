@@ -10,7 +10,7 @@ import { escapeRe, WORKFLOW_DIR } from "../shared/pins.js";
  * `init` reads what is already installed so a re-run updates it in place rather
  * than writing a second copy beside a file somebody renamed. `doctor` reads the
  * same files to diagnose them. Neither knows how many there are: an adopter
- * takes whatever subset of the five they want, under whatever filenames, with
+ * takes whatever subset of them they want, under whatever filenames, with
  * whatever job ids.
  *
  * So a caller is recognised by **what it calls**, never by its filename. The
@@ -103,8 +103,8 @@ export const selfCheckFor = (caller: InstalledCaller): string =>
  * from memory and it excludes nothing — the same silence a wrong job id gives,
  * through the other half of the same string.
  *
- * True for a caller that sets no `self-check` at all: four of the five take no
- * such input, and the one that does declares it `required: true`, so an absent
+ * True for a caller that sets no `self-check` at all: `review` is the only one
+ * that takes such an input, and it declares it `required: true`, so an absent
  * one is refused by GitHub rather than being quietly wrong.
  */
 export const selfCheckMatches = (caller: InstalledCaller): boolean =>

@@ -32,6 +32,7 @@ third execution model in §2b.
 | `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | **the execution half, shipped** (#92). Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
 | `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | **deferred: nothing to sequence between PRDs yet.** #91, detached from #87 so the chain would not build a slice nobody wanted. Not blocked on missing edges — `/wayfinder` records blockers as native dependencies, and on a `/to-tickets` batch `docs/agents/ticket-shape.md` requires them (upstream's skill writes a prose line, so they are added and verified by hand) — the point is that this tier sequences **top-level** issues, and ordering *within* a PRD is already carried by creation order (§2a). Its label exists and is human-written (§8) |
 | `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
+| `agent-follow-ups` — file a merged PR's recorded findings | — | ➕ | #44. The review agent records what it cannot fix in the PR in front of it; this files each finding as a `needs-triage` stub once that PR merges. The only workflow here that turns an agent's output into **new issues** — `token-expiry` files a fixed one about the loop itself, and the `implement` pair only label and close — and the only one in the loop that runs **no model**, which is what makes holding `issues: write` while reading issue bodies safe. Optional per adopter: the caller file is the off switch. See §10 |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
 | `token-expiry` — warn before `AGENT_PAT` lapses | — | ➕ | weekly; #70 |
@@ -345,6 +346,7 @@ come up was *inside* one PRD.
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
 | `contents: read` (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits |
+| **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the inline comments, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
 
 ---
 
@@ -456,6 +458,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `agent:blocked` | ✅ | ✅ |
 | `agent:queued` | ✅ | 🟡 declared in `docs/agents/triage-labels.md`, written by a human, read by nothing — `promote-queued` is deferred (§1). 🟡 and not ✅ on this file's own legend: the label is present, the tier it belongs to is not |
 | `agent:to-issues` | ✅ | ❌ PRD tier — and the string is double-booked on the tracker: #79 (harvest agent comments into issues, §10) proposes the same label for an unrelated job. Neither exists here yet, so it costs nothing to settle, but #79 is the one that has to move — this row is upstream's name for upstream's workflow |
+| `agent:follow-ups` | ❌ | ➕ PRs — the marker *and* the manual trigger in one string, disambiguated by event type rather than by a second label a human could choose wrong. Added by review, removed by any filing run that reached a verdict — including one that suppressed every finding, and one that read a retraction; removing it by hand is the opt-out (`docs/ADOPTING.md` §3) |
 | `agent:update-branch` | ✅ | ✅ |
 | `Sandcastle` (triage: "ready for an AFK agent") | ✅ | 🟡 ours is `ready-for-agent`, written by the local `/triage` and `/to-tickets` skills; no workflow reads it |
 
@@ -693,14 +696,40 @@ expensive to rediscover.
   Top-level comments (§4) do not weaken this: the agent *reports* them in its structured output and
   the workflow posts them, which is the same shape as thread replies.
 - **An agent that raises work never files it.** `agent:fix` may say a follow-up is needed; it
-  cannot create the issue. Filing is a separate, human-labelled step. `architecture-review`
-  upstream has the same shape — it files a PRD and stops, and a human labels it `agent:implement`.
-  Collapsing the two closes a cycle with no gate, the same failure "never auto-cascade review →
-  fix" above already guards against. Concretely: no workflow gets `issues: write` unless filing is
-  its job — `tests/workflows.test.ts` holds every workflow to that, exempting only
-  the two `implement` workflows — both halves of each pair since #98 — and `token-expiry.yml` by
-  name, so a new one is covered on arrival (`agent-review` had been granted it unused, #101) — and
-  harvesting those comments into issues (#79) is a separate workflow behind its own label.
+  cannot create the issue. `architecture-review` upstream has the same shape — it files a PRD and
+  stops, and a human labels it `agent:implement`. Collapsing the two closes a cycle with no gate,
+  the same failure "never auto-cascade review → fix" above already guards against. Concretely: no
+  workflow gets `issues: write` unless filing is its job — `tests/workflows.test.ts` holds every
+  workflow to that, exempting only the two `implement` workflows — both halves of each pair since
+  #98 — `token-expiry.yml` by name, and the `follow-ups` pair for the reason immediately below, so
+  a new one is covered on arrival (`agent-review` had been granted it unused, #101) — and harvesting those comments into
+  issues (#79) is a separate workflow behind its own label.
+
+  **Amended by `follow-ups` (#44), in its second half only.** This used to continue "*filing is a
+  separate, human-labelled step*", and that clause is now false: a merged pull request's recorded
+  out-of-scope findings become issues with nobody labelling anything. The clause is written out
+  here rather than deleted, because an invariant that quietly loses a sentence reads to the next
+  person as an oversight in whichever workflow contradicts it.
+
+  What was being protected survives intact, and is the whole of what this bullet now asserts:
+
+  - **The agent that raises the finding still never files it.** It is the review agent, and review
+    holds `contents: read` and no `issues:` scope at all. It emits the findings into its own review
+    body; a separate workflow, started by the merge, reads that body.
+  - **The workflow that holds the permission runs no model.** `follow-ups` installs no agent and
+    declares no secrets — what would be the agent's judgement is a pure function over plain objects
+    (`shared/follow-up-plan.ts`). That is also what keeps reading arbitrary issue bodies while
+    holding `issues: write` from being a prompt-injection surface, which is a property the
+    human-labelled step never gave us.
+
+  **Why the change is a move of the gate rather than the removal of one.** The concern behind the
+  invariant is an *unattended cycle* — work raised, filed and built with no human in it. The gate
+  is still there and has moved from **before filing** to **before building**: stubs arrive
+  `needs-triage`, never `agent:implement`, so nothing a review raises is ever built until a person
+  decides it should be. What the old position actually bought was a maintainer reading every review
+  before merging and opening the issues by hand, which is the labour this loop exists to remove —
+  and the failure it produced was silent, since an unfiled finding leaves no trace at all. Opt-in
+  is what had already failed.
 - **No agent reads its own output back as input.** The invariant above closes by a different door
   if it does. `gh pr comment` posts as `github-actions[bot]`, which `isTrustedAuthor` trusts on
   purpose — so without a filter the agent's own "worth a follow-up issue" note returns next run as

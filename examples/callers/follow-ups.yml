@@ -1,0 +1,57 @@
+name: Agent Follow-ups
+
+# The trigger and the token grant. Everything else — the fork guard, the merge
+# gate, the permissions ceiling, the concurrency group and every step — is in
+# follow-ups.yml, which an adopting repo references instead of copying (#50).
+#
+# **This caller is the off switch.** The sixth runner and the sixth reusable
+# ship inert: nothing invokes a reusable except a caller's reference, so a repo
+# that copies the other five never files anything, and turning it off later is
+# deleting this file. The review half keeps recording its out-of-scope findings
+# in the review body and keeps marking the pull request either way — unfiled
+# rather than invisible, and a search for merged pull requests carrying
+# `agent:follow-ups` is then the exact list of the ones nobody filed.
+#
+# Two activity types, and `closed` is the load-bearing one: it is **not** a
+# default `pull_request_target` type, so a caller that listed only `labeled`
+# would file nothing on a merge and look exactly like one that did. `labeled`
+# is the manual entry point — re-add `agent:follow-ups` to a closed pull
+# request to drive a missed close event, a reconsidered opt-out or a partial
+# failure. Both are narrowed in the called job's condition, which an adopter
+# cannot loosen.
+#
+# `pull_request_target` reads workflow YAML from the *base* branch, so a pull
+# request cannot alter this file to change what runs. The called workflow is
+# equally out of a PR's reach — but because of what the `uses:` below is
+# **pinned to**, not because it is local. Pin a tag or a SHA, never a branch:
+# `@main` would hand a job holding `issues: write` to whatever currently sits
+# on another repository's default branch (docs/ADOPTING.md §9).
+on:
+  pull_request_target:
+    types: [closed, labeled]
+
+jobs:
+  follow-ups:
+    uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.1.7
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs — and
+    # `issues: write` is the one this workflow exists for. The agent that raised
+    # these findings still cannot file them: it runs in `review`, which holds
+    # `contents: read` and no `issues:` scope at all, and the job below that
+    # holds the permission runs no model.
+    permissions:
+      contents: read
+      issues: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and the run dies at `npx`
+      # with a 401 that reads like a bad token rather than a missing grant.
+      packages: read
+      pull-requests: write
+    # No `with:` and no `secrets:`, and neither is an omission. The called
+    # workflow declares no inputs — nothing is checked out, so there is no
+    # toolchain to describe and no command to run — and no secrets, because it
+    # runs no model and creates its issues with the workflow token. A repository
+    # without `AGENT_PAT` files exactly as much as one with it.

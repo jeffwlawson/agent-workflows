@@ -141,6 +141,24 @@ The refusal says: *"Label the issues they produce instead."* That path is:
 3. `/to-tickets` publishes the slices under that PRD, in dependency order, each `ready-for-agent`
    ([`ticket-shape.md`](./ticket-shape.md)).
 4. A human adds `agent:implement` to the PRD.
+5. Once the slices are published and verified natively **and every child ticket is closed**,
+   **close the map** — `gh issue close <map> --reason completed --comment "Sliced into PRD
+   #<prd>"`. After `/to-tickets`, not before: slicing is the map's last consumer and the step most
+   likely to surface a decision the PRD under-specifies, and the map is where that ticket would go.
+   An open child under a closed map is not a state this path produces — the frontier query reads
+   children regardless of the map's own state, so a later `/wayfinder` session would be handed a
+   frontier on a route that has left planning. Close the child, or reopen the map.
 
-The map and its tickets stay open, refused, and useful — they are the record of why the PRD says
-what it says. They are not a queue that eventually drains into the loop.
+Closing is bookkeeping, not disposal. **A map and its tickets are never implementable at any point
+in their lives** — that is what the refusal above is about, and it holds whether they are open or
+closed. They remain the record of why the PRD says what it says, reachable from the PRD's body link
+and from GitHub's own back-reference on the map. They are not a queue that eventually drains into
+the loop.
+
+Child tickets close earlier and one at a time, as they are answered:
+[`issue-tracker.md`](./issue-tracker.md#wayfinding-operations)'s *Resolve* operation closes each one
+and appends a pointer to Decisions-so-far, and the **frontier query reads the map's open children**
+to find the next one. So issue state carries information here — an open child is an unanswered
+question, and an open map is a route that has not yet been sliced into a PRD. Neither reads on
+promotion: step 4 is a scheduling decision, and a map whose slices are waiting for one has already
+finished its own job.

@@ -206,3 +206,16 @@ labels, which two workflows refuse and nothing else describes. See
 
 Single-context — `CONTEXT.md` + `docs/adr/` at the repo root. See
 [`docs/agents/domain.md`](./docs/agents/domain.md).
+
+## Asking me to decide
+
+- **Lead with the stake** — one sentence on what changes depending on my answer. Where nothing
+  changes, decide it and tell me what you decided.
+- **Three sentences of body.** Supporting evidence goes after the question, where I can skip it.
+- **One recommendation, one reason.**
+- **Go long when the reasoning is the finding** — a risk I would miss if you compressed it — and
+  say that is why.
+
+## When a message doesn't land
+
+When I say something is over my head, re-pitch it in plain English.

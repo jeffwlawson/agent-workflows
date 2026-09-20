@@ -1,6 +1,7 @@
 import { safeGh, writeText } from "../shared/common.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
+  passesSecret,
   readInstalledCallers,
   repoSlug,
   selfCheckFor,
@@ -49,7 +50,13 @@ export interface Finding {
  * lead to opposite actions.
  */
 export interface RepoFacts {
-  /** Names of the repository's Actions secrets. */
+  /**
+   * Every Actions secret a workflow here can read: this repository's own, and
+   * the organization secrets shared with it. Two endpoints, one answer —
+   * `repos/{owner}/{repo}/actions/secrets` is the repository's alone, and an
+   * organization that holds one Claude token and one bot PAT centrally answers
+   * it with nothing at all.
+   */
   readonly secrets: readonly string[] | undefined;
   /** Settings → Actions → General → Allow GitHub Actions to create … pull requests. */
   readonly canCreatePullRequests: boolean | undefined;
@@ -280,11 +287,60 @@ export const diagnose = (
     });
   }
 
+  // The wire, as distinct from the secret. A `workflow_call` job receives only
+  // what its caller hands it — there is no inheritance without
+  // `secrets: inherit` — and `AGENT_PAT` is declared optional by every reusable
+  // half, so a caller that does not name it does not fail: the secret arrives
+  // as the empty string and the `secrets.AGENT_PAT || secrets.GITHUB_TOKEN`
+  // fallback on the other side absorbs it. The loop then runs under the
+  // built-in token with the repository secret correctly set — a push that
+  // starts no CI, a label that fires no event, a pull request nothing can mark
+  // ready. Three of §1's five, from a line an adopter deleted rather than from
+  // anything they failed to set, which is why the secrets row above cannot see
+  // it.
+  //
+  // Only the optional secret is ruled on. `CLAUDE_CODE_OAUTH_TOKEN` is
+  // `required: true` on every reusable half, so a caller that omits it is
+  // refused by GitHub before the job starts — loud, and out of this command's
+  // remit for the reason an absent `self-check` is.
+  for (const caller of callers) {
+    if (passesSecret(caller, "AGENT_PAT")) continue;
+
+    const named =
+      caller.secrets === undefined || caller.secrets === "inherit" ? [] : caller.secrets;
+    // Where the secret is known not to be set, the row above is already the
+    // error and this is the next thing to do rather than a second fault. Where
+    // it could not be read, a set one is the case that costs something.
+    const unset = facts.secrets !== undefined && !facts.secrets.includes("AGENT_PAT");
+    add({
+      severity: unset ? "warning" : "error",
+      check: "secrets wiring",
+      problem:
+        `${caller.file} does not hand \`AGENT_PAT\` to \`${caller.workflow}.yml\` — the ` +
+        `\`${caller.jobId}\` job ` +
+        (named.length === 0
+          ? `declares no \`secrets:\` block at all`
+          : `passes only ${named.map((name) => `\`${name}\``).join(", ")}`) +
+        `. A called workflow gets only what it is passed, and this one is optional there, so it ` +
+        `arrives as the empty string and the job falls back to \`GITHUB_TOKEN\`: a push that ` +
+        `starts no CI, a label that fires no event, and a pull request nothing can mark ready. ` +
+        `The secret being set is what makes that invisible.` +
+        (unset
+          ? ` \`AGENT_PAT\` is not set here either, so this is the wire to add once it is.`
+          : ``),
+      fix:
+        `Add \`AGENT_PAT: \${{ secrets.AGENT_PAT }}\` to that job's \`secrets:\` block — or ` +
+        `\`secrets: inherit\`, which hands the called workflow every secret this repository holds.`,
+    });
+  }
+
   if (facts.secrets === undefined) {
     add({
       severity: "warning",
       check: "secrets",
-      problem: `Could not read this repository's Actions secrets.`,
+      problem:
+        `Could not read the Actions secrets available here — neither this repository's own nor ` +
+        `the organization secrets shared with it.`,
       fix: `Check \`CLAUDE_CODE_OAUTH_TOKEN\` and \`AGENT_PAT\` by hand; reading them needs admin.`,
     });
   } else {
@@ -407,19 +463,6 @@ export const diagnose = (
 };
 
 /**
- * One scalar `gh` answer, or `undefined` when `gh` could not give one.
- *
- * Safe for a scalar precisely because the answer it is used for — `.visibility`
- * — has no empty value: a repository is `PUBLIC` or `PRIVATE`, and nothing
- * prints an empty line but a `gh` that failed. Anything whose *empty* answer is
- * meaningful goes through `parseList` instead.
- */
-const answer = (args: readonly string[], cwd: string): string | undefined => {
-  const out = safeGh(args, { cwd }).trim();
-  return out === "" ? undefined : out;
-};
-
-/**
  * A **list** `gh` answered with — which is the one place empty output must not
  * mean "could not read".
  *
@@ -456,6 +499,30 @@ const list = (
 ): readonly string[] | undefined => parseList(safeGh([...args, "--jq", `[${jq}] | @json`], { cwd }));
 
 /**
+ * The secrets a workflow here can actually read, out of the two lists GitHub
+ * keeps apart — the repository's own, and the organization secrets shared with
+ * it — and `undefined` where either of them could not be read.
+ *
+ * The judgement is in the third argument. `safeGh` renders every failure as the
+ * same empty string, and the organization endpoint 404s on a user-owned
+ * repository: trusting that as "could not read" would make every org-less
+ * repository undiagnosable, which is most of them. Knowing there is no
+ * organization is what turns that 404 into the fact it is — *there are none* —
+ * while leaving a 403 on a repository that has one as unknown, where absence
+ * cannot be concluded from a list that was never served.
+ */
+export const availableSecrets = (
+  repository: readonly string[] | undefined,
+  organization: readonly string[] | undefined,
+  inOrganization: boolean | undefined,
+): readonly string[] | undefined => {
+  if (repository === undefined) return undefined;
+  if (inOrganization === false) return repository;
+  if (organization === undefined) return undefined;
+  return [...repository, ...organization];
+};
+
+/**
  * `gh`'s answer for a repository's visibility, as the two cases the diagnosis
  * distinguishes. An **internal** repository is private as far as every check
  * here is concerned: the check-runs API 403s without the scope exactly as it
@@ -487,7 +554,19 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
   // `{owner}/{repo}` and every repo-scoped subcommand off the working
   // directory's git remote, so a `doctor --dir ../other` that did not say so
   // would check one repository's files against another repository's secrets.
-  const visibility = answer(["repo", "view", "--json", "visibility", "--jq", ".visibility"], dir);
+  const [visibility] = list(["repo", "view", "--json", "visibility"], ".visibility", dir) ?? [];
+
+  // Whether there is an organization behind this repository at all, which is
+  // what makes an empty organization-secrets answer readable below.
+  //
+  // A second call rather than a second field of the one above, so that a `gh`
+  // old enough not to know this field costs only the question it answers: asked
+  // together, an unknown field fails the whole query and the visibility — which
+  // decides a severity — would go unread with it. Through `list` for
+  // `parseList`'s reason, since the answer is legally `false` and a `false` read
+  // as a `gh` that said nothing is the distinction the secrets turn on.
+  const [inOrganization] =
+    list(["repo", "view", "--json", "isInOrganization"], ".isInOrganization", dir) ?? [];
 
   // One call, two facts: the default token's permissions and the create-pull-
   // requests setting are two fields of the same response, they need the same
@@ -501,19 +580,40 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
       dir,
     ) ?? [];
 
+  // Two endpoints, because GitHub keeps them apart: the first is this
+  // repository's own secrets, the second is "all organization secrets shared
+  // with a repository". A repository whose tokens are held centrally has none
+  // of its own, so reading only the first would fail a working loop with a fix
+  // telling them to duplicate an organization secret.
+  //
+  // The page size is a page size, not the default: both endpoints serve 30 at a
+  // time, name-ascending, and a repository with more than that would truncate
+  // `CLAUDE_CODE_OAUTH_TOKEN` off the end — where `parseList` cannot tell a
+  // short page from a short list. `--paginate` is not the fix: it applies the
+  // query per page and prints one array per page, which is not the single JSON
+  // document `parseList` reads, so every answer would come back unreadable
+  // instead.
+  const repositorySecrets = list(
+    ["api", "repos/{owner}/{repo}/actions/secrets?per_page=100"],
+    ".secrets[].name",
+    dir,
+  );
+  const inOrg = inOrganization === "true" ? true : inOrganization === "false" ? false : undefined;
+  // Not asked where there is nothing to ask — an unreadable first list makes
+  // the answer unknown whatever the second says, and on a user-owned
+  // repository the endpoint 404s, which `safeGh` renders as the same empty
+  // string a 403 gives.
+  const organizationSecrets =
+    repositorySecrets === undefined || inOrg === false
+      ? undefined
+      : list(
+          ["api", "repos/{owner}/{repo}/actions/organization-secrets?per_page=100"],
+          ".secrets[].name",
+          dir,
+        );
+
   return {
-    // A page size, not the default. The secrets endpoint serves 30 at a time,
-    // name-ascending, and a repository with more than that would truncate
-    // `CLAUDE_CODE_OAUTH_TOKEN` off the end — where `parseList` cannot tell a
-    // short page from a short list and the run fails a correctly configured
-    // repository. `--paginate` is not the fix: it applies the query per page and
-    // prints one array per page, which is not the single JSON document
-    // `parseList` reads — so every answer would come back unreadable instead.
-    secrets: list(
-      ["api", "repos/{owner}/{repo}/actions/secrets?per_page=100"],
-      ".secrets[].name",
-      dir,
-    ),
+    secrets: availableSecrets(repositorySecrets, organizationSecrets, inOrg),
     // Both spellings named, so the third case stays `undefined`: a field a
     // future API drops answers `null`, and reading anything-but-`true` as `false`
     // would turn that into "the setting is off" — a finding about a fact nobody
@@ -539,6 +639,15 @@ export interface DoctorOptions {
    */
   readonly facts?: RepoFacts | undefined;
 }
+
+/**
+ * Whether `gh` answered nothing at all — no auth, no `gh`, no admin here. Read
+ * off the whole record rather than a chosen field, so a fact added later is
+ * covered by construction: the question is "was anything about the repository
+ * knowable", and every field of it is `undefined` for exactly that reason.
+ */
+const nothingRead = (facts: RepoFacts): boolean =>
+  Object.values(facts).every((value) => value === undefined);
 
 const render = (finding: Finding): string =>
   `${finding.severity === "error" ? "FAIL" : "warn"}  ${finding.check}: ${finding.problem}\n` +
@@ -567,7 +676,15 @@ export const runDoctor = async (options: DoctorOptions, io: CliIo): Promise<numb
 
   if (errors.length === 0) {
     io.stdout(
-      `${callers.length} caller(s) checked; ${warnings.length} thing(s) to know, nothing broken.\n`,
+      // "Nothing broken" is a claim about what was looked at, and with no `gh`,
+      // no auth or no admin the only thing looked at was the callers. Saying it
+      // anyway is worst at the moment `setup/SETUP.md` §5 sends somebody here —
+      // and permanently, for an adopter who is not an admin of the repository.
+      // Exit 0 is still right: nothing was found to be wrong.
+      nothingRead(facts)
+        ? `${callers.length} caller(s) checked and nothing wrong with them. No repository fact ` +
+          `could be read, so the secrets, the repository settings and the labels are unchecked.\n`
+        : `${callers.length} caller(s) checked; ${warnings.length} thing(s) to know, nothing broken.\n`,
     );
     return 0;
   }

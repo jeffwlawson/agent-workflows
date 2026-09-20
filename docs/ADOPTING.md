@@ -50,12 +50,13 @@ the fix, and that table is the whole of what it rules on.
 
 | What it checks | The failure it is for |
 |---|---|
-| both secrets are set | §2 — and `AGENT_PAT`'s absence is three of §1's five |
+| both secrets are set — on the repository, or shared with it by its organization | §2 — and `AGENT_PAT`'s absence is three of §1's five |
 | Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
 | every caller grants `packages: read` | §4 — a 401 at `npx` that reads like a bad token |
 | a caller that declares no `permissions:` block at all | §4 — it runs with the default token, whose restricted setting is `contents` and `packages` read, so the install works and every write 403s |
 | a **private** repo's review caller grants `checks: read` | §4 — a wait that spends its budget and reviews blind |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
+| every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for 15 of its 20 minutes |
 | the labels exist | §3 — a transition that is a silent no-op |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |

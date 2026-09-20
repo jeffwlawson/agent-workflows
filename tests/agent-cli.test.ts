@@ -5,7 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
 import { init, labelCommand, STATE_LABELS, TRIGGER_LABELS } from "../setup/init.js";
-import { asVisibility, parseList, runDoctor, type RepoFacts } from "../setup/doctor.js";
+import {
+  asVisibility,
+  availableSecrets,
+  parseList,
+  runDoctor,
+  type RepoFacts,
+} from "../setup/doctor.js";
 
 /**
  * The runners ship as one versioned package with one binary (#96), so the entry
@@ -611,6 +617,11 @@ describe("doctor names the failures that otherwise look like something else", ()
         ...jobPermissions,
         "    with:",
         "      self-check: review / review",
+        // The wires a real caller carries, since every scenario built from this
+        // helper is about somewhere *else* being wrong.
+        "    secrets:",
+        "      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+        "      AGENT_PAT: ${{ secrets.AGENT_PAT }}",
         "",
       ].join("\n"),
     );
@@ -1106,6 +1117,93 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(err).toContain("`review` job");
   });
 
+  /**
+   * The secret being *set* and the job being *handed* it are two facts, and
+   * only the first is a repository setting. A `workflow_call` job receives what
+   * its caller passes and nothing else, `AGENT_PAT` is optional on the other
+   * side, and the `secrets.AGENT_PAT || secrets.GITHUB_TOKEN` fallback absorbs
+   * the empty string it arrives as — so a caller an adopter rewrote without the
+   * line runs the loop under the built-in token with the secret correctly set.
+   * That is `docs/ADOPTING.md` §1's failures two, three and four, reached from
+   * the one place nothing else here looks.
+   */
+  it("fails a caller that does not pass AGENT_PAT to the workflow it calls", async () => {
+    const root = await installed();
+    edit(root, "agent-fix.yml", (text) =>
+      text.replace(/^ *AGENT_PAT: .*$/m, ""),
+    );
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toContain("AGENT_PAT");
+    expect(err).toContain("agent-fix.yml");
+    expect(err).toContain("secrets: inherit");
+  });
+
+  /**
+   * `secrets: inherit` hands over every secret the repository holds, which is
+   * what the reference callers decline to do — but it does hand over this one,
+   * so it is a wire rather than a fault. Reporting it would be a preflight
+   * arguing with a choice.
+   */
+  it("accepts a caller that inherits every secret", async () => {
+    const root = await installed();
+    edit(root, "agent-fix.yml", (text) =>
+      text.replace(/^    secrets:\n(?:      .*\n)+/m, "    secrets: inherit\n"),
+    );
+
+    const { code, err } = await check(root, healthy());
+
+    expect(err).toBe("");
+    expect(code).toBe(0);
+  });
+
+  /**
+   * And where the secret is not set either, the missing wire is the next thing
+   * to do rather than a second fault: one error about the secret, and this
+   * reported as something to know. Two errors for one cause is how a list of
+   * real findings stops being read.
+   */
+  it("reports the missing wire as a warning when the secret is not set either", async () => {
+    const root = await installed();
+    edit(root, "agent-fix.yml", (text) => text.replace(/^ *AGENT_PAT: .*$/m, ""));
+
+    const { out, err } = await check(root, {
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    });
+
+    expect(out).toContain("secrets wiring");
+    expect(err).not.toContain("secrets wiring");
+  });
+
+  /**
+   * GitHub keeps repository secrets and the organization secrets shared with a
+   * repository at two endpoints, and an organization holding one Claude token
+   * and one bot PAT centrally answers the first with nothing. Reading only that
+   * one is two errors and exit 1 on a working loop, with a fix telling them to
+   * duplicate an organization secret.
+   *
+   * The judgement is the third argument: `safeGh` renders a 404 on a user-owned
+   * repository and a 403 on an organization's as the same empty string, so
+   * knowing there is no organization is what lets the first be read as "there
+   * are none" rather than collapsing every org-less repository into unknown.
+   */
+  it("counts an organization's shared secrets as set, without collapsing repos that have none", () => {
+    expect(availableSecrets([], ["AGENT_PAT"], true)).toEqual(["AGENT_PAT"]);
+    expect(availableSecrets(["CLAUDE_CODE_OAUTH_TOKEN"], [], true)).toEqual([
+      "CLAUDE_CODE_OAUTH_TOKEN",
+    ]);
+    // No organization to ask about: the 404 is the answer, not a silence.
+    expect(availableSecrets([], undefined, false)).toEqual([]);
+    // One that has an organization, whose list could not be read: absence
+    // cannot be concluded from a list nobody was served.
+    expect(availableSecrets([], undefined, true)).toBeUndefined();
+    expect(availableSecrets([], undefined, undefined)).toBeUndefined();
+    expect(availableSecrets(undefined, ["AGENT_PAT"], false)).toBeUndefined();
+  });
+
   /** A fact `gh` could not answer is reported as unknown, never as a pass. */
   it("says what it could not read rather than treating it as fine", async () => {
     const { code, out } = await check(await installed(), {
@@ -1119,6 +1217,34 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(0);
     expect(out).toMatch(/could not/i);
+  });
+
+  /**
+   * …and the last line a human's eye lands on has to say the same thing. With
+   * no `gh`, no auth or no admin, the only thing checked was the callers, and
+   * "nothing broken" is then a claim about a repository nothing was read from —
+   * at exactly the moment `setup/SETUP.md` §5 sends somebody here, and
+   * permanently for an adopter who is not an admin. Exit 0 is still right:
+   * nothing was found to be wrong.
+   */
+  it("does not say nothing is broken when no repository fact was read", async () => {
+    const { code, out } = await check(await installed(), {
+      secrets: undefined,
+      canCreatePullRequests: undefined,
+      defaultWorkflowPermissions: undefined,
+      labels: undefined,
+      visibility: undefined,
+      releases: undefined,
+    });
+
+    expect(code).toBe(0);
+    expect(out).not.toContain("nothing broken");
+    expect(out).toContain("No repository fact could be read");
+
+    // And it is still said where something *was* read, so the sentence stays
+    // the one a working run ends on.
+    const known = await check(await installed(), healthy());
+    expect(known.out).toContain("nothing broken");
   });
 
   /**

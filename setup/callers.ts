@@ -54,6 +54,16 @@ export interface InstalledCaller {
   readonly permissionsFrom: "job" | "workflow" | "none";
   /** `self-check`, on the one caller that takes it. */
   readonly selfCheck: string | undefined;
+  /**
+   * What this job hands the workflow it calls: the names in its `secrets:`
+   * block, the literal `"inherit"`, or `undefined` where it declares no block.
+   *
+   * Read for the same reason `with:` and `permissions:` are — it is a wire the
+   * caller owns and the called half cannot make up for. A `workflow_call` job
+   * receives *only* what it is passed; there is no inheritance without
+   * `secrets: inherit`.
+   */
+  readonly secrets: readonly string[] | "inherit" | undefined;
 }
 
 /**
@@ -99,6 +109,31 @@ export const selfCheckFor = (caller: InstalledCaller): string =>
  */
 export const selfCheckMatches = (caller: InstalledCaller): boolean =>
   caller.selfCheck === undefined || caller.selfCheck === selfCheckFor(caller);
+
+/**
+ * Whether this caller hands `name` to the workflow it calls.
+ *
+ * `secrets: inherit` passes everything, a map passes what it names, and no
+ * block at all passes nothing. An *optional* secret that was not passed is not
+ * an error on either side: it arrives as the empty string, which is why the one
+ * wire an adopter can quietly drop is the one nothing complains about.
+ */
+export const passesSecret = (caller: InstalledCaller, name: string): boolean =>
+  caller.secrets === "inherit" || (caller.secrets?.includes(name) ?? false);
+
+/**
+ * The block is a map of names, or the single word `inherit`. Anything else —
+ * an empty block, a list, a string that is not `inherit` — names nothing, and
+ * is read as such rather than as an absent block: a `secrets:` key that GitHub
+ * would reject is not a wire either way.
+ */
+const secretsOf = (value: unknown): readonly string[] | "inherit" | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return value.trim() === "inherit" ? "inherit" : [];
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.keys(value as Record<string, unknown>)
+    : [];
+};
 
 const asStringMap = (value: unknown): Record<string, string> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -189,6 +224,7 @@ export const callersIn = (
       readonly name?: unknown;
       readonly permissions?: unknown;
       readonly with?: unknown;
+      readonly secrets?: unknown;
     };
     const match = typeof job.uses === "string" ? uses.exec(job.uses.trim()) : null;
     if (match === null) return [];
@@ -206,6 +242,7 @@ export const callersIn = (
         ref: match[2] ?? "",
         ...grantsFor(job, top, topDeclared),
         selfCheck,
+        secrets: secretsOf(job.secrets),
       },
     ];
   });

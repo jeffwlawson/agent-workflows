@@ -60,8 +60,8 @@ a scaffolder that silently reverted a `with:` input would be manufacturing exact
 class the pair exists to remove.
 
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — the two
-grants, an absent `permissions:` block, the pin's shape and its freshness, `self-check`, the labels
-— and reads nothing out of `examples/callers/`, so a release that changes a caller *body* is a
+grants, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape and its freshness,
+`self-check`, the labels — and reads nothing out of `examples/callers/`, so a release that changes a caller *body* is a
 release that teaches `diagnose` about it in the same commit, exactly as a new pin site is a change
 to `shared/pins.ts` in the same commit. Diffing an adopter's caller against the reference is the
 other design and it is the wrong one here: most of what differs is a decision they made, and a

@@ -1337,17 +1337,18 @@ describe("doctor names the failures that otherwise look like something else", ()
    * one is two errors and exit 1 on a working loop, with a fix telling them to
    * duplicate an organization secret.
    *
-   * The judgement is the third argument: `safeGh` renders a 404 on a user-owned
-   * repository and a 403 on an organization's as the same empty string, so
-   * knowing there is no organization is what lets the first be read as "there
-   * are none" rather than collapsing every org-less repository into unknown.
+   * The judgement is the third argument: `safeGh` renders the organization
+   * endpoint's refusal of a user-owned repository (422 against this repository's
+   * `gh`) and a 403 on an organization's as the same empty string, so knowing
+   * there is no organization is what lets the first be read as "there are none"
+   * rather than collapsing every org-less repository into unknown.
    */
   it("counts an organization's shared secrets as set, without collapsing repos that have none", () => {
     expect(availableSecrets([], ["AGENT_PAT"], true)).toEqual(["AGENT_PAT"]);
     expect(availableSecrets(["CLAUDE_CODE_OAUTH_TOKEN"], [], true)).toEqual([
       "CLAUDE_CODE_OAUTH_TOKEN",
     ]);
-    // No organization to ask about: the 404 is the answer, not a silence.
+    // No organization to ask about: the refusal is the answer, not a silence.
     expect(availableSecrets([], undefined, false)).toEqual([]);
     // One that has an organization, whose list could not be read: absence
     // cannot be concluded from a list nobody was served.

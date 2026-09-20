@@ -26,13 +26,13 @@
     "verify": "npm run typecheck && npm run test"
   },
   "dependencies": {
-    "@ai-hero/sandcastle": "0.12.0"
+    "@ai-hero/sandcastle": "0.12.0",
+    "yaml": "^2.8.1"
   },
   "devDependencies": {
     "@standard-schema/spec": "^1.0.0",
     "@types/node": "24.10.1",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4",
-    "yaml": "^2.8.1"
+    "vitest": "^3.2.4"
   }
 }

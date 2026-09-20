@@ -440,6 +440,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `corpus.yml` + `scripts/lint-corpus.ts` | Lints a pinned `microsoft/winget-pkgs` snapshot. Every manifest there is known-good, so any **error** is by definition a false positive — a free pre-labelled regression suite. Caught 417 false positives, then a bug in its own gate |
 | Severity-aware corpus gate | Errors fail the build; warnings are reported but do not. Without this, warning-severity rules are structurally impossible |
 | `docs/friction.md` | The actual deliverable of the pilot — every time a human reached into the loop |
+| `init` and `doctor` | The install path, as subcommands of the runner binary (#6). Neither upstream mechanism covers the Actions half: `sandcastle init` sets up the local loop and refuses a re-run, `/setup-matt-pocock-skills` sets up the skills' config, and **neither sets up GitHub Actions** — nor the labels, the two secrets, the repository setting or the version pin. `doctor` has no upstream counterpart at all; it exists because every failure in `docs/ADOPTING.md` §1 is a condition with no runtime symptom |
 | `CONTEXT.md` domain model | CVM has one too; ours is load-bearing for rule-class reasoning |
 
 ---

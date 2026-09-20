@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeText } from "./shared/common.js";
+import { VERSION } from "./shared/manifest.js";
 
 /**
  * One binary for the whole loop. A workflow invokes it as
@@ -10,25 +11,17 @@ import { writeText } from "./shared/common.js";
  * pinned in the workflow YAML — which is what makes the runner base-controlled
  * under `pull_request_target` and retires the stale-runner trap (#96).
  *
- * Dispatch is a table rather than five separate bins because the package has a
- * second surface coming: `init` and `doctor` (#112) are the install and
- * preflight path, and they belong to the same version as the runners they set
- * up. A table also means adding a runner is one entry rather than a new bin, a
- * new pin and a new workflow line.
+ * Dispatch is a table rather than separate bins because the package has two
+ * surfaces: the five runners a workflow step invokes, and the install path
+ * `init` and `doctor` are (#6). They belong to the same version as the runners
+ * they set up — the version that writes a pin has to be the version that pin
+ * names — so one install, one binary, one thing to keep in step. A table also
+ * means adding a runner is one entry rather than a new bin, a new pin and a new
+ * workflow line.
  */
 
-/**
- * The package's own version. `cli.ts` sits at the package root in the source
- * tree and `cli.js` sits one level below it in `dist/`, so the manifest is
- * either beside this module or immediately above it.
- */
-const MANIFEST = ["package.json", path.join("..", "package.json")]
-  .map((rel) => path.join(import.meta.dirname, rel))
-  .find((file) => fs.existsSync(file));
-
-export const VERSION: string = MANIFEST
-  ? ((JSON.parse(fs.readFileSync(MANIFEST, "utf8")) as { version?: string }).version ?? "unknown")
-  : "unknown";
+/** Re-exported where it has always been read from; the lookup is in `shared/`. */
+export { VERSION };
 
 /** Bad usage, as distinct from a run that failed — see the exit codes below. */
 class UsageError extends Error {}
@@ -36,7 +29,12 @@ class UsageError extends Error {}
 export interface Command {
   /** One line, shown in `help`. */
   readonly summary: string;
-  readonly run: (args: readonly string[]) => Promise<unknown>;
+  /**
+   * The process exit code, or nothing for the ordinary "it worked" case. A
+   * number is how `doctor` reports a repository it found problems in, which is a
+   * *result* rather than a crash — the run did exactly what it was asked to.
+   */
+  readonly run: (args: readonly string[], io: CliIo) => Promise<number | void>;
 }
 
 /**
@@ -56,20 +54,87 @@ const runner = (name: string, load: () => Promise<unknown>): Command => ({
     if (args.length > 0) {
       throw new UsageError(`\`${name}\` takes no arguments, but got: ${args.join(" ")}`);
     }
-    return load();
+    await load();
   },
 });
 
+/**
+ * `--dir <path>`, the one option the install path takes, and the only one.
+ *
+ * Unlike a runner these are typed by a human, in somebody else's checkout, so
+ * arguments are the interface rather than a misunderstanding of it. An unknown
+ * flag is still refused rather than ignored, for the reason a runner refuses
+ * every argument: a silently-dropped flag does the real thing while its author
+ * believes it did not.
+ *
+ * A path that is not an existing directory is refused on the same grounds.
+ * `init` writes through a recursive mkdir, so a mistyped `--dir` scaffolds a
+ * whole repository at a path nobody has — reporting the same repo-relative lines a correct run
+ * does, while the repository being adopted is untouched — and `doctor` reads the
+ * same typo as "no caller here, run `init`". The commands already refuse a
+ * `SETUP.md` they did not write and a filename they do not own; "this directory
+ * is not there" is the same refusal, and the answer is absolute so the report
+ * names where it is working.
+ */
+const targetDir = (name: string, args: readonly string[]): string => {
+  let dir = ".";
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--dir" || arg === "-C") {
+      const value = args[i + 1];
+      if (value === undefined) throw new UsageError(`\`${name} ${arg}\` needs a directory.`);
+      dir = value;
+      i += 1;
+      continue;
+    }
+    throw new UsageError(`\`${name}\` does not know the option ${arg}. The only one is \`--dir <path>\`.`);
+  }
+  // Not a directory counts as not there. `init` writes through a recursive
+  // mkdir, which turns a path that is a file into an `ENOTDIR` thrown from
+  // somewhere inside the scaffolding — exit 1, with a message about a directory
+  // nobody asked for — and `doctor` reads it as "no caller here, run `init`",
+  // which is a finding about a repository that does not exist.
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    throw new UsageError(
+      `\`${name}\`: ${JSON.stringify(dir)} is not a directory. Give \`--dir\` the root of a checkout that already exists.`,
+    );
+  }
+  return path.resolve(dir);
+};
+
 export const COMMANDS: Readonly<Record<string, Command>> = {
+  doctor: {
+    summary: "Check an adopting repo for the setup failures that fail silently.",
+    run: async (args, io) => {
+      const { runDoctor } = await import("./setup/doctor.js");
+      const dir = targetDir("doctor", args);
+      // Named, because every finding below is repo-relative and `gh` was asked
+      // about whichever repository this directory is — "which repo did that
+      // answer come from?" must not depend on remembering what `--dir` said.
+      io.stdout(`  in ${dir}\n`);
+      return runDoctor({ dir }, io);
+    },
+  },
   fix: runner("fix", () => import("./fix/fix.js")),
   implement: runner("implement", () => import("./implement/implement.js")),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
+  init: {
+    summary: "Install the caller workflows into this repo, and say what is left.",
+    run: async (args, io) => {
+      const { init } = await import("./setup/init.js");
+      const dir = targetDir("init", args);
+      io.stdout(`  in ${dir}\n`);
+      for (const change of init({ dir })) {
+        io.stdout(`  ${change.action.padEnd(9)} ${change.file}${change.note ? ` (${change.note})` : ""}\n`);
+      }
+    },
+  },
   review: runner("review", () => import("./review/review.js")),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
 };
 
 /**
- * Generated from the table, so a command added for #112 documents itself. A
+ * Generated from the table, so a command added later documents itself. A
  * hand-written list is the copy that goes stale first, and `help` is exactly
  * where a stale copy is read as authoritative.
  */
@@ -81,7 +146,8 @@ const usage = (): string => {
 
   return `Usage: agent-workflows <command>
 
-Runners for a GitHub Actions agent loop, invoked one per workflow step.
+Runners for a GitHub Actions agent loop, invoked one per workflow step, plus
+the install path \`init\` and \`doctor\`, which you run by hand.
 
 Commands:
 ${commands}
@@ -89,7 +155,8 @@ ${commands}
 
 Exit codes:
   0  the command succeeded
-  1  the run failed; the reason is in OUTPUT_DIR/failure_reason.txt
+  1  the run failed, or \`doctor\` found something; the reason is in
+     OUTPUT_DIR/failure_reason.txt
   2  bad usage
 `;
 };
@@ -142,8 +209,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     // produced this?" is the first question asked of output that looks wrong,
     // and the answer should not depend on reading the YAML as of that week.
     io.stdout(`agent-workflows ${VERSION}: ${name}\n`);
-    await command.run(args);
-    return 0;
+    return (await command.run(args, io)) ?? 0;
   } catch (error) {
     if (error instanceof UsageError) return refuse(io, error.message);
     throw error;

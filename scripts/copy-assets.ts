@@ -12,6 +12,11 @@ import { fileURLToPath } from "node:url";
  * fine in a checkout and is simply absent from the tarball — a failure that
  * appears only on a published version, in another repo's CI.
  *
+ * `init` (#6) reads the reference callers the same way — `examples/callers/`
+ * relative to its own module — so those are assets on the same terms, and the
+ * same failure: an `init` that scaffolds correctly from a checkout and finds an
+ * empty directory once published.
+ *
  * Copies by walking rather than from a list, for the same reason the checks in
  * `tests/workflows.test.ts` do: a prompt added with a new runner is the exact
  * file nobody would remember to add to a list.
@@ -31,6 +36,19 @@ import { fileURLToPath } from "node:url";
 const SKIPPED_DIRS = new Set(["dist", "node_modules", "output", "docs"]);
 
 /**
+ * What counts as an asset: a prompt, or a reference caller.
+ *
+ * The `.yml` half is scoped to `examples/` rather than written as an extension
+ * rule, and that is not tidiness. `.github/workflows/` is a sibling directory
+ * full of `.yml` that no runner reads and that nothing should publish — the
+ * reusable halves are referenced over the network, not shipped — so a bare
+ * "copy every .yml" would put eleven workflow files into the tarball and make
+ * this walk the thing that publishes them.
+ */
+const isAsset = (rel: string, name: string): boolean =>
+  name.endsWith(".md") || (rel.startsWith("examples/") && name.endsWith(".yml"));
+
+/**
  * Relative paths of every asset under `packageDir` that a runner may resolve.
  *
  * Root-level `.md` is deliberately excluded: the only one is the package's own
@@ -45,7 +63,7 @@ const assetsUnder = (dir: string, prefix = ""): readonly string[] =>
     }
     // `prefix` is empty only at the package root, which is the one level whose
     // Markdown is documentation rather than an asset.
-    return prefix && entry.name.endsWith(".md") ? [rel] : [];
+    return prefix && isAsset(rel, entry.name) ? [rel] : [];
   });
 
 /** Copy every prompt into `outDir`, keeping the path a runner will look under. */

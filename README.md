@@ -15,6 +15,34 @@ Each runner takes its whole input from the environment the workflow step sets �
 branch, `CLAUDE_CODE_OAUTH_TOKEN`, model overrides, `OUTPUT_DIR`. None of them takes an argument,
 and passing one is refused rather than ignored.
 
+Two more subcommands are the **install path**, run by a human rather than by a workflow:
+
+```bash
+npx --yes @jeffwlawson/agent-workflows@<version> init      # scaffold the caller workflows
+npx --yes @jeffwlawson/agent-workflows@<version> doctor    # check what fails silently
+```
+
+Those two are typed at a terminal, so no workflow has written the scoped `.npmrc` for them — see
+*Installing it* below for the two `npm config set` lines. Without them the scope resolves to npmjs
+and `npx` exits `404 Not Found`, which reads as "no such package" rather than "not authenticated".
+
+`init` copies the reference callers from [`examples/callers/`](./examples/callers/) into
+`.github/workflows/`, substituting the one thing that is per-repo — the version pin — and writes a
+`SETUP.md` naming the work it cannot do: the two secrets, the repository setting, the labels, and
+the two documents below. It **updates** on a re-run rather than refusing, which is how you take a
+release: the pin moves in the callers you have, and nothing else about them changes, a caller being
+the half an adopter owns.
+
+`doctor` exits non-zero on every failure `docs/ADOPTING.md` §1 describes as announcing itself as
+something else — a missing secret, a caller that does not pass `AGENT_PAT` on to the workflow it
+calls, a caller without `packages: read`, a private repo's review caller without `checks: read`, a
+pin that is a branch rather than a tag, a `self-check` that does not name the check run its job
+produces, a label that does not exist — and names the fix for each. It also reports how many
+releases behind each pin is, which is a thing to know rather than a thing that is broken.
+
+They are subcommands of the same binary on purpose: the version that writes a pin has to be the
+version that pin names.
+
 ## Installing it
 
 Published to **GitHub Packages**, so `npx` needs a scoped registry and a token:
@@ -31,6 +59,15 @@ Published to **GitHub Packages**, so `npx` needs a scoped registry and a token:
 - run: npx --yes @jeffwlawson/agent-workflows@<version> review
   env:
     NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Run by hand rather than by a workflow — `init`, `doctor`, or a local invocation — nothing has
+written that `.npmrc`, so write it once per machine:
+
+```bash
+gh auth refresh -h github.com -s read:packages     # if your gh token lacks the scope
+npm config set @jeffwlawson:registry=https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
 ```
 
 The scope matters: it keeps the entry to `@jeffwlawson`, so the consuming repo's own install still
@@ -69,8 +106,8 @@ this package to fall back on.
 | Code | Meaning |
 |---|---|
 | 0 | the command succeeded |
-| 1 | the run failed; the reason is in `$OUTPUT_DIR/failure_reason.txt`, for the workflow's `if: failure()` step to put on the issue or PR |
-| 2 | bad usage — an unknown subcommand, or an argument to a runner |
+| 1 | the run failed, or `doctor` found a problem; the reason is in `$OUTPUT_DIR/failure_reason.txt`, for the workflow's `if: failure()` step to put on the issue or PR |
+| 2 | bad usage — an unknown subcommand, an argument to a runner, or an option `init`/`doctor` does not know |
 
 ## Building and publishing
 
@@ -86,7 +123,8 @@ on the registry is a no-op rather than a 409.
 
 `prepack` is what stops a publish shipping a stale `dist/`. The prompts are copied rather than
 compiled: every runner resolves its prompt relative to its own directory, and `tsc` emits `.js` and
-nothing else.
+nothing else. The reference callers ride along for the same reason — `init` reads them out of the
+tarball at a path relative to its own module.
 
 A version has to be **published before the workflow pinning it runs**, since `npx` resolves the pin
 from the registry rather than from the repository. Bumping the version here and repinning the

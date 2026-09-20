@@ -94,7 +94,7 @@ const SKIPPED_DIRS = new Set(["output", "dist", "node_modules", ".git"]);
  * *this file*, whose `DOMAIN` regex contains the very words it searches for, so
  * a whole-repo walk fails on itself.
  */
-const RUNNER_SURFACE = ["cli.ts", "shared", "scripts", "fix", "implement", "implement-prd", "review", "update-branch"];
+const RUNNER_SURFACE = ["cli.ts", "shared", "scripts", "setup", "fix", "implement", "implement-prd", "review", "update-branch"];
 
 const filesUnder = (dir: string): readonly string[] =>
   fs
@@ -153,6 +153,12 @@ interface Step {
 
 interface Job {
   readonly if?: string;
+  /**
+   * The job's display name, which GitHub writes into the check run in place of
+   * the id. Read here so a reusable half that grew one could not rename the
+   * second half of every adopter's `self-check` unnoticed.
+   */
+  readonly name?: string;
   readonly permissions?: Record<string, string>;
   readonly concurrency?: { readonly group?: string; readonly "cancel-in-progress"?: boolean };
   readonly steps?: readonly Step[];
@@ -1131,6 +1137,31 @@ describe("agent-review tells its caller what it cannot know", () => {
     const [calledJob] = Object.keys(workflowOf(REVIEW).jobs);
 
     expect(caller().with?.["self-check"]).toBe(`${callerJob} / ${calledJob}`);
+  });
+
+  /**
+   * …and the second half is knowable from outside this repository, which is a
+   * property rather than a coincidence: every reusable half declares one job
+   * whose id is its own filename, so `review.yml@v…` is enough to say that the
+   * check run ends in `/ review`.
+   *
+   * `setup/callers.ts` reads it exactly that way — an adopter's caller names
+   * the file it calls and nothing else — so `doctor` can rule on *both* halves
+   * of their `self-check` and name the whole of the fix. Rename a job here
+   * without renaming its file and that advice becomes confidently wrong in
+   * somebody else's repository, where no test of theirs could see it.
+   */
+  it.each(RUNNER_COMMANDS)("%s.yml declares a job of its own name", (command: string) => {
+    const jobs = workflowOf(path.join(WORKFLOW_DIR, `${command}.yml`)).jobs;
+
+    expect(Object.keys(jobs)).toEqual([command]);
+    // And no `name:` on it, which is the other half of the same property:
+    // GitHub writes a job's display name into the check run and falls back to
+    // the id only where there is none. One added here would rename the second
+    // half of every adopter's `self-check` at once, and `doctor` — which
+    // composes it from the `uses:` filename, because that is all a caller
+    // states — would go on telling them the old one was right.
+    expect(jobs[command]?.name).toBeUndefined();
   });
 });
 

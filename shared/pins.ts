@@ -65,7 +65,13 @@ export interface PinRewrite {
   readonly found: readonly PinForm[];
 }
 
-const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * A literal for use inside a pattern. Exported because the same need arises
+ * wherever a *name* becomes part of a regex — this package's name here, a job id
+ * in `setup/` — and three private copies of one line is three places for the
+ * character class to be subtly different.
+ */
+export const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * The one thing this refuses, and it refuses it in both halves: a version that

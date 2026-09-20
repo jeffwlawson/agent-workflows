@@ -2459,6 +2459,76 @@ describe("why blocker edges do not chain is written down, not re-derived", () =>
 });
 
 /**
+ * The other half of `ISSUES_WRITE_EXEMPT`'s newest entry (#51).
+ *
+ * That list argues the parity invariant in a comment, because the pair it lets
+ * through is the first in the loop that genuinely **creates** issues. The
+ * invariant itself lives in `docs/parity.md` §10 — and until this slice it read
+ * "an agent that raises work never files it. Filing is a separate,
+ * human-labelled step", whose second clause the filing workflow overturns
+ * outright: nothing labels a merged pull request by hand.
+ *
+ * An invariant amended only where it is *obeyed* is one the next reader finds
+ * contradicted by the code citing it, and the citation is a string nothing
+ * dereferences — the same failure the blocker-edge describe above exists for.
+ * So the amendment is asserted where it is written: the two halves that survive
+ * intact, and the reason the change is a move of the gate rather than the
+ * removal of one.
+ */
+describe("the filing invariant is amended where it is written, not only where it is obeyed", () => {
+  const parity = fs.readFileSync(path.join("docs", "parity.md"), "utf8");
+
+  /** The bullet, from its bolded lede to the start of the next one. */
+  const invariant = (): string =>
+    parity
+      .split(/^(?=- \*\*)/m)
+      .find((bullet) => bullet.startsWith("- **An agent that raises work never files it.")) ?? "";
+
+  /**
+   * The headline survives the amendment and is not weakened to fit: the review
+   * agent emits its findings into its own review body under `contents: read`
+   * and no `issues:` scope, and the workflow that spends the permission runs no
+   * model at all. Those two are what the invariant was protecting; the
+   * human-labelled step was how it was protected, not what it was for.
+   */
+  it("restates the two halves that still hold", () => {
+    expect(invariant()).not.toBe("");
+    expect(invariant()).toMatch(/runs no model/);
+    expect(invariant()).toMatch(/contents: read/);
+    for (const file of MERGE_GATED) expect(invariant()).toContain(path.basename(file, ".yml"));
+  });
+
+  /**
+   * And says what stopped being true, in the words it used to be true in. A
+   * silently dropped clause reads as an oversight to whoever finds the
+   * workflow; named, it reads as a decision with a reason under it — the
+   * concern was an unattended cycle, and the gate has moved from before filing
+   * to before building, which is `needs-triage` rather than `agent:implement`
+   * on every stub.
+   */
+  it("names the clause it overturns, and the gate that replaced it", () => {
+    expect(invariant()).toMatch(/human-labelled/);
+    expect(invariant()).toMatch(/before building/);
+    expect(invariant()).toMatch(/needs-triage/);
+  });
+
+  /**
+   * And the comparison this file is *for* has a row for the workflow the
+   * amendment is about. `docs/parity.md` states its own rule in a blockquote —
+   * update the row in the same pull request that changes the behaviour, because
+   * it drifted once already and a parity doc that contradicts itself is worse
+   * than none — and nothing enforced it. This does, for the one table where the
+   * set is knowable from here.
+   */
+  it("gives every workflow in the loop a row in the comparison", () => {
+    const table = parity.split(/^(?=## )/m).find((s) => s.startsWith("## 1.")) ?? "";
+
+    expect(table).not.toBe("");
+    for (const command of RUNNER_COMMANDS) expect(table).toContain(`\`agent-${command}\``);
+  });
+});
+
+/**
  * The runner contract, held to by every workflow in the set: fetch the context
  * before the agent starts, scrub the token, and leave every tracker mutation to
  * the workflow. `implement-prd` is the first runner handed *two* issues — the
@@ -2856,6 +2926,173 @@ describe("Dependabot watches the caller pins no test here can reach", () => {
 
     expect(blocks).toHaveLength(1);
     expect(parse(blocks[0] as string)).toEqual(configOf(DEPENDABOT));
+  });
+});
+
+/**
+ * §3 of `docs/ADOPTING.md` is the only place a label's **lifecycle** is written
+ * down, and until #51 it was written as a rule with an exception after it. Two
+ * exceptions is not a rule with exceptions any more — it is a three-valued
+ * property, and prose reading "the rule is X, except here, and also except
+ * here" is read as "the rule is X" by everyone who is not currently editing it.
+ *
+ * So the lifecycle is a column, and this is what makes it one: a row that names
+ * a label and leaves the column blank — or fills it with a fourth lifecycle
+ * nobody has written the rules for — fails here rather than in whichever repo
+ * copied the loop and waited for the label to be cleared by something.
+ *
+ * The second check is the other direction. A label the workflows *write* and
+ * §3 never names is a label an adopter never creates, and a label that does not
+ * exist makes its transition a silent no-op — the failure §3 opens by naming.
+ */
+describe("the adoption doc gives every label a lifecycle, in a column", () => {
+  const ADOPTING = path.join("docs", "ADOPTING.md");
+  const TRIAGE = path.join("docs", "agents", "triage-labels.md");
+
+  /** §3, from its heading to the next top-level one. */
+  const labelSection = (): string =>
+    fs
+      .readFileSync(ADOPTING, "utf8")
+      .split(/^(?=## )/m)
+      .find((section) => section.startsWith("## 3.")) ?? "";
+
+  /**
+   * The lifecycles that exist, spelled as the column spells them. Written out
+   * rather than derived, because the point of the list is that adding a fourth
+   * is a decision — a new lifecycle is new behaviour somewhere in the loop, and
+   * it arrives here as a failing test rather than as a sentence in a table.
+   */
+  const LIFECYCLES = ["consumed on entry", "cursor", "marker, removed on success"];
+
+  const cellsOf = (row: string): readonly string[] =>
+    row
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.replace(/\*/g, "").trim());
+
+  /** Every row of the lifecycle table: the ones naming a label. */
+  const rows = (): readonly string[] =>
+    (labelSection().match(/^\|.*\|$/gm) ?? []).filter((row) => row.includes("`agent:"));
+
+  it("fills the column in on every row, from the lifecycles that exist", () => {
+    expect(rows().length).toBeGreaterThan(0);
+    expect([...new Set(rows().map((row) => cellsOf(row)[1]))].sort()).toEqual(
+      [...LIFECYCLES].sort(),
+    );
+  });
+
+  /**
+   * Comments count. A label named only in a `#` line is still a label somebody
+   * reading the file will reach for, and `agent:queued` — declared, inert, and
+   * named in two workflow comments — is exactly that case.
+   */
+  it("names every agent label the workflow files name", () => {
+    const used = [
+      ...new Set(
+        workflowFiles.flatMap((file) => fs.readFileSync(file, "utf8").match(/agent:[a-z-]+/g) ?? []),
+      ),
+    ].sort();
+
+    expect(used.length).toBeGreaterThan(0);
+    for (const label of used) expect(labelSection()).toContain(`\`${label}\``);
+  });
+
+  /**
+   * And the labels this repo's own tracker defines are defined once. `init`'s
+   * table is held to §3 by `tests/agent-cli.test.ts`; `docs/agents/triage-labels.md`
+   * is the third copy, and the first two labels the loop files a stub with come
+   * from *its* vocabulary rather than from the `agent:*` one. A colour is
+   * harmless to get wrong twice; the **name** is not, and it is the same line
+   * that carries both.
+   */
+  it("defines a label the same way wherever it is defined twice", () => {
+    const LABEL_COMMAND = /^gh label create +"([^"]+)" +--color +(\S+) +--description +"([^"]+)"$/gm;
+    const definitionsIn = (file: string): ReadonlyMap<string, string> =>
+      new Map(
+        [...fs.readFileSync(file, "utf8").matchAll(LABEL_COMMAND)].map(
+          ([, name, color, description]) => [name ?? "", `${color} — ${description}`],
+        ),
+      );
+
+    const adopting = definitionsIn(ADOPTING);
+    const triage = definitionsIn(TRIAGE);
+    const shared = [...adopting.keys()].filter((name) => triage.has(name));
+
+    expect(shared.length).toBeGreaterThan(0);
+    for (const name of shared) expect(triage.get(name)).toBe(adopting.get(name));
+  });
+});
+
+/**
+ * **A count no test reads is a count that goes stale.** The rule this repo
+ * already applies to the version tag — prose is the one copy nothing checks,
+ * and it sat two releases behind before anyone noticed — applied to the other
+ * thing `docs/ADOPTING.md` used to write down nine times: how many workflows
+ * there are. Adding the sixth (#50) made all nine wrong in one commit.
+ *
+ * One survives, and it is the one that is an **argument** rather than a fact:
+ * ungrouped, Dependabot opens a pull request per caller, and the point of the
+ * paragraph is that this is enough of them to merge some and leave the rest —
+ * a repository then calling two releases at once. That sentence needs the
+ * arithmetic, so the number stays and is derived here instead, from the
+ * callers themselves.
+ */
+describe("the adoption doc counts nothing a release can falsify", () => {
+  const ADOPTING = path.join("docs", "ADOPTING.md");
+  const DEPENDABOT = path.join(".github", "dependabot.yml");
+
+  const NUMBERS: Record<string, number> = {
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+  };
+
+  it("derives the one count it keeps from the callers it is counting", () => {
+    const written = /a\s+release opens \*\*(\w+)\*\* pull requests/.exec(
+      fs.readFileSync(ADOPTING, "utf8"),
+    );
+
+    expect(
+      written?.[1],
+      "the grouping paragraph must keep its `a release opens **N** pull requests` sentence",
+    ).toBeDefined();
+    expect(NUMBERS[(written?.[1] ?? "").toLowerCase()]).toBe(callersIn(CALLER_DIR).length);
+  });
+
+  /**
+   * Everywhere else is uncounted prose, in the adoption doc and in the
+   * Dependabot config's header beside it — that header is written for the same
+   * reader and goes stale in the same silence, and it is the file this repo
+   * actually runs.
+   *
+   * One phrase is exempt, and it is exempt for the reason the kept count is
+   * kept: *the two `implement` workflows* is a closed pair produced by one
+   * design decision (they partition every label event by issue shape), so the
+   * number is part of what is being said rather than a tally of a set that
+   * grows.
+   */
+  it("counts callers, workflows and files nowhere else", () => {
+    const EXEMPT = ["two `implement` workflows", "two implement workflows"];
+    const COUNTED = new RegExp(
+      `\\b(${Object.keys(NUMBERS).join("|")})\\b(?:\\s+[\\w\`*-]+){0,2}\\s+(callers?|workflows?|reusables?|files|pins?)\\b`,
+      "gi",
+    );
+
+    const offenders = [ADOPTING, DEPENDABOT]
+      .flatMap((file) =>
+        [...fs.readFileSync(file, "utf8").matchAll(COUNTED)].map((hit) => `${file}: ${hit[0]}`),
+      )
+      .filter((hit) => !EXEMPT.some((phrase) => hit.includes(phrase)));
+
+    expect(offenders).toEqual([]);
   });
 });
 

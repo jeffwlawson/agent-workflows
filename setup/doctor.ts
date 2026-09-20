@@ -315,7 +315,7 @@ export const diagnose = (
   // fallback on the other side absorbs it. The loop then runs under the
   // built-in token with the repository secret correctly set — a push that
   // starts no CI, a label that fires no event, a pull request nothing can mark
-  // ready. Three of §1's five, from a line an adopter deleted rather than from
+  // ready. Three of §1's failures, from a line an adopter deleted rather than from
   // anything they failed to set, which is why the secrets row above cannot see
   // it.
   //

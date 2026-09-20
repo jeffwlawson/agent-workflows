@@ -25,7 +25,7 @@ Set both as Actions secrets (Settings → Secrets and variables → Actions):
   write, Issues: write and Workflows: write, and an expiry date rather than none. The workflows
   fall back to `GITHUB_TOKEN` without it and keep running; they just stop triggering each other,
   because a push or a label add made with the built-in token fires no event. That is three of §1's
-  five failures, and all three look like the loop working.
+  failures at once, and all three look like the loop working.
 
 ## 2. One repository setting
 

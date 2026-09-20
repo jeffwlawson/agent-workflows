@@ -41,22 +41,25 @@ into. This is the answer.
 
 | | What it says | Who writes it | Who reads it |
 | --- | --- | --- | --- |
-| **triage roles** (above) | *how well specified is this, and who should do it* | a human, or `/triage` | humans, and the local skills |
-| **`agent:*`** | *workflow state — what is running, or refused, right now* | the workflows, and a human at the one entry point below | the five workflows |
+| **triage roles** (above) | *how well specified is this, and who should do it* | a human, `/triage`, or the `follow-ups` workflow on a stub it files (below) | humans, and the local skills |
+| **`agent:*`** | *workflow state — what is running, or refused, right now* | the workflows, and a human at the one entry point below | the loop's workflows |
 
 They are **not merged, and neither is derived from the other.** A triage role is a judgement about
 an issue; an `agent:*` label is a position in a state machine. An issue can sit at
 `ready-for-agent` indefinitely and carry no `agent:*` label at all — that is the normal resting
 state, not an unfinished transition.
 
-The six workflow-state labels are listed in `docs/ADOPTING.md` §3 and their transitions in
+The workflow-state labels are listed in `docs/ADOPTING.md` §3 and their transitions in
 `CONTEXT.md`; this file does not restate them, because a second copy is a second thing to keep in
 step.
 
 ## The one join: `ready-for-agent` → `agent:implement`, by hand
 
-This is the only place the two vocabularies touch, and it stays a **human hand**. Not because
-automating it is hard, but because the two labels authorise different things:
+This is the only place the two vocabularies touch **in that direction** — a triage judgement
+authorising a workflow — and it stays a **human hand**. (They touch once in the other direction
+too, where a workflow writes a triage label onto an issue it just created; that is the section
+after next.) Not because automating it is hard, but because the two labels authorise different
+things:
 
 - `ready-for-agent` says *this issue is specified well enough that an agent could build it.*
 - `agent:implement` says *build it, now, on this repo, and open a PR.*
@@ -78,10 +81,38 @@ Two mechanical reasons reinforce it:
 them — see [`ticket-shape.md`](./ticket-shape.md#labels), which is the instruction that makes that
 so. Exactly one issue per batch is ever promoted, the parent, by a person.
 
+## The other join: a filed stub arrives `needs-triage`
+
+The `follow-ups` workflow files the out-of-scope findings a review recorded, once the pull request
+merges, and every stub it opens carries `needs-triage` and `pr-follow-up`. That is a **workflow
+writing a triage label**, and it is the only place in the loop that happens.
+
+It is a join rather than a merge of the two vocabularies, and it goes in the harmless direction:
+the stub arrives as *work to judge*, never as work to do. Nothing files an `agent:*` label onto it,
+so the gate the section above describes is untouched — a stub becomes buildable exactly when a
+person promotes it, like anything else on the tracker. Read the other way round, this is where the
+loop's own gate now sits: the review agent raises the finding and cannot file it, the filing
+workflow files it and cannot authorise it (`docs/parity.md` §10).
+
+`pr-follow-up` is the provenance half: *this came from a reviewer rather than from a person*, and
+it is also the candidate filter the duplicate check lists on, so a stub that loses it is a stub the
+next merge cannot see. Neither label exists in this repo yet — `needs-triage` is waiting on the
+first `/triage` run (above), and this one needs creating before the first merge that files anything,
+or the runner files the stub unlabelled and says so with a warning:
+
+```bash
+gh label create "pr-follow-up"    --color D4C5F9 --description "Filed from a merged PR's review by the follow-ups workflow"
+```
+
+The strings are fixed in the runner rather than configurable, which is the cost of the join: a
+tracker that spells its triage label differently gets `needs-triage` beside its own vocabulary
+rather than inside it. `docs/ADOPTING.md` §3 says the same thing to an adopter, and the two files
+are held to the same colour and description by a test.
+
 ## `agent:queued` — declared, and inert
 
-There is a seventh `agent:*` label. It is **written by a human, never by a workflow, and read by
-nothing.**
+There is one `agent:*` label that no workflow reads at all. It is **written by a human, never by a
+workflow, and read by nothing.**
 
 It marks a dependency between *top-level* issues: this one is specified and authorised, but waits
 on another. The workflow that would consume it, `promote-queued`, does not exist in this repo — so

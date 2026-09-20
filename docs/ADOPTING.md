@@ -1,8 +1,14 @@
 # Adopting this agent loop in another repo
 
-Five GitHub Actions workflows that let a labelled issue become a reviewed pull request without a
-human in the middle — four for a single issue, and one that works a parent issue's sub-issues in
-sequence onto one branch. This is what it takes to install them somewhere else.
+A set of GitHub Actions workflows that let a labelled issue become a reviewed pull request without
+a human in the middle — most of them working one issue, one working a parent issue's sub-issues in
+sequence onto a single branch, and one — optional — filing the out-of-scope findings a review
+recorded, once the pull request has merged. This is what it takes to install them somewhere else.
+
+**Nothing below counts them.** A number in prose is a copy no test reads, so it goes stale in
+silence the release after somebody adds a workflow — which is what happened to the nine places this
+file used to say *five*. One count survives, in *Keeping the pins fresh*, because there the number
+is the argument rather than a fact about the set.
 
 Everything below was learned by hitting it. `docs/friction.md` has the narrative; this file is the
 checklist, and it is ordered so the things that fail *silently* come first.
@@ -33,7 +39,7 @@ npm config set @jeffwlawson:registry=https://npm.pkg.github.com
 npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
 ```
 
-`init` copies the five reference callers out of [`examples/callers/`](../examples/callers/) into
+`init` copies the reference callers out of [`examples/callers/`](../examples/callers/) into
 `.github/workflows/`, substituting the one thing that is per-repo — the version pin — and writes a
 `SETUP.md` listing what is left: the two secrets (§2), the repository setting (§1), the labels (§3),
 and the two documents §6 is about. A `SETUP.md` it did not write is left alone.
@@ -50,7 +56,7 @@ the fix, and that table is the whole of what it rules on.
 
 | What it checks | The failure it is for |
 |---|---|
-| both secrets are set — on the repository, or shared with it by its organization | §2 — and `AGENT_PAT`'s absence is three of §1's five |
+| both secrets are set — on the repository, or shared with it by its organization | §2 — and `AGENT_PAT`'s absence is three of §1's failures by itself |
 | Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
 | every caller grants `packages: read` | §4 — a 401 at `npx` that reads like a bad token |
 | a caller that declares no `permissions:` block at all | §4 — it runs with the default token, whose restricted setting is `contents` and `packages` read, so the install works and every write 403s |
@@ -61,8 +67,8 @@ the fix, and that table is the whole of what it rules on.
 | the labels exist | §3 — a transition that is a silent no-op |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
 
-The one row it cannot have is §1's fifth: a label set at issue *creation* fires no `labeled` event,
-and nothing in a checkout records that it happened. That one stays prose, below.
+The rows it cannot have are §1's last two, and for one reason: both are an event that never fired,
+and nothing in a checkout records the absence of an event. They stay prose, below.
 
 Everything `gh` could not answer — no auth, no admin — is reported as **unknown** rather than folded
 into a pass. Run it in the repository being adopted, or pass `--dir <path>`; it asks GitHub about
@@ -70,7 +76,7 @@ whichever repository that directory is.
 
 ---
 
-## 1. The five failures that look like something else
+## 1. The failures that look like something else
 
 Read these before setting anything up. Each cost a run to diagnose, and none of them says what is
 actually wrong.
@@ -130,12 +136,34 @@ So **label in a separate call from creation**, always. This bites the moment any
 issues programmatically — a script, a planning skill, an agent seeding its own backlog — and it
 looks exactly like the `GITHUB_TOKEN` no-op above, so it gets misdiagnosed as a missing PAT.
 
-Recovery on an issue that already carries the label is **remove, then re-add**: adding a label that
-is already present is a no-op and fires nothing.
+Recovery on an issue that already carries the label is **remove, then re-add** — which is the next
+failure, reached from the other side.
 
-> **A warning about diagnosing all five.** These share a signature with a GitHub Actions platform
+### Re-adding a label that is already there fires nothing
+
+Same root cause: no state transition, so no event. What differs is when you meet it — this is the
+one you hit while trying to *fix* something rather than while setting it up. `gh issue edit
+--add-label` and `gh pr edit --add-label` exit 0 either way, and the label is on the issue
+afterwards because it was on it before.
+
+The worked example is the follow-ups marker (§3), the label this loop most often asks you to
+re-add on purpose — the PRD chain's manual remedy above is the same gesture for the same reason.
+`agent:follow-ups` stays on a merged pull request whenever the filing run did not finish: a missed
+`closed` delivery, a partial failure, an opt-out you have since reconsidered. Adding it back is how
+you drive the run again — and on a pull request that still carries it, adding it back is nothing at
+all:
+
+```bash
+gh pr edit 42 --remove-label "agent:follow-ups"
+gh pr edit 42 --add-label    "agent:follow-ups"
+```
+
+Two calls, in that order, and no useful way to tell from the outside that one call would have been
+too few.
+
+> **A warning about diagnosing any of these.** These share a signature with a GitHub Actions platform
 > incident — label present, no run, no error, nothing in any log. During one such incident a label
-> add was misread here as a *sixth*, structural rule (that a GitHub App's label adds are suppressed
+> add was misread here as a further, structural rule (that a GitHub App's label adds are suppressed
 > like `GITHUB_TOKEN`'s), which would have written off the App-identity path in `parity.md` §9.4.
 > Re-running the same label add hours later dispatched normally. The rules above are documented and
 > **retestable**; an outage is neither. Before concluding a trigger is structurally dead, do it
@@ -232,7 +260,7 @@ trace is a log line nobody reads until output quality is questioned weeks later.
 
 ## 3. Labels
 
-All six must exist. A missing label makes its transition a no-op, and the state machine drifts
+All of these must exist. A missing label makes its transition a no-op, and the state machine drifts
 without erroring.
 
 ```bash
@@ -245,15 +273,38 @@ gh label create "agent:blocked"     --color B60205 --description "A run failed o
 ```
 
 **Trigger labels are consumed on entry.** That is what makes a retry idempotent — a human re-adds
-the label deliberately. `agent:in-progress` is held for the duration and removed by an `always()`
-step; `agent:blocked` is applied on failure alongside a comment carrying the reason — and by either
-`implement` workflow when it refuses an issue's *shape* (a sub-issue, a nested PRD, or a
-`wayfinder:*` planning ticket), since re-labelling would only reproduce the same refusal.
+the label deliberately. It is not a rule with exceptions, though. It is a three-valued property,
+and which value a label has is a **column**:
 
-**The one exception is the PRD chain**, which re-adds `agent:implement` to the parent itself after
-each sub-issue closes, and stops by *not* re-adding it. So on a parent issue the label is a cursor
-rather than a one-shot: seeing it there means the next slice is due, and seeing it there with no run
-happening means the PAT is missing (§1).
+| Label | Lifecycle | Cleared by |
+|---|---|---|
+| `agent:review`, `agent:fix`, `agent:update-branch` | **consumed on entry** | the run, as it starts |
+| `agent:implement` on an ordinary issue | **consumed on entry** | the run, as it starts |
+| `agent:implement` on a PRD parent | **cursor** | the chain, by *not* re-adding it after the last slice |
+| `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, and only on one that filed — or you, to opt out |
+
+**Fill the column in when you add a label.** Written as prose this said "consumed on entry, except
+on a PRD parent, and also except for the marker" — which is read as "consumed on entry", and the
+exception nobody read is the one that behaves differently at three in the morning.
+
+**The cursor.** The PRD chain re-adds `agent:implement` to the parent itself after each sub-issue
+closes, and stops by *not* re-adding it. So on a parent issue the label is a cursor rather than a
+one-shot: seeing it there means the next slice is due, and seeing it there with no run happening
+means the PAT is missing (§1).
+
+**The marker.** `agent:follow-ups` says *this pull request's latest review recorded out-of-scope
+findings*. The review half adds it on any run that recorded one and never removes it; removing it
+is how an author **opts out** before the merge, and the filing half removes it only on a run that
+actually filed — so a failed or partial run leaves the retry affordance where it was. Adding it
+back to a **closed** pull request is the manual entry point, and it is the gesture
+[re-adding a label that is already there](#re-adding-a-label-that-is-already-there-fires-nothing)
+in §1 is about: you will reach for it on a pull request that already carries the label, where it
+does nothing at all.
+
+`agent:in-progress` is held for the duration and removed by an `always()` step; `agent:blocked` is
+applied on failure alongside a comment carrying the reason — and by either `implement` workflow
+when it refuses an issue's *shape* (a sub-issue, a nested PRD, or a `wayfinder:*` planning ticket),
+since re-labelling would only reproduce the same refusal.
 
 **Amend the issue before you label it, never after.** The runner reads the issue body when the run
 starts, so an edit made afterwards describes work the agent was never asked to do — the PR then
@@ -268,17 +319,46 @@ the review and fix agents, which the issue body no longer does.
 **Where the labels come from is a separate question.** These six are *workflow state*. If you also
 run a triage step — a human or a planning skill deciding an issue is well enough specified to hand
 over — that is a second vocabulary, and joining the two is a decision you have to make explicitly.
-`docs/agents/triage-labels.md` records this repo's answer: the five canonical triage roles, the
-seventh `agent:*` label (`agent:queued`, declared but inert), the `wayfinder:*` planning labels
-that never trigger a workflow, and why `ready-for-agent` → `agent:implement` stays a human hand
-rather than an automation. Take it alongside the workflows and edit the mapping — in the order §4
-gives, since the file is also a skill's output path — and the reasoning survives the rename.
+`docs/agents/triage-labels.md` records this repo's answer: the canonical triage roles, the
+`agent:*` label no workflow reads (`agent:queued`, declared but inert), the `wayfinder:*` planning
+labels that never trigger a workflow, why `ready-for-agent` → `agent:implement` stays a human hand
+rather than an automation, and the one join that is *not* a human hand — a filed stub arriving
+`needs-triage`. Take it alongside the workflows and edit the mapping — in the order §4 gives, since
+the file is also a skill's output path — and the reasoning survives the rename.
+
+### Three more, and none of them mandated
+
+`init` does not scaffold these and `doctor` does not demand them. They arrived after the six above,
+so a repository can be current on the pin without them — and nothing fails when they are missing,
+which is the problem. What each absence costs is below.
+
+```bash
+gh label create "agent:follow-ups" --color 0052CC --description "This PR's review recorded out-of-scope findings"
+gh label create "pr-follow-up"     --color D4C5F9 --description "Filed from a merged PR's review by the follow-ups workflow"
+gh label create "needs-triage"     --color D93F0B --description "Maintainer needs to evaluate this issue"
+```
+
+- **`agent:follow-ups`** is the marker in the table above, and you want it whether or not you take
+  the filing caller (§4). The review step that adds it warns rather than failing, so without the
+  label the findings still reach the review body — but nothing marks the pull request, so nothing
+  can file them later and nothing can list the ones that went unfiled.
+- **`pr-follow-up`** and **`needs-triage`** are what a filed stub arrives carrying, and they are
+  required **only if you install the filing caller**. Missing, the runner files the stub
+  *unlabelled* and says so with a `::warning::` — a stub outside your triage queue is worth more
+  than a finding nobody kept — but an unlabelled stub is invisible to exactly the queue it was
+  filed for. Worse for `pr-follow-up` specifically: it is the candidate filter the duplicate check
+  lists on, so unlabelled stubs are stubs the next merge cannot see, and a chronic finding files
+  afresh every time instead of re-flagging the issue that already has it.
+- Both strings are **fixed in the runner**, not inputs. A tracker whose triage label is spelled
+  differently gets a stub labelled `needs-triage` beside its own vocabulary rather than inside it;
+  relabelling on arrival is a triage rule, not a configuration. This is the one place the two
+  vocabularies above touch automatically.
 
 ---
 
 ## 4. Files to write
 
-**Nothing in the loop is copied any more.** As of #98 all five workflows are split in two: a
+**Nothing in the loop is copied any more.** As of #98 every workflow in the loop is split in two: a
 `*-reusable.yml` here holding the job — the fork guard, the permissions ceiling, the concurrency
 group, the preflight, every step — and a **caller** in your repo holding the trigger, the token
 grant and the secrets. You write the callers; you reference the jobs.
@@ -292,8 +372,29 @@ that drifts; a control behind a pinned `uses:` is one you get fixes to.
 .github/workflows/agent-review.yml
 .github/workflows/agent-fix.yml
 .github/workflows/agent-update-branch.yml
+.github/workflows/agent-follow-ups.yml      # optional — this file is the off switch
 .github/dependabot.yml                      # not part of the loop; see the end of this section
 ```
+
+**`agent-follow-ups.yml` is the first genuinely optional file in that list.** It files a merged
+pull request's recorded out-of-scope findings as triageable issues, and copying it is the whole of
+switching that on: the runner subcommand ships inside the package and the reusable lives here, but
+nothing invokes a reusable except a caller's reference, so a repository without this file files
+nothing. Not a mechanism invented for this: it is the same per-file granularity that already lets
+you skip `agent-implement-prd.yml`.
+
+`init` (§0) scaffolds the lot on a first run, this file included, so **opting out is deleting it
+afterwards** rather than declining it up front. That is not a gap in the command: a re-run pins
+what is installed, and a caller you deleted is named rather than written back into your tree.
+
+Opting out does **not** turn the recording off, and that asymmetry is deliberate. The review half
+still writes its out-of-scope findings into the review body and still marks the pull request, so
+the findings are *unfiled* rather than invisible — invisible is the failure the workflow exists to
+fix, and trading it away to avoid a stray label would invert the point. The markers are then an
+index: searching merged pull requests for `agent:follow-ups` is the exact list of the ones whose
+findings nobody filed. Every one of them stays recoverable — install the caller, then
+[remove the label and add it back](#re-adding-a-label-that-is-already-there-fires-nothing) on
+whichever of them you want filed.
 
 The runners are **not copied either**. They are an npm package — `@jeffwlawson/agent-workflows` —
 and the reusable workflow invokes one subcommand of it at a version pinned in *its* YAML:
@@ -340,7 +441,7 @@ it into one that can install (§2).
 ### What a caller looks like
 
 **Copy them from [`examples/callers/`](../examples/callers/)** — or let `init` (§0) do it, which is
-the same copy with the pin substituted. Five files, one per workflow, already
+the same copy with the pin substituted. One file per workflow, each already
 carrying the correct trigger, permissions, `self-check` and pinned `uses:`. Drop them into your
 `.github/workflows/` and rename if you like — the job id is the only thing you cannot rename
 freely, for the reason below.
@@ -396,9 +497,18 @@ The permissions per workflow, which are what each job actually spends:
 | `agent-review` | **read** | **read** | — | read | write |
 | `agent-fix` | — | write | — | read | write |
 | `agent-update-branch` | — | write | — | read | write |
+| `agent-follow-ups` | — | read | **write** | read | write |
 
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
+
+> **`issues: write` is on one row only, and it is the one that creates issues.** No other workflow
+> in the loop holds it to *file* anything — the `implement` pair spends it on labels and on closing
+> a sub-issue the PRD already lists. It is also the only caller that passes **no secrets at all**:
+> the job runs no model, so there is no `CLAUDE_CODE_OAUTH_TOKEN` to hand over, and it creates its
+> issues with `GITHUB_TOKEN`, so there is no `AGENT_PAT` either — a repository without the PAT
+> files exactly as much as one with it. Adding either to your caller is not harmless: GitHub
+> refuses a `secrets:` entry the called workflow does not declare, before the job starts.
 
 > **`checks: read` on review is the row that only a private repository needs — and it is not
 > optional there.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a
@@ -474,10 +584,10 @@ offered as-is because it is already repo-agnostic — no branch names, no toolch
 Splitting it would add a file and a pin to save nobody an edit.
 
 Optional, and needs its mapping rewritten for your labels: `docs/agents/triage-labels.md` (§3).
-Run `/setup-matt-pocock-skills` **first** — it writes all three files in `docs/agents/`, including
+Run `/setup-matt-pocock-skills` **first** — it writes every file in `docs/agents/`, including
 `triage-labels.md` at that same path — then copy this repo's version on top of what it generated.
 The reverse order silently loses everything below the mapping table, because the skill rewrites
-the file with its own default five-row version.
+the file with its own default version.
 
 **If you take `agent-implement-prd.yml`, take `docs/agents/ticket-shape.md` with it.** The workflow
 reads a hierarchy it does not create: a parent issue with **native sub-issues**, created in
@@ -507,7 +617,7 @@ what **this** repo needs to develop the package, whose sources are this reposito
 > **A note for anyone reading the history.** Until the package moved to its own repository it lived
 > at `.sandcastle/agent-workflows/` inside the linter, was **not** an npm workspace, and declared
 > `typescript` without ever installing it — the build resolved `tsc` by walking up into the parent's
-> `node_modules`, and was green only because the two pins matched. Commits before the move describe
+> `node_modules`, and was green only because both pins matched. Commits before the move describe
 > that layout and are accurate about it.
 
 Publishing is `publish-agent-workflows.yml`, triggered by pushing an `agent-workflows-v<version>`
@@ -530,11 +640,11 @@ origin/<default>` — is in place, so a tag on an unmerged commit is refused.
 
 ### Keeping the pins fresh
 
-Everything above is an **exact** pin in five files, and a pin is a thing that goes stale silently. A
-release here moves nothing in your repository and tells nobody: no check fails, no run changes, the
-loop keeps working — on the version you installed. Measured in September 2026 across the three
-repositories running this loop, one of them was **four releases behind** and nobody had noticed. It
-was the repository the loop was piloted on.
+Everything above is an **exact** pin, one per caller you installed, and a pin is a thing that goes
+stale silently. A release here moves nothing in your repository and tells nobody: no check fails,
+no run changes, the loop keeps working — on the version you installed. Measured in September 2026
+across the three repositories running this loop, one of them was **four releases behind** and
+nobody had noticed. It was the repository the loop was piloted on.
 
 Nothing in this repository can see that. The `@ref` in the reference callers is derived from
 `package.json` and checked by name, and the same check covers this repo's own callers — it covers no
@@ -580,10 +690,20 @@ So the group you need most is the one that never fires here.
 `.github/workflows` itself, and naming the workflow directory finds nothing.
 
 **The grouping is the part worth reading.** Ungrouped, each caller is its own dependency, so a
-release opens **five** pull requests and five is enough to merge three of them. A repository whose
+release opens **six** pull requests and six is enough to merge three of them. A repository whose
 callers name two different tags is calling two releases at once — and since the runner version is
 baked into the reusable half, that is two *runner* versions too, which is the split-brain the pin
-exists to close. Grouped, it is one pull request moving all five or none.
+exists to close. Grouped, it is one pull request moving all of them or none.
+
+That is the one number this file still writes down, against its own rule, because here the number
+*is* the argument: the claim is that ungrouped there are enough pull requests for a partial merge
+to be the likely outcome, and "enough" cannot be said without counting. It moves when a workflow is
+added, so a test derives it from the reference callers and fails when it lags.
+
+**Taking the filing caller needs no change here.** The pattern matches on
+`jeffwlawson/agent-workflows*`, which is the repository rather than the workflow, so a caller is in
+the group the moment you copy the file. A sixth file needing a seventh line of config would be a
+pin that splits across two releases the first time somebody forgot to write it.
 
 The second group is why `actions/checkout` and `astral-sh/setup-uv` do not each arrive on their own.
 The ecosystem is repository-wide: those pins are in scope whether or not you say anything about
@@ -628,8 +748,8 @@ next person does not go looking for it.
 
 | Assumption | Now | Notes |
 |---|---|---|
-| Default branch is `main` | `default-branch`, on all five | It means two different things by event, and both are right. On `review`, `fix` and `update-branch` the base comes from the pull request (#71, #100) and this is only the fallback for an event carrying none — which never happens on a real PR, but degrades *silently* when it does. On the two `implement` workflows there is no event field to read: an `issues` event says nothing about branches, so this **is** the branch they cut from and open the PR against. It reaches the runners as `BASE_REF` too, so the prompts name a branch that exists (#98) — `implement/implement.ts` used to count commits against a literal `main`, which was the one site here that *hard-errored* rather than misbehaving quietly |
-| `npm ci` and `.nvmrc` | `setup` and `node-version-file`, on all five | the whole toolchain assumption, and both are skippable: pass `''` and a repo whose toolchain is not Node still gets the loop, running on the image's own Node. Only `npm install -g @anthropic-ai/claude-code` is unconditional, and that is the agent's own runtime rather than yours |
+| Default branch is `main` | `default-branch`, on every caller that takes inputs | It means two different things by event, and both are right. On `review`, `fix` and `update-branch` the base comes from the pull request (#71, #100) and this is only the fallback for an event carrying none — which never happens on a real PR, but degrades *silently* when it does. On the two `implement` workflows there is no event field to read: an `issues` event says nothing about branches, so this **is** the branch they cut from and open the PR against. It reaches the runners as `BASE_REF` too, so the prompts name a branch that exists (#98) — `implement/implement.ts` used to count commits against a literal `main`, which was the one site here that *hard-errored* rather than misbehaving quietly |
+| `npm ci` and `.nvmrc` | `setup` and `node-version-file`, on the same set | the whole toolchain assumption, and both are skippable: pass `''` and a repo whose toolchain is not Node still gets the loop, running on the image's own Node. The filing caller is outside this row rather than exempt from it — it declares no inputs, because it checks nothing out and has no toolchain to configure. Only `npm install -g @anthropic-ai/claude-code` is unconditional, and that is the agent's own runtime rather than yours |
 | The gate command (`npm run verify` here) | not an input, and not a coupling | each prompt says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of it. It cannot become an input: `runWithExtraction` drops prompt arguments before the extraction pass, so a placeholder would reach one prompt literal |
 | `CONTEXT.md` and `CLAUDE.md` exist | still yours to write | see §6. This is the coupling the others turned into — a de-domained prompt makes it total rather than partial |
 | Project domain | **not a coupling** (#95) | the prompts name no domain of their own. A test walks every prompt and runner file and fails on any adopting repo's vocabulary, so it stays that way |
@@ -715,11 +835,12 @@ built on for the length of the PRD before anybody reads it.
 
 ## 8. If your repo is public
 
-`agent-review`, `agent-fix` and `agent-update-branch` use `pull_request_target`, which runs with
-secrets and write access. These controls are not decoration — and since #98 you no longer copy any
-of them: every one lives in a `*-reusable.yml` you reference, where a caller can skip the job but
-cannot loosen it. Read them anyway. Not to install them, but because a control you cannot see is
-one you cannot reason about, and the paragraph after the table is a decision only you can make.
+`agent-review`, `agent-fix`, `agent-update-branch` and — if you took it — `agent-follow-ups` use
+`pull_request_target`, which runs with write access, and with secrets everywhere but the last.
+These controls are not decoration — and since #98 you no longer copy any of them: every one lives
+in a `*-reusable.yml` you reference, where a caller can skip the job but cannot loosen it. Read
+them anyway. Not to install them, but because a control you cannot see is one you cannot reason
+about, and the paragraph after the table is a decision only you can make.
 
 | Control | Why |
 |---|---|
@@ -728,6 +849,7 @@ one you cannot reason about, and the paragraph after the table is a decision onl
 | **Trust your own bot by login** — `github-actions[bot]` **and** `github-actions` | REST and GraphQL spell the same account differently. List one and the review→fix handoff silently drops its own agent's comments |
 | **Scrub the GitHub token** from the agent's environment after fetching context | the agent runs unsandboxed; it has no legitimate `gh` use once context is read |
 | **`contents: read`** on review | the one agent structurally unable to mutate the branch |
+| **No model in the job that files** | `agent-follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the runner |
 
 **The trigger is weaker than the trust boundary.** Every control above gates an *input*; the
 **trigger** is a label, and GitHub's **Triage** role can add labels with no push access at all. So a

@@ -19,13 +19,13 @@ section, which decides where a change belongs.
 
 ## This repo runs its own loop, on the last release
 
-Five callers are installed in `.github/workflows/`, prefixed `agent-` so they do not collide by
-filename with the reusable workflows they call. Job ids stay unprefixed — `self-check` is built from
-job ids, not filenames, so `agent-review.yml` keeps `review / review`.
+A caller per workflow is installed in `.github/workflows/`, prefixed `agent-` so they do not
+collide by filename with the reusable workflows they call. Job ids stay unprefixed — `self-check`
+is built from job ids, not filenames, so `agent-review.yml` keeps `review / review`.
 
 They use a **pinned remote** reference, `jeffwlawson/agent-workflows/...@v<tag>`, rather than a
 local `./` path. The tag is not written out here on purpose — prose is the one copy of it no test
-reads, and it sat two releases behind before anyone noticed. The five callers carry the live pin
+reads, and it sat two releases behind before anyone noticed. The local callers carry the live pin
 and are checked against `package.json`; read it there.
 
 That is a deliberate choice with one decisive reason and one supporting one.
@@ -126,7 +126,7 @@ it exists as a documented adoption step because an adopter has no test that can 
 
 Its `agent-loop` group should therefore never open a pull request here, and one that does is a
 second signal that a release step was missed — it reads `.github/workflows` only, so it moves the
-five callers and never `examples/callers/` or the `npm exec` lines, and its PR stays red until you
+local callers and never `examples/callers/` or the `npm exec` lines, and its PR stays red until you
 move those by hand.
 
 Changing what a pin looks like — a new workflow, a renamed one, a different invocation — is a
@@ -151,7 +151,7 @@ code in `shared/`, never in `scripts/`. A test in `tests/sync-version.test.ts` a
 `setup/` is `init` and `doctor` — the half a human runs, in somebody else's checkout. It is
 deliberately **not** shaped like a runner: a runner is `<name>/<name>.ts` plus a prompt and takes no
 arguments, and the walk in `tests/agent-cli.test.ts` derives "the runners" from exactly that shape,
-so a `setup/setup.ts` would quietly enrol these two in every rule written for the other five.
+so a `setup/setup.ts` would quietly enrol these two in every rule written for the runners.
 
 1. `setup/callers.ts` is the half both use — reading a caller out of an adopter's tree. A caller is
    recognised by **what it calls**, never by its filename: adopters rename files and job ids, and a

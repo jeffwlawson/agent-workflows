@@ -570,6 +570,30 @@ describe("init installs the reference callers into an adopting repo", () => {
   });
 
   /**
+   * Every `gh label create` block §3 ships, in the order it ships them: the
+   * labels it **mandates** first, then the ones it documents conditionally.
+   * Scoped to §3 so a block added to another section cannot become the first.
+   */
+  const documentedLabels = (): readonly { name: string; color: string; description: string }[][] =>
+    ((fs
+      .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
+      .split(/^(?=## )/m)
+      .find((section) => section.startsWith("## 3.")) ?? "").match(/```bash\n[\s\S]*?```/g) ?? [])
+      .map((block) =>
+        [
+          ...block.matchAll(/^gh label create +"([^"]+)" +--color +(\S+) +--description +"([^"]+)"$/gm),
+        ].map(([, name, color, description]) => ({
+          name: name ?? "",
+          color: color ?? "",
+          description: description ?? "",
+        })),
+      )
+      .filter((block) => block.length > 0);
+
+  const byName = (labels: readonly { name: string }[]) =>
+    [...labels].sort((a, b) => a.name.localeCompare(b.name));
+
+  /**
    * The label table in `setup/init.ts` is a **second copy** of `docs/ADOPTING.md`
    * §3: the doc is what a human reads, the table is what `SETUP.md` tells them
    * to run and what `doctor` demands exists. Nothing else holds the two in step,
@@ -578,26 +602,38 @@ describe("init installs the reference callers into an adopting repo", () => {
    * is a transition that no-ops rather than anything that errors.
    *
    * So this is `PIN`'s trick for labels: parse the block the doc actually ships
-   * and compare it, colour and description included.
+   * and compare it, colour and description included — **the mandated block**,
+   * which is the first of the two §3 now carries (#51).
    */
-  it("scaffolds exactly the labels docs/ADOPTING.md §3 documents", () => {
-    const documented = [
-      ...fs
-        .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
-        .matchAll(/^gh label create +"([^"]+)" +--color +(\S+) +--description +"([^"]+)"$/gm),
-    ].map(([, name, color, description]) => ({
-      name: name ?? "",
-      color: color ?? "",
-      description: description ?? "",
-    }));
+  it("scaffolds exactly the labels docs/ADOPTING.md §3 mandates", () => {
+    const mandated = documentedLabels()[0] ?? [];
 
     // The block itself has to still be there: a doc restructure that moved it
     // would otherwise make this pass by comparing nothing.
-    expect(documented).toHaveLength(6);
+    expect(mandated).toHaveLength(6);
+    expect(byName([...TRIGGER_LABELS, ...STATE_LABELS])).toEqual(byName(mandated));
+  });
 
-    const byName = (labels: readonly { name: string }[]) =>
-      [...labels].sort((a, b) => a.name.localeCompare(b.name));
-    expect(byName([...TRIGGER_LABELS, ...STATE_LABELS])).toEqual(byName(documented));
+  /**
+   * And scaffolds none of the ones it documents **conditionally**.
+   *
+   * `pr-follow-up` and `needs-triage` matter only to a repository that installed
+   * the filing caller, and `agent:follow-ups` is added by a step that warns
+   * rather than failing. Putting any of them in the tables above would put them
+   * in `SETUP.md` — which is fine — *and* in `doctor`'s missing-label check,
+   * which is not: a preflight that fails a correctly-installed loop over a label
+   * its workflows never look for is a preflight people learn to ignore.
+   *
+   * Asserted from the doc rather than from a list, so a fourth conditional label
+   * is covered by arriving in that block. The block has to exist for the same
+   * reason the one above does.
+   */
+  it("scaffolds none of the labels §3 documents conditionally", () => {
+    const conditional = documentedLabels().slice(1).flat();
+    const scaffolded = new Set([...TRIGGER_LABELS, ...STATE_LABELS].map((label) => label.name));
+
+    expect(conditional.length).toBeGreaterThan(0);
+    for (const label of conditional) expect(scaffolded).not.toContain(label.name);
   });
 });
 

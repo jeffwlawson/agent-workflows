@@ -36,7 +36,8 @@ name a defect for.
 
 **This list is a complete restatement, every run.** *Raise only what is new* governs the summary and
 the inline comments; it does **not** govern this list. Only the most recent list is ever read, so a
-finding you raised in an earlier round and leave out of this one is lost.
+finding you raised in an earlier round and leave out of this one is lost — and an empty list is how
+a round says the earlier ones are no longer true. Re-record anything that still is.
 
 Order them by **the worst consequence if nobody ever fixes it** — not by how hard each is to fix,
 and not by how confident you are in it. List the three most serious. Anything past the third is

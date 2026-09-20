@@ -88,6 +88,12 @@ describe("planFollowUps: the authenticity gate", () => {
     expect(result.issues.map((i) => i.path)).toEqual(["src/new.ts"]);
   });
 
+  /**
+   * A bot review carrying no block is not an all-clear: it is a body no review
+   * run of this version posted — a `fix` run's thread replies, an older
+   * release, a human's review from the bot's own identity. Reading one as an
+   * empty list would let a thread reply retract a finding nobody addressed.
+   */
   it("skips a later review that carries no block at all", () => {
     const result = plan([], [], {
       reviews: [
@@ -97,6 +103,25 @@ describe("planFollowUps: the authenticity gate", () => {
     });
 
     expect(result.issues.map((i) => i.path)).toEqual(["src/a.ts"]);
+  });
+
+  /**
+   * And the other side of that, which is the whole reason a review run records
+   * an **empty** block rather than no block: round 1 raised it, the author
+   * fixed it, round 2 recorded nothing. Without a retraction round 1 stays the
+   * newest list on the pull request and the merge files a stub for work already
+   * done — filing against the author's fix, in the one channel whose credit
+   * with a triage queue is the only thing keeping it read.
+   */
+  it("retracts on a later round that recorded nothing", () => {
+    const result = plan([], [], {
+      reviews: [
+        review([followUp({ location: "src/fixed-since.ts" })]),
+        review([]),
+      ],
+    });
+
+    expect(result).toEqual({ ...NOTHING, report: undefined, removeMarker: true });
   });
 
   /**
@@ -265,6 +290,30 @@ describe("planFollowUps: what counts as the same finding", () => {
    * That is the direction every choice in this file fails in: a duplicate is
    * loud and cheap, a skipped finding is silent and unrecoverable.
    */
+  /**
+   * The last payload wins, which is `parseFollowUpsBlock`'s rule for the same
+   * hazard: a stub's prose is written *before* its key, and that prose is the
+   * agent quoting the code the finding rests on — which on this feature's own
+   * files is a payload. Taking the first would let a quoted decoy key a real
+   * finding, absorbing it as a re-flag of somewhere else entirely: a silent
+   * skip, which is the one direction nothing here fails in.
+   */
+  it("matches on the stub's own key, not on a payload its evidence quotes", () => {
+    const quoting: FilingStub = {
+      number: 71,
+      state: "OPEN",
+      stateReason: null,
+      body: [
+        'The evidence: the next run reads `<!--{"version":1,"location":"src/decoy.ts","pr":1}-->`.',
+        "",
+        `<!--{"version":1,"location":"src/real.ts","pr":7}-->`,
+      ].join("\n"),
+    };
+
+    expect(plan([followUp({ location: "src/decoy.ts" })], [quoting]).issues).toHaveLength(1);
+    expect(plan([followUp({ location: "src/real.ts" })], [quoting]).stubComments).toHaveLength(1);
+  });
+
   it("does not match a stub carrying no payload", () => {
     const result = plan(
       [followUp({ location: "src/a.ts" })],

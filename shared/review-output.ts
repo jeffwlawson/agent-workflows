@@ -207,11 +207,14 @@ export const hasFollowUpsBlock = (body: string): boolean =>
  * **throw** when there is one this cannot read.
  *
  * The split is the difference between the two failure modes a reader has to
- * keep apart. No block is the ordinary case — most reviews find nothing out of
- * scope — and is answered with silence. A block that cannot be read is a shape
- * this version does not know, which is an ordinary consequence of a release
- * rather than a defect, and the message is what says so out loud instead of
- * guessing at fields that may have moved.
+ * keep apart. No block at all means *no review run of this version posted this
+ * body* — an older release, a `fix` run's thread replies, a human's review —
+ * and is answered with silence; a run that found nothing out of scope writes an
+ * **empty** block rather than no block, which is a different answer and the one
+ * that retracts. A block that cannot be read is a shape this version does not
+ * know, which is an ordinary consequence of a release rather than a defect, and
+ * the message is what says so out loud instead of guessing at fields that may
+ * have moved.
  *
  * Lives beside the renderer because the two are one format. A parser in the
  * half that files would be a second description of it, drifting from the first
@@ -255,8 +258,17 @@ export const parseFollowUpsBlock = (
  * body has a hard 65,536-character ceiling whose overflow is a 422 that takes
  * the inline comments down with it, so the full stub text is not spent twice.
  *
- * Called with at least one finding. A review that recorded none appends nothing
- * at all rather than an empty block — there is no opt-out to offer.
+ * **A run that recorded none writes the payload and nothing else** — the bare
+ * comment, no `<details>`, invisible to a reader. That empty list is the
+ * *retraction*, and it is why this is called on every review rather than only
+ * on the ones with something to say: the reader takes the latest list, so a
+ * round that records nothing has to be able to say so. Without it a round 2
+ * that found the out-of-scope defect fixed leaves round 1's block standing as
+ * the newest, and the merge files a stub for the thing the author just fixed.
+ *
+ * No `<details>` around it because there is nothing to offer: no finding to
+ * show, and no opt-out to describe. An empty disclosure widget on every review
+ * is how a channel teaches people to stop opening it.
  */
 export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number): string => {
   const payload = embeddableJson({
@@ -264,6 +276,8 @@ export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number)
     dropped,
     followUps: kept,
   });
+  const marker = `<!-- ${FOLLOW_UPS_MARKER} ${payload} -->`;
+  if (kept.length === 0) return marker;
 
   // One line each. A title is meant to be one line; whitespace-collapsing it
   // means a model that wrapped one cannot break the list it sits in.
@@ -288,7 +302,7 @@ export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number)
     ...items,
     ...truncation,
     "",
-    `<!-- ${FOLLOW_UPS_MARKER} ${payload} -->`,
+    marker,
     "</details>",
   ].join("\n");
 };

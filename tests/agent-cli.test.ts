@@ -4,7 +4,14 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
-import { init, labelCommand, STATE_LABELS, TRIGGER_LABELS } from "../setup/init.js";
+import {
+  advisoryLabelSpecsFor,
+  init,
+  labelCommand,
+  labelSpecsFor,
+  STATE_LABELS,
+  TRIGGER_LABELS,
+} from "../setup/init.js";
 import {
   asVisibility,
   availableSecrets,
@@ -631,9 +638,61 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("scaffolds none of the labels §3 documents conditionally", () => {
     const conditional = documentedLabels().slice(1).flat();
     const scaffolded = new Set([...TRIGGER_LABELS, ...STATE_LABELS].map((label) => label.name));
+    // The function `doctor` demands from, named rather than inferred from the
+    // tables: what must not happen is a preflight erroring over one of these.
+    const demanded = new Set(labelSpecsFor(referenceNames).map((label) => label.name));
 
     expect(conditional.length).toBeGreaterThan(0);
-    for (const label of conditional) expect(scaffolded).not.toContain(label.name);
+    for (const label of conditional) {
+      expect(scaffolded).not.toContain(label.name);
+      expect(demanded).not.toContain(label.name);
+    }
+  });
+
+  /**
+   * …and **names** them in the `SETUP.md` it writes, which is the other half of
+   * that decision rather than a contradiction of it (#54).
+   *
+   * `init` scaffolds the filing caller on a first run, so an adopter who ran it
+   * has a live feature whose three labels no artifact they hold mentions — the
+   * review marks nothing, the stubs file unlabelled, and the only signal is a
+   * `::warning::` inside a green run, which is §1's own signature. Telling them
+   * is free; failing them over it is what `doctor` still declines to do.
+   *
+   * Compared against the doc block rather than a list here too, so the third
+   * copy of these strings — `ADVISORY_LABELS` — cannot drift from §3 either.
+   */
+  it("names the conditional labels in the prompt when it installed the caller that wants them", async () => {
+    const root = adopted();
+    const conditional = documentedLabels().slice(1).flat();
+
+    await init({ dir: root });
+
+    expect(byName(advisoryLabelSpecsFor(referenceNames))).toEqual(byName(conditional));
+    for (const label of conditional) expect(read(root, "SETUP.md")).toContain(labelCommand(label));
+  });
+
+  /**
+   * And says nothing about them to a repository that declined that caller (§4).
+   * Three labels prescribed to a repository where nothing will ever read them
+   * is a setup list with a step that cannot be completed for a reason — which
+   * is how a checklist stops being worked through.
+   */
+  it("says nothing about them once the caller that wants them is gone", async () => {
+    const root = adopted();
+    await init({ dir: root });
+
+    fs.rmSync(path.join(root, ".github", "workflows", "agent-follow-ups.yml"));
+    await init({ dir: root });
+
+    const setup = read(root, "SETUP.md");
+    for (const label of documentedLabels().slice(1).flat()) {
+      expect(setup).not.toContain(label.name);
+    }
+    // The mandated six are untouched by any of that.
+    for (const label of [...TRIGGER_LABELS, ...STATE_LABELS]) {
+      expect(setup).toContain(labelCommand(label));
+    }
   });
 });
 

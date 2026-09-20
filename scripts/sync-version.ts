@@ -204,7 +204,7 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
  * only the manifest and the lockfile. Staging happens **by path**, from what
  * `syncVersion` returned. `npm version` blocks a dirty tree only for *tracked*
  * modifications, so a `git add -A` here would sweep any untracked file lying
- * around into the release commit and the tag `publish.yml` fires on — an
+ * around into the release commit and the tag `publish.yml` fires on — a
  * twenty-first file inside a release, which nothing in the suite can see.
  */
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

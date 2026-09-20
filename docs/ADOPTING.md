@@ -328,9 +328,11 @@ the file is also a skill's output path — and the reasoning survives the rename
 
 ### Three more, and none of them mandated
 
-`init` does not scaffold these and `doctor` does not demand them. They arrived after the six above,
-so a repository can be current on the pin without them — and nothing fails when they are missing,
-which is the problem. What each absence costs is below.
+`init` creates none of them and `doctor` demands none of them; `init` does *list* them in the
+`SETUP.md` it writes, and only for a repository it installed the filing caller into, since a caller
+you declined is three labels nothing will ever read. They arrived after the six above, so a
+repository can be current on the pin without them — and nothing fails when they are missing, which
+is the problem. What each absence costs is below.
 
 ```bash
 gh label create "agent:follow-ups" --color 0052CC --description "This PR's review recorded out-of-scope findings"

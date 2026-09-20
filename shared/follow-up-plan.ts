@@ -201,9 +201,16 @@ interface StubKey {
  * An unreadable payload is treated the same way for the same reason: a
  * duplicate issue is loud and cheap, and a skipped finding is silent and
  * unrecoverable.
+ *
+ * The **last** readable payload wins, which is `parseFollowUpsBlock`'s rule for
+ * the identical hazard and for the identical reason: `stubBody` writes the
+ * agent's prose *before* the key, and that prose is evidence quoting the code —
+ * which on this feature's own files is a payload. Reading the first would let a
+ * quoted decoy key a real finding, absorbing it as a re-flag of somewhere else:
+ * a silent skip, the one direction nothing here fails in.
  */
 const stubKey = (body: string): StubKey | undefined => {
-  for (const match of body.matchAll(STUB_PAYLOAD)) {
+  for (const match of [...body.matchAll(STUB_PAYLOAD)].reverse()) {
     let payload: unknown;
     try {
       payload = JSON.parse(match[1] ?? "");
@@ -250,6 +257,17 @@ const isWontfix = (stub: FilingStub): boolean =>
  * `wontfix`, because an open stub at a path someone also declined work at is
  * the later decision of the two. Highest number within a category, which is the
  * most recent.
+ *
+ * **The idempotence that buys is same-pull-request-scoped, and the re-flag path
+ * is at-least-once.** A retry after a partial failure meets a stub *this* pull
+ * request filed through its `pr` field and reports it as already filed; a
+ * *chronic* stub carries somebody else's number, so the retry takes the `open`
+ * branch again and comments "Flagged again by #N" a second time. Accepted
+ * rather than overlooked: closing it means reading every candidate stub's
+ * comments before re-flagging — a page of comments per match, on the one
+ * workflow here holding `issues: write` — to prevent a duplicate line on an
+ * issue that is already about exactly that. A duplicate comment is loud and
+ * cheap, which is the direction everything in this file fails in.
  */
 const matchStub = (
   stubs: readonly FilingStub[],
@@ -331,6 +349,13 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
   // because each run restates the whole set, the newest block is the complete
   // answer and every older one is a superseded draft. Nine reviews on one pull
   // request is an ordinary shape.
+  //
+  // A block is what a review *run* leaves, found or not — a run that recorded
+  // nothing writes an empty one — so the newest block is the newest run and a
+  // later round genuinely retracts. Carrying none means no run of this version
+  // posted that body: a `fix` run's thread replies, an older release, a human.
+  // Those are skipped rather than read as an all-clear, which is what stops a
+  // thread reply from retracting a finding nobody addressed.
   //
   // The login is part of the *selection*, not a veto applied afterwards. A
   // review is world-writable on a public repository, so refusing because
@@ -445,9 +470,10 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
     lines.push(`- **Re-flagged** — \`${path}\` — commented on #${match.stub.number}.`);
   }
 
-  // A readable block that asked for nothing. The renderer never writes one, so
-  // this is a hand-made body rather than a run of the review — dealt with, and
-  // nothing to report about it.
+  // A readable block that asked for nothing: the retraction, and the ordinary
+  // shape of every review that found nothing out of scope. Nothing to file and
+  // nothing to say — but the marker comes off, because this pull request's
+  // latest list is empty and there is nothing left unfiled to find it by.
   if (lines.length === 0 && dropped === 0) {
     return { issues: [], stubComments: [], report: undefined, removeMarker: true };
   }

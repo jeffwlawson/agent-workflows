@@ -581,9 +581,9 @@ jobs:
       # **Never removed here**, which is the other half of the rule and is not
       # symmetry. Removal is the human's opt-out gesture; a step that cleared a
       # stale marker would be racing the person it exists to serve. A marker
-      # left behind by a later empty run costs nothing — the findings live in
-      # the review body, and a merge whose latest review carries no block is a
-      # silent no-op.
+      # left behind by a later empty run costs nothing either: that run posts an
+      # *empty* findings block, which is what the filing half reads as the
+      # latest list, so the merge files nothing and clears the marker itself.
       #
       # After the review is posted, on purpose. The label points at a record
       # that lives in the review body, so marking a PR whose review failed to

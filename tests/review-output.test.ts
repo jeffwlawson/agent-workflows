@@ -237,6 +237,23 @@ describe("renderFollowUpsBlock", () => {
   it("names the marker a reader selects on", () => {
     expect(FOLLOW_UPS_MARKER).toBe("agent-follow-ups");
   });
+
+  /**
+   * The retraction, and the shape of every review that found nothing out of
+   * scope. It has to be *a block* — the reader takes the latest one, so a round
+   * that recorded nothing can only supersede round 1 by leaving something — and
+   * it has to be invisible, because there is no finding to show and no opt-out
+   * to describe. An empty disclosure widget on every review is how a channel
+   * teaches people to stop opening it.
+   */
+  it("writes the empty list as a bare payload, with nothing for a reader to see", () => {
+    const block = renderFollowUpsBlock([], 0);
+
+    expect(block).toBe(`<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[]} -->`);
+    expect(block).not.toContain("<details>");
+    expect(hasFollowUpsBlock(block)).toBe(true);
+    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0 });
+  });
 });
 
 /**

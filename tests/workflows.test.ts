@@ -929,7 +929,8 @@ describe("agent-review marks a PR whose review recorded follow-ups", () => {
    * Never removed here. Removal is the human's opt-out gesture and, later, the
    * filing step's on-success cleanup; a step that cleared a stale marker would
    * be racing the person it exists to serve. A marker left by a later empty run
-   * costs nothing — a merge whose latest review carries no block is a no-op.
+   * costs nothing either: that run records an *empty* list, which is the latest
+   * list, so the merge files nothing and clears the marker itself.
    */
   it("never removes the marker", () => {
     expect(fs.readFileSync(REVIEW, "utf8")).not.toContain(`--remove-label "${FOLLOW_UPS_LABEL}"`);

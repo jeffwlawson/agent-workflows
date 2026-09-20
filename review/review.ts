@@ -83,11 +83,16 @@ try {
   // Capped here rather than in the schema. A fourth follow-up is not a broken
   // review, and rejecting the output would lose the summary and every inline
   // comment with it.
+  //
+  // **Appended on every run, including the run that recorded nothing**, where
+  // it renders as the bare payload and shows a reader nothing at all. The list
+  // is a complete restatement each round and the filing half reads the latest
+  // one, so recording none has to be sayable: otherwise round 1's findings stay
+  // the newest thing on the pull request and a merge after round 2 fixed them
+  // files a stub for work already done.
   const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(result.output.followUps);
-  const followUpsBlock =
-    followUps.length === 0 ? "" : renderFollowUpsBlock(followUps, droppedFollowUps);
-  const body =
-    followUpsBlock === "" ? result.output.summary : `${result.output.summary}\n\n${followUpsBlock}`;
+  const followUpsBlock = renderFollowUpsBlock(followUps, droppedFollowUps);
+  const body = `${result.output.summary}\n\n${followUpsBlock}`;
 
   writeJson("review_payload.json", {
     commit_id: headSha,
@@ -112,7 +117,11 @@ try {
   // this run recorded something. Written only in that case, so its *existence*
   // is the whole condition and the step needs no parsing. The content is the
   // block exactly as posted, which is what a human debugging the run wants.
-  if (followUpsBlock !== "") writeText("follow_ups.md", followUpsBlock);
+  //
+  // Keyed on the findings rather than on the block, which is no longer the same
+  // question: the block is posted either way, and a retraction is precisely the
+  // run that must not mark the pull request.
+  if (followUps.length > 0) writeText("follow_ups.md", followUpsBlock);
 
   console.log("Review complete.");
   console.log(`Inline comments: ${validComments.length} kept of ${result.output.inlineComments.length} produced.`);

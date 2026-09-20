@@ -43,6 +43,8 @@ without erroring, so create them before labelling anything:
 {{LABELS}}
 ```
 
+{{ADVISORY_LABELS}}
+
 Add a label in a call **separate from creating the issue**. A label passed to the create call rides
 along in `issues.opened` and emits no `labeled` event at all, so the issue really does carry the
 label and the workflow really did never see one. Recovery is remove, then re-add.

@@ -86,9 +86,14 @@ const fetchReviews = (prNumber: string): FilingReview[] => {
   const raw = gh([
     "api",
     "graphql",
-    "-F",
+    // `-f` for the two strings and `-F` for the number, which is not stylistic:
+    // `-F` type-converts an integer-shaped value, so a repository named in
+    // digits — `org/2048` — would send `repo` as an `Int` against `String!` and
+    // every merge in it would die at the GraphQL layer. `number` is the one
+    // that genuinely wants `Int!`.
+    "-f",
     `owner=${owner}`,
-    "-F",
+    "-f",
     `repo=${repo}`,
     "-F",
     `number=${prNumber}`,
@@ -230,9 +235,12 @@ export interface FilingOutcome {
  * findings are unfiled.
  *
  * A throw anywhere in here fails the run with the marker still on, which is
- * what makes a partial failure recoverable — and safe to recover, because a
- * stub this pull request already filed carries its number in the dedup payload
- * and is reported as *already filed* on the retry rather than re-flagged.
+ * what makes a partial failure recoverable — and safe to recover for the half
+ * that matters: a stub this pull request already filed carries its number in
+ * the dedup payload and is reported as *already filed* on the retry rather than
+ * re-flagged. Re-flagging a **chronic** stub is at-least-once by contrast, so a
+ * retry can leave two identical "flagged again" comments on it — the accepted
+ * boundary, argued at `matchStub`.
  */
 export const executeFilingPlan = (prNumber: string, plan: FilingPlan): FilingOutcome => {
   const available = plan.issues.length === 0 ? new Set<string>() : repoLabels();

@@ -346,7 +346,7 @@ come up was *inside* one PRD.
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
 | `contents: read` (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits |
-| **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the inline comments, serialised into the review body as a collapsed block with a versioned payload, and capped at three. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
+| **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the inline comments, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
 
 ---
 

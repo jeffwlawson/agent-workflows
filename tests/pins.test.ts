@@ -47,8 +47,9 @@ describe("the pin rewrite is a core init can use", () => {
   const PACKAGE = "@jeffwlawson/agent-workflows";
 
   /**
-   * An adopter's repository once `init` has copied the callers in: five
-   * `.github/workflows/agent-*.yml` and nothing else this rewrite knows about.
+   * An adopter's repository once `init` has copied the callers in: one
+   * `.github/workflows/agent-*.yml` per reference caller, and nothing else this
+   * rewrite knows about.
    *
    * The manifest is deliberately somebody else's. An adopter's `package.json`
    * names an unrelated project — or, for a repository whose toolchain is not
@@ -81,7 +82,13 @@ describe("the pin rewrite is a core init can use", () => {
       return rewrite.found;
     });
 
-    expect(found).toEqual(["ref", "ref", "ref", "ref", "ref"]);
+    // One `ref` pin per caller and no `package` pin anywhere: an adopter's tree
+    // holds no reusable half. Derived from the fixture rather than written out,
+    // because the count is the reference set's and moves with it — it went from
+    // five to six when `follow-ups` landed (#50) — while the property being
+    // asserted, one pin of one form per file, does not.
+    expect(found).toEqual(callersIn(root).map(() => "ref"));
+    expect(found.length).toBeGreaterThan(1);
     for (const file of callersIn(root)) {
       expect(read(root, file)).toContain(`${PACKAGE.replace(/^@/, "")}/.github/workflows/`);
       expect(read(root, file)).toContain(`.yml@v${TARGET}`);

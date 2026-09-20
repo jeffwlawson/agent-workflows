@@ -60,6 +60,26 @@ const PR_WORKFLOWS = [
   "update-branch.yml",
 ].map((f) => path.join(WORKFLOW_DIR, f));
 
+/**
+ * The fourth `pull_request_target` reusable, which is in none of the sets above
+ * and gets its own describe at the bottom of this file (#50).
+ *
+ * It files a **closed** pull request's recorded findings, so five of the shared
+ * set's assertions are false of it — no base ref, no state environment, an
+ * *inverted* closed-PR guard, no checkout, no in-progress labelling — and two
+ * of those assert that a checkout step and an in-progress step *exist*, which
+ * the set's exemption idiom cannot express. Keeping it in would also make the
+ * set's own premise ("every one of them has to work against the PR's real
+ * base") false the moment a member has no base ref at all.
+ *
+ * Named as a set of one rather than as a lone constant because the partition
+ * test below is what makes leaving the shared set safe: a seventh
+ * `pull_request_target` reusable in neither set is a named failure there rather
+ * than a workflow that quietly gets no assertions.
+ */
+const FOLLOW_UPS = path.join(WORKFLOW_DIR, "follow-ups.yml");
+const MERGE_GATED: readonly string[] = [FOLLOW_UPS];
+
 const workflowFiles = fs
   .readdirSync(WORKFLOW_DIR)
   .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))
@@ -144,6 +164,23 @@ const ISSUES_WRITE_EXEMPT = new Set([
   "implement-prd.yml",
   // Files the AGENT_PAT expiry issue. Acts on no PR at all.
   "token-expiry.yml",
+  // The first entry here that genuinely **creates** new issues — the others
+  // close, re-label or file one fixed issue about the loop itself — so it is the
+  // first that has to argue `docs/parity.md` §10's parity invariant rather than
+  // sidestep it (#50).
+  //
+  // The argument: the invariant's concern is an unattended cycle, and the gate
+  // has moved from *before filing* to *before building* — the stubs arrive
+  // `needs-triage`, never `agent:implement`, so a human still decides what gets
+  // built. Both halves of the invariant that carry the weight survive intact.
+  // **The agent that raises the finding still never files it**: the review
+  // agent emits the findings into its own review body under `contents: read`
+  // and no `issues:` scope. And **the workflow holding the permission runs no
+  // model** — this pair installs no Claude Code and invokes a runner whose
+  // judgement is a pure function, which is also what keeps reading arbitrary
+  // issue bodies with `issues: write` from being a prompt-injection surface.
+  "agent-follow-ups.yml",
+  "follow-ups.yml",
 ]);
 
 const issuesWriteChecked = workflowFiles.filter(
@@ -228,7 +265,7 @@ const stepsOf = (file: string): readonly Step[] => jobOf(file).steps ?? [];
  * put a file in the wrong bucket: the thing being asked is "does this file do
  * the work", and `uses:` is that question answered.
  */
-const RUNNER_COMMANDS = ["fix", "implement", "implement-prd", "review", "update-branch"];
+const RUNNER_COMMANDS = ["fix", "follow-ups", "implement", "implement-prd", "review", "update-branch"];
 /** Both halves of the loop: what a caller grants and what the called job bounds. */
 const agentWorkflows = (): readonly string[] => [...callerWorkflows, ...runnerWorkflows];
 const runnerWorkflows = RUNNER_COMMANDS.map((c) => path.join(WORKFLOW_DIR, `${c}.yml`));
@@ -259,6 +296,26 @@ const targetOf = (file: string): string =>
   (jobOf(file).uses ?? "").replace(/^[^/]+\/[^/]+\//, "").replace(/@.*$/, "");
 
 /**
+ * The loop minus its merge-gated half, in both directions.
+ *
+ * Four of the checks below are about a **wire**: the three shared inputs, the
+ * toolchain they configure, the auth step's position relative to that toolchain,
+ * and the two secrets a caller hands over. `follow-ups.yml` declares no inputs
+ * and no secrets on purpose — nothing is checked out, so there is no toolchain
+ * to describe and no command to run, and it runs no model, so there is no
+ * credential to pass (#50). Asserting the absence is that workflow's own
+ * describe; what is excluded here is only the *presence*.
+ *
+ * Filtered rather than exempted by filename, because the question each of those
+ * four asks is "does this half carry the wire the other half declares", and a
+ * pair that declares none is out of that question rather than failing it.
+ */
+const wiredWorkflows = (): readonly string[] =>
+  runnerWorkflows.filter((file) => !MERGE_GATED.includes(file));
+const wiredCallers = (): readonly string[] =>
+  callerWorkflows.filter((file) => !MERGE_GATED.includes(targetOf(file)));
+
+/**
  * What each caller's trigger fires on, keyed by filename (#46). Everything
  * absent takes `TRIGGER_TYPES_DEFAULT` — which today is every caller there is,
  * so the map is empty and the default is exactly the assertion it replaces.
@@ -278,7 +335,18 @@ const targetOf = (file: string): string =>
  * subset check, which would let *any* caller grow *any* extra type unnoticed.
  */
 const TRIGGER_TYPES_DEFAULT: readonly string[] = ["labeled"];
-const TRIGGER_TYPES: Readonly<Record<string, readonly string[]>> = {};
+const TRIGGER_TYPES: Readonly<Record<string, readonly string[]>> = {
+  /**
+   * The filing pair, in both caller sets (#50). `closed` is what the feature is
+   * *for* — findings become issues when the pull request merges — and it is
+   * **not** a default `pull_request_target` activity type, so a caller that
+   * listed only `labeled` would file nothing on a merge and read exactly like
+   * one that did. `labeled` is the manual entry point on an already-closed pull
+   * request: a missed close event, a reconsidered opt-out, a partial failure.
+   */
+  "agent-follow-ups.yml": ["closed", "labeled"],
+  "follow-ups.yml": ["closed", "labeled"],
+};
 const triggerTypesOf = (file: string): readonly string[] =>
   TRIGGER_TYPES[path.basename(file)] ?? TRIGGER_TYPES_DEFAULT;
 
@@ -626,11 +694,17 @@ describe("every PR workflow shares one concurrency group per PR", () => {
       ),
     ];
 
-    expect(checkRuns).toHaveLength(5);
+    expect(checkRuns).toHaveLength(6);
     for (const name of checkRuns) expect(name).toMatch(excluded);
     // Bare job ids too — an adopter is free to inline a job rather than call
     // one, and the pattern predates the split.
-    for (const name of ["review", "fix", "update-branch", "implement", "implement-prd"]) {
+    //
+    // `follow-ups` is in the pattern even though excluding it is dead at
+    // runtime: this wait only runs on an open pull request and that workflow
+    // only fires on a closed one (#50). One word in one string, against a
+    // carve-out whose comment would have to justify a timing argument that
+    // could stop being true.
+    for (const name of ["review", "fix", "follow-ups", "update-branch", "implement", "implement-prd"]) {
       expect(name).toMatch(excluded);
     }
 
@@ -877,6 +951,306 @@ describe("agent-review marks a PR whose review recorded follow-ups", () => {
 });
 
 /**
+ * The filing half (#50): the workflow that turns a merged pull request's
+ * recorded findings into triageable issues. Its own describe, and its own
+ * constant, because it is the one `pull_request_target` reusable that is **not**
+ * in `PR_WORKFLOWS` — see the comment on `MERGE_GATED` for why five of that
+ * set's assertions are false of it and two of them cannot be exempted at all.
+ *
+ * **The four properties below are restated, not inherited.** That is the cost of
+ * leaving the shared set, paid here explicitly: the single-file precedent in this
+ * file is *additive*, where this one gets none of the shared assertions, so the
+ * properties that do still hold would silently lapse. The shape diverges on the
+ * guard and on the checkout; it does not diverge on the fork guard or on the
+ * concurrency group, and both of those are exactly as load-bearing here as they
+ * are there — more so for the fork guard, since this is the one workflow in the
+ * loop holding `issues: write`.
+ *
+ * **The residual, named so nobody closes it with a test that cannot.** Every
+ * check here reads YAML: the trigger, the condition, the permissions, the
+ * concurrency group, the pin, and the absence of the house guard. Nothing here
+ * reaches *"GitHub really did dispatch this job on `merged == true`"* — that is
+ * a statement about the platform, and the research behind the condition is
+ * evidence rather than proof. It gets proven by this repository's own loop, one
+ * release later: the callers here run on the last release, this repo merges pull
+ * requests constantly, and the merged path is exercised on the first merge after
+ * the tag. An unstated gap invites someone to add a test that pretends to close
+ * it.
+ */
+describe("the follow-ups workflow files a merged PR rather than refusing it", () => {
+  /** Both halves of the pair, found the way every other check here finds them. */
+  const CALLERS = callerWorkflows.filter((file) => targetOf(file) === FOLLOW_UPS);
+
+  /**
+   * The file with its YAML comments dropped — what GitHub actually acts on.
+   *
+   * Needed because three of the absences below are *argued for in the header*,
+   * at length: the file says why it installs no Claude Code and why it reaches
+   * for no `AGENT_PAT`, and a raw-text search would then find the very strings
+   * whose absence it is checking. A prose-shaped assertion that fails on prose
+   * teaches the next editor to delete the explanation.
+   */
+  const declared = (file: string): string =>
+    fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+
+  it("has both caller sets pointing at it", () => {
+    expect(CALLERS.map((f) => path.basename(f)).sort()).toEqual([
+      "agent-follow-ups.yml",
+      "follow-ups.yml",
+    ]);
+  });
+
+  /**
+   * **The one assertion this workflow most needs, and the reason it is an exact
+   * string.**
+   *
+   * This is the loop's first job-level condition mixing `&&` and `||`, and `&&`
+   * binds tighter. Written flat — without the parentheses around the
+   * disjunction — the fork guard attaches to the first disjunct only, and a fork
+   * pull request reaches the `labeled` branch of the one workflow in the loop
+   * holding `issues: write`. The broken expression and this one contain
+   * **identical substrings**, so no amount of per-clause substring matching can
+   * tell them apart: only comparing the whole thing can.
+   *
+   * Normalised on whitespace alone, because the YAML shape is folded across
+   * lines and the newlines are not the property. Everything else — the hoisted
+   * fork guard, both trigger branches, the literal `true`, and which clause
+   * reads which field — is pinned byte for byte, so a rearrangement that changes
+   * the meaning cannot pass.
+   *
+   * The marker string in it is held to `FOLLOW_UPS_LABEL` by the review describe
+   * above, which is where the rendered opt-out line and the label step meet.
+   */
+  it("hoists the fork guard out of the disjunction, exactly", () => {
+    const condition = (jobOf(FOLLOW_UPS).if ?? "").replace(/\s+/g, " ").trim();
+
+    expect(condition).toBe(
+      "github.event.pull_request.head.repo.full_name == github.repository && " +
+        "( ( github.event.action == 'closed' && github.event.pull_request.merged == true ) || " +
+        "( github.event.action == 'labeled' && github.event.label.name == 'agent:follow-ups' " +
+        "&& github.event.pull_request.state == 'closed' ) )",
+    );
+  });
+
+  /**
+   * The tripwire the exact condition does **not** cover, and the one failure
+   * here that is silent and green.
+   *
+   * A first step refusing a non-open pull request can be added *alongside* an
+   * untouched condition — as a "consistency" fix, since the other three PR
+   * workflows all have one — and since a merged pull request is not open, it
+   * would refuse every single run. No failed job, no comment, nothing to
+   * notice: the feature simply stops, and the workflow still reads correct.
+   *
+   * So this is the inversion stated as a test: **this workflow requires what
+   * the other three refuse.** Merged is the normal case here, and the merge gate
+   * is the job condition alone — no state step, no shell guard. A shell guard
+   * exists elsewhere to explain a refusal in a comment; the case refused here is
+   * a pull request closed without merging, where nobody is waiting and a comment
+   * on a dead PR is noise.
+   */
+  it("carries neither the house state guard nor the environment that feeds it", () => {
+    const text = fs.readFileSync(FOLLOW_UPS, "utf8");
+
+    expect(stepsOf(FOLLOW_UPS).map((step) => step.id)).not.toContain("state");
+    expect(text).not.toContain('"$PR_STATE" != "open"');
+    expect(text).not.toContain("PR_MERGED");
+  });
+
+  /**
+   * Restated (1): the per-pull-request concurrency group. Not conformism — this
+   * workflow has **two entry points**, so a manual label add can race the
+   * merge-triggered run, and both would list the existing stubs *before* either
+   * filed: a read-then-write with no lock, whose result is two issues for one
+   * finding. The usual objection to this group — a job waiting on CI deadlocking
+   * behind a queued sibling — does not apply, because this job waits on no
+   * checks at all.
+   */
+  it("joins the loop's per-PR group, first-come", () => {
+    const { concurrency } = jobOf(FOLLOW_UPS);
+
+    expect(concurrency?.group).toBe("agent-pr-${{ github.event.pull_request.number }}");
+    expect(concurrency?.["cancel-in-progress"]).toBe(false);
+  });
+
+  /** Restated (2): one group, or GitHub rejects a job declared in two. */
+  it("declares exactly one group", () => {
+    const groups = [...fs.readFileSync(FOLLOW_UPS, "utf8").matchAll(/^\s*group:\s*(.+)$/gm)].map(
+      (m) => (m[1] ?? "").trim(),
+    );
+
+    expect(groups).toEqual(["agent-pr-${{ github.event.pull_request.number }}"]);
+  });
+
+  /**
+   * Restated (3): the fork guard, on this side of the seam. The exact-string
+   * check above already pins it, and it is restated as its own case because
+   * *this* is the property the shared set would have been asserting — losing it
+   * to a rearrangement of that string should fail as "the fork guard", not as
+   * "the condition changed".
+   */
+  it("guards the fork on this side of the seam", () => {
+    expect(jobOf(FOLLOW_UPS).if ?? "").toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+  });
+
+  /**
+   * Zero inputs and zero declared secrets, which is why the wire checks above
+   * skip this pair rather than exempting it.
+   *
+   * No `setup`: nothing is checked out, and executing an adopter-supplied
+   * command is the sharpest edge in the reusable surface — declaring no input
+   * keeps it structurally impossible rather than merely absent. No
+   * `node-version-file`, whose default names a file that does not exist without
+   * a checkout. No model credential, because no model runs, which is what keeps
+   * a `pull_request_target` job holding `issues: write` free of one. And no
+   * `AGENT_PAT`: the loop PAT is optional everywhere, so a filing step depending
+   * on it would file **nothing**, silently, on a repository without one — which
+   * is the exact failure class this feature exists to fix.
+   */
+  it("declares no inputs and no secrets, on either side", () => {
+    const call = workflowOf(FOLLOW_UPS).on?.workflow_call;
+
+    expect(call?.inputs).toBeUndefined();
+    expect(call?.secrets).toBeUndefined();
+    for (const file of CALLERS) {
+      expect(jobOf(file).with).toBeUndefined();
+      expect(jobOf(file).secrets).toBeUndefined();
+    }
+  });
+
+  /**
+   * …and no model, stated as the three things that would have to be there for
+   * one: a credential, the install, and a checkout for it to read.
+   */
+  it("installs no agent and checks nothing out", () => {
+    const text = declared(FOLLOW_UPS);
+
+    expect(text).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(text).not.toContain("@anthropic-ai/claude-code");
+    expect(stepsOf(FOLLOW_UPS).filter((s) => (s.uses ?? "").startsWith("actions/checkout@"))).toEqual(
+      [],
+    );
+  });
+
+  /**
+   * The half of the registry-auth ordering that survives having no toolchain.
+   *
+   * `%s: authenticates after the toolchain, before the run` runs over the wired
+   * set only, because it asserts a toolchain step *exists* and there is none
+   * here — but the reason that step is ordered at all is the second half of its
+   * name: both it and a toolchain `setup-node` write the same `.npmrc` and the
+   * last one wins, and the runner cannot install from GitHub Packages before the
+   * entry exists. That half still applies, so it is restated rather than
+   * dropped with the premise that carried it.
+   */
+  it("authenticates before the run, with no toolchain step to sit after", () => {
+    const steps = stepsOf(FOLLOW_UPS);
+    const auth = steps.findIndex((step) => (step.with ?? {})["registry-url"] !== undefined);
+    const run = steps.findIndex((step) => (step.run ?? "").trim().startsWith("npm exec"));
+
+    expect(auth).toBeGreaterThanOrEqual(0);
+    expect(auth).toBeLessThan(run);
+    expect(steps.filter((step) => step.with?.["node-version-file"] !== undefined)).toEqual([]);
+  });
+
+  /**
+   * The permissions, by value rather than by equality between the halves — the
+   * generic check already holds those equal to each other, and here the *values*
+   * are the decision.
+   *
+   * `issues: write` is the grant this feature is about. `pull-requests: write`
+   * posts the report and removes the marker, since a PR's labels live under that
+   * scope. `packages: read` installs the runner and is needed in both halves,
+   * because a called workflow can only downgrade. `contents: read` is strictly
+   * unnecessary and kept on purpose: the block is a *replacement*, so omitting
+   * it sets `contents: none`, an untested configuration for the install.
+   *
+   * What is absent is the security statement, which is why it is asserted rather
+   * than merely commented in the file: no `contents: write`, no `checks: read`,
+   * no `actions: write`.
+   */
+  it.each([
+    ["the called job bounds", FOLLOW_UPS],
+    ["agent-follow-ups.yml grants", path.join(WORKFLOW_DIR, "agent-follow-ups.yml")],
+    ["examples/callers/follow-ups.yml grants", path.join(CALLER_DIR, "follow-ups.yml")],
+  ])("%s exactly the four scopes the job spends", (_half: string, file: string) => {
+    expect(jobOf(file).permissions).toEqual({
+      contents: "read",
+      issues: "write",
+      packages: "read",
+      "pull-requests": "write",
+    });
+  });
+
+  /**
+   * The issues are created with the workflow token, and the file says which one
+   * it is: `GH_TOKEN` is what every `gh` call in the runner reads, and nothing
+   * here ever reaches for the PAT. A repository without `AGENT_PAT` files
+   * exactly as much as one with it.
+   */
+  it("files with the always-present workflow token", () => {
+    const text = declared(FOLLOW_UPS);
+
+    expect(text).toContain("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}");
+    expect(text).not.toContain("AGENT_PAT");
+  });
+
+  /**
+   * Three statements that live in the file's header because they are invisible
+   * anywhere else, and each of which someone would otherwise have to re-derive
+   * from a condition, an absence, and a thing that is not there at all.
+   *
+   * The behaviour table is the one artifact that says, per trigger and per pull
+   * request state, whether the job fires and what it does. The structural
+   * consequence is that a job condition cannot make an API call — so the marker
+   * is re-read in the runner, this job starts on *every* merge in the repository,
+   * and most runs end having done nothing and said nothing. And the manual entry
+   * point does **not** override the edited-body refusal, which is an absence: a
+   * control with a one-label bypass is not a control.
+   */
+  it("states the behaviour table, the silent exit and the absent bypass", () => {
+    const header = fs.readFileSync(FOLLOW_UPS, "utf8").split("\non:")[0] ?? "";
+    const rows = (header.match(/^# \|.*\|$/gm) ?? []).filter((row) => !/^# \|-+/.test(row));
+
+    // A header, a separator and one row per case the trigger can produce.
+    expect(rows.length).toBeGreaterThanOrEqual(7);
+    expect(header).toMatch(/job condition cannot make an API call/i);
+    expect(header).toMatch(/silent exit/i);
+    expect(header).toMatch(/does not override the edited-body refusal/i);
+  });
+
+  /**
+   * And the seam this describe sits on, made into a named failure rather than a
+   * silent gap.
+   *
+   * Leaving the shared set is safe exactly while the two sets **partition** the
+   * `pull_request_target` reusables. A seventh workflow in neither would get the
+   * general assertions at the top of this file and nothing else — the same
+   * silent-coverage failure this whole suite exists to catch, one level up. The
+   * file's stated preference is derived-not-listed, and this is what converts
+   * "someone forgot" into a test that says so by name.
+   */
+  it("partitions the pull_request_target reusables with the shared set", () => {
+    const triggered = [
+      ...new Set(
+        callerWorkflows
+          .filter((file) => workflowOf(file).on?.pull_request_target !== undefined)
+          .map(targetOf),
+      ),
+    ].sort();
+
+    expect(triggered).toEqual([...PR_WORKFLOWS, ...MERGE_GATED].sort());
+    expect(PR_WORKFLOWS.filter((file) => MERGE_GATED.includes(file))).toEqual([]);
+  });
+});
+
+/**
  * The whole loop is now callable (#98, slice 4 of #88; #97 proved the pattern on
  * review). The loop is the deliverable and it is installed in other repos, so
  * what an adopter writes per workflow has to be a trigger and two wires — every
@@ -898,26 +1272,33 @@ describe("every workflow in the loop is called rather than copied", () => {
   const callOf = (file: string) => workflowOf(file).on?.workflow_call;
 
   /**
-   * Five pairs, and *only* five: a workflow that is neither half of one is a
-   * workflow an adopter would have to copy. Derived from `uses:` rather than
-   * from the file names, so a half-done conversion — a `-reusable.yml` with no
-   * caller, or a caller left doing the work itself — lands here rather than
-   * being silently bucketed.
+   * Every workflow is half of a pair, and *only* those: a workflow that is
+   * neither half of one is a workflow an adopter would have to copy. Derived
+   * from `uses:` rather than from the file names, so a half-done conversion — a
+   * reusable with no caller, or a caller left doing the work itself — lands
+   * here rather than being silently bucketed.
+   *
+   * The list is written out because a release is what keeps it honest: a new
+   * workflow is three files carrying a version pin, and `scripts/sync-version.ts`
+   * refuses the release until all three exist. Adding an entry here is the same
+   * moment you add the third file.
    */
   it("splits every agent workflow into a caller and a runner", () => {
     expect(callerWorkflows.map((f) => path.basename(f)).sort()).toEqual([
       "agent-fix.yml",
+      "agent-follow-ups.yml",
       "agent-implement-prd.yml",
       "agent-implement.yml",
       "agent-review.yml",
       "agent-update-branch.yml",
       "fix.yml",
+      "follow-ups.yml",
       "implement-prd.yml",
       "implement.yml",
       "review.yml",
       "update-branch.yml",
     ]);
-    // Both caller sets point at the same five reusables, so dedupe before
+    // Both caller sets point at the same reusables, so dedupe before
     // comparing: what matters is that every runner has a caller and every
     // caller reaches a runner, not the multiplicity.
     expect([...new Set(callerWorkflows.map(targetOf))].sort()).toEqual(runnerWorkflows.slice().sort());
@@ -1096,7 +1477,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * secret the repository holds, including the ones this loop has no use for —
    * and it is the form that reads as tidier, so the list is worth pinning.
    */
-  it.each(callerWorkflows)("%s: passes both secrets by name", (file) => {
+  it.each(wiredCallers())("%s: passes both secrets by name", (file) => {
     const declared = callOf(targetOf(file))?.secrets ?? {};
 
     expect(Object.keys(declared).sort()).toEqual(["AGENT_PAT", "CLAUDE_CODE_OAUTH_TOKEN"]);
@@ -1126,7 +1507,7 @@ describe("every workflow in the loop is called rather than copied", () => {
     ["setup", "npm ci"],
   ] as const;
 
-  it.each(runnerWorkflows)("%s: declares the three shared inputs, typed and described", (file) => {
+  it.each(wiredWorkflows())("%s: declares the three shared inputs, typed and described", (file) => {
     for (const [name, value] of SHARED_INPUTS) {
       const input = callOf(file)?.inputs?.[name];
 
@@ -1147,7 +1528,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * that is the agent's own runtime rather than the adopter's toolchain, and
    * every runner image already has the Node it needs for it.
    */
-  it.each(runnerWorkflows)("%s: takes the toolchain from the caller", (file) => {
+  it.each(wiredWorkflows())("%s: takes the toolchain from the caller", (file) => {
     const node = stepsOf(file).find((s) => (s.uses ?? "").startsWith("actions/setup-node@"));
     const install = stepsOf(file).find((s) => (s.run ?? "").includes("${{ inputs.setup }}"));
 
@@ -2198,6 +2579,7 @@ describe("every workflow invokes the runners at a pinned version", () => {
   it("finds the agent workflows", () => {
     expect(runnerWorkflows.map(subcommandOf).sort()).toEqual([
       "fix",
+      "follow-ups",
       "implement",
       "implement-prd",
       "review",
@@ -2604,7 +2986,7 @@ describe("the runner package is installed from GitHub Packages", () => {
    * one an adopter may skip entirely, which is why the auth step declares no
    * `node-version-file` of its own.
    */
-  it.each(runnerWorkflows)("%s: authenticates after the toolchain, before the run", (file) => {
+  it.each(wiredWorkflows())("%s: authenticates after the toolchain, before the run", (file) => {
     const auth = authIndex(file);
     const toolchain = stepsOf(file).findIndex(
       (s) => s.with?.["node-version-file"] !== undefined,

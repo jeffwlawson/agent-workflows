@@ -8,11 +8,11 @@ import { assertPinnable, rewritePins, WORKFLOW_DIR } from "../shared/pins.ts";
 /**
  * The half of `npm version` npm will not do.
  *
- * A release names its version in seventeen files. `npm version` bumps two of
- * them — the manifest and the lockfile — and the other fifteen are pins: one
+ * A release names its version in twenty files. `npm version` bumps two of
+ * them — the manifest and the lockfile — and the other eighteen are pins: one
  * `--package=…@<version>` per reusable workflow, and one `…yml@v<version>` in
  * each of the two caller sets. `v0.1.4` and `v0.1.5` were both cut by editing
- * those fifteen by hand and folding the result into the version commit.
+ * them by hand and folding the result into the version commit.
  *
  * This **propagates; it never decides**. The bump is npm's, the version is read
  * from the manifest npm has already written, and nothing here commits or tags —
@@ -102,14 +102,14 @@ const pinnedOnce = (rel: string, text: string, form: PinForm, pinning: Pinning):
  * Rewrite every version pin in the tree at `root` to `version`.
  *
  * The three sites of one workflow live in three directories, so the set is
- * cross-checked rather than walked: a walk of any one directory finds five when
- * a sixth workflow is half-landed, and reports success. Every directory must
+ * cross-checked rather than walked: a walk of any one directory finds the old
+ * count when a new workflow is half-landed, and reports success. Every directory must
  * name the same workflows, every named file must exist, and every file must
  * carry its one pin — otherwise nothing is written at all.
  */
 export const syncVersion = (version: string, packageDir = "."): readonly VersionSite[] => {
-  // Before the first file is opened, rather than distributed to fifteen of them
-  // for the suite to reject one at a time.
+  // Before the first file is opened, rather than distributed to every one of
+  // them for the suite to reject one at a time.
   assertPinnable(version);
 
   const manifest = JSON.parse(readFile(packageDir, "package.json")) as { readonly name?: string };
@@ -174,7 +174,7 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
   ];
 
   // Every refusal is raised before the first write, so a run that throws leaves
-  // fifteen files as they were rather than some prefix of them rewritten.
+  // every file as it was rather than some prefix of them rewritten.
   const pending = sites.map((site) => ({
     ...site,
     text: pinnedOnce(site.file, readFile(packageDir, site.file), site.form, { packageName, version }),
@@ -205,7 +205,7 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
  * `syncVersion` returned. `npm version` blocks a dirty tree only for *tracked*
  * modifications, so a `git add -A` here would sweep any untracked file lying
  * around into the release commit and the tag `publish.yml` fires on — an
- * eighteenth file inside a release, which nothing in the suite can see.
+ * twenty-first file inside a release, which nothing in the suite can see.
  */
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const packageDir = path.resolve(import.meta.dirname, "..");

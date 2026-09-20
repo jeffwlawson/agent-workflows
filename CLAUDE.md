@@ -84,20 +84,20 @@ git push --follow-tags
 `v*` on a commit reachable from `main` triggers `publish.yml`. It refuses a tag on an unmerged
 commit, and no-ops if the version is already on the registry.
 
-**That first command is the whole release.** The version appears in seventeen files and `npm
-version` bumps two of them; `scripts/sync-version.ts` writes the other fifteen — the `npm exec`
-pin in each of the five reusable workflows, and the `uses:` ref in each of the two caller sets. It
+**That first command is the whole release.** The version appears in twenty files and `npm
+version` bumps two of them; `scripts/sync-version.ts` writes the other eighteen — the `npm exec`
+pin in each of the six reusable workflows, and the `uses:` ref in each of the two caller sets. It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
-stages **by path** — the fifteen it wrote, never `-A`: npm's dirty-tree check passes untracked
+stages **by path** — the eighteen it wrote, never `-A`: npm's dirty-tree check passes untracked
 files, so `-A` would carry a stray one into the tag `publish.yml` fires on, and nothing here would
 see it. It propagates and never decides: the version is read from `package.json`, never passed in,
 and nothing there commits or tags — `npm version` does both, and a second tagging path is a second
 way to publish.
 
-It refuses rather than doing part of the job. All fifteen sites must exist and each must carry
-exactly one recognisable pin, so a sixth workflow whose caller or example is missing stops the
-release instead of quietly propagating to fifteen of eighteen.
+It refuses rather than doing part of the job. All eighteen sites must exist and each must carry
+exactly one recognisable pin, so a seventh workflow whose caller or example is missing stops the
+release instead of quietly propagating to eighteen of twenty-one.
 
 A refusal leaves no commit and no tag, but it does leave the **manifest and lockfile bumped** in
 the working tree — npm writes those before the hook runs and does not roll them back. Undo them

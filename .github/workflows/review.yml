@@ -297,7 +297,13 @@ jobs:
           # Still bounded at both ends, which is the point of anchoring at all:
           # `fixtures`, `CI / fix-lint` and `build / fixtures` are repo checks,
           # not agents, and none of them match.
-          AGENT_CHECKS: '(^|/ )(review|fix|update-branch|implement-prd|implement)( / |$)'
+          #
+          # `follow-ups` joins the list even though its exclusion is dead at
+          # runtime — this wait only runs on an open pull request and that
+          # workflow only fires on a closed one (#50). Joining costs one word in
+          # one string; carving it out would cost a comment justifying a timing
+          # argument that could stop being true.
+          AGENT_CHECKS: '(^|/ )(review|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller

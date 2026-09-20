@@ -1173,6 +1173,32 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * …and the caller that is *supposed* to hand over nothing (#50).
+   *
+   * `follow-ups.yml` declares no secrets at all: it runs no model, so there is
+   * no `CLAUDE_CODE_OAUTH_TOKEN` to take, and it creates its issues with the
+   * workflow token, so there is no `AGENT_PAT` either. The generic wiring check
+   * above reads a caller's `secrets:` block and not the workflow behind it, so
+   * without a fixed-list exemption it reports the reference caller this package
+   * ships — and its `fix:` would have an adopter add a secret GitHub refuses to
+   * pass to a workflow that does not declare it. A preflight whose advice breaks
+   * a working loop is worse than no preflight.
+   *
+   * Run against the caller `init` really wrote rather than a fixture, so this is
+   * the file an adopter would be handed the advice about. That it declares no
+   * `secrets:` block at all is the other half of the pair, and is asserted where
+   * the workflow shapes are — `tests/workflows.test.ts`, on both halves at once.
+   */
+  it("asks for no AGENT_PAT wire on the caller whose workflow takes no secrets", async () => {
+    const root = await installed();
+
+    const { code, out, err } = await check(root, healthy());
+
+    expect(`${out}${err}`).not.toContain("agent-follow-ups.yml");
+    expect(code).toBe(0);
+  });
+
+  /**
    * `secrets: inherit` hands over every secret the repository holds, which is
    * what the reference callers decline to do — but it does hand over this one,
    * so it is a wire rather than a fault. Reporting it would be a preflight

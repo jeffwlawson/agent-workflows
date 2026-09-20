@@ -74,6 +74,26 @@ export interface RepoFacts {
   readonly releases: readonly string[] | undefined;
 }
 
+/**
+ * The reusable halves that declare **no secrets at all**, and so have no wire
+ * for a caller to get wrong.
+ *
+ * `diagnose` rules on a fixed list and reads nothing out of `examples/callers/`,
+ * so a release that changes the *shape* of a caller is a release that teaches
+ * this file about it in the same commit (`CONTEXT.md`). `follow-ups` (#50) is
+ * the first such shape: it runs no model, so it takes no
+ * `CLAUDE_CODE_OAUTH_TOKEN`, and it creates its issues with the workflow token,
+ * so it takes no `AGENT_PAT` either — the loop PAT is optional everywhere, and a
+ * filing step that depended on it would file nothing at all on a repository
+ * without one.
+ *
+ * Without this entry the wiring check below would tell an adopter to add a
+ * secret the called workflow does not declare, which GitHub refuses outright:
+ * a fix that breaks a working loop, which is the one thing a preflight must
+ * never produce.
+ */
+const SECRETLESS_WORKFLOWS: ReadonlySet<string> = new Set(["follow-ups"]);
+
 /** An exact release tag, or a full commit SHA. Nothing that can move. */
 const TAG = /^v?\d+\.\d+\.\d+$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -304,6 +324,7 @@ export const diagnose = (
   // refused by GitHub before the job starts — loud, and out of this command's
   // remit for the reason an absent `self-check` is.
   for (const caller of callers) {
+    if (SECRETLESS_WORKFLOWS.has(caller.workflow)) continue;
     if (passesSecret(caller, "AGENT_PAT")) continue;
 
     const named =

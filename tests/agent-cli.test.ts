@@ -891,7 +891,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    * written down.
    *
    * `diagnose` rules on a fixed list, and for four releases that list was two
-   * rows of the eight the callers actually need: a caller that declared a
+   * rows of the nine the callers actually need: a caller that declared a
    * `permissions:` block and got `pull-requests: write` wrong passed the
    * preflight built to catch exactly that (#45). Which grant a job needs is not
    * a judgement call — the reusable half's own `permissions:` is the ceiling,
@@ -1060,7 +1060,8 @@ describe("doctor names the failures that otherwise look like something else", ()
    * is the one shape the table must not expand over. That job runs with the
    * repository's default `GITHUB_TOKEN`, and the fix is the whole block rather
    * than any scope in it — a job-level block replaces the inherited token, so a
-   * list of eight scopes to add is eight ways to lose the rest of what it holds.
+   * list of the scopes it is missing is a list of ways to lose the rest of what
+   * it holds.
    */
   it("rules on a caller with no block once rather than once per scope", async () => {
     const { out, err } = await check(adoptedWith([]), healthy());

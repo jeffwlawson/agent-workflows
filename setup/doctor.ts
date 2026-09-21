@@ -125,8 +125,14 @@ const compareVersions = (a: string, b: string): number => {
  * fails by name when any of the three disagree.
  *
  * So the columns worth reading here are `why` and `absence`, which are the part
- * no YAML states. For four releases this list held two of the eight rows, and
- * the six it skipped failed the same way the two it caught did: a 403 reading
+ * no YAML states — and a row is therefore one `why` rather than one scope.
+ * `pull-requests: write` is two rows because `follow-ups` spends it on a pull
+ * request that is already closed, where none of the transition-step account the
+ * other five get is true; a single row covering both would be an explanation
+ * that is wrong wherever it is not the one the reader needs.
+ *
+ * For four releases this list held two of the nine rows, and the seven it
+ * skipped failed the same way the two it caught did: a 403 reading
  * `Resource not accessible by integration`, which names neither the scope that
  * is missing nor the file that has to grant it, on a step whose own name is
  * about labels or about a push (#45).
@@ -164,15 +170,33 @@ export const REQUIRED_PERMISSIONS: readonly {
   {
     permission: "pull-requests",
     value: "write",
-    workflows: "all",
+    workflows: ["review", "fix", "update-branch", "implement", "implement-prd"],
     why:
       "the label transitions this loop advances on, and the review, report or reason it leaves " +
-      "behind when it stops, are `gh pr edit` and `gh pr comment`. Only the `--remove-label` " +
-      "calls are written `|| true` — the `--add-label` ending each transition step is not, and " +
-      "Actions' default `bash -e` fails that step on the 403, which on `review`, `fix` and " +
-      "`update-branch` is before the checkout. What a human is left with is a red step reading " +
-      "`Resource not accessible by integration`, which names neither the scope nor the half that " +
-      "has to grant it",
+      "behind when it stops, are `gh pr edit` and `gh pr comment`. The `--remove-label` calls " +
+      "and the `agent:blocked` adds carry `|| true`; the `--add-label` ending each transition " +
+      "step does not, and Actions' default `bash -e` fails that step on the 403 — before the " +
+      "checkout on `review`, `fix` and `update-branch`, which run under the workflow token " +
+      "throughout. On the two implement halves it is the fallback that spends it: `gh pr create` " +
+      "and the `agent:review` after it both prefer `AGENT_PAT`, so it is a repository without one " +
+      "where the 403 lands, at the pull request that was to carry the whole agent pass — branch " +
+      "pushed, nothing opened on it. What a human is left with is a red step reading `Resource " +
+      "not accessible by integration`, which names neither the scope nor the half that has to " +
+      "grant it",
+    absence: "always",
+  },
+  {
+    permission: "pull-requests",
+    value: "write",
+    workflows: ["follow-ups"],
+    why:
+      "this job transitions no label and checks nothing out, so the account in the row above is " +
+      "not what happens here: the calls are the report saying what was filed and the removal of " +
+      "the `agent:follow-ups` marker, both made from the runner and neither guarded. The marker " +
+      "is what carries the state — removed only on a filing run that finished — so a 403 there " +
+      "leaves it in place and the retry is a label removed and added by hand. Nothing says so " +
+      "either: the failure comment this workflow posts when a step dies is a `gh pr comment` " +
+      "too, so the one channel that would name the 403 is the one the 403 closed",
     absence: "always",
   },
   {

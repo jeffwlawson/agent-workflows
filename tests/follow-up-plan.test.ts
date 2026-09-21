@@ -40,14 +40,22 @@ const review = (findings: readonly FollowUp[], over: Partial<FilingReview> = {})
   ...over,
 });
 
-/** A stub as the label-filtered listing returns it, carrying its dedup payload. */
-const stub = (over: Partial<FilingStub> & { location?: string; pr?: number } = {}): FilingStub => {
-  const { location = "src/a.ts", pr = 7, ...rest } = over;
+/**
+ * A stub as the label-filtered listing returns it, carrying its dedup payload.
+ *
+ * `location` is written into the key **verbatim**, which is what identity
+ * compares; relatedness normalises it on the way back in. So a stub standing in
+ * for one this pull request filed has to name the line the finding named.
+ */
+const stub = (
+  over: Partial<FilingStub> & { location?: string; pr?: number; seq?: number } = {},
+): FilingStub => {
+  const { location = "src/a.ts", pr = 7, seq = 0, ...rest } = over;
   return {
     number: 71,
     state: "OPEN",
     stateReason: null,
-    body: `Prose that may be reworded freely.\n\n<!--{"version":1,"location":"${location}","pr":${pr}}-->`,
+    body: `Prose that may be reworded freely.\n\n<!--{"version":2,"location":"${location}","pr":${pr},"seq":${seq}}-->`,
     ...rest,
   };
 };
@@ -69,6 +77,14 @@ const NOTHING = { issues: [], stubComments: [] };
 /** The outcome lines of the planned comment, which is where every skip is visible. */
 const reportLines = (report: string | undefined): readonly string[] =>
   (report ?? "").split("\n").filter((line) => line.startsWith("- "));
+
+/**
+ * The advisory link a filed stub carries, or `""` when it carries none. It sits
+ * in the issue body rather than in the pull request report on purpose: the
+ * report's job was making *skips* visible, and relatedness is not a skip.
+ */
+const relationOf = (body: string | undefined): string =>
+  (body ?? "").split("\n").find((line) => line.startsWith("**Possibly related:**")) ?? "";
 
 describe("planFollowUps: the authenticity gate", () => {
   /**
@@ -253,18 +269,19 @@ describe("planFollowUps: what counts as the same finding", () => {
     expect(plan([followUp({ location })]).issues.map((i) => i.path)).toEqual([path]);
   });
 
-  it("matches a stub on the normalised path, whatever line each one named", () => {
+  it("links a stub on the normalised path, whatever line each one named", () => {
     const result = plan([followUp({ location: "./src/a.ts:400" })], [stub({ location: "src/a.ts:12" })]);
-
-    expect(result.issues).toEqual([]);
-    expect(result.stubComments.map((c) => c.issue)).toEqual([71]);
-  });
-
-  it("does not match a stub at another path", () => {
-    const result = plan([followUp({ location: "src/a.ts" })], [stub({ location: "src/b.ts" })]);
 
     expect(result.issues).toHaveLength(1);
     expect(result.stubComments).toEqual([]);
+    expect(relationOf(result.issues[0]?.body)).toContain("#71");
+  });
+
+  it("links nothing at another path", () => {
+    const result = plan([followUp({ location: "src/a.ts" })], [stub({ location: "src/b.ts" })]);
+
+    expect(result.issues).toHaveLength(1);
+    expect(relationOf(result.issues[0]?.body)).toBe("");
   });
 
   /**
@@ -272,165 +289,309 @@ describe("planFollowUps: what counts as the same finding", () => {
    * location line, which is written for a human and read by nobody. Rewording
    * a stub, or correcting the path in its prose, must not break matching.
    */
-  it("matches on the payload even when the stub's prose names another path", () => {
+  it("reads relatedness off the payload even when the stub's prose names another path", () => {
     const misleading: FilingStub = {
       number: 71,
       state: "OPEN",
       stateReason: null,
-      body: `**Location:** \`src/decoy.ts:4\`\n\n<!--{"version":1,"location":"src/a.ts","pr":7}-->`,
+      body: `**Location:** \`src/decoy.ts:4\`\n\n<!--{"version":2,"location":"src/a.ts","pr":7,"seq":0}-->`,
     };
 
-    expect(plan([followUp({ location: "src/decoy.ts" })], [misleading]).issues).toHaveLength(1);
-    expect(plan([followUp({ location: "src/a.ts" })], [misleading]).stubComments).toHaveLength(1);
+    expect(
+      relationOf(plan([followUp({ location: "src/decoy.ts" })], [misleading]).issues[0]?.body),
+    ).toBe("");
+    expect(
+      relationOf(plan([followUp({ location: "src/a.ts" })], [misleading]).issues[0]?.body),
+    ).toContain("#71");
   });
 
-  /**
-   * A hand-written stub, or one from before a format change, simply does not
-   * match — so the run files a duplicate rather than skipping a real finding.
-   * That is the direction every choice in this file fails in: a duplicate is
-   * loud and cheap, a skipped finding is silent and unrecoverable.
-   */
   /**
    * The last payload wins, which is `parseFollowUpsBlock`'s rule for the same
    * hazard: a stub's prose is written *before* its key, and that prose is the
    * agent quoting the code the finding rests on — which on this feature's own
-   * files is a payload. Taking the first would let a quoted decoy key a real
-   * finding, absorbing it as a re-flag of somewhere else entirely: a silent
-   * skip, which is the one direction nothing here fails in.
+   * files is a payload. Taking the first would let a quoted decoy speak for a
+   * real stub, pointing a triager at somewhere else entirely.
    */
-  it("matches on the stub's own key, not on a payload its evidence quotes", () => {
+  it("reads the stub's own key, not a payload its evidence quotes", () => {
     const quoting: FilingStub = {
       number: 71,
       state: "OPEN",
       stateReason: null,
       body: [
-        'The evidence: the next run reads `<!--{"version":1,"location":"src/decoy.ts","pr":1}-->`.',
+        'The evidence: the next run reads `<!--{"version":2,"location":"src/decoy.ts","pr":1,"seq":0}-->`.',
         "",
-        `<!--{"version":1,"location":"src/real.ts","pr":7}-->`,
+        `<!--{"version":2,"location":"src/real.ts","pr":7,"seq":0}-->`,
       ].join("\n"),
     };
 
-    expect(plan([followUp({ location: "src/decoy.ts" })], [quoting]).issues).toHaveLength(1);
-    expect(plan([followUp({ location: "src/real.ts" })], [quoting]).stubComments).toHaveLength(1);
+    expect(relationOf(plan([followUp({ location: "src/decoy.ts" })], [quoting]).issues[0]?.body)).toBe(
+      "",
+    );
+    expect(
+      relationOf(plan([followUp({ location: "src/real.ts" })], [quoting]).issues[0]?.body),
+    ).toContain("#71");
   });
 
-  it("does not match a stub carrying no payload", () => {
+  /**
+   * A hand-written stub, or one from before a format change, simply does not
+   * match — so the run files without a link rather than linking the wrong
+   * thing. `STUB_KEY_VERSION` moved to `2` with this change, so every stub the
+   * previous release filed is in exactly that population: accepted, because one
+   * unlinked duplicate is a click to close and a skipped finding is not.
+   */
+  it("links nothing to a stub carrying no payload", () => {
     const result = plan(
       [followUp({ location: "src/a.ts" })],
       [{ number: 71, state: "OPEN", stateReason: null, body: "A hand-written issue about src/a.ts." }],
     );
 
     expect(result.issues).toHaveLength(1);
-    expect(result.stubComments).toEqual([]);
+    expect(relationOf(result.issues[0]?.body)).toBe("");
   });
 
-  it("does not match a stub whose payload is a version it does not know", () => {
+  it("links nothing to a stub whose payload is a version it does not know", () => {
     const result = plan(
       [followUp({ location: "src/a.ts" })],
       [{
         number: 71,
         state: "OPEN",
         stateReason: null,
-        body: `<!--{"version":2,"location":"src/a.ts","pr":7}-->`,
+        body: `<!--{"version":3,"location":"src/a.ts","pr":7,"seq":0}-->`,
       }],
     );
 
     expect(result.issues).toHaveLength(1);
+    expect(relationOf(result.issues[0]?.body)).toBe("");
   });
 });
 
-describe("planFollowUps: what a match is worth", () => {
-  it("comments on an open stub rather than opening a second one", () => {
-    const result = plan([followUp()], [stub({ state: "OPEN" })]);
+/**
+ * Identity: the only binding key, and the only thing that stops a file (#82).
+ * All three fields have to agree — the pull request, the `location` exactly as
+ * the review recorded it, and the finding's place in that review's list.
+ */
+describe("planFollowUps: identity, and the retry it makes exact", () => {
+  /**
+   * What makes a retry exactly idempotent. The marker is left in place on a
+   * partial failure so the run can be re-driven; on that retry the findings
+   * that did file are found by their own key and reported rather than refiled.
+   */
+  it("plans nothing for a finding this pull request already filed", () => {
+    const result = plan(
+      [followUp({ location: "src/a.ts:12" })],
+      [stub({ location: "src/a.ts:12", pr: 32, seq: 0 })],
+      { prNumber: 32 },
+    );
 
-    expect(result.issues).toEqual([]);
-    expect(result.stubComments).toHaveLength(1);
-    expect(result.stubComments[0]?.issue).toBe(71);
-    // Chronicity is what triage most wants to see, so the comment says which
-    // pull request met it again.
-    expect(result.stubComments[0]?.body).toContain("#32");
-    expect(result.report).toMatch(/Re-flagged/);
+    expect(result).toMatchObject(NOTHING);
+    expect(result.report).toMatch(/Already filed/i);
+    expect(result.report).toContain("#71");
+    // Finding-scoped, and the line has to say so: "this same path" would be
+    // describing the rule this replaced.
+    expect(result.report).toMatch(/same finding/);
   });
 
   /**
-   * Notifying the people who decided not to do it, to tell them it is still
-   * true, is relitigating a closed decision on a schedule. It stays visible in
-   * the pull request comment — read once, by the person who just merged.
+   * `location` is in the key as well as `seq` so a *changed* review fails the
+   * check rather than passing it. Same slot, different finding, is exactly
+   * where reporting "already filed" would skip a real one.
    */
-  it("suppresses against a wontfix decision and comments nowhere", () => {
+  it("files when the seq agrees and the location does not", () => {
+    const result = plan(
+      [followUp({ location: "src/a.ts:400" })],
+      [stub({ location: "src/a.ts:12", pr: 32, seq: 0 })],
+      { prNumber: 32 },
+    );
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.report).not.toMatch(/Already filed/i);
+  });
+
+  it("files when the location agrees and the seq does not", () => {
+    const result = plan(
+      [followUp({ location: "src/a.ts:12" })],
+      [stub({ location: "src/a.ts:12", pr: 32, seq: 1 })],
+      { prNumber: 32 },
+    );
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.report).not.toMatch(/Already filed/i);
+  });
+
+  it("does not read another pull request's stub as its own", () => {
+    const result = plan(
+      [followUp({ location: "src/a.ts:12" })],
+      [stub({ location: "src/a.ts:12", pr: 31, seq: 0 })],
+      { prNumber: 32 },
+    );
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.report).not.toMatch(/Already filed/i);
+  });
+
+  /**
+   * The production failure this change is for (#82): one review, two findings
+   * in `.github/workflows/review.yml` at lines 104 and 462, 358 lines apart and
+   * unrelated. The second was dropped, and re-running would have dropped it
+   * again.
+   */
+  it("files both findings when one review raises two at the same path", () => {
+    const result = plan([
+      followUp({ title: "the fork guard is missing", location: ".github/workflows/review.yml:104" }),
+      followUp({ title: "the pin is stale", location: ".github/workflows/review.yml:462" }),
+    ]);
+
+    expect(result.issues.map((i) => i.title)).toEqual([
+      "the fork guard is missing",
+      "the pin is stale",
+    ]);
+    expect(reportLines(result.report)).toHaveLength(2);
+    for (const line of reportLines(result.report)) expect(line).toMatch(/Filed/);
+  });
+
+  /** And the retry over that same batch, which has to be exact for both of them. */
+  it("is exactly idempotent on a retry, including two findings at one path", () => {
+    const findings = [
+      followUp({ title: "first", location: "src/a.ts:12" }),
+      followUp({ title: "second", location: "src/a.ts:88" }),
+      followUp({ title: "third", location: "src/b.ts:4" }),
+    ];
+
+    const result = planFollowUps({
+      prNumber: 32,
+      reviews: [review(findings)],
+      stubs: [
+        stub({ number: 71, location: "src/a.ts:12", pr: 32, seq: 0 }),
+        stub({ number: 72, location: "src/a.ts:88", pr: 32, seq: 1 }),
+      ],
+    });
+
+    expect(result.issues.map((i) => i.title)).toEqual(["third"]);
+    const lines = reportLines(result.report);
+    expect(lines[0]).toMatch(/Already filed/i);
+    expect(lines[1]).toMatch(/Already filed/i);
+    expect(lines[2]).toMatch(/Filed/);
+  });
+
+  /**
+   * The trap this change is one wrong line away from reintroducing. A `seq`
+   * taken from the count of what has filed only advances when something files,
+   * so on the retry above the third finding would be written as `seq` 0 — and
+   * the attempt after that would read it as the first finding's stub and skip
+   * it. Index into the reviewer's list, never into the plan.
+   */
+  it("numbers a finding by its place in the review's list, not by how many filed", () => {
+    const findings = [
+      followUp({ title: "first", location: "src/a.ts:12" }),
+      followUp({ title: "second", location: "src/a.ts:88" }),
+      followUp({ title: "third", location: "src/b.ts:4" }),
+    ];
+
+    const result = planFollowUps({
+      prNumber: 32,
+      reviews: [review(findings)],
+      stubs: [
+        stub({ number: 71, location: "src/a.ts:12", pr: 32, seq: 0 }),
+        stub({ number: 72, location: "src/a.ts:88", pr: 32, seq: 1 }),
+      ],
+    });
+
+    expect(result.issues[0]?.body).toContain(`"seq":2`);
+  });
+});
+
+describe("planFollowUps: what relatedness is worth", () => {
+  /**
+   * A link, never a verdict. #41 keyed a skip on this same coarse match and it
+   * cost a real finding; the match itself was not the mistake, the authority
+   * given to it was.
+   */
+  it("files beside an open stub and links it, rather than commenting on it", () => {
+    const result = plan([followUp()], [stub({ state: "OPEN" })]);
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.stubComments).toEqual([]);
+    const relation = relationOf(result.issues[0]?.body);
+    expect(relation).toContain("#71");
+    expect(relation).toContain("(open)");
+    expect(relation).toContain("src/a.ts");
+    // The sentence that stops a triager reading a path match as a duplicate
+    // claim and closing a real finding on it.
+    expect(relation).toMatch(/not a claim/i);
+    expect(result.report).toMatch(/Filed/);
+  });
+
+  /**
+   * A `wontfix` decision is not a standing order to stop reporting the file it
+   * was made in. Declining one finding in a 658-line workflow used to suppress
+   * every future finding anywhere in it, permanently, with nothing written on
+   * the pull request.
+   */
+  it("files against a wontfix decision, and names the reason in the link", () => {
     const result = plan([followUp()], [stub({ state: "CLOSED", stateReason: "not_planned" })]);
 
-    expect(result).toMatchObject(NOTHING);
-    expect(result.report).toMatch(/Suppressed/);
-    expect(result.report).toContain("#71");
+    expect(result.issues).toHaveLength(1);
+    expect(result.stubComments).toEqual([]);
+    const relation = relationOf(result.issues[0]?.body);
+    expect(relation).toContain("#71");
+    expect(relation).toContain("wontfix");
+    expect(result.report).not.toMatch(/Suppressed/);
   });
 
   it("reads the close reason in both spellings the two APIs report", () => {
     for (const stateReason of ["not_planned", "NOT_PLANNED"]) {
-      expect(plan([followUp()], [stub({ state: "closed", stateReason })])).toMatchObject(NOTHING);
+      const result = plan([followUp()], [stub({ state: "closed", stateReason })]);
+
+      expect(relationOf(result.issues[0]?.body)).toContain("wontfix");
     }
   });
 
   /**
-   * A stub someone *fixed* and closed must refile if the problem returns: the
-   * finding is true again, and swallowing it is how a regression goes
-   * unreported.
+   * A stub someone *fixed* and closed describes a problem that is no longer
+   * there, so pointing a triager at it would mislead rather than help.
    */
-  it("files again against a stub that was fixed and closed", () => {
+  it("links nothing to a stub that was fixed and closed", () => {
     const result = plan([followUp()], [stub({ state: "CLOSED", stateReason: "completed" })]);
 
     expect(result.issues).toHaveLength(1);
-    expect(result.stubComments).toEqual([]);
+    expect(relationOf(result.issues[0]?.body)).toBe("");
+  });
+
+  /** One link, never a list — and an open stub is the later decision of the two. */
+  it("links one stub only, preferring an open one over a wontfix at the same path", () => {
+    const result = plan(
+      [followUp()],
+      [
+        stub({ number: 60, state: "CLOSED", stateReason: "not_planned", pr: 5 }),
+        stub({ number: 71, pr: 5 }),
+      ],
+    );
+
+    const body = result.issues[0]?.body ?? "";
+    expect(body.match(/\*\*Possibly related:\*\*/g)).toHaveLength(1);
+    expect(relationOf(body)).toContain("#71");
   });
 
   /**
-   * What makes a retry exactly idempotent. The marker is left in place on a
-   * partial failure so the run can be re-driven; on that retry the findings
-   * that did file are open stubs, and without this they would take the
-   * comment-on-existing branch and post "flagged again by #32" on a stub #32
-   * created ninety seconds earlier.
+   * Identity outranks relatedness: a stub this pull request filed for *this*
+   * finding stops the file outright, whatever else sits at the path.
    */
-  it("plans nothing at all when the matched stub was filed by this same pull request", () => {
-    const result = plan([followUp()], [stub({ pr: 32 })], { prNumber: 32 });
+  it("prefers the idempotence case over a wontfix decision at the same path", () => {
+    const result = plan(
+      [followUp({ location: "src/a.ts:12" })],
+      [
+        stub({ number: 60, state: "CLOSED", stateReason: "not_planned", location: "src/a.ts", pr: 5 }),
+        stub({ number: 71, location: "src/a.ts:12", pr: 32, seq: 0 }),
+      ],
+      { prNumber: 32 },
+    );
 
     expect(result).toMatchObject(NOTHING);
     expect(result.report).toMatch(/Already filed/i);
     expect(result.report).toContain("#71");
   });
 
-  it("prefers the idempotence case over a wontfix decision at the same path", () => {
-    const result = plan(
-      [followUp()],
-      [
-        stub({ number: 60, state: "CLOSED", stateReason: "not_planned", pr: 5 }),
-        stub({ number: 71, pr: 32 }),
-      ],
-      { prNumber: 32 },
-    );
-
-    expect(result.report).toMatch(/Already filed/i);
-    expect(result.report).toContain("#71");
-  });
-
-  /**
-   * Applying the rule against the tracker but not within the batch would make
-   * the second finding's fate depend on a race with issue creation. This is
-   * also where path-only matching is most likely to be genuinely wrong, which
-   * is why the sibling is named: that is what makes a wrong skip correctable.
-   */
-  it("applies the same rule within one batch, first wins, and names the sibling", () => {
-    const result = plan([
-      followUp({ title: "parse() drops the guard", location: "src/a.ts:12" }),
-      followUp({ title: "apply() reads the config twice", location: "src/a.ts:88" }),
-    ]);
-
-    expect(result.issues.map((i) => i.title)).toEqual(["parse() drops the guard"]);
-    const suppressed = reportLines(result.report).find((l) => /Suppressed/.test(l)) ?? "";
-    expect(suppressed).toContain("src/a.ts");
-    expect(suppressed).toContain("parse() drops the guard");
-  });
-
-  it("does not suppress a second finding at a different path", () => {
+  it("does not link a second finding at a different path to the first one's stub", () => {
     const result = plan([
       followUp({ location: "src/a.ts" }),
       followUp({ location: "src/b.ts" }),
@@ -491,10 +652,38 @@ describe("planFollowUps: the stub it plans", () => {
     expect(body).toMatch(/not necessarily/i);
   });
 
+  /**
+   * Two keys in one payload. `location` is written **verbatim**, normalisation
+   * and all — identity compares it byte for byte, and relatedness normalises it
+   * on the way back in, so storing the normalised form would throw away the
+   * half that has to be exact.
+   */
   it("carries the dedup payload the next run matches on", () => {
     expect(filed({ location: "./src/a.ts:12" }).body).toContain(
-      `<!--{"version":1,"location":"src/a.ts","pr":32}-->`,
+      `<!--{"version":2,"location":"./src/a.ts:12","pr":32,"seq":0}-->`,
     );
+  });
+
+  it("carries no relation line when nothing on the tracker is related", () => {
+    expect(relationOf(filed().body)).toBe("");
+  });
+
+  /**
+   * After the provenance sentence and before the key: it is the last thing a
+   * triager reads before the payload, and it qualifies the finding rather than
+   * the evidence above it.
+   */
+  it("puts the relation after the provenance sentence and before the payload", () => {
+    const body = plan([followUp()], [stub({ pr: 5 })]).issues[0]?.body ?? "";
+    const lines = body.split("\n");
+
+    const provenance = lines.findIndex((line) => line.includes(REVIEW_URL));
+    const relation = lines.findIndex((line) => line.startsWith("**Possibly related:**"));
+    const payload = lines.findIndex((line) => line.startsWith("<!--{"));
+
+    expect(provenance).toBeGreaterThan(-1);
+    expect(relation).toBeGreaterThan(provenance);
+    expect(payload).toBeGreaterThan(relation);
   });
 
   /**
@@ -515,10 +704,9 @@ describe("planFollowUps: the stub it plans", () => {
       body: first.issues[0]?.body ?? "",
     };
 
-    expect(planFollowUps({ prNumber: 33, reviews: [review(findings)], stubs: [asStub] })).toMatchObject({
-      issues: [],
-      stubComments: [{ issue: 71 }],
-    });
+    const second = planFollowUps({ prNumber: 33, reviews: [review(findings)], stubs: [asStub] });
+
+    expect(relationOf(second.issues[0]?.body)).toContain("#71");
   });
 });
 
@@ -531,9 +719,16 @@ describe("planFollowUps: what the merged pull request is told", () => {
    */
   it.each([
     ["filed", [] as readonly FilingStub[], /Filed/],
-    ["re-flagged", [stub({ pr: 5 })], /Re-flagged/],
-    ["suppressed", [stub({ state: "CLOSED", stateReason: "not_planned" })], /Suppressed/],
-    ["already filed", [stub({ pr: 32 })], /Already filed/i],
+    // Both related states report identically, and that is the point: the
+    // report's job was making *skips* visible and there are none. The relation
+    // belongs on the issue being triaged, not on a merged pull request.
+    ["filed beside a related open stub", [stub({ pr: 5 })], /Filed/],
+    [
+      "filed beside a wontfix decision",
+      [stub({ state: "CLOSED", stateReason: "not_planned" })],
+      /Filed/,
+    ],
+    ["already filed", [stub({ location: "src/a.ts:12", pr: 32, seq: 0 })], /Already filed/i],
   ])("reports %s as one line naming its path and no count", (
     _outcome: string,
     stubs: readonly FilingStub[],
@@ -550,9 +745,9 @@ describe("planFollowUps: what the merged pull request is told", () => {
   });
 
   /**
-   * Three lines is the most a run can produce — the cap is three findings, and
-   * a within-batch suppression spends one of them — so the fourth outcome is
-   * exercised by the idempotence case above rather than crammed in here.
+   * Three lines is the most a run can produce, and both outcomes appear in
+   * them. The cap is three findings, and nothing spends one of them on a skip
+   * any more.
    */
   it("keeps the outcomes in the order the reviewer listed them", () => {
     const result = planFollowUps({
@@ -560,12 +755,12 @@ describe("planFollowUps: what the merged pull request is told", () => {
       reviews: [
         review([
           followUp({ title: "new", location: "src/new.ts" }),
-          followUp({ title: "chronic", location: "src/open.ts" }),
-          followUp({ title: "declined", location: "src/wontfix.ts" }),
+          followUp({ title: "retried", location: "src/done.ts:4" }),
+          followUp({ title: "declined before", location: "src/wontfix.ts" }),
         ]),
       ],
       stubs: [
-        stub({ number: 71, location: "src/open.ts", pr: 5 }),
+        stub({ number: 71, location: "src/done.ts:4", pr: 32, seq: 1 }),
         stub({ number: 72, location: "src/wontfix.ts", state: "CLOSED", stateReason: "not_planned" }),
       ],
     });
@@ -574,10 +769,12 @@ describe("planFollowUps: what the merged pull request is told", () => {
     expect(lines).toHaveLength(3);
     expect(lines[0]).toMatch(/Filed/);
     expect(lines[0]).toContain("src/new.ts");
-    expect(lines[1]).toMatch(/Re-flagged/);
-    expect(lines[1]).toContain("src/open.ts");
-    expect(lines[2]).toMatch(/Suppressed/);
+    expect(lines[1]).toMatch(/Already filed/i);
+    expect(lines[1]).toContain("src/done.ts");
+    expect(lines[2]).toMatch(/Filed/);
     expect(lines[2]).toContain("src/wontfix.ts");
+    // Two outcomes, and neither of the two that used to be a silent skip.
+    expect(result.report).not.toMatch(/Suppressed|Re-flagged/);
   });
 
   /**
@@ -602,8 +799,11 @@ describe("planFollowUps: what the merged pull request is told", () => {
    * suppress the report of a suppression — a run that files nothing is exactly
    * the run whose reasoning someone will want to see.
    */
-  it("still reports when it filed nothing but matched something", () => {
-    const result = plan([followUp()], [stub({ state: "CLOSED", stateReason: "not_planned" })]);
+  it("still reports when it filed nothing because it had already filed it", () => {
+    const result = plan(
+      [followUp({ location: "src/a.ts:12" })],
+      [stub({ location: "src/a.ts:12", pr: 32, seq: 0 })],
+    );
 
     expect(result.issues).toEqual([]);
     expect(result.report).not.toBe(undefined);
@@ -672,16 +872,17 @@ describe("the stub key and the review block version independently", () => {
 
     const result = planAgainst({ prNumber: 32, reviews: [review([followUp()])], stubs: [] });
 
-    expect(result.issues[0]?.body).toContain(`<!--{"version":1,"location":"src/a.ts","pr":32}-->`);
+    expect(result.issues[0]?.body).toContain(
+      `<!--{"version":2,"location":"src/a.ts:12","pr":32,"seq":0}-->`,
+    );
   });
 
-  it("matches a stub at its own version when the block's has moved", async () => {
+  it("reads a stub at its own version when the block's has moved", async () => {
     const { planFollowUps: planAgainst } = await filingHalfAgainstBlockVersion(99);
 
     const result = planAgainst({ prNumber: 32, reviews: [review([followUp()])], stubs: [stub()] });
 
-    expect(result.issues).toEqual([]);
-    expect(result.stubComments.map((c) => c.issue)).toEqual([71]);
+    expect(relationOf(result.issues[0]?.body)).toContain("#71");
   });
 
   /**

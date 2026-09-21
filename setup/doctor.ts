@@ -236,9 +236,12 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: ["follow-ups"],
     why:
       "this is the grant the workflow exists for: it files the review's recorded out-of-scope " +
-      "findings as issues, with the workflow token rather than the PAT. Without it the first " +
-      "`gh issue create` 403s and nothing is filed; what says so is a failure comment on a pull " +
-      "request that is already merged and closed, which nobody is waiting on a run for",
+      "findings as issues, with the workflow token rather than the PAT. Creation is the whole of " +
+      "what it spends the grant on since #82 — a related issue is linked from the stub being " +
+      "filed rather than commented on, so nothing here writes to an issue it did not open. " +
+      "Without it the first `gh issue create` 403s and nothing is filed; what says so is a " +
+      "failure comment on a pull request that is already merged and closed, which nobody is " +
+      "waiting on a run for",
     absence: "always",
   },
   {

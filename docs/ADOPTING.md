@@ -297,8 +297,9 @@ means the PAT is missing (§1).
 **The marker.** `agent:follow-ups` says *this pull request's latest review recorded out-of-scope
 findings*. The review half adds it on any run that recorded one and never removes it; removing it
 is how an author **opts out** before the merge, and the filing half removes it on any run that
-reached a verdict — including one where every finding was suppressed, or where the latest review
-retracted them — so a failed or partial run leaves the retry affordance where it was. Adding it
+reached a verdict — including one where an earlier attempt had already filed every finding, or
+where the latest review retracted them — so a failed or partial run leaves the retry affordance
+where it was. Adding it
 back to a **closed** pull request is the manual entry point, and it is the gesture
 [re-adding a label that is already there](#re-adding-a-label-that-is-already-there-fires-nothing)
 in §1 is about: you will reach for it on a pull request that already carries the label, where it
@@ -352,8 +353,12 @@ gh label create "needs-triage"     --color D93F0B --description "Maintainer need
   *unlabelled* and says so with a `::warning::` — a stub outside your triage queue is worth more
   than a finding nobody kept — but an unlabelled stub is invisible to exactly the queue it was
   filed for. Worse for `pr-follow-up` specifically: it is the candidate filter the duplicate check
-  lists on, so unlabelled stubs are stubs the next merge cannot see, and a chronic finding files
-  afresh every time instead of re-flagging the issue that already has it.
+  lists on, so unlabelled stubs are stubs the next merge cannot see. Filing afresh is the
+  *intended* outcome for a chronic finding — since #82 a path match links the earlier issue from
+  the new stub rather than suppressing it — but an unlabelled stub cannot be linked, so the triager
+  never learns there is already an issue about that file. Sharper still: the same listing is how a
+  filing run recognises its **own** stubs, so a run that failed half way through refiles every one
+  of them on the retry.
 - Both strings are **fixed in the runner**, not inputs. A tracker whose triage label is spelled
   differently gets a stub labelled `needs-triage` beside its own vocabulary rather than inside it;
   relabelling on arrival is a triage rule, not a configuration. This is the one place the two

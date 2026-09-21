@@ -27,7 +27,10 @@ and an out-of-scope finding is usually off-diff, where an inline comment is drop
 
 Every part of the bar is required, and a finding missing any of it belongs in the summary instead:
 
-- **a `location`** — `path` or `path:line`. **One path**, the one a reader should open first.
+- **a `location`** — `path` or `path:line`. **One path**, the one a reader should open first. It
+  is also read back verbatim once the pull request merges: a filed issue is keyed on this exact
+  string, and that key is how a filing run that failed half way recognises what it already filed.
+  Two findings in the same file are told apart by the line, so give one.
 - **evidence it is real**, quoting the code or the check result it rests on.
 - **why this pull request cannot fix it** — what it would have to change that is not its subject.
 

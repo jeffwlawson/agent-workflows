@@ -458,7 +458,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `agent:blocked` | ✅ | ✅ |
 | `agent:queued` | ✅ | 🟡 declared in `docs/agents/triage-labels.md`, written by a human, read by nothing — `promote-queued` is deferred (§1). 🟡 and not ✅ on this file's own legend: the label is present, the tier it belongs to is not |
 | `agent:to-issues` | ✅ | ❌ PRD tier — and the string is double-booked on the tracker: #79 (harvest agent comments into issues, §10) proposes the same label for an unrelated job. Neither exists here yet, so it costs nothing to settle, but #79 is the one that has to move — this row is upstream's name for upstream's workflow |
-| `agent:follow-ups` | ❌ | ➕ PRs — the marker *and* the manual trigger in one string, disambiguated by event type rather than by a second label a human could choose wrong. Added by review, removed by any filing run that reached a verdict — including one that suppressed every finding, and one that read a retraction; removing it by hand is the opt-out (`docs/ADOPTING.md` §3) |
+| `agent:follow-ups` | ❌ | ➕ PRs — the marker *and* the manual trigger in one string, disambiguated by event type rather than by a second label a human could choose wrong. Added by review, removed by any filing run that reached a verdict — including one that found every finding already filed by an earlier attempt, and one that read a retraction; removing it by hand is the opt-out (`docs/ADOPTING.md` §3) |
 | `agent:update-branch` | ✅ | ✅ |
 | `Sandcastle` (triage: "ready for an AFK agent") | ✅ | 🟡 ours is `ready-for-agent`, written by the local `/triage` and `/to-tickets` skills; no workflow reads it |
 

@@ -352,12 +352,20 @@ const matchIdentity = (
  * finding anywhere in that file, permanently, with nothing said on the pull
  * request.
  *
+ * **This pull request's own stubs are not candidates.** They cannot exist on a
+ * first attempt — the listing is read before anything is created — so the only
+ * run that meets one is a retry, and what it meets is the *sibling* finding
+ * from this same review: the pair #82 is about were 358 lines apart and
+ * unrelated. Letting it in would put the likeliest-spurious link ahead of the
+ * likeliest-real one, and make the issue body depend on whether the earlier
+ * attempt crashed. Excluded, so a retry writes the body the first attempt would
+ * have written. Identity owns the same-pull-request question now, and it owns
+ * it exactly.
+ *
  * One link, never a list, and the priority is a tie-break with a reason rather
- * than an ordering that fell out of the list. This pull request's own stubs
- * first, because a sibling finding it filed minutes ago is the closest thing on
- * the tracker. Then open over `wontfix`, because an open stub at a path someone
- * also declined work at is the later decision of the two. Highest number within
- * a category, which is the most recent.
+ * than an ordering that fell out of the list. Open over `wontfix`, because an
+ * open stub at a path someone also declined work at is the later decision of
+ * the two. Highest number within a category, which is the most recent.
  */
 const matchRelated = (
   stubs: readonly FilingStub[],
@@ -367,13 +375,10 @@ const matchRelated = (
   const candidates = stubs
     .map((stub) => ({ stub, key: stubKey(stub.body) }))
     .filter((candidate): candidate is { stub: FilingStub; key: StubKey } =>
-      candidate.key?.path === path,
+      candidate.key !== undefined && candidate.key.path === path && candidate.key.pr !== prNumber,
     )
     .filter(({ stub }) => !isClosed(stub) || isWontfix(stub))
     .sort((a, b) => b.stub.number - a.stub.number);
-
-  const samePr = candidates.find(({ key }) => key.pr === prNumber);
-  if (samePr) return samePr.stub;
 
   const open = candidates.find(({ stub }) => !isClosed(stub));
   if (open) return open.stub;

@@ -74,7 +74,7 @@ const plan = (
 
 const NOTHING = { issues: [], stubComments: [] };
 
-/** The outcome lines of the planned comment, which is where every skip is visible. */
+/** The outcome lines of the planned comment, which is where every outcome is visible. */
 const reportLines = (report: string | undefined): readonly string[] =>
   (report ?? "").split("\n").filter((line) => line.startsWith("- "));
 
@@ -555,6 +555,34 @@ describe("planFollowUps: what relatedness is worth", () => {
 
     expect(result.issues).toHaveLength(1);
     expect(relationOf(result.issues[0]?.body)).toBe("");
+  });
+
+  /**
+   * A stub *this* pull request filed is never a candidate. It cannot exist on a
+   * first attempt — the listing is read before anything is created — so the
+   * only run that meets one is a retry, and what it meets is the sibling
+   * finding from this same review: #82's own pair were 358 lines apart and
+   * unrelated. Excluded, so the retry writes the body the first attempt would
+   * have written rather than one that depends on the crash.
+   */
+  it("links the chronic stub, not the sibling an earlier attempt of this run filed", () => {
+    const result = planFollowUps({
+      prNumber: 32,
+      reviews: [
+        review([
+          followUp({ title: "first", location: "src/a.ts:12" }),
+          followUp({ title: "second", location: "src/a.ts:88" }),
+        ]),
+      ],
+      stubs: [
+        stub({ number: 71, location: "src/a.ts:12", pr: 32, seq: 0 }),
+        stub({ number: 50, location: "src/a.ts", pr: 10, seq: 0 }),
+      ],
+    });
+
+    expect(result.issues.map((i) => i.title)).toEqual(["second"]);
+    expect(relationOf(result.issues[0]?.body)).toContain("#50");
+    expect(relationOf(result.issues[0]?.body)).not.toContain("#71");
   });
 
   /** One link, never a list — and an open stub is the later decision of the two. */

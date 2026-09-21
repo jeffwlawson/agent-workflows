@@ -29,8 +29,9 @@ Every part of the bar is required, and a finding missing any of it belongs in th
 
 - **a `location`** — `path` or `path:line`. **One path**, the one a reader should open first. It
   is also read back verbatim once the pull request merges: a filed issue is keyed on this exact
-  string, and that key is how a filing run that failed half way recognises what it already filed.
-  Two findings in the same file are told apart by the line, so give one.
+  string together with the finding's place in this list, and that key is how a filing run that
+  failed half way recognises what it already filed. Give the line when you have one — it is the
+  first thing a reader opens.
 - **evidence it is real**, quoting the code or the check result it rests on.
 - **why this pull request cannot fix it** — what it would have to change that is not its subject.
 

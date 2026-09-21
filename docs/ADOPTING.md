@@ -299,8 +299,8 @@ findings*. The review half adds it on any run that recorded one and never remove
 is how an author **opts out** before the merge, and the filing half removes it on any run that
 reached a verdict — including one where an earlier attempt had already filed every finding, or
 where the latest review retracted them — so a failed or partial run leaves the retry affordance
-where it was. Adding it
-back to a **closed** pull request is the manual entry point, and it is the gesture
+where it was. Adding it back to a **closed** pull request is the manual entry point, and it is
+the gesture
 [re-adding a label that is already there](#re-adding-a-label-that-is-already-there-fires-nothing)
 in §1 is about: you will reach for it on a pull request that already carries the label, where it
 does nothing at all.

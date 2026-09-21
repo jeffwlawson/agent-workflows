@@ -2,8 +2,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
+import { callersIn } from "../setup/callers.js";
 import {
   advisoryLabelSpecsFor,
   init,
@@ -16,6 +18,7 @@ import {
   asVisibility,
   availableSecrets,
   parseList,
+  REQUIRED_PERMISSIONS,
   runDoctor,
   type RepoFacts,
 } from "../setup/doctor.js";
@@ -881,6 +884,212 @@ describe("doctor names the failures that otherwise look like something else", ()
     const isPublic = await check(root, { ...healthy(), visibility: "public" });
     expect(isPublic.code).toBe(0);
     expect(isPublic.out).toContain("checks: read");
+  });
+
+  /**
+   * The table itself, against the two places the same grants are already
+   * written down.
+   *
+   * `diagnose` rules on a fixed list, and for four releases that list was two
+   * rows of the nine the callers actually need: a caller that declared a
+   * `permissions:` block and got `pull-requests: write` wrong passed the
+   * preflight built to catch exactly that (#45). Which grant a job needs is not
+   * a judgement call — the reusable half's own `permissions:` is the ceiling,
+   * the authoritative statement of what that job spends, and the reference
+   * caller's block is the grant `tests/workflows.test.ts` holds equal to it. So
+   * the table is derived from the ceiling here rather than written a third time
+   * by hand, and a workflow that grows a scope fails by name in three places
+   * instead of drifting in the one copy nothing diffs.
+   *
+   * Only `dist` ships, so `REQUIRED_PERMISSIONS` has to be a constant in the
+   * runner rather than something read out of `examples/callers/` at run time,
+   * and a test is the only thing that can hold it to its source — the
+   * arrangement `init`'s label table and `docs/ADOPTING.md` §3 are already in.
+   */
+  const ceilings = (): ReadonlyMap<string, Record<string, string>> => {
+    const dir = path.join(PACKAGE_DIR, ".github", "workflows");
+    const found = new Map<string, Record<string, string>>();
+
+    for (const entry of fs.readdirSync(dir).filter((name) => name.endsWith(".yml"))) {
+      const document = parse(fs.readFileSync(path.join(dir, entry), "utf8")) as {
+        readonly on?: { readonly workflow_call?: unknown } | null;
+        readonly jobs?: Record<string, { readonly permissions?: Record<string, string> }>;
+      } | null;
+      // A reusable half is one something can `uses:`, which is the same thing
+      // that makes it a workflow somebody's caller hands a token to.
+      if (document?.on?.workflow_call === undefined) continue;
+      const [job] = Object.values(document.jobs ?? {});
+      found.set(entry.replace(/\.yml$/, ""), job?.permissions ?? {});
+    }
+    return found;
+  };
+
+  /**
+   * What each cell's *absence* is expected to do, which is the half of the
+   * table no comparison above can reach: `absence` decides whether `doctor`
+   * exits 1, and a wrong one is a preflight that reports the misconfiguration
+   * #45 is about and then exits 0 next to it.
+   *
+   * Written by hand here, and deliberately not read back out of
+   * `REQUIRED_PERMISSIONS` — an expectation derived from the table under test
+   * is one that moves when the table is wrong. The default is `"always"`, so a
+   * scope added to a workflow arrives expecting an error and has to be argued
+   * down to a line here rather than silently landing as a warning.
+   */
+  const NOT_AN_ERROR: Readonly<Record<string, "private" | "advisory">> = {
+    // Served without the scope on a public repository; a 403 on a private one.
+    "review/checks: read": "private",
+    "review/contents: read": "private",
+    // Nothing in that job reads the repository, so nothing is known to fail.
+    "follow-ups/contents: read": "advisory",
+  };
+
+  /**
+   * Every one of those grants as a scenario: the workflow, the scope, the
+   * value, and how its absence is expected to present.
+   */
+  const grantCells = (): readonly (readonly [
+    string,
+    string,
+    string,
+    string,
+    "always" | "private" | "advisory",
+  ])[] =>
+    [...ceilings()].flatMap(([workflow, grants]) =>
+      Object.entries(grants).map(
+        ([permission, value]) =>
+          [
+            `${workflow}'s ${permission}: ${value}`,
+            workflow,
+            permission,
+            value,
+            NOT_AN_ERROR[`${workflow}/${permission}: ${value}`] ?? "always",
+          ] as const,
+      ),
+    );
+
+  it("demands exactly what the reusable halves bound and the reference callers grant", () => {
+    const bound = ceilings();
+    // The premise: a restructure that stopped finding the reusables would
+    // otherwise make every comparison below one between two empty maps.
+    expect(bound.size).toBeGreaterThanOrEqual(6);
+
+    const demanded = new Map(
+      [...bound.keys()].map((name) => [name, {} as Record<string, string>]),
+    );
+    for (const row of REQUIRED_PERMISSIONS) {
+      for (const name of row.workflows === "all" ? [...bound.keys()] : row.workflows) {
+        // Two rows for one cell is one `why` the other silently replaces.
+        expect(demanded.get(name)?.[row.permission]).toBeUndefined();
+        demanded.set(name, { ...demanded.get(name), [row.permission]: row.value });
+      }
+    }
+
+    const granted = new Map(
+      [...bound.keys()].map((name) => {
+        const file = path.join(PACKAGE_DIR, "examples", "callers", `${name}.yml`);
+        const [caller] = callersIn(fs.readFileSync(file, "utf8"), manifest.name, file);
+        return [name, { ...caller?.permissions }];
+      }),
+    );
+
+    expect(Object.fromEntries(demanded)).toEqual(Object.fromEntries(bound));
+    expect(Object.fromEntries(granted)).toEqual(Object.fromEntries(bound));
+
+    // And the severities below are expectations about cells that exist: a key
+    // naming a scope a workflow has since dropped is an argument nothing reads,
+    // which is how the next scope to need one gets the default instead.
+    const cells = grantCells().map(
+      ([, workflow, permission, value]) => `${workflow}/${permission}: ${value}`,
+    );
+    for (const key of Object.keys(NOT_AN_ERROR)) expect(cells).toContain(key);
+  });
+
+  /**
+   * And says so about a caller that declares a block and leaves one of them
+   * out, which is the shape this command exists for: the scope is missing from
+   * a file that looks complete, and what the run gives back is a step failing
+   * on `Resource not accessible by integration` — a message that names neither
+   * the grant nor the file, on a step whose own name is about labels or about a
+   * push.
+   *
+   * Asserted on **both** visibilities and by exit code, because the severity is
+   * the check: a row that reports a broken caller and exits 0 is a preflight
+   * that says the install is fine. The expectation comes from `NOT_AN_ERROR`
+   * rather than from the table being tested, so flipping a row to `"advisory"`
+   * fails here by name.
+   *
+   * Derived from the same ceilings rather than listed, so a seventh workflow or
+   * a scope added to one arrives here as a scenario rather than as a gap.
+   */
+  it.each(grantCells())(
+    "names %s when the caller's own block leaves it out, and rules on it",
+    async (
+      _label: string,
+      workflow: string,
+      permission: string,
+      value: string,
+      absence: "always" | "private" | "advisory",
+    ) => {
+      const root = await installed();
+      edit(root, `agent-${workflow}.yml`, (text) =>
+        text.replace(new RegExp(`^ *${permission}: ${value}$`, "m"), ""),
+      );
+
+      for (const visibility of ["private", "public"] as const) {
+        const fails = absence === "always" || (absence === "private" && visibility === "private");
+        const { code, out, err } = await check(root, { ...healthy(), visibility });
+
+        // Errors are printed to stderr and exit 1; warnings to stdout and exit
+        // 0. Which stream carries the line is therefore the same statement as
+        // the code, and both are asserted so a check that moved stream without
+        // moving severity cannot pass.
+        const said = (fails ? err : out)
+          .split("\n")
+          .find((line) => line.includes(`${permission}: ${value}:`));
+
+        expect(said, `${visibility}: nothing on ${fails ? "stderr" : "stdout"}`).toBeDefined();
+        expect(said).toContain(`agent-${workflow}.yml`);
+        expect(code, `${visibility}: exit code`).toBe(fails ? 1 : 0);
+      }
+    },
+  );
+
+  /**
+   * And says it in a paragraph, not a page. `render` prints a `why` as one
+   * unwrapped terminal line and `runDoctor` writes it as one line of
+   * `failure_reason.txt`, so length is the difference between a finding a
+   * human reads and one they scroll past — and the row that grew to five times
+   * its neighbours was the one whose extra sentences needed a correction in
+   * three commits running. What each grant's absence does belongs here; the
+   * per-repository anatomy of *when* belongs in `docs/ADOPTING.md` §4, where it
+   * can be a paragraph with a table next to it.
+   *
+   * The cap is above every row rather than near the longest, because this is a
+   * guard against the next unbounded one, not a style rule.
+   */
+  it("keeps each reason short enough to read on one line", () => {
+    for (const { permission, value, why } of REQUIRED_PERMISSIONS) {
+      expect(why.length, `${permission}: ${value} — ${why.slice(0, 60)}…`).toBeLessThan(700);
+    }
+  });
+
+  /**
+   * …and none of them about a caller that declares no block **anywhere**, which
+   * is the one shape the table must not expand over. That job runs with the
+   * repository's default `GITHUB_TOKEN`, and the fix is the whole block rather
+   * than any scope in it — a job-level block replaces the inherited token, so a
+   * list of the scopes it is missing is a list of ways to lose the rest of what
+   * it holds.
+   */
+  it("rules on a caller with no block once rather than once per scope", async () => {
+    const { out, err } = await check(adoptedWith([]), healthy());
+    const said = `${out}${err}`;
+
+    expect(said.match(/permissions block:/g) ?? []).toHaveLength(1);
+    for (const [, , permission, value] of grantCells()) {
+      expect(said).not.toContain(`${permission}: ${value}:`);
+    }
   });
 
   /**

@@ -52,15 +52,17 @@ did not touch rather than writing it back. What it therefore does **not** do is 
 change a later release made to a caller itself — `doctor` reports the ones in the table below, with
 the fix, and that table is the whole of what it rules on.
 
-`doctor` exits non-zero on every §1 failure detectable from repo state, and names the fix for each:
+`doctor` exits non-zero on every §1 failure detectable from repo state, and names the fix for
+each. A row that is a **warning** instead — printed, exit 0 — says so where it stands:
 
 | What it checks | The failure it is for |
 |---|---|
 | both secrets are set — on the repository, or shared with it by its organization | §2 — and `AGENT_PAT`'s absence is three of §1's failures by itself |
 | Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
-| every caller that declares a `permissions:` block grants each scope the job it calls spends — the whole of *The permissions per workflow* table below | §4 — a 401 at `npx` that reads like a bad token, a `git push` that 403s with the agent pass already spent, and label transitions written `\|\| true` that exit 0 and advance nothing |
+| every caller that declares a `permissions:` block grants each scope the job it calls spends — the whole of *The permissions per workflow* table below, at the severity the two rows under this one qualify | §4 — a 401 at `npx` that reads like a bad token, a `git push` that 403s with the agent pass already spent, and a label transition that 403s before the checkout on `Resource not accessible by integration`, which names neither the scope nor the file that grants it |
+| the two scopes only a **private** repository needs — `checks: read` and `contents: read` on review — which are an error there and *a warning on a public repository*, where the same calls are served without them | §4 — a wait that spends its budget and reviews blind, and a checkout that 403s before the diff is read |
+| `agent-follow-ups`' `contents: read`, the one grant no call here is known to fail without — *a warning everywhere, not a failure* | §4 — a `permissions:` block replaces the inherited token rather than adding to it, so dropping the line sets `contents: none`, which is a configuration the runner install has never run under |
 | a caller that declares no `permissions:` block at all | §4 — it runs with the default token, whose restricted setting is `contents` and `packages` read, so the install works and every write 403s |
-| the two scopes only a **private** repository needs — `checks: read` and `contents: read` on review | §4 — a wait that spends its budget and reviews blind, and a checkout that 403s before the diff is read |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
 | every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for 15 of its 20 minutes |
@@ -536,10 +538,10 @@ Four things about that shape are worth knowing before you paste it:
 
 - **`permissions` has to be on your job too.** The called workflow can only *downgrade* the token it
   is handed, so it cannot grant itself the `pull-requests: write` its label edits spend. On a repo
-  whose default `GITHUB_TOKEN` is read-only, omitting this block gives you a run that costs a full
-  agent pass and silently transitions nothing. The two blocks say the same thing for opposite
-  reasons — yours grants, ours bounds — which is why `contents: read` on review stays an invariant
-  no caller can widen.
+  whose default `GITHUB_TOKEN` is read-only, omitting this block gives you a run that dies at its
+  first label edit — `Resource not accessible by integration`, on a step named for labels, before
+  anything is checked out. The two blocks say the same thing for opposite reasons — yours grants,
+  ours bounds — which is why `contents: read` on review stays an invariant no caller can widen.
 - **Pin the `@ref`.** Same reasoning as the runner version above, and the same trap: a floating
   `@main` is a workflow that changes under a pull request nobody touched. An exact pin is a pin
   that goes stale, which nothing in this repository can see from here — *Keeping the pins fresh*,

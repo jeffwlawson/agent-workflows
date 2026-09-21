@@ -924,12 +924,47 @@ describe("doctor names the failures that otherwise look like something else", ()
     return found;
   };
 
-  /** Every one of those grants as a scenario: the workflow, the scope, the value. */
-  const grantCells = (): readonly (readonly [string, string, string, string])[] =>
+  /**
+   * What each cell's *absence* is expected to do, which is the half of the
+   * table no comparison above can reach: `absence` decides whether `doctor`
+   * exits 1, and a wrong one is a preflight that reports the misconfiguration
+   * #45 is about and then exits 0 next to it.
+   *
+   * Written by hand here, and deliberately not read back out of
+   * `REQUIRED_PERMISSIONS` — an expectation derived from the table under test
+   * is one that moves when the table is wrong. The default is `"always"`, so a
+   * scope added to a workflow arrives expecting an error and has to be argued
+   * down to a line here rather than silently landing as a warning.
+   */
+  const NOT_AN_ERROR: Readonly<Record<string, "private" | "advisory">> = {
+    // Served without the scope on a public repository; a 403 on a private one.
+    "review/checks: read": "private",
+    "review/contents: read": "private",
+    // Nothing in that job reads the repository, so nothing is known to fail.
+    "follow-ups/contents: read": "advisory",
+  };
+
+  /**
+   * Every one of those grants as a scenario: the workflow, the scope, the
+   * value, and how its absence is expected to present.
+   */
+  const grantCells = (): readonly (readonly [
+    string,
+    string,
+    string,
+    string,
+    "always" | "private" | "advisory",
+  ])[] =>
     [...ceilings()].flatMap(([workflow, grants]) =>
       Object.entries(grants).map(
         ([permission, value]) =>
-          [`${workflow}'s ${permission}: ${value}`, workflow, permission, value] as const,
+          [
+            `${workflow}'s ${permission}: ${value}`,
+            workflow,
+            permission,
+            value,
+            NOT_AN_ERROR[`${workflow}/${permission}: ${value}`] ?? "always",
+          ] as const,
       ),
     );
 
@@ -960,38 +995,63 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(Object.fromEntries(demanded)).toEqual(Object.fromEntries(bound));
     expect(Object.fromEntries(granted)).toEqual(Object.fromEntries(bound));
+
+    // And the severities below are expectations about cells that exist: a key
+    // naming a scope a workflow has since dropped is an argument nothing reads,
+    // which is how the next scope to need one gets the default instead.
+    const cells = grantCells().map(
+      ([, workflow, permission, value]) => `${workflow}/${permission}: ${value}`,
+    );
+    for (const key of Object.keys(NOT_AN_ERROR)) expect(cells).toContain(key);
   });
 
   /**
    * And says so about a caller that declares a block and leaves one of them
-   * out, which is the shape this command exists for: every label transition the
-   * loop advances on is a `gh pr edit … || true` that exits 0 on a 403, so the
-   * run is green, the agent pass is spent and nothing anywhere says why the
-   * state machine stopped. The scopes that are not swallowed fail at the push
-   * or at the transition instead, with a `Resource not accessible by
-   * integration` that names no grant.
+   * out, which is the shape this command exists for: the scope is missing from
+   * a file that looks complete, and what the run gives back is a step failing
+   * on `Resource not accessible by integration` — a message that names neither
+   * the grant nor the file, on a step whose own name is about labels or about a
+   * push.
+   *
+   * Asserted on **both** visibilities and by exit code, because the severity is
+   * the check: a row that reports a broken caller and exits 0 is a preflight
+   * that says the install is fine. The expectation comes from `NOT_AN_ERROR`
+   * rather than from the table being tested, so flipping a row to `"advisory"`
+   * fails here by name.
    *
    * Derived from the same ceilings rather than listed, so a seventh workflow or
    * a scope added to one arrives here as a scenario rather than as a gap.
    */
   it.each(grantCells())(
-    "names %s when the caller's own block leaves it out",
-    async (_label: string, workflow: string, permission: string, value: string) => {
+    "names %s when the caller's own block leaves it out, and rules on it",
+    async (
+      _label: string,
+      workflow: string,
+      permission: string,
+      value: string,
+      absence: "always" | "private" | "advisory",
+    ) => {
       const root = await installed();
       edit(root, `agent-${workflow}.yml`, (text) =>
         text.replace(new RegExp(`^ *${permission}: ${value}$`, "m"), ""),
       );
 
-      const { out, err } = await check(root, healthy());
-      // Warnings are printed to stdout and errors to stderr, and which one a
-      // scope produces depends on the visibility. What is asserted here is that
-      // it was reported at all, and reported against the caller that dropped it.
-      const said = `${out}${err}`
-        .split("\n")
-        .find((line) => line.includes(`${permission}: ${value}:`));
+      for (const visibility of ["private", "public"] as const) {
+        const fails = absence === "always" || (absence === "private" && visibility === "private");
+        const { code, out, err } = await check(root, { ...healthy(), visibility });
 
-      expect(said).toBeDefined();
-      expect(said).toContain(`agent-${workflow}.yml`);
+        // Errors are printed to stderr and exit 1; warnings to stdout and exit
+        // 0. Which stream carries the line is therefore the same statement as
+        // the code, and both are asserted so a check that moved stream without
+        // moving severity cannot pass.
+        const said = (fails ? err : out)
+          .split("\n")
+          .find((line) => line.includes(`${permission}: ${value}:`));
+
+        expect(said, `${visibility}: nothing on ${fails ? "stderr" : "stdout"}`).toBeDefined();
+        expect(said).toContain(`agent-${workflow}.yml`);
+        expect(code, `${visibility}: exit code`).toBe(fails ? 1 : 0);
+      }
     },
   );
 

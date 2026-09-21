@@ -126,8 +126,10 @@ const compareVersions = (a: string, b: string): number => {
  *
  * So the columns worth reading here are `why` and `absence`, which are the part
  * no YAML states. For four releases this list held two of the eight rows, and
- * the six it skipped failed the same way the two it caught did — after a full
- * agent pass, and for most of them in a green run (#45).
+ * the six it skipped failed the same way the two it caught did: a 403 reading
+ * `Resource not accessible by integration`, which names neither the scope that
+ * is missing nor the file that has to grant it, on a step whose own name is
+ * about labels or about a push (#45).
  */
 export const REQUIRED_PERMISSIONS: readonly {
   readonly permission: string;
@@ -164,10 +166,13 @@ export const REQUIRED_PERMISSIONS: readonly {
     value: "write",
     workflows: "all",
     why:
-      "the label transitions this loop advances on, the review or report the job posts and the " +
-      "reason it leaves behind when it stops are all `gh pr edit` and `gh pr comment`, and the " +
-      "transitions are written `|| true`. A 403 there exits 0: the run is green, the agent pass " +
-      "is spent, and the state machine simply stops advancing with nothing anywhere saying why",
+      "the label transitions this loop advances on, and the review, report or reason it leaves " +
+      "behind when it stops, are `gh pr edit` and `gh pr comment`. Only the `--remove-label` " +
+      "calls are written `|| true` — the `--add-label` ending each transition step is not, and " +
+      "Actions' default `bash -e` fails that step on the 403, which on `review`, `fix` and " +
+      "`update-branch` is before the checkout. What a human is left with is a red step reading " +
+      "`Resource not accessible by integration`, which names neither the scope nor the half that " +
+      "has to grant it",
     absence: "always",
   },
   {
@@ -176,8 +181,9 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: ["implement", "implement-prd", "fix", "update-branch"],
     why:
       "the branch this job produces is committed and pushed, and `git push` is not written " +
-      "`|| true`. The run fails at its last step, after the whole agent pass, and the work it did " +
-      "is discarded with it",
+      "`|| true`. So this one is loud rather than silent — and late: with no `AGENT_PAT` for the " +
+      "checkout to push under, the 403 lands at the push, after the whole agent pass, and the " +
+      "work the agent did is discarded with it",
     absence: "always",
   },
   {
@@ -185,11 +191,13 @@ export const REQUIRED_PERMISSIONS: readonly {
     value: "write",
     workflows: ["implement", "implement-prd"],
     why:
-      "the issue's labels are transitioned from this job and its outcome commented on it — " +
-      "`agent:in-progress` on the way in, `agent:blocked` and a reason on the way out. The " +
-      "removals are written `|| true` and pass silently, so what a 403 leaves is an issue that " +
-      "never moved — and, on the PRD chain, a sub-issue that stays open and is implemented again " +
-      "on the next run",
+      "the issue's labels are transitioned from this job and its outcome commented on it. The " +
+      "removals are written `|| true`; the `gh issue edit --add-label \"agent:in-progress\"` " +
+      "that follows them is not, and Actions' default `bash -e` fails that step on the 403 — " +
+      "before the checkout, and before the branch exists. Nothing downstream runs either: not the " +
+      "`agent:blocked` and reason this job leaves when it stops, and not the sub-issue the PRD " +
+      "chain closes to advance. The message names no scope: `Resource not accessible by " +
+      "integration`",
     absence: "always",
   },
   {
@@ -198,8 +206,9 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: ["follow-ups"],
     why:
       "this is the grant the workflow exists for: it files the review's recorded out-of-scope " +
-      "findings as issues, with the workflow token rather than the PAT. Without it a merge files " +
-      "nothing at all, on a run nobody is waiting for",
+      "findings as issues, with the workflow token rather than the PAT. Without it the first " +
+      "`gh issue create` 403s and nothing is filed; what says so is a failure comment on a pull " +
+      "request that is already merged and closed, which nobody is waiting on a run for",
     absence: "always",
   },
   {

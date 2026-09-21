@@ -1056,6 +1056,25 @@ describe("doctor names the failures that otherwise look like something else", ()
   );
 
   /**
+   * And says it in a paragraph, not a page. `render` prints a `why` as one
+   * unwrapped terminal line and `runDoctor` writes it as one line of
+   * `failure_reason.txt`, so length is the difference between a finding a
+   * human reads and one they scroll past — and the row that grew to five times
+   * its neighbours was the one whose extra sentences needed a correction in
+   * three commits running. What each grant's absence does belongs here; the
+   * per-repository anatomy of *when* belongs in `docs/ADOPTING.md` §4, where it
+   * can be a paragraph with a table next to it.
+   *
+   * The cap is above every row rather than near the longest, because this is a
+   * guard against the next unbounded one, not a style rule.
+   */
+  it("keeps each reason short enough to read on one line", () => {
+    for (const { permission, value, why } of REQUIRED_PERMISSIONS) {
+      expect(why.length, `${permission}: ${value} — ${why.slice(0, 60)}…`).toBeLessThan(700);
+    }
+  });
+
+  /**
    * …and none of them about a caller that declares no block **anywhere**, which
    * is the one shape the table must not expand over. That job runs with the
    * repository's default `GITHUB_TOKEN`, and the fix is the whole block rather

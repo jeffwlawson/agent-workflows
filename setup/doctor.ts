@@ -145,7 +145,14 @@ export const REQUIRED_PERMISSIONS: readonly {
   /**
    * How the absence presents, which is the whole of the severity:
    *
-   * - `"always"` — the job 403s wherever it runs. An error.
+   * - `"always"` — the job 403s wherever it runs. An error, and deliberately
+   *   not softened where `AGENT_PAT` is set: the push, and two of `implement`'s
+   *   calls, prefer that token, so a PAT defers those 403s rather than removing
+   *   them. A preflight that passed on one would be green on a loop that breaks
+   *   the day the token expires (`docs/ADOPTING.md` §2), after a full agent
+   *   pass. The PR-creation check below is `hasPat ? "warning" : "error"`
+   *   because a PAT makes that repository *setting* moot; nothing makes a
+   *   grant the caller has to hold moot.
    * - `"private"` — a public repository serves the call without the scope and a
    *   private one 403s, so it is an error on a private repository and a warning
    *   on a public one. An unreadable visibility resolves to the error and says
@@ -172,20 +179,12 @@ export const REQUIRED_PERMISSIONS: readonly {
     value: "write",
     workflows: ["review", "fix", "update-branch", "implement", "implement-prd"],
     why:
-      "the label transitions this loop advances on, and the review, report or reason it leaves " +
-      "behind when it stops, are `gh pr edit` and `gh pr comment`. The `--remove-label` calls " +
-      "and the `agent:blocked` adds carry `|| true`; the `--add-label` ending each transition " +
-      "step does not, and Actions' default `bash -e` fails that step on the 403 — before the " +
-      "checkout on `review`, `fix` and `update-branch`, which run under the workflow token " +
-      "throughout. The two implement halves transition an *issue*, so where they die is the " +
-      "repository's to decide: on a **private** one it is `implement`'s preflight `gh pr list`, " +
-      "which runs under the workflow token before any label is touched and before the branch " +
-      "exists, and a private repository does not serve that read to `pull-requests: none`. " +
-      "Otherwise it is the step that opens the pull request, which prefers `AGENT_PAT` — so it " +
-      "is a repository without one where the 403 lands, at the pull request that was to carry " +
-      "the whole agent pass: branch pushed, nothing opened on it. What a human is left with is " +
-      "a red step reading `Resource not accessible by integration`, which names neither the " +
-      "scope nor the half that has to grant it",
+      "the label transitions this loop advances on are `gh pr edit`, and the `--add-label` " +
+      "ending each transition step is not written `|| true` — so Actions' default `bash -e` " +
+      "fails that step on the 403, before the checkout, on a step whose own name is about " +
+      "labels and a message, `Resource not accessible by integration`, that names neither the " +
+      "scope nor the half that grants it. Required whether or not `AGENT_PAT` is set: where a " +
+      "call prefers the PAT it defers this rather than removing it (`docs/ADOPTING.md` §4)",
     absence: "always",
   },
   {
@@ -208,9 +207,11 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: ["implement", "implement-prd", "fix", "update-branch"],
     why:
       "the branch this job produces is committed and pushed, and `git push` is not written " +
-      "`|| true`. So this one is loud rather than silent — and late: with no `AGENT_PAT` for the " +
-      "checkout to push under, the 403 lands at the push, after the whole agent pass, and the " +
-      "work the agent did is discarded with it",
+      "`|| true`. So this one is loud rather than silent — and late: the 403 lands at the push, " +
+      "after the whole agent pass, and the work the agent did is discarded with it. Required " +
+      "whether or not `AGENT_PAT` is set: the checkout pushes under the PAT where there is one, " +
+      "which masks the absence until that token expires rather than removing it " +
+      "(`docs/ADOPTING.md` §4)",
     absence: "always",
   },
   {

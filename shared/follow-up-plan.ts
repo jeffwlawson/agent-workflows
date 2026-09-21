@@ -176,16 +176,18 @@ const normaliseLocation = (location: string): string => {
 /**
  * The stub payload's shape, versioned for the same reason the review block is
  * and on its own timeline (#81): the two are written and read by different
- * pairs of releases, and the gap this one spans is the longer of the two — a
- * key written into an issue is read back by every run after it, for as long as
- * the issue is open.
+ * pairs of releases, and the gap this one spans is the longer of the two: a key
+ * written into an issue is read back by every run after it, for as long as that
+ * issue exists — `fetchStubs` lists `--state all`, and a `wontfix` closure is
+ * the case that most needs its key to still match.
  *
  * Deliberately **not** the block's `FOLLOW_UPS_VERSION`, which they shared
  * until this was split out. Moving one to reshape the other's payload is a cost
- * with no connection to the change that caused it: a bump here would also
- * refuse every findings block already posted by the previous release, filing
- * nothing for pull requests that recorded their findings correctly.
- * `embeddableJson` stays shared, because a JSON escaper is not the coupling.
+ * with no connection to the change that caused it: while they shared one, a
+ * bump here also refused every findings block already posted by the previous
+ * release, filing nothing for pull requests that recorded their findings
+ * correctly. `embeddableJson` stays shared, because a JSON escaper is not the
+ * coupling.
  */
 export const STUB_KEY_VERSION = 1;
 

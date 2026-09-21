@@ -44,7 +44,7 @@ something else — a missing secret, a caller that does not pass `AGENT_PAT` on 
 calls, a caller whose `permissions:` block leaves out a grant the workflow it calls spends *on the
 repository it is run against*, a pin that is a branch rather than a tag, a `self-check` that does
 not name the check run its job produces, a label that does not exist — and names the fix for each.
-Two things it says without failing: how many releases behind each pin is, and the one grant no call
+It also reports, without failing: how many releases behind each pin is, and the one grant no call
 is known to 403 without — `agent-follow-ups`' `contents: read`, a warning everywhere. Both are a
 thing to know rather than a thing that is broken.
 

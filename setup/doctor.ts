@@ -177,12 +177,15 @@ export const REQUIRED_PERMISSIONS: readonly {
       "and the `agent:blocked` adds carry `|| true`; the `--add-label` ending each transition " +
       "step does not, and Actions' default `bash -e` fails that step on the 403 — before the " +
       "checkout on `review`, `fix` and `update-branch`, which run under the workflow token " +
-      "throughout. On the two implement halves it is the fallback that spends it: `gh pr create` " +
-      "and the `agent:review` after it both prefer `AGENT_PAT`, so it is a repository without one " +
-      "where the 403 lands, at the pull request that was to carry the whole agent pass — branch " +
-      "pushed, nothing opened on it. What a human is left with is a red step reading `Resource " +
-      "not accessible by integration`, which names neither the scope nor the half that has to " +
-      "grant it",
+      "throughout. The two implement halves transition an *issue*, so where they die is the " +
+      "repository's to decide: on a **private** one it is `implement`'s preflight `gh pr list`, " +
+      "which runs under the workflow token before any label is touched and before the branch " +
+      "exists, and a private repository does not serve that read to `pull-requests: none`. " +
+      "Otherwise it is the step that opens the pull request, which prefers `AGENT_PAT` — so it " +
+      "is a repository without one where the 403 lands, at the pull request that was to carry " +
+      "the whole agent pass: branch pushed, nothing opened on it. What a human is left with is " +
+      "a red step reading `Resource not accessible by integration`, which names neither the " +
+      "scope nor the half that has to grant it",
     absence: "always",
   },
   {

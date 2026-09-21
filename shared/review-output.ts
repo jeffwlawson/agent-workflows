@@ -167,6 +167,12 @@ export const FOLLOW_UPS_MARKER = "agent-follow-ups";
  * whatever reads this are same-version at *install* time and not at *read*
  * time: a review posted before a release is read after it. The field is the
  * cheapest way for a reader to refuse a shape it does not know.
+ *
+ * **This block and nothing else** — the dedup key on a filed stub carries its
+ * own `STUB_KEY_VERSION` (`shared/follow-up-plan.ts`), and the two move
+ * separately on purpose (#81). One constant for both made a bump for either
+ * payload refuse the other, so a key change cost the filing of every review
+ * body the previous release had already posted.
  */
 export const FOLLOW_UPS_VERSION = 1;
 

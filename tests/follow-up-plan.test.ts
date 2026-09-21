@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FOLLOW_UP_STUB_LABEL,
   MAX_STUB_TITLE,
@@ -632,5 +632,77 @@ describe("planFollowUps: what the merged pull request is told", () => {
       plan([], [], { reviews: [review([followUp()], { lastEditedAt: "2026-09-20T10:00:00Z" })] })
         .removeMarker,
     ).toBe(false);
+  });
+});
+
+/**
+ * Two payloads, two versions (#81). They were one constant, and nothing about
+ * them moves together: the findings block is written into a review body by one
+ * release and read out of it by the next, while the dedup key is written into
+ * an issue that outlives both. Bumping the one constant to change the key also
+ * changed the block's shape, so every review body already posted took the
+ * loud-refusal branch above and filed nothing — a cost with no connection to
+ * the change that caused it.
+ *
+ * Neither half of that can be asserted on the values, which are both `1` and
+ * are meant to be. So each test moves *one* version in a re-imported module
+ * graph and asserts the other payload did not follow.
+ */
+describe("the stub key and the review block version independently", () => {
+  afterEach(() => {
+    vi.doUnmock("../shared/review-output.js");
+    vi.doUnmock("../shared/follow-up-plan.js");
+    vi.resetModules();
+  });
+
+  /** The filing half, re-imported against a review block whose version has moved on. */
+  const filingHalfAgainstBlockVersion = async (version: number) => {
+    vi.resetModules();
+    vi.doMock("../shared/review-output.js", async () => ({
+      ...(await vi.importActual<typeof import("../shared/review-output.js")>(
+        "../shared/review-output.js",
+      )),
+      FOLLOW_UPS_VERSION: version,
+    }));
+    return import("../shared/follow-up-plan.js");
+  };
+
+  it("writes the stub key at its own version when the block's has moved", async () => {
+    const { planFollowUps: planAgainst } = await filingHalfAgainstBlockVersion(99);
+
+    const result = planAgainst({ prNumber: 32, reviews: [review([followUp()])], stubs: [] });
+
+    expect(result.issues[0]?.body).toContain(`<!--{"version":1,"location":"src/a.ts","pr":32}-->`);
+  });
+
+  it("matches a stub at its own version when the block's has moved", async () => {
+    const { planFollowUps: planAgainst } = await filingHalfAgainstBlockVersion(99);
+
+    const result = planAgainst({ prNumber: 32, reviews: [review([followUp()])], stubs: [stub()] });
+
+    expect(result.issues).toEqual([]);
+    expect(result.stubComments.map((c) => c.issue)).toEqual([71]);
+  });
+
+  /**
+   * The other direction has nothing to mock *into*: the review half does not
+   * import the filing half, so moving the stub key's version reaches nothing.
+   * That absence is the assertion — a re-coupling is what would give this mock
+   * something to bite on, and the block would render the moved version.
+   */
+  it("renders the block at its own version when the stub key's has moved", async () => {
+    vi.resetModules();
+    vi.doMock("../shared/follow-up-plan.js", async () => ({
+      ...(await vi.importActual<typeof import("../shared/follow-up-plan.js")>(
+        "../shared/follow-up-plan.js",
+      )),
+      STUB_KEY_VERSION: 99,
+    }));
+
+    const { renderFollowUpsBlock: render, FOLLOW_UPS_MARKER: marker } = await import(
+      "../shared/review-output.js"
+    );
+
+    expect(render([], 0)).toBe(`<!-- ${marker} {"version":1,"dropped":0,"followUps":[]} -->`);
   });
 });

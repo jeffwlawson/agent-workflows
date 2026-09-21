@@ -3,7 +3,6 @@ import {
   capFollowUps,
   embeddableJson,
   FOLLOW_UPS_LABEL,
-  FOLLOW_UPS_VERSION,
   hasFollowUpsBlock,
   parseFollowUpsBlock,
   type FollowUp,
@@ -175,12 +174,30 @@ const normaliseLocation = (location: string): string => {
 };
 
 /**
+ * The stub payload's shape, versioned for the same reason the review block is
+ * and on its own timeline (#81): the two are written and read by different
+ * pairs of releases, and the gap this one spans is the longer of the two: a key
+ * written into an issue is read back by every run after it, for as long as that
+ * issue exists — `fetchStubs` lists `--state all`, and a `wontfix` closure is
+ * the case that most needs its key to still match.
+ *
+ * Deliberately **not** the block's `FOLLOW_UPS_VERSION`, which they shared
+ * until this was split out. Moving one to reshape the other's payload is a cost
+ * with no connection to the change that caused it: while they shared one, a
+ * bump here also refused every findings block already posted by the previous
+ * release, filing nothing for pull requests that recorded their findings
+ * correctly. `embeddableJson` stays shared, because a JSON escaper is not the
+ * coupling.
+ */
+export const STUB_KEY_VERSION = 1;
+
+/**
  * The key a stub is matched on, written into the stub and read back on the next
  * run. Never the prose: a stub may be reworded freely, and a matcher that read
  * the prose would break on the first person who tidied one up.
  */
 const dedupPayload = (path: string, prNumber: number): string =>
-  `<!--${embeddableJson({ version: FOLLOW_UPS_VERSION, location: path, pr: prNumber })}-->`;
+  `<!--${embeddableJson({ version: STUB_KEY_VERSION, location: path, pr: prNumber })}-->`;
 
 /**
  * Any HTML comment holding a bare JSON object. The review body's block carries
@@ -219,7 +236,7 @@ const stubKey = (body: string): StubKey | undefined => {
     }
     if (typeof payload !== "object" || payload === null) continue;
     const record = payload as Record<string, unknown>;
-    if (record["version"] !== FOLLOW_UPS_VERSION) continue;
+    if (record["version"] !== STUB_KEY_VERSION) continue;
     const location = record["location"];
     const pr = record["pr"];
     if (typeof location !== "string" || typeof pr !== "number") continue;

@@ -72,7 +72,7 @@ const plan = (
     stubs,
   });
 
-const NOTHING = { issues: [], stubComments: [] };
+const NOTHING = { issues: [] };
 
 /** The outcome lines of the planned comment, which is where every outcome is visible. */
 const reportLines = (report: string | undefined): readonly string[] =>
@@ -273,7 +273,6 @@ describe("planFollowUps: what counts as the same finding", () => {
     const result = plan([followUp({ location: "./src/a.ts:400" })], [stub({ location: "src/a.ts:12" })]);
 
     expect(result.issues).toHaveLength(1);
-    expect(result.stubComments).toEqual([]);
     expect(relationOf(result.issues[0]?.body)).toContain("#71");
   });
 
@@ -510,7 +509,6 @@ describe("planFollowUps: what relatedness is worth", () => {
     const result = plan([followUp()], [stub({ state: "OPEN" })]);
 
     expect(result.issues).toHaveLength(1);
-    expect(result.stubComments).toEqual([]);
     const relation = relationOf(result.issues[0]?.body);
     expect(relation).toContain("#71");
     expect(relation).toContain("(open)");
@@ -531,7 +529,6 @@ describe("planFollowUps: what relatedness is worth", () => {
     const result = plan([followUp()], [stub({ state: "CLOSED", stateReason: "not_planned" })]);
 
     expect(result.issues).toHaveLength(1);
-    expect(result.stubComments).toEqual([]);
     const relation = relationOf(result.issues[0]?.body);
     expect(relation).toContain("#71");
     expect(relation).toContain("wontfix");
@@ -824,8 +821,8 @@ describe("planFollowUps: what the merged pull request is told", () => {
 
   /**
    * The silent exit is for *no findings block at all*. It is not licence to
-   * suppress the report of a suppression — a run that files nothing is exactly
-   * the run whose reasoning someone will want to see.
+   * go quiet on a retry that found everything already filed — a run that files
+   * nothing is exactly the run whose reasoning someone will want to see.
    */
   it("still reports when it filed nothing because it had already filed it", () => {
     const result = plan(

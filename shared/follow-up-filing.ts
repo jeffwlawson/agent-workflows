@@ -221,8 +221,6 @@ const issueNumberIn = (url: string): number => {
 export interface FilingOutcome {
   /** Issues opened, in the order the reviewer listed them. */
   readonly created: readonly number[];
-  /** Existing stubs commented on. Empty since #82 — see `FilingPlan.stubComments`. */
-  readonly commented: readonly number[];
   readonly reported: boolean;
   readonly markerRemoved: boolean;
 }
@@ -235,6 +233,13 @@ export interface FilingOutcome {
  * is removed on success and left in place on every refusal and every failure,
  * where it is both the retry affordance and the signal that this pull request's
  * findings are unfiled.
+ *
+ * `issue create` is the **only** issue write here, and since #82 the only one
+ * anywhere in this feature — a related stub is linked from the body of the one
+ * being filed rather than commented on, so `issues: write` is never spent on an
+ * issue this pull request did not open. `setup/doctor.ts` tells an adopter
+ * exactly that about the grant, and this is the half that has to stay true of
+ * it: a plan cannot ask for a comment, and nothing here can perform one.
  *
  * A throw anywhere in here fails the run with the marker still on, which is
  * what makes a partial failure recoverable — and safe to recover, with no
@@ -284,17 +289,12 @@ export const executeFilingPlan = (prNumber: string, plan: FilingPlan): FilingOut
     report = report?.replace(issue.placeholder, `#${number}`);
   }
 
-  for (const comment of plan.stubComments) {
-    gh(["issue", "comment", String(comment.issue), "--body", comment.body]);
-  }
-
   if (report !== undefined) gh(["pr", "comment", prNumber, "--body", report]);
 
   if (plan.removeMarker) gh(["pr", "edit", prNumber, "--remove-label", FOLLOW_UPS_LABEL]);
 
   return {
     created,
-    commented: plan.stubComments.map((comment) => comment.issue),
     reported: report !== undefined,
     markerRemoved: plan.removeMarker,
   };

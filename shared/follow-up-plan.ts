@@ -100,25 +100,21 @@ export interface PlannedIssue {
   readonly placeholder: string;
 }
 
-export interface PlannedStubComment {
-  readonly issue: number;
-  readonly body: string;
-}
-
+/**
+ * What a run can plan, and the whole of it: issues to open, a report to post,
+ * and the marker to take off.
+ *
+ * **Commenting on an existing stub is not on this list, and that is the
+ * change #82 made.** Re-flagging wrote to an issue this pull request does not
+ * own, and it was the visible half of a pair of rules whose other half skipped
+ * a real finding silently. What replaced both is a link in the body of the
+ * stub actually being filed, where the triager who has to judge it reads it —
+ * so `issues: write` is spent on creation and nothing else, which is what
+ * `setup/doctor.ts` tells an adopter the grant is for.
+ */
 export interface FilingPlan {
   /** Stubs to open, in the order the reviewer listed them. */
   readonly issues: readonly PlannedIssue[];
-  /**
-   * Comments to add to existing stubs.
-   *
-   * **No rule produces one since #82.** Re-flagging commented on an issue this
-   * pull request does not own, and it was the visible half of a pair of rules
-   * whose other half skipped a real finding silently. What replaced both is a
-   * link in the body of the stub actually being filed, where the triager who
-   * has to judge it reads it. So this is empty on every plan, and the execute
-   * half still performs it: an empty list is a plan like any other.
-   */
-  readonly stubComments: readonly PlannedStubComment[];
   /**
    * What to post on the pull request, or `undefined` for the silent exit.
    *
@@ -140,14 +136,12 @@ export interface FilingPlan {
 /** Nothing to do and nothing to say. A fresh object each time, so no caller can share one. */
 const silent = (): FilingPlan => ({
   issues: [],
-  stubComments: [],
   report: undefined,
   removeMarker: false,
 });
 
 const refusal = (report: string): FilingPlan => ({
   issues: [],
-  stubComments: [],
   report,
   removeMarker: false,
 });
@@ -569,12 +563,11 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
   // nothing to say — but the marker comes off, because this pull request's
   // latest list is empty and there is nothing left unfiled to find it by.
   if (lines.length === 0 && dropped === 0) {
-    return { issues: [], stubComments: [], report: undefined, removeMarker: true };
+    return { issues: [], report: undefined, removeMarker: true };
   }
 
   return {
     issues,
-    stubComments: [],
     report: [
       `**Out-of-scope findings**, read from [the review](${review.url}) on this pull request:`,
       "",

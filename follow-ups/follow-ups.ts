@@ -54,19 +54,6 @@ try {
     console.log(
       `Filed ${outcome.created.length} issue(s)${outcome.created.length === 0 ? "" : `: ${outcome.created.map((n) => `#${n}`).join(", ")}`}.`,
     );
-    // Conditional, where the lines around it are unconditional: **no rule has
-    // produced a stub comment since #82** (`FilingPlan.stubComments`), so an
-    // unconditional line here would read `Re-flagged 0 existing stub(s).` on
-    // every run forever — naming an outcome this loop no longer has, in the run
-    // log someone opens precisely when filing looks wrong. The execute half
-    // still performs the list, so a plan that somehow carried one must not be
-    // silent; that is what this prints, and on every ordinary run it prints
-    // nothing at all.
-    if (outcome.commented.length > 0) {
-      console.log(
-        `Commented on ${outcome.commented.length} existing stub(s): ${outcome.commented.map((n) => `#${n}`).join(", ")}.`,
-      );
-    }
     // Both are worth a line even when nothing was filed. A run that reported
     // without removing the marker is a refusal, and a run that removed it
     // without reporting decided there was nothing to say — and telling those

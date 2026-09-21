@@ -129,11 +129,12 @@ const fetchReviews = (prNumber: string): FilingReview[] => {
 };
 
 /**
- * How many stubs are read. There is a cap because the set only ever grows — a
- * `wontfix` suppression never expires — and the listing is newest first, so
- * what falls off the end is the oldest. That direction is the point: a stub
- * missed files a duplicate, which is loud and cheap, where the other ordering
- * would start skipping real findings once a repository got old enough.
+ * How many stubs are read. There is a cap because the set only ever grows —
+ * closed stubs stay in the listing — and that listing is newest first, so what
+ * falls off the end is the oldest. That direction is the point: a stub missed
+ * is a link not made and, on a retry, a duplicate filed. Both are loud and
+ * cheap, where the other ordering would start losing this pull request's own
+ * stubs once a repository got old enough.
  */
 const STUB_LIMIT = 500;
 
@@ -151,9 +152,10 @@ interface GhStub {
  * skips a real finding silently, which is the one direction nothing in this
  * feature fails in.
  *
- * Both states, because the planner needs to tell a stub closed as `wontfix` —
- * a decision not to relitigate — from one closed because somebody fixed it,
- * where a finding that is true again has to file again.
+ * Both states, because the planner needs to tell a stub closed as `wontfix`
+ * from one closed because somebody fixed it: the first is still worth linking
+ * from a stub being filed at the same path, and the second describes a problem
+ * that is no longer there.
  */
 const fetchStubs = (): FilingStub[] => {
   const raw = gh([
@@ -219,8 +221,6 @@ const issueNumberIn = (url: string): number => {
 export interface FilingOutcome {
   /** Issues opened, in the order the reviewer listed them. */
   readonly created: readonly number[];
-  /** Existing stubs re-flagged. */
-  readonly commented: readonly number[];
   readonly reported: boolean;
   readonly markerRemoved: boolean;
 }
@@ -234,13 +234,20 @@ export interface FilingOutcome {
  * where it is both the retry affordance and the signal that this pull request's
  * findings are unfiled.
  *
+ * `issue create` is the **only** issue write here, and since #82 the only one
+ * anywhere in this feature — a related stub is linked from the body of the one
+ * being filed rather than commented on, so `issues: write` is never spent on an
+ * issue this pull request did not open. `setup/doctor.ts` tells an adopter
+ * exactly that about the grant, and this is the half that has to stay true of
+ * it: a plan cannot ask for a comment, and nothing here can perform one.
+ *
  * A throw anywhere in here fails the run with the marker still on, which is
- * what makes a partial failure recoverable — and safe to recover for the half
- * that matters: a stub this pull request already filed carries its number in
- * the dedup payload and is reported as *already filed* on the retry rather than
- * re-flagged. Re-flagging a **chronic** stub is at-least-once by contrast, so a
- * retry can leave two identical "flagged again" comments on it — the accepted
- * boundary, argued at `matchStub`.
+ * what makes a partial failure recoverable — and safe to recover, with no
+ * at-least-once half left in it since #82: every stub this pull request filed
+ * carries that finding's identity in its dedup payload, so the retry reports it
+ * as *already filed* and creates only what is missing. Finding by finding
+ * rather than path by path, which is what makes two findings in one file
+ * recoverable too.
  */
 export const executeFilingPlan = (prNumber: string, plan: FilingPlan): FilingOutcome => {
   const available = plan.issues.length === 0 ? new Set<string>() : repoLabels();
@@ -282,17 +289,12 @@ export const executeFilingPlan = (prNumber: string, plan: FilingPlan): FilingOut
     report = report?.replace(issue.placeholder, `#${number}`);
   }
 
-  for (const comment of plan.stubComments) {
-    gh(["issue", "comment", String(comment.issue), "--body", comment.body]);
-  }
-
   if (report !== undefined) gh(["pr", "comment", prNumber, "--body", report]);
 
   if (plan.removeMarker) gh(["pr", "edit", prNumber, "--remove-label", FOLLOW_UPS_LABEL]);
 
   return {
     created,
-    commented: plan.stubComments.map((comment) => comment.issue),
     reported: report !== undefined,
     markerRemoved: plan.removeMarker,
   };

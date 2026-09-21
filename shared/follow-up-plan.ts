@@ -100,29 +100,35 @@ export interface PlannedIssue {
   readonly placeholder: string;
 }
 
-export interface PlannedStubComment {
-  readonly issue: number;
-  readonly body: string;
-}
-
+/**
+ * What a run can plan, and the whole of it: issues to open, a report to post,
+ * and the marker to take off.
+ *
+ * **Commenting on an existing stub is not on this list, and that is the
+ * change #82 made.** Re-flagging wrote to an issue this pull request does not
+ * own, and it was the visible half of a pair of rules whose other half skipped
+ * a real finding silently. What replaced both is a link in the body of the
+ * stub actually being filed, where the triager who has to judge it reads it —
+ * so `issues: write` is spent on creation and nothing else, which is what
+ * `setup/doctor.ts` tells an adopter the grant is for.
+ */
 export interface FilingPlan {
   /** Stubs to open, in the order the reviewer listed them. */
   readonly issues: readonly PlannedIssue[];
-  /** Comments to add to existing stubs — the chronic case, and nothing else. */
-  readonly stubComments: readonly PlannedStubComment[];
   /**
    * What to post on the pull request, or `undefined` for the silent exit.
    *
-   * Silence is for *no findings block at all*. It is not licence to suppress
-   * the report of a suppression: a run that files nothing but matched something
-   * still says so, or a wrong skip is invisible.
+   * Silence is for *no findings block at all*. A run that filed nothing because
+   * an earlier attempt had already filed everything still says so: that is the
+   * retry reporting itself, and a retry that went quiet reads exactly like a
+   * run that never happened.
    */
   readonly report: string | undefined;
   /**
    * Whether to remove the marker label. Removed on success — including a
-   * success in which everything was suppressed — and left in place on every
-   * refusal, where it is the retry affordance and the signal that this pull
-   * request's findings are unfiled.
+   * success in which every finding had already been filed by an earlier
+   * attempt — and left in place on every refusal, where it is the retry
+   * affordance and the signal that this pull request's findings are unfiled.
    */
   readonly removeMarker: boolean;
 }
@@ -130,14 +136,12 @@ export interface FilingPlan {
 /** Nothing to do and nothing to say. A fresh object each time, so no caller can share one. */
 const silent = (): FilingPlan => ({
   issues: [],
-  stubComments: [],
   report: undefined,
   removeMarker: false,
 });
 
 const refusal = (report: string): FilingPlan => ({
   issues: [],
-  stubComments: [],
   report,
   removeMarker: false,
 });
@@ -153,13 +157,22 @@ const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 const PATH_SHAPED = /[/.]/;
 
 /**
- * A `location` reduced to the key duplicate detection runs on.
+ * A `location` reduced to the key **relatedness** runs on — and nothing else
+ * since #82.
  *
  * The trailing line number is **stripped and discarded**. Line numbers drift,
  * so two reviews of the same chronic problem nearly always disagree on the
- * line, and keying on it makes dedup fail precisely where the feature is aimed.
- * Not case-folded: two paths differing only in case are two files on the
- * platform this runs on.
+ * line, and keying on it would make the link fail precisely where it is most
+ * wanted. Not case-folded: two paths differing only in case are two files on
+ * the platform this runs on.
+ *
+ * That rationale is #41's and survives intact. What does not is the authority
+ * #41 gave this one key: it also decided whether anything was filed, and a
+ * whole-file match deciding that lost a real finding in production — two
+ * findings 358 lines apart in one 658-line workflow, the second dropped in
+ * silence. Identity is keyed on the unnormalised location instead, and what is
+ * left here is advisory: a path match produces a link on the filed stub and
+ * never a verdict, so the coarseness costs a triager one glance.
  *
  * A multi-file location matches on its first path-shaped token and the rest is
  * ignored. Multi-file is the agent freelancing on a single-value field, "any
@@ -189,15 +202,35 @@ const normaliseLocation = (location: string): string => {
  * correctly. `embeddableJson` stays shared, because a JSON escaper is not the
  * coupling.
  */
-export const STUB_KEY_VERSION = 1;
+export const STUB_KEY_VERSION = 2;
 
 /**
  * The key a stub is matched on, written into the stub and read back on the next
  * run. Never the prose: a stub may be reworded freely, and a matcher that read
  * the prose would break on the first person who tidied one up.
+ *
+ * It answers **two** questions with different authority (#82), which is why
+ * `location` is written verbatim and `seq` is written at all:
+ *
+ * | | Question | Fields | Authority |
+ * |---|---|---|---|
+ * | Identity | did this run already file this finding? | `pr` + `location` + `seq` | binding |
+ * | Relatedness | is there an issue a triager should see? | `location`, normalised | advisory |
+ *
+ * One key served both until #82 and could not: it was the normalised path, so
+ * two findings in one file were one finding, and the loser of that was skipped
+ * rather than linked. Storing the normalised form is what made identity as
+ * coarse as relatedness, so the raw string is what goes in and normalisation
+ * happens on the way back out.
+ *
+ * Version `2` makes every stub the previous release filed unmatchable, so the
+ * next review raising a finding at one of those paths files fresh rather than
+ * linking. Accepted on the grounds `stubKey` already states: an unreadable key
+ * files a duplicate rather than skipping a real finding, which is one click to
+ * close.
  */
-const dedupPayload = (path: string, prNumber: number): string =>
-  `<!--${embeddableJson({ version: STUB_KEY_VERSION, location: path, pr: prNumber })}-->`;
+const dedupPayload = (location: string, prNumber: number, seq: number): string =>
+  `<!--${embeddableJson({ version: STUB_KEY_VERSION, location, pr: prNumber, seq })}-->`;
 
 /**
  * Any HTML comment holding a bare JSON object. The review body's block carries
@@ -206,8 +239,13 @@ const dedupPayload = (path: string, prNumber: number): string =>
 const STUB_PAYLOAD = /<!--\s*(\{[\s\S]*?\})\s*-->/g;
 
 interface StubKey {
+  /** The `location` exactly as the review recorded it. Identity compares this. */
+  readonly location: string;
+  /** That location with its line number stripped. Relatedness matches on this. */
   readonly path: string;
   readonly pr: number;
+  /** The finding's 0-based place in the review's list, which is what makes identity exact. */
+  readonly seq: number;
 }
 
 /**
@@ -217,14 +255,16 @@ interface StubKey {
  * does not match, so the finding is filed as a duplicate rather than skipped.
  * An unreadable payload is treated the same way for the same reason: a
  * duplicate issue is loud and cheap, and a skipped finding is silent and
- * unrecoverable.
+ * unrecoverable. The version bump to `2` put every stub the previous release
+ * filed into exactly that population, knowingly.
  *
  * The **last** readable payload wins, which is `parseFollowUpsBlock`'s rule for
  * the identical hazard and for the identical reason: `stubBody` writes the
  * agent's prose *before* the key, and that prose is evidence quoting the code —
  * which on this feature's own files is a payload. Reading the first would let a
- * quoted decoy key a real finding, absorbing it as a re-flag of somewhere else:
- * a silent skip, the one direction nothing here fails in.
+ * quoted decoy speak for the stub it sits in — pointing a triager at an
+ * unrelated issue, and, where the decoy named this pull request, skipping a
+ * real finding as one already filed.
  */
 const stubKey = (body: string): StubKey | undefined => {
   for (const match of [...body.matchAll(STUB_PAYLOAD)].reverse()) {
@@ -239,94 +279,150 @@ const stubKey = (body: string): StubKey | undefined => {
     if (record["version"] !== STUB_KEY_VERSION) continue;
     const location = record["location"];
     const pr = record["pr"];
-    if (typeof location !== "string" || typeof pr !== "number") continue;
-    // Re-normalised on the way in as well as on the way out, so a payload
-    // written by hand — or by a release whose normalisation was narrower —
-    // still matches what this run would produce.
-    return { path: normaliseLocation(location), pr };
+    const seq = record["seq"];
+    if (typeof location !== "string" || typeof pr !== "number" || typeof seq !== "number") {
+      continue;
+    }
+    // Normalised on the way out as well as on the way in, so a payload written
+    // by hand — or by a release whose normalisation was narrower — is still
+    // related to what this run would produce. The raw string is kept beside it
+    // because identity has to compare what was written, not what it reduces to.
+    return { location, path: normaliseLocation(location), pr, seq };
   }
   return undefined;
 };
-
-type MatchKind = "same-pr" | "open" | "wontfix";
-
-interface StubMatch {
-  readonly stub: FilingStub;
-  readonly kind: MatchKind;
-}
 
 const isClosed = (stub: FilingStub): boolean => stub.state.toLowerCase() === "closed";
 const isWontfix = (stub: FilingStub): boolean =>
   isClosed(stub) && (stub.stateReason ?? "").toLowerCase() === WONTFIX_REASON;
 
 /**
- * The stub a finding is a duplicate of, if any.
+ * **Identity**, and the only thing here that can stop a finding being filed.
+ *
+ * All three fields have to agree: the pull request, the `location` exactly as
+ * the review recorded it, and `seq` — the finding's place in that review's
+ * list. That is narrow enough to be *right* rather than merely likely, because
+ * the only run it can match is another attempt at this same filing: the review
+ * body is byte-identical between attempts, which `planFollowUps` guarantees by
+ * refusing an edited one outright.
+ *
+ * `location` is in the key as well as `seq` so a **changed** review fails the
+ * check rather than passing it. Same slot, different finding, is exactly where
+ * reporting "already filed" would skip a real one; filing a duplicate is the
+ * direction everything in this file fails in.
+ *
+ * State is deliberately **not** filtered, unlike relatedness below. "Did this
+ * run file this?" has one answer however the issue has fared since, and a stub
+ * closed between two attempts would otherwise be filed a second time.
+ */
+const matchIdentity = (
+  stubs: readonly FilingStub[],
+  followUp: FollowUp,
+  seq: number,
+  prNumber: number,
+): FilingStub | undefined =>
+  stubs.find((stub) => {
+    const key = stubKey(stub.body);
+    return (
+      key !== undefined &&
+      key.pr === prNumber &&
+      key.seq === seq &&
+      key.location === followUp.location
+    );
+  });
+
+/**
+ * **Relatedness**: an issue the triager of the stub being filed should see.
+ *
+ * Advisory. It produces a link in that stub's body and never a verdict, and
+ * that is what makes keying it on the whole file safe — #41 keyed a *skip* on
+ * the same coarse match, and the match was never the mistake, the authority
+ * was. As a link the coarseness costs a triager one glance.
  *
  * Open stubs and `wontfix`-closed ones are candidates and nothing else is: a
- * stub closed because someone **fixed** it has to refile if the problem
- * returns, or a regression is swallowed. Known and accepted, and stated here so
- * a reader neither re-derives it nor assumes it was overlooked: a `wontfix`
- * suppression never expires, and the set read here only ever grows.
+ * stub closed because somebody **fixed** it describes a problem that is no
+ * longer there, so pointing at it would mislead rather than help. Note what
+ * this no longer does — a `wontfix` at a path used to suppress every future
+ * finding anywhere in that file, permanently, with nothing said on the pull
+ * request.
  *
- * The priority is a tie-break with a reason rather than an ordering that fell
- * out of the list. Same pull request first, because that answer is exactly
- * right and the other two would both be wrong on a retry. Then open over
- * `wontfix`, because an open stub at a path someone also declined work at is
- * the later decision of the two. Highest number within a category, which is the
- * most recent.
+ * **This pull request's own stubs are not candidates.** They cannot exist on a
+ * first attempt — the listing is read before anything is created — so the only
+ * run that meets one is a retry, and what it meets is the *sibling* finding
+ * from this same review: the pair #82 is about were 358 lines apart and
+ * unrelated. Letting it in would put the likeliest-spurious link ahead of the
+ * likeliest-real one, and make the issue body depend on whether the earlier
+ * attempt crashed. Excluded, so a retry writes the body the first attempt would
+ * have written. Identity owns the same-pull-request question now, and it owns
+ * it exactly.
  *
- * **The idempotence that buys is same-pull-request-scoped, and the re-flag path
- * is at-least-once.** A retry after a partial failure meets a stub *this* pull
- * request filed through its `pr` field and reports it as already filed; a
- * *chronic* stub carries somebody else's number, so the retry takes the `open`
- * branch again and comments "Flagged again by #N" a second time. Accepted
- * rather than overlooked: closing it means reading every candidate stub's
- * comments before re-flagging — a page of comments per match, on the one
- * workflow here holding `issues: write` — to prevent a duplicate line on an
- * issue that is already about exactly that. A duplicate comment is loud and
- * cheap, which is the direction everything in this file fails in.
+ * One link, never a list, and the priority is a tie-break with a reason rather
+ * than an ordering that fell out of the list. Open over `wontfix`, because an
+ * open stub at a path someone also declined work at is the later decision of
+ * the two. Highest number within a category, which is the most recent.
  */
-const matchStub = (
+const matchRelated = (
   stubs: readonly FilingStub[],
   path: string,
   prNumber: number,
-): StubMatch | undefined => {
+): FilingStub | undefined => {
   const candidates = stubs
     .map((stub) => ({ stub, key: stubKey(stub.body) }))
     .filter((candidate): candidate is { stub: FilingStub; key: StubKey } =>
-      candidate.key?.path === path,
+      candidate.key !== undefined && candidate.key.path === path && candidate.key.pr !== prNumber,
     )
     .filter(({ stub }) => !isClosed(stub) || isWontfix(stub))
     .sort((a, b) => b.stub.number - a.stub.number);
 
-  const samePr = candidates.find(({ key }) => key.pr === prNumber);
-  if (samePr) return { stub: samePr.stub, kind: "same-pr" };
-
   const open = candidates.find(({ stub }) => !isClosed(stub));
-  if (open) return { stub: open.stub, kind: "open" };
+  if (open) return open.stub;
 
-  const wontfix = candidates[0];
-  return wontfix ? { stub: wontfix.stub, kind: "wontfix" } : undefined;
+  return candidates[0]?.stub;
 };
 
 /**
+ * The link, worded so it cannot be read as a verdict.
+ *
+ * The state is read off the stub rather than off how it was chosen, so the line
+ * always describes what that issue is *now*. The closing sentence is not
+ * decoration and the path is not either: a path match is the whole of what was
+ * established, and a triager who takes it for a duplicate claim closes a real
+ * finding on it.
+ */
+const relationLine = (stub: FilingStub, path: string): string =>
+  [
+    `**Possibly related:** #${stub.number}`,
+    isWontfix(stub) ? `, closed as \`wontfix\`,` : ` (open),`,
+    ` matched on the file path \`${path}\`.`,
+    ` A path match is not a claim that these are the same problem.`,
+  ].join("");
+
+/**
  * The stub body: the agent's two prose beats, then the location line, then
- * provenance, then the key.
+ * provenance, then the relation if there is one, then the key.
  *
  * The title is not repeated as a heading — GitHub renders it already. The
- * location line is for a human and is **never read back**; matching is on the
- * payload, so this one keeps the line number the agent gave.
+ * location line is for a human and is **never read back**: every match runs on
+ * the payload, which carries its own verbatim copy of the same string.
  *
  * Provenance links the review the block was *read* from, which is the latest
  * one, and says so in words. Walking back through nine reviews to find the
  * first occurrence would have to match on prose, so a finding the agent
  * reworded between rounds would look new.
+ *
+ * The relation is the whole of what a path match now buys (#82). It is written
+ * here, on the issue somebody is about to triage, rather than on the merged
+ * pull request where the old outcome line lived — nobody opens that again, and
+ * the person who has to judge whether these are the same problem is reading
+ * this.
  */
 const stubBody = (
   followUp: FollowUp,
   review: FilingReview,
   prNumber: number,
   path: string,
+  seq: number,
+  related: FilingStub | undefined,
 ): string =>
   [
     followUp.body.trim(),
@@ -336,16 +432,11 @@ const stubBody = (
     "---",
     "",
     `Read from [a review](${review.url}) on #${prNumber}. That review is where this finding was *read*, not necessarily where it was first raised — each review restates its whole list, so an earlier one may have raised it first.`,
+    // After the provenance and before the key: it qualifies the finding rather
+    // than the evidence above it, and it is the last thing a triager reads.
+    ...(related === undefined ? [] : ["", relationLine(related, path)]),
     "",
-    dedupPayload(path, prNumber),
-  ].join("\n");
-
-/** "Flagged again by #N" is evidence of chronicity, and chronicity is what triage most wants to see. */
-const reflagBody = (followUp: FollowUp, review: FilingReview, prNumber: number): string =>
-  [
-    `Flagged again by #${prNumber}: **${oneLine(followUp.title)}** at \`${oneLine(followUp.location)}\`.`,
-    "",
-    `Read from [a review](${review.url}) on that pull request. No second issue was opened — this one already covers the path.`,
+    dedupPayload(followUp.location, prNumber, seq),
   ].join("\n");
 
 /**
@@ -420,71 +511,51 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
   const dropped = block.dropped + over;
 
   const issues: PlannedIssue[] = [];
-  const stubComments: PlannedStubComment[] = [];
   const lines: string[] = [];
-  /** Paths already spoken for by an earlier finding in this same batch, and by which one. */
-  const claimed = new Map<string, string>();
 
-  for (const followUp of kept) {
+  // `seq` is the finding's index into `kept` — the reviewer's list as this run
+  // reads it — and **never** a count of what has been filed. A counter only
+  // advances when something files, so on a retry where findings 0 and 1 already
+  // filed, finding 1 would come round as `seq` 0 and match finding 0's stub:
+  // the same silent skip, reintroduced one line at a time.
+  for (const [seq, followUp] of kept.entries()) {
     const path = normaliseLocation(followUp.location);
     const title = oneLine(followUp.title);
 
-    // The same rule within the batch, first wins. Applying it against the
-    // tracker but not here would make the second finding's fate depend on a
-    // race with issue creation. This is also where path-only matching is most
-    // likely to be genuinely wrong, which is why the sibling is named: that is
-    // what makes a wrong skip correctable rather than merely regrettable.
-    const sibling = claimed.get(path);
-    if (sibling !== undefined) {
-      lines.push(
-        `- **Suppressed** — \`${path}\` — the same path as *${sibling}*, listed first in this review and handled above.`,
-      );
-      continue;
-    }
-    claimed.set(path, title);
-
-    const match = matchStub(input.stubs, path, input.prNumber);
-    if (!match) {
-      const placeholder = `{{follow-up-issue-${issues.length}}}`;
-      issues.push({
-        // Verbatim and unprefixed. A pull-request-number prefix is provenance
-        // visible without opening the issue, but it eats the left edge of every
-        // title in a triage list — where a scanner's eye lands — and
-        // `pr-follow-up` already carries the same fact in colour.
-        title: title.length <= MAX_STUB_TITLE ? title : `${title.slice(0, MAX_STUB_TITLE - 1)}…`,
-        body: stubBody(followUp, review, input.prNumber, path),
-        labels: STUB_LABELS,
-        path,
-        placeholder,
-      });
-      lines.push(`- **Filed** — \`${path}\` — ${placeholder}`);
-      continue;
-    }
-
-    if (match.kind === "same-pr") {
+    const already = matchIdentity(input.stubs, followUp, seq, input.prNumber);
+    if (already) {
       // Neither new nor chronic: this is the same pull request meeting itself
       // on a retry, and it is what makes that retry exactly idempotent.
       lines.push(
-        `- **Already filed by this pull request** — \`${path}\` — #${match.stub.number}, which it opened for this same path already.`,
+        `- **Already filed by this pull request** — \`${path}\` — #${already.number}, which it opened for this same finding already.`,
       );
       continue;
     }
 
-    if (match.kind === "wontfix") {
-      // Visible here and commented nowhere. Notifying the people who decided
-      // not to do it, to tell them it is still true, is relitigating a closed
-      // decision on a schedule.
-      lines.push(
-        `- **Suppressed** — \`${path}\` — #${match.stub.number} was closed as \`wontfix\`; nothing was commented there.`,
-      );
-      continue;
-    }
-
-    stubComments.push({
-      issue: match.stub.number,
-      body: reflagBody(followUp, review, input.prNumber),
+    const placeholder = `{{follow-up-issue-${seq}}}`;
+    issues.push({
+      // Verbatim and unprefixed. A pull-request-number prefix is provenance
+      // visible without opening the issue, but it eats the left edge of every
+      // title in a triage list — where a scanner's eye lands — and
+      // `pr-follow-up` already carries the same fact in colour.
+      title: title.length <= MAX_STUB_TITLE ? title : `${title.slice(0, MAX_STUB_TITLE - 1)}…`,
+      body: stubBody(
+        followUp,
+        review,
+        input.prNumber,
+        path,
+        seq,
+        matchRelated(input.stubs, path, input.prNumber),
+      ),
+      labels: STUB_LABELS,
+      path,
+      placeholder,
     });
-    lines.push(`- **Re-flagged** — \`${path}\` — commented on #${match.stub.number}.`);
+    // One line whatever was related, and deliberately the same line. This
+    // report's job was making *skips* visible and there are none left to make
+    // visible; a relation is for the triager of the new stub, not for a merged
+    // pull request nobody opens again.
+    lines.push(`- **Filed** — \`${path}\` — ${placeholder}`);
   }
 
   // A readable block that asked for nothing: the retraction, and the ordinary
@@ -492,12 +563,11 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
   // nothing to say — but the marker comes off, because this pull request's
   // latest list is empty and there is nothing left unfiled to find it by.
   if (lines.length === 0 && dropped === 0) {
-    return { issues: [], stubComments: [], report: undefined, removeMarker: true };
+    return { issues: [], report: undefined, removeMarker: true };
   }
 
   return {
     issues,
-    stubComments,
     report: [
       `**Out-of-scope findings**, read from [the review](${review.url}) on this pull request:`,
       "",

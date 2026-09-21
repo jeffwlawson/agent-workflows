@@ -54,9 +54,6 @@ try {
     console.log(
       `Filed ${outcome.created.length} issue(s)${outcome.created.length === 0 ? "" : `: ${outcome.created.map((n) => `#${n}`).join(", ")}`}.`,
     );
-    console.log(
-      `Re-flagged ${outcome.commented.length} existing stub(s)${outcome.commented.length === 0 ? "" : `: ${outcome.commented.map((n) => `#${n}`).join(", ")}`}.`,
-    );
     // Both are worth a line even when nothing was filed. A run that reported
     // without removing the marker is a refusal, and a run that removed it
     // without reporting decided there was nothing to say — and telling those

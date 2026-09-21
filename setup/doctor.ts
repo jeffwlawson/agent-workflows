@@ -179,12 +179,14 @@ export const REQUIRED_PERMISSIONS: readonly {
     value: "write",
     workflows: ["review", "fix", "update-branch", "implement", "implement-prd"],
     why:
-      "the label transitions this loop advances on are `gh pr edit`, and the `--add-label` " +
-      "ending each transition step is not written `|| true` — so Actions' default `bash -e` " +
-      "fails that step on the 403, before the checkout, on a step whose own name is about " +
-      "labels and a message, `Resource not accessible by integration`, that names neither the " +
-      "scope nor the half that grants it. Required whether or not `AGENT_PAT` is set: where a " +
-      "call prefers the PAT it defers this rather than removing it (`docs/ADOPTING.md` §4)",
+      "on `review`, `fix` and `update-branch` the label transition is `gh pr edit`, and the " +
+      "`--add-label` ending that step is not written `|| true` — so Actions' default `bash -e` " +
+      "fails it on the 403, before the checkout. The two implement halves transition an *issue* " +
+      "and spend this scope later: at `implement`'s preflight `gh pr list` on a private " +
+      "repository, otherwise at the step that opens the pull request, after the agent pass. " +
+      "`Resource not accessible by integration` names neither the scope nor the half that grants " +
+      "it. Required whether or not `AGENT_PAT` is set: where a call prefers the PAT it defers " +
+      "this rather than removing it (`docs/ADOPTING.md` §4)",
     absence: "always",
   },
   {
@@ -193,12 +195,12 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: ["follow-ups"],
     why:
       "this job transitions no label and checks nothing out, so the account in the row above is " +
-      "not what happens here: the calls are the report saying what was filed and the removal of " +
-      "the `agent:follow-ups` marker, both made from the runner and neither guarded. The marker " +
-      "is what carries the state — removed only on a filing run that finished — so a 403 there " +
-      "leaves it in place and the retry is a label removed and added by hand. Nothing says so " +
-      "either: the failure comment this workflow posts when a step dies is a `gh pr comment` " +
-      "too, so the one channel that would name the 403 is the one the 403 closed",
+      "not what happens here. It reads the marker and the reviews off the pull request before " +
+      "it files anything, so a private repository files nothing at all; served those reads, it " +
+      "files and then 403s on the two unguarded calls that end the run — the report saying what " +
+      "was filed, and the removal of the `agent:follow-ups` marker that carries the state, which " +
+      "therefore stays and makes the retry a label removed and added by hand. Nothing says so " +
+      "either: the failure comment this workflow posts is a `gh pr comment` too",
     absence: "always",
   },
   {

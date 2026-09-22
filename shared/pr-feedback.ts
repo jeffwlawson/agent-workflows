@@ -216,8 +216,10 @@ const SURFACE_OF_SELECTION: Record<string, FeedbackSurface> = {
 /**
  * The fields `isTrustedAuthor` is given. An error on one of these is an error on
  * the gate. Transcribed from `QUERY` as the map above is, and held to it the
- * same way — a gate field the query no longer selects fails the build rather
- * than quietly classifying an error on the gate as harmless.
+ * same way — but per selection set rather than across the query, because both
+ * are selected three times over: a body the query asks for without these two
+ * beside it fails the build, rather than reaching the gate with an association
+ * it cannot read and an error on one classified as harmless.
  */
 const GATE_FIELDS = new Set(["author", "authorAssociation"]);
 

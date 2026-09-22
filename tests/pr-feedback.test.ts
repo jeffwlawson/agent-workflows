@@ -768,13 +768,43 @@ describe("the classification is checked against the query it was transcribed fro
    */
   const GATE_READS = ["author", "authorAssociation"];
 
+  /** Every selection set in the query, under the dotted path that reaches it. */
+  const selectionSets = (
+    selections: readonly Selection[],
+    at: readonly string[],
+  ): readonly { readonly at: string; readonly keys: readonly string[] }[] => [
+    { at: at.join("."), keys: selections.map((selection) => selection.key) },
+    ...selections.flatMap((selection) => selectionSets(selection.children, [...at, selection.key])),
+  ];
+
+  /**
+   * The selection sets asking for a **body** — text somebody wrote, which is the
+   * whole reason the gate exists. Derived rather than listed, because a list of
+   * the three would be the transcription this block is here to distrust.
+   */
+  const AUTHORED = selectionSets(SELECTIONS, ["repository", "pullRequest"]).filter((set) =>
+    set.keys.includes("body"),
+  );
+
+  /**
+   * Per selection set, not across the query. The gate's two fields are selected
+   * three times over, so a check against the union of every path segment passes
+   * while two of the three still name them — and aliasing `authorAssociation` in
+   * the conversation comments alone is then a gate the API can refuse in silence:
+   * the error classified harmless, `fix` pushing on feedback whose author
+   * association it never read.
+   */
+  it("selects both gate fields beside every body the query asks for", () => {
+    // Vacuous over an empty list, and an empty list is itself the finding: this
+    // query asks for no feedback text at all.
+    expect(AUTHORED.length).toBeGreaterThan(0);
+
+    expect(
+      AUTHORED.filter((set) => !GATE_READS.every((field) => set.keys.includes(field))),
+    ).toEqual([]);
+  });
+
   it("marks the paths naming a gate field trust-bearing, and only those", () => {
-    const segments = new Set(PATHS.flatMap((path) => path.map(String)));
-
-    // A rename lands here first, before the classification has anything to
-    // disagree with: the gate reads a field this query no longer selects.
-    for (const field of GATE_READS) expect([...segments]).toContain(field);
-
     const trustBearing = classified().filter((selection) => selection.trustBearing);
 
     expect(trustBearing.map((selection) => selection.path)).toEqual(

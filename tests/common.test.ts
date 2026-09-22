@@ -1,4 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 // Only the two process-spawning exports are replaced; the rest of the module is
 // left intact, because anything else in the graph that reaches for
@@ -17,6 +20,7 @@ import {
   fetchTrustedIssue,
   ghOutcome,
   isTrustedAuthor,
+  required,
   safeGh,
 } from "../shared/common.js";
 
@@ -552,5 +556,87 @@ describe("fetchPullRequestHeading — the jq program survives the crossing", () 
     });
 
     expect(fetchPullRequestHeading("123")).toBe("PR #123");
+  });
+});
+
+/**
+ * `required` is the first thing a runner does — `fix/fix.ts` reads `PR_NUMBER`
+ * and `BRANCH` at module scope — so an input the workflow never wired stops the
+ * run before anything else has happened, which is exactly the run whose failure
+ * comment has to say what was missing.
+ *
+ * It used to exit without writing the reason file, so a missing `BASE_REF` and
+ * a runner that would not load at all produced the *same* comment on the PR:
+ * `(no reason file written)` (`docs/friction.md`, 2026-08-08, "One signature,
+ * two causes"). What that loses is the absence itself — the comment cannot even
+ * say which of the two happened. So what is pinned here is that the name of the
+ * variable reaches the file the `if: failure()` step reads.
+ */
+describe("required — a missing env var says which one, where the workflow can read it", () => {
+  const VAR = "AGENT_WORKFLOWS_TEST_ONLY_VAR";
+
+  /**
+   * `fail` never returns, so the exit has to stop the call here too. Letting
+   * the real `process.exit` run would end the test process mid-suite, which
+   * reports as no result rather than as a failure.
+   */
+  class Exited extends Error {}
+
+  let scratch = "";
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+  const previousOutputDir = process.env["OUTPUT_DIR"];
+
+  const reasonFile = (): string => path.join(scratch, "failure_reason.txt");
+
+  beforeEach(() => {
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), "common-required-"));
+    process.env["OUTPUT_DIR"] = scratch;
+    delete process.env[VAR];
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+    delete process.env[VAR];
+    if (previousOutputDir === undefined) delete process.env["OUTPUT_DIR"];
+    else process.env["OUTPUT_DIR"] = previousOutputDir;
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("returns the value, and writes nothing, when the variable is set", () => {
+    process.env[VAR] = "some-branch";
+
+    expect(required(VAR)).toBe("some-branch");
+    expect(fs.existsSync(reasonFile())).toBe(false);
+  });
+
+  it("writes the missing name where the failure comment can read it, then exits 1", () => {
+    expect(() => required(VAR)).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(reasonFile(), "utf8")).toContain(VAR);
+  });
+
+  /**
+   * An unset `vars.X` interpolates into the empty string rather than into
+   * nothing, so an input a caller declared and never filled in arrives set and
+   * empty. Same absence, and it has to reach the PR by the same route — this is
+   * the shape the 2026-08-08 run actually had.
+   */
+  it("treats an empty value as missing, reason file and all", () => {
+    process.env[VAR] = "";
+
+    expect(() => required(VAR)).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(reasonFile(), "utf8")).toContain(VAR);
   });
 });

@@ -43,9 +43,20 @@ const { execFileSync: spawnForReal } =
 // 2026-07-31:
 //   gh api graphql -f query='{ __type(name: "CommentAuthorAssociation")
 //                              { enumValues { name } } }'
-// Three are write-gated and therefore trusted; the other five are not. All
-// eight are listed so a later edit to TRUSTED_ASSOCIATIONS cannot widen the set
-// without a test turning red.
+// Three are trusted and the other five are not. What those three have in
+// common is that the repository already knows the author — org-adjacent or
+// better — and NOT that they can push. The enum's own descriptions
+// (introspected with `description` alongside `name`, 2026-09-20, #35) are the
+// ground truth for that:
+//   OWNER:        "Author is the owner of the repository."
+//   MEMBER:       "Author is a member of the organization that owns the
+//                  repository."
+//   COLLABORATOR: "Author has been invited to collaborate on the repository."
+// Only OWNER is write-gated by its definition: COLLABORATOR covers the Read
+// and Triage roles too, and MEMBER is org membership with no repository grant
+// implied. Whether the trusted set should narrow to match is open at #68 —
+// these rows pin what it is today either way, so a later edit to
+// TRUSTED_ASSOCIATIONS cannot widen the set without a test turning red.
 const ASSOCIATIONS: [association: string, trusted: boolean][] = [
   ["OWNER", true],
   ["MEMBER", true],
@@ -77,8 +88,10 @@ describe("isTrustedAuthor — author_association gate", () => {
 describe("isTrustedAuthor — trusted bot logins", () => {
   // Regression tests. Our own workflow account is reported as
   // `github-actions[bot]` by the REST API and as `github-actions` by GraphQL —
-  // the same account, two spellings. Its author_association is NONE, so an
-  // association-only gate would discard it. Listing only the REST spelling was a
+  // the same account, two spellings. Its author_association is never one the
+  // association half trusts — NONE where the bot has not committed and
+  // CONTRIBUTOR where it has (#71) — so an association-only gate would discard
+  // it. Listing only the REST spelling was a
   // shipped bug (docs/friction.md, "Closing the loop"): GraphQL-sourced comments
   // from the review agent were silently dropped and the review → fix handoff
   // quietly did nothing. Both spellings must stay trusted even with NONE.
@@ -308,9 +321,10 @@ describe("the trusted fetches reach gh through argv", () => {
   });
 
   // Same stdout reaching the same gate, arriving at the other verdict. A body
-  // that is present and readable is still withheld, because the author has no
-  // write access — the field is not the boundary, the author is.
-  it("withholds the same fields when the author has no write access", () => {
+  // that is present and readable is still withheld, because the author's
+  // association is outside the trusted set — the field is not the boundary,
+  // the author is.
+  it("withholds the same fields when the author's association is untrusted", () => {
     spawned.mockReturnValue(
       JSON.stringify({
         title: "Fix the merge",

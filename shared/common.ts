@@ -203,18 +203,51 @@ export const scrubGitHubTokens = (): void => {
   delete process.env["GITHUB_TOKEN"];
 };
 
+/**
+ * What the association half of the gate establishes is **org-adjacent or
+ * better**, which is not the same thing as repository write access. Only
+ * `OWNER` is write-gated by its own definition; GraphQL describes the other
+ * two as "Author has been invited to collaborate on the repository"
+ * (`COLLABORATOR` — which includes the Read and Triage roles, neither of which
+ * can push) and "Author is a member of the organization that owns the
+ * repository" (`MEMBER` — org membership, implying no repository grant at
+ * all). Introspected from `CommentAuthorAssociation` on 2026-09-20; evidence
+ * and method in #35.
+ *
+ * The two readings coincide on a personal repository — a collaborator there
+ * has write, and `MEMBER` cannot occur without an owning org — and come apart
+ * on an organization one. So this set is write-gated *here* and not in
+ * general, which is the wrong way round: the adopter is the one exposed.
+ *
+ * The belief that association implied write access was adopted locally from a
+ * community pattern, not from GitHub, which describes the field only as "How
+ * the author is associated with the repository" and publishes the
+ * OWNER/MEMBER/COLLABORATOR triple nowhere (#71).
+ *
+ * Whether the set itself should narrow is the open decision at #68. Until it
+ * is taken, every description of this gate says what it establishes rather
+ * than what it was believed to.
+ */
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 /**
- * Our own workflows post as `github-actions[bot]`, whose `author_association`
- * is `NONE` — so an association-only gate would discard the review agent's own
- * findings and break the review → fix handoff.
+ * Our own workflows post as `github-actions[bot]`, and its
+ * `author_association` is never one this gate trusts — the value is
+ * repository-dependent, `NONE` where the bot has never committed and
+ * `CONTRIBUTOR` where it has (`nodejs/node` #66163 and #65881, checked
+ * 2026-09-20, #71), and neither is in the set above. So an association-only
+ * gate would discard the review agent's own findings and break the review
+ * → fix handoff, on this repository and on an adopter's alike.
  *
  * Trusting this one login is sound because the identity is *transitively
  * write-gated*: only a workflow in this repository can post as it, and adding
- * or editing a workflow requires write access. Deliberately NOT `user.type ===
- * "Bot"` in general — that would also trust Dependabot and any GitHub App an
- * admin installs, which is a far wider surface for a workflow that commits code.
+ * or editing a workflow requires write access. That is a property of the
+ * login. The association half above establishes rather less (#68), so this is
+ * the stronger of the two halves rather than a convenience on top of it.
+ *
+ * Deliberately NOT `user.type === "Bot"` in general — that would also trust
+ * Dependabot and any GitHub App an admin installs, which is a far wider
+ * surface for a workflow that commits code.
  */
 // Both spellings on purpose: the REST API reports this account as
 // `github-actions[bot]`, GraphQL reports the same account as `github-actions`.
@@ -243,21 +276,26 @@ export const isTrustedAuthor = (association: string | undefined, login: string |
 export interface TrustedIssue {
   readonly title: string;
   readonly body: string;
-  /** True only when the issue's author has repo write access. */
+  /**
+   * True only when the author passes `isTrustedAuthor`: a trusted association
+   * — org-adjacent or better, which on an organization repository is weaker
+   * than write access (#68) — or our own workflow login.
+   */
   readonly trusted: boolean;
 }
 
 /**
  * Fetch an issue's title and body, but treat them as usable ONLY when the issue
- * author has repo write access (OWNER / MEMBER / COLLABORATOR).
+ * author is OWNER / MEMBER / COLLABORATOR — org-adjacent or better, not
+ * necessarily write-gated; see `TRUSTED_ASSOCIATIONS` and #68.
  *
  * Why: on a public repo anyone can *open* an issue with arbitrary title and
  * body, and this text is fed verbatim to an unsandboxed agent that holds tokens
  * and produces public output — a prompt-injection / exfiltration source. Author
- * association is the structural boundary, not the field: title and body from a
- * write-access author sit behind the same trust boundary the loop already
- * assumes. Comments are never fetched at all — they are world-writable
- * regardless of who opened the issue.
+ * association is the structural boundary, not the field: title and body from an
+ * author the repository already knows sit behind the same trust boundary the
+ * rest of the loop assumes. Comments are never fetched at all — they are
+ * world-writable regardless of who opened the issue.
  */
 export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
   const ghRepo = process.env["GH_REPO"] ?? "";

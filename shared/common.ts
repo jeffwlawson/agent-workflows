@@ -169,6 +169,46 @@ export const safeGh = (args: readonly string[], options: GhOptions = {}): string
   }
 };
 
+/** What `gh` did, when the caller has to rule on the answer rather than on the exit code. */
+export interface GhOutcome {
+  /** True when `gh` exited zero. */
+  readonly ok: boolean;
+  /** What `gh` printed to stdout — present on a non-zero exit too, and often the whole answer. */
+  readonly stdout: string;
+  /** What `gh` printed to stderr, which is where it explains a refusal in words. */
+  readonly stderr: string;
+}
+
+/** `execFileSync` hands back whatever the stdio encoding produced; normalise it to text. */
+const capturedText = (value: unknown): string =>
+  typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
+
+/**
+ * `gh` with argv, returning its **output** on a non-zero exit rather than
+ * throwing it away.
+ *
+ * The third wrapper, and the reason it is not one of the other two: GraphQL
+ * answers partially. A query whose selections are mostly fine and one of which
+ * is forbidden returns `200` with valid `data` *and* an `errors[]` array, and
+ * `gh` exits non-zero on that response while printing the good data to stdout
+ * (#76). `gh()` throws it away because `execFileSync` throws; `safeGh()`
+ * swallows it into `""`, which its two callers want — for them a missing issue
+ * is an ordinary absence — and which here is the same information loss by a
+ * politer route.
+ *
+ * So this is for the caller that must *inspect* what came back: a response is
+ * the evidence, the exit code is not. Deliberately not a widening of `safeGh`,
+ * whose swallowing is load-bearing where it is used.
+ */
+export const ghOutcome = (args: readonly string[], options: GhOptions = {}): GhOutcome => {
+  try {
+    return { ok: true, stdout: gh([...args], options), stderr: "" };
+  } catch (error) {
+    const thrown = error as { stdout?: unknown; stderr?: unknown };
+    return { ok: false, stdout: capturedText(thrown.stdout), stderr: capturedText(thrown.stderr) };
+  }
+};
+
 /**
  * Run `git` with argv (no shell) — the same decision as `gh`, for the same
  * reason. Use this whenever a **variable** reaches git: `execFileSync` passes

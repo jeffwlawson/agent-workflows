@@ -197,7 +197,13 @@ jobs:
           package-manager-cache: false
 
       # The runner refuses (non-zero) when there is no trusted feedback, so the
-      # "nothing to act on" case surfaces through the normal failure path.
+      # "nothing to act on" case surfaces through the normal failure path. It
+      # refuses for three other reasons too, each with its own sentence in the
+      # reason file: a feedback selection the API would not answer, one the
+      # author gate itself reads, and a query that came back with no answer at
+      # all (#76). This job pushes, so an unestablished author is a reason to
+      # stop — and "nothing was said" must never be the sentence a human is
+      # shown for "we were not allowed to look".
       - name: Run fix agent
         if: steps.state.outputs.proceed == 'true'
         env:

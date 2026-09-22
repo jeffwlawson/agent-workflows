@@ -1,5 +1,9 @@
 import { fetchTrustedComments, fetchTrustedIssue, gh } from "./common.js";
-import { fetchPullRequestFeedback } from "./pr-feedback.js";
+import {
+  fetchPullRequestFeedback,
+  unreadableNote,
+  type UnreadableSelection,
+} from "./pr-feedback.js";
 import { parseDiffLines } from "./diff-lines.js";
 
 export interface PullRequestContext {
@@ -10,6 +14,12 @@ export interface PullRequestContext {
   readonly linkedIssue: string;
   /** Collaborator-authored conversation comments on the PR and linked issue. */
   readonly discussion: string;
+  /**
+   * Feedback selections the API refused, already rendered into `discussion` for
+   * the agent. Carried separately so the runner can say the same thing in its
+   * own log, where a human debugging the run reads it.
+   */
+  readonly unreadableFeedback: readonly UnreadableSelection[];
   readonly diff: string;
   readonly diffLines: Map<string, Set<number>>;
 }
@@ -57,9 +67,16 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
   // a human left on the previous one instead of repeating itself.
   const feedback = fetchPullRequestFeedback(prNumber);
   const issueComments = issueNumber ? fetchTrustedComments(issueNumber) : "";
+  // A review **degrades** where the fix runner refuses: it holds `contents:
+  // read` and produces text, so proceeding on what survived is right. What it
+  // must not do is proceed *silently* — a refused selection used to render as an
+  // absent section, and an absent section reads as agreement, so the agent
+  // repeated work a human had already commented on with nothing recording why
+  // (#76). The note goes last: it is a caveat on what is above it.
   const discussion = [
     feedback.all,
     issueComments && `### On the linked issue\n\n${issueComments}`,
+    unreadableNote(feedback.unreadable),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -78,6 +95,7 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
     issueTitle,
     linkedIssue,
     discussion,
+    unreadableFeedback: feedback.unreadable,
     diff,
     diffLines: parseDiffLines(diff),
   };

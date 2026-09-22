@@ -11,7 +11,12 @@ import {
   writeJson,
 } from "../shared/common.js";
 import { filterOutcomes, filterTopLevelComments, fixOutputSchema } from "../shared/fix-output.js";
-import { fetchPullRequestFeedback } from "../shared/pr-feedback.js";
+import {
+  describeUnreadable,
+  fetchPullRequestFeedback,
+  refusalReason,
+  surfaceText,
+} from "../shared/pr-feedback.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
@@ -20,15 +25,21 @@ const BRANCH = required("BRANCH");
 try {
   const feedback = fetchPullRequestFeedback(PR_NUMBER);
 
-  // The workflow pre-flights this too, but re-check here: between the pre-flight
-  // and now, the only *trusted* feedback could have been from an author the gate
-  // rejects. Refusing beats letting the agent invent work to do.
-  if (!feedback.hasFeedback) {
-    fail(
-      "No unresolved feedback from a repo collaborator (or our review agent) to act on. " +
-        "Resolved threads and comments from non-collaborators are deliberately ignored.",
+  // Said in the log whether or not it is a reason to stop, because a run that
+  // proceeded on a partial answer is one someone will later ask about.
+  if (feedback.unreadable.length > 0) {
+    console.log(
+      `Feedback selections that could not be read: ${describeUnreadable(feedback.unreadable)}`,
     );
   }
+
+  // This is the run that pushes, so it refuses where a review degrades. The
+  // four-way decision lives with the fetch — an empty result, a refused
+  // selection, a refused selection the author gate reads, and no answer at all
+  // are different reasons, and a human can only act on one of them if it is
+  // named (#76). `fail()` puts whichever it is on the PR.
+  const refusal = refusalReason(feedback);
+  if (refusal) fail(refusal);
 
   // Context is gathered; the agent must not hold the GitHub token. This matters
   // more here than anywhere else — this workflow can push.
@@ -45,9 +56,12 @@ try {
     promptArgs: {
       PR_NUMBER,
       BRANCH,
-      REVIEW_SUMMARIES: feedback.summaries || "(none)",
-      INLINE_COMMENTS: feedback.inline || "(none)",
-      CONVERSATION: feedback.conversation || "(none)",
+      // Each surface as the agent should see it: its text, or a named refusal
+      // where the API would not answer — never "(none)" for both, which is the
+      // same collapse one level down from the fetch.
+      REVIEW_SUMMARIES: surfaceText(feedback, "summaries"),
+      INLINE_COMMENTS: surfaceText(feedback, "inline"),
+      CONVERSATION: surfaceText(feedback, "conversation"),
       PR_DIFF: feedback.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: fixOutputSchema }),

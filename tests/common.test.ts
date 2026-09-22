@@ -15,6 +15,7 @@ import {
   fetchPullRequestHeading,
   fetchTrustedComments,
   fetchTrustedIssue,
+  ghOutcome,
   isTrustedAuthor,
   safeGh,
 } from "../shared/common.js";
@@ -279,6 +280,73 @@ describe("safeGh — argv, with the swallowing safeSh had", () => {
     });
 
     expect(safeGh(["api", "repos/o/r/issues/9999"])).toBe("");
+  });
+});
+
+/**
+ * The third wrapper, and the one whose whole reason for existing is what the
+ * other two throw away. GraphQL answers partially: a query with one forbidden
+ * selection returns `200` with valid `data` *and* an `errors[]` array, and `gh`
+ * exits non-zero on that response having already printed the good data to
+ * stdout (#76). `gh()` throws it away, `safeGh()` swallows it into `""` — which
+ * its two callers want and which here is the same loss by a politer route — so
+ * a caller that must rule on the *answer* rather than the exit code needs the
+ * output back.
+ */
+describe("ghOutcome — the output survives a non-zero exit", () => {
+  beforeEach(() => {
+    spawned.mockReset();
+    shelled.mockReset();
+  });
+
+  it("reports a zero exit with its stdout", () => {
+    spawned.mockReturnValue('{"data":{}}');
+
+    expect(ghOutcome(["api", "graphql", "-f", "query={}"])).toEqual({
+      ok: true,
+      stdout: '{"data":{}}',
+      stderr: "",
+    });
+    expect(shelled).not.toHaveBeenCalled();
+  });
+
+  it("hands back the payload gh printed before exiting non-zero", () => {
+    const partial = '{"data":{"repository":{"collaborators":null}},"errors":[{"type":"FORBIDDEN"}]}';
+    spawned.mockImplementation(() => {
+      const error = new Error("Command failed") as Error & { stdout: string; stderr: string };
+      error.stdout = partial;
+      error.stderr = "gh: You do not have permission to view repository collaborators.\n";
+      throw error;
+    });
+
+    const outcome = ghOutcome(["api", "graphql", "-f", "query={}"]);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.stdout).toBe(partial);
+    expect(outcome.stderr).toContain("do not have permission");
+  });
+
+  // A failure with nothing on it at all — a missing binary throws an ENOENT
+  // carrying no captured output. It must read as empty text, not as `undefined`
+  // reaching a caller that is about to `JSON.parse` it.
+  it("reports empty text when the failure carried no output", () => {
+    spawned.mockImplementation(() => {
+      throw new Error("spawn gh ENOENT");
+    });
+
+    expect(ghOutcome(["api", "graphql"])).toEqual({ ok: false, stdout: "", stderr: "" });
+  });
+
+  it("reaches gh through argv, with no shell", () => {
+    spawned.mockReturnValue("{}");
+
+    ghOutcome(["api", "graphql", "-F", "number=$(id)"]);
+
+    const [file, args, options] = spawned.mock.calls.at(-1)!;
+    expect(file).toBe("gh");
+    expect(args).toEqual(["api", "graphql", "-F", "number=$(id)"]);
+    expect(options).not.toHaveProperty("shell");
+    expect(shelled).not.toHaveBeenCalled();
   });
 });
 

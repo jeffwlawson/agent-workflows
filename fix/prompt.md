@@ -46,6 +46,12 @@ before applying, and decline it like any other comment if it is wrong. A suggest
 dangerous than prose precisely because it looks ready to apply — a confident reviewer working
 from a false premise produces a tidy patch that is still wrong.
 
+**A section that says it could not be read.** One of the three sections above may say so instead
+of holding comments. That is not "there was none" — the API refused that part of the request, and
+what it covers is unknown. Do not treat it as agreement or as an empty list: work from what you
+were shown, and say in a reply or a top-level comment that a surface was unreadable if it changes
+what you would otherwise conclude.
+
 **Outdated anchors.** A comment marked *outdated* was written against code that has since
 changed. Its line numbers point at the old state, so re-read the current code before deciding
 whether the point still stands. It often already has been addressed.

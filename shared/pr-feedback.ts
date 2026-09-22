@@ -569,9 +569,16 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * Returns argv for `git`, not a command string: `git()` runs `execFileSync`, so
  * `baseRef` arrives as one argument and is never shell-parsed. That matters
  * because a git ref may legally contain `` ` ``, `$()`, `;`, `|` and `&`. This
- * previously carried a "must stay trusted input" warning instead (issue #75) —
- * write access is still the loop's trust boundary, but it is no longer the only
- * thing standing between a ref name and `/bin/sh`.
+ * previously carried a "must stay trusted input" warning instead (issue #75).
+ * The input is in fact narrow, and both sources named above are push-gated: a
+ * PR's `base.ref` names a branch in the *base* repository, which somebody had
+ * to create there, and the `default-branch` input behind it is either set in
+ * caller YAML, which `pull_request_target` reads from the base branch, or left
+ * to the pinned reusable's `default: main` — a pull request can edit neither.
+ * Push access is this input's provenance and nothing wider — it is not the
+ * line `isTrustedAuthor` draws over the world-writable feedback surfaces,
+ * which admits org-adjacent or better (#68). Neither is what makes this call
+ * safe: the argv form is, and it holds however the ref got here.
  */
 export const diffCommandAgainstBase = (baseRef: string | undefined): readonly string[] => {
   const base = (baseRef ?? "").trim();

@@ -101,6 +101,14 @@ export interface PullRequestFeedback {
  * is fine (#76). So a selection added to this query is a row added to
  * `SURFACE_OF_SELECTION` in the same change — without one, an error on it is
  * unplaceable, which is read as trust-bearing and makes the run refuse.
+ *
+ * That refusal is loud about an omission and silent about a **rename**: alias a
+ * selection here, or follow a field of GitHub's that moves, and the query keeps
+ * working while every error under it arrives unplaceable — a run refused on the
+ * author gate, naming a selection the map has never heard of, for a query with
+ * nothing wrong with it. So the transcription is checked against this string
+ * rather than trusted to it: `tests/pr-feedback.test.ts` reads it and puts every
+ * path it could produce through `classify`, and fails by name on either.
  */
 const QUERY = `
 query($owner:String!,$repo:String!,$number:Int!) {
@@ -205,7 +213,14 @@ const SURFACE_OF_SELECTION: Record<string, FeedbackSurface> = {
   reviewThreads: "inline",
 };
 
-/** The fields `isTrustedAuthor` is given. An error on one of these is an error on the gate. */
+/**
+ * The fields `isTrustedAuthor` is given. An error on one of these is an error on
+ * the gate. Transcribed from `QUERY` as the map above is, and held to it the
+ * same way — but per selection set rather than across the query, because both
+ * are selected three times over: a body the query asks for without these two
+ * beside it fails the build, rather than reaching the gate with an association
+ * it cannot read and an error on one classified as harmless.
+ */
 const GATE_FIELDS = new Set(["author", "authorAssociation"]);
 
 const EVERYTHING = { surfaces: ALL_SURFACES, trustBearing: true } as const;
@@ -226,7 +241,9 @@ const UNPLACEABLE = { surfaces: [] as readonly FeedbackSurface[], trustBearing: 
  * That last rule is why this map is a fixed list rather than a derivation: a
  * surface added to `QUERY` is a row added here in the same change, exactly as a
  * new pin site is a change to `shared/pins.ts` in the same commit. Leaving it
- * out does not go unnoticed — it makes the new surface refuse.
+ * out does not go unnoticed — it makes the new surface refuse, and a test that
+ * reads `QUERY` fails on it by name, which is the half refusing cannot do for a
+ * selection merely *renamed*.
  */
 const classify = (
   segments: readonly string[],

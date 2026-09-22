@@ -627,6 +627,194 @@ describe("a selection the author gate reads is trust-bearing", () => {
   });
 });
 
+/**
+ * Both lists `classify` rules on are hand-transcribed from `QUERY`, and the
+ * query's own comment says so: a selection added to it is a row added to
+ * `SURFACE_OF_SELECTION` in the same change.
+ *
+ * An **omission** is already loud — an unplaceable path is read as trust-bearing
+ * and the run refuses. A **rename** is not. Alias `comments` to anything, or
+ * follow a field of GitHub's that moves, and the query keeps working while every
+ * error under it arrives unplaceable: a refusal blamed on the author gate,
+ * naming a selection the map has never heard of, for a query with nothing wrong
+ * with it. The same for the gate's own two fields, which are transcribed the
+ * same way.
+ *
+ * So the transcription is checked against the thing it was transcribed from.
+ * `QUERY` is read out of the module's text because nothing exports it — the way
+ * the fix runner's wiring is asserted over `fix/fix.ts` below — and every path
+ * an error in it could name is put through the one seam that shows what the
+ * classification made of it.
+ *
+ * The data half of the fixture is deliberately whole. What is under test is the
+ * classification of a *path*, which `asUnreadable` computes from the error
+ * alone; which shape each individual refusal leaves behind in `data` is the
+ * business of the blocks above, one refusal at a time.
+ */
+describe("the classification is checked against the query it was transcribed from", () => {
+  /** One selection of the query, under the response key an error path would name. */
+  interface Selection {
+    readonly key: string;
+    readonly children: readonly Selection[];
+  }
+
+  /**
+   * Enough GraphQL to read this one query: field names, selection sets, and the
+   * alias that decides the response key. Arguments go first — they carry no
+   * selections — and the operation's own header with them, so the walk starts at
+   * `repository`.
+   *
+   * The alias is the point rather than a detail. `conversation: comments(...)`
+   * puts `conversation` in every error path GitHub reports, so the alias, not the
+   * field, is what the map has to be keyed on.
+   */
+  const parseSelections = (graphql: string): readonly Selection[] => {
+    const withoutArguments = graphql.replace(/\([^)]*\)/g, " ");
+    const tokens =
+      withoutArguments
+        .slice(withoutArguments.indexOf("{") + 1)
+        .match(/[_A-Za-z][_A-Za-z0-9]*|[{}:]/g) ?? [];
+
+    let at = 0;
+    const selectionSet = (): Selection[] => {
+      const selections: Selection[] = [];
+      for (let token = tokens[at]; token !== undefined && token !== "}"; token = tokens[at]) {
+        at += 1;
+        // `alias: field` — the alias is the response key, so the field name is
+        // the half that gets dropped.
+        if (tokens[at] === ":") at += 2;
+
+        let children: readonly Selection[] = [];
+        if (tokens[at] === "{") {
+          at += 1;
+          children = selectionSet();
+          at += 1;
+        }
+        selections.push({ key: token, children });
+      }
+      return selections;
+    };
+    return selectionSet();
+  };
+
+  const refuse = (what: string): never => {
+    throw new Error(`${what} — this check reads shared/pr-feedback.ts and can no longer find it.`);
+  };
+
+  const querySource = (): string =>
+    /\bconst QUERY = `([^`]*)`/.exec(fs.readFileSync("shared/pr-feedback.ts", "utf8"))?.[1] ??
+    refuse("`QUERY` is no longer a template literal");
+
+  const childrenOf = (selections: readonly Selection[], key: string): readonly Selection[] =>
+    selections.find((selection) => selection.key === key)?.children ??
+    refuse(`\`QUERY\` no longer selects \`${key}\``);
+
+  /** The query's own selections under `pullRequest`, by response key. */
+  const SELECTIONS = childrenOf(childrenOf(parseSelections(querySource()), "repository"), "pullRequest");
+
+  /**
+   * Every path an error in those selections could name. The `0` after `nodes` is
+   * the list index GitHub puts there: `classify` reads names and not positions,
+   * but a path without it is not one the API sends.
+   */
+  const pathsUnder = (
+    selections: readonly Selection[],
+    prefix: readonly (string | number)[],
+  ): readonly (readonly (string | number)[])[] =>
+    selections.flatMap((selection) => {
+      const here = [...prefix, ...(selection.key === "nodes" ? ["nodes", 0] : [selection.key])];
+      return [here, ...pathsUnder(selection.children, here)];
+    });
+
+  const PATHS = pathsUnder(SELECTIONS, ["repository", "pullRequest"]);
+  const dotted = (path: readonly (string | number)[]): string => path.map(String).join(".");
+
+  /** Every path at once: one response, one error per path, in that order. */
+  const classified = () => {
+    ghAnswers(() => {
+      throw exitsNonZero(
+        response(
+          pullRequest(),
+          PATHS.map((path) => forbidden([...path], "Resource not accessible")),
+        ),
+        "gh: Resource not accessible\n",
+      );
+    });
+    return fetchPullRequestFeedback("12").unreadable;
+  };
+
+  it("places every selection the query makes on a rendered surface", () => {
+    // The parse itself, since an empty list would agree with everything below.
+    // Not the three names: transcribing them here is the habit under test, and
+    // an added selection should fail on the row it is missing rather than on a
+    // list in a test that has to be updated to say the same thing twice.
+    expect(SELECTIONS.length).toBeGreaterThan(0);
+
+    const unplaceable = classified().filter((selection) => selection.surfaces.length === 0);
+
+    expect(unplaceable.map((selection) => selection.path)).toEqual([]);
+  });
+
+  /**
+   * The gate's own fields, in the query's words for them. `isTrustedAuthor` is
+   * handed `authorAssociation` and the `login` under `author`, and it is
+   * `author` that matters of that second pair: a path through it costs the gate
+   * its login whether it stops there or goes on to the leaf.
+   *
+   * Named here because `GATE_FIELDS` is the transcription under test and cannot
+   * also be the expectation. What this catches is the two coming apart — an
+   * error on a field the gate reads, classified as harmless because the query
+   * calls that field something else now.
+   */
+  const GATE_READS = ["author", "authorAssociation"];
+
+  /** Every selection set in the query, under the dotted path that reaches it. */
+  const selectionSets = (
+    selections: readonly Selection[],
+    at: readonly string[],
+  ): readonly { readonly at: string; readonly keys: readonly string[] }[] => [
+    { at: at.join("."), keys: selections.map((selection) => selection.key) },
+    ...selections.flatMap((selection) => selectionSets(selection.children, [...at, selection.key])),
+  ];
+
+  /**
+   * The selection sets asking for a **body** — text somebody wrote, which is the
+   * whole reason the gate exists. Derived rather than listed, because a list of
+   * the three would be the transcription this block is here to distrust.
+   */
+  const AUTHORED = selectionSets(SELECTIONS, ["repository", "pullRequest"]).filter((set) =>
+    set.keys.includes("body"),
+  );
+
+  /**
+   * Per selection set, not across the query. The gate's two fields are selected
+   * three times over, so a check against the union of every path segment passes
+   * while two of the three still name them — and aliasing `authorAssociation` in
+   * the conversation comments alone is then a gate the API can refuse in silence:
+   * the error classified harmless, `fix` pushing on feedback whose author
+   * association it never read.
+   */
+  it("selects both gate fields beside every body the query asks for", () => {
+    // Vacuous over an empty list, and an empty list is itself the finding: this
+    // query asks for no feedback text at all.
+    expect(AUTHORED.length).toBeGreaterThan(0);
+
+    expect(
+      AUTHORED.filter((set) => !GATE_READS.every((field) => set.keys.includes(field))),
+    ).toEqual([]);
+  });
+
+  it("marks the paths naming a gate field trust-bearing, and only those", () => {
+    const trustBearing = classified().filter((selection) => selection.trustBearing);
+
+    expect(trustBearing.map((selection) => selection.path)).toEqual(
+      PATHS.filter((path) => path.map(String).some((segment) => GATE_READS.includes(segment))).map(
+        dotted,
+      ),
+    );
+  });
+});
+
 describe("a total failure stays distinguishable from a partial one", () => {
   it("reports a failed status when gh printed nothing usable", () => {
     ghAnswers(() => {

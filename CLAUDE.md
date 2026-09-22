@@ -189,10 +189,15 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
   is indistinguishable from the module-resolution failure a stale branch gives — one signature, two
   causes, and the signature is the *absence* of information.
 
-  `shared/common.ts`'s `required()` is a **known exception**: it `process.exit(1)`s on a missing
-  env var without writing the file. It is the reason that string has been seen twice for unrelated
-  reasons (`docs/friction.md`, 2026-08-08). Do not copy the pattern, and fix it as its own change
-  rather than folding it into an unrelated one.
+  `shared/common.ts`'s `required()` was the known exception and is no longer one (#88): a missing
+  env var now exits through `fail()`, so the run that dies at module scope — before any of a
+  runner's own work — still names the variable it wanted. That is the case the convention is
+  hardest to keep and most needed, since nothing else has happened yet for a human to read.
+
+  One cause of the string survives and is not fixable from here: a step that fails *before* the
+  runner exists to write anything, which is where `CONTEXT.md`'s note on the toolchain-free auth
+  step points. So it now means "the run never got as far as the runner", rather than that plus a
+  missing input.
 - TypeScript is strict, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. With
   the latter, build optional properties conditionally (`...(x === undefined ? {} : { x })`) rather
   than assigning `undefined`.

@@ -6,15 +6,6 @@ import * as sandcastle from "@ai-hero/sandcastle";
 
 export const outputDir = (): string => process.env["OUTPUT_DIR"] ?? "/tmp";
 
-export const required = (name: string): string => {
-  const value = process.env[name];
-  if (!value) {
-    console.error(`Missing required env var: ${name}`);
-    process.exit(1);
-  }
-  return value;
-};
-
 /**
  * Write the reason somewhere the workflow's `if: failure()` step can read it,
  * then exit non-zero. Without this the issue comment can only say "check the
@@ -25,6 +16,31 @@ export const fail = (message: string): never => {
   fs.mkdirSync(outputDir(), { recursive: true });
   fs.writeFileSync(path.join(outputDir(), "failure_reason.txt"), message);
   process.exit(1);
+};
+
+/**
+ * Read an input the workflow step was supposed to set, failing the run when it
+ * did not.
+ *
+ * Out through `fail`, not `process.exit`, and that is the whole point of the
+ * function: this runs at module scope, before any of a runner's own work, so
+ * the run it ends is the one with nothing else in its log to go on. Exiting
+ * silently left the comment reading `(no reason file written)` — the same
+ * string a runner that will not load at all produces, one signature for two
+ * causes whose difference is the only thing worth knowing (`docs/friction.md`,
+ * 2026-08-08).
+ *
+ * Empty counts as missing: GitHub interpolates an unset `vars.X` into `""`
+ * rather than into nothing, so a `with:` input a caller declared and never
+ * filled in arrives set and empty.
+ */
+export const required = (name: string): string => {
+  const value = process.env[name];
+  // `return`, rather than a bare call and a fallthrough: `fail` is a const, so
+  // TypeScript does not narrow on its `never` return and would still see
+  // `string | undefined` below.
+  if (!value) return fail(`Missing required env var: ${name}`);
+  return value;
 };
 
 /**

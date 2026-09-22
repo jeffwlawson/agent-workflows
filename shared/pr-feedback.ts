@@ -154,6 +154,31 @@ interface GqlThread {
  * `errors[]` naming `…comments.nodes.0.authorAssociation`. Typing the elements
  * as non-null is a claim the response does not support, and TypeScript would
  * then let a `null` reach `isTrustedAuthor` unchecked.
+ *
+ * **Where a refusal surfaces is decided by that same propagation, and it is not
+ * uniform across the three.** From the published schema
+ * (`docs.github.com/public/fpt/schema.docs.graphql`):
+ *
+ * - `PullRequest.comments: IssueCommentConnection!` and
+ *   `PullRequest.reviewThreads: PullRequestReviewThreadConnection!` are
+ *   **non-null**, so an error on either propagates past them to the nearest
+ *   nullable ancestor — `Repository.pullRequest`, which is nullable. A token
+ *   forbidden one of those two gets `pullRequest: null`, which `readResponse`
+ *   rules `failed`. It never gets that connection nulled beside populated
+ *   siblings.
+ * - `PullRequest.reviews: PullRequestReviewConnection` is **nullable**, so it
+ *   is the one selection here whose whole connection can go missing while the
+ *   other two answer. That is the shape `partial` was built for at the
+ *   connection level.
+ * - Below the connections it is the elements that absorb it, per the paragraph
+ *   above — `PullRequestReviewThread.comments` is non-null too, so an error
+ *   there nulls the thread rather than the list. That is how `comments` and
+ *   `reviewThreads` reach `partial`: through a hole in the list, not an absent
+ *   connection.
+ *
+ * The `| null` on each connection below is therefore wider than the schema, and
+ * stays: this reads a payload it did not type, and a reader that trusts a
+ * non-null marking throws where it meant to report (#76).
  */
 interface GqlPullRequest {
   comments?: { nodes?: (GqlAuthored | null)[] | null } | null;

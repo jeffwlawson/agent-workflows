@@ -105,6 +105,35 @@ const forbidden = (path: (string | number)[], message: string): unknown => ({
 });
 
 /**
+ * **Which pairings GitHub can actually return**, because a fixture the schema
+ * forbids tests the reader against a response it will never meet. From the
+ * published schema (`docs.github.com/public/fpt/schema.docs.graphql`), a field
+ * error null-propagates to the nearest *nullable* ancestor:
+ *
+ * - `PullRequest.comments` and `PullRequest.reviewThreads` are **non-null**
+ *   (`IssueCommentConnection!`, `PullRequestReviewThreadConnection!`). A
+ *   refusal of either propagates past the connection to `Repository.pullRequest`
+ *   — nullable — so it arrives as `pullRequest: null`, which is a `failed`, not
+ *   a `partial`. `{ comments: null }` beside populated siblings is not a shape
+ *   that exists; see *a total failure stays distinguishable from a partial one*.
+ * - `PullRequest.reviews` is **nullable**, so it is the one connection that can
+ *   go missing on its own while the other two answer.
+ * - Inside a list it is the element that absorbs the error, since
+ *   `nodes: [X]` is nullable per element. `PullRequestReviewThread.comments` is
+ *   non-null, so a refusal there nulls the *thread* — which is how `comments`
+ *   and `reviewThreads` reach `partial` at all: a hole in the list, never an
+ *   absent connection.
+ *
+ * `THREAD_HOLE` is that last shape, used wherever a test needs the inline
+ * surface refused while its siblings answer.
+ */
+const THREAD_HOLE = { reviewThreads: { nodes: [null] } };
+const THREAD_HOLE_ERROR = forbidden(
+  ["repository", "pullRequest", "reviewThreads", "nodes", 0, "comments"],
+  "Resource not accessible",
+);
+
+/**
  * Stand in for `gh`, and for the `git diff` the fetch takes in the same breath.
  * `answer` is a thunk so a scenario can throw the way a non-zero exit does.
  */
@@ -133,13 +162,21 @@ afterEach(() => {
   }
 });
 
+/**
+ * Every fixture here is a `partial`, which narrows what the refusal is allowed
+ * to be: `reviews` nulled, or a hole in a node list. A refusal of the `comments`
+ * or `reviewThreads` *connection* cannot appear in this block at all — those two
+ * are non-null and null-propagate to `pullRequest`, so they land in *a total
+ * failure stays distinguishable from a partial one* instead. See the note above
+ * `THREAD_HOLE`.
+ */
 describe("a partial-error response keeps the selections that returned", () => {
+  // The inline surface refused through the only route that leaves its siblings
+  // standing: an error inside the thread list, nulling the thread.
   it("renders the surfaces that answered when one selection was refused", () => {
     ghAnswers(() => {
       throw exitsNonZero(
-        response(pullRequest({ reviewThreads: null }), [
-          forbidden(["repository", "pullRequest", "reviewThreads"], "Resource not accessible"),
-        ]),
+        response(pullRequest(THREAD_HOLE), [THREAD_HOLE_ERROR]),
         "gh: Resource not accessible\n",
       );
     });
@@ -156,6 +193,9 @@ describe("a partial-error response keeps the selections that returned", () => {
     expect(feedback.threadIds).toEqual([]);
   });
 
+  // `reviews` is the one nullable connection of the three, so this is the only
+  // connection-level refusal that reaches `partial` rather than nulling the
+  // pull request out from under its siblings.
   it("names the refused selection, the surface it takes out, and what the API said", () => {
     ghAnswers(() => {
       throw exitsNonZero(
@@ -182,9 +222,15 @@ describe("a partial-error response keeps the selections that returned", () => {
   it("reads a partial error that arrives with a zero exit too", () => {
     // `gh` exits non-zero today. The response is what decides, not the exit
     // code, so a gh that stopped doing that must not turn a refusal into a pass.
+    //
+    // `body` is `String!`, so the error nulls the element rather than the
+    // connection — the conversation surface refused the way it actually is.
     ghAnswers(() =>
-      response(pullRequest({ comments: null }), [
-        forbidden(["repository", "pullRequest", "comments"], "Resource not accessible"),
+      response(pullRequest({ comments: { nodes: [null, CONVERSATION_COMMENT] } }), [
+        forbidden(
+          ["repository", "pullRequest", "comments", "nodes", 0, "body"],
+          "Resource not accessible",
+        ),
       ]),
     );
 
@@ -247,9 +293,7 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
   it("says a surface could not be read, rather than passing it off as empty", () => {
     ghAnswers(() => {
       throw exitsNonZero(
-        response(pullRequest({ reviewThreads: null }), [
-          forbidden(["repository", "pullRequest", "reviewThreads"], "Resource not accessible"),
-        ]),
+        response(pullRequest(THREAD_HOLE), [THREAD_HOLE_ERROR]),
         "gh: Resource not accessible\n",
       );
     });
@@ -307,9 +351,7 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
   it("renders a note for the agent naming what is unknown rather than absent", () => {
     ghAnswers(() => {
       throw exitsNonZero(
-        response(pullRequest({ reviewThreads: null }), [
-          forbidden(["repository", "pullRequest", "reviewThreads"], "Resource not accessible"),
-        ]),
+        response(pullRequest(THREAD_HOLE), [THREAD_HOLE_ERROR]),
         "gh: Resource not accessible\n",
       );
     });
@@ -370,12 +412,29 @@ describe("a selection the author gate reads is trust-bearing", () => {
     expect(feedback.conversation).toContain("Please rename this");
   });
 
-  it("marks an errored author login as trust-bearing", () => {
+  /**
+   * `author` is the gate field whose error leaves the element **standing**:
+   * `PullRequestReview.author` is `Actor`, nullable, so it absorbs the error
+   * itself rather than propagating to the node the way `authorAssociation!`
+   * does above. The review therefore renders, under `@unknown`, and
+   * `isTrustedAuthor` passes on `OWNER` alone — the login half of the gate is
+   * an `||`, so losing it cannot loosen anything.
+   *
+   * Which is exactly why the classification has to carry: nothing about the
+   * rendered output says the author could not be established, and the only
+   * thing that stops the run which *pushes* is `trustBearing` reaching
+   * `refusalReason`. A review degrades and is handed a comment whose author is
+   * unknown; a fix refuses.
+   */
+  it("marks an errored author login as trust-bearing, though the element survives it", () => {
     ghAnswers(() => {
       throw exitsNonZero(
-        response(pullRequest({ reviews: { nodes: [null] } }), [
-          forbidden(["repository", "pullRequest", "reviews", "nodes", 0, "author"], "Forbidden"),
-        ]),
+        response(
+          pullRequest({
+            reviews: { nodes: [{ ...REVIEW_SUMMARY, author: null }] },
+          }),
+          [forbidden(["repository", "pullRequest", "reviews", "nodes", 0, "author"], "Forbidden")],
+        ),
         "gh: Forbidden\n",
       );
     });
@@ -383,7 +442,11 @@ describe("a selection the author gate reads is trust-bearing", () => {
     const feedback = fetchPullRequestFeedback("12");
 
     expect(feedback.unreadable[0]?.trustBearing).toBe(true);
-    expect(feedback.summaries).toBe("");
+    // The review is still rendered — with the author it could not establish.
+    expect(feedback.summaries).toContain("**@unknown** (COMMENTED)");
+    expect(feedback.hasFeedback).toBe(true);
+    // And the consumer that pushes stops anyway, naming the gate.
+    expect(refusalReason(feedback)).toContain("author gate");
   });
 
   /**
@@ -393,6 +456,10 @@ describe("a selection the author gate reads is trust-bearing", () => {
    * filter. Reading a `null` in any of them throws a `TypeError` that the
    * runner writes into `failure_reason.txt` in place of its named refusal —
    * one signature standing in for another, which is the whole subject of #76.
+   *
+   * One error per hole, because that is the correspondence: a nulled element is
+   * the shadow of an entry in `errors[]`, and a fixture with four holes and one
+   * error would be asserting against a response GitHub does not send.
    */
   it("reads a response whose every node list has a hole in it", () => {
     ghAnswers(() => {
@@ -413,6 +480,15 @@ describe("a selection the author gate reads is trust-bearing", () => {
               ["repository", "pullRequest", "comments", "nodes", 0, "authorAssociation"],
               "Resource not accessible",
             ),
+            forbidden(["repository", "pullRequest", "reviews", "nodes", 1, "body"], "Forbidden"),
+            forbidden(
+              ["repository", "pullRequest", "reviewThreads", "nodes", 0, "comments"],
+              "Forbidden",
+            ),
+            forbidden(
+              ["repository", "pullRequest", "reviewThreads", "nodes", 1, "comments", "nodes", 0, "body"],
+              "Forbidden",
+            ),
           ],
         ),
         "gh: Resource not accessible\n",
@@ -426,6 +502,7 @@ describe("a selection the author gate reads is trust-bearing", () => {
     expect(feedback.inline).toContain("This swallows the error.");
     expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
     expect(feedback.hasFeedback).toBe(true);
+    expect(feedback.unreadable).toHaveLength(4);
   });
 
   /**
@@ -570,15 +647,25 @@ describe("a total failure stays distinguishable from a partial one", () => {
   });
 
   /**
-   * The same not-found shape with a **confined** error, which is the one that
-   * used to slip through: classifying `…pullRequest.comments` by its path says
-   * the other two surfaces answered, and nothing answered — `pullRequest` is
-   * null, and every feedback selection in the query hangs off it. Read as
-   * `partial` the review agent is handed one named selection above an empty
-   * discussion, which is #76 one level up; read as a refused *gate* selection
-   * the fix runner names a cause that has nothing to do with it.
+   * **What a `FORBIDDEN` on a feedback connection actually looks like**, and
+   * the acceptance criterion a reader should check here rather than in the
+   * `partial` block. `PullRequest.comments` is `IssueCommentConnection!` — as
+   * is `reviewThreads` — so the error cannot stop at the connection: it
+   * propagates to the nearest nullable ancestor, `repository.pullRequest`, and
+   * the token is handed the whole pull request nulled. Two of the three
+   * feedback selections therefore have nothing to preserve when refused
+   * outright, and preservation is for `reviews`, for holes in a node list, for
+   * nullable leaves and for siblings of `pullRequest` such as
+   * `repository.collaborators`.
+   *
+   * It is also the shape that used to slip through, because the error is
+   * *confined*: classifying `…pullRequest.comments` by its path says the other
+   * two surfaces answered, and nothing answered. Read as `partial` the review
+   * agent is handed one named selection above an empty discussion — #76 one
+   * level up; read as a refused *gate* selection the fix runner names a cause
+   * that has nothing to do with it.
    */
-  it("reads a null pull request as no answer even where the error names one selection", () => {
+  it("reads a refused non-null connection as no answer, since it arrives as a null pull request", () => {
     ghAnswers(() => {
       throw exitsNonZero(
         response(null, [
@@ -769,9 +856,7 @@ describe("the review context surfaces what it could not read", () => {
   it("carries the refusal into the discussion the agent is shown", () => {
     ghAnswers(() => {
       throw exitsNonZero(
-        response(pullRequest({ reviewThreads: null }), [
-          forbidden(["repository", "pullRequest", "reviewThreads"], "Resource not accessible"),
-        ]),
+        response(pullRequest(THREAD_HOLE), [THREAD_HOLE_ERROR]),
         "gh: Resource not accessible\n",
       );
     });
@@ -818,9 +903,7 @@ describe("the review context surfaces what it could not read", () => {
         return JSON.stringify({ title: "A PR", body: "Closes #5" });
       if (args[0] === "api" && args[1] === "graphql")
         throw exitsNonZero(
-          response(pullRequest({ reviewThreads: null }), [
-            forbidden(["repository", "pullRequest", "reviewThreads"], "Resource not accessible"),
-          ]),
+          response(pullRequest(THREAD_HOLE), [THREAD_HOLE_ERROR]),
           "gh: Resource not accessible\n",
         );
       if (args[1] === "repos/o/r/issues/5")

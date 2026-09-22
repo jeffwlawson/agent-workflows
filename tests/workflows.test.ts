@@ -1526,7 +1526,13 @@ describe("every workflow in the loop is called rather than copied", () => {
 
     let from = at;
     while (from > 0 && (lines[from - 1] ?? "").trimStart().startsWith("#")) from -= 1;
-    const comment = lines.slice(from, at).join("\n");
+    // Unwrapped before matching: a claim in a YAML comment wraps at whatever
+    // point the line ran out, so a regex over the raw block only catches a
+    // phrase that happens not to straddle a `#`.
+    const comment = lines
+      .slice(from, at)
+      .map((l) => l.trimStart().replace(/^#\s?/, ""))
+      .join(" ");
 
     expect(comment).toContain("grants nothing");
     expect(comment).not.toMatch(/silently transitions no label/i);

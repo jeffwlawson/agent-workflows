@@ -22,6 +22,13 @@ Resolved threads are omitted deliberately: they have been handled.
 acknowledging it; one still outstanding may be reinforced. Treat maintainer steering as
 authoritative, and keep your own judgement about the code.
 
+**A note saying part of it could not be read.** The section below may carry one, headed
+*Feedback that could not be read*, naming the selections the API refused. What those cover is
+*unknown*, not empty: the feedback shown may be incomplete, or there may be none of it shown at
+all. Do not read that absence as agreement or as a complete list. Review from what you were
+given, and say in your summary that a feedback surface was unreadable where it changes a
+conclusion you would otherwise draw.
+
 {{DISCUSSION}}
 
 # CI RESULTS

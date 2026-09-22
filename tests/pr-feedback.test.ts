@@ -318,6 +318,10 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
 
     expect(note).toContain("repository.pullRequest.reviewThreads");
     expect(note).toContain("unknown");
+    // It names what it qualifies rather than its own position: the note is not
+    // always last, and where nothing rendered "above" points at nothing.
+    expect(note).toContain("review summaries");
+    expect(note).not.toContain("above");
   });
 
   it("renders no note at all when everything was readable", () => {
@@ -565,10 +569,65 @@ describe("a total failure stays distinguishable from a partial one", () => {
     expect(reason).not.toContain("author gate");
   });
 
+  /**
+   * The same not-found shape with a **confined** error, which is the one that
+   * used to slip through: classifying `…pullRequest.comments` by its path says
+   * the other two surfaces answered, and nothing answered — `pullRequest` is
+   * null, and every feedback selection in the query hangs off it. Read as
+   * `partial` the review agent is handed one named selection above an empty
+   * discussion, which is #76 one level up; read as a refused *gate* selection
+   * the fix runner names a cause that has nothing to do with it.
+   */
+  it("reads a null pull request as no answer even where the error names one selection", () => {
+    ghAnswers(() => {
+      throw exitsNonZero(
+        response(null, [
+          forbidden(["repository", "pullRequest", "comments"], "Resource not accessible"),
+        ]),
+        "gh: Resource not accessible\n",
+      );
+    });
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.status).toBe("failed");
+    // The path and the words survive — they are what names the cause — and the
+    // classification does not: no surface was read, so none of them is empty.
+    expect(feedback.unreadable).toEqual([
+      {
+        path: "repository.pullRequest.comments",
+        reason: "FORBIDDEN: Resource not accessible",
+        surfaces: ["summaries", "inline", "conversation"],
+        trustBearing: true,
+      },
+    ]);
+    for (const surface of ["summaries", "inline", "conversation"] as const) {
+      expect(surfaceText(feedback, surface)).toContain("could not be read");
+    }
+
+    const reason = refusalReason(feedback);
+    expect(reason).toContain("could not be read at all");
+    expect(reason).not.toContain("author gate");
+  });
+
+  // Nothing resolved and nothing said about why — legal GraphQL, and the state
+  // whose sentence must not become "nobody has commented on this PR".
+  it("reads a null pull request with no errors at all as no answer", () => {
+    ghAnswers(() => response(null));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.status).toBe("failed");
+    expect(feedback.unreadable).toHaveLength(1);
+    expect(feedback.unreadable[0]?.surfaces).toEqual(["summaries", "inline", "conversation"]);
+    expect(refusalReason(feedback)).toContain("resolved no pull request");
+  });
+
   it("keeps a one-selection refusal partial, however little else rendered", () => {
-    // The other half of that rule. The pull request resolved, so the surfaces
-    // the error does not name answered and were empty — which is a different
-    // fact from "no answer" even though nothing rendered either way.
+    // The other half of that rule, and the code now enforces its premise: the
+    // pull request resolved, so the surfaces the error does not name answered
+    // and were empty — a different fact from "no answer" even though nothing
+    // rendered either way.
     ghAnswers(() => {
       throw exitsNonZero(
         response({ comments: { nodes: [] }, reviews: null, reviewThreads: { nodes: [] } }, [
@@ -744,5 +803,70 @@ describe("the review context surfaces what it could not read", () => {
 
     expect(context.unreadableFeedback).toEqual([]);
     expect(context.discussion).not.toContain("could not be read");
+  });
+
+  /**
+   * The note qualifies the PR's own feedback and nothing else. The linked-issue
+   * comments below it come from a different fetch the refusal says nothing
+   * about, so a note placed after them spans a section it has no bearing on and
+   * leaves the agent to guess how far it reaches.
+   */
+  it("places the note with the feedback it qualifies, above the linked-issue comments", () => {
+    spawned.mockImplementation(((file: string, args: readonly string[]) => {
+      if (file === "git") return "diff --git a/x b/x\n";
+      if (args[0] === "pr" && args[1] === "view")
+        return JSON.stringify({ title: "A PR", body: "Closes #5" });
+      if (args[0] === "api" && args[1] === "graphql")
+        throw exitsNonZero(
+          response(pullRequest({ reviewThreads: null }), [
+            forbidden(["repository", "pullRequest", "reviewThreads"], "Resource not accessible"),
+          ]),
+          "gh: Resource not accessible\n",
+        );
+      if (args[1] === "repos/o/r/issues/5")
+        return JSON.stringify({
+          title: "The issue",
+          body: "What was asked for.",
+          author_association: "OWNER",
+          user: { login: "maintainer" },
+        });
+      if (args[1] === "repos/o/r/issues/5/comments")
+        return JSON.stringify([
+          { body: "Steering the agent.", author_association: "OWNER", user: { login: "maintainer" } },
+        ]);
+      throw new Error(`unrecorded gh call: ${args.join(" ")}`);
+    }) as never);
+
+    const { discussion } = fetchPullRequestContext("12");
+    const note = discussion.indexOf("Feedback that could not be read");
+    const issue = discussion.indexOf("### On the linked issue");
+
+    expect(discussion).toContain("Steering the agent.");
+    expect(note).toBeGreaterThan(-1);
+    expect(issue).toBeGreaterThan(-1);
+    expect(note).toBeLessThan(issue);
+  });
+});
+
+/**
+ * The note is data the agent is handed; the framing for it belongs in the
+ * prompt the runner controls, or the two consumers disagree about when the
+ * agent is told. `fix` says it in prose because its refusal renders inside a
+ * surface; `review` has to name the heading, so the heading is read out of the
+ * renderer rather than transcribed — `tests/pins.test.ts` is the precedent.
+ */
+describe("both prompts frame a section that could not be read", () => {
+  const heading = unreadableNote([
+    { path: "repository.pullRequest.reviews", reason: "FORBIDDEN", surfaces: [], trustBearing: true },
+  ])
+    .split("\n")[0]!
+    .replace(/^#+\s*/, "");
+
+  it("names in review/prompt.md the heading the note actually emits", () => {
+    expect(fs.readFileSync("review/prompt.md", "utf8")).toContain(heading);
+  });
+
+  it("tells the fix agent a surface may say it could not be read", () => {
+    expect(fs.readFileSync("fix/prompt.md", "utf8")).toContain("could not be read");
   });
 });

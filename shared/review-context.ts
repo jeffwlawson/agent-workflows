@@ -72,11 +72,17 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
   // must not do is proceed *silently* — a refused selection used to render as an
   // absent section, and an absent section reads as agreement, so the agent
   // repeated work a human had already commented on with nothing recording why
-  // (#76). The note goes last: it is a caveat on what is above it.
+  // (#76).
+  //
+  // The note sits with the feedback it qualifies rather than at the end. What
+  // follows it comes from a different fetch — `fetchTrustedComments` on the
+  // linked issue — which the refusal says nothing about, and a caveat that
+  // spans a section it has no bearing on is one the agent has to guess the
+  // scope of.
   const discussion = [
     feedback.all,
-    issueComments && `### On the linked issue\n\n${issueComments}`,
     unreadableNote(feedback.unreadable),
+    issueComments && `### On the linked issue\n\n${issueComments}`,
   ]
     .filter(Boolean)
     .join("\n\n");

@@ -33,6 +33,10 @@ export interface UnreadableSelection {
    * The rendered surfaces this takes out. Empty where the path maps to none of
    * them, which means the selection is not one of the three feedback surfaces
    * rather than that nothing was lost.
+   *
+   * Read from the path only where the pull request itself resolved. It did not
+   * on `failed`, so nothing was read whatever any one error named, and every
+   * entry there covers every surface.
    */
   readonly surfaces: readonly FeedbackSurface[];
   /**
@@ -233,6 +237,9 @@ const asUnreadable = (error: GqlError): UnreadableSelection => {
 /** The query as a whole, for the case where no part of the response can be placed. */
 const WHOLE_QUERY = "(the whole query)";
 
+/** Said where a response resolved no pull request and offered no error explaining it. */
+const NO_PULL_REQUEST = "the response resolved no pull request and said nothing about why";
+
 /** What `gh` said about a failure, in as few words as it used. */
 const spokenReason = (outcome: GhOutcome): string => {
   const said = [outcome.stderr, outcome.stdout]
@@ -248,6 +255,44 @@ const spokenReason = (outcome: GhOutcome): string => {
     .join(" ")
     .slice(0, 300);
 };
+
+/**
+ * The state where **nothing was read**, however the response chose to say so.
+ *
+ * Each error keeps its path and its words — that is what names the cause for a
+ * human — and loses its classification: a path is only evidence about *which*
+ * surface when the surfaces around it were read, and here none were. So every
+ * entry covers every surface and counts as trust-bearing, which is the same
+ * fact stated twice: nothing rendered, and the author gate established nothing
+ * either. An error that says nothing at all still has to leave a sentence
+ * behind, hence the fallback.
+ */
+const nothingWasRead = (
+  errors: readonly GqlError[],
+  fallbackReason: string,
+): {
+  readonly pr: undefined;
+  readonly status: FeedbackStatus;
+  readonly unreadable: readonly UnreadableSelection[];
+} => ({
+  pr: undefined,
+  status: "failed",
+  unreadable:
+    errors.length > 0
+      ? errors.map(asUnreadable).map((selection) => ({
+          ...selection,
+          surfaces: ALL_SURFACES,
+          trustBearing: true,
+        }))
+      : [
+          {
+            path: WHOLE_QUERY,
+            reason: fallbackReason,
+            surfaces: ALL_SURFACES,
+            trustBearing: true,
+          },
+        ],
+});
 
 /**
  * Read the response, not the exit code.
@@ -286,54 +331,29 @@ const readResponse = (
   // `data` object (which is a whole-query failure however it is explained), and
   // a non-zero exit the payload does not account for. The errors, where there
   // are any, say more than `gh`'s stderr does.
-  const noAnswer =
-    parsed === undefined || !hasData || (errors.length === 0 && !outcome.ok);
-  if (noAnswer) {
-    return {
-      pr: undefined,
-      status: "failed",
-      unreadable:
-        errors.length > 0
-          ? errors.map(asUnreadable)
-          : [
-              {
-                path: WHOLE_QUERY,
-                reason: spokenReason(outcome),
-                surfaces: ALL_SURFACES,
-                trustBearing: true,
-              },
-            ],
-    };
-  }
+  const noAnswer = parsed === undefined || !hasData || (errors.length === 0 && !outcome.ok);
+  if (noAnswer) return nothingWasRead(errors, spokenReason(outcome));
 
   const pr = parsed?.data?.repository?.pullRequest ?? undefined;
-  const unreadable = errors.map(asUnreadable);
 
-  // A partial answer by construction that is a total failure in fact: GitHub
-  // reports an invisible or absent pull request as `data` present, the leaf
-  // nulled, `NOT_FOUND` in `errors[]`. Read as `partial` that refuses through
-  // the *gate* branch — "a selection the author gate depends on could not be
-  // read: `repository.pullRequest`" — which names the wrong cause for "the pull
-  // request is not visible to this token". So: a response that resolved no pull
-  // request, every one of whose errors covers every surface, is `failed`. That
-  // is the state whose sentence is "no answer", and it is the accurate one.
+  // The pull request did not resolve, so **no surface was read** — whatever any
+  // individual error happened to name. That is the invariant, and it holds
+  // without knowing a thing about the schema: every feedback selection in this
+  // query is a child of `pullRequest`, so a null one leaves all three unread
+  // rather than answered-and-empty.
   //
-  // Both halves are load-bearing. An error confined to one selection leaves the
-  // others genuinely answered, so it stays `partial` however little rendered.
-  const nothingResolved =
-    pr === undefined &&
-    unreadable.length > 0 &&
-    unreadable.every((selection) =>
-      ALL_SURFACES.every((surface) => selection.surfaces.includes(surface)),
-    );
+  // It decides a shape that otherwise lands in `partial` and misleads both
+  // consumers. GitHub reports an invisible or absent pull request as `data`
+  // present, the leaf nulled, an entry in `errors[]` — and where that entry is
+  // *confined* to one selection (`…pullRequest.comments`), classifying it by its
+  // path would hand the review agent one named selection above an empty
+  // discussion, which reads as "the other two answered and nobody commented".
+  // #76 one level up. Read as `partial` it also refuses through the *gate*
+  // branch, naming a cause — "a selection the author gate depends on" — that has
+  // nothing to do with "the pull request is not visible to this token".
+  if (pr === undefined) return nothingWasRead(errors, NO_PULL_REQUEST);
 
-  const status: FeedbackStatus = nothingResolved
-    ? "failed"
-    : errors.length > 0
-      ? "partial"
-      : "ok";
-
-  return { pr, status, unreadable };
+  return { pr, status: errors.length > 0 ? "partial" : "ok", unreadable: errors.map(asUnreadable) };
 };
 
 const SURFACE_LABELS: Record<FeedbackSurface, string> = {
@@ -360,6 +380,12 @@ export const describeUnreadable = (unreadable: readonly UnreadableSelection[]): 
  * be visible in the context the agent is handed: an absent section reads as
  * agreement, and the agent would silently repeat work a human already commented
  * on. Empty when everything was readable, so nothing is said on the normal path.
+ *
+ * It names what it is a caveat on rather than saying "above". A note that points
+ * at its own position is wrong the moment something is rendered after it, and
+ * where nothing rendered at all it points at nothing — which is the case that
+ * most needs saying, since an empty feedback section is exactly what a refusal
+ * looks like from the agent's side.
  */
 export const unreadableNote = (unreadable: readonly UnreadableSelection[]): string =>
   unreadable.length === 0
@@ -367,8 +393,10 @@ export const unreadableNote = (unreadable: readonly UnreadableSelection[]): stri
     : [
         "### Feedback that could not be read",
         "",
-        "Part of the query behind the sections above was refused, so what it covers is " +
-          "**unknown** rather than empty. Do not read its absence as agreement — say so in " +
+        "Part of the query behind this pull request's own feedback — its review summaries, " +
+          "unresolved review threads and conversation comments — was refused, so what it " +
+          "covers is **unknown** rather than empty. That holds whether the affected section " +
+          "is short or missing entirely: do not read its absence as agreement, and say so in " +
           "your output if it matters to a conclusion you would otherwise draw.",
         "",
         ...unreadable.map(

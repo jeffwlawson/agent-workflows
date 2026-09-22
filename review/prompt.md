@@ -23,11 +23,13 @@ acknowledging it; one still outstanding may be reinforced. Treat maintainer stee
 authoritative, and keep your own judgement about the code.
 
 **A note saying part of it could not be read.** The section below may carry one, headed
-*Feedback that could not be read*, naming the selections the API refused. What those cover is
-*unknown*, not empty: the feedback shown may be incomplete, or there may be none of it shown at
-all. Do not read that absence as agreement or as a complete list. Review from what you were
-given, and say in your summary that a feedback surface was unreadable where it changes a
-conclusion you would otherwise draw.
+*Feedback that could not be read*, naming the selections the API refused and saying which case
+it is. Where a refused selection renders one of these surfaces, what that surface covers is
+*unknown* rather than empty — the feedback shown may be incomplete, or there may be none of it
+shown at all — so do not read that absence as agreement or as a complete list. Where it renders
+none of them, what you were shown is complete and the refusal is recorded for its own sake.
+Review from what you were given, and say in your summary that a feedback surface was unreadable
+where it changes a conclusion you would otherwise draw.
 
 {{DISCUSSION}}
 

@@ -239,7 +239,18 @@ const classify = (
   if (pullRequestField !== "pullRequest") return UNPLACEABLE;
   if (selection === undefined) return EVERYTHING;
 
-  const surface = SURFACE_OF_SELECTION[selection];
+  // Asked for as an **own** key rather than by indexing. An object literal
+  // inherits `Object.prototype`, so `SURFACE_OF_SELECTION["toString"]` is a
+  // function rather than `undefined` — and a path segment named `toString`,
+  // `constructor`, `valueOf` or `__proto__` would skip `UNPLACEABLE` and come
+  // back trust-bearing only if it also named a gate field. That is the rule
+  // above inverted, in the one lookup here that reads a key out of a payload
+  // this file did not type. No selection in `QUERY` is called any of those
+  // today; nothing makes that a property of the reader rather than of the
+  // query.
+  const surface = Object.hasOwn(SURFACE_OF_SELECTION, selection)
+    ? SURFACE_OF_SELECTION[selection]
+    : undefined;
   if (surface === undefined) return UNPLACEABLE;
 
   return { surfaces: [surface], trustBearing: rest.some((segment) => GATE_FIELDS.has(segment)) };
@@ -400,6 +411,34 @@ export const describeUnreadable = (unreadable: readonly UnreadableSelection[]): 
     .join("; ");
 
 /**
+ * The preamble, which is **two different statements** and must not be one.
+ *
+ * A refusal that renders one of the three surfaces makes that surface unknown
+ * rather than empty, and that is the thing the agent has to be told. A refusal
+ * that renders none of them — `repository.collaborators`, the selection #73 is
+ * about, which arrives as a sibling of `pullRequest` — takes nothing out of what
+ * is shown: all three answered in full, and telling the agent otherwise is the
+ * one-sentence-two-facts collapse this change exists to take apart, now aimed
+ * the other way. It is still said, because a refused selection is worth knowing
+ * about and is what makes the run that *pushes* stop; it is just not a caveat on
+ * the feedback below it.
+ *
+ * The per-entry lines already make this distinction by dropping the surface
+ * suffix where none is named. Only the preamble generalised over both.
+ */
+const notePreamble = (unreadable: readonly UnreadableSelection[]): string =>
+  unreadable.some((selection) => selection.surfaces.length > 0)
+    ? "Part of the query behind this pull request's own feedback — its review summaries, " +
+      "unresolved review threads and conversation comments — was refused, so what it " +
+      "covers is **unknown** rather than empty. That holds whether the affected section " +
+      "is short or missing entirely: do not read its absence as agreement, and say so in " +
+      "your output if it matters to a conclusion you would otherwise draw."
+    : "Part of the same query was refused, but none of it renders this pull request's " +
+      "feedback: the review summaries, unresolved review threads and conversation comments " +
+      "you were shown are what the API returned, in full. It is named here because a " +
+      "refusal is worth knowing about — not as a caveat on anything below.";
+
+/**
  * The same thing as a block for a prompt — for the consumer that **degrades**
  * rather than refusing. A review proceeds on what survived, so the gap has to
  * be visible in the context the agent is handed: an absent section reads as
@@ -418,11 +457,7 @@ export const unreadableNote = (unreadable: readonly UnreadableSelection[]): stri
     : [
         "### Feedback that could not be read",
         "",
-        "Part of the query behind this pull request's own feedback — its review summaries, " +
-          "unresolved review threads and conversation comments — was refused, so what it " +
-          "covers is **unknown** rather than empty. That holds whether the affected section " +
-          "is short or missing entirely: do not read its absence as agreement, and say so in " +
-          "your output if it matters to a conclusion you would otherwise draw.",
+        notePreamble(unreadable),
         "",
         ...unreadable.map(
           (selection) =>

@@ -371,6 +371,35 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
     expect(note).not.toContain("above");
   });
 
+  /**
+   * The other half of that sentence, and the case #73 walks into:
+   * `repository.collaborators` is refused, it renders none of the three
+   * surfaces, and all three answered in full. A preamble that generalises over
+   * both tells the agent its feedback is unknown when it is complete — the same
+   * two-facts-in-one-sentence collapse this change exists to take apart, aimed
+   * the other way. The refusal is still named; it is just not a caveat on the
+   * comments below it.
+   */
+  it("does not call the feedback unknown when the refusal renders none of it", () => {
+    ghAnswers(() => {
+      throw exitsNonZero(
+        response(pullRequest(), [
+          forbidden(["repository", "collaborators"], "You do not have permission"),
+        ]),
+        "gh: You do not have permission\n",
+      );
+    });
+
+    const note = unreadableNote(fetchPullRequestFeedback("12").unreadable);
+
+    // Said, by name, with what the API said about it.
+    expect(note).toContain("repository.collaborators");
+    expect(note).toContain("You do not have permission");
+    // But not as a claim about the three surfaces, which answered.
+    expect(note).not.toContain("unknown");
+    expect(note).toContain("in full");
+  });
+
   it("renders no note at all when everything was readable", () => {
     readableButEmpty();
 
@@ -543,6 +572,38 @@ describe("a selection the author gate reads is trust-bearing", () => {
     // Everything the query *did* answer is still rendered: the refusal is a
     // reason to refuse the run, not a reason to throw the response away.
     expect(feedback.summaries).toContain("Looks close");
+  });
+
+  /**
+   * The one lookup here that reads a key out of a payload this file did not
+   * type, so the payload gets to choose the key. `SURFACE_OF_SELECTION` is an
+   * object literal and therefore inherits `Object.prototype`: indexing it with
+   * `toString` returns a *function*, not `undefined`, so a selection named that
+   * would sail past the unplaceable branch and be classified — fail-open, in
+   * the one place the rule is to fail closed. Not reachable from today's
+   * `QUERY`, whose paths are its own field names; reachable the moment a
+   * selection is aliased to one of these, and cheaper to close than to notice.
+   */
+  it("treats a selection named after an Object.prototype key as unplaceable", () => {
+    for (const key of ["toString", "constructor", "valueOf", "__proto__"]) {
+      ghAnswers(() => {
+        throw exitsNonZero(
+          response(pullRequest(), [
+            forbidden(["repository", "pullRequest", key], "Resource not accessible"),
+          ]),
+          "gh: Resource not accessible\n",
+        );
+      });
+
+      expect(fetchPullRequestFeedback("12").unreadable).toEqual([
+        {
+          path: `repository.pullRequest.${key}`,
+          reason: "FORBIDDEN: Resource not accessible",
+          surfaces: [],
+          trustBearing: true,
+        },
+      ]);
+    }
   });
 
   it("treats an error with no path as covering everything", () => {

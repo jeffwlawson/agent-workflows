@@ -340,6 +340,11 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
     const rendered = surfaceText(feedback, "inline");
 
     expect(feedback.unreadable[0]?.trustBearing).toBe(false);
+    // And the consumer that pushes proceeds on it, which is the half the
+    // comment above claims and nothing asserted: a refusal that left trusted
+    // feedback standing is not a reason to stop, so refusing on *any* partial
+    // error — the pre-#76 outcome with better wording — has to fail here.
+    expect(refusalReason(feedback)).toBeUndefined();
     // Both halves: what was read, and that it is not all there was.
     expect(rendered).toContain("This swallows the error.");
     expect(rendered).toContain("could not be read");

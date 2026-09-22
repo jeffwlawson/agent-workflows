@@ -66,12 +66,16 @@ const MAINTAINER = { author: { login: "maintainer" }, authorAssociation: "OWNER"
 
 const CONVERSATION_COMMENT = { body: "Please rename this before merge.", ...MAINTAINER };
 const REVIEW_SUMMARY = { body: "Looks close — one thing.", state: "COMMENTED", ...MAINTAINER };
+const THREAD_COMMENT = {
+  path: "shared/pr-feedback.ts",
+  line: 171,
+  body: "This swallows the error.",
+  ...MAINTAINER,
+};
 const THREAD = {
   id: "PRRT_kwthread",
   isResolved: false,
-  comments: {
-    nodes: [{ path: "shared/pr-feedback.ts", line: 171, body: "This swallows the error.", ...MAINTAINER }],
-  },
+  comments: { nodes: [THREAD_COMMENT] },
 };
 
 interface Selections {
@@ -260,6 +264,46 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
     expect(surfaceText(feedback, "summaries")).toContain("Looks close");
   });
 
+  /**
+   * The case where silence does the most damage, and the one an empty-surface
+   * substitution cannot cover: an error *inside* a surface that rendered. The
+   * agent sees comments, has no reason to doubt the list is complete, and reads
+   * the missing ones as absent. `line` is nullable on a review comment, so this
+   * is an error that leaves its element standing — and it is not trust-bearing,
+   * so the fix runner proceeds and the note is the only thing that tells it.
+   */
+  it("says so beside the comments a partly-read surface did hold", () => {
+    ghAnswers(() => {
+      throw exitsNonZero(
+        response(
+          pullRequest({
+            reviewThreads: {
+              nodes: [{ ...THREAD, comments: { nodes: [{ ...THREAD_COMMENT, line: null }] } }],
+            },
+          }),
+          [
+            forbidden(
+              ["repository", "pullRequest", "reviewThreads", "nodes", 0, "comments", "nodes", 0, "line"],
+              "Forbidden",
+            ),
+          ],
+        ),
+        "gh: Forbidden\n",
+      );
+    });
+
+    const feedback = fetchPullRequestFeedback("12");
+    const rendered = surfaceText(feedback, "inline");
+
+    expect(feedback.unreadable[0]?.trustBearing).toBe(false);
+    // Both halves: what was read, and that it is not all there was.
+    expect(rendered).toContain("This swallows the error.");
+    expect(rendered).toContain("could not be read");
+    expect(rendered).toContain("nodes.0.line");
+    // The surfaces the error did not name are handed over unchanged.
+    expect(surfaceText(feedback, "summaries")).toBe(feedback.summaries);
+  });
+
   it("renders a note for the agent naming what is unknown rather than absent", () => {
     ghAnswers(() => {
       throw exitsNonZero(
@@ -283,11 +327,22 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
   });
 });
 
+/**
+ * The shape of these fixtures is the finding, not decoration. An error on a
+ * *field* does not leave the object beside it intact: `authorAssociation` is
+ * `CommentAuthorAssociation!` and `nodes` is `[IssueComment]`, so the error
+ * null-propagates up to the nearest nullable parent, which is the element. The
+ * pairing GitHub actually returns is `nodes: [null, {…}]` **with** the error —
+ * never a fully-populated list — and asserting the classification against a
+ * populated one is asserting it against a response no API produces, which is
+ * how a `TypeError` in the reader stays invisible.
+ */
 describe("a selection the author gate reads is trust-bearing", () => {
-  it("marks an errored authorAssociation as trust-bearing", () => {
+  it("marks an errored authorAssociation as trust-bearing, and steps over the hole", () => {
     ghAnswers(() => {
       throw exitsNonZero(
-        response(pullRequest(), [
+        // The element the error nulled, beside one that survived it.
+        response(pullRequest({ comments: { nodes: [null, CONVERSATION_COMMENT] } }), [
           forbidden(
             ["repository", "pullRequest", "comments", "nodes", 0, "authorAssociation"],
             "Resource not accessible",
@@ -307,19 +362,66 @@ describe("a selection the author gate reads is trust-bearing", () => {
         trustBearing: true,
       },
     ]);
+    // The hole is skipped rather than read: the comment beside it still renders.
+    expect(feedback.conversation).toContain("Please rename this");
   });
 
   it("marks an errored author login as trust-bearing", () => {
     ghAnswers(() => {
       throw exitsNonZero(
-        response(pullRequest(), [
+        response(pullRequest({ reviews: { nodes: [null] } }), [
           forbidden(["repository", "pullRequest", "reviews", "nodes", 0, "author"], "Forbidden"),
         ]),
         "gh: Forbidden\n",
       );
     });
 
-    expect(fetchPullRequestFeedback("12").unreadable[0]?.trustBearing).toBe(true);
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.unreadable[0]?.trustBearing).toBe(true);
+    expect(feedback.summaries).toBe("");
+  });
+
+  /**
+   * Every list in the query at once, because the hole appears in whichever one
+   * the error reached and each is read by different code: the conversation
+   * split, the `render` filter, the thread filter, and the per-thread comment
+   * filter. Reading a `null` in any of them throws a `TypeError` that the
+   * runner writes into `failure_reason.txt` in place of its named refusal —
+   * one signature standing in for another, which is the whole subject of #76.
+   */
+  it("reads a response whose every node list has a hole in it", () => {
+    ghAnswers(() => {
+      throw exitsNonZero(
+        response(
+          {
+            comments: { nodes: [null, CONVERSATION_COMMENT] },
+            reviews: { nodes: [REVIEW_SUMMARY, null] },
+            reviewThreads: {
+              nodes: [
+                null,
+                { ...THREAD, comments: { nodes: [null, ...THREAD.comments.nodes] } },
+              ],
+            },
+          },
+          [
+            forbidden(
+              ["repository", "pullRequest", "comments", "nodes", 0, "authorAssociation"],
+              "Resource not accessible",
+            ),
+          ],
+        ),
+        "gh: Resource not accessible\n",
+      );
+    });
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.conversation).toContain("Please rename this");
+    expect(feedback.summaries).toContain("Looks close");
+    expect(feedback.inline).toContain("This swallows the error.");
+    expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
+    expect(feedback.hasFeedback).toBe(true);
   });
 
   /**
@@ -430,6 +532,53 @@ describe("a total failure stays distinguishable from a partial one", () => {
     // The unplaceable error still counts, and still fails closed.
     expect(feedback.unreadable).toHaveLength(1);
     expect(feedback.unreadable[0]?.trustBearing).toBe(true);
+  });
+
+  /**
+   * GitHub reports a pull request this token cannot see as a *partial* answer by
+   * construction: `data` present, the leaf nulled, `NOT_FOUND` in `errors[]`.
+   * Taken at face value that refuses through the author-gate branch — "a
+   * selection the author gate depends on could not be read" — which names a
+   * cause that has nothing to do with it. Nothing resolved, so the honest state
+   * is the one whose sentence is "no answer".
+   */
+  it("reads the not-found shape as no answer rather than as a refused selection", () => {
+    ghAnswers(() => {
+      throw exitsNonZero(
+        response(null, [
+          {
+            type: "NOT_FOUND",
+            path: ["repository", "pullRequest"],
+            message: "Could not resolve to a PullRequest with the number of 12.",
+          },
+        ]),
+        "gh: Could not resolve to a PullRequest with the number of 12.\n",
+      );
+    });
+
+    const feedback = fetchPullRequestFeedback("12");
+    const reason = refusalReason(feedback);
+
+    expect(feedback.status).toBe("failed");
+    expect(reason).toContain("could not be read at all");
+    expect(reason).toContain("Could not resolve to a PullRequest");
+    expect(reason).not.toContain("author gate");
+  });
+
+  it("keeps a one-selection refusal partial, however little else rendered", () => {
+    // The other half of that rule. The pull request resolved, so the surfaces
+    // the error does not name answered and were empty — which is a different
+    // fact from "no answer" even though nothing rendered either way.
+    ghAnswers(() => {
+      throw exitsNonZero(
+        response({ comments: { nodes: [] }, reviews: null, reviewThreads: { nodes: [] } }, [
+          forbidden(["repository", "pullRequest", "reviews"], "Forbidden"),
+        ]),
+        "gh: Forbidden\n",
+      );
+    });
+
+    expect(fetchPullRequestFeedback("12").status).toBe("partial");
   });
 
   it("is not a partial error, and not an empty result", () => {

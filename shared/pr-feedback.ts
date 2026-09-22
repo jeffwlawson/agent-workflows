@@ -18,7 +18,8 @@ const ALL_SURFACES: readonly FeedbackSurface[] = ["summaries", "inline", "conver
  * - `partial` — `200` with valid `data` **and** an `errors[]` array. Some
  *   selections answered and at least one did not; `unreadable` says which.
  * - `failed` — nothing usable came back at all (network, bad token, malformed
- *   JSON). Not "no feedback": no answer.
+ *   JSON, or a query that resolved no pull request). Not "no feedback": no
+ *   answer.
  */
 export type FeedbackStatus = "ok" | "partial" | "failed";
 
@@ -135,13 +136,25 @@ interface GqlThreadComment extends GqlAuthored {
 interface GqlThread {
   id?: string;
   isResolved?: boolean;
-  comments?: { nodes?: GqlThreadComment[] };
+  comments?: { nodes?: (GqlThreadComment | null)[] | null } | null;
 }
 
+/**
+ * The connections, with **nullable elements** — which is what GitHub's schema
+ * says and what a partial error actually produces.
+ *
+ * `nodes: [IssueComment]` nulls per element, and the fields the author gate
+ * reads do not: `authorAssociation: CommentAuthorAssociation!`. A field error
+ * on one of those null-propagates up to the nearest nullable parent, which is
+ * the element — `comments: { nodes: [null, {…}] }` beside an entry in
+ * `errors[]` naming `…comments.nodes.0.authorAssociation`. Typing the elements
+ * as non-null is a claim the response does not support, and TypeScript would
+ * then let a `null` reach `isTrustedAuthor` unchecked.
+ */
 interface GqlPullRequest {
-  comments?: { nodes?: GqlAuthored[] } | null;
-  reviews?: { nodes?: (GqlAuthored & { state?: string })[] } | null;
-  reviewThreads?: { nodes?: GqlThread[] } | null;
+  comments?: { nodes?: (GqlAuthored | null)[] | null } | null;
+  reviews?: { nodes?: ((GqlAuthored & { state?: string }) | null)[] | null } | null;
+  reviewThreads?: { nodes?: (GqlThread | null)[] | null } | null;
 }
 
 /** One entry of a GraphQL `errors[]` array. `path` is absent on an error that names no selection. */
@@ -293,11 +306,34 @@ const readResponse = (
     };
   }
 
-  return {
-    pr: parsed?.data?.repository?.pullRequest ?? undefined,
-    status: errors.length > 0 ? "partial" : "ok",
-    unreadable: errors.map(asUnreadable),
-  };
+  const pr = parsed?.data?.repository?.pullRequest ?? undefined;
+  const unreadable = errors.map(asUnreadable);
+
+  // A partial answer by construction that is a total failure in fact: GitHub
+  // reports an invisible or absent pull request as `data` present, the leaf
+  // nulled, `NOT_FOUND` in `errors[]`. Read as `partial` that refuses through
+  // the *gate* branch — "a selection the author gate depends on could not be
+  // read: `repository.pullRequest`" — which names the wrong cause for "the pull
+  // request is not visible to this token". So: a response that resolved no pull
+  // request, every one of whose errors covers every surface, is `failed`. That
+  // is the state whose sentence is "no answer", and it is the accurate one.
+  //
+  // Both halves are load-bearing. An error confined to one selection leaves the
+  // others genuinely answered, so it stays `partial` however little rendered.
+  const nothingResolved =
+    pr === undefined &&
+    unreadable.length > 0 &&
+    unreadable.every((selection) =>
+      ALL_SURFACES.every((surface) => selection.surfaces.includes(surface)),
+    );
+
+  const status: FeedbackStatus = nothingResolved
+    ? "failed"
+    : errors.length > 0
+      ? "partial"
+      : "ok";
+
+  return { pr, status, unreadable };
 };
 
 const SURFACE_LABELS: Record<FeedbackSurface, string> = {
@@ -349,13 +385,25 @@ export const unreadableNote = (unreadable: readonly UnreadableSelection[]): stri
  * "(none)". The distinction is the deliverable — "nothing was said" and "we were
  * not allowed to look" are different facts, and rendering both as "(none)" is
  * the information loss #76 is about, one level down from the fetch.
+ *
+ * A refusal is said whether or not the surface also rendered something, because
+ * a *partly* read surface is the case where silence does the most damage: the
+ * agent sees comments, has no reason to doubt the list is complete, and treats
+ * the missing ones as absent. Rendering a caveat beside real content is the same
+ * rule `unreadableNote` follows for the review context, which appends
+ * unconditionally — the two consumers should not disagree about when the agent
+ * is told.
  */
 export const surfaceText = (feedback: PullRequestFeedback, surface: FeedbackSurface): string => {
   const text = feedback[surface];
-  if (text) return text;
-
   const refused = feedback.unreadable.filter((selection) => selection.surfaces.includes(surface));
-  return refused.length === 0 ? "(none)" : `(could not be read — ${describeUnreadable(refused)})`;
+
+  if (refused.length === 0) return text || "(none)";
+
+  const note = describeUnreadable(refused);
+  return text
+    ? `${text}\n\n---\n\n(part of this section could not be read, so what it covers is unknown rather than absent — ${note})`
+    : `(could not be read — ${note})`;
 };
 
 /**
@@ -463,12 +511,29 @@ const anchorOf = (c: GqlThreadComment): string => {
   return `${c.path ?? "unknown"}:${range}${outdated ? " (outdated — the code here has changed since)" : ""}`;
 };
 
+/**
+ * The elements a partial answer actually left behind.
+ *
+ * A nulled element is a hole in the list, not an object with absent fields, so
+ * every read below has to step over it: `n.authorAssociation` on a `null` is a
+ * `TypeError`, and a runner that throws there writes *that* into
+ * `failure_reason.txt` instead of the refusal it meant to give — one signature
+ * standing in for another, which is the substitution #76 exists to remove.
+ *
+ * Nothing is lost by dropping them. Every hole is the shadow of an entry in
+ * `errors[]`, so `unreadable` already names it — and an error reaching one of
+ * the gate's own fields is trust-bearing, which is what makes the run that
+ * pushes refuse rather than act on the elements that survived.
+ */
+const present = <T>(nodes: readonly (T | null | undefined)[] | null | undefined): T[] =>
+  (nodes ?? []).filter((node): node is T => node !== null && node !== undefined);
+
 /** Trusted, non-empty, and rendered — the filter every surface shares. */
 const render = <T extends GqlAuthored>(
-  nodes: T[] | undefined,
+  nodes: readonly (T | null | undefined)[] | null | undefined,
   format: (node: T, login: string) => string,
 ): string =>
-  (nodes ?? [])
+  present(nodes)
     .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined))
     .filter((n) => (n.body ?? "").trim().length > 0)
     .map((n) => format(n, n.author?.login ?? "unknown"))
@@ -523,7 +588,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
   // the agent's own "worth a follow-up issue" note under a prompt heading that
   // says to decide whether to address or decline it — which is the invariant in
   // docs/parity.md §10 closed by a different door.
-  const commentNodes = pr?.comments?.nodes ?? [];
+  const commentNodes = present(pr?.comments?.nodes);
   const priorTopLevelComments = commentNodes
     .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined))
     .filter((n) => isAgentTopLevelComment(n.body))
@@ -541,12 +606,12 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
 
   // Grouped by thread, not flattened: the fix agent has to name a thread to
   // reply to or resolve it, so thread identity must survive into the prompt.
-  const threads = (pr?.reviewThreads?.nodes ?? [])
+  const threads = present(pr?.reviewThreads?.nodes)
     .filter((thread): thread is GqlThread & { id: string } =>
       thread.isResolved !== true && typeof thread.id === "string",
     )
     .map((thread) => {
-      const trusted = (thread.comments?.nodes ?? []).filter(
+      const trusted = present(thread.comments?.nodes).filter(
         (c) =>
           isTrustedAuthor(c.authorAssociation, c.author?.login ?? undefined) &&
           (c.body ?? "").trim().length > 0,

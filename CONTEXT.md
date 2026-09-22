@@ -105,7 +105,13 @@ repo: it runs with repo secrets and write access. Three things close it, and non
 2. **The author gate** — `isTrustedAuthor` in `shared/`. Every PR feedback surface is
    world-writable, and `fix` acts on that feedback with `contents: write` and pushes. An injection
    would steer *committed code*, so the gate is read by the workflow, not by the agent, whose GitHub
-   token is scrubbed before it starts.
+   token is scrubbed before it starts. What it establishes is **org-adjacent or better**, not write
+   access: of `OWNER` / `MEMBER` / `COLLABORATOR` only the first is write-gated by the enum's own
+   definition, `COLLABORATOR` covers the Read and Triage roles and `MEMBER` is org membership with
+   no repository grant. The two coincide on a personal repo and come apart on an organization one,
+   so this gate is write-gated *here* and not for an adopting org. Whether the set narrows is the
+   open decision at #68; the second half of the gate, the workflow-bot login, is transitively
+   write-gated and is the stronger of the two.
 3. **The pin** — see below.
 
 ## Base-controlled, and what that now depends on

@@ -31,13 +31,14 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
   const issueNumber = issueMatch?.[1] ?? "";
 
   // SECURITY: `fetchTrustedIssue` returns the title/body only when the issue's
-  // author has repo write access, and never fetches comments. On a public repo
-  // anyone can open an issue or comment on one, and this text reaches an
-  // unsandboxed, token-holding agent that posts public output — so untrusted
-  // issue text is a prompt-injection / exfiltration source. Gating on author
-  // association (not on field type) keeps this input behind the same
-  // write-access boundary the rest of the loop assumes, and holds even once
-  // community-authored issues enter the backlog.
+  // author is trusted by `isTrustedAuthor` — org-adjacent or better, which is
+  // not the same as write access (see `TRUSTED_ASSOCIATIONS`, #68) — and never
+  // fetches comments. On a public repo anyone can open an issue or comment on
+  // one, and this text reaches an unsandboxed, token-holding agent that posts
+  // public output — so untrusted issue text is a prompt-injection /
+  // exfiltration source. Gating on author association (not on field type)
+  // keeps this input behind the same boundary the rest of the loop assumes,
+  // and holds even once community-authored issues enter the backlog.
   let issueTitle = "";
   let linkedIssue = "(no linked issue found)";
   if (issueNumber) {

@@ -865,17 +865,27 @@ about, and the paragraph after the table is a decision only you can make.
 | Control | Why |
 |---|---|
 | **Fork guard**: `head.repo.full_name == github.repository` in the job-level `if` | without it a fork PR runs its own code with your secrets in scope. Fails closed before a runner is provisioned |
-| **Author-association gate** on every issue/PR/comment/review-thread body | all world-writable. Anyone can *open* an issue or comment on a PR; `agent:fix` acts on that text and pushes code |
+| **Author-association gate** on every issue/PR/comment/review-thread body | all world-writable. Anyone can *open* an issue or comment on a PR; `agent:fix` acts on that text and pushes code. Trusts `OWNER` / `MEMBER` / `COLLABORATOR` — org-adjacent or better, *not* write access; see the paragraph below |
 | **Trust your own bot by login** — `github-actions[bot]` **and** `github-actions` | REST and GraphQL spell the same account differently. List one and the review→fix handoff silently drops its own agent's comments |
 | **Scrub the GitHub token** from the agent's environment after fetching context | the agent runs unsandboxed; it has no legitimate `gh` use once context is read |
 | **`contents: read`** on review | the one agent structurally unable to mutate the branch |
 | **No model in the job that files** | `agent-follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the runner |
 
-**The trigger is weaker than the trust boundary.** Every control above gates an *input*; the
-**trigger** is a label, and GitHub's **Triage** role can add labels with no push access at all. So a
-triage-role collaborator can add `agent:fix` and cause an agent to push code — below the write
-boundary the rest of the design assumes. Moot while you are the only collaborator, and a real
-escalation path the day that changes. Two ways out, and it is a decision rather than a defect: check
+**Neither the trigger nor the input gate is the write boundary, and it is the same role on both
+sides.** The **trigger** is a label, and GitHub's **Triage** role can add labels with no push access
+at all — so a triage-role collaborator can add `agent:fix` and cause an agent to push code. The
+**author-association gate** admits that same person's text: `COLLABORATOR` is GitHub's word for
+"has been invited to collaborate on the repository", Read and Triage roles included, and `MEMBER` is
+membership of the owning organization with no repository grant implied at all. Only `OWNER` is
+write-gated by its definition (`CommentAuthorAssociation` enum descriptions, introspected
+2026-09-20). So the gate establishes *org-adjacent or better*, not *can push* — one role, below the
+write boundary, both triggering the run and authoring what it reads.
+
+On a personal repository the two coincide, because a collaborator there has write access and
+`MEMBER` cannot occur without an owning org; on an organization repository they come apart. If you
+are adopting into an org, this is your exposure and not ours, which is the wrong way round and is
+why it is written here. Moot while you are the only collaborator, and a real escalation path the day
+that changes. Two ways out, and it is a decision rather than a defect: check
 `github.event.sender`'s permission level, or treat "never grant Triage on a repo running this loop"
 as part of the setup. Pick one before you add a collaborator (#102).
 
@@ -883,11 +893,19 @@ If you take the first, it goes in **your caller's** job-level `if:`. That is the
 seam allows — a caller's `if:` can narrow what runs, never widen it — and it is why the trade is
 still yours to make after the conversion rather than ours to make for everyone.
 
+Either way you have closed the *trigger* half only: a Read-role collaborator cannot add a label, and
+their comment still passes the author-association gate. Whether that gate should narrow to a
+permission check of its own is an open decision (#68) and a change to the reusable half, which you
+would get for free. Until it is taken, what the gate gives you is *org-adjacent or better*, not
+*can push*.
+
 The residual you cannot cheaply close: the agent runs unsandboxed with a model token readable in its
-environment and unrestricted network egress. Every *injection source* is behind the write boundary,
-so the exposure is "a compromised collaborator or a poisoned dependency could exfiltrate a scoped,
-rotatable model token." Bounded and monitorable. If your threat model includes untrusted code or
-long-lived secrets, you need a sandbox with egress control, which means self-hosted runners.
+environment and unrestricted network egress. Every *injection source* is behind the author gate —
+org-adjacent or better, which on an org repo is a wider set than the write boundary (above) — so the
+exposure is "a compromised collaborator, org member or poisoned dependency could exfiltrate a
+scoped, rotatable model token." Bounded and monitorable. If your threat model includes untrusted
+code or long-lived secrets, you need a sandbox with egress control, which means self-hosted
+runners.
 
 ---
 

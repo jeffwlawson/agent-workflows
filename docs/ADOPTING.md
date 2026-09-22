@@ -896,7 +896,8 @@ still yours to make after the conversion rather than ours to make for everyone.
 Either way you have closed the *trigger* half only: a Read-role collaborator cannot add a label, and
 their comment still passes the author-association gate. Whether that gate should narrow to a
 permission check of its own is an open decision (#68) and a change to the reusable half, which you
-would get for free. Until it is taken, what the gate gives you is the sentence above.
+would get for free. Until it is taken, what the gate gives you is *org-adjacent or better*, not
+*can push*.
 
 The residual you cannot cheaply close: the agent runs unsandboxed with a model token readable in its
 environment and unrestricted network egress. Every *injection source* is behind the author gate —

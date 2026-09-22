@@ -91,16 +91,26 @@ describe("isTrustedAuthor — trusted bot logins", () => {
   // the same account, two spellings. Its author_association is never one the
   // association half trusts — NONE where the bot has not committed and
   // CONTRIBUTOR where it has (#71) — so an association-only gate would discard
-  // it. Listing only the REST spelling was a
-  // shipped bug (docs/friction.md, "Closing the loop"): GraphQL-sourced comments
-  // from the review agent were silently dropped and the review → fix handoff
-  // quietly did nothing. Both spellings must stay trusted even with NONE.
+  // it either way. Listing only the REST spelling was a shipped bug
+  // (docs/friction.md, "Closing the loop"): GraphQL-sourced comments from the
+  // review agent were silently dropped and the review → fix handoff quietly
+  // did nothing. Both spellings must stay trusted whichever value it carries,
+  // so both values are a row here rather than only the one this repository
+  // happens to report.
   it("trusts github-actions[bot] (the REST spelling) even with NONE", () => {
     expect(isTrustedAuthor("NONE", "github-actions[bot]")).toBe(true);
   });
 
   it("trusts github-actions (the GraphQL spelling) even with NONE", () => {
     expect(isTrustedAuthor("NONE", "github-actions")).toBe(true);
+  });
+
+  it("trusts github-actions[bot] with CONTRIBUTOR, the adopter's value", () => {
+    expect(isTrustedAuthor("CONTRIBUTOR", "github-actions[bot]")).toBe(true);
+  });
+
+  it("trusts github-actions with CONTRIBUTOR, the adopter's value", () => {
+    expect(isTrustedAuthor("CONTRIBUTOR", "github-actions")).toBe(true);
   });
 });
 

@@ -1459,8 +1459,11 @@ describe("every workflow in the loop is called rather than copied", () => {
    * what keeps `contents: read` on review an invariant (docs/parity.md §10). And
    * the caller's block is the grant: on a repo whose default `GITHUB_TOKEN` is
    * read-only, a permission declared only in the callee grants nothing, and
-   * every `gh` call needing it 403s — a run that costs a full agent pass and
-   * silently transitions no label at all.
+   * every `gh` call needing it 403s. What that costs is per workflow and is
+   * accounted for in one place, `setup/doctor.ts`'s `REQUIRED_PERMISSIONS`:
+   * the three PR workflows die at the label transition above their checkout,
+   * before an agent pass is spent, while `implement` reaches the step that
+   * opens the pull request and `follow-ups` 403s having already filed.
    *
    * Asserted as equality between the halves rather than against a table, so the
    * property held is the one that matters: neither half can drift from the
@@ -1471,6 +1474,63 @@ describe("every workflow in the loop is called rather than copied", () => {
 
     expect(granted).toEqual(jobOf(targetOf(file)).permissions);
     expect(Object.keys(granted ?? {})).not.toHaveLength(0);
+  });
+
+  /**
+   * What a missing grant actually costs on a PR workflow, pinned where it is
+   * paid (#78). The comment above used to say the review ran, spent a full
+   * agent pass and transitioned no label — and that is the one shape this
+   * cannot take: `review`, `fix` and `update-branch` all transition labels in
+   * one step *above* their checkout, and the `--add-label` ending it is
+   * deliberately not written `|| true`, so Actions' default `bash -e` fails the
+   * run there. Loud, and before the diff is fetched.
+   *
+   * That is the behaviour `setup/doctor.ts` describes to an adopter ("fails it
+   * on the 403, before the checkout"), so it is a property of these three
+   * workflows rather than an oversight in them: a `|| true` added to that line
+   * would buy back exactly the silent, paid-for run the prose once claimed.
+   */
+  it.each(PR_WORKFLOWS)("%s: a 403 on the label transition fails before the checkout", (file) => {
+    const steps = stepsOf(file);
+    const transition = steps.findIndex((s) =>
+      (s.run ?? "").includes('--add-label "agent:in-progress"'),
+    );
+    const checkout = steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+
+    expect(transition).toBeGreaterThanOrEqual(0);
+    expect(checkout).toBeGreaterThan(transition);
+
+    // Keyed on the tolerance rather than on the command: the two `--remove-label`
+    // lines in the same step are `|| true` on purpose — a label that is not
+    // there is not a failure — so it is this line alone that must be bare.
+    const adds = (steps[transition]?.run ?? "")
+      .split("\n")
+      .filter((l) => l.includes('--add-label "agent:in-progress"'));
+
+    expect(adds).not.toHaveLength(0);
+    for (const line of adds) expect(line).not.toContain("|| true");
+  });
+
+  /**
+   * And the sentence that described it. Review is the one workflow whose
+   * `permissions:` block spells the grant/bound split out at length, so it is
+   * the one that can get the cost wrong; the claim also reached #45's issue
+   * body and from there `REQUIRED_PERMISSIONS`, which is why the correction is
+   * asserted rather than just made.
+   */
+  it("review.yml's permissions comment describes that failure, not a silent one", () => {
+    const lines = fs.readFileSync(REVIEW, "utf8").split("\n");
+    const at = lines.findIndex((l) => l.trim() === "permissions:");
+
+    expect(at).toBeGreaterThan(0);
+
+    let from = at;
+    while (from > 0 && (lines[from - 1] ?? "").trimStart().startsWith("#")) from -= 1;
+    const comment = lines.slice(from, at).join("\n");
+
+    expect(comment).toContain("grants nothing");
+    expect(comment).not.toMatch(/silently transitions no label/i);
+    expect(comment).toMatch(/before the checkout/i);
   });
 
   /**

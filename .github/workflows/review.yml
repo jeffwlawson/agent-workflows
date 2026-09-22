@@ -101,9 +101,13 @@ jobs:
     # *downgrade* the token it is handed, so this block is the bound and cannot
     # be widened from the caller's side. The caller's block is the grant: on a
     # repo whose default `GITHUB_TOKEN` is read-only, `pull-requests: write`
-    # declared only here grants nothing, and every `gh pr edit` below 403s — a
-    # review that runs, costs a full agent pass, and silently transitions no
-    # label at all.
+    # declared only here grants nothing, and every `gh pr edit` below 403s. The
+    # first one not written `|| true` is the `--add-label "agent:in-progress"`
+    # ending `Transition labels`, and Actions' default `bash -e` fails the run
+    # there — before the checkout, so before the diff is fetched and before an
+    # agent pass is spent. That loud, early failure is the intended one and is
+    # what `setup/doctor.ts` tells an adopter to expect, which is why that one
+    # line carries no tolerance while the removals beside it do.
     permissions:
       # Reading the check runs the CI wait below polls. On a **public**
       # repository they are readable without this scope, which is why every

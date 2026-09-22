@@ -11,6 +11,7 @@ import {
   writeJson,
   writeText,
 } from "../shared/common.js";
+import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   capFollowUps,
@@ -43,6 +44,16 @@ const readCiStatus = (): string => {
 
 try {
   const context = fetchPullRequestContext(PR_NUMBER);
+
+  // A review proceeds on what survived a partial answer — but says so twice:
+  // here, for whoever reads the run, and in the discussion the agent is handed.
+  // An unreadable selection that is only *absent* is indistinguishable from a
+  // PR nobody has commented on (#76).
+  if (context.unreadableFeedback.length > 0) {
+    console.log(
+      `Feedback selections that could not be read: ${describeUnreadable(context.unreadableFeedback)}`,
+    );
+  }
 
   // All `gh`-based context fetching is done; the review agent must not hold the
   // GitHub token (it has no legitimate use for it, and posting happens in a

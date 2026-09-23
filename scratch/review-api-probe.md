@@ -17,9 +17,9 @@
 17. probe line 17
 18. probe line 18
 19. probe line 19
-20. probe line 20
-21. probe line 21
-22. probe line 22
+20. probe line 20 (modified)
+21. probe line 21 (modified)
+22. probe line 22 (modified)
 23. probe line 23
 24. probe line 24
 25. probe line 25

@@ -41,7 +41,7 @@ prose into one; a decision written in two places is a decision that can disagree
 
 ```
 /
-├── CONTEXT.md
+├── CONTEXT.md        ← probe edit (throwaway)
 ├── CLAUDE.md
 ├── docs/
 │   ├── adr/            ← created lazily by /domain-modeling

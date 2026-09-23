@@ -5,7 +5,11 @@ import {
   type UnreadableSelection,
 } from "./pr-feedback.js";
 import { parseDiffLines } from "./diff-lines.js";
-import { carriedFindings, type CarriedFinding } from "./review-verification.js";
+import {
+  carriedFindings,
+  type CarriedFinding,
+  type SettledFinding,
+} from "./review-verification.js";
 
 export interface PullRequestContext {
   /**
@@ -39,6 +43,18 @@ export interface PullRequestContext {
    * that a human's push silently emptied.
    */
   readonly carriedFindings: readonly CarriedFinding[];
+  /**
+   * What a **maintainer** has already closed on this pull request (#109,
+   * decision 10). Handed to every review as settled, so the one thing it is
+   * never asked to do is raise it again.
+   *
+   * Beside `carriedFindings` rather than inside it, because the two are
+   * opposite instructions: rule on these, leave those alone. A single list with
+   * a flag on it would make "settled" one more property of a finding a review
+   * is answering about, and a review that answered would be overruling a human
+   * by filling in a field.
+   */
+  readonly settledFindings: readonly SettledFinding[];
   readonly diff: string;
   readonly diffLines: Map<string, Set<number>>;
 }
@@ -130,6 +146,7 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
       threads: feedback.agentThreads,
       latestReviewBody: feedback.latestAgentReviewBody,
     }),
+    settledFindings: feedback.settledFindings,
     diff,
     diffLines: parseDiffLines(diff),
   };

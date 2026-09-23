@@ -4,6 +4,7 @@ import {
   carriedFindings,
   parseVerification,
   renderCarriedFindings,
+  renderSettledFindings,
   verifyCarried,
   type AgentThread,
   type CarriedFinding,
@@ -193,6 +194,7 @@ describe("verifyCarried", () => {
       {
         threadId: "PRRT_one",
         findingId: "f-1",
+        reason: "ADDRESSED",
         reply: expect.stringContaining("The guard now runs before `apply()`."),
       },
     ]);
@@ -269,5 +271,125 @@ describe("verifyCarried", () => {
 
   it("has nothing to do on the first review of a pull request", () => {
     expect(verifyCarried([], [])).toEqual({ resolutions: [], stillOpen: [] });
+  });
+});
+
+/**
+ * **The maintainer's decisions stick** (#109, decision 10; #112). Two halves,
+ * and they fail in opposite directions if either is got wrong.
+ *
+ * A thread a human resolved is settled: raising it again — in the same words or
+ * in new ones — is the loop overruling the person it works for, and it does so
+ * silently, because nothing on the pull request records that the finding is one
+ * a maintainer already closed.
+ *
+ * A thread a maintainer replied to declining the finding is settled too, but
+ * only the **workflow** may say so. The gate is `maintainerReply`, which is
+ * present only where a trusted author wrote it (`shared/pr-feedback.ts`), so a
+ * decline typed by anyone at all cannot close a finding by being believed.
+ */
+describe("a maintainer's decision settles a finding", () => {
+  const declined = (id: string): VerificationEntry => ({ id, status: "declined" });
+
+  const REPLY = { login: "maintainer", body: "Won't fix — the duplicate write is intended here." };
+
+  describe("renderSettledFindings", () => {
+    it("names who settled it, so the reviewer can see it was not this loop", () => {
+      const rendered = renderSettledFindings([
+        { findingId: "f-7", resolvedBy: "maintainer", text: "src/queue.ts:206 — the guard runs after the return" },
+      ]);
+
+      expect(rendered).toContain("@maintainer");
+      expect(rendered).toContain("src/queue.ts:206 — the guard runs after the return");
+      expect(rendered).toMatch(/do not raise/i);
+    });
+
+    /**
+     * An empty section reads as one the run failed to fill in, which is the
+     * reading that makes a reviewer discount the heading above it.
+     */
+    it("says so in words when the maintainer has settled nothing", () => {
+      expect(renderSettledFindings([])).toContain("no finding");
+    });
+  });
+
+  describe("parseVerification", () => {
+    it("reads a decline, which is the third thing a review may say", () => {
+      expect(parseVerification({ id: "f-1", status: "declined" })).toEqual({
+        id: "f-1",
+        status: "declined",
+      });
+    });
+  });
+
+  describe("verifyCarried", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const CARRIED: readonly CarriedFinding[] = [
+      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", maintainerReply: REPLY },
+      { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour" },
+    ];
+
+    /**
+     * `WONT_FIX` rather than `ADDRESSED`: the code did not change, the person
+     * who owns it decided. GitHub takes the reason and shows it to nobody, so
+     * the reply is where that distinction survives.
+     */
+    it("closes a declined thread as won't fix, quoting the maintainer", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { resolutions, stillOpen } = verifyCarried(CARRIED, [declined("f-1")]);
+
+      expect(resolutions).toEqual([
+        {
+          threadId: "PRRT_one",
+          findingId: "f-1",
+          reason: "WONT_FIX",
+          reply: expect.stringContaining("> Won't fix — the duplicate write is intended here."),
+        },
+      ]);
+      expect(resolutions[0]?.reply).toContain("@maintainer");
+      expect(stillOpen.map((f) => f.id)).toEqual(["f-2"]);
+    });
+
+    /** And a verified fix still closes as addressed, which is the other reason. */
+    it("closes a landed thread as addressed", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      expect(verifyCarried(CARRIED, [landed("f-2")]).resolutions[0]?.reason).toBe("ADDRESSED");
+    });
+
+    /**
+     * **The author gate, structurally.** A review may misread a reply — it is
+     * prose — but it can only misread one that reached it, and only a trusted
+     * author's reply is carried. So a decline with no maintainer behind it
+     * leaves the thread open, which is the direction this has to fail in: the
+     * loop never closes a finding on an untrusted stranger's say-so.
+     */
+    it("leaves a decline open where no maintainer replied on the thread", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { resolutions, stillOpen } = verifyCarried(CARRIED, [declined("f-2"), landed("f-1")]);
+
+      expect(resolutions.map((r) => r.findingId)).toEqual(["f-1"]);
+      expect(stillOpen.map((f) => f.id)).toEqual(["f-2"]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("f-2"));
+    });
+
+    /**
+     * A body-recorded finding has no thread for anybody to reply on, so a
+     * decline of one is a ruling about a conversation that cannot have
+     * happened. It stays open and keeps counting.
+     */
+    it("leaves a declined body entry open, since no maintainer could have replied", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const carried: readonly CarriedFinding[] = [{ id: "f-3", text: "the cache key omits the tenant" }];
+
+      const { resolutions, stillOpen } = verifyCarried(carried, [declined("f-3")]);
+
+      expect(resolutions).toEqual([]);
+      expect(stillOpen.map((f) => f.id)).toEqual(["f-3"]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("f-3"));
+    });
   });
 });

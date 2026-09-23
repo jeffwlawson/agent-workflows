@@ -30,6 +30,10 @@ dropped.
   the reason it closed.
 - `open` — it does not. It counts against this pull request exactly as one of your own findings
   does, so do **not** also restate it in `fixBeforeMerge`: that counts it twice.
+- `declined` — a maintainer replied on the thread refusing it ("won't fix", "this is intended").
+  The workflow closes the thread as *won't fix*, quoting **them** rather than you, and it stops
+  counting. This reports their decision; it is never yours to take. A reply you cannot read as a
+  refusal is `open`, and so is one from anybody who is not a maintainer.
 
 `note` is one line, written to whoever raised the finding and whoever has to read the thread after
 it closes. An identifier you omit stays open, which is the safe direction and not a way to skip the
@@ -106,7 +110,8 @@ dropped from the end, here, after you have written it; it is not yours to filter
   ],
   "verified": [
     { "id": "f-1a2b3c4d", "status": "landed", "note": "The guard now runs before `apply()`, and a test covers the malformed input." },
-    { "id": "f-5e6f7a8b", "status": "open", "note": "Still returns early on an empty list, so the count is unchanged." }
+    { "id": "f-5e6f7a8b", "status": "open", "note": "Still returns early on an empty list, so the count is unchanged." },
+    { "id": "f-9c0d1e2f", "status": "declined", "note": "The maintainer replied that the duplicate write is intended." }
   ],
   "needsYou": "Omit this field unless another pass cannot settle it; one line naming which of the three cases it is.",
   "findings": [

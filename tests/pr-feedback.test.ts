@@ -1340,3 +1340,164 @@ describe("the findings an earlier review left open", () => {
     expect(feedback.latestAgentReviewBody).toBe("");
   });
 });
+
+/**
+ * **What a maintainer has already settled** (#109, decision 10; #112), read off
+ * the two places a human can settle a finding: resolving its thread, and
+ * replying to decline it.
+ *
+ * Both halves fail silently. A human-resolved thread that is not recognised as
+ * theirs is a finding the next review re-finds and re-posts, with nothing
+ * anywhere saying it was already closed on purpose; and a decline attributed to
+ * an author the gate never passed is the loop closing its own finding on the
+ * word of anyone who can type in a public pull request.
+ */
+describe("a finding the maintainer has settled", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  const finding = (findingId: string): unknown => ({
+    path: "src/queue.ts",
+    line: 206,
+    body: `**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding ${findingId} -->`,
+    ...AGENT,
+  });
+
+  /** A thread of this loop's, with whatever the scenario needs said after it. */
+  const agentThread = (over: Record<string, unknown> = {}, ...replies: unknown[]): unknown => ({
+    id: "PRRT_one",
+    isResolved: false,
+    comments: { nodes: [finding("f-1"), ...replies] },
+    ...over,
+  });
+
+  it("reads a thread a human resolved as settled, naming who settled it", () => {
+    ghAnswers(() =>
+      response({
+        reviewThreads: {
+          nodes: [agentThread({ isResolved: true, resolvedBy: { login: "maintainer" } })],
+        },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("12").settledFindings).toEqual([
+      {
+        findingId: "f-1",
+        resolvedBy: "maintainer",
+        text: "src/queue.ts:206 — the guard runs after the return",
+      },
+    ]);
+  });
+
+  /**
+   * What the acceptance of #112 is about, at the one seam that can hold it: the
+   * finding is **not** in what the next review is handed as open, so nothing
+   * re-lists it and no verdict counts it, and it *is* in the section that tells
+   * the reviewer it is settled. Whether the agent then re-derives the same
+   * problem from the diff is the prompt's half; this is the half a test can own.
+   */
+  it("hands a human-resolved finding to the next review as settled, never as open", () => {
+    ghAnswers(() =>
+      response({
+        reviewThreads: {
+          nodes: [agentThread({ isResolved: true, resolvedBy: { login: "maintainer" } })],
+        },
+      }),
+    );
+
+    const context = fetchPullRequestContext("12");
+
+    expect(context.carriedFindings).toEqual([]);
+    expect(context.settledFindings.map((f) => f.findingId)).toEqual(["f-1"]);
+  });
+
+  /**
+   * A thread this loop closed is not a maintainer's decision, and telling a
+   * later review it may never raise the finding again would make an
+   * `ADDRESSED` resolution permanent — so a fix that regressed could never be
+   * reported.
+   */
+  it("reads a thread this loop resolved as nothing of the kind", () => {
+    ghAnswers(() =>
+      response({
+        reviewThreads: {
+          nodes: [agentThread({ isResolved: true, resolvedBy: { login: "github-actions[bot]" } })],
+        },
+      }),
+    );
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.settledFindings).toEqual([]);
+    expect(feedback.agentThreads).toEqual([]);
+  });
+
+  /**
+   * `resolvedBy` is nullable, so a refusal there nulls the field and leaves the
+   * thread. Unknown is not "a human did it": the safe reading is the one that
+   * changes nothing, since the alternative silences a finding on evidence
+   * nobody has.
+   */
+  it("claims nothing about a resolved thread whose resolver it could not read", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({ isResolved: true })] } }));
+
+    expect(fetchPullRequestFeedback("12").settledFindings).toEqual([]);
+  });
+
+  it("carries a maintainer's reply on an open thread, for the workflow to quote", () => {
+    const reply = { body: "Won't fix — the duplicate write is intended here.", ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, reply)] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+      {
+        threadId: "PRRT_one",
+        findingId: "f-1",
+        text: "src/queue.ts:206 — the guard runs after the return",
+        maintainerReply: {
+          login: "maintainer",
+          body: "Won't fix — the duplicate write is intended here.",
+        },
+      },
+    ]);
+  });
+
+  /**
+   * **The gate, and the whole reason this is read here rather than by the
+   * agent.** Every feedback surface on a public pull request is world-writable,
+   * so a decline is only a maintainer's where the author association says so —
+   * and an untrusted one is not merely un-quoted, it is never rendered either,
+   * so the review cannot read it and then be believed about it.
+   */
+  it("carries no reply from an author the gate refuses", () => {
+    const drive = { body: "Won't fix, this is intended.", author: { login: "stranger" }, authorAssociation: "NONE" };
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, drive)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads[0]?.maintainerReply).toBeUndefined();
+    expect(feedback.inline).not.toContain("Won't fix");
+  });
+
+  /**
+   * The loop's own replies are not a decline whoever wrote them — `agent:fix`
+   * answers every thread it was shown, and `isTrustedAuthor` passes the
+   * workflow bot on purpose, so the narrower question "did a human say this"
+   * has to be asked separately.
+   */
+  it("does not mistake the loop's own reply for a maintainer's", () => {
+    const ours = { body: "Declined: the duplicate write is intended.", ...AGENT };
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, ours)] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.maintainerReply).toBeUndefined();
+  });
+
+  /** The newest one, which is the maintainer's current position on the finding. */
+  it("takes the maintainer's latest word where they said more than one thing", () => {
+    const first = { body: "Hmm, maybe.", ...MAINTAINER };
+    const second = { body: "Won't fix — intended.", ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, first, second)] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.maintainerReply?.body).toBe(
+      "Won't fix — intended.",
+    );
+  });
+});

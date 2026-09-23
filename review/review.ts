@@ -29,7 +29,12 @@ import {
   detectReviewRound,
   unreadableRoundNote,
 } from "../shared/review-round.js";
-import { renderCarriedFindings, verifyCarried } from "../shared/review-verification.js";
+import {
+  renderCarriedFindings,
+  renderSettledFindings,
+  verifyCarried,
+  type ResolutionReason,
+} from "../shared/review-verification.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
@@ -118,6 +123,7 @@ try {
       CI_STATUS: readCiStatus(),
       ROUND: describeRound(round),
       OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
+      SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),
       PR_DIFF: context.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
@@ -257,9 +263,15 @@ try {
   console.log(
     `Findings: ${placed.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${placements("body")} in the body; ${missed} in code an earlier review had already read.`,
   );
+  // Split by reason rather than counted together: "the code was fixed" and "a
+  // maintainer said no" are the two ways a finding stops counting, and a human
+  // reading this log to explain a verdict needs to know which one happened.
+  const closedAs = (reason: ResolutionReason): number =>
+    resolutions.filter((r) => r.reason === reason).length;
   console.log(
-    `Earlier findings: ${context.carriedFindings.length} open before this review — ${resolutions.length} verified fixed and resolved, ${stillOpen.length} still open.`,
+    `Earlier findings: ${context.carriedFindings.length} open before this review — ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${stillOpen.length} still open.`,
   );
+  console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));

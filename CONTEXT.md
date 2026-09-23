@@ -45,6 +45,16 @@ the next review is handed, so while the fixer closed its own threads the one pas
 it land?* could not see what it was checking. Round 1 does it too, because a human may have pushed
 the fix and the question has the same answer whoever wrote the commit.
 
+**And a maintainer's decision outranks both** (#109, decision 10). A thread a *human* resolved is
+handed to every later review as settled, with the instruction not to raise it again in any wording;
+a thread where a maintainer **replied** declining the finding is closed by the reviewer as
+`WONT_FIX`, quoting them, and stops counting. The review never overrules a maintainer and never
+declines on its own authority — a reply it cannot read as a refusal leaves the thread open, which
+is the safe direction because an open finding costs a round and a wrongly closed one costs the
+decision. What makes the decline usable is the author gate rather than the reading: only a reply
+`isTrustedAuthor` passed reaches the agent at all, and only one it passed can close a thread, so a
+decline typed by anyone at all is a finding that stays open.
+
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather
 than the normal path — and it is the one workflow an adopter can decline by not copying its caller

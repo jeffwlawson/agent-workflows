@@ -736,10 +736,20 @@ jobs:
       # replies and resolves nothing, so nothing is marked done by the run that
       # claims to have done it.
       #
-      # `resolutionReason: ADDRESSED` is recorded by GitHub and exposed nowhere
-      # afterwards — no field on `PullRequestReviewThread` reads it back — so the
-      # reply is the record, and it is posted first for that reason: a thread
-      # that closes with no reply loses the only statement of why.
+      # `resolutionReason` is recorded by GitHub and exposed nowhere afterwards
+      # — no field on `PullRequestReviewThread` reads it back — so the reply is
+      # the record, and it is posted first for that reason: a thread that closes
+      # with no reply loses the only statement of why.
+      #
+      # Two reasons, and which one a thread closes on is decided by
+      # `verifyCarried` and read out of the file, never derived here: a finding
+      # the review verified fixed closes as `ADDRESSED`, and one a maintainer
+      # declined closes as `WONT_FIX` with their words quoted back (#109,
+      # decision 10). The enum is spelled out on both arms because it is a
+      # literal in the document rather than a variable GitHub would coerce —
+      # and the branch is on a fixed list, so a value this step does not
+      # recognise closes as addressed instead of putting an unknown string into
+      # a mutation.
       #
       # Both mutations spend `pull-requests: write`, which this job already holds
       # for its label edits, and nothing else. Resolving a thread is not a
@@ -769,6 +779,7 @@ jobs:
           for i in $(seq 0 $((count - 1))); do
             tid=$(jq -r ".[$i].threadId" "$RESOLUTIONS")
             body=$(jq -r ".[$i].reply" "$RESOLUTIONS")
+            reason=$(jq -r ".[$i].reason" "$RESOLUTIONS")
 
             gh api graphql -f threadId="$tid" -f body="$body" -f query='
               mutation($threadId:ID!,$body:String!) {
@@ -779,13 +790,24 @@ jobs:
               && echo "  replied to ${tid}" \
               || echo "  WARNING: reply failed for ${tid}"
 
-            gh api graphql -f threadId="$tid" -f query='
-              mutation($threadId:ID!) {
-                resolveReviewThread(
-                  input:{threadId:$threadId, resolutionReason:ADDRESSED}
-                ) { clientMutationId }
-              }' >/dev/null \
-              && echo "  resolved ${tid}" \
+            if [ "$reason" = "WONT_FIX" ]; then
+              mutation='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(
+                    input:{threadId:$threadId, resolutionReason:WONT_FIX}
+                  ) { clientMutationId }
+                }'
+            else
+              mutation='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(
+                    input:{threadId:$threadId, resolutionReason:ADDRESSED}
+                  ) { clientMutationId }
+                }'
+            fi
+
+            gh api graphql -f threadId="$tid" -f query="$mutation" >/dev/null \
+              && echo "  resolved ${tid} (${reason})" \
               || echo "  WARNING: resolve failed for ${tid}"
           done
 

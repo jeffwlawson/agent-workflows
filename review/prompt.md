@@ -17,7 +17,9 @@ is the full list of what you must not do.
 Feedback already on this PR — earlier review summaries, unresolved inline threads (replies
 included), and conversation comments — plus any collaborator comments on the linked issue.
 Resolved threads are omitted deliberately: a thread is closed by a review that checked the code and
-found the finding fixed, or by a human, so one that is gone is one that is settled.
+found the finding fixed, or by a human, so one that is gone is one that is settled. The ones a
+**human** closed are listed under *WHAT THE MAINTAINER HAS SETTLED* below, because those carry an
+instruction rather than only an absence.
 
 **Raise only what is new.** A point already made below and since addressed gets one line
 acknowledging it; one still outstanding may be reinforced. Treat maintainer steering as
@@ -70,9 +72,9 @@ it was raised in, under **EXISTING FEEDBACK** above, or in that review's body.
 {{OPEN_FINDINGS}}
 
 **Rule on every one of them, by identifier, in `verified`.** For each: `landed` if the current code
-resolves it, `open` if it does not, and one line saying why. Check the code in front of you rather
-than a claim that it was fixed — a reply saying a finding was addressed is an assertion, and
-verifying it is the whole of this job.
+resolves it, `open` if it does not, `declined` if a maintainer has replied refusing it — and one
+line saying why. Check the code in front of you rather than a claim that it was fixed — a reply
+saying a finding was addressed is an assertion, and verifying it is the whole of this job.
 
 This is asked of **every** review, this round included. A finding does not need a fix round to have
 been settled: a human may have pushed the fix, or the finding may have been wrong.
@@ -85,6 +87,34 @@ counts against this pull request exactly as a finding of your own would, so do n
 One you say nothing about **stays open**. That is deliberate, and it is the safe direction rather
 than an invitation to leave the list half-done: a finding nobody has checked is not a finding
 anybody has settled.
+
+**`declined` is the third answer, and it is not yours.** Where a maintainer has replied on the
+thread saying they will not fix it — "won't fix", "this is intended", "leave it" — rule it
+`declined`. The workflow then closes that thread as *won't fix*, quoting their reply. You are
+reporting what they decided, not deciding anything: you never overrule a maintainer, and you never
+decline a finding on your own authority.
+
+A reply you cannot read as a decline leaves the thread `open`. Somebody explaining the code,
+asking a question, or saying they will get to it has not declined anything, and reading a maybe as
+a no closes a finding nobody settled. Open is the safe direction here as everywhere else — a
+maintainer who meant to decline can say so again, and the next review will read it.
+
+Only a reply the workflow has **already gated** can close a thread this way. You will not see an
+untrusted author's comment at all, and a decline you attribute to one leaves the thread open
+whatever you rule.
+
+# WHAT THE MAINTAINER HAS SETTLED
+
+Findings an earlier review raised that a **human** then closed by hand. They are not open, they are
+not yours to verify, and there is nothing to report about them.
+
+{{SETTLED_FINDINGS}}
+
+**Do not raise any of these again** — not in the same words, and not as a fresh finding you derived
+from the diff. A maintainer closing a thread is the decision on that point; re-posting it as though
+it were new is this loop overruling the person it works for, and the record has no way to recognise
+that it has happened. If you believe one of them is now a different problem — the code has changed
+since and broken something else — say so about *that* problem, naming what changed.
 
 # CI RESULTS
 

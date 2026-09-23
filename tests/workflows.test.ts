@@ -1379,6 +1379,26 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
   });
 
   /**
+   * And as **won't fix** where a maintainer declined it (#109, decision 10;
+   * #112) — a distinction this step cannot derive and must not try to. Which
+   * reason a thread closes on is `verifyCarried`'s, read out of the file as the
+   * reply is, and the enum is spelled out on both arms because it is an enum
+   * literal in the document rather than a variable GitHub would coerce.
+   *
+   * The branch is on a fixed list rather than on whatever the file says, for
+   * the reason every other reader of a generated file here is: a value this
+   * step does not recognise closes the thread as addressed, which is the
+   * reading that loses a nuance rather than the one that interpolates an
+   * unknown string into a GraphQL document.
+   */
+  it("closes it as won't fix where a maintainer declined it", () => {
+    const run = resolveStep()?.run ?? "";
+
+    expect(run).toContain("resolutionReason:WONT_FIX");
+    expect(run).toContain(".reason");
+  });
+
+  /**
    * After the verdict, and never able to take it down. A thread that will not
    * close is a thread a human closes; a review posted without its verdict is
    * the state the whole feature exists to prevent.

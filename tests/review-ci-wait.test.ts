@@ -457,8 +457,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   /**
    * With one context skipped, and it is this job's own answer. `agent-review`
    * is the context the verdict is posted under, so counting it would feed the
-   * last round's verdict into the next round's evidence: every "ready after a
-   * "changes recommended" — a `failure` status — would derive "needs a closer
+   * last round's verdict into the next round's evidence: every "changes
+   * recommended" — a `failure` status — would derive "needs a closer
    * look" one round later, off nothing but its own reply.
    */
   it("ignores the verdict's own context, which is this job's previous answer", () => {

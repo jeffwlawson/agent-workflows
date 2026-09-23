@@ -450,7 +450,7 @@ reason to wait is that it moves who pays for a wrong verdict. Today one you disa
 the minute it takes to read the review and merge anyway. Required, it blocks the merge until a
 review says otherwise, so a verdict that is flaky is a repository where nothing merges.
 
-Two consequences to weigh before switching it on rather than after:
+Three consequences to weigh before switching it on rather than after:
 
 - **A pull request the loop never reviewed carries no status**, and a required check that is absent
   is not a check that passed. Your own one-line fix, pushed and opened by hand, stops being

@@ -1359,6 +1359,33 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
     expect(run).not.toContain("|| true");
   });
 
+  /**
+   * And a read that *failed* is not a commit with no verdict on it (#105).
+   * Collapsed into one answer only the second is ever reported: a caller
+   * predating the `statuses: write` grant gets `statuses: none`, so on a
+   * private repository this `GET` 403s — and the warning naming the grant is
+   * on the *write* below, which is never reached. The step would log "nothing
+   * to carry over" and exit 0, and every refresh would drop the verdict with
+   * no signal anywhere. It is the distinction `verdictOn` keeps as `undefined`
+   * against `false`, and the CI word keeps as `unknown` against `red`.
+   */
+  it("says so when the statuses could not be read, rather than reading that as none", () => {
+    const run = copy()?.run ?? "";
+    const read = run.slice(0, run.indexOf('if [ -z "$verdict" ]'));
+
+    // Its own arm, gated on the read rather than on what the read produced.
+    expect(read).toContain('if ! statuses=$(gh api');
+    // With a warning of its own — the one below is on the write, so a step
+    // that gave up here would reach no warning at all.
+    expect(read).toContain("::warning::");
+    // And what `gh` said, which is what tells a 403 from an outage: the same
+    // pair the review's CI arms use.
+    expect(read).toContain('2>"$err"');
+    expect(read).toContain('cat "$err"');
+    // Still without failing the run: the merge is pushed by now.
+    expect(read).toContain("exit 0");
+  });
+
   it("asks for a review of the resolution it wrote", () => {
     expect(request()?.run ?? "").toContain('--add-label "agent:review"');
   });

@@ -251,10 +251,52 @@ const LABELLED = new RegExp(`^[\\s*_]*${FIX_BEFORE_MERGE_LABEL}(?![A-Za-z0-9])`,
  * wrong.
  */
 export const countFixBeforeMerge = (output: ReviewOutput): number =>
-  Math.max(
-    output.fixBeforeMerge.length,
-    output.inlineComments.filter((comment) => LABELLED.test(comment.body)).length,
-  );
+  Math.max(output.fixBeforeMerge.length, labelledComments(output).length);
+
+/** The inline comments that carry the label, in the order the model produced them. */
+const labelledComments = (output: ReviewOutput): readonly InlineComment[] =>
+  output.inlineComments.filter((comment) => LABELLED.test(comment.body));
+
+/**
+ * A labelled comment as one checklist line: its anchor, then the claim it
+ * opens with.
+ *
+ * Up to the comment's first line break rather than the whole body, which is
+ * what keeps a ```suggestion block out of the list it would otherwise be
+ * collapsed into. The comment is where the evidence and the fix live; the
+ * checklist wants the claim and the place to find the rest.
+ */
+const asChecklistLine = (comment: InlineComment): string => {
+  const [opening = ""] = comment.body.replace(LABELLED, "").split("\n");
+  const claim = opening.replace(/^[\s*_.:;,—–-]+/, "").trim();
+  const anchor = `\`${comment.path}:${comment.line}\``;
+
+  return claim === "" ? anchor : `${anchor} — ${claim}`;
+};
+
+/**
+ * The findings the checklist records, which must be the ones the verdict was
+ * **counted** from (#105).
+ *
+ * `fixBeforeMerge` alone was the shape that broke: the count takes the larger
+ * of the list and the labelled comments, so in exactly the case that rule
+ * exists for — a finding labelled `**Fix before merge.**` in a comment and left
+ * off the list — the verdict said *changes recommended* over an empty
+ * checklist, and round 2 was told that checklist is the list of what to verify.
+ *
+ * So when the comments outnumber the list, they are recorded too. All of them,
+ * not the ones the list left out: the list is a *restatement* of the same
+ * findings in the model's own words, and telling which comment a given line
+ * restates is the prose-matching this derivation exists to avoid. A finding
+ * written down twice costs a reader a moment; one written down nowhere is the
+ * failure this is here to remove.
+ */
+export const fixBeforeMergeChecklist = (output: ReviewOutput): readonly string[] => {
+  const labelled = labelledComments(output);
+  if (labelled.length <= output.fixBeforeMerge.length) return output.fixBeforeMerge;
+
+  return [...output.fixBeforeMerge, ...labelled.map(asChecklistLine)];
+};
 
 /**
  * The checklist the posted review body carries, or `undefined` when there is
@@ -279,13 +321,13 @@ const renderFixBeforeMerge = (findings: readonly string[]): string | undefined =
 };
 
 /**
- * The summary as it is posted: four parts in one fixed order, and the one place
- * that order is written down (#105).
+ * The summary as it is posted: **five** parts in one fixed order, and the one
+ * place that order is written down (#105).
  *
  * Each part is there because a reader needs it before the one after it — the
- * assessment and the step it implies, why it cannot be automated, what to fix,
- * and then the evidence — and
- * two of them are parts the review used to lose. `needsYou` reached the
+ * assessment and the step it implies, why another pass cannot settle it, how
+ * the round was read, what to fix, and then the evidence — and two of them are
+ * parts the review used to lose. `needsYou` reached the
  * derivation and nothing else, so the case the agent named ("the wrong thing
  * was built", "the issue itself was wrong") never reached the maintainer whose
  * decision it is. And `fixBeforeMerge` was posted nowhere at all, which left
@@ -293,7 +335,13 @@ const renderFixBeforeMerge = (findings: readonly string[]): string | undefined =
  * run resolves every thread it addressed, and resolved threads are dropped from
  * the feedback the next review is handed.
  *
- * A function rather than four lines in the runner, because this is the part of
+ * Handed the review's whole output rather than the three fields it reads out of
+ * it, so the checklist it renders cannot be a different set from the one
+ * `deriveVerdict` counted — which is the second way the body lost a finding,
+ * and the one a caller passing `fixBeforeMerge` straight through would keep
+ * open.
+ *
+ * A function rather than five lines in the runner, because this is the part of
  * the review a human acts on and the runner is a script with no test around it.
  */
 export const renderReviewSummary = (parts: {
@@ -305,18 +353,17 @@ export const renderReviewSummary = (parts: {
    * what is rendered here.
    */
   readonly verdict: VerdictRow;
-  readonly needsYou?: string | undefined;
+  /** The review as the agent produced it, which is what the verdict was derived from. */
+  readonly output: ReviewOutput;
   /** The note a round that could not be established carries; see `shared/review-round.ts`. */
   readonly roundNote?: string | undefined;
-  readonly fixBeforeMerge: readonly string[];
-  readonly summary: string;
 }): string =>
   [
     `### ${parts.verdict.heading}\n\n${parts.verdict.nextStep}`,
-    parts.needsYou,
+    parts.output.needsYou,
     parts.roundNote,
-    renderFixBeforeMerge(parts.fixBeforeMerge),
-    parts.summary,
+    renderFixBeforeMerge(fixBeforeMergeChecklist(parts.output)),
+    parts.output.summary,
   ]
     .filter((part) => part !== undefined && part !== "")
     .join("\n\n");

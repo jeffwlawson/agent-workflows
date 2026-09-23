@@ -6,6 +6,7 @@ import {
   countFixBeforeMerge,
   deriveVerdict,
   filterInlineComments,
+  fixBeforeMergeChecklist,
   FOLLOW_UPS_MARKER,
   hasFollowUpsBlock,
   MAX_FOLLOW_UPS,
@@ -660,11 +661,15 @@ describe("the verdict's commit status", () => {
  * findings against summary prose.
  */
 describe("the posted review body", () => {
-  const parts = {
-    verdict: VERDICTS["changes recommended"],
-    fixBeforeMerge: [] as readonly string[],
-    summary: "The change does what the issue asked.",
-  };
+  const SUMMARY = "The change does what the issue asked.";
+  const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
+    summary: SUMMARY,
+    inlineComments: [],
+    followUps: [],
+    fixBeforeMerge: [],
+    ...over,
+  });
+  const parts = { verdict: VERDICTS["changes recommended"], output: output() };
 
   /**
    * The heading as a heading, so the assessment is what a reader's eye lands on
@@ -677,25 +682,31 @@ describe("the posted review body", () => {
     expect(body.startsWith("### 🟡 Changes recommended\n\n")).toBe(true);
     expect(body).toContain(parts.verdict.nextStep);
     expect(body).not.toContain(parts.verdict.description);
-    expect(body.endsWith(parts.summary)).toBe(true);
+    expect(body.endsWith(SUMMARY)).toBe(true);
   });
 
   it("names the case when the agent said a fix round cannot settle it", () => {
-    const body = renderReviewSummary({ ...parts, needsYou: "the issue asked for the opposite" });
+    const body = renderReviewSummary({
+      ...parts,
+      output: output({ needsYou: "the issue asked for the opposite" }),
+    });
 
     expect(body).toContain("the issue asked for the opposite");
     // Above the summary, because it is why the reader is being asked to read
     // one: a reason found underneath the evidence is a reason they reach after
     // deciding they had to.
-    expect(body.indexOf("the issue asked for the opposite")).toBeLessThan(
-      body.indexOf(parts.summary),
-    );
+    expect(body.indexOf("the issue asked for the opposite")).toBeLessThan(body.indexOf(SUMMARY));
   });
 
   it("renders each finding as a checklist entry, open rather than collapsed", () => {
     const body = renderReviewSummary({
       ...parts,
-      fixBeforeMerge: ["the guard runs after the return", "the new test asserts the old behaviour"],
+      output: output({
+        fixBeforeMerge: [
+          "the guard runs after the return",
+          "the new test asserts the old behaviour",
+        ],
+      }),
     });
 
     expect(body).toContain("**To fix before merge**");
@@ -709,7 +720,10 @@ describe("the posted review body", () => {
    * list it sits in — the same reason a follow-up title is collapsed.
    */
   it("keeps a wrapped finding on one line", () => {
-    const body = renderReviewSummary({ ...parts, fixBeforeMerge: ["the guard runs\n  after the return"] });
+    const body = renderReviewSummary({
+      ...parts,
+      output: output({ fixBeforeMerge: ["the guard runs\n  after the return"] }),
+    });
 
     expect(body).toContain("- [ ] the guard runs after the return");
   });
@@ -726,6 +740,96 @@ describe("the posted review body", () => {
     const body = renderReviewSummary({ ...parts, roundNote: "_Reviewed as a second round._" });
 
     expect(body).toContain("_Reviewed as a second round._");
+  });
+});
+
+/**
+ * The checklist is the set the **verdict was counted from** (#105), which
+ * `fixBeforeMerge` alone is not: the count takes the larger of the list and the
+ * labelled inline comments, so the case that rule exists for — a finding
+ * labelled in a comment and left off the list — posted *changes recommended*
+ * over an empty checklist. Round 2 is then told that checklist is what to
+ * verify against, under a verdict line reading "no need to read them first".
+ */
+describe("the checklist and the count are one set", () => {
+  const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
+    summary: "s",
+    inlineComments: [],
+    followUps: [],
+    fixBeforeMerge: [],
+    ...over,
+  });
+  const body = (over: Partial<ReviewOutput>): string =>
+    renderReviewSummary({ verdict: VERDICTS["changes recommended"], output: output(over) });
+
+  it("records a labelled comment the list left out, anchored where it was made", () => {
+    const missing = {
+      inlineComments: [
+        comment({
+          path: "src/queue.ts",
+          line: 206,
+          body: "**Fix before merge.** the guard runs after the return.",
+        }),
+      ],
+    };
+
+    expect(countFixBeforeMerge(output(missing))).toBe(1);
+    expect(fixBeforeMergeChecklist(output(missing))).toHaveLength(1);
+    expect(body(missing)).toContain("- [ ] `src/queue.ts:206` — the guard runs after the return.");
+  });
+
+  /**
+   * Up to the comment's first line break, so a ```suggestion block stays in the
+   * comment it belongs to rather than being collapsed into the list.
+   */
+  it("takes the claim a comment opens with, not the fix it carries", () => {
+    const suggested = body({
+      inlineComments: [
+        comment({
+          body: "__Fix before merge__ this comment describes the old behaviour.\n\n```suggestion\n * Returns every match\n```",
+        }),
+      ],
+    });
+
+    expect(suggested).toContain("— this comment describes the old behaviour.");
+    expect(suggested).not.toContain("```suggestion");
+  });
+
+  /**
+   * A review that did as it was asked renders its own words and nothing else:
+   * the list accounts for every labelled comment, so the comments add nothing.
+   */
+  it("renders the list alone when it accounts for every labelled comment", () => {
+    const both = {
+      fixBeforeMerge: ["the guard runs after the return"],
+      inlineComments: [
+        comment({ body: "**Fix before merge.** the guard runs after the return" }),
+      ],
+    };
+
+    expect(fixBeforeMergeChecklist(output(both))).toEqual(["the guard runs after the return"]);
+    expect(body(both).match(/- \[ \]/g)).toHaveLength(1);
+  });
+
+  /**
+   * And when they outnumber it, all of them are recorded rather than the ones
+   * the list left out: the list restates the same findings in the model's own
+   * words, so telling which line restates which comment is prose-matching. A
+   * finding written down twice costs a reader a moment; one written down
+   * nowhere is the failure this exists to remove.
+   */
+  it("records every labelled comment once the list is short, rather than guessing which", () => {
+    const short = {
+      fixBeforeMerge: ["the guard runs after the return"],
+      inlineComments: [
+        comment({ path: "a.ts", body: "**Fix before merge.** the guard runs after the return" }),
+        comment({ path: "b.ts", body: "**Fix before merge.** the new test asserts the old behaviour" }),
+      ],
+    };
+
+    expect(countFixBeforeMerge(output(short))).toBe(2);
+    expect(body(short)).toContain("- [ ] the guard runs after the return");
+    expect(body(short)).toContain("`b.ts:10` — the new test asserts the old behaviour");
   });
 });
 

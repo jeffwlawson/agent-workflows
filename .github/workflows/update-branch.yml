@@ -337,7 +337,30 @@ jobs:
           # repository with a deploy bot on every commit has more than that —
           # unpaginated, the older the verdict the likelier it silently is not
           # there.
-          verdict=$(gh api "repos/{owner}/{repo}/commits/${OLD_SHA}/statuses" --paginate --slurp \
+          #
+          # The read is its own arm, because **the read failing is not "there
+          # is no verdict"** (#105). Collapsed into one, only the second is ever
+          # reported: a caller installed before this release has no `statuses`
+          # entry and GitHub sets every unlisted scope to `none`, so on a
+          # private repository this `GET` 403s exactly as docs/ADOPTING.md §4
+          # describes for `checks: read` — and the step would log "nothing to
+          # carry over" and exit 0, while the warning naming the grant sits on
+          # the *write* below and never fires. Every refresh would drop the
+          # verdict with no signal anywhere. It is the distinction `verdictOn`
+          # keeps as `undefined` against `false`, and the CI word keeps as
+          # `unknown` against `red`.
+          err="${RUNNER_TEMP}/carry-verdict.err"
+          if ! statuses=$(gh api "repos/{owner}/{repo}/commits/${OLD_SHA}/statuses" --paginate --slurp 2>"$err"); then
+            echo "::warning::Could not read the statuses on ${OLD_SHA}, so no \`${VERDICT_CONTEXT}\` verdict was carried on to ${NEW_SHA} and this pull request now reads as unreviewed — which is not the same as its having none. On a private repository this is a caller missing \`statuses: write\` — see jeffwlawson/agent-workflows docs/ADOPTING.md §4. See what \`gh\` said below."
+            if [ -s "$err" ]; then
+              cat "$err"
+            fi
+            exit 0
+          fi
+          # Still `|| verdict=""`, and now it can only mean what it says: the
+          # read succeeded, so an empty answer is a commit carrying no verdict
+          # of ours.
+          verdict=$(printf '%s' "$statuses" \
             | jq -c '(add // []) | map(select(.context == env.VERDICT_CONTEXT and .creator.login == env.LOOP_ACCOUNT))[0] // empty') \
             || verdict=""
           if [ -z "$verdict" ]; then

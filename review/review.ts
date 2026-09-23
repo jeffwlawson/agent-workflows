@@ -158,13 +158,13 @@ try {
   //
   // What the body is made of, and in what order, is `renderReviewSummary`'s:
   // it is the part of the review a human acts on, and this file is a script
-  // with no test around it (#105).
+  // with no test around it (#105). It is handed the output whole rather than
+  // the fields it reads, so the checklist it renders is the set the verdict
+  // above was counted from and not a second reading of it.
   const summary = renderReviewSummary({
     verdict,
-    needsYou: result.output.needsYou,
+    output: result.output,
     roundNote: unreadableRoundNote(round),
-    fixBeforeMerge: result.output.fixBeforeMerge,
-    summary: result.output.summary,
   });
   const body = `${summary}\n\n${followUpsBlock}`;
 

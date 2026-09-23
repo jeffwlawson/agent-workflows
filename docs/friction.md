@@ -1960,3 +1960,34 @@ test able to catch a shell defect; it also hands the test every timeout, retry a
 owns. A harness that runs real code needs its own bound on that code, or the sharper coverage buys
 itself a new failure mode — one that reads as infrastructure flakiness rather than as the defect it
 actually is.
+
+## 2026-09-23 — v0.3.0 posted no verdict at all, and said the adopter was to blame
+
+The first pull request reviewed on v0.3.0 (#121) got a correct review body opening
+`### 🟡 Changes recommended`, and no `agent-review` status. The step had run, and been green:
+
+```
+{"message":"Validation Failed","errors":"Validation failed: Description doesn't accept 4-byte Unicode", ... "status":"422"}
+::warning::Could not post the `agent-review` verdict for a82743f. … This needs `statuses: write` in the caller …
+```
+
+The rename to Copilot code review's headings (#105) put each heading's marker — 🟢, 🟡, 🔵 — at the
+front of the status description too. A review body accepts them; a commit status description
+refuses any character outside the Basic Multilingual Plane, and every one of those is outside it.
+So every verdict v0.3.0 tried to post was rejected, on every pull request.
+
+Two things made it worse than a missing line in the checks box:
+
+- **The round rule reads those statuses back.** With none ever posted, every review was a round 1,
+  so the bound that stops a second fix round off one human label was silently off for the whole
+  release. Nothing looped only because `agent:fix` is still a human's to add.
+- **The warning blamed the grant.** It named `statuses: write` as the cause of any refusal, so the
+  one signal the run did give pointed every adopter at their own caller.
+
+Nothing that could have caught it ran: 987 tests held the descriptions to the table, to the
+140-character limit and to each other, and none can see what GitHub accepts. The fix splits the
+heading from a marker-free `label` that fronts the description, adds a test that no description
+carries a character GitHub refuses there, and makes the warning print GitHub's reply and say that a
+422 is ours. The general lesson is the one the 2026-09-19 entry drew from the other side: a
+constraint that lives only in the remote API is untested until something real calls it, and the
+first real call was the release.

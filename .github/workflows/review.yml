@@ -663,7 +663,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.3.0 -- agent-workflows review
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.3.1 -- agent-workflows review
 
       # GraphQL `addPullRequestReview`, not REST `POST /pulls/{n}/reviews`, for
       # the one thing REST cannot do: open a **file-level** thread in the same
@@ -729,7 +729,7 @@ jobs:
             args+=(-f "target_url=${REVIEW_URL}")
           fi
           gh api "${args[@]}" \
-            || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. This needs \`statuses: write\` in the caller — see jeffwlawson/agent-workflows docs/ADOPTING.md §4."
+            || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above: a 403 is a caller missing \`statuses: write\` (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
 
       # The threads this review checked and found fixed (#111, and #109 decision
       # 1). The **reviewer** closes a finding and the fixer never does: a fix run
@@ -916,7 +916,7 @@ jobs:
         run: |
           gh api --method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}" \
             -f "context=agent-review" -f "state=error" -f "target_url=${RUN_URL}" \
-            -f "description=The review run failed, so there is no verdict. See the run, then re-add agent:review to retry." \
+            -f "description=The review run failed, so there's no verdict. Check the run, then re-add agent:review." \
             || echo "::warning::Could not post the failed \`agent-review\` verdict for ${HEAD_SHA}. The failure comment on the pull request is the only record of this run."
 
       - name: Always remove in-progress

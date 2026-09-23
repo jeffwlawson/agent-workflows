@@ -3,8 +3,21 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { isWorkflowBot } from "../shared/common.js";
-import { ADD_REVIEW_MUTATION } from "../shared/review-findings.js";
-import { FOLLOW_UPS_LABEL, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
+import {
+  ADD_REVIEW_MUTATION,
+  FIX_BEFORE_MERGE_LABEL,
+  type Finding,
+  type PlacedFinding,
+  PREVIOUSLY_MISSED_LABEL,
+  SEVERITIES,
+  severityBadge,
+} from "../shared/review-findings.js";
+import {
+  FOLLOW_UPS_LABEL,
+  renderReviewBody,
+  VERDICT_CONTEXT,
+  VERDICTS,
+} from "../shared/review-output.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -3855,7 +3868,8 @@ describe("the adoption doc says what to do with each verdict", () => {
     expect(section()).toMatch(/required status check/i);
 
     const SKIPPED = new Set(["node_modules", "dist", "output", ".git", "tests"]);
-    const PROTECTION = /required_status_checks|branches\/[^\s"'`]*\/protection|\/rulesets\b/i;
+    const PROTECTION =
+      /required_status_checks|required_conversation_resolution|branches\/[^\s"'`]*\/protection|\/rulesets\b/i;
 
     const sourceUnder = (dir: string): readonly string[] =>
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -3869,6 +3883,86 @@ describe("the adoption doc says what to do with each verdict", () => {
     );
 
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * The body an adopter reads is now a **record** (#109, decision 8), and the
+   * section that tells them what to do with a verdict is where they meet it.
+   *
+   * Derived from a rendered body rather than transcribed, for the reason the
+   * verdict rows above are: the group headings, the badges and the *new* mark
+   * are what a maintainer sees on their own pull requests, and a doc that names
+   * three groups the renderer no longer writes is a reader looking for
+   * something that is not there. Renaming a group is then a failure here rather
+   * than a discovery on somebody else's repository.
+   */
+  it("names the groups, the badges and the *new* mark the body actually renders", () => {
+    const labelled = (id: string, label: string, over: Partial<Finding> = {}): PlacedFinding => ({
+      id,
+      placement: "line",
+      finding: {
+        title: "the guard runs after the return",
+        path: "src/queue.ts",
+        line: 206,
+        body: `**${label}.** the guard runs after the return`,
+        severity: "high",
+        ...over,
+      },
+    });
+
+    // One entry in each of the three groups, so every heading is rendered.
+    const body = renderReviewBody({
+      verdict: VERDICTS["changes recommended"],
+      output: { summary: "", findings: [], followUps: [], fixBeforeMerge: [], verified: [] },
+      placed: [
+        labelled("f-open", FIX_BEFORE_MERGE_LABEL),
+        labelled("f-missed", PREVIOUSLY_MISSED_LABEL, { severity: "low" }),
+      ],
+      stillOpen: [],
+      resolved: [{ id: "f-done", threadId: "PRRT_one", text: "the cache key omits the tenant" }],
+    });
+
+    const groups = [...body.matchAll(/<summary><b>(.*?)<\/b>/g)].map(([, title]) => title ?? "");
+    expect(groups).toHaveLength(3);
+    for (const group of groups) {
+      expect(group).not.toBe("");
+      expect(section()).toContain(`**${group}**`);
+    }
+
+    // The badge as the body writes it — a code span, never one of GitHub's
+    // severity images (decision 9) — so a reader is told the spelling they see.
+    for (const severity of SEVERITIES) expect(section()).toContain(severityBadge(severity));
+    expect(section()).toContain("*new*");
+  });
+
+  /**
+   * Who closes a thread, which #111 moved. An adopter reading a review sees
+   * threads open and close without either half naming itself, and the two
+   * wrong conclusions are symmetrical: that the fix run's `addressed` reply
+   * settled something, or that an open thread means no fix run has been near
+   * it. Both are corrected by one sentence, and this is where it has to be.
+   */
+  it("says the review closes threads and the fix run does not", () => {
+    expect(section()).toMatch(/the review[^.]{0,60}resolves\b/i);
+    expect(section()).toMatch(/`agent:fix`[^.]{0,80}resolves none/i);
+    // And the consequence a reader draws the wrong conclusion from without
+    // it: a thread the fix run declined is nobody's to close but yours.
+    expect(section()).toMatch(/declined[^.]{0,120}stays open/i);
+  });
+
+  /**
+   * The second optional gate (#109, decision 11), written under the same rule
+   * as the first: described for an adopter to switch on once the resolutions
+   * have earned it, and switched on by nothing here. The file scan in the test
+   * above is the half that holds the second clause — its pattern covers the
+   * setting this one is about.
+   */
+  it("documents conversation resolution as an optional gate, beside the required check", () => {
+    expect(section()).toMatch(/conversation resolution/i);
+    // What it costs is the part an adopter cannot infer from GitHub's own
+    // wording: the reviewer's resolutions become the merge gate, so a finding
+    // the fix run declined holds the merge until a human rules on it.
+    expect(section()).toMatch(/declined[^.]{0,200}stay open/i);
   });
 });
 

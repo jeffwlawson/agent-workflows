@@ -559,6 +559,15 @@ expensive to rediscover.
   problem #96 exists to remove. Nothing above changes: review still adds no trigger label, so the
   arrow stops at review, and `agent:fix` is still a human's to add.
 
+  **And since #111 the leg is load-bearing rather than tidying.** A fix run resolves nothing, so
+  the review it asks for is the pass that *ends* the round's findings: it reads the code the fix
+  wrote, closes what landed and counts what did not. "A round closes itself out" used to mean the
+  verdict got refreshed, with the threads already closed by the run that wrote the fix; it now
+  means the findings themselves are ruled on by something other than their fixer. What this costs
+  is that the leg is no longer optional in practice — a round nobody reviews again is a round whose
+  threads all stay open — and that is the right cost, because the alternative is the fixer
+  closing them.
+
   A second bound now sits under the first, and it is what makes the leg safe to automate rather
   than merely acyclic. The review a fix asks for is by construction a **round 2** (an earlier
   verdict stands, every commit since is the loop's own, and at least one of them is a non-merge
@@ -572,7 +581,12 @@ expensive to rediscover.
 
   And a fix run that pushed *nothing* requests nothing. The threads it replied to already say why
   it declined, and the verdict standing on the head commit is still the right one: nothing has
-  happened for a review to be about.
+  happened for a review to be about. Those threads stay **open**, which is the same answer #111
+  gives everywhere else and lands here as a statement about who decides: a finding the loop
+  declined is not a finding the loop may retire, so the round ends on a maintainer reading the
+  decline and resolving the thread or pushing back. That is also what makes the optional
+  "require conversation resolution" gate mean something (`docs/ADOPTING.md` §3b) — under it, the
+  merge waits on exactly that reading.
 
   **Since #99 `update-branch` walks the same leg**, on the half of its work an agent wrote: a
   conflict resolution adds `agent:review` and a clean merge does not, because a clean merge carries

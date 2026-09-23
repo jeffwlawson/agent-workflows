@@ -392,8 +392,8 @@ different next step. Only the last two rows ask you to read anything.
 
 `failure` on anything but the first row is not the loop disliking the change. It is a step left to
 do, and it is a `failure` because a green tick beside *add `agent:fix`* would say the opposite of
-what it means. Nothing merges or blocks on any of this by default, and making it do so is the last
-part of this section.
+what it means. Nothing merges or blocks on any of this by default, and the two settings that make it
+do so are the last part of this section.
 
 **A run that failed is a fourth state and not a verdict.** It posts `error`, linked to the run:
 there is no verdict, and re-adding `agent:review` (§3) retries. The state worth knowing is the
@@ -417,6 +417,52 @@ claim about the merge commit it now sits on. That commit's own checks have not b
 not run when the copy was made — so a `success` carried on to a merge commit means "the last review
 of this branch found nothing to fix", and whether the merge itself is green is what the merge box's
 other checks are for.
+
+### Reading the review body
+
+The verdict is the one-line answer; the review body is the record it was derived from. It is laid
+out like Copilot code review's overview, in one fixed order: the assessment heading from the table
+above, one sentence saying what is unresolved, the next step in italics, `**Findings:** N`, then the
+findings in three collapsible groups, then what the change does, then a link to the run.
+
+The groups are the part worth learning, because they are what the body remembers from one round to
+the next:
+
+- **Open** — everything owed now: what this review found, and what an earlier review raised that
+  this one could not verify as fixed. Entries this review is the first to raise are marked *new*,
+  which is how a round that found nothing new and left three findings standing reads differently
+  from a fresh review that went badly. Expanded on arrival.
+- **Resolved since last review** — findings an earlier review raised that this one checked against
+  the current code and closed. Folded on arrival: it is the record's memory rather than your list.
+  Nothing else keeps it, because a resolved thread drops out of the next round's view entirely.
+- **Previously missed** — findings this review made in code an earlier review had already read.
+  They count toward the verdict exactly like the rest, and they say the record was wrong about this
+  pull request rather than that the pull request got worse. Expanded on arrival.
+
+Every entry carries a **severity** — `High`, `Medium` or `Low` — and each group is sorted worst
+first. It is for reading and for ordering, and for nothing else: the verdict is not derived from it,
+whether a finding blocks the merge or becomes a follow-up issue does not read it, and three `Low`
+findings get the same assessment as three `High` ones. That is deliberate — a dial the agent turns
+that changes the outcome is one you have to check on every review to find out which way it was
+turned. `Low` means a real but small defect; preferences are still posted nowhere, at any rating.
+
+An entry quoted in full, with its evidence indented under it, is a finding in a file this pull
+request does not change. GitHub has no diff line to hang a thread on there, so the body is the only
+place it can live. Every other entry is the one-line version of a thread, and the thread is where
+you answer it.
+
+**The review resolves a thread; an `agent:fix` run resolves none.** A fix run replies in every
+thread it was shown — `addressed` or `declined`, with its reason — and leaves all of them open. What
+closes one is a *later review* reading the code as it now stands, finding the fix landed and saying
+so in a reply on the way out; or you, resolving it yourself. So an open thread is not evidence that
+nothing has been done about it: read the last reply. This is the other half of why the second round
+exists — the pass that closes a finding is never the pass that wrote the fix.
+
+A thread an `agent:fix` run **declined** is the case to know: it stays open until you rule on it.
+The loop will not retire a finding on the strength of its own disagreement with it. Your own
+decline, replied on the thread, is a different thing — the next review closes that one as
+`WONT_FIX`, quoting you, and stops counting it. If it misreads you it leaves the thread open, which
+is the direction that costs a round rather than a decision.
 
 ### The pull request list as an inbox
 
@@ -471,6 +517,37 @@ Three consequences to weigh before switching it on rather than after:
   first did. That is the right default while you are the one deciding what happens next. As a merge
   gate it means the second round sends you to the review rather than round the loop again, which is
   a good deal more of your attention than the un-gated version asks for.
+
+### Requiring conversation resolution — later than that
+
+The other gate GitHub offers is **"Require conversation resolution before merging"**, a branch
+protection setting that sits beside the required check above: no pull request merges while a thread
+on it is unresolved. Nothing here switches it on either, and for the same reason — it is a
+repository setting, yours by hand, and what it changes is who pays when the loop is wrong.
+
+What it gates here is the review's **verification**, because that is what resolving a thread now
+means (above). Nearly everything the loop raises is a thread, and a thread closes when a review has
+read the current code and found the finding settled, or when you close it. So with the
+setting on, a merge waits until every finding the loop raised is either verified fixed or ruled on
+by a human — **including the ones an `agent:fix` run declined**, which stay open by design and are
+yours to resolve or to argue with.
+
+Three things to weigh, and the third is why this one comes after the required check rather than
+with it:
+
+- **A finding the loop was wrong about still holds the merge.** The cost is one click — resolve the
+  thread — but it is your click, on every one of them, and on a busy repository that is the cost
+  you are actually signing up for.
+- **It gates the threads, not the whole record.** A finding in a file the pull request never
+  touches has no thread to resolve, so this setting cannot see it; it is in the review body under
+  *Open* and it counts toward the verdict, which is what the required check gates. The two settings
+  cover different halves of the same record, which is an argument for running both rather than for
+  picking one.
+- **Give the resolutions a few rounds first.** Which threads close is a judgement the review now
+  makes on its own, against code a fix run wrote, and it is the newest thing in the loop. Watch a
+  handful of rounds and read what it closed and what it left open before you make those closures
+  the thing your merges wait on. The required check asks you to trust a verdict you can read in one
+  line; this asks you to trust a decision per finding, so it is the later of the two to switch on.
 
 ---
 

@@ -506,7 +506,7 @@ The permissions per workflow, which are what each job actually spends:
 | `agent-implement-prd` | — | write | write | read | write | — |
 | `agent-review` | **read** | **read** | — | read | write | **write** |
 | `agent-fix` | — | write | — | read | write | — |
-| `agent-update-branch` | — | write | — | read | write | — |
+| `agent-update-branch` | — | write | — | read | write | **write** |
 | `agent-follow-ups` | — | read | **write** | read | write | — |
 
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
@@ -527,6 +527,14 @@ does — it is about installing the runner it runs.
 > summarising it. So nothing on the pull request says the grant is missing, which is why `doctor`
 > reports it as an error. Newer than the five scopes above it, so a caller installed against an
 > earlier release has a review that works and a verdict that never arrives.
+
+> **`statuses: write` on update-branch is what keeps it**, for the same reason and with the same
+> silence when it is missing. A clean refresh copies the verdict from the commit that was reviewed
+> on to the merge commit it creates, because the new commit carries none until something posts one.
+> Without the scope the copy 403s and the step warns — it cannot fail, since the merge is pushed by
+> then — so the pull request reads as unreviewed and every refresh quietly costs a review round.
+> A refresh that had to *resolve* conflicts copies nothing and adds `agent:review` instead, which
+> is a label rather than a status and needs no scope of its own.
 
 > **`checks: read` on review is the row that only a private repository needs — and it is not
 > optional there.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a
@@ -550,9 +558,10 @@ does — it is about installing the runner it runs.
 > **`AGENT_PAT` defers two of these; it does not replace them, and `doctor` reports both as
 > failures whether or not you have one.** The checkout that pushes runs under
 > `${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}`, as do `gh pr create` and every `agent:review`
-> label the loop adds itself — on the `implement` pair, and on a `fix` run that pushed. So with the
-> PAT set, a caller missing `contents: write` or `pull-requests: write` keeps working — until the
-> token expires (§2), and then loses a full agent pass to a 403 at the push. Nothing defers the calls the workflow token
+> label the loop adds itself — on the `implement` pair, on a `fix` run that pushed, and on an
+> `update-branch` run that resolved conflicts. So with the PAT set, a caller missing
+> `contents: write` or `pull-requests: write` keeps working — until the token expires (§2), and
+> then loses a full agent pass to a 403 at the push. Nothing defers the calls the workflow token
 > serves: every label transition 403s the first time it runs, and on a **private** repository so
 > does `implement`'s preflight `gh pr list`, before any branch exists. The grants are what your
 > job has to hold; the PAT only decides when you find out.

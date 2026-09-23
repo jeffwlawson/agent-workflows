@@ -267,6 +267,18 @@ export const REQUIRED_PERMISSIONS: readonly {
     absence: "always",
   },
   {
+    permission: "statuses",
+    value: "write",
+    workflows: ["update-branch"],
+    why:
+      "a clean refresh copies the review's verdict from the old head on to the merge commit it " +
+      "creates, because a commit status belongs to a commit and the new one carries none until " +
+      "something posts it. Without the scope that copy 403s and the step warns — it cannot fail, " +
+      "since the merge is pushed by then — so the pull request reads as unreviewed and every " +
+      "refresh of it quietly costs a review round",
+    absence: "always",
+  },
+  {
     permission: "contents",
     value: "read",
     workflows: ["review"],

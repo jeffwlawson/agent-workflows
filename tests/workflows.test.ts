@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { isWorkflowBot } from "../shared/common.js";
 import { FOLLOW_UPS_LABEL, VERDICT_CONTEXT } from "../shared/review-output.js";
 
 /**
@@ -1190,6 +1191,195 @@ describe("agent-fix asks for the re-review its own push needs", () => {
     expect(run).toContain("failure_reason.txt");
     expect(run).toContain("exit 1");
     expect(run).not.toContain("|| true");
+  });
+});
+
+/**
+ * A refresh moves the branch, and a verdict is per commit — so without this
+ * every merge into a base branch wipes the verdict off every open pull request
+ * that refreshes against it (#99), and the trial of whether the verdicts can be
+ * trusted is read off pull requests carrying none.
+ *
+ * Two paths, opposite answers, settled by #96's decision 6. A clean merge
+ * reviewed nothing and changed nothing the review read, so the verdict standing
+ * on the old head is still true of the new one and is copied verbatim. A
+ * conflict resolution is the loop writing code no review has seen, so nothing is
+ * copied and a review is asked for instead — a round 2 by the round rule
+ * (`shared/review-round.ts`), because the resolution commit is the loop's own.
+ *
+ * Neither has a runtime symptom when it breaks. A copy that never fires leaves a
+ * refreshed pull request looking unreviewed, which is merely the cost of the
+ * feature being off; a copy that fired on the conflicts path would put "ready to
+ * merge" on code an agent wrote and nobody read.
+ */
+describe("agent-update-branch carries the verdict, or asks for the round it made necessary", () => {
+  const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
+  const stepNamed = (name: string): Step | undefined =>
+    stepsOf(UPDATE).find((s) => s.name === name);
+  const push = (): Step | undefined => stepNamed("Push branch");
+  const copy = (): Step | undefined => stepNamed("Carry the verdict over to the merge commit");
+  const request = (): Step | undefined => stepNamed("Request a review of the resolution");
+
+  /**
+   * The push is what makes the new head exist, so it is what names it. Read
+   * from `git rev-parse` in the step that pushed rather than re-read below: the
+   * commit the verdict is posted on has to be the commit that was pushed, and
+   * two reads of the working tree are two chances for that to stop being true.
+   *
+   * `pushed` is the other half, and it is written where `-e` can only mean the
+   * push worked — a branch that did not move is not one to comment about as
+   * though it had.
+   */
+  it("reports the commit it pushed, and that it pushed one", () => {
+    expect(push()?.id).toBe("push");
+    expect(push()?.run ?? "").toContain("pushed=true");
+    expect(push()?.run ?? "").toContain("head=$(git rev-parse HEAD)");
+  });
+
+  it("copies the old head's verdict on to the commit it pushed", () => {
+    expect(copy()?.env?.["OLD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(copy()?.env?.["NEW_SHA"]).toBe("${{ steps.push.outputs.head }}");
+    expect(copy()?.run ?? "").toContain("commits/${OLD_SHA}/statuses");
+    expect(copy()?.run ?? "").toContain("/statuses/${NEW_SHA}");
+  });
+
+  /**
+   * Copied, never parsed. The state, the line a human acts on and the link are
+   * the review's own words about a tree this merge did not change; deriving any
+   * of them here would be a second copy of the table `shared/review-output.ts`
+   * holds — in YAML, where nothing can unit-test it — and one that is asked to
+   * say something about a commit no review has read.
+   */
+  it("copies what the verdict says rather than deriving a second one", () => {
+    const run = copy()?.run ?? "";
+
+    for (const field of [".state", ".description", ".target_url"]) expect(run).toContain(field);
+  });
+
+  /**
+   * And copies only the loop's own. A status is a thing any token holding
+   * `statuses: write` can post under any context it likes, so the creator is
+   * what stops a refresh laundering somebody else's "ready to merge" on to a
+   * commit — the same two conditions `verdictOn` selects on, because this writes
+   * what that reads.
+   */
+  it("copies only a verdict this loop posted, under the context it posts under", () => {
+    expect(copy()?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
+    expect(isWorkflowBot(copy()?.env?.["LOOP_ACCOUNT"])).toBe(true);
+    expect(copy()?.run ?? "").toContain("env.VERDICT_CONTEXT");
+    expect(copy()?.run ?? "").toContain("env.LOOP_ACCOUNT");
+  });
+
+  /**
+   * Posted under the job's own `GITHUB_TOKEN` rather than the PAT the push
+   * prefers, and that is the whole of why the copy is worth making: a status
+   * created by anything else is one `verdictOn` does not count, so the carried
+   * verdict would be invisible to the round that reads it next.
+   */
+  it("posts the copy as the account that round detection reads", () => {
+    expect(copy()?.env?.["GH_TOKEN"]).toBeUndefined();
+  });
+
+  /**
+   * Nothing to copy is not a failure: a pull request nobody has reviewed yet
+   * refreshes like any other, and the honest answer for its new head is the
+   * absence of a verdict. Neither is a copy that could not be posted — the
+   * merge has already landed and been pushed, so failing here would mark the
+   * pull request blocked and tell a human the branch was left untouched.
+   */
+  it("posts nothing when there is nothing to carry, and never fails the run", () => {
+    const run = copy()?.run ?? "";
+
+    expect(run).toContain("set -uo pipefail");
+    expect(run).toContain('if [ -z "$verdict" ]');
+    expect(run).toContain("exit 0");
+    expect(run).toContain("::warning::");
+    expect(run).not.toContain("|| true");
+  });
+
+  it("asks for a review of the resolution it wrote", () => {
+    expect(request()?.run ?? "").toContain('--add-label "agent:review"');
+  });
+
+  /**
+   * The two are opposite arms of the same merge, and the gates are what keep
+   * them that way. A copy on the conflicts path is a verdict about code an
+   * agent wrote unread; a request on the clean path is a review round nothing
+   * happened to justify, and one that would post a fresh verdict over the
+   * carried one.
+   */
+  it("never does both: the copy is the clean path, the request the conflicts one", () => {
+    expect(copy()?.if).toBe("steps.merge.outputs.status == 'clean' && success()");
+    expect(request()?.if).toBe("steps.merge.outputs.status == 'conflicts' && success()");
+  });
+
+  /**
+   * Both act on what the push left behind, and the request goes last of the
+   * success arms — the review reads the pull request, so a round started before
+   * this run's own comment is posted is a round reading the state before it.
+   */
+  it("acts only after the push, and asks last", () => {
+    const names = stepsOf(UPDATE).map((s) => s.name ?? "");
+
+    expect(names.indexOf(copy()?.name ?? "")).toBeGreaterThan(names.indexOf("Push branch"));
+    for (const earlier of ["Push branch", "Comment on the PR"]) {
+      expect(names.indexOf(request()?.name ?? "")).toBeGreaterThan(names.indexOf(earlier));
+    }
+  });
+
+  /**
+   * The same PAT requirement every label this loop adds carries: one added with
+   * `GITHUB_TOKEN` triggers nothing, so the pull request would carry
+   * `agent:review` and simply sit there.
+   */
+  it("warns loudly when AGENT_PAT is absent", () => {
+    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(request()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(request()?.run ?? "").toContain("::warning::");
+  });
+
+  /**
+   * …and fails the run when the add itself fails, naming the way out. Unlike
+   * the copy above, silence here leaves a resolution nobody reviews — and the
+   * failure comment's own remedy is the wrong one, since re-adding
+   * `agent:update-branch` finds a branch already merged and does nothing.
+   */
+  it("fails with a reason a human can act on rather than swallowing the add", () => {
+    const run = request()?.run ?? "";
+
+    expect(run).toContain("set -euo pipefail");
+    expect(run).toContain("failure_reason.txt");
+    expect(run).toContain("exit 1");
+    expect(run).not.toContain("|| true");
+  });
+
+  /**
+   * A failure after the push is now a real case rather than a corner of one, so
+   * the comment that reports it stops asserting the opposite. "The branch was
+   * left untouched" is true of everything above the push and false of
+   * everything below it, and the remedy it carries — re-add the label — is
+   * inert on a branch that is already merged.
+   */
+  it("does not tell a human the branch is untouched after it pushed", () => {
+    const blocked = stepNamed("Mark blocked on failure");
+
+    expect(blocked?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.pushed }}");
+    expect(blocked?.run ?? "").toContain('"$PUSHED" = "true"');
+  });
+
+  /**
+   * The grant the copy spends, in all three places it has to be: the reusable
+   * half's ceiling, which is the authoritative statement of what this job
+   * costs, and both caller sets, which is where it is actually granted. The
+   * generic check above holds caller and callee equal; this is the pair where
+   * the value is the point, because a status is its own scope and nothing this
+   * job already held covers it.
+   */
+  it("holds the statuses grant in the ceiling and in every caller", () => {
+    const halves = [UPDATE, ...callerWorkflows.filter((file) => targetOf(file) === UPDATE)];
+
+    expect(halves).toHaveLength(3);
+    for (const file of halves) expect(jobOf(file).permissions?.["statuses"]).toBe("write");
   });
 });
 

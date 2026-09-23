@@ -565,6 +565,12 @@ expensive to rediscover.
   And a fix run that pushed *nothing* requests nothing. The threads it replied to already say why
   it declined, and the verdict standing on the head commit is still the right one: nothing has
   happened for a review to be about.
+
+  **Since #99 `update-branch` walks the same leg**, on the half of its work an agent wrote: a
+  conflict resolution adds `agent:review` and a clean merge does not, because a clean merge carries
+  the last verdict forward instead (#96, decision 6). Both bounds above hold unchanged — one hop to
+  a review that adds no trigger label, and a round 2 that cannot answer "ready after a fix". What
+  is worth saying twice is which arrow this is *not*: no workflow in the loop adds `agent:fix`.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
   is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this.
 

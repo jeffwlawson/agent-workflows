@@ -363,10 +363,11 @@ const renderFixBeforeMerge = (findings: readonly string[]): string | undefined =
 export const renderReviewSummary = (parts: {
   /**
    * The row the derivation chose. The body opens with its heading and then its
-   * next step — the same two halves the commit status carries as one line, so
-   * the two surfaces cannot say different things — and the heading is *not*
-   * repeated inside the step, which is why the status's `description` is not
-   * what is rendered here.
+   * next step — the same two halves the commit status carries, except that the
+   * status fronts its line with `label` because a description refuses the
+   * heading's marker (see `label`), so the two surfaces cannot say different
+   * things — and the heading is *not* repeated inside the step, which is why
+   * the status's `description` is not what is rendered here.
    */
   readonly verdict: VerdictRow;
   /** The review as the agent produced it, which is what the verdict was derived from. */

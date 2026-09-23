@@ -402,8 +402,11 @@ rather than a gap. A status belongs to a commit, so a push leaves the new head w
 instead of carrying a stale *approval recommended* over code nobody read. The status history on
 the pull request is also the whole record of what earlier rounds said; nothing else keeps one.
 
-If no verdict arrives on *any* pull request, the caller is missing `statuses: write` — the review
-still posts, so there is nothing on the pull request to say so. That is §4, and `doctor` reports it.
+If no verdict arrives on *any* pull request, a caller missing `statuses: write` is the likeliest
+cause — the review still posts, so there is nothing on the pull request to say so. That is §4, and
+`doctor` reports it. It is not the only cause: GitHub can refuse the status itself, which is ours
+rather than yours. The run's warning prints what GitHub replied and says which of the two it was, so
+read that before you touch the caller.
 
 **The loop keeps it current, and stops short of your hand.** A `fix` run that pushed asks for its
 own re-review, so a round closes itself out rather than leaving *add `agent:fix`* standing over a

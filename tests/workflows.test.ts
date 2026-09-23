@@ -1408,6 +1408,17 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
     expect(read).toContain("exit 0");
   });
 
+  /**
+   * And the same on the write. This copies `.description` verbatim, so a
+   * description GitHub refuses is refused here too — the 422 that lost every
+   * v0.3.0 verdict (#121) would have lost every carried one as well. A warning
+   * naming only the grant sends the reader to their own caller for a fault
+   * that is ours; the twin assertion is on `review.yml`'s post step.
+   */
+  it("does not blame the grant alone when the copy is refused", () => {
+    expect(copy()?.run ?? "").toContain("a 422 is the status itself being refused");
+  });
+
   it("asks for a review of the resolution it wrote", () => {
     expect(request()?.run ?? "").toContain('--add-label "agent:review"');
   });

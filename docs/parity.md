@@ -795,6 +795,24 @@ expensive to rediscover.
   cannot produce the round-1 row, so a previously-missed finding asks a maintainer to read and
   reply rather than sending the loop round again. Genuinely out-of-scope findings still go to
   `followUps`, on the bar stated with that list.
+- **A label on a finding is presentation, and one predicate decides what counts.** Every entry in
+  `findings` is fix-before-merge by definition — #96's decision 1 leaves a finding two kinds and
+  `followUps` is the other — so `countFixBeforeMerge` and `reviewRecord` both take *every* finding,
+  whatever its placement and whatever its body opens with, plus the carried findings ruled still
+  open. `**Findings:** N` is therefore the record's own size, entry for entry, and a test asserts
+  that equality over every shape of review rather than over an example.
+
+  A predicate over the label was a **second definition of "a finding counts"**, and the two
+  disagreed in the unsafe direction twice. In a file the pull request never touches there is no
+  thread, so the record is the only surface: an unlabelled finding was recorded and counted
+  nowhere, and the review posted *Approval recommended* and a `success` status over a populated
+  *Open* group. On a diff line it got a thread and an id and still reached no group and no count in
+  the round that raised it — then counted through `stillOpen` in every round after, so the same
+  finding was non-blocking when found and blocking for ever after with no code change between.
+
+  The label is still asked for in both halves of the brief, because it is the first thing a human
+  reads on the thread. What it may never be again is a thing the machinery reads: the one
+  survivor is *previously missed*, which selects a **group** and not a count.
 - **Severity is display and ordering, and nothing reads it that decides anything.** Since #113
   (#109, decision 9) every finding and every follow-up carries `high` / `medium` / `low`. The
   review body sorts each group worst first and badges each entry; `deriveVerdict` never sees it,

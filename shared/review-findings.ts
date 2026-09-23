@@ -176,10 +176,19 @@ export const newFindingId = (): string => `f-${randomUUID().replace(/-/g, "").sl
 
 /**
  * The label every *fix before merge* finding opens with, exactly as the prompt
- * and the extraction brief spell it. A fixed token, read as one — the verdict's
- * count looks for it at the start of a finding's body and nowhere else, because
- * reading the summary for findings is the prose-parsing that derivation exists
- * to replace.
+ * and the extraction brief spell it.
+ *
+ * **Presentation, and not a criterion.** The brief still asks for it, because
+ * it is the first thing a human reads on the thread — but nothing counts or
+ * records a finding on the strength of it. By the design this builds on (#96,
+ * decision 1) a finding is one of two kinds and `followUps` is the other, so
+ * **every entry in `findings` is fix-before-merge by definition**. A predicate
+ * over the label was a second definition of that, and the two disagreed: an
+ * unlabelled finding was recorded where the body was its only surface and
+ * counted nowhere, so a review could post *Approval recommended* over a
+ * populated *Open* group — and an unlabelled one on a diff line got a thread
+ * and an id, went uncounted in the round that raised it, and then counted
+ * through `stillOpen` in every round after.
  */
 export const FIX_BEFORE_MERGE_LABEL = "Fix before merge";
 
@@ -188,9 +197,10 @@ export const FIX_BEFORE_MERGE_LABEL = "Fix before merge";
  * introduced *and an earlier review of it already read that code* (#109,
  * decision 4).
  *
- * It counts as *fix before merge* exactly like the label above — which is the
- * decision, and the thing that makes it worth a second spelling rather than a
- * sentence in the prose. A missed finding says the review record was wrong
+ * It counts exactly as every other finding does, and it is read for one thing
+ * only: which group of the record it lands in. That group is the decision, and
+ * the thing that makes it worth a second spelling rather than a sentence in
+ * the prose — a missed finding says the review record was wrong
  * about this pull request, and that is a stronger reason to stop the merge
  * than an ordinary finding, not a weaker one. Before #111 the round-2 prompt
  * sent these to `followUps`, where they were filed after the merge they should
@@ -205,12 +215,12 @@ export const PREVIOUSLY_MISSED_LABEL = "Previously missed";
  * `__Fix before merge__` this has to read.
  *
  * `#` and `>` are in the class for the drift a model actually produces —
- * `### Fix before merge` and `> **Fix before merge.**` — and the reason to
- * admit them is what refusing them costs: the label is what makes a finding
- * *counted*, so a body the label reader does not recognise is a finding the
- * verdict does not see. Leniency here is the safe direction, and the
- * unlabelled case is covered too (`reviewRecord` records a body-placed finding
- * whatever it opens with).
+ * `### Fix before merge` and `> **Fix before merge.**`. Nothing is counted or
+ * dropped on this answer any more, so what refusing one of those costs is what
+ * the two readers below are for: a *previously missed* finding filed under
+ * *Open*, and a label left standing at the front of the one-line claim the
+ * record shows. Both are display faults rather than lost findings, and both
+ * are still worth not having.
  */
 const labelled = (label: string): RegExp =>
   new RegExp(`^[\\s*_#>]*${label}(?![A-Za-z0-9])`, "i");
@@ -222,22 +232,14 @@ const LABELS = [labelled(FIX_BEFORE_MERGE_LABEL), MISSED] as const;
 const LEADING = /^[\s*_#>.:;,—–-]+/;
 
 /**
- * Whether a finding is one this pull request must not merge without fixing.
+ * Whether an earlier review had already read the code this finding is about.
  *
- * A predicate rather than the pattern, so the one description of what the label
- * looks like stays in this file: the verdict counts these and the body lists
- * them, and two readings of the same emphasis is how one of them starts
- * counting a finding the other does not.
- *
- * **Either label answers yes.** A *previously missed* finding is a
- * fix-before-merge finding with a second thing said about it, so a body that
- * carries only that label is still counted — which is what stops the decision
- * resting on the model also remembering to write the first one.
+ * The one thing a label decides, and it decides a **group** rather than a
+ * count: a previously-missed finding is listed under *Previously missed*
+ * instead of *Open*, and counts toward the verdict either way. There is
+ * deliberately no `isFixBeforeMerge` beside it — that predicate existed, and a
+ * finding it did not recognise was a finding the verdict did not see.
  */
-export const isFixBeforeMerge = (finding: Finding): boolean =>
-  LABELS.some((label) => label.test(finding.body));
-
-/** Whether an earlier review had already read the code this finding is about. */
 export const isPreviouslyMissed = (finding: Finding): boolean => MISSED.test(finding.body);
 
 /**

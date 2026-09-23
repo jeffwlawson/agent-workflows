@@ -171,9 +171,10 @@ There are two, and every finding is one of them.
 
 **Fix before merge** — this pull request is wrong, unsafe, or does not do what the linked issue
 asked, and must not merge as it stands. Say so in the finding, and restate each one as a single
-line in `fixBeforeMerge`. That list is counted, and every finding is listed in the review's
-findings record under **Open** — so a finding only the prose carries is one nobody can act on
-without reading for it.
+line in `fixBeforeMerge`. Every finding is counted and every one is listed in the review's findings
+record under **Open** — so a finding only the prose carries is one nobody can act on without
+reading for it. The label is for whoever reads the thread: one you forget to write still counts
+and is still recorded, so it is not a dial for how serious you meant it.
 
 **A follow-up** — real, but not this pull request's to fix. Those go to the `followUps` list your
 structured output carries, on the bar stated with it.

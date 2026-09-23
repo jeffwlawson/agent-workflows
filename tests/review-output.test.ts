@@ -10,7 +10,7 @@ import {
   type PlacedFinding,
   type Severity,
 } from "../shared/review-findings.js";
-import { carriedFindings } from "../shared/review-verification.js";
+import { carriedFindings, type CarriedFinding } from "../shared/review-verification.js";
 import {
   capFollowUps,
   countFixBeforeMerge,
@@ -236,8 +236,9 @@ describe("reviewOutputSchema: follow-ups", () => {
 
   /**
    * The cap is a *runner* concern and must never be a schema one. Extraction
-   * throwing here fails the whole output — summary and inline comments with it
-   * — so a model that emitted a fourth follow-up would cost the entire review.
+   * throwing here fails the whole output — every finding and all three prose
+   * fields with it — so a model that emitted a fourth follow-up would cost the
+   * entire review.
    */
   it("does not throw on more than the cap", () => {
     expect(parse({ summary: "s", followUps: followUps(5) }).followUps).toHaveLength(5);
@@ -535,50 +536,51 @@ describe("deriveVerdict", () => {
   });
 
   /**
-   * The list is a restatement of findings the inline comments already carry, so
-   * either of the two can be the one the model forgot — and only one of the two
-   * mistakes has a consequence. A finding labelled **Fix before merge.** in a
-   * comment but left off the list derives *approval recommended*, which puts the
-   * unsafe answer on the one signal meant to be acted on without reading
-   * (#105). Counted as the larger of the two, so a review that did as it was
-   * asked is not double-counted.
+   * The list is a restatement of findings the `findings` list already carries,
+   * so either of the two can be the one the model forgot — and only one of the
+   * two mistakes has a consequence. A finding written into `findings` and left
+   * off the list used to derive *approval recommended*, which puts the unsafe
+   * answer on the one signal meant to be acted on without reading (#105).
    */
-  it("counts a labelled inline comment the list left out", () => {
-    const labelled = output({
+  it("counts a finding the list left out", () => {
+    const listless = output({
       findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
     });
 
-    expect(deriveVerdict(labelled, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe("changes recommended");
-    expect(deriveVerdict(labelled, { ci: "green", round: 2, stillOpen: 0 }).verdict).toBe(
+    expect(deriveVerdict(listless, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(listless, { ci: "green", round: 2, stillOpen: 0 }).verdict).toBe(
       "changes recommended after a fix round",
     );
   });
 
   /**
-   * Counted over the comments **as produced**. `filterInlineComments` drops an
-   * anchor that is not in the diff, and a finding whose line the model invented
-   * is still a finding — dropping it from the count as well as from the review
-   * is how a review that found something ends up saying nothing is wrong.
-   * Nothing here filters, which is what makes that true: the derivation is
-   * handed the model's own output.
+   * **However the body is written, label or none.** The label is presentation
+   * and no predicate reads it: by #96's decision 1 a finding is one of two
+   * kinds and `followUps` is the other, so an entry in `findings` is
+   * fix-before-merge by definition.
+   *
+   * What a predicate over the label cost is the unsafe direction twice over. A
+   * finding it did not recognise in an untouched file was counted nowhere and
+   * posted nowhere — the body is that one's only surface — so a review
+   * recommended approval over a populated *Open* group; and one on a diff line
+   * got a thread and an id, counted in no round that raised it, then counted
+   * through `stillOpen` in every round after, turning non-blocking into
+   * blocking with no code change.
    */
-  it("reads the label past whatever emphasis it was written in", () => {
-    for (const body of ["Fix before merge. x", "__Fix before merge__ x", "  **fix before merge:** x"]) {
-      expect(
-        deriveVerdict(output({ findings: [finding({ body })] }), { ci: "green", round: 1, stillOpen: 0 })
-          .verdict,
-        body,
-      ).toBe("changes recommended");
-    }
-  });
-
-  /** And an ordinary comment is not a finding: the label is a fixed token, read as one. */
-  it("does not count a comment that merely mentions fixing something", () => {
-    const chatty = output({
-      findings: [finding({ body: "Worth a look before merge — fix before merge is the label." })],
-    });
-
-    expect(deriveVerdict(chatty, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe("approval recommended");
+  it.each([
+    "**Fix before merge.** x",
+    "Fix before merge. x",
+    "__Fix before merge__ x",
+    "  **fix before merge:** x",
+    "### Fix before merge\n\nx",
+    "Worth a look before merge — the guard runs after the return.",
+    "the guard runs after the return",
+  ])("counts a finding whatever its body opens with: %s", (body: string) => {
+    expect(
+      deriveVerdict(output({ findings: [finding({ body })] }), { ci: "green", round: 1, stillOpen: 0 })
+        .verdict,
+      body,
+    ).toBe("changes recommended");
   });
 
   it("counts one finding once when it is recorded in both places", () => {
@@ -587,8 +589,9 @@ describe("deriveVerdict", () => {
       findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
     });
 
-    // The larger of the two, not the sum — and either way a fix is a fix, so
-    // what this pins is the arithmetic rather than the verdict.
+    // One set, not the sum of two: a restatement counts only where the list is
+    // longer than the findings it restates. Either way a fix is a fix, so what
+    // this pins is the arithmetic rather than the verdict.
     expect(deriveVerdict(both, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe("changes recommended");
     expect(countFixBeforeMerge(both)).toBe(1);
   });
@@ -1508,12 +1511,14 @@ describe("the record and the count are one set", () => {
       findings: [finding({ path: "a.ts", body: "**Fix before merge.** the guard runs after the return" })],
     };
 
-    expect(countFixBeforeMerge(output(short))).toBe(2);
     expect(body(short)).toContain("- the guard runs after the return");
     expect(body(short)).toContain("- the new test asserts the old behaviour");
-    // Never fewer entries than the verdict counted, which is the direction that
-    // matters; a finding recorded twice is the price of never losing one.
-    expect(record(short).findings).toBeGreaterThanOrEqual(countFixBeforeMerge(output(short)));
+    // Three: the finding, and both restatements, because which of the two it
+    // restates is not knowable without matching prose. The count says three
+    // too — the record and the count are one set, so the price of never losing
+    // a finding is paid in both places or in neither.
+    expect(countFixBeforeMerge(output(short))).toBe(3);
+    expect(record(short).findings).toBe(countFixBeforeMerge(output(short)));
   });
 
   /** A restatement has no finding behind it to rate, so it sorts last and shows no badge. */
@@ -1528,19 +1533,24 @@ describe("the record and the count are one set", () => {
 });
 
 /**
- * **A finding placed in the body reaches the record whatever it opens with.**
+ * **A finding is recorded and counted whatever its body opens with.**
  *
- * A finding on a line or on a file gets a thread however its body is written,
- * so a reader meets it either way. One in a file this pull request never
- * touches has no thread at all — the record is its only surface — so a record
- * that listed only the *labelled* findings posted an unlabelled one **nowhere**
- * and said nothing about having done so, while the runner logged it as "in the
- * body" and `docs/ADOPTING.md` told an adopter to trust that counter.
+ * The label is presentation: by #96's decision 1 a finding is one of two kinds
+ * and `followUps` is the other, so an entry in `findings` is fix-before-merge
+ * by definition. A predicate over the label was a second definition of that,
+ * and it disagreed with the first in the unsafe direction twice over.
  *
- * The label reader is lenient about how the label was written for the same
- * reason (`tests/review-findings.test.ts`); this is the case it cannot cover.
+ * In an **untouched file** there is no thread, so the record is the only
+ * surface: an unlabelled finding was posted nowhere at all and counted
+ * nowhere, and the review recommended approval over a populated *Open* group
+ * — while the runner logged it as "in the body" and `docs/ADOPTING.md` told an
+ * adopter to trust that counter. On a **diff line** it got a thread and an id
+ * and still reached no group and no count in the round that raised it, then
+ * counted through `stillOpen` in every round after: a finding that was not
+ * blocking when it was found and blocking for ever after, with no code change
+ * between the two.
  */
-describe("a finding the body is the only surface for", () => {
+describe("a finding the record does not read a label on", () => {
   const output = (findings: Finding[]): ReviewOutput => ({
     findings,
     followUps: [],
@@ -1588,13 +1598,29 @@ describe("a finding the body is the only surface for", () => {
     ]);
   });
 
+  /** And it must not derive *approval recommended* over the group it is in. */
+  it("counts in the round that raised it, rather than recommending approval over itself", () => {
+    expect(countFixBeforeMerge(output([unlabelled]))).toBe(1);
+    expect(
+      deriveVerdict(output([unlabelled]), { ci: "green", round: 1, stillOpen: 0 }).verdict,
+    ).toBe("changes recommended");
+  });
+
   /**
-   * And a **thread**'s finding is not pulled into the record by this: the
-   * thread is its record, and a second copy in the body is one a maintainer
-   * cannot close by resolving the thread.
+   * And the same finding on a **diff line**, which is the half the thread
+   * disguises: it gets a thread and an id either way, so nothing about the
+   * pull request looked wrong — the finding simply reached no group and no
+   * count until the round *after* the one that raised it, when `stillOpen`
+   * picked it up. Ran end to end, that read `approval recommended` and then
+   * `changes recommended after a fix round` with no commit between them.
    */
-  it("does not record an unlabelled finding that got a thread of its own", () => {
-    const threaded = finding({ path: "src/queue.ts", line: 10, body: "a passing remark" });
+  it("is recorded and counted in its first round when it got a thread of its own", () => {
+    const threaded = finding({
+      path: "src/queue.ts",
+      line: 10,
+      title: "a passing remark",
+      body: "a passing remark",
+    });
     const placed = placeFindings(
       [threaded],
       new Map([["src/queue.ts", new Set([10])]]),
@@ -1603,8 +1629,99 @@ describe("a finding the body is the only surface for", () => {
 
     expect(placed[0]?.placement).toBe("line");
     expect(
-      reviewRecord({ output: output([threaded]), placed, stillOpen: [], resolved: [] }).open,
-    ).toEqual([]);
+      reviewRecord({ output: output([threaded]), placed, stillOpen: [], resolved: [] }).open.map(
+        (entry) => entry.title,
+      ),
+    ).toEqual(["a passing remark"]);
+    expect(countFixBeforeMerge(output([threaded]))).toBe(1);
+  });
+});
+
+/**
+ * **The record and the count are one set, over every shape of review** — the
+ * invariant the two failures above were each half of.
+ *
+ * Stated as arithmetic rather than as an example, because the ways they can
+ * come apart are not enumerable by hand: any predicate either half reads and
+ * the other does not reopens it, silently, and in whichever direction that
+ * predicate happens to fall. The unsafe direction is a record longer than the
+ * count — a body listing findings under a verdict saying there are none —
+ * and the merely confusing one is a count longer than the record.
+ */
+describe("the record's size is the count the verdict was given", () => {
+  const LINE = new Map([["src/queue.ts", new Set([10])]]);
+  const at = (over: Partial<Finding>): Finding =>
+    finding({ path: "src/queue.ts", line: 10, ...over });
+
+  const SHAPES: readonly (readonly [string, Partial<ReviewOutput>])[] = [
+    ["nothing found", {}],
+    ["one labelled finding", { findings: [at({ body: "**Fix before merge.** x" })] }],
+    ["one unlabelled finding on a diff line", { findings: [at({ body: "a passing remark" })] }],
+    [
+      "one unlabelled finding in an untouched file",
+      { findings: [at({ path: "src/other.ts", line: 88, body: "a passing remark" })] },
+    ],
+    [
+      "one previously missed finding",
+      { findings: [at({ body: "**Previously missed.** x" })] },
+    ],
+    [
+      "a labelled one, a missed one and an unlabelled one",
+      {
+        findings: [
+          at({ body: "**Fix before merge.** x" }),
+          at({ body: "**Previously missed.** y" }),
+          at({ path: "src/other.ts", line: 88, body: "z" }),
+        ],
+      },
+    ],
+    ["the list alone, with no findings", { fixBeforeMerge: ["a", "b"] }],
+    [
+      "a list longer than the findings",
+      { fixBeforeMerge: ["a", "b"], findings: [at({ body: "**Fix before merge.** x" })] },
+    ],
+    [
+      "a list the findings account for",
+      { fixBeforeMerge: ["x"], findings: [at({ body: "**Fix before merge.** x" })] },
+    ],
+  ];
+
+  const CARRIED: readonly (readonly [string, CarriedFinding[]])[] = [
+    ["nothing carried", []],
+    ["one carried finding still open", [{ id: "f-1", threadId: "PRRT_one", text: "an earlier one" }]],
+    [
+      "two carried findings still open",
+      [
+        { id: "f-1", threadId: "PRRT_one", text: "an earlier one" },
+        { id: "f-2", text: "an earlier one with no thread" },
+      ],
+    ],
+  ];
+
+  const cases = SHAPES.flatMap(([shape, over]) =>
+    CARRIED.map(([carried, stillOpen]) => [`${shape}, ${carried}`, over, stillOpen] as const),
+  );
+
+  it.each(cases)("%s", (_case, over, stillOpen) => {
+    const reviewed: ReviewOutput = {
+      findings: [],
+      followUps: [],
+      fixBeforeMerge: [],
+      verified: [],
+      ...over,
+    };
+    const placed = placeFindings(reviewed.findings, LINE, () => "f-x");
+    const record = reviewRecord({ output: reviewed, placed, stillOpen, resolved: [] });
+    const counted = countFixBeforeMerge(reviewed) + stillOpen.length;
+
+    expect(record.open.length + record.missed.length).toBe(counted);
+    expect(record.findings).toBe(counted);
+    // And the verdict is the same question asked once: nothing is open exactly
+    // when the record is empty.
+    expect(
+      deriveVerdict(reviewed, { ci: "green", round: 1, stillOpen: stillOpen.length }).verdict ===
+        "approval recommended",
+    ).toBe(record.findings === 0);
   });
 });
 

@@ -1,7 +1,6 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
 import {
   findingMarker,
-  isFixBeforeMerge,
   isPreviouslyMissed,
   openingClaim,
   parseFinding,
@@ -339,18 +338,41 @@ export interface VerdictInputs {
 }
 
 /**
+ * The `fixBeforeMerge` lines that are a finding the `findings` list does not
+ * carry — all of them, once the list is the longer of the two, and none of
+ * them otherwise.
+ *
+ * The one place a `fixBeforeMerge` line becomes a countable, recordable thing
+ * of its own, and it is why `countFixBeforeMerge` and `reviewRecord` can be
+ * one set rather than two readings of one: both take the entries from here and
+ * from `findings`, so the number the body states and the number the verdict
+ * was derived from cannot differ.
+ *
+ * **All of them, not the ones the findings left out.** The list restates the
+ * same findings in the model's own words, and telling which line restates
+ * which finding is the prose-matching this derivation exists to avoid. So a
+ * review that wrote one finding and two lines is counted at three: a finding
+ * written down twice costs a reader a moment, and one written down nowhere is
+ * the failure #105 closed.
+ */
+const restatedLines = (output: ReviewOutput): readonly string[] =>
+  output.fixBeforeMerge.length > output.findings.length ? output.fixBeforeMerge : [];
+
+/**
  * How many findings this pull request must not merge without fixing.
  *
- * The **larger** of the two places a finding is recorded, not the count of the
- * list alone. The model is asked to put every one of them in both, so either
- * can be the one it forgot — and a finding labelled `**Fix before merge.**` in
- * a finding body but missing from `fixBeforeMerge` derives *approval
- * recommended*, which is the unsafe direction for the one signal meant to be
- * acted on without reading.
+ * **Every entry in `findings`**, whatever its placement and whatever its body
+ * opens with, plus the restated lines above. The label is not read here and is
+ * not read anywhere that counts or records: by #96's decision 1 a finding is
+ * one of two kinds and `followUps` is the other, so an entry in this list is
+ * fix-before-merge by definition, and a predicate over the label was a second
+ * definition of that which disagreed with the first — in the unsafe direction,
+ * since an unlabelled finding then derived *approval recommended* over a
+ * record that listed it.
  *
- * Larger rather than the sum, because the two are restatements of one set of
- * findings: adding them would double-count every review that did as it was
- * asked.
+ * The model is asked to write every finding into `fixBeforeMerge` as well, so
+ * either half can be the one it forgot: a review that wrote the list and no
+ * findings is counted off the list, which is the case #105 closed.
  *
  * **This review's own findings, and not the ones it carried.** What an earlier
  * review left open is verified rather than re-found (#111) and reaches the
@@ -363,11 +385,7 @@ export interface VerdictInputs {
  * found and where GitHub would let it be posted are two different questions.
  */
 export const countFixBeforeMerge = (output: ReviewOutput): number =>
-  Math.max(output.fixBeforeMerge.length, labelledFindings(output).length);
-
-/** The findings that carry the label, in the order the model produced them. */
-const labelledFindings = (output: ReviewOutput): readonly Finding[] =>
-  output.findings.filter(isFixBeforeMerge);
+  output.findings.length + restatedLines(output).length;
 
 /**
  * One line of the review's record: what the finding is, how bad, where, and
@@ -442,8 +460,12 @@ export interface ReviewRecord {
   readonly missed: RecordEntry[];
   /**
    * The number the body states, which is **what is unresolved**: `open` plus
-   * `missed`. Never less than what `deriveVerdict` counted — see
-   * `restatedEntries` for the one case where it is more.
+   * `missed`.
+   *
+   * Exactly `countFixBeforeMerge(output) + stillOpen.length` — the count
+   * `deriveVerdict` was given, entry for entry, because both are taken from
+   * one set. A test asserts it over every shape of review, including the two
+   * an unlabelled finding used to break it in.
    */
   readonly findings: number;
 }
@@ -525,32 +547,19 @@ const worstFirst = (entries: readonly RecordEntry[]): RecordEntry[] =>
   [...entries].sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
 /**
- * The `fixBeforeMerge` lines, recorded as entries when — and only when — the
- * list is longer than the findings it restates (#105).
+ * The restated `fixBeforeMerge` lines, as entries (#105).
  *
- * The count takes the larger of the two, so the case this exists for is a
- * finding the model wrote into the list and left out of `findings`: without
- * this the verdict would say *changes recommended* over a record showing fewer
- * findings than it counted, and the next round would verify against the
- * shorter one.
- *
- * **All of them, not the ones the findings left out.** The list restates the
- * same findings in the model's own words, and telling which line restates which
- * finding is the prose-matching this derivation exists to avoid. A finding
- * written down twice costs a reader a moment; one written down nowhere is the
- * failure this is here to remove — and it is why `ReviewRecord.findings` can
- * exceed the verdict's count but never fall short of it.
+ * The same `restatedLines` the count takes, which is what makes the record and
+ * the count one set: the case this exists for is a finding the model wrote
+ * into the list and left out of `findings`, and without it the verdict would
+ * say *changes recommended* over a record showing fewer findings than it
+ * counted, with the next round verifying against the shorter one.
  *
  * Badge-less and anchor-less on purpose: a restatement is a line of prose, and
  * a severity invented for it would be this file rating a finding.
  */
-const restatedEntries = (
-  output: ReviewOutput,
-  labelled: readonly PlacedFinding[],
-): RecordEntry[] =>
-  output.fixBeforeMerge.length > labelled.length
-    ? output.fixBeforeMerge.map((line) => ({ title: oneLine(line), isNew: true }))
-    : [];
+const restatedEntries = (output: ReviewOutput): RecordEntry[] =>
+  restatedLines(output).map((line) => ({ title: oneLine(line), isNew: true }));
 
 /**
  * The record, from the review and what it verified.
@@ -567,28 +576,23 @@ export const reviewRecord = (parts: {
   readonly stillOpen: readonly CarriedFinding[];
   readonly resolved: readonly CarriedFinding[];
 }): ReviewRecord => {
-  const labelled = parts.placed.filter((placed) => isFixBeforeMerge(placed.finding));
-  // **And every finding the body is the only surface for**, labelled or not.
-  // A finding placed on a line or on a file gets a thread whatever it opens
-  // with, so a reader sees it either way; one placed in the body reaches a
-  // reader through this record and through nothing else, so a record that
-  // listed only the labelled ones posted an unlabelled one *nowhere* — with
-  // the runner still logging it as "in the body" and `docs/ADOPTING.md`
-  // telling an adopter to trust that counter.
-  //
-  // The label reader is lenient about how the label was written for the same
-  // reason (`labelled`, in `shared/review-findings.ts`); this is the case it
-  // cannot cover, where the model wrote no label at all.
-  const recorded = parts.placed.filter(
-    (placed) => isFixBeforeMerge(placed.finding) || placed.placement === "body",
-  );
-  const missed = recorded.filter((placed) => isPreviouslyMissed(placed.finding));
-  const fresh = recorded.filter((placed) => !isPreviouslyMissed(placed.finding));
+  // **Every finding, whatever its body opens with.** The label is presentation
+  // and is read only for which group an entry lands in (below): a record that
+  // filtered on it recorded a different set from the one the verdict counted,
+  // and the two disagreed in the unsafe direction — an unlabelled finding in
+  // an untouched file was posted *nowhere*, since the body is its only
+  // surface, while the runner logged it as "in the body" and
+  // `docs/ADOPTING.md` told an adopter to trust that counter; an unlabelled
+  // one on a diff line got a thread and an id, reached no group and no count
+  // in the round that raised it, and then counted through `stillOpen` in every
+  // round after — blocking a merge it had not blocked when it was found.
+  const missed = parts.placed.filter((placed) => isPreviouslyMissed(placed.finding));
+  const fresh = parts.placed.filter((placed) => !isPreviouslyMissed(placed.finding));
 
   const open = worstFirst([
     ...fresh.map(placedEntry),
     ...parts.stillOpen.map((finding) => carriedEntry(finding, true)),
-    ...restatedEntries(parts.output, labelled),
+    ...restatedEntries(parts.output),
   ]);
   const missedEntries = worstFirst(missed.map(placedEntry));
 
@@ -974,9 +978,10 @@ export const renderReviewBody = (parts: {
 export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): VerdictRow => {
   if (output.needsYou !== undefined) return VERDICTS["needs a closer look"];
   // This review's findings **and** the earlier ones it checked and found still
-  // open. Added rather than maximised, unlike the two halves inside
-  // `countFixBeforeMerge`: those are two restatements of one set of findings,
-  // and these are two disjoint sets — one this review found, one it verified.
+  // open. Added, because the two are disjoint sets — one this review found,
+  // one it verified — where the two halves inside `countFixBeforeMerge` are
+  // two restatements of one set. Their sum is the record's own size, which is
+  // what `**Findings:** N` states.
   if (countFixBeforeMerge(output) + inputs.stillOpen > 0) {
     // **A round-2 review can never produce the round-1 row** (#96, decision 5),
     // and it is enforced here rather than asked of the prompt. The fix round

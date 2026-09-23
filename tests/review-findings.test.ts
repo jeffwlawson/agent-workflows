@@ -3,7 +3,6 @@ import { parseDiffLines } from "../shared/diff-lines.js";
 import {
   FINDING_MARKER,
   findingMarker,
-  isFixBeforeMerge,
   isPreviouslyMissed,
   newFindingId,
   openingClaim,
@@ -400,26 +399,28 @@ describe("reviewMutation", () => {
  * *Previously missed* (#109, decision 4): a real problem a later review finds
  * in code an earlier review already read.
  *
- * It counts as *fix before merge*, and that is the decision rather than a
- * detail of it — a finding the record missed says the record was wrong about
- * this pull request, which is a stronger reason to stop the merge than an
- * ordinary finding rather than a weaker one. Before #111 the round-2 brief sent
- * these to `followUps`, where they were filed as issues after the merge they
- * should have stopped.
+ * It counts exactly as every other finding does — a finding the record missed
+ * says the record was wrong about this pull request, which is a stronger
+ * reason to stop the merge than an ordinary finding rather than a weaker one.
+ * Before #111 the round-2 brief sent these to `followUps`, where they were
+ * filed as issues after the merge they should have stopped.
+ *
+ * What the label decides is the **group**, and that is now the only thing any
+ * label decides: there is no `isFixBeforeMerge` beside this, because a
+ * predicate over the other label was a second definition of "a finding
+ * counts", and a body it did not recognise was a finding the verdict did not
+ * see.
  */
 describe("a finding an earlier review missed", () => {
   const missed = (body: string): Finding => finding({ body });
 
-  it("counts toward the merge on its own label", () => {
-    expect(isFixBeforeMerge(missed("**Previously missed.** the cache key omits the tenant"))).toBe(
-      true,
-    );
+  it("is read off its own label", () => {
     expect(isPreviouslyMissed(missed("**Previously missed.** the cache key omits the tenant"))).toBe(
       true,
     );
   });
 
-  /** The same emphasis tolerance the other label has, for the same reason. */
+  /** The same emphasis tolerance the claim reader has, for the same reason. */
   it.each([
     "**Previously missed.** the cache key omits the tenant",
     "__Previously missed__ — the cache key omits the tenant",
@@ -430,24 +431,29 @@ describe("a finding an earlier review missed", () => {
   });
 
   /**
-   * The drift a model actually produces. The label is what makes a finding
-   * *counted*, so a body the reader refuses is a finding the verdict does not
-   * see — and `^[\\s*_]*` refused both of these.
+   * The drift a model actually produces, which `^[\\s*_]*` refused. Nothing is
+   * counted or dropped on this answer any more, so what it costs is a
+   * previously-missed finding filed under *Open* and a label left standing at
+   * the front of the one-line claim the record shows.
    */
   it.each([
     "### Fix before merge\n\nthe cache key omits the tenant",
     "> **Fix before merge.** the cache key omits the tenant",
     "### Previously missed\n\nthe cache key omits the tenant",
   ])("reads a label a model wrote as a heading or inside a quote: %s", (body: string) => {
-    expect(isFixBeforeMerge(missed(body))).toBe(true);
     expect(openingClaim(body)).toBe("the cache key omits the tenant");
   });
 
-  it("is not read into a finding that merely says something was missed", () => {
-    const body = "**Fix before merge.** the earlier round previously missed a case here";
+  it("reads it as a heading, which is where a group would otherwise be lost", () => {
+    expect(isPreviouslyMissed(missed("### Previously missed\n\nthe cache key omits the tenant"))).toBe(
+      true,
+    );
+  });
 
-    expect(isPreviouslyMissed(missed(body))).toBe(false);
-    expect(isFixBeforeMerge(missed(body))).toBe(true);
+  it("is not read into a finding that merely says something was missed", () => {
+    expect(
+      isPreviouslyMissed(missed("**Fix before merge.** the earlier round previously missed a case here")),
+    ).toBe(false);
   });
 
   /**

@@ -63,9 +63,12 @@ Those two places and nowhere else. A finding is never restated in `whatChanged`,
 in `assessment` — those describe the change and the pass, and the record above them is where a
 finding is read and answered.
 
-Both, not either. The list is what is **counted** — the outcome posted to the pull request is
-derived from how many entries it has — and the two are written independently, so either can be the
-one you left something out of. The list is one line each; the evidence stays in the finding.
+Both, not either. **Every finding counts** — the outcome posted to the pull request is derived
+from how many there are, and the list is counted too where it is the longer of the two, so either
+can be the one you left something out of without the count dropping. The label is for whoever
+reads the thread and decides nothing: a finding you forget to label still counts, still blocks the
+merge, and is still listed in the record. The list is one line each; the evidence stays in the
+finding.
 
 A real problem in code an earlier review of this pull request already read is **previously
 missed**: open its body with `**Previously missed.**` rather than `**Fix before merge.**`, and

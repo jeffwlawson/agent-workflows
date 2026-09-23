@@ -44,6 +44,12 @@ jobs:
       # with a 401 that reads like a bad token rather than a missing grant.
       packages: read
       pull-requests: write
+      # Posting the review's verdict as an `agent-review` commit status on the
+      # reviewed commit — the one line saying what to do next. A status is its
+      # own scope, so `pull-requests: write` does not cover it; without this the
+      # review posts and no verdict appears, which looks like the feature being
+      # switched off rather than like a missing grant.
+      statuses: write
     with:
       # `<caller job id> / <called job id>`. The other three inputs
       # (`default-branch`, `node-version-file`, `setup`) default to this repo's

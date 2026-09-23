@@ -30,6 +30,12 @@ jobs:
       # with a 401 that reads like a bad token rather than a missing grant.
       packages: read
       pull-requests: write
+      # Carrying the review's verdict on to the merge commit a clean refresh
+      # creates. A commit status is its own scope rather than part of
+      # `pull-requests: write`; without this the merge lands and the pull
+      # request reads as unreviewed, which the step warns about rather than
+      # failing on — the branch has already moved by then.
+      statuses: write
     # No `with:`. The three inputs (`default-branch`, `node-version-file`,
     # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
     secrets:

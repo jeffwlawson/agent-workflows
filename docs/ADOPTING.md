@@ -366,6 +366,114 @@ gh label create "needs-triage"     --color D93F0B --description "Maintainer need
 
 ---
 
+## 3b. Reading the verdict
+
+Labels are how you drive the loop; this is how it answers. Every review ends in one of three
+assessments, derived from what the review found rather than written in it, and posted as a **commit
+status** on the commit that was reviewed — context `agent-review`, linked to the review it is the
+verdict on. GitHub shows it in the merge box, so the outcome of a review is readable without
+opening the review.
+
+The three are **GitHub's own**: they are the headings Copilot code review opens every overview
+with, taken verbatim. If you have read one of those, you already know what ours mean.
+
+| Verdict | Commit status | What GitHub shows you |
+|---|---|---|
+| **🟢 Approval recommended** | `success` | 🟢 Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge. |
+| **🟡 Changes recommended** | `failure` | 🟡 Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically. |
+| **🟡 Changes recommended**, after a fix round | `failure` | 🟡 Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix. |
+| **🔵 Needs a closer look** | `failure` | 🔵 Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR. |
+
+The third column is the status description **verbatim** — what GitHub shows you is what is written
+here, and the same words open the review summary, so the two cannot tell you different things.
+Three headings and four rows: *Changes recommended* has a first-round line and a second-round one,
+because a fix round that has already run and not settled the findings is the same assessment with a
+different next step. Only the last two rows ask you to read anything.
+
+`failure` on anything but the first row is not the loop disliking the change. It is a step left to
+do, and it is a `failure` because a green tick beside *add `agent:fix`* would say the opposite of
+what it means. Nothing merges or blocks on any of this by default, and making it do so is the last
+part of this section.
+
+**A run that failed is a fourth state and not a verdict.** It posts `error`, linked to the run:
+there is no verdict, and re-adding `agent:review` (§3) retries. The state worth knowing is the
+absent one — a commit with no `agent-review` status has not been reviewed, which is deliberate
+rather than a gap. A status belongs to a commit, so a push leaves the new head with no verdict
+instead of carrying a stale *approval recommended* over code nobody read. The status history on
+the pull request is also the whole record of what earlier rounds said; nothing else keeps one.
+
+If no verdict arrives on *any* pull request, the caller is missing `statuses: write` — the review
+still posts, so there is nothing on the pull request to say so. That is §4, and `doctor` reports it.
+
+**The loop keeps it current, and stops short of your hand.** A `fix` run that pushed asks for its
+own re-review, so a round closes itself out rather than leaving *add `agent:fix`* standing over a
+branch that was already fixed; a clean `agent:update-branch` refresh copies the verdict on to the
+merge commit it makes, and one that had to resolve conflicts asks for a review of what it wrote
+instead. What no workflow here does is add `agent:fix`. That label is the human hand in the loop,
+and the table above is where you are asked for it.
+
+A **copied** verdict says what it said before: it is the review's word about the branch work, not a
+claim about the merge commit it now sits on. That commit's own checks have not been read — they had
+not run when the copy was made — so a `success` carried on to a merge commit means "the last review
+of this branch found nothing to fix", and whether the merge itself is green is what the merge box's
+other checks are for.
+
+### The pull request list as an inbox
+
+`status:` in a GitHub search reads the head commit's **combined** state, so a saved search per state
+covers the open pull requests the loop has ruled on:
+
+- `is:pr is:open status:failure` — waiting on a fix, or on you. **This is the inbox to work from.**
+- `is:pr is:open status:success` — approval recommended, where it works. See the trap below.
+
+*Combined* means everything on the commit and not only this one — and **check runs count too**, not
+just commit statuses: a pull request with no commit status at all still appears under
+`status:success` and `status:pending` on the strength of its checks. So a pull request whose tests
+are red is in the failure search whatever its verdict says, and one whose checks are still running
+is in neither. The pair is a queue rather than a verdict filter, which is the right shape for it
+anyway: the thing you act on is the line you read when you open one.
+
+**The success search has a trap, and it is an installed app rather than anything you configured.** A
+GitHub App that creates a check *suite* on every commit and never runs a check inside it leaves that
+commit `pending` in search indefinitely — while the pull request's own merge box is green and its
+rollup reads `SUCCESS`. On a repository with one of those installed, `status:success` silently omits
+exactly the pull requests it is for, which is the failure mode worth knowing about: a search that
+returns nothing looks like a quiet week. `status:failure` is unaffected, because an empty queued
+suite is not a failure — which is why it is the one to work from.
+
+### Making `agent-review` a required status check — later, if at all
+
+Once the verdicts have proven themselves, `agent-review` can go into your branch protection rule as
+a **required status check**: no merge until a review has posted `success` on the head commit.
+Nothing here does that and nothing here will — it is a repository setting, added by hand, and the
+reason to wait is that it moves who pays for a wrong verdict. Today one you disagree with costs you
+the minute it takes to read the review and merge anyway. Required, it blocks the merge until a
+review says otherwise, so a verdict that is flaky is a repository where nothing merges.
+
+Three consequences to weigh before switching it on rather than after:
+
+- **A pull request the loop never reviewed carries no status**, and a required check that is absent
+  is not a check that passed. Your own one-line fix, pushed and opened by hand, stops being
+  mergeable until you label it `agent:review`.
+- **A required `agent-review` is not proof that the loop's review produced it.** Every workflow in
+  your repository posts as `github-actions[bot]`, not just these — so a workflow file added in a
+  pull request's *own branch*, running on that pull request's events, can post `agent-review:
+  success` on the head commit after the real review has spoken, and a status is replaced by the
+  newest post under its context. The loop is safe against that on its own terms: a forged verdict
+  can only make the next review a second round, and a second round is stricter, not laxer. What it
+  is not safe for is a merge gate, where the effect is the gate satisfying itself. So read the
+  verdict alongside the diff that produced it — which on a branch that edits `.github/workflows/`
+  you were going to do anyway.
+- **The second round is strict on purpose.** A fix round that pushed gets a verification review,
+  and that round cannot answer with the first-round *Changes recommended* line — a finding that
+  survived a fix round gets the second-round one instead, which asks you to read the review and
+  reply before labelling, on the grounds that a second fix has no more reason to settle it than the
+  first did. That is the right default while you are the one deciding what happens next. As a merge
+  gate it means the second round sends you to the review rather than round the loop again, which is
+  a good deal more of your attention than the un-gated version asks for.
+
+---
+
 ## 4. Files to write
 
 **Nothing in the loop is copied any more.** As of #98 every workflow in the loop is split in two: a
@@ -500,14 +608,14 @@ jobs:
 
 The permissions per workflow, which are what each job actually spends:
 
-| Caller | `checks` | `contents` | `issues` | `packages` | `pull-requests` |
-|---|---|---|---|---|---|
-| `agent-implement` | — | write | write | read | write |
-| `agent-implement-prd` | — | write | write | read | write |
-| `agent-review` | **read** | **read** | — | read | write |
-| `agent-fix` | — | write | — | read | write |
-| `agent-update-branch` | — | write | — | read | write |
-| `agent-follow-ups` | — | read | **write** | read | write |
+| Caller | `checks` | `contents` | `issues` | `packages` | `pull-requests` | `statuses` |
+|---|---|---|---|---|---|---|
+| `agent-implement` | — | write | write | read | write | — |
+| `agent-implement-prd` | — | write | write | read | write | — |
+| `agent-review` | **read** | **read** | — | read | write | **write** |
+| `agent-fix` | — | write | — | read | write | — |
+| `agent-update-branch` | — | write | — | read | write | **write** |
+| `agent-follow-ups` | — | read | **write** | read | write | — |
 
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
@@ -519,6 +627,23 @@ does — it is about installing the runner it runs.
 > issues with `GITHUB_TOKEN`, so there is no `AGENT_PAT` either — a repository without the PAT
 > files exactly as much as one with it. Adding either to your caller is not harmless: GitHub
 > refuses a `secrets:` entry the called workflow does not declare, before the job starts.
+
+> **`statuses: write` on review is what posts the verdict**, and it is a scope of its own rather
+> than part of `pull-requests: write` — a commit status is attached to a commit, not to a pull
+> request. Without it the review posts, the run stays green and no verdict appears anywhere: the
+> step warns rather than failing, on the grounds that a posted review is worth more than the line
+> summarising it. So nothing on the pull request says the grant is missing, which is why `doctor`
+> reports it as an error. Newer than the five scopes above it, so a caller installed against an
+> earlier release has a review that works and a verdict that never arrives. What the verdict says,
+> and what you do with each one, is §3b.
+
+> **`statuses: write` on update-branch is what keeps it**, for the same reason and with the same
+> silence when it is missing. A clean refresh copies the verdict from the commit that was reviewed
+> on to the merge commit it creates, because the new commit carries none until something posts one.
+> Without the scope the copy 403s and the step warns — it cannot fail, since the merge is pushed by
+> then — so the pull request reads as unreviewed and every refresh quietly costs a review round.
+> A refresh that had to *resolve* conflicts copies nothing and adds `agent:review` instead, which
+> is a label rather than a status and needs no scope of its own.
 
 > **`checks: read` on review is the row that only a private repository needs — and it is not
 > optional there.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a
@@ -541,8 +666,9 @@ does — it is about installing the runner it runs.
 
 > **`AGENT_PAT` defers two of these; it does not replace them, and `doctor` reports both as
 > failures whether or not you have one.** The checkout that pushes runs under
-> `${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}`, as do `gh pr create` and the `agent:review`
-> label that follows it on the `implement` pair. So with the PAT set, a caller missing
+> `${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}`, as do `gh pr create` and every `agent:review`
+> label the loop adds itself — on the `implement` pair, on a `fix` run that pushed, and on an
+> `update-branch` run that resolved conflicts. So with the PAT set, a caller missing
 > `contents: write` or `pull-requests: write` keeps working — until the token expires (§2), and
 > then loses a full agent pass to a 403 at the push. Nothing defers the calls the workflow token
 > serves: every label transition 403s the first time it runs, and on a **private** repository so

@@ -13,13 +13,29 @@ the middle. One workflow per label transition, near enough:
 |---|---|---|
 | `agent:implement` on an **issue** | `implement` or `implement-prd` | branch, implement, open a draft PR, request review |
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, mark ready |
-| `agent:fix` on a **PR** | `fix` | act on review feedback, reply, resolve threads |
-| `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts |
+| `agent:fix` on a **PR** | `fix` | act on review feedback, reply, resolve threads, ask for a re-review if it pushed |
+| `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
 | `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
 sub-issue per run onto one branch, and re-adds its own label to advance.
+
+`fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
+PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
+first row. A run that pushed asks for the review of what it pushed, so the round it was given
+closes without a human labelling again. That is one hop and cannot cycle: review adds no trigger
+label of its own. The review a **fix** asks for is a **second round**, which is barred from the
+round-1 *Changes recommended* — the line that promises an automatic re-review — and so cannot ask
+for another fix round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a
+full round 1, because round 2 needs a non-merge loop commit since the verdict and a resolution
+leaves only a merge. A fix run that pushed nothing asks for nothing.
+
+`update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
+the last review read, so it carries that review's verdict on to the merge commit instead — a
+commit status belongs to a commit, so without the copy every merge into a base branch would wipe
+the verdict off every open PR that refreshes against it. A **conflict resolution** is the loop
+writing code no review has seen, so it copies nothing and asks.
 
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather

@@ -54,10 +54,13 @@ on:
         required: true
       AGENT_PAT:
         description: >-
-          User PAT, used to check the branch out and push it — a push made with
-          `GITHUB_TOKEN` starts no CI run on the resulting PR
-          (docs/ADOPTING.md §1), which on a refresh is the whole point of the
-          refresh. Optional: without it the push still lands.
+          User PAT, used to check the branch out, push it, and — where conflicts
+          had to be resolved — add the `agent:review` that asks for the review
+          of the resolution. Neither a push nor a label made with `GITHUB_TOKEN`
+          triggers another workflow (docs/ADOPTING.md §1), which on a refresh is
+          the whole point of the refresh. Optional, and both halves degrade
+          rather than fail: the push still lands, and the label still goes on
+          but starts no review until a human re-adds it.
         required: false
 
 jobs:
@@ -83,6 +86,12 @@ jobs:
       # bound, it grants nothing without the caller's own `packages: read`.
       packages: read
       pull-requests: write
+      # Carrying the review's verdict on to the merge commit a clean refresh
+      # creates (#99). A commit status is its own scope rather than part of
+      # `pull-requests: write`, so nothing above covers it; without it the merge
+      # lands and the pull request reads as unreviewed, which the step warns
+      # about rather than failing on — the branch has already moved by then.
+      statuses: write
 
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -250,11 +259,126 @@ jobs:
         # process `cwd`: the runner still does its git work in the checkout.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.2.0 -- agent-workflows update-branch
 
+      # Two outputs, both written only where `-e` can already only mean the push
+      # worked, and both read by a step below that has no other way to know
+      # (#99).
+      #
+      # `head` is the commit the verdict is copied on to, and it is read here
+      # rather than in that step because *this* is the step that made it the
+      # branch tip. Two reads of the working tree are two chances for the commit
+      # a status is posted about to stop being the commit that was pushed.
+      #
+      # `pushed` is what separates the failure arm's two remedies: everything
+      # above this step leaves the branch untouched and is retried by re-adding
+      # the label, and everything below it does not.
       - name: Push branch
+        id: push
         if: steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts'
         run: |
           set -euo pipefail
           git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
+          {
+            echo "pushed=true"
+            echo "head=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      # A verdict is per commit, so the merge commit carries none until
+      # something posts one — and a clean refresh would otherwise wipe the
+      # review's answer off every open pull request each time the base branch
+      # moves (#96, decision 6).
+      #
+      # Sound because a clean merge changed nothing the review read: same
+      # branch work, plus commits that are already on the base. So the verdict
+      # standing on the old head is still the verdict on this one, and it is
+      # **copied, never parsed** — the state, the line a human acts on and the
+      # link are the review's own words, and re-deriving any of them here would
+      # be a second copy of a table `shared/review-output.ts` holds, in YAML,
+      # about a commit no review has read.
+      #
+      # The conflicts path gets none of this: the resolution is code an agent
+      # wrote, which no review has seen. It asks for one instead, below.
+      #
+      # Two conditions on what is copied, and they are the two `verdictOn`
+      # selects on, because this writes what that reads. The **context**, and
+      # the **creator**: a status is a thing any token holding `statuses: write`
+      # can post under any context it likes, so without the second a refresh
+      # would launder an outside integration's approval on to a commit.
+      # The creator narrows it to *a workflow in this repository* and no
+      # further — `github-actions[bot]` is the account every workflow here posts
+      # as, not only the loop's — which is the bound the round rule is safe
+      # under and a required check is not (docs/ADOPTING.md §3b). An
+      # `error` is copied along with the rest — it says "the last review of this
+      # branch produced no verdict", which a merge does not make untrue, and
+      # `verdictOn` already declines to count it as a round.
+      #
+      # Posted under the job's own `GITHUB_TOKEN` rather than the PAT the
+      # checkout and the push prefer, and that is the whole of why the copy is
+      # worth making: a status created by any other account is one the next
+      # round does not recognise, so the carried verdict would be invisible to
+      # the reader it exists for.
+      #
+      # Never fails the run. The merge is pushed by the time this runs, so a
+      # failure here would mark the pull request blocked and tell a human the
+      # branch was left untouched. No verdict to copy is not a failure either: a
+      # pull request nobody has reviewed yet refreshes like any other, and the
+      # honest answer for its new head is the absence of one.
+      - name: Carry the verdict over to the merge commit
+        if: steps.merge.outputs.status == 'clean' && success()
+        env:
+          OLD_SHA: ${{ github.event.pull_request.head.sha }}
+          NEW_SHA: ${{ steps.push.outputs.head }}
+          VERDICT_CONTEXT: agent-review
+          LOOP_ACCOUNT: github-actions[bot]
+        run: |
+          set -uo pipefail
+          # Newest first, which is the order this endpoint documents, so the
+          # first match is the verdict that stands rather than the first one
+          # ever posted. Paginated because the page is thirty statuses and a
+          # repository with a deploy bot on every commit has more than that —
+          # unpaginated, the older the verdict the likelier it silently is not
+          # there.
+          #
+          # The read is its own arm, because **the read failing is not "there
+          # is no verdict"** (#105). Collapsed into one, only the second is ever
+          # reported: a caller installed before this release has no `statuses`
+          # entry and GitHub sets every unlisted scope to `none`, so on a
+          # private repository this `GET` 403s exactly as docs/ADOPTING.md §4
+          # describes for `checks: read` — and the step would log "nothing to
+          # carry over" and exit 0, while the warning naming the grant sits on
+          # the *write* below and never fires. Every refresh would drop the
+          # verdict with no signal anywhere. It is the distinction `verdictOn`
+          # keeps as `undefined` against `false`, and the CI word keeps as
+          # `unknown` against `red`.
+          err="${RUNNER_TEMP}/carry-verdict.err"
+          if ! statuses=$(gh api "repos/{owner}/{repo}/commits/${OLD_SHA}/statuses" --paginate --slurp 2>"$err"); then
+            echo "::warning::Could not read the statuses on ${OLD_SHA}, so no \`${VERDICT_CONTEXT}\` verdict was carried on to ${NEW_SHA} and this pull request now reads as unreviewed — which is not the same as its having none. On a private repository this is a caller missing \`statuses: write\` — see jeffwlawson/agent-workflows docs/ADOPTING.md §4. See what \`gh\` said below."
+            if [ -s "$err" ]; then
+              cat "$err"
+            fi
+            exit 0
+          fi
+          # Still `|| verdict=""`, and now it can only mean what it says: the
+          # read succeeded, so an empty answer is a commit carrying no verdict
+          # of ours.
+          verdict=$(printf '%s' "$statuses" \
+            | jq -c '(add // []) | map(select(.context == env.VERDICT_CONTEXT and .creator.login == env.LOOP_ACCOUNT))[0] // empty') \
+            || verdict=""
+          if [ -z "$verdict" ]; then
+            echo "No ${VERDICT_CONTEXT} verdict of ours on ${OLD_SHA} — nothing to carry over."
+            exit 0
+          fi
+          state=$(printf '%s' "$verdict" | jq -r '.state')
+          description=$(printf '%s' "$verdict" | jq -r '.description // ""')
+          target_url=$(printf '%s' "$verdict" | jq -r '.target_url // ""')
+          args=(--method POST "repos/{owner}/{repo}/statuses/${NEW_SHA}"
+                -f "context=${VERDICT_CONTEXT}" -f "state=${state}" -f "description=${description}")
+          # `if`, not a test ending the arm: an absent link is the ordinary case
+          # for a verdict posted by a run that could not read its own review.
+          if [ -n "$target_url" ]; then
+            args+=(-f "target_url=${target_url}")
+          fi
+          gh api "${args[@]}" \
+            || echo "::warning::Could not carry the \`${VERDICT_CONTEXT}\` verdict from ${OLD_SHA} on to ${NEW_SHA}. The merge is pushed; what is missing is the line saying what to do about it, so this pull request now reads as unreviewed. This needs \`statuses: write\` in the caller — see jeffwlawson/agent-workflows docs/ADOPTING.md §4."
 
       - name: Comment on the PR
         if: steps.state.outputs.proceed == 'true' && success()
@@ -281,17 +405,78 @@ jobs:
           esac
           gh pr comment "$PR_NUMBER" --body "$body"
 
+      # The resolution closes itself out, the way a fix round does (#96,
+      # decision 6). The commit this job just pushed is an agent's reading of a
+      # conflict — the one thing this loop writes that no review has seen — and
+      # by the round rule the review it asks for is a full **round 1**: round 2
+      # needs a non-merge loop commit since the last verdict, and a resolution
+      # leaves only the merge (#105). Which is the reading that suits it: the
+      # earlier round's findings have not been attempted, so a verification pass
+      # over them would answer with the round-2 line — "a fix round did not
+      # settle these" — on the strength of the base branch having moved, about
+      # findings no fix round ever saw.
+      #
+      # So this is the other half of the step above, not an addition to it: a
+      # clean merge carries the old verdict forward because it is still true,
+      # and a resolution carries nothing forward because it is not. Each path
+      # does exactly one of the two.
+      #
+      # Last of the success arms, after the comment reporting what was resolved:
+      # the review reads the pull request, so a round started before this run
+      # has finished speaking is a round reading the state before it.
+      #
+      # MUST use AGENT_PAT, like every other label this loop adds: a label added
+      # with GITHUB_TOKEN triggers nothing, so the pull request would carry
+      # `agent:review` and simply sit there. Warn loudly rather than pretend it
+      # worked.
+      #
+      # And fail the run if the add itself fails, with a reason naming the way
+      # out. The failure comment's own remedy — re-add `agent:update-branch` —
+      # is inert here: the merge is already pushed, so a second run finds the
+      # branch up to date and does nothing.
+      - name: Request a review of the resolution
+        if: steps.merge.outputs.status == 'conflicts' && success()
+        env:
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
+            printf 'The conflicts are resolved and pushed, but `agent:review` could not be added, so no review of the resolution was requested. Add `agent:review` to this PR by hand — re-adding `agent:update-branch` would find the branch already up to date and do nothing.\n' \
+              > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
+          if [ "$HAS_PAT" != "true" ]; then
+            # On the pull request as well as in the log (#105): a warning
+            # annotation is on a run nobody opens, and what is at stake here is
+            # a conflict resolution an agent wrote that nothing has reviewed.
+            echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
+            gh pr comment "$PR_NUMBER" --body 'The conflicts are resolved and pushed, but no review of the resolution will start on its own: `AGENT_PAT` is not set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review it.' \
+              || echo "::warning::…and that could not be said on the pull request either."
+          fi
+
+      # The remedy depends on whether the branch moved, and since #99 both cases
+      # are ordinary: the two steps that can fail *after* the push are the
+      # verdict this job carries over and the review it asks for. "The branch
+      # was left untouched" is true of every step above the push and false of
+      # every one below it, and re-adding the label — which is the whole of the
+      # advice — does nothing on a branch that is already merged.
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && failure()
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
         run: |
           reason="(no reason file written; check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
+          outcome="The branch was left untouched. Re-add \`agent:update-branch\` to retry."
+          if [ "$PUSHED" = "true" ]; then
+            outcome="The merge is pushed; what failed came after it, so re-adding \`agent:update-branch\` would find the branch up to date and do nothing. Act on the reason above instead."
+          fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '`agent:update-branch` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe branch was left untouched. Re-add `agent:update-branch` to retry.\n' "$reason" "$RUN_URL" > "$body_file"
+          printf '`agent:update-branch` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\n%s\n' "$reason" "$RUN_URL" "$outcome" > "$body_file"
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
           gh pr comment "$PR_NUMBER" --body-file "$body_file"
 

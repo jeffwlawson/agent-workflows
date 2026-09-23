@@ -33,6 +33,32 @@ where it changes a conclusion you would otherwise draw.
 
 {{DISCUSSION}}
 
+# WHICH ROUND THIS IS
+
+{{ROUND}}
+
+**Round 1** is the review described everywhere else in this brief: read the change, and report what
+you find.
+
+**Round 2 is a verification pass.** An earlier review of this pull request stands, a fix round has
+pushed since, and the question is no longer *what is wrong with this change* but *did the last
+round's findings land, and did the new commits break anything?* In that case:
+
+- Take each finding the earlier review said had to be fixed before merge and say, one at a time,
+  whether the current change resolves it. They are the **To fix before merge** checklist in that
+  review's body, under **EXISTING FEEDBACK** above — that checklist is the list, not the inline
+  threads, which the fix round resolves and which are dropped from what you were handed. One that
+  did not land is a `fixBeforeMerge` entry again, saying what is still missing rather than
+  restating the original finding.
+- Read the new commits for what they broke. A fix that resolves its own finding and regresses
+  something else is the failure this pass exists to catch, and nothing else is looking for it.
+- Anything else real you notice is a `followUps` entry, not a new thing to fix before merge. That
+  list is a complete restatement every round, so re-record the entries the earlier round listed
+  that are still true.
+- Open your summary by saying this is a verification of the earlier round. The reader is being
+  asked to look at a pull request they had already been told was nearly ready, and why is the first
+  thing they will want.
+
 # CI RESULTS
 
 The PR's other checks, waited for and collected before this review started. Some are
@@ -42,8 +68,10 @@ A check that validates the code against known-good real-world data — rather th
 this team wrote — is the **oracle**. Your reasoning consults the diff; the oracle consults the
 world. Where they disagree, the oracle wins.
 
-A failing check is the most valuable thing in this review — diagnose *why*. Green checks are a
-precondition of recommending merge.
+A failing check is the most valuable thing in this review — diagnose *why*. A failure you can
+explain is a finding to fix before merge; one you cannot is the third case under *When another
+pass will not settle it* below. The check results are read again after you, so a review that
+says nothing about a red one leaves the reader with a verdict and no diagnosis.
 
 {{CI_STATUS}}
 
@@ -70,10 +98,47 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
 Prefer a few high-signal comments over many trivial ones. A clean change gets a short review
 saying so.
 
-Label each finding **blocking** or **judgement call**. Blocking means the change is wrong or
-unsafe as it stands; a judgement call is a preference you would accept being overruled on. Quote
-the code or check result each finding rests on — a reader should be able to check you without
-re-deriving your reasoning.
+# THE TWO KINDS OF FINDING
+
+There are two, and every finding is one of them.
+
+**Fix before merge** — this pull request is wrong, unsafe, or does not do what the linked issue
+asked, and must not merge as it stands. Say so in the summary and in the inline comment, and
+restate each one as a single line in `fixBeforeMerge`. That list is counted, and it is posted as
+the **To fix before merge** checklist on the review — it is what the next round verifies against,
+so a finding only the prose carries is one nobody can act on without reading for it.
+
+**A follow-up** — real, but not this pull request's to fix. Those go to the `followUps` list your
+structured output carries, on the bar stated with it.
+
+**Nothing else is posted.** A style preference, a "consider…", a rename you would accept being
+overruled on: if it is not worth fixing, it is not worth the time of the person who has to read
+it. Saying the change is clean is a finding; wishing it were different is not.
+
+**The outcome is derived, not written.** A verdict, and the next step a human should take, is
+computed from `fixBeforeMerge`, from `needsYou` below and from the check results, then posted
+where GitHub shows it. So do not state a verdict of your own: what decides it is what you
+record, not what the summary calls it.
+
+Quote the code or check result each finding rests on — a reader should be able to check you
+without re-deriving your reasoning.
+
+# WHEN ANOTHER PASS WILL NOT SETTLE IT
+
+Most findings are fixed by another pass over this branch. Some are not, and saying which is your
+judgement to make: it is what tells the reader they have to read this review rather than act on
+it. Report it in `needsYou`, in one line naming which case it is, when one of these holds:
+
+- **the wrong thing was built** — the change does something other than what the linked issue
+  asked for, so fixing it is a different change rather than a correction to this one;
+- **the issue itself was wrong** — doing what it asked is the defect, so the pull request should
+  be closed rather than fixed;
+- **a check fails and you cannot say why** — the diff does not explain it, so no fix can be aimed
+  at it.
+
+Leave it out otherwise, which is nearly every review. It is not a severity dial: using it for a
+finding another pass would settle spends the one signal that says a human is needed, on a review
+where they were not.
 
 # SUGGESTED CHANGES
 
@@ -91,9 +156,12 @@ When a fix is **mechanical and you know the exact replacement text**, put it in 
 - **Literal content** — reproduce surrounding indentation; no diff `-`/`+` markers; no nested
   code fence.
 
-Good candidates: a stale claim in a comment, a rename, a misspelled identifier, a missing
-`readonly`. Where the fix needs judgement, spans several places, or changes behaviour, describe
-it in prose and leave it to `agent:fix` — a wrong suggestion is one click from being committed.
+Good candidates, and each is a finding you would report anyway: a comment whose claim the diff
+made false, a misspelled identifier that breaks the thing it names, a bound that is off by one.
+A suggestion is a way to make a *fix before merge* cheap to apply — not a way to post a
+preference, which the section above says not to post at all. Where the fix needs judgement, spans
+several places, or changes behaviour, describe it in prose and leave it to `agent:fix` — a wrong
+suggestion is one click from being committed.
 
 # BOUNDARIES
 

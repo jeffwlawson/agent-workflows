@@ -15,10 +15,20 @@ import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   capFollowUps,
+  countFixBeforeMerge,
+  deriveVerdict,
   filterInlineComments,
   renderFollowUpsBlock,
+  renderReviewSummary,
   reviewOutputSchema,
+  VERDICT_CONTEXT,
+  type CiResult,
 } from "../shared/review-output.js";
+import {
+  describeRound,
+  detectReviewRound,
+  unreadableRoundNote,
+} from "../shared/review-round.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
@@ -42,8 +52,38 @@ const readCiStatus = (): string => {
   }
 };
 
+/**
+ * The same checks as one word, written by the same workflow step — and the
+ * half of the verdict that is not the agent's to decide.
+ *
+ * Deliberately not read out of the prose above: that file is evidence for the
+ * agent, and a derivation that parsed it would be a second description of a
+ * format written two steps away. Anything this cannot read is `unknown`, which
+ * the derivation treats as "not green" — a review that could not see the checks
+ * is not one that can recommend approving a pull request.
+ */
+const readCiResult = (): CiResult => {
+  const file = process.env["CI_RESULT_FILE"];
+  if (!file) return "unknown";
+  try {
+    const value = fs.readFileSync(file, "utf8").trim();
+    return value === "green" || value === "red" ? value : "unknown";
+  } catch {
+    return "unknown";
+  }
+};
+
 try {
   const context = fetchPullRequestContext(PR_NUMBER);
+
+  // Which pass over this pull request this is, read off the repository before
+  // the token goes (#96). It changes what the agent is asked to do — round 2
+  // verifies that the last round's findings landed — and it changes what the
+  // derivation may conclude, which is the half that is not the agent's.
+  const round = detectReviewRound(PR_NUMBER);
+  console.log(
+    `Round: ${round.round}${round.unreadable === undefined ? "" : ` — assumed, because ${round.unreadable}`}.`,
+  );
 
   // A review proceeds on what survived a partial answer — but says so twice:
   // here, for whoever reads the run, and in the discussion the agent is handed.
@@ -75,6 +115,7 @@ try {
       LINKED_ISSUE: context.linkedIssue,
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
+      ROUND: describeRound(round),
       PR_DIFF: context.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
@@ -103,7 +144,29 @@ try {
   // files a stub for work already done.
   const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(result.output.followUps);
   const followUpsBlock = renderFollowUpsBlock(followUps, droppedFollowUps);
-  const body = `${result.output.summary}\n\n${followUpsBlock}`;
+
+  // The verdict, derived from the review and the checks rather than written by
+  // the agent (#96). Its heading and next-step line open the summary, so the
+  // outcome is the first thing a reader sees and the same words the commit
+  // status carries — one statement in two places, not two that can disagree.
+  const ci = readCiResult();
+  const verdict = deriveVerdict(result.output, { ci, round: round.round });
+  // And a round nothing could establish says so in the body as well as in the
+  // brief. The agent was told it was a second round; what it cannot say — and
+  // what changes how a reader weighs the review — is that the round was the
+  // stricter reading rather than a fact about this pull request.
+  //
+  // What the body is made of, and in what order, is `renderReviewSummary`'s:
+  // it is the part of the review a human acts on, and this file is a script
+  // with no test around it (#105). It is handed the output whole rather than
+  // the fields it reads, so the checklist it renders is the set the verdict
+  // above was counted from and not a second reading of it.
+  const summary = renderReviewSummary({
+    verdict,
+    output: result.output,
+    roundNote: unreadableRoundNote(round),
+  });
+  const body = `${summary}\n\n${followUpsBlock}`;
 
   writeJson("review_payload.json", {
     commit_id: headSha,
@@ -121,7 +184,24 @@ try {
       body: c.body,
     })),
   });
-  writeText("summary.md", result.output.summary);
+  writeText("summary.md", summary);
+
+  // What the workflow posts the commit status from — context, state and line.
+  // A file rather than a step output, for the same reason the payload above is
+  // one: the step that posts cannot read this process, and the table all three
+  // come from is tested here rather than restated in YAML. The only copy of the
+  // context that is *not* read from here is the one the failure arm posts,
+  // which by definition runs on a review that wrote no file.
+  //
+  // `verdict` is the row's key rather than its heading, because the round-1 and
+  // round-2 rows share a heading and a reader of this file has to tell them
+  // apart — PRD #101's automatic fix may fire on the round-1 case and no other.
+  writeJson("verdict.json", {
+    context: VERDICT_CONTEXT,
+    verdict: verdict.verdict,
+    state: verdict.state,
+    description: verdict.description,
+  });
 
   // How the workflow knows to mark the pull request: a step cannot read this
   // process's memory, and the marker label has to go on when — and only when —
@@ -135,6 +215,9 @@ try {
   if (followUps.length > 0) writeText("follow_ups.md", followUpsBlock);
 
   console.log("Review complete.");
+  console.log(
+    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output)} to fix before merge, checks ${ci}, round ${round.round}).`,
+  );
   console.log(`Inline comments: ${validComments.length} kept of ${result.output.inlineComments.length} produced.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {

@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { FOLLOW_UPS_LABEL } from "../shared/review-output.js";
+import { isWorkflowBot } from "../shared/common.js";
+import { FOLLOW_UPS_LABEL, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -713,12 +714,18 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     for (const name of ["fixtures", "CI", "CI / verify", "CI / fix-lint", "build / fixtures"]) {
       expect(name).not.toMatch(excluded);
     }
-    // Both jq filters — the one that decides whether to keep waiting and the
-    // one that writes the list into the prompt. A pattern only the second used
-    // would still deadlock on a queued agent job.
+    // Every jq pass over the check runs carries it — the one that decides
+    // whether to keep waiting, the one that writes the list into the prompt,
+    // and the one that reduces them to the verdict's single word (#96). Counted
+    // against the passes rather than against a literal, so a fourth arrives
+    // here as a failure rather than as a pattern nobody extended: one that
+    // skipped this would deadlock on a queued agent job, or read a sibling
+    // agent's failure as this commit's CI.
+    const passes = [...(waitStep().run ?? "").matchAll(/\.\[\]\.check_runs\[\]/g)];
     const filters = [...(waitStep().run ?? "").matchAll(/test\(\\"\$\{AGENT_CHECKS\}\\"\)/g)];
 
-    expect(filters).toHaveLength(2);
+    expect(passes.length).toBeGreaterThanOrEqual(3);
+    expect(filters).toHaveLength(passes.length);
   });
 
   /**
@@ -948,6 +955,525 @@ describe("agent-review marks a PR whose review recorded follow-ups", () => {
 
     expect(run).toContain("::warning::");
     expect(run).not.toContain("|| true");
+  });
+});
+
+/**
+ * The verdict (#96): an outcome a maintainer can act on without reading the
+ * review, posted where GitHub already shows the state of a commit.
+ *
+ * A commit status rather than a comment or a label, for one property neither of
+ * those has — it is attached to a **commit**. A new commit carries no verdict
+ * until one is posted for it, so a stale approval cannot survive a
+ * push, and the status history is the only record of what past rounds said.
+ *
+ * Nothing here has a runtime symptom when it breaks. A status posted under the
+ * wrong context is a second opinion nobody reconciles; one posted on the wrong
+ * commit is a verdict about a tree that was not reviewed; and a run that fails
+ * without posting one leaves the last verdict standing, which is the stale
+ * "ready" this design exists to make impossible.
+ */
+describe("agent-review posts its verdict as a commit status", () => {
+  const stepNamed = (name: string): Step | undefined =>
+    stepsOf(REVIEW).find((s) => s.name === name);
+  const postStep = (): Step | undefined => stepNamed("Post the verdict as a commit status");
+  const errorStep = (): Step | undefined => stepNamed("Post an error verdict");
+
+  /**
+   * On the SHA the payload named, which is the same one the checkout, the CI
+   * wait and the review's own `commit_id` are pinned to — and which the
+   * pre-flight above refuses to proceed past if the branch has moved. Reading
+   * the live head here instead would post a verdict about a diff nobody read.
+   */
+  it.each([
+    ["the verdict", "Post the verdict as a commit status"],
+    ["an error", "Post an error verdict"],
+  ])("posts %s on the commit that was reviewed", (_case: string, name: string) => {
+    const step = stepNamed(name);
+
+    expect(step?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(step?.run ?? "").toContain('/statuses/${HEAD_SHA}');
+  });
+
+  /**
+   * One context, and one place it is written. A reader of these statuses
+   * selects on it — it is how a later round tells the loop's own verdict from
+   * anything else that can post a status — so a drift between the halves is a
+   * verdict nothing recognises.
+   *
+   * The failure arm is the exception and has to be: a run that failed wrote no
+   * `verdict.json` for it to read, so that one literal is held here instead.
+   */
+  it("posts the verdict under the context the runner wrote", () => {
+    expect(VERDICT_CONTEXT).toBe("agent-review");
+    expect(postStep()?.run ?? "").toContain(".context");
+    expect(postStep()?.run ?? "").toContain("context=${context}");
+  });
+
+  it("posts an error under that same context, spelled out", () => {
+    expect(errorStep()?.run ?? "").toContain(`context=${VERDICT_CONTEXT}`);
+  });
+
+  /**
+   * The state and the line a human reads come from the runner's own derivation,
+   * read out of the file it wrote. Deriving either here would be a second
+   * description of #96's table — in YAML, where nothing can unit-test it.
+   */
+  it("takes the state and the next step from what the runner derived", () => {
+    const run = postStep()?.run ?? "";
+
+    expect(run).toContain("${RUNNER_TEMP}/verdict.json");
+    expect(run).toContain(".state");
+    expect(run).toContain(".description");
+  });
+
+  /**
+   * And links the review it is the verdict on, so the one line has somewhere to
+   * go when a reader does want the detail. The URL is the posted review's own,
+   * which only the response to that POST carries.
+   */
+  it("links the review it posted, by capturing the URL that POST returned", () => {
+    const post = stepNamed("Post PR review");
+
+    expect(post?.id).toBe("review");
+    expect(post?.run ?? "").toContain("html_url");
+    expect(post?.run ?? "").toContain('"$GITHUB_OUTPUT"');
+    expect(postStep()?.env?.["REVIEW_URL"]).toBe("${{ steps.review.outputs.url }}");
+    expect(postStep()?.run ?? "").toContain("target_url=");
+  });
+
+  it("posts the verdict after the review it points at, and only if that posted", () => {
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(postStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+    expect(names.indexOf(postStep()?.name ?? "")).toBeGreaterThan(names.indexOf("Post PR review"));
+  });
+
+  /**
+   * A failed run posts `error` rather than nothing. Nothing is the dangerous
+   * answer: the previous verdict on this commit stays the newest, so a run that
+   * died half way reads from the outside exactly like the review that
+   * recommended approval.
+   */
+  it("posts error when the run failed", () => {
+    const step = errorStep();
+
+    expect(step?.if).toBe("steps.state.outputs.proceed == 'true' && failure()");
+    expect(step?.run ?? "").toContain("state=error");
+
+    // Below every step it is the arm for, the verdict's own posting included:
+    // a `failure()` step covers what precedes it, so one placed beside the
+    // success arm would miss the failure that leaves no status at all.
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(
+      names.indexOf(postStep()?.name ?? ""),
+    );
+  });
+
+  /**
+   * Neither posting may fail the run. The likeliest cause is an adopter whose
+   * caller predates the `statuses: write` grant, and a posted review is worth
+   * more than its verdict — `setup/doctor.ts` is what names that grant, where
+   * the adopter is looking for it. A warning keeps the failure visible; `||
+   * true` would leave a loop that posts no verdicts and looks healthy, which is
+   * the shape the marker step above is written against too.
+   */
+  it.each([
+    ["the verdict", "Post the verdict as a commit status"],
+    ["an error", "Post an error verdict"],
+  ])("warns rather than failing when %s cannot be posted", (_case: string, name: string) => {
+    const run = stepNamed(name)?.run ?? "";
+
+    expect(run).toContain("::warning::");
+    expect(run).not.toContain("|| true");
+  });
+
+  /**
+   * The CI half of the derivation, which the runner must not read out of the
+   * prose the same step writes for the agent. One word, from the check runs'
+   * own `conclusion`, with the same two exclusions the evidence above uses —
+   * a queued sibling agent job is not a red check.
+   */
+  /**
+   * Check runs are an Actions concept, and CI that reports through the
+   * commit-status API has none — so a word derived from check runs alone calls
+   * that commit green and lets the review recommend approving a red one
+   * (#105). Both surfaces, and the verdict's **own** context skipped: it is
+   * the answer this job is about to post, so counting it would feed each
+   * round's verdict into the next round's evidence.
+   */
+  it("reads the commit's statuses as well as its check runs, minus its own", () => {
+    const wait = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
+    const run = wait?.run ?? "";
+
+    expect(run).toContain("commits/${HEAD_SHA}/status");
+    expect(run).toContain(".[].statuses[]");
+    // Held to the runner's constant, not merely to a string: the exclusion is
+    // only correct because it names the context the verdict posts under.
+    expect(wait?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
+    expect(run).toContain("select(.context != env.VERDICT_CONTEXT)");
+    // A status that has not passed has not passed — the same reading the check
+    // runs get, and the step has already spent its wait. Read past the YAML's
+    // own backslashes, which is what the jq inside a double-quoted shell string
+    // costs and not something this assertion is about.
+    const unescaped = run.replace(/\\/g, "");
+
+    for (const state of ["failure", "error", "pending"]) {
+      expect(unescaped, state).toContain(`. == "${state}"`);
+    }
+  });
+
+  it("hands the runner the checks' result as a word, not as prose", () => {
+    const wait = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
+    const agent = stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent");
+
+    expect(wait?.run ?? "").toContain('${RUNNER_TEMP}/ci_result.txt');
+    expect(agent?.env?.["CI_RESULT_FILE"]).toBe("${{ runner.temp }}/ci_result.txt");
+    // Distinct from the evidence file: one is what the agent reads, the other
+    // is what the verdict is derived from, and collapsing them would put the
+    // derivation back in the prose it was taken out of.
+    expect(agent?.env?.["CI_STATUS_FILE"]).toBe("${{ runner.temp }}/ci_status.md");
+  });
+});
+
+/**
+ * The fix round closes itself out (#96): a push asks for the review of what it
+ * pushed, instead of leaving a pull request whose verdict says "add agent:fix"
+ * on a branch where the fix has already landed.
+ *
+ * This is the `agent:fix` → `agent:review` leg that `docs/parity.md` §10
+ * already calls safe, and the property it rests on is unchanged — review adds
+ * no trigger label of its own, so there is no cycle to close. What is new is
+ * the bound underneath it: a round-2 review cannot answer with the round-1
+ * *Changes recommended* line, the one that promises an automatic re-review
+ * (`deriveVerdict`), so this leg cannot be walked a second time off one human
+ * label.
+ *
+ * Nothing here has a runtime symptom when it breaks, which is why it is
+ * asserted against the workflow text. A request that never fires leaves a
+ * pushed fix sitting unreviewed and looking finished; one that fires on a run
+ * that pushed *nothing* asks for a review of a branch that did not move, which
+ * re-reviews the same commit and re-posts the verdict that already stood.
+ */
+describe("agent-fix asks for the re-review its own push needs", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const stepNamed = (name: string): Step | undefined => stepsOf(FIX).find((s) => s.name === name);
+  const request = (): Step | undefined => stepNamed("Request re-review");
+
+  /**
+   * Both arms of the push write the output, not just the one that pushed. An
+   * unset output is indistinguishable from a step that never ran, and those two
+   * differ in exactly what this gate has to know.
+   */
+  it("reports whether the branch actually moved", () => {
+    const push = stepNamed("Push branch");
+
+    expect(push?.id).toBe("push");
+    expect(push?.run ?? "").toContain('echo "pushed=true" >> "$GITHUB_OUTPUT"');
+    expect(push?.run ?? "").toContain('echo "pushed=false" >> "$GITHUB_OUTPUT"');
+  });
+
+  it("requests the review only when the fix pushed something", () => {
+    expect(request()?.if).toBe(
+      "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed == 'true'",
+    );
+    expect(request()?.run ?? "").toContain('--add-label "agent:review"');
+  });
+
+  /**
+   * Last of the success arms. The review reads the feedback on the pull
+   * request, so a request made before the replies and the top-level comments
+   * are posted starts a round that reads the round before it.
+   */
+  it("asks only once this run has said everything it has to say", () => {
+    const names = stepsOf(FIX).map((s) => s.name ?? "");
+
+    for (const earlier of ["Reply to and resolve review threads", "Post top-level comments"]) {
+      expect(names.indexOf("Request re-review")).toBeGreaterThan(names.indexOf(earlier));
+    }
+  });
+
+  /**
+   * The same PAT requirement every label transition in this loop carries: a
+   * label added with `GITHUB_TOKEN` triggers nothing, so the pull request would
+   * carry `agent:review` and simply sit there — the silent no-op
+   * `implement-prd`'s two adds are warned about in the same words.
+   */
+  /**
+   * In the log **and** on the pull request (#105). A warning annotation is on a
+   * run nobody opens, and what it contradicts is the verdict line the
+   * maintainer acted on: "A re-review runs automatically" is what they were
+   * told, and without the PAT the label goes on and nothing fires.
+   */
+  it("says on the pull request, not only in the log, that no review will start", () => {
+    const run = request()?.run ?? "";
+
+    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(request()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(run).toContain("::warning::");
+    expect(run).toContain("gh pr comment");
+    expect(run).toContain("AGENT_PAT");
+    // Inside the arm that knows there is no PAT, not on every run: a comment
+    // on the pull requests where the re-review *did* start is noise on the
+    // channel this one needs to be read on.
+    const arm = run.slice(run.indexOf('if [ "$HAS_PAT" != "true" ]'));
+
+    expect(arm).toContain("gh pr comment");
+  });
+
+  /**
+   * …and fails the run when the add itself fails, naming the way out. The
+   * failure comment's generic remedy — re-add `agent:fix` — is the wrong one
+   * here: this run's threads are answered and resolved, so a second fix run
+   * finds nothing trusted to act on and refuses. Without the reason file the
+   * comment reads `(no reason file written)`, which is the signature of a run
+   * that never reached the runner at all.
+   */
+  it("fails with a reason a human can act on rather than swallowing the add", () => {
+    const run = request()?.run ?? "";
+
+    expect(run).toContain("set -euo pipefail");
+    expect(run).toContain("failure_reason.txt");
+    expect(run).toContain("exit 1");
+    expect(run).not.toContain("|| true");
+  });
+
+  /**
+   * And the comment that reports a failure stops contradicting the reason it
+   * just wrote (#105). The step above writes "re-adding `agent:fix` would …
+   * refuse" and the failure comment appended its fixed "Re-add `agent:fix` to
+   * retry" underneath it — one comment, two opposite instructions, on the one
+   * surface a blocked pull request is read from. Now the remedy comes from
+   * whether the branch moved, the way `update-branch`'s does.
+   */
+  it("does not tell a human to re-add the label after its threads are answered", () => {
+    const blocked = stepNamed("Mark blocked on failure");
+
+    expect(blocked?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.pushed }}");
+    expect(blocked?.run ?? "").toContain('"$PUSHED" = "true"');
+  });
+});
+
+/**
+ * A refresh moves the branch, and a verdict is per commit — so without this
+ * every merge into a base branch wipes the verdict off every open pull request
+ * that refreshes against it (#99), and the trial of whether the verdicts can be
+ * trusted is read off pull requests carrying none.
+ *
+ * Two paths, opposite answers, settled by #96's decision 6. A clean merge
+ * reviewed nothing and changed nothing the review read, so the verdict standing
+ * on the old head is still true of the new one and is copied verbatim. A
+ * conflict resolution is the loop writing code no review has seen, so nothing is
+ * copied and a review is asked for instead — a full **round 1** by the round
+ * rule (`shared/review-round.ts`), because round 2 needs a non-merge loop
+ * commit since the verdict and a resolution leaves only the merge (#105).
+ *
+ * Neither has a runtime symptom when it breaks. A copy that never fires leaves a
+ * refreshed pull request looking unreviewed, which is merely the cost of the
+ * feature being off; a copy that fired on the conflicts path would put "ready to
+ * merge" on code an agent wrote and nobody read.
+ */
+describe("agent-update-branch carries the verdict, or asks for the round it made necessary", () => {
+  const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
+  const stepNamed = (name: string): Step | undefined =>
+    stepsOf(UPDATE).find((s) => s.name === name);
+  const push = (): Step | undefined => stepNamed("Push branch");
+  const copy = (): Step | undefined => stepNamed("Carry the verdict over to the merge commit");
+  const request = (): Step | undefined => stepNamed("Request a review of the resolution");
+
+  /**
+   * The push is what makes the new head exist, so it is what names it. Read
+   * from `git rev-parse` in the step that pushed rather than re-read below: the
+   * commit the verdict is posted on has to be the commit that was pushed, and
+   * two reads of the working tree are two chances for that to stop being true.
+   *
+   * `pushed` is the other half, and it is written where `-e` can only mean the
+   * push worked — a branch that did not move is not one to comment about as
+   * though it had.
+   */
+  it("reports the commit it pushed, and that it pushed one", () => {
+    expect(push()?.id).toBe("push");
+    expect(push()?.run ?? "").toContain("pushed=true");
+    expect(push()?.run ?? "").toContain("head=$(git rev-parse HEAD)");
+  });
+
+  it("copies the old head's verdict on to the commit it pushed", () => {
+    expect(copy()?.env?.["OLD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(copy()?.env?.["NEW_SHA"]).toBe("${{ steps.push.outputs.head }}");
+    expect(copy()?.run ?? "").toContain("commits/${OLD_SHA}/statuses");
+    expect(copy()?.run ?? "").toContain("/statuses/${NEW_SHA}");
+  });
+
+  /**
+   * Copied, never parsed. The state, the line a human acts on and the link are
+   * the review's own words about a tree this merge did not change; deriving any
+   * of them here would be a second copy of the table `shared/review-output.ts`
+   * holds — in YAML, where nothing can unit-test it — and one that is asked to
+   * say something about a commit no review has read.
+   */
+  it("copies what the verdict says rather than deriving a second one", () => {
+    const run = copy()?.run ?? "";
+
+    for (const field of [".state", ".description", ".target_url"]) expect(run).toContain(field);
+  });
+
+  /**
+   * And copies only the loop's own. A status is a thing any token holding
+   * `statuses: write` can post under any context it likes, so the creator is
+   * what stops a refresh laundering somebody else's approval on to a
+   * commit — the same two conditions `verdictOn` selects on, because this writes
+   * what that reads.
+   */
+  it("copies only a verdict this loop posted, under the context it posts under", () => {
+    expect(copy()?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
+    expect(isWorkflowBot(copy()?.env?.["LOOP_ACCOUNT"])).toBe(true);
+    expect(copy()?.run ?? "").toContain("env.VERDICT_CONTEXT");
+    expect(copy()?.run ?? "").toContain("env.LOOP_ACCOUNT");
+  });
+
+  /**
+   * Posted under the job's own `GITHUB_TOKEN` rather than the PAT the push
+   * prefers, and that is the whole of why the copy is worth making: a status
+   * created by anything else is one `verdictOn` does not count, so the carried
+   * verdict would be invisible to the round that reads it next.
+   */
+  it("posts the copy as the account that round detection reads", () => {
+    expect(copy()?.env?.["GH_TOKEN"]).toBeUndefined();
+  });
+
+  /**
+   * Nothing to copy is not a failure: a pull request nobody has reviewed yet
+   * refreshes like any other, and the honest answer for its new head is the
+   * absence of a verdict. Neither is a copy that could not be posted — the
+   * merge has already landed and been pushed, so failing here would mark the
+   * pull request blocked and tell a human the branch was left untouched.
+   */
+  it("posts nothing when there is nothing to carry, and never fails the run", () => {
+    const run = copy()?.run ?? "";
+
+    expect(run).toContain("set -uo pipefail");
+    expect(run).toContain('if [ -z "$verdict" ]');
+    expect(run).toContain("exit 0");
+    expect(run).toContain("::warning::");
+    expect(run).not.toContain("|| true");
+  });
+
+  /**
+   * And a read that *failed* is not a commit with no verdict on it (#105).
+   * Collapsed into one answer only the second is ever reported: a caller
+   * predating the `statuses: write` grant gets `statuses: none`, so on a
+   * private repository this `GET` 403s — and the warning naming the grant is
+   * on the *write* below, which is never reached. The step would log "nothing
+   * to carry over" and exit 0, and every refresh would drop the verdict with
+   * no signal anywhere. It is the distinction `verdictOn` keeps as `undefined`
+   * against `false`, and the CI word keeps as `unknown` against `red`.
+   */
+  it("says so when the statuses could not be read, rather than reading that as none", () => {
+    const run = copy()?.run ?? "";
+    const read = run.slice(0, run.indexOf('if [ -z "$verdict" ]'));
+
+    // Its own arm, gated on the read rather than on what the read produced.
+    expect(read).toContain('if ! statuses=$(gh api');
+    // With a warning of its own — the one below is on the write, so a step
+    // that gave up here would reach no warning at all.
+    expect(read).toContain("::warning::");
+    // And what `gh` said, which is what tells a 403 from an outage: the same
+    // pair the review's CI arms use.
+    expect(read).toContain('2>"$err"');
+    expect(read).toContain('cat "$err"');
+    // Still without failing the run: the merge is pushed by now.
+    expect(read).toContain("exit 0");
+  });
+
+  it("asks for a review of the resolution it wrote", () => {
+    expect(request()?.run ?? "").toContain('--add-label "agent:review"');
+  });
+
+  /**
+   * The two are opposite arms of the same merge, and the gates are what keep
+   * them that way. A copy on the conflicts path is a verdict about code an
+   * agent wrote unread; a request on the clean path is a review round nothing
+   * happened to justify, and one that would post a fresh verdict over the
+   * carried one.
+   */
+  it("never does both: the copy is the clean path, the request the conflicts one", () => {
+    expect(copy()?.if).toBe("steps.merge.outputs.status == 'clean' && success()");
+    expect(request()?.if).toBe("steps.merge.outputs.status == 'conflicts' && success()");
+  });
+
+  /**
+   * Both act on what the push left behind, and the request goes last of the
+   * success arms — the review reads the pull request, so a round started before
+   * this run's own comment is posted is a round reading the state before it.
+   */
+  it("acts only after the push, and asks last", () => {
+    const names = stepsOf(UPDATE).map((s) => s.name ?? "");
+
+    expect(names.indexOf(copy()?.name ?? "")).toBeGreaterThan(names.indexOf("Push branch"));
+    for (const earlier of ["Push branch", "Comment on the PR"]) {
+      expect(names.indexOf(request()?.name ?? "")).toBeGreaterThan(names.indexOf(earlier));
+    }
+  });
+
+  /**
+   * The same PAT requirement every label this loop adds carries: one added with
+   * `GITHUB_TOKEN` triggers nothing, so the pull request would carry
+   * `agent:review` and simply sit there.
+   */
+  it("says on the pull request, not only in the log, that no review will start", () => {
+    const run = request()?.run ?? "";
+
+    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(request()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(run).toContain("::warning::");
+    // What is unreviewed here is a conflict resolution an agent wrote, which
+    // is the one thing this loop produces that no review has seen (#105).
+    expect(run.slice(run.indexOf('if [ "$HAS_PAT" != "true" ]'))).toContain("gh pr comment");
+  });
+
+  /**
+   * …and fails the run when the add itself fails, naming the way out. Unlike
+   * the copy above, silence here leaves a resolution nobody reviews — and the
+   * failure comment's own remedy is the wrong one, since re-adding
+   * `agent:update-branch` finds a branch already merged and does nothing.
+   */
+  it("fails with a reason a human can act on rather than swallowing the add", () => {
+    const run = request()?.run ?? "";
+
+    expect(run).toContain("set -euo pipefail");
+    expect(run).toContain("failure_reason.txt");
+    expect(run).toContain("exit 1");
+    expect(run).not.toContain("|| true");
+  });
+
+  /**
+   * A failure after the push is now a real case rather than a corner of one, so
+   * the comment that reports it stops asserting the opposite. "The branch was
+   * left untouched" is true of everything above the push and false of
+   * everything below it, and the remedy it carries — re-add the label — is
+   * inert on a branch that is already merged.
+   */
+  it("does not tell a human the branch is untouched after it pushed", () => {
+    const blocked = stepNamed("Mark blocked on failure");
+
+    expect(blocked?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.pushed }}");
+    expect(blocked?.run ?? "").toContain('"$PUSHED" = "true"');
+  });
+
+  /**
+   * The grant the copy spends, in all three places it has to be: the reusable
+   * half's ceiling, which is the authoritative statement of what this job
+   * costs, and both caller sets, which is where it is actually granted. The
+   * generic check above holds caller and callee equal; this is the pair where
+   * the value is the point, because a status is its own scope and nothing this
+   * job already held covers it.
+   */
+  it("holds the statuses grant in the ceiling and in every caller", () => {
+    const halves = [UPDATE, ...callerWorkflows.filter((file) => targetOf(file) === UPDATE)];
+
+    expect(halves).toHaveLength(3);
+    for (const file of halves) expect(jobOf(file).permissions?.["statuses"]).toBe("write");
   });
 });
 
@@ -1632,6 +2158,11 @@ describe("agent-review tells its caller what it cannot know", () => {
       // that is about the toolchain rather than about the review.
       packages: "read",
       "pull-requests": "write",
+      // The verdict (#96). A commit status is not a pull-request write, so
+      // nothing this job already held covers it — without the grant the review
+      // posts and no verdict appears, which is the one failure here that looks
+      // like the feature simply being off.
+      statuses: "write",
     });
   });
 
@@ -1660,13 +2191,18 @@ describe("agent-review tells its caller what it cannot know", () => {
    * is the one case with no error to read when it is wrong, so it does not get
    * to depend on a heuristic.
    */
-  it("excludes its own check run from the wait, in both filters", () => {
+  it("excludes its own check run from the wait, in every filter", () => {
     const step = waitStep();
 
     expect(step.env?.["SELF_CHECK"]).toBe("${{ inputs.self-check }}");
+    // Counted against the jq passes over the check runs rather than against a
+    // literal: the verdict's word is a third one (#96), and a fourth must fail
+    // here rather than quietly reading this job's own run as evidence.
+    const passes = [...(step.run ?? "").matchAll(/\.\[\]\.check_runs\[\]/g)];
     const filters = [...(step.run ?? "").matchAll(/select\(\.name != env\.SELF_CHECK\)/g)];
 
-    expect(filters).toHaveLength(2);
+    expect(passes.length).toBeGreaterThanOrEqual(3);
+    expect(filters).toHaveLength(passes.length);
   });
 
   /**
@@ -3087,6 +3623,95 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
 
     expect(shared.length).toBeGreaterThan(0);
     for (const name of shared) expect(triage.get(name)).toBe(adopting.get(name));
+  });
+});
+
+/**
+ * The verdict is machine-readable so a maintainer does not have to read the
+ * review — which leaves exactly one thing that has to be written in prose:
+ * **what they do about it.** That is the adoption doc's, and it is the copy
+ * with no mechanism behind it. A `state` that changed, a description reworded,
+ * a fourth state added: the derivation is unit-tested and the doc is not, so
+ * the doc is where the loop and what an adopter was told it does come apart.
+ *
+ * Nothing here checks that the section reads well. What it checks is that the
+ * section is about the verdicts the code actually posts — the names, the lines
+ * GitHub shows and the states those lines arrive under — so a reader acting on
+ * it is acting on this release rather than on the one it was written against.
+ *
+ * And that the section stays *documentation*. Making `agent-review` a required
+ * check is a decision with a repository-wide cost — a verdict that is ever
+ * wrong blocks every merge, including the pull requests this loop never
+ * reviewed — so it is described for an adopter to take when they trust the
+ * verdicts, and nothing here takes it for them.
+ */
+describe("the adoption doc says what to do with each verdict", () => {
+  const ADOPTING = path.join("docs", "ADOPTING.md");
+
+  /** The section, by what its heading is about rather than by its number. */
+  const section = (): string =>
+    fs
+      .readFileSync(ADOPTING, "utf8")
+      .split(/^(?=## )/m)
+      .find((s) => /^## .*verdict/i.test(s.split("\n")[0] ?? "")) ?? "";
+
+  it("names every verdict, with the line it posts and the state it posts under", () => {
+    expect(section(), "docs/ADOPTING.md needs a section whose heading names the verdict").not.toBe(
+      "",
+    );
+    expect(section()).toContain(`\`${VERDICT_CONTEXT}\``);
+
+    for (const row of Object.values(VERDICTS)) {
+      // The heading rather than the key: the heading is what an adopter sees on
+      // their own pull requests, and the key is the machine-readable half only
+      // `verdict.json` carries. Four rows share three headings, and the
+      // descriptions below are what tell the two that share one apart here.
+      expect(section()).toContain(row.heading);
+      // The description verbatim, because it is what GitHub shows beside the
+      // status: a paraphrase here is an adopter told to do something other
+      // than what their own pull requests will tell them.
+      expect(section()).toContain(row.description);
+      expect(section()).toContain(`\`${row.state}\``);
+    }
+  });
+
+  /**
+   * The inbox pair, derived from the states rather than listed. `status:` is a
+   * search over the head commit's combined state, so one search per state a
+   * verdict can post is what makes the pair exhaustive — a fourth state, or a
+   * verdict moved from `failure` to `pending`, leaves open pull requests in
+   * neither search and fails here instead.
+   */
+  it("gives a search per state a verdict posts, so no open pull request is in neither", () => {
+    for (const state of new Set(Object.values(VERDICTS).map((row) => row.state))) {
+      expect(section()).toContain(`is:pr is:open status:${state}`);
+    }
+  });
+
+  /**
+   * Written where the adopter decides, and nowhere else. Branch protection is
+   * repository configuration a caller could reach — `init` runs in their
+   * checkout and the loop holds a token — and the point of documenting it is
+   * that it is theirs to switch on after the verdicts have earned it.
+   */
+  it("documents the required check without anything here enabling one", () => {
+    expect(section()).toMatch(/required status check/i);
+
+    const SKIPPED = new Set(["node_modules", "dist", "output", ".git", "tests"]);
+    const PROTECTION = /required_status_checks|branches\/[^\s"'`]*\/protection|\/rulesets\b/i;
+
+    const sourceUnder = (dir: string): readonly string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const rel = dir === "." ? entry.name : `${dir}/${entry.name}`;
+        if (entry.isDirectory()) return SKIPPED.has(entry.name) ? [] : sourceUnder(rel);
+        return /\.(ts|yml|yaml)$/.test(entry.name) ? [rel] : [];
+      });
+
+    const offenders = sourceUnder(".").filter((file) =>
+      PROTECTION.test(fs.readFileSync(file, "utf8")),
+    );
+
+    expect(offenders).toEqual([]);
   });
 });
 

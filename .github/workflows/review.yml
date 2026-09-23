@@ -121,6 +121,14 @@ jobs:
       # bound, it grants nothing without the caller's own `packages: read`.
       packages: read
       pull-requests: write
+      # The verdict, posted as a commit status on the reviewed head (#96). A
+      # status is not a pull-request write — it is its own scope — so nothing
+      # already here covers it, and the caller has to grant it too. Without it
+      # the review posts and no verdict appears, which is the one failure in
+      # this job that looks like the feature simply being switched off; the
+      # steps warn rather than failing for that reason, and `setup/doctor.ts`
+      # names the grant where an adopter is looking for it.
+      statuses: write
 
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -317,6 +325,11 @@ jobs:
           # id is not a regex, and a `.` in one would quietly match a
           # neighbouring check too.
           SELF_CHECK: ${{ inputs.self-check }}
+          # The verdict's own context, excluded from the commit statuses this
+          # step reduces to a word — see the arm that reads them. Spelled out
+          # here rather than read from the runner: this step runs long before
+          # the runner does, and a test holds the literal to `VERDICT_CONTEXT`.
+          VERDICT_CONTEXT: agent-review
           WAIT_SECONDS: "900"
         run: |
           set -uo pipefail
@@ -448,6 +461,87 @@ jobs:
             fi
           fi
 
+          # The same check runs again, as **one word** this time: the CI half of
+          # the verdict the runner derives (#96).
+          #
+          # Separate from the evidence above on purpose. That file is prose for
+          # the agent — notes, failure logs, whatever the listing managed — and
+          # a derivation that parsed it would be a second description of a
+          # format written three lines up, drifting from it on the release that
+          # edits either. This reads `.conclusion` from the API instead, with
+          # the same two exclusions: a queued sibling agent job is not a red
+          # check, and this job's own run is not evidence about the diff.
+          #
+          # Three values, and `unknown` is not folded into `red`: a review that
+          # could not see the checks has not seen a failure, it has seen
+          # nothing. Both send a finding-free review to a human — the
+          # derivation reads anything but `green` that way — and they say
+          # different things about why. A step that dies before writing the
+          # file leaves no file at all, which the runner reads as `unknown`
+          # too.
+          #
+          # A check that has not *passed* is not green, so a still-pending one
+          # (the timeout arm above) counts with the failures rather than being
+          # waited for twice. A commit with no other checks at all is green:
+          # there is nothing failing, which is the honest reading for an
+          # adopter whose repository runs none.
+          #
+          # `if !` rather than `|| { … }` on the same grounds as the arms above:
+          # under `bash -e` a test as the last command of the arm ends the step.
+          : > "$err"
+          if ! checks=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
+            | jq -r "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | .conclusion // .status] | if any(. != \"success\" and . != \"neutral\" and . != \"skipped\") then \"red\" else \"green\" end" \
+            2>>"$err"); then
+            checks=unknown
+            echo "::warning::Could not decide whether this commit's check runs are green, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
+            if [ -s "$err" ]; then
+              cat "$err"
+            fi
+          fi
+
+          # And the **other** CI surface, which check runs are not (#105). A
+          # repository whose CI reports through the commit-status API — most
+          # things outside Actions, and every `create-status` integration — has
+          # no check run to read at all, so a derivation over check runs alone
+          # calls that commit green and can recommend approving a red one.
+          #
+          # `agent-review` is excluded by context, and that exclusion is the
+          # whole reason this can be read at all: it is the context this very
+          # job posts the verdict under, so counting it would make a `failure`
+          # verdict on the previous round part of the evidence for the next one
+          # — and every "changes recommended" would derive "needs a closer look"
+          # one round later, by reading its own answer back.
+          #
+          # `pending` counts with the failures for the same reason a queued
+          # check run does: a status that has not passed has not passed, and
+          # this step has already spent its wait.
+          #
+          # The combined endpoint rather than the per-post list, because it
+          # returns the latest status per context — the list returns one entry
+          # per *post*, and a context that went `pending → success` would be
+          # read as both.
+          : > "$err"
+          if ! commit_statuses=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>"$err" \
+            | jq -r "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | .state] | if any(. == \"failure\" or . == \"error\" or . == \"pending\") then \"red\" else \"green\" end" \
+            2>>"$err"); then
+            commit_statuses=unknown
+            echo "::warning::Could not read this commit's statuses, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
+            if [ -s "$err" ]; then
+              cat "$err"
+            fi
+          fi
+
+          # One word out of two, and `red` beats `unknown`: a failure that was
+          # seen is more than the other half failing to be read, and the two
+          # halves fail independently. `green` needs both to have answered it.
+          case "${checks}/${commit_statuses}" in
+            red/* | */red) ci_result=red ;;
+            unknown/* | */unknown) ci_result=unknown ;;
+            *) ci_result=green ;;
+          esac
+          echo "$ci_result" > "${RUNNER_TEMP}/ci_result.txt"
+          echo "Checks on this commit are: ${ci_result} (check runs ${checks}, commit statuses ${commit_statuses})."
+
           # Tail the failing steps so the agent sees *what* failed, not merely
           # that something did. Capped so a noisy failure cannot swamp the prompt.
           #
@@ -553,6 +647,10 @@ jobs:
           AGENT_MODEL_REVIEW: ${{ vars.AGENT_MODEL_REVIEW }}
           OUTPUT_DIR: ${{ runner.temp }}
           CI_STATUS_FILE: ${{ runner.temp }}/ci_status.md
+          # The evidence and the fact are two files, not one. The first is what
+          # the agent reads; the second is what the verdict is derived from, and
+          # keeping them apart is what stops the derivation reading prose.
+          CI_RESULT_FILE: ${{ runner.temp }}/ci_result.txt
         # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
         # whole point. `npx pkg@version` reuses a package already present in the
         # working directory when it satisfies the spec — and in the repository
@@ -567,11 +665,58 @@ jobs:
         # process `cwd`: the runner still does its git work in the checkout.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.2.0 -- agent-workflows review
 
+      # The `id:` and the captured URL are the verdict's (#96): a commit status
+      # carries one link, and the only place the posted review's own URL exists
+      # is the response to this POST. `--jq` rather than a second lookup — the
+      # newest review on the pull request is not reliably this one.
       - name: Post PR review
+        id: review
         if: steps.state.outputs.proceed == 'true' && success()
         env:
           PAYLOAD: ${{ runner.temp }}/review_payload.json
-        run: gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" --input "$PAYLOAD"
+        run: |
+          url=$(gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" --input "$PAYLOAD" --jq .html_url)
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+
+      # The verdict: what a maintainer does next, on the commit it is about.
+      #
+      # A commit status rather than a comment or a label, for the one property
+      # neither of those has — it is attached to a **commit**. A new commit
+      # carries no verdict until one is posted for it, so a stale "ready to
+      # merge" cannot survive a push, and the status history is the only record
+      # of what earlier rounds said. One context, so a later review of the same
+      # commit replaces its own verdict and nothing else.
+      #
+      # The context, the state and the line all come out of `verdict.json`,
+      # which the runner wrote from a derivation that is unit-tested. Deriving
+      # any of them here would be a second copy of that table, in YAML, where
+      # nothing can test it — and the line is the whole feature: it is what
+      # makes the outcome actionable without reading the review.
+      #
+      # Never fails the run, on the same grounds as the marker step above: the
+      # likeliest cause is an adopter whose caller predates `statuses: write`,
+      # and a posted review is worth more than its verdict. A warning says so
+      # where `|| true` would leave a loop posting no verdicts and looking
+      # healthy.
+      - name: Post the verdict as a commit status
+        if: steps.state.outputs.proceed == 'true' && success()
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEW_URL: ${{ steps.review.outputs.url }}
+        run: |
+          context=$(jq -r .context "${RUNNER_TEMP}/verdict.json")
+          state=$(jq -r .state "${RUNNER_TEMP}/verdict.json")
+          description=$(jq -r .description "${RUNNER_TEMP}/verdict.json")
+          args=(--method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}"
+                -f "context=${context}" -f "state=${state}" -f "description=${description}")
+          # `if`, not `[ -n … ] && …`: under `bash -e` an unset URL would end
+          # the step here — with the review posted and no verdict on it, which
+          # is the state this whole step exists to make impossible.
+          if [ -n "$REVIEW_URL" ]; then
+            args+=(-f "target_url=${REVIEW_URL}")
+          fi
+          gh api "${args[@]}" \
+            || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. This needs \`statuses: write\` in the caller — see jeffwlawson/agent-workflows docs/ADOPTING.md §4."
 
       # The marker for the filing half (#47): this PR's review recorded
       # out-of-scope findings, and a human still has a say before they become
@@ -656,6 +801,30 @@ jobs:
           printf '`agent:review` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-add `agent:review` to retry.\n' "$reason" "$RUN_URL" > "$body_file"
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
           gh pr comment "$PR_NUMBER" --body-file "$body_file"
+
+      # And a run that failed says so in the same place, rather than leaving the
+      # last verdict standing. Silence is the dangerous answer here: a status is
+      # per commit and per context, so a review that died half way reads from
+      # the outside exactly like one that recommended approval — right up until
+      # someone merges on it.
+      #
+      # Last of the failure arms, so every step above it is covered — including
+      # the one that posts the verdict itself, whose own failure would otherwise
+      # be the one that leaves no status at all.
+      #
+      # The one step that spells the context out. A run that failed wrote no
+      # `verdict.json` to read it from, so this literal is held to
+      # `VERDICT_CONTEXT` by a test instead.
+      - name: Post an error verdict
+        if: steps.state.outputs.proceed == 'true' && failure()
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api --method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}" \
+            -f "context=agent-review" -f "state=error" -f "target_url=${RUN_URL}" \
+            -f "description=The review run failed, so there is no verdict. See the run, then re-add agent:review to retry." \
+            || echo "::warning::Could not post the failed \`agent-review\` verdict for ${HEAD_SHA}. The failure comment on the pull request is the only record of this run."
 
       - name: Always remove in-progress
         if: always() && steps.state.outputs.proceed == 'true'

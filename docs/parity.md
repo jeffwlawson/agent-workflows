@@ -556,9 +556,10 @@ expensive to rediscover.
 
   A second bound now sits under the first, and it is what makes the leg safe to automate rather
   than merely acyclic. The review a fix asks for is by construction a **round 2** (an earlier
-  verdict stands, and every commit since is the loop's own — `shared/review-round.ts`), and a
-  round-2 review can never produce "ready after a fix": findings that survived a fix round derive
-  "needs you" instead (#96 decision 5, enforced in `deriveVerdict`, not in the prompt). So the leg
+  verdict stands, every commit since is the loop's own, and at least one of them is a non-merge
+  commit — `shared/review-round.ts`), and a round-2 review can never produce "ready after a fix":
+  findings that survived a fix round derive "needs you" instead (#96 decision 5, enforced in
+  `deriveVerdict`, not in the prompt). So the leg
   cannot be walked twice off one human label — the second round's only outcomes are "ready to
   merge" and a human.
 
@@ -568,9 +569,14 @@ expensive to rediscover.
 
   **Since #99 `update-branch` walks the same leg**, on the half of its work an agent wrote: a
   conflict resolution adds `agent:review` and a clean merge does not, because a clean merge carries
-  the last verdict forward instead (#96, decision 6). Both bounds above hold unchanged — one hop to
-  a review that adds no trigger label, and a round 2 that cannot answer "ready after a fix". What
-  is worth saying twice is which arrow this is *not*: no workflow in the loop adds `agent:fix`.
+  the last verdict forward instead (#96, decision 6). The first bound is what holds it — one hop to
+  a review that adds no trigger label, and review still adds none — and the second one does not
+  apply, because the review a resolution asks for is a **round 1**: round 2 needs a non-merge loop
+  commit since the verdict, and a resolution leaves only a merge commit. That is the reading rather
+  than a gap in it (#105). The findings of the verdict a conflict interrupted have never been
+  attempted, so counting the merge as a fix round would escalate them to "needs you" — spending a
+  human on a base branch moving, which is the one thing on this leg nobody chose. What is worth
+  saying twice is which arrow this is *not*: no workflow in the loop adds `agent:fix`.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
   is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this.
 

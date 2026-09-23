@@ -37,8 +37,21 @@ const HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const MIDDLE = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const FIRST = "cccccccccccccccccccccccccccccccccccccccc";
 
+/** An ordinary commit: one parent, which is what a fix round pushes. */
 const commit = (sha: string, author = LOOP_COMMIT_AUTHOR): unknown => ({
   sha,
+  parents: [{ sha: "parent" }],
+  commit: { author: { name: author } },
+});
+
+/**
+ * And the other kind this loop makes: the merge `update-branch` commits when it
+ * resolves conflicts. Two parents, the same author, and *not* an attempt at
+ * anybody's findings — which is the whole of why the round rule now asks.
+ */
+const merge = (sha: string, author = LOOP_COMMIT_AUTHOR): unknown => ({
+  sha,
+  parents: [{ sha: "parent" }, { sha: "base" }],
   commit: { author: { name: author } },
 });
 
@@ -52,9 +65,28 @@ const verdict = (state = "failure"): unknown => ({
 interface Repo {
   /** Pages exactly as `gh api --paginate --slurp` returns them: an array of arrays. */
   readonly commits: unknown;
-  /** Statuses per commit SHA; a thunk may throw the way a non-zero exit does. */
+  /**
+   * Statuses per commit SHA, also as pages — this endpoint is paginated too,
+   * and returns one entry per status *post* rather than one per context, so a
+   * verdict on an ordinary repository is not reliably on page 1. A thunk, so a
+   * scenario can throw the way a non-zero exit does.
+   */
   readonly statuses: Record<string, () => string>;
 }
+
+/**
+ * What a call that asked for **one** page gets back, which is what makes the
+ * pagination tests below mean anything: `--paginate --slurp` returns every page
+ * wrapped in an outer array, and a call without it returns the first page's
+ * entries and nothing else. A stub that answered both the same way would pass
+ * whether or not the code paginates.
+ */
+const paged = (pages: string, args: readonly string[]): string => {
+  if (args.includes("--paginate")) return pages;
+  const first = (JSON.parse(pages) as unknown[])[0];
+
+  return JSON.stringify(first ?? []);
+};
 
 const ghAnswers = (repo: Repo): void => {
   spawned.mockImplementation(((file: string, args: readonly string[]) => {
@@ -62,19 +94,28 @@ const ghAnswers = (repo: Repo): void => {
     const endpoint = args[1] ?? "";
     if (endpoint.includes("/pulls/")) {
       if (typeof repo.commits === "string") throw new Error(repo.commits);
-      return JSON.stringify(repo.commits);
+      return paged(JSON.stringify(repo.commits), args);
     }
     const sha = endpoint.split("/").pop() === "statuses" ? (endpoint.split("/").at(-2) ?? "") : "";
     const answer = repo.statuses[sha];
     if (!answer) throw new Error(`unrecorded gh call: ${args.join(" ")}`);
-    return answer();
+    return paged(answer(), args);
   }) as never);
 };
 
-/** Every commit answered with no statuses at all, so a test only lists the ones it cares about. */
-const statuses = (over: Record<string, unknown[]> = {}): Record<string, () => string> =>
+/**
+ * Every commit answered with no statuses at all, so a test only lists the ones
+ * it cares about. A plain list becomes a single page; a test that cares where
+ * the verdict sits passes the pages itself.
+ */
+const statuses = (over: Record<string, unknown[] | unknown[][]> = {}): Record<string, () => string> =>
   Object.fromEntries(
-    [HEAD, MIDDLE, FIRST].map((sha) => [sha, () => JSON.stringify(over[sha] ?? [])]),
+    [HEAD, MIDDLE, FIRST].map((sha) => {
+      const recorded = over[sha] ?? [];
+      const pages = recorded.every((entry) => Array.isArray(entry)) ? recorded : [recorded];
+
+      return [sha, () => JSON.stringify(pages)];
+    }),
   );
 
 const PREVIOUS = process.env["GH_REPO"];
@@ -135,7 +176,7 @@ describe("detectReviewRound", () => {
       statuses: {
         ...statuses(),
         [FIRST]: () =>
-          JSON.stringify([{ context: VERDICT_CONTEXT, state: "success", creator: { login: "someone-else" } }]),
+          JSON.stringify([[{ context: VERDICT_CONTEXT, state: "success", creator: { login: "someone-else" } }]]),
       },
     });
 
@@ -170,19 +211,46 @@ describe("detectReviewRound", () => {
   });
 
   /**
-   * The head's own verdict counts, with nothing after it to test. Re-reviewing
-   * a commit that has already been reviewed is a second pass over it however it
-   * was asked for — a human re-adding `agent:review` without pushing — and
-   * #96's decision 4 is written in exactly those terms: a verdict on *a commit
-   * of this pull request*, and every commit after it the loop's. Pinned here
-   * because it is the one case the wording admits and nobody would think to
-   * ask about, and because it fails in the safe direction: the cost is a "read
-   * the review" that could have been "add agent:fix".
+   * The head's own verdict, with nothing pushed after it: a human re-adding
+   * `agent:review` on a commit that already carries one. A round **1**, because
+   * the third condition has nothing to find — no fix has been attempted, so
+   * there is nothing for a verification pass to verify.
+   *
+   * Pinned because it reads the opposite way to the rest of the file and the
+   * reason is worth keeping: reaching this at all takes a human adding the
+   * label by hand, and every automatic leg into review runs off a push. The
+   * cycle the round rule bounds cannot be opened from here.
    */
-  it("is round 2 when the commit being reviewed already carries a verdict", () => {
+  it("is round 1 when the commit being reviewed carries a verdict and nothing was pushed after", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(HEAD)]],
       statuses: statuses({ [HEAD]: [verdict()] }),
+    });
+
+    expect(detectReviewRound("12")).toEqual({ round: 1 });
+  });
+
+  /**
+   * A conflict resolution is a **merge** commit under the loop's own identity,
+   * so without the third condition it would make the next review a round 2 —
+   * and a pull request sitting at "ready after a fix" that then hit conflicts
+   * would have its never-attempted findings escalated to "needs you" by nothing
+   * more than the base branch moving (#105).
+   */
+  it("is round 1 when the only loop commit since the verdict is a merge", () => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(MIDDLE), merge(HEAD)]],
+      statuses: statuses({ [MIDDLE]: [verdict()] }),
+    });
+
+    expect(detectReviewRound("12")).toEqual({ round: 1 });
+  });
+
+  /** And a fix that was attempted stays a round 2, merge or no merge after it. */
+  it("is round 2 when a fix commit and a merge have both landed since the verdict", () => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(MIDDLE), merge(HEAD)]],
+      statuses: statuses({ [FIRST]: [verdict()] }),
     });
 
     expect(detectReviewRound("12")).toEqual({ round: 2 });
@@ -192,6 +260,32 @@ describe("detectReviewRound", () => {
     ghAnswers({
       commits: [[commit(FIRST)], [commit(MIDDLE), commit(HEAD)]],
       statuses: statuses({ [MIDDLE]: [verdict()] }),
+    });
+
+    expect(detectReviewRound("12")).toEqual({ round: 2 });
+  });
+
+  /**
+   * And every page of the *statuses*, which is the endpoint that pages fastest:
+   * it returns one entry per status post rather than one per context, so an
+   * adopter's external CI spends two of the thirty on every
+   * `pending → success`. Unpaginated this answered `false` rather than
+   * `undefined` — a second round read as a first, the one direction this file
+   * must never fail in.
+   */
+  it("finds a verdict that has fallen off the first page of statuses", () => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
+      statuses: statuses({
+        [MIDDLE]: [
+          Array.from({ length: 30 }, () => ({
+            context: "ci/deploy",
+            state: "success",
+            creator: { login: "deploy-bot[bot]" },
+          })),
+          [verdict()],
+        ],
+      }),
     });
 
     expect(detectReviewRound("12")).toEqual({ round: 2 });
@@ -230,7 +324,25 @@ describe("detectReviewRound", () => {
      * test, which is the one test missing data can only weaken.
      */
     it("when a commit in the listing has no SHA to look up", () => {
-      ghAnswers({ commits: [[{ commit: { author: { name: LOOP_COMMIT_AUTHOR } } }]], statuses: statuses() });
+      ghAnswers({
+        commits: [[{ parents: [], commit: { author: { name: LOOP_COMMIT_AUTHOR } } }]],
+        statuses: statuses(),
+      });
+
+      expect(detectReviewRound("12").round).toBe(2);
+    });
+
+    /**
+     * And a commit with no `parents` goes the same way, for the same reason:
+     * guessing at it would decide "was anything attempted since the verdict"
+     * from data that was not there, and the two guesses are a full review
+     * nobody needed or a verification pass over an untouched branch.
+     */
+    it("when a commit in the listing does not say how many parents it has", () => {
+      ghAnswers({
+        commits: [[{ sha: HEAD, commit: { author: { name: LOOP_COMMIT_AUTHOR } } }]],
+        statuses: statuses(),
+      });
 
       expect(detectReviewRound("12").round).toBe(2);
     });

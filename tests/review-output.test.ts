@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   capFollowUps,
+  countFixBeforeMerge,
   deriveVerdict,
   filterInlineComments,
   FOLLOW_UPS_MARKER,
@@ -10,6 +11,7 @@ import {
   MAX_FOLLOW_UPS,
   parseFollowUpsBlock,
   renderFollowUpsBlock,
+  renderReviewSummary,
   reviewOutputSchema,
   VERDICT_CONTEXT,
   VERDICTS,
@@ -449,6 +451,63 @@ describe("deriveVerdict", () => {
     ).toBe("ready after a fix");
   });
 
+  /**
+   * The list is a restatement of findings the inline comments already carry, so
+   * either of the two can be the one the model forgot — and only one of the two
+   * mistakes has a consequence. A finding labelled **Fix before merge.** in a
+   * comment but left off the list derives *ready to merge*, which puts the
+   * unsafe answer on the one signal meant to be acted on without reading
+   * (#105). Counted as the larger of the two, so a review that did as it was
+   * asked is not double-counted.
+   */
+  it("counts a labelled inline comment the list left out", () => {
+    const labelled = output({
+      inlineComments: [comment({ body: "**Fix before merge.** the guard runs after the return" })],
+    });
+
+    expect(deriveVerdict(labelled, { ci: "green", round: 1 }).verdict).toBe("ready after a fix");
+    expect(deriveVerdict(labelled, { ci: "green", round: 2 }).verdict).toBe("needs you");
+  });
+
+  /**
+   * Counted over the comments **as produced**. `filterInlineComments` drops an
+   * anchor that is not in the diff, and a finding whose line the model invented
+   * is still a finding — dropping it from the count as well as from the review
+   * is how a review that found something ends up saying nothing is wrong.
+   * Nothing here filters, which is what makes that true: the derivation is
+   * handed the model's own output.
+   */
+  it("reads the label past whatever emphasis it was written in", () => {
+    for (const body of ["Fix before merge. x", "__Fix before merge__ x", "  **fix before merge:** x"]) {
+      expect(
+        deriveVerdict(output({ inlineComments: [comment({ body })] }), { ci: "green", round: 1 })
+          .verdict,
+        body,
+      ).toBe("ready after a fix");
+    }
+  });
+
+  /** And an ordinary comment is not a finding: the label is a fixed token, read as one. */
+  it("does not count a comment that merely mentions fixing something", () => {
+    const chatty = output({
+      inlineComments: [comment({ body: "Worth a look before merge — fix before merge is the label." })],
+    });
+
+    expect(deriveVerdict(chatty, { ci: "green", round: 1 }).verdict).toBe("ready to merge");
+  });
+
+  it("counts one finding once when it is recorded in both places", () => {
+    const both = output({
+      fixBeforeMerge: ["the guard runs after the return"],
+      inlineComments: [comment({ body: "**Fix before merge.** the guard runs after the return" })],
+    });
+
+    // The larger of the two, not the sum — and either way a fix is a fix, so
+    // what this pins is the arithmetic rather than the verdict.
+    expect(deriveVerdict(both, { ci: "green", round: 1 }).verdict).toBe("ready after a fix");
+    expect(countFixBeforeMerge(both)).toBe(1);
+  });
+
   it("prefers needs you over a fix-before-merge finding", () => {
     expect(
       deriveVerdict(output({ fixBeforeMerge: ["a"], needsYou: "the wrong thing was built" }), {
@@ -529,6 +588,79 @@ describe("the verdict's commit status", () => {
     for (const row of Object.values(VERDICTS)) {
       expect(row.description.length, row.verdict).toBeLessThanOrEqual(140);
     }
+  });
+});
+
+/**
+ * The body a maintainer actually reads, which is where two of the review's own
+ * outputs used to stop existing (#105).
+ *
+ * `needsYou` fed the derivation and was then dropped, so the case the agent
+ * named — *the wrong thing was built*, *the issue itself was wrong* — reached
+ * nobody, while the status line it produced is a fixed sentence that cannot
+ * carry it. And `fixBeforeMerge` was posted nowhere at all: the fix run
+ * resolves every thread it addressed and resolved threads are dropped from the
+ * feedback the next review is handed, so round 2 was verifying the last round's
+ * findings against summary prose.
+ */
+describe("the posted review body", () => {
+  const parts = {
+    verdict: "Add agent:fix. The fixes are clear, so no need to read them first.",
+    fixBeforeMerge: [] as readonly string[],
+    summary: "The change does what the issue asked.",
+  };
+
+  it("opens with the verdict and closes with the summary", () => {
+    const body = renderReviewSummary(parts);
+
+    expect(body.startsWith(parts.verdict)).toBe(true);
+    expect(body.endsWith(parts.summary)).toBe(true);
+  });
+
+  it("names the case when the agent said a fix round cannot settle it", () => {
+    const body = renderReviewSummary({ ...parts, needsYou: "the issue asked for the opposite" });
+
+    expect(body).toContain("the issue asked for the opposite");
+    // Above the summary, because it is why the reader is being asked to read
+    // one: a reason found underneath the evidence is a reason they reach after
+    // deciding they had to.
+    expect(body.indexOf("the issue asked for the opposite")).toBeLessThan(body.indexOf(parts.summary));
+  });
+
+  it("renders each finding as a checklist entry, open rather than collapsed", () => {
+    const body = renderReviewSummary({
+      ...parts,
+      fixBeforeMerge: ["the guard runs after the return", "the new test asserts the old behaviour"],
+    });
+
+    expect(body).toContain("**To fix before merge**");
+    expect(body).toContain("- [ ] the guard runs after the return");
+    expect(body).toContain("- [ ] the new test asserts the old behaviour");
+    expect(body).not.toContain("<details>");
+  });
+
+  /**
+   * A finding the model wrapped over two lines cannot be allowed to break the
+   * list it sits in — the same reason a follow-up title is collapsed.
+   */
+  it("keeps a wrapped finding on one line", () => {
+    const body = renderReviewSummary({ ...parts, fixBeforeMerge: ["the guard runs\n  after the return"] });
+
+    expect(body).toContain("- [ ] the guard runs after the return");
+  });
+
+  it("carries no checklist at all when there is nothing to fix", () => {
+    expect(renderReviewSummary(parts)).not.toContain("To fix before merge");
+  });
+
+  /**
+   * And the round note, which is the one thing in the body that is a fact about
+   * how the run read the repository rather than about the change.
+   */
+  it("says when the round was assumed rather than established", () => {
+    const body = renderReviewSummary({ ...parts, roundNote: "_Reviewed as a second round._" });
+
+    expect(body).toContain("_Reviewed as a second round._");
   });
 });
 

@@ -325,6 +325,11 @@ jobs:
           # id is not a regex, and a `.` in one would quietly match a
           # neighbouring check too.
           SELF_CHECK: ${{ inputs.self-check }}
+          # The verdict's own context, excluded from the commit statuses this
+          # step reduces to a word — see the arm that reads them. Spelled out
+          # here rather than read from the runner: this step runs long before
+          # the runner does, and a test holds the literal to `VERDICT_CONTEXT`.
+          VERDICT_CONTEXT: agent-review
           WAIT_SECONDS: "900"
         run: |
           set -uo pipefail
@@ -484,16 +489,59 @@ jobs:
           # `if !` rather than `|| { … }` on the same grounds as the arms above:
           # under `bash -e` a test as the last command of the arm ends the step.
           : > "$err"
-          if ! gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
+          if ! checks=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
             | jq -r "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | .conclusion // .status] | if any(. != \"success\" and . != \"neutral\" and . != \"skipped\") then \"red\" else \"green\" end" \
-            2>>"$err" > "${RUNNER_TEMP}/ci_result.txt"; then
-            echo unknown > "${RUNNER_TEMP}/ci_result.txt"
-            echo "::warning::Could not decide whether this commit's checks are green, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
+            2>>"$err"); then
+            checks=unknown
+            echo "::warning::Could not decide whether this commit's check runs are green, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
             if [ -s "$err" ]; then
               cat "$err"
             fi
           fi
-          echo "Checks on this commit are: $(cat "${RUNNER_TEMP}/ci_result.txt")"
+
+          # And the **other** CI surface, which check runs are not (#105). A
+          # repository whose CI reports through the commit-status API — most
+          # things outside Actions, and every `create-status` integration — has
+          # no check run to read at all, so a derivation over check runs alone
+          # calls that commit green and can answer "ready to merge" over a red
+          # one.
+          #
+          # `agent-review` is excluded by context, and that exclusion is the
+          # whole reason this can be read at all: it is the context this very
+          # job posts the verdict under, so counting it would make a `failure`
+          # verdict on the previous round part of the evidence for the next one
+          # — and every "ready after a fix" would derive "needs you" one round
+          # later, by reading its own answer back.
+          #
+          # `pending` counts with the failures for the same reason a queued
+          # check run does: a status that has not passed has not passed, and
+          # this step has already spent its wait.
+          #
+          # The combined endpoint rather than the per-post list, because it
+          # returns the latest status per context — the list returns one entry
+          # per *post*, and a context that went `pending → success` would be
+          # read as both.
+          : > "$err"
+          if ! commit_statuses=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>"$err" \
+            | jq -r "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | .state] | if any(. == \"failure\" or . == \"error\" or . == \"pending\") then \"red\" else \"green\" end" \
+            2>>"$err"); then
+            commit_statuses=unknown
+            echo "::warning::Could not read this commit's statuses, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
+            if [ -s "$err" ]; then
+              cat "$err"
+            fi
+          fi
+
+          # One word out of two, and `red` beats `unknown`: a failure that was
+          # seen is more than the other half failing to be read, and the two
+          # halves fail independently. `green` needs both to have answered it.
+          case "${checks}/${commit_statuses}" in
+            red/* | */red) ci_result=red ;;
+            unknown/* | */unknown) ci_result=unknown ;;
+            *) ci_result=green ;;
+          esac
+          echo "$ci_result" > "${RUNNER_TEMP}/ci_result.txt"
+          echo "Checks on this commit are: ${ci_result} (check runs ${checks}, commit statuses ${commit_statuses})."
 
           # Tail the failing steps so the agent sees *what* failed, not merely
           # that something did. Capped so a noisy failure cannot swamp the prompt.

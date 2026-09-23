@@ -29,7 +29,7 @@ export interface ReviewRound {
   readonly unreadable?: string;
 }
 
-/** One commit of the pull request, reduced to the two facts the round turns on. */
+/** One commit of the pull request, reduced to the three facts the round turns on. */
 interface Commit {
   readonly sha: string;
   /**
@@ -38,6 +38,13 @@ interface Commit {
    * is null for exactly the commits this has to recognise.
    */
   readonly author: string;
+  /**
+   * How many parents the commit has, which is the only thing that separates the
+   * two kinds of commit this loop makes. A fix run makes ordinary commits; an
+   * `update-branch` conflict resolution makes a **merge** commit, and a merge
+   * commit is not an attempt at anybody's findings (#105).
+   */
+  readonly parents: number;
 }
 
 const readJson = (text: string): unknown => {
@@ -58,10 +65,11 @@ const readJson = (text: string): unknown => {
  * before the commit being reviewed. The answer would be readable, wrong, and
  * wrong in the direction that calls a second round a first.
  *
- * A commit whose `sha` is missing makes the whole listing unreadable rather
- * than being skipped. Skipping it would drop a commit from the "every commit
- * since" test below, which is the one test that can only be weakened by
- * missing data.
+ * A commit whose `sha` or `parents` is missing makes the whole listing
+ * unreadable rather than being skipped. Skipping it would drop a commit from
+ * the "every commit since" test below, which is the one test that can only be
+ * weakened by missing data; guessing at `parents` would do the same to the
+ * "and one of them was a fix" test beside it.
  */
 const readCommits = (repo: string, prNumber: string): readonly Commit[] | undefined => {
   const pages = readJson(
@@ -71,10 +79,19 @@ const readCommits = (repo: string, prNumber: string): readonly Commit[] | undefi
 
   const commits: Commit[] = [];
   for (const raw of pages.flatMap((page) => (Array.isArray(page) ? (page as unknown[]) : [page]))) {
-    const value = raw as { sha?: unknown; commit?: { author?: { name?: unknown } } };
+    const value = raw as {
+      sha?: unknown;
+      parents?: unknown;
+      commit?: { author?: { name?: unknown } };
+    };
     if (typeof value.sha !== "string" || value.sha === "") return undefined;
+    if (!Array.isArray(value.parents)) return undefined;
     const author = value.commit?.author?.name;
-    commits.push({ sha: value.sha, author: typeof author === "string" ? author : "" });
+    commits.push({
+      sha: value.sha,
+      author: typeof author === "string" ? author : "",
+      parents: value.parents.length,
+    });
   }
   return commits;
 };
@@ -87,22 +104,39 @@ const readCommits = (repo: string, prNumber: string): readonly Commit[] | undefi
  *
  * **The creator**, because a status is a thing any token with `statuses: write`
  * can post under any context it likes. Only one posted by the account this
- * loop's workflows run as counts, so nothing outside the loop can promote a
- * pull request to a second round — and a second round cannot produce "ready
- * after a fix", so a forged one is a way to make a review stricter, not a way
- * to make it pass.
+ * loop's workflows run as counts — which narrows it to *a workflow in this
+ * repository* and no further, because `github-actions[bot]` is the account
+ * every workflow here posts as, not only the loop's. That is enough for the
+ * round question and not enough for a merge gate: a forged verdict can only
+ * promote a pull request to a second round, and a second round cannot produce
+ * "ready after a fix", so it is a way to make a review stricter rather than a
+ * way to make it pass. The merge-gate half of that caveat is `docs/ADOPTING.md`
+ * §3b's.
  *
  * **Not `error`**, because that state is the review saying *there is no
  * verdict*: the run died before it reviewed anything. Counting it would make
  * every retry after a failed run a verification pass over findings that were
  * never posted — which can only end in "needs you", on a pull request nobody
  * has reviewed yet.
+ *
+ * Paginated, and flattened the way `readCommits` flattens its pages. The page
+ * is thirty statuses and this endpoint returns one entry per *post* rather than
+ * one per context, so an adopter's external CI spends two of them on every
+ * `pending → success`: unpaginated, the verdict falls off page 1 on an ordinary
+ * repository and this answers `false` rather than `undefined` — a second round
+ * read as a first, which is the one direction this file must never fail in.
+ * `--slurp` returns the pages, so without the flattening `Array.isArray` would
+ * pass and `.some()` would match nothing, which is the same wrong answer with
+ * the check still in place.
  */
 const verdictOn = (repo: string, sha: string): boolean | undefined => {
-  const parsed = readJson(safeGh(["api", `repos/${repo}/commits/${sha}/statuses`]));
-  if (!Array.isArray(parsed)) return undefined;
+  const pages = readJson(
+    safeGh(["api", `repos/${repo}/commits/${sha}/statuses`, "--paginate", "--slurp"]),
+  );
+  if (!Array.isArray(pages)) return undefined;
 
-  return parsed.some((raw) => {
+  const statuses = pages.flatMap((page) => (Array.isArray(page) ? (page as unknown[]) : [page]));
+  return statuses.some((raw) => {
     const status = raw as { context?: unknown; state?: unknown; creator?: { login?: unknown } };
     const login = status.creator?.login;
     return (
@@ -117,9 +151,10 @@ const verdictOn = (repo: string, sha: string): boolean | undefined => {
  * Which round this review is, from the pull request's commits and the verdicts
  * posted on them (#96, decision 4).
  *
- * **Round 2** is: a verdict this loop posted stands on a commit of this pull
- * request, and every commit made since is the loop's own. That is the shape a
- * fix round leaves behind — review posts a verdict, `agent:fix` pushes, and the
+ * **Round 2** is all three of: a verdict this loop posted stands on a commit of
+ * this pull request, every commit made since is the loop's own, and at least
+ * one of those is a **non-merge** commit. That is the shape a fix round leaves
+ * behind — review posts a verdict, `agent:fix` pushes ordinary commits, and the
  * push asks for this review — and it is the only shape that means "the last
  * review's findings have had their chance to land".
  *
@@ -129,19 +164,29 @@ const verdictOn = (repo: string, sha: string): boolean | undefined => {
  * contains work no review has seen, and a verification pass over an earlier
  * round's findings is the wrong reading of it.
  *
+ * The third condition is what keeps a **conflict resolution** out (#105). An
+ * `update-branch` run commits under the same identity as a fix run, so without
+ * it the review that run asks for would be a round 2 — and a pull request at
+ * "ready after a fix" that then hit conflicts would have its never-attempted
+ * findings escalated to "needs you" by nothing but a merge. `update-branch`
+ * writes merge commits and a fix run writes ordinary ones, and the commits API
+ * gives `parents` for each, so "has anything been *attempted* since the
+ * verdict" is answerable rather than assumed. A conflict-only update is a full
+ * round 1.
+ *
  * Both misclassifications are safe, which is what makes the cheap signal
  * enough. A human commit read as the loop's gets the stricter review; a loop
  * commit read as a human's gets a full one.
  *
- * A verdict on the **head** commit itself counts, with nothing after it to
- * test: re-reviewing a commit that has already been reviewed is a second pass
- * over it however it was asked for, and this is the reading #96's decision 4 is
- * written in ("a commit of this pull request … every commit after it"). The
- * case is a human re-adding `agent:review` without pushing, and taking it as a
- * second round costs them a "read the review" they could have had as "add
- * agent:fix" — the safe direction, and the one the rest of this function fails
- * in. A run that *failed* does not reach here at all: the `error` status it
- * posts is not a verdict, and `verdictOn` says so.
+ * A verdict on the **head** commit itself, with nothing after it, is now a
+ * round 1 rather than a round 2 — the third condition has nothing to find. That
+ * is the case of a human re-adding `agent:review` without pushing, and the
+ * reading is the honest one: no fix has been attempted, so there is nothing for
+ * a verification pass to verify. It cannot re-open the cycle the round rule
+ * bounds, because reaching it at all takes a human adding the label by hand;
+ * every automatic leg into review runs off a push. A run that *failed* does not
+ * reach here at all: the `error` status it posts is not a verdict, and
+ * `verdictOn` says so.
  */
 export const detectReviewRound = (prNumber: string): ReviewRound => {
   const repo = process.env["GH_REPO"] ?? "";
@@ -164,7 +209,9 @@ export const detectReviewRound = (prNumber: string): ReviewRound => {
     if (!reviewed) continue;
 
     const since = commits.slice(i + 1);
-    return { round: since.every((c) => c.author === LOOP_COMMIT_AUTHOR) ? 2 : 1 };
+    const onlyTheLoop = since.every((c) => c.author === LOOP_COMMIT_AUTHOR);
+    const attempted = since.some((c) => c.author === LOOP_COMMIT_AUTHOR && c.parents < 2);
+    return { round: onlyTheLoop && attempted ? 2 : 1 };
   }
 
   return { round: 1 };
@@ -176,9 +223,9 @@ export const describeRound = (detected: ReviewRound): string => {
     return `This is **round 2**, taken as the stricter reading because ${detected.unreadable}.`;
   }
   if (detected.round === 2) {
-    return "This is **round 2**: a verdict from an earlier review of this pull request stands, and every commit made since is the loop's own.";
+    return "This is **round 2**: a verdict from an earlier review of this pull request stands, and a fix round of the loop's own has pushed since.";
   }
-  return "This is **round 1**: no earlier verdict stands on these commits, or a human has pushed since one did.";
+  return "This is **round 1**: no earlier verdict stands on these commits, or nothing has been attempted against one since — a human pushed, or the only commits since are merges.";
 };
 
 /**

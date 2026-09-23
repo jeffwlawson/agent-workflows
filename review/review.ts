@@ -15,9 +15,11 @@ import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   capFollowUps,
+  countFixBeforeMerge,
   deriveVerdict,
   filterInlineComments,
   renderFollowUpsBlock,
+  renderReviewSummary,
   reviewOutputSchema,
   VERDICT_CONTEXT,
   type CiResult,
@@ -153,9 +155,17 @@ try {
   // brief. The agent was told it was a second round; what it cannot say — and
   // what changes how a reader weighs the review — is that the round was the
   // stricter reading rather than a fact about this pull request.
-  const summary = [verdict.description, unreadableRoundNote(round), result.output.summary]
-    .filter((part) => part !== undefined)
-    .join("\n\n");
+  //
+  // What the body is made of, and in what order, is `renderReviewSummary`'s:
+  // it is the part of the review a human acts on, and this file is a script
+  // with no test around it (#105).
+  const summary = renderReviewSummary({
+    verdict: verdict.description,
+    needsYou: result.output.needsYou,
+    roundNote: unreadableRoundNote(round),
+    fixBeforeMerge: result.output.fixBeforeMerge,
+    summary: result.output.summary,
+  });
   const body = `${summary}\n\n${followUpsBlock}`;
 
   writeJson("review_payload.json", {
@@ -202,7 +212,7 @@ try {
 
   console.log("Review complete.");
   console.log(
-    `Verdict: ${verdict.verdict} (${result.output.fixBeforeMerge.length} to fix before merge, checks ${ci}, round ${round.round}).`,
+    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output)} to fix before merge, checks ${ci}, round ${round.round}).`,
   );
   console.log(`Inline comments: ${validComments.length} kept of ${result.output.inlineComments.length} produced.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);

@@ -406,18 +406,34 @@ merge commit it makes, and one that had to resolve conflicts asks for a review o
 instead. What no workflow here does is add `agent:fix`. That label is the human hand in the loop,
 and the table above is where you are asked for it.
 
+A **copied** verdict says what it said before: it is the review's word about the branch work, not a
+claim about the merge commit it now sits on. That commit's own checks have not been read — they had
+not run when the copy was made — so a `success` carried on to a merge commit means "the last review
+of this branch found nothing to fix", and whether the merge itself is green is what the merge box's
+other checks are for.
+
 ### The pull request list as an inbox
 
-`status:` in a GitHub search reads the head commit's combined state, so a saved search per state
-covers every open pull request the loop has ruled on:
+`status:` in a GitHub search reads the head commit's **combined** state, so a saved search per state
+covers the open pull requests the loop has ruled on:
 
-- `is:pr is:open status:success` — ready to merge.
-- `is:pr is:open status:failure` — waiting on a fix, or on you.
+- `is:pr is:open status:failure` — waiting on a fix, or on you. **This is the inbox to work from.**
+- `is:pr is:open status:success` — ready to merge, where it works. See the trap below.
 
-*Combined* means every check on the commit and not only this one. A pull request whose tests are red
-is in the second search whatever its verdict says, and one whose checks are still running is in
-neither. So the pair is a queue rather than a verdict filter — which is the right shape for it
-anyway, since the thing you act on is the line you read when you open one.
+*Combined* means everything on the commit and not only this one — and **check runs count too**, not
+just commit statuses: a pull request with no commit status at all still appears under
+`status:success` and `status:pending` on the strength of its checks. So a pull request whose tests
+are red is in the failure search whatever its verdict says, and one whose checks are still running
+is in neither. The pair is a queue rather than a verdict filter, which is the right shape for it
+anyway: the thing you act on is the line you read when you open one.
+
+**The success search has a trap, and it is an installed app rather than anything you configured.** A
+GitHub App that creates a check *suite* on every commit and never runs a check inside it leaves that
+commit `pending` in search indefinitely — while the pull request's own merge box is green and its
+rollup reads `SUCCESS`. On a repository with one of those installed, `status:success` silently omits
+exactly the pull requests it is for, which is the failure mode worth knowing about: a search that
+returns nothing looks like a quiet week. `status:failure` is unaffected, because an empty queued
+suite is not a failure — which is why it is the one to work from.
 
 ### Making `agent-review` a required status check — later, if at all
 
@@ -433,6 +449,15 @@ Two consequences to weigh before switching it on rather than after:
 - **A pull request the loop never reviewed carries no status**, and a required check that is absent
   is not a check that passed. Your own one-line fix, pushed and opened by hand, stops being
   mergeable until you label it `agent:review`.
+- **A required `agent-review` is not proof that the loop's review produced it.** Every workflow in
+  your repository posts as `github-actions[bot]`, not just these — so a workflow file added in a
+  pull request's *own branch*, running on that pull request's events, can post `agent-review:
+  success` on the head commit after the real review has spoken, and a status is replaced by the
+  newest post under its context. The loop is safe against that on its own terms: a forged verdict
+  can only make the next review a second round, and a second round is stricter, not laxer. What it
+  is not safe for is a merge gate, where the effect is the gate satisfying itself. So read the
+  verdict alongside the diff that produced it — which on a branch that edits `.github/workflows/`
+  you were going to do anyway.
 - **The second round is strict on purpose.** A fix round that pushed gets a verification review,
   and that round cannot answer *ready after a fix* — a finding that survived a fix round derives
   *needs you* instead, on the grounds that a second fix has no more reason to settle it than the

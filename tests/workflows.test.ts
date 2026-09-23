@@ -1095,6 +1095,35 @@ describe("agent-review posts its verdict as a commit status", () => {
    * own `conclusion`, with the same two exclusions the evidence above uses —
    * a queued sibling agent job is not a red check.
    */
+  /**
+   * Check runs are an Actions concept, and CI that reports through the
+   * commit-status API has none — so a word derived from check runs alone calls
+   * that commit green and lets the review answer "ready to merge" over a red
+   * one (#105). Both surfaces, and the verdict's **own** context skipped: it is
+   * the answer this job is about to post, so counting it would feed each
+   * round's verdict into the next round's evidence.
+   */
+  it("reads the commit's statuses as well as its check runs, minus its own", () => {
+    const wait = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
+    const run = wait?.run ?? "";
+
+    expect(run).toContain("commits/${HEAD_SHA}/status");
+    expect(run).toContain(".[].statuses[]");
+    // Held to the runner's constant, not merely to a string: the exclusion is
+    // only correct because it names the context the verdict posts under.
+    expect(wait?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
+    expect(run).toContain("select(.context != env.VERDICT_CONTEXT)");
+    // A status that has not passed has not passed — the same reading the check
+    // runs get, and the step has already spent its wait. Read past the YAML's
+    // own backslashes, which is what the jq inside a double-quoted shell string
+    // costs and not something this assertion is about.
+    const unescaped = run.replace(/\\/g, "");
+
+    for (const state of ["failure", "error", "pending"]) {
+      expect(unescaped, state).toContain(`. == "${state}"`);
+    }
+  });
+
   it("hands the runner the checks' result as a word, not as prose", () => {
     const wait = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
     const agent = stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent");
@@ -1170,10 +1199,26 @@ describe("agent-fix asks for the re-review its own push needs", () => {
    * carry `agent:review` and simply sit there — the silent no-op
    * `implement-prd`'s two adds are warned about in the same words.
    */
-  it("warns loudly when AGENT_PAT is absent", () => {
+  /**
+   * In the log **and** on the pull request (#105). A warning annotation is on a
+   * run nobody opens, and what it contradicts is the verdict line the
+   * maintainer acted on: "A re-review runs automatically" is what they were
+   * told, and without the PAT the label goes on and nothing fires.
+   */
+  it("says on the pull request, not only in the log, that no review will start", () => {
+    const run = request()?.run ?? "";
+
     expect(request()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
     expect(request()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
-    expect(request()?.run ?? "").toContain("::warning::");
+    expect(run).toContain("::warning::");
+    expect(run).toContain("gh pr comment");
+    expect(run).toContain("AGENT_PAT");
+    // Inside the arm that knows there is no PAT, not on every run: a comment
+    // on the pull requests where the re-review *did* start is noise on the
+    // channel this one needs to be read on.
+    const arm = run.slice(run.indexOf('if [ "$HAS_PAT" != "true" ]'));
+
+    expect(arm).toContain("gh pr comment");
   });
 
   /**
@@ -1192,6 +1237,21 @@ describe("agent-fix asks for the re-review its own push needs", () => {
     expect(run).toContain("exit 1");
     expect(run).not.toContain("|| true");
   });
+
+  /**
+   * And the comment that reports a failure stops contradicting the reason it
+   * just wrote (#105). The step above writes "re-adding `agent:fix` would …
+   * refuse" and the failure comment appended its fixed "Re-add `agent:fix` to
+   * retry" underneath it — one comment, two opposite instructions, on the one
+   * surface a blocked pull request is read from. Now the remedy comes from
+   * whether the branch moved, the way `update-branch`'s does.
+   */
+  it("does not tell a human to re-add the label after its threads are answered", () => {
+    const blocked = stepNamed("Mark blocked on failure");
+
+    expect(blocked?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.pushed }}");
+    expect(blocked?.run ?? "").toContain('"$PUSHED" = "true"');
+  });
 });
 
 /**
@@ -1204,8 +1264,9 @@ describe("agent-fix asks for the re-review its own push needs", () => {
  * reviewed nothing and changed nothing the review read, so the verdict standing
  * on the old head is still true of the new one and is copied verbatim. A
  * conflict resolution is the loop writing code no review has seen, so nothing is
- * copied and a review is asked for instead — a round 2 by the round rule
- * (`shared/review-round.ts`), because the resolution commit is the loop's own.
+ * copied and a review is asked for instead — a full **round 1** by the round
+ * rule (`shared/review-round.ts`), because round 2 needs a non-merge loop
+ * commit since the verdict and a resolution leaves only the merge (#105).
  *
  * Neither has a runtime symptom when it breaks. A copy that never fires leaves a
  * refreshed pull request looking unreviewed, which is merely the cost of the
@@ -1332,10 +1393,15 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
    * `GITHUB_TOKEN` triggers nothing, so the pull request would carry
    * `agent:review` and simply sit there.
    */
-  it("warns loudly when AGENT_PAT is absent", () => {
+  it("says on the pull request, not only in the log, that no review will start", () => {
+    const run = request()?.run ?? "";
+
     expect(request()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
     expect(request()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
-    expect(request()?.run ?? "").toContain("::warning::");
+    expect(run).toContain("::warning::");
+    // What is unreviewed here is a conflict resolution an agent wrote, which
+    // is the one thing this loop produces that no review has seen (#105).
+    expect(run.slice(run.indexOf('if [ "$HAS_PAT" != "true" ]'))).toContain("gh pr comment");
   });
 
   /**

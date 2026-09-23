@@ -17,6 +17,7 @@
  *
  * Endpoints recorded:
  *   repos/{owner}/{repo}/commits/{sha}/check-runs  — pages from GH_REPLAY_PAGES
+ *   repos/{owner}/{repo}/commits/{sha}/status      — pages from GH_REPLAY_STATUS_PAGES
  *   repos/{owner}/{repo}/actions/runs?…            — runs from GH_REPLAY_RUNS
  *   repos/{owner}/{repo}/actions/runs/{id}         —  "     "    "
  *
@@ -25,6 +26,8 @@
  *
  * Environment:
  *   GH_REPLAY_PAGES       path to a JSON array of page bodies, in page order
+ *   GH_REPLAY_STATUS_PAGES  path to a JSON array of combined-status page bodies
+ *   GH_REPLAY_STATUS_FAILURE  `403` or `unreachable`: how the status call fails
  *   GH_REPLAY_FAILURE     `403` or `unreachable`: how the check-runs call fails
  *   GH_REPLAY_FAILURE_AT  1-based check-runs call to start failing at; default 1
  *   GH_REPLAY_COUNTER     path this process counts check-runs calls in
@@ -176,6 +179,57 @@ if (/\/commits\/[^/]+\/check-runs$/.test(endpoint)) {
 
   // `--slurp` wraps every page into one outer array; without it the pages are
   // printed one after another, each its own JSON document.
+  if (has("--slurp")) emit(pages);
+  else for (const page of pages) emit(page);
+
+  process.exit(0);
+}
+
+// The **combined status** endpoint, which is the other CI surface: a repository
+// reporting through the status API has no check run to read at all.
+//
+// One body per page in the shape the endpoint documents —
+// `{"state","sha","total_count","statuses":[{"context","state",…}]}` — and gh
+// writes whatever the API returned through, so the only gh behaviour replayed
+// here is the one already recorded above: `--slurp` wraps the pages in one
+// outer array, and a bare `--paginate` prints them one after another.
+//
+// The default is a commit with no statuses on it at all, which is every
+// repository whose CI is Actions and is what the scenarios about check runs
+// want standing behind them.
+if (/\/commits\/[^/]+\/status$/.test(endpoint)) {
+  const failure = process.env["GH_REPLAY_STATUS_FAILURE"];
+
+  // Same two shapes as the check-runs arm above, and for the same reason: a
+  // failed request under `--slurp` still writes JSON to stdout, so the pipeline
+  // the step builds succeeds at its first stage either way.
+  if (failure !== undefined) {
+    if (has("--slurp")) {
+      process.stdout.write(
+        failure === "403"
+          ? `${JSON.stringify([
+              {
+                message: "Resource not accessible by integration",
+                documentation_url: "https://docs.github.com/rest/commits/statuses",
+                status: "403",
+              },
+            ])}\n`
+          : "[]",
+      );
+    }
+    die(
+      failure === "403"
+        ? "gh: Resource not accessible by integration (HTTP 403)"
+        : `Get "https://localhost/api/v3/${endpoint}": dial tcp [::1]:443: connect: connection refused`,
+      1,
+    );
+  }
+
+  if (!has("--paginate")) unrecorded();
+
+  const file = process.env["GH_REPLAY_STATUS_PAGES"];
+  const pages = file === undefined ? [{ state: "success", total_count: 0, statuses: [] }] : JSON.parse(readFileSync(file, "utf8"));
+
   if (has("--slurp")) emit(pages);
   else for (const page of pages) emit(page);
 

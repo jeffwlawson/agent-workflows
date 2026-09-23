@@ -44,10 +44,12 @@ you find.
 pushed since, and the question is no longer *what is wrong with this change* but *did the last
 round's findings land, and did the new commits break anything?* In that case:
 
-- Take each finding the earlier review said had to be fixed before merge — they are in **EXISTING
-  FEEDBACK** above — and say, one at a time, whether the current change resolves it. One that did
-  not land is a `fixBeforeMerge` entry again, saying what is still missing rather than restating
-  the original finding.
+- Take each finding the earlier review said had to be fixed before merge and say, one at a time,
+  whether the current change resolves it. They are the **To fix before merge** checklist in that
+  review's body, under **EXISTING FEEDBACK** above — that checklist is the list, not the inline
+  threads, which the fix round resolves and which are dropped from what you were handed. One that
+  did not land is a `fixBeforeMerge` entry again, saying what is still missing rather than
+  restating the original finding.
 - Read the new commits for what they broke. A fix that resolves its own finding and regresses
   something else is the failure this pass exists to catch, and nothing else is looking for it.
 - Anything else real you notice is a `followUps` entry, not a new thing to fix before merge. That
@@ -102,8 +104,9 @@ There are two, and every finding is one of them.
 
 **Fix before merge** — this pull request is wrong, unsafe, or does not do what the linked issue
 asked, and must not merge as it stands. Say so in the summary and in the inline comment, and
-restate each one as a single line in `fixBeforeMerge`. That list is counted; a finding only the
-prose carries is one nobody can act on without reading for it.
+restate each one as a single line in `fixBeforeMerge`. That list is counted, and it is posted as
+the **To fix before merge** checklist on the review — it is what the next round verifies against,
+so a finding only the prose carries is one nobody can act on without reading for it.
 
 **A follow-up** — real, but not this pull request's to fix. Those go to the `followUps` list your
 structured output carries, on the bar stated with it.
@@ -153,9 +156,12 @@ When a fix is **mechanical and you know the exact replacement text**, put it in 
 - **Literal content** — reproduce surrounding indentation; no diff `-`/`+` markers; no nested
   code fence.
 
-Good candidates: a stale claim in a comment, a rename, a misspelled identifier, a missing
-`readonly`. Where the fix needs judgement, spans several places, or changes behaviour, describe
-it in prose and leave it to `agent:fix` — a wrong suggestion is one click from being committed.
+Good candidates, and each is a finding you would report anyway: a comment whose claim the diff
+made false, a misspelled identifier that breaks the thing it names, a bound that is off by one.
+A suggestion is a way to make a *fix before merge* cheap to apply — not a way to post a
+preference, which the section above says not to post at all. Where the fix needs judgement, spans
+several places, or changes behaviour, describe it in prose and leave it to `agent:fix` — a wrong
+suggestion is one click from being committed.
 
 # BOUNDARIES
 

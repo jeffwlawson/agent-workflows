@@ -86,6 +86,19 @@ const EXPRESSIONS: Readonly<Record<string, string>> = {
   "${{ inputs.self-check }}": SELF_CHECK,
 };
 
+/**
+ * A commit status, as the combined endpoint returns one. The loop's own verdict
+ * posts under `agent-review`, which is the context the step must skip: it is
+ * the answer this very job is about to write, so counting it would make one
+ * round's verdict part of the evidence for the next one's.
+ */
+const status = (context: string, state: string): Record<string, unknown> => ({ context, state });
+const statusPage = (statuses: readonly Record<string, unknown>[]): Record<string, unknown> => ({
+  state: "success",
+  total_count: statuses.length,
+  statuses,
+});
+
 const resolved = (env: Record<string, string>): Record<string, string> =>
   Object.fromEntries(
     Object.entries(env).map(([key, value]) => {
@@ -156,6 +169,14 @@ const runWaitStep = (options: {
    * is the only way to express "the count answered and the listing did not".
    */
   readonly unreadableFrom?: number;
+  /**
+   * The commit's statuses — the *other* CI surface, which check runs do not
+   * cover. Default: a commit carrying none, which is every repository whose CI
+   * is Actions and what the check-run scenarios want standing behind them.
+   */
+  readonly statuses?: readonly Record<string, unknown>[];
+  /** How the combined-status call fails, when the scenario is about that. */
+  readonly statusesUnreadable?: "403" | "unreachable";
   readonly failedRuns?: readonly { readonly id: number; readonly name: string }[];
   readonly gh?: string;
   readonly extraEnv?: Record<string, string>;
@@ -163,10 +184,12 @@ const runWaitStep = (options: {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-ci-"));
   const script = path.join(temp, "step.sh");
   const pages = path.join(temp, "check-runs.json");
+  const statusPages = path.join(temp, "statuses.json");
   const runs = path.join(temp, "runs.json");
 
   fs.writeFileSync(script, waitStep().run ?? "");
   fs.writeFileSync(pages, JSON.stringify(options.pages ?? [PAGE_ONE, page(PAGE_TWO)]));
+  fs.writeFileSync(statusPages, JSON.stringify([statusPage(options.statuses ?? [])]));
   fs.writeFileSync(runs, JSON.stringify((options.failedRuns ?? []).map((run) => ({ ...run, conclusion: "failure" }))));
 
   const ghDir = path.resolve(options.gh ?? REPLAY_DIR);
@@ -191,6 +214,10 @@ const runWaitStep = (options: {
       GH_TOKEN: "test-token",
       RUNNER_TEMP: temp,
       GH_REPLAY_PAGES: pages,
+      GH_REPLAY_STATUS_PAGES: statusPages,
+      ...(options.statusesUnreadable === undefined
+        ? {}
+        : { GH_REPLAY_STATUS_FAILURE: options.statusesUnreadable }),
       GH_REPLAY_RUNS: runs,
       GH_REPLAY_COUNTER: path.join(temp, "check-runs.calls"),
       ...(options.unreadable === undefined ? {} : { GH_REPLAY_FAILURE: options.unreadable }),
@@ -247,9 +274,10 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * moment a request is attempted. Reaching *that* error is the assertion: it
    * means the flags parsed.
    *
-   * Three of the step's five calls, and it cannot be more than three: an
-   * unreachable host fails the runs listing, so `for rid in $(gh api …)`
-   * iterates nothing and the two calls in its body are never composed at all.
+   * Four of the step's calls since #105 added the commit-status read, and it
+   * cannot be more than four: an unreachable host fails the runs listing, so
+   * `for rid in $(gh api …)` iterates nothing and the two calls in its body are
+   * never composed at all.
    * Those two are the sibling test below — they are otherwise seen only by the
    * replay, which is the thing that can drift from the binary.
    */
@@ -262,8 +290,11 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     const outcome = runWaitStep({ gh: temp, waitSeconds: "0", extraEnv: { GH_HOST: "localhost" } });
     const stderr = fs.readFileSync(log, "utf8");
 
-    // Live rather than vacuous: gh got as far as building the request.
+    // Live rather than vacuous: gh got as far as building the request — and
+    // both endpoints did, since the two are read by separate invocations that
+    // can carry separate flags.
     expect(stderr).toContain("check-runs");
+    expect(stderr).toContain(`commits/${HEAD_SHA}/status`);
     // Two ways a composed call can be one gh refuses, and only the first has
     // ever happened here. The runs listing below the wait is seen by the real
     // binary *only* through this test — the sibling below spawns the two calls
@@ -409,6 +440,70 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   });
 
   /**
+   * And the other CI surface (#105). Check runs are an Actions concept; a
+   * repository whose CI reports through the commit-status API has none to
+   * read, so a word derived from check runs alone calls that commit green and
+   * lets the review answer "ready to merge" over a red one.
+   */
+  it.each([
+    ["red when a commit status failed", [status("ci/build", "failure")], "red"],
+    ["red when one errored", [status("ci/build", "error")], "red"],
+    ["red when one is still pending", [status("ci/build", "pending")], "red"],
+    ["green when every one of them passed", [status("ci/build", "success")], "green"],
+  ])("is %s", (_case: string, statuses: readonly Record<string, unknown>[], expected: string) => {
+    expect(runWaitStep({ waitSeconds: "0", statuses }).ciResult).toBe(expected);
+  });
+
+  /**
+   * With one context skipped, and it is this job's own answer. `agent-review`
+   * is the context the verdict is posted under, so counting it would feed the
+   * last round's verdict into the next round's evidence: every "ready after a
+   * fix" — a `failure` status — would derive "needs you" one round later, off
+   * nothing but its own reply.
+   */
+  it("ignores the verdict's own context, which is this job's previous answer", () => {
+    const outcome = runWaitStep({
+      waitSeconds: "0",
+      statuses: [status("agent-review", "failure"), status("ci/build", "success")],
+    });
+
+    expect(outcome.ciResult).toBe("green");
+  });
+
+  /**
+   * Unreadable stays `unknown` rather than collapsing into either answer. The
+   * two halves fail independently — this one can 403 on a repository whose
+   * check runs read fine — and a review that could not see one of them has not
+   * seen a failure, it has seen nothing.
+   */
+  it.each([["403"], ["unreachable"]])(
+    "does not know when the statuses cannot be read (%s)",
+    (how: string) => {
+      const outcome = runWaitStep({
+        waitSeconds: "0",
+        statusesUnreadable: how as "403" | "unreachable",
+      });
+
+      expect(outcome.ciResult).toBe("unknown");
+      expect(outcome.stdout).toContain("::warning::Could not read this commit's statuses");
+    },
+  );
+
+  /**
+   * And a failure that *was* seen outranks a half that could not be read: both
+   * send the review to a human, and `red` is the one that says why.
+   */
+  it("is red when one half failed and the other could not be read", () => {
+    const outcome = runWaitStep({
+      pages: [PAGE_ONE, page([...PAGE_TWO, done("deploy", "failure")])],
+      waitSeconds: "0",
+      statusesUnreadable: "403",
+    });
+
+    expect(outcome.ciResult).toBe("red");
+  });
+
+  /**
    * The arm #16 added, which is the only reason any of this was noticed: an
    * unreadable endpoint stops the wait, says so in the log, and says so again
    * in the evidence handed to the agent.
@@ -443,7 +538,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     // And the verdict's half says it does not know, rather than defaulting to
     // the one value that would let the review call a pull request ready.
     expect(outcome.ciResult).toBe("unknown");
-    expect(outcome.stdout).toContain("::warning::Could not decide whether this commit's checks are green");
+    expect(outcome.stdout).toContain("::warning::Could not decide whether this commit's check runs are green");
   });
 
   /**

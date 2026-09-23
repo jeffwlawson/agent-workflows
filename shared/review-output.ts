@@ -161,6 +161,107 @@ export interface VerdictInputs {
 }
 
 /**
+ * The label every *fix before merge* inline comment opens with, exactly as the
+ * prompt and the extraction brief spell it. A fixed token, read as one — the
+ * count below looks for it at the start of a comment body and nowhere else,
+ * because reading the summary for findings is the prose-parsing this whole
+ * derivation exists to replace.
+ */
+export const FIX_BEFORE_MERGE_LABEL = "Fix before merge";
+
+/**
+ * The label at the head of a body, past whatever emphasis it was written in.
+ * `(?![A-Za-z0-9])` rather than `\b`, because the emphasis it is most often
+ * written in ends in `_` — a word character, so `\b` refuses the very case
+ * `__Fix before merge__` this has to read.
+ */
+const LABELLED = new RegExp(`^[\\s*_]*${FIX_BEFORE_MERGE_LABEL}(?![A-Za-z0-9])`, "i");
+
+/**
+ * How many findings this pull request must not merge without fixing.
+ *
+ * The **larger** of the two places a finding is recorded, not the count of the
+ * list alone. The model is asked to put every one of them in both, so either
+ * can be the one it forgot — and a finding labelled `**Fix before merge.**` in
+ * an inline comment but missing from `fixBeforeMerge` derives *ready to merge*,
+ * which is the unsafe direction for the one signal meant to be acted on without
+ * reading.
+ *
+ * Larger rather than the sum, because the two are restatements of one set of
+ * findings: adding them would double-count every review that did as it was
+ * asked.
+ *
+ * Counted over the inline comments **as produced**, before
+ * `filterInlineComments` drops the off-diff anchors. A finding whose line the
+ * model invented is still a finding; dropping it from the count as well as from
+ * the review is how a review that found something ends up saying nothing is
+ * wrong.
+ */
+export const countFixBeforeMerge = (output: ReviewOutput): number =>
+  Math.max(
+    output.fixBeforeMerge.length,
+    output.inlineComments.filter((comment) => LABELLED.test(comment.body)).length,
+  );
+
+/**
+ * The checklist the posted review body carries, or `undefined` when there is
+ * nothing to fix.
+ *
+ * In the **body**, because that is the only place round 2 can read it. A fix
+ * run resolves every thread it addressed, and resolved threads are dropped from
+ * the feedback the next review is handed — so a list carried only by the inline
+ * comments is invisible to the pass whose whole job is checking that it landed.
+ *
+ * Open rather than collapsed, unlike the follow-ups block: these are the
+ * findings the verdict just told a reader to act on, and a disclosure widget
+ * over them is one more click between the line and the work.
+ */
+const renderFixBeforeMerge = (findings: readonly string[]): string | undefined => {
+  if (findings.length === 0) return undefined;
+  // One line each, for the same reason a follow-up title is collapsed: a
+  // finding the model wrapped cannot be allowed to break the list it sits in.
+  const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+  return ["**To fix before merge**", "", ...findings.map((f) => `- [ ] ${oneLine(f)}`)].join("\n");
+};
+
+/**
+ * The summary as it is posted: four parts in one fixed order, and the one place
+ * that order is written down (#105).
+ *
+ * Each part is there because a reader needs it before the one after it — what
+ * to do, why it cannot be automated, what to fix, and then the evidence — and
+ * two of them are parts the review used to lose. `needsYou` reached the
+ * derivation and nothing else, so the case the agent named ("the wrong thing
+ * was built", "the issue itself was wrong") never reached the maintainer whose
+ * decision it is. And `fixBeforeMerge` was posted nowhere at all, which left
+ * round 2 verifying the last round's findings against summary prose: the fix
+ * run resolves every thread it addressed, and resolved threads are dropped from
+ * the feedback the next review is handed.
+ *
+ * A function rather than four lines in the runner, because this is the part of
+ * the review a human acts on and the runner is a script with no test around it.
+ */
+export const renderReviewSummary = (parts: {
+  /** The verdict's next-step line — the same sentence the commit status carries. */
+  readonly verdict: string;
+  readonly needsYou?: string | undefined;
+  /** The note a round that could not be established carries; see `shared/review-round.ts`. */
+  readonly roundNote?: string | undefined;
+  readonly fixBeforeMerge: readonly string[];
+  readonly summary: string;
+}): string =>
+  [
+    parts.verdict,
+    parts.needsYou,
+    parts.roundNote,
+    renderFixBeforeMerge(parts.fixBeforeMerge),
+    parts.summary,
+  ]
+    .filter((part) => part !== undefined && part !== "")
+    .join("\n\n");
+
+/**
  * The verdict, from the review and the checks and nothing else.
  *
  * The order of the arms is the whole of it. The agent's own "a fix round will
@@ -173,7 +274,7 @@ export interface VerdictInputs {
  */
 export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): VerdictRow => {
   if (output.needsYou !== undefined) return VERDICTS["needs you"];
-  if (output.fixBeforeMerge.length > 0) {
+  if (countFixBeforeMerge(output) > 0) {
     // **A round-2 review can never say "ready after a fix"** (#96, decision 5),
     // and it is enforced here rather than asked of the prompt. The fix round
     // has already run and already pushed; findings that survived it are

@@ -302,7 +302,11 @@ jobs:
       # selects on, because this writes what that reads. The **context**, and
       # the **creator**: a status is a thing any token holding `statuses: write`
       # can post under any context it likes, so without the second a refresh
-      # would launder somebody else's "ready to merge" on to a commit. An
+      # would launder an outside integration's "ready to merge" on to a commit.
+      # The creator narrows it to *a workflow in this repository* and no
+      # further — `github-actions[bot]` is the account every workflow here posts
+      # as, not only the loop's — which is the bound the round rule is safe
+      # under and a required check is not (docs/ADOPTING.md §3b). An
       # `error` is copied along with the rest — it says "the last review of this
       # branch produced no verdict", which a merge does not make untrue, and
       # `verdictOn` already declines to count it as a round.
@@ -379,10 +383,14 @@ jobs:
           gh pr comment "$PR_NUMBER" --body "$body"
 
       # The resolution closes itself out, the way a fix round does (#96,
-      # decision 6). The commits this job just pushed are an agent's reading of
-      # a conflict — the one thing this loop writes that no review has seen —
-      # and by the round rule the review it asks for is a **round 2**, because
-      # every commit since the last verdict is the loop's own.
+      # decision 6). The commit this job just pushed is an agent's reading of a
+      # conflict — the one thing this loop writes that no review has seen — and
+      # by the round rule the review it asks for is a full **round 1**: round 2
+      # needs a non-merge loop commit since the last verdict, and a resolution
+      # leaves only the merge (#105). Which is the reading that suits it: the
+      # earlier round's findings have not been attempted, so a verification pass
+      # over them would escalate them to "needs you" on the strength of the base
+      # branch having moved.
       #
       # So this is the other half of the step above, not an addition to it: a
       # clean merge carries the old verdict forward because it is still true,
@@ -415,7 +423,12 @@ jobs:
             exit 1
           fi
           if [ "$HAS_PAT" != "true" ]; then
+            # On the pull request as well as in the log (#105): a warning
+            # annotation is on a run nobody opens, and what is at stake here is
+            # a conflict resolution an agent wrote that nothing has reviewed.
             echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
+            gh pr comment "$PR_NUMBER" --body 'The conflicts are resolved and pushed, but no review of the resolution will start on its own: `AGENT_PAT` is not set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review it.' \
+              || echo "::warning::…and that could not be said on the pull request either."
           fi
 
       # The remedy depends on whether the branch moved, and since #99 both cases

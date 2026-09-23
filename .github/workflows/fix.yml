@@ -374,20 +374,42 @@ jobs:
             exit 1
           fi
           if [ "$HAS_PAT" != "true" ]; then
+            # Both, and the comment is the one that reaches anybody (#105). The
+            # verdict this run's fix was made against promised "A re-review runs
+            # automatically", and without the PAT it does not: the label goes
+            # on, nothing fires, and the only sign of it is a warning annotation
+            # on a run nobody opens. One line on the pull request, where the
+            # maintainer who added `agent:fix` is already looking.
             echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
+            gh pr comment "$PR_NUMBER" --body 'The fix is pushed, but no re-review will start on its own: `AGENT_PAT` is not set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review the fix.' \
+              || echo "::warning::…and that could not be said on the pull request either."
           fi
 
+      # The remedy depends on whether the branch moved, the way
+      # `update-branch.yml`'s does — and it has to, because this step's own
+      # advice contradicted the reason above it (#105). Everything after the
+      # push is a step that can fail on a branch that already moved: the thread
+      # replies, the top-level comments and the re-review this run asks for.
+      # "Re-add `agent:fix` to retry" is the wrong answer to all three — the
+      # threads are answered and resolved by then, so a second fix run finds
+      # nothing it trusts to act on and refuses, which is exactly what the
+      # re-review step's own reason file says.
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && failure()
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
         run: |
           reason="(no reason file written; check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
+          outcome="Re-add \`agent:fix\` to retry."
+          if [ "$PUSHED" = "true" ]; then
+            outcome="The fix is pushed; what failed came after it, so re-adding \`agent:fix\` would find its threads already answered and refuse. Act on the reason above instead."
+          fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '`agent:fix` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-add `agent:fix` to retry.\n' "$reason" "$RUN_URL" > "$body_file"
+          printf '`agent:fix` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\n%s\n' "$reason" "$RUN_URL" "$outcome" > "$body_file"
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
           gh pr comment "$PR_NUMBER" --body-file "$body_file"
 

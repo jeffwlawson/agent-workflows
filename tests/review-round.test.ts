@@ -25,7 +25,7 @@ import { VERDICT_CONTEXT } from "../shared/review-output.js";
  *
  * The consequence of getting it wrong is asymmetric, and these tests are
  * written around that asymmetry. Reading a first round as a second makes the
- * review stricter — a fix-before-merge finding is answered "a fix round did not
+ * review stricter — a fix-before-merge finding is answered "a fix round didn't
  * settle these" — and costs a human a look they did not owe. Reading a second as a first lets a fix round
  * that did not work ask for another one, which is the cycle the loop is built
  * not to have. So every case that cannot be established lands on 2.
@@ -187,7 +187,7 @@ describe("detectReviewRound", () => {
    * `error` is the review saying *there is no verdict* — the run died before it
    * reviewed anything. Counting it would make the retry after every failed run
    * a verification pass over findings that were never posted, and a round-2 run
-   * with findings can only answer "a fix round did not settle these".
+   * with findings can only answer "a fix round didn't settle these".
    */
   it("ignores an error status, which is a run that produced no verdict", () => {
     ghAnswers({

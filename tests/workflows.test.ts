@@ -1015,6 +1015,28 @@ describe("agent-review posts its verdict as a commit status", () => {
   });
 
   /**
+   * The failure arm's description is the one written here rather than in
+   * `VERDICTS`, so the test that keeps those free of characters GitHub refuses
+   * in a status (`422 Description doesn't accept 4-byte Unicode`, #121) cannot
+   * see it.
+   */
+  it("spells the error's description in characters a status accepts", () => {
+    const description = /-f "description=([^"]*)"/.exec(errorStep()?.run ?? "")?.[1] ?? "";
+
+    expect(description).not.toBe("");
+    expect([...description].filter((ch) => (ch.codePointAt(0) ?? 0) > 0xffff)).toEqual([]);
+  });
+
+  /**
+   * A refused post is ours as often as it is the adopter's. The warning used to
+   * name only the missing grant, so v0.3.0's rejected verdicts (a 422 on the
+   * description itself) read as every adopter's misconfiguration (#121).
+   */
+  it("does not blame the grant alone when the post is refused", () => {
+    expect(postStep()?.run ?? "").toContain("a 422 is the status itself being refused");
+  });
+
+  /**
    * The state and the line a human reads come from the runner's own derivation,
    * read out of the file it wrote. Deriving either here would be a second
    * description of #96's table — in YAML, where nothing can unit-test it.
@@ -1203,7 +1225,7 @@ describe("agent-fix asks for the re-review its own push needs", () => {
   /**
    * In the log **and** on the pull request (#105). A warning annotation is on a
    * run nobody opens, and what it contradicts is the verdict line the
-   * maintainer acted on: "A re-review runs automatically" is what they were
+   * maintainer acted on: "a re-review follows automatically" is what they were
    * told, and without the PAT the label goes on and nothing fires.
    */
   it("says on the pull request, not only in the log, that no review will start", () => {
@@ -1384,6 +1406,17 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
     expect(read).toContain('cat "$err"');
     // Still without failing the run: the merge is pushed by now.
     expect(read).toContain("exit 0");
+  });
+
+  /**
+   * And the same on the write. This copies `.description` verbatim, so a
+   * description GitHub refuses is refused here too — the 422 that lost every
+   * v0.3.0 verdict (#121) would have lost every carried one as well. A warning
+   * naming only the grant sends the reader to their own caller for a fault
+   * that is ours; the twin assertion is on `review.yml`'s post step.
+   */
+  it("does not blame the grant alone when the copy is refused", () => {
+    expect(copy()?.run ?? "").toContain("a 422 is the status itself being refused");
   });
 
   it("asks for a review of the resolution it wrote", () => {

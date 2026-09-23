@@ -379,10 +379,10 @@ with, taken verbatim. If you have read one of those, you already know what ours 
 
 | Verdict | Commit status | What GitHub shows you |
 |---|---|---|
-| **🟢 Approval recommended** | `success` | 🟢 Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge. |
-| **🟡 Changes recommended** | `failure` | 🟡 Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically. |
-| **🟡 Changes recommended**, after a fix round | `failure` | 🟡 Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix. |
-| **🔵 Needs a closer look** | `failure` | 🔵 Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR. |
+| **🟢 Approval recommended** | `success` | Approval recommended. Nothing left to fix. Merge when ready; follow-ups are filed as issues on merge. |
+| **🟡 Changes recommended** | `failure` | Changes recommended. The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically. |
+| **🟡 Changes recommended**, after a fix round | `failure` | Changes recommended. A fix round didn't settle these. Read the review, add guidance where it helps, then add agent:fix. |
+| **🔵 Needs a closer look** | `failure` | Needs a closer look. A fix round can't settle this alone. Read the review, add guidance, then add agent:fix or close the PR. |
 
 The third column is the status description **verbatim** — what GitHub shows you is what is written
 here, and the same words open the review summary, so the two cannot tell you different things.
@@ -402,8 +402,11 @@ rather than a gap. A status belongs to a commit, so a push leaves the new head w
 instead of carrying a stale *approval recommended* over code nobody read. The status history on
 the pull request is also the whole record of what earlier rounds said; nothing else keeps one.
 
-If no verdict arrives on *any* pull request, the caller is missing `statuses: write` — the review
-still posts, so there is nothing on the pull request to say so. That is §4, and `doctor` reports it.
+If no verdict arrives on *any* pull request, a caller missing `statuses: write` is the likeliest
+cause — the review still posts, so there is nothing on the pull request to say so. That is §4, and
+`doctor` reports it. It is not the only cause: GitHub can refuse the status itself, which is ours
+rather than yours. The run's warning prints what GitHub replied and says which of the two it was, so
+read that before you touch the caller.
 
 **The loop keeps it current, and stops short of your hand.** A `fix` run that pushed asks for its
 own re-review, so a round closes itself out rather than leaving *add `agent:fix`* standing over a
@@ -466,8 +469,8 @@ Three consequences to weigh before switching it on rather than after:
   you were going to do anyway.
 - **The second round is strict on purpose.** A fix round that pushed gets a verification review,
   and that round cannot answer with the first-round *Changes recommended* line — a finding that
-  survived a fix round gets the second-round one instead, which asks you to read the review and
-  reply before labelling, on the grounds that a second fix has no more reason to settle it than the
+  survived a fix round gets the second-round one instead, which asks you to read the review (adding
+  guidance where it helps) before labelling again, on the grounds that a second fix has no more reason to settle it than the
   first did. That is the right default while you are the one deciding what happens next. As a merge
   gate it means the second round sends you to the review rather than round the loop again, which is
   a good deal more of your attention than the un-gated version asks for.

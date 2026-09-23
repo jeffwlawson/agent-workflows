@@ -559,8 +559,8 @@ expensive to rediscover.
   verdict stands, every commit since is the loop's own, and at least one of them is a non-merge
   commit — `shared/review-round.ts`), and a round-2 review can never produce the **round-1**
   *Changes recommended*: findings that survived a fix round get the round-2 row instead, whose line
-  drops the promise of an automatic re-review and asks the maintainer to read and reply first (#96
-  decision 5, enforced in `deriveVerdict`, not in the prompt). The two rows share a heading and
+  drops the promise of an automatic re-review and asks the maintainer to read the review, adding
+  guidance where it helps, before labelling again (#96 decision 5, enforced in `deriveVerdict`, not in the prompt). The two rows share a heading and
   differ in the next step and in the key `verdict.json` carries, which is what an automatic fix
   would have to match on. So the leg cannot be walked twice off one human label — the second
   round's only outcomes are *Approval recommended* and a human.
@@ -576,7 +576,7 @@ expensive to rediscover.
   apply, because the review a resolution asks for is a **round 1**: round 2 needs a non-merge loop
   commit since the verdict, and a resolution leaves only a merge commit. That is the reading rather
   than a gap in it (#105). The findings of the verdict a conflict interrupted have never been
-  attempted, so counting the merge as a fix round would answer them with "a fix round did not
+  attempted, so counting the merge as a fix round would answer them with "a fix round didn't
   settle these" — spending a human on a base branch moving, and on findings no fix round ever saw,
   which is the one thing on this leg nobody chose. What is worth saying twice is which arrow this
   is *not*: no workflow in the loop adds `agent:fix`.

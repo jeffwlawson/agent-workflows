@@ -116,7 +116,7 @@ const readCommits = (repo: string, prNumber: string): readonly Commit[] | undefi
  * **Not `error`**, because that state is the review saying *there is no
  * verdict*: the run died before it reviewed anything. Counting it would make
  * every retry after a failed run a verification pass over findings that were
- * never posted — which can only end in "a fix round did not settle these", on a
+ * never posted — which can only end in "a fix round didn't settle these", on a
  * pull request nobody has reviewed yet.
  *
  * Paginated, and flattened the way `readCommits` flattens its pages. The page

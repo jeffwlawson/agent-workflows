@@ -379,10 +379,10 @@ with, taken verbatim. If you have read one of those, you already know what ours 
 
 | Verdict | Commit status | What GitHub shows you |
 |---|---|---|
-| **🟢 Approval recommended** | `success` | 🟢 Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge. |
-| **🟡 Changes recommended** | `failure` | 🟡 Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically. |
-| **🟡 Changes recommended**, after a fix round | `failure` | 🟡 Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix. |
-| **🔵 Needs a closer look** | `failure` | 🔵 Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR. |
+| **🟢 Approval recommended** | `success` | Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge. |
+| **🟡 Changes recommended** | `failure` | Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically. |
+| **🟡 Changes recommended**, after a fix round | `failure` | Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix. |
+| **🔵 Needs a closer look** | `failure` | Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR. |
 
 The third column is the status description **verbatim** — what GitHub shows you is what is written
 here, and the same words open the review summary, so the two cannot tell you different things.

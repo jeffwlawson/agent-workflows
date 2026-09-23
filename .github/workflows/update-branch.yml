@@ -378,7 +378,7 @@ jobs:
             args+=(-f "target_url=${target_url}")
           fi
           gh api "${args[@]}" \
-            || echo "::warning::Could not carry the \`${VERDICT_CONTEXT}\` verdict from ${OLD_SHA} on to ${NEW_SHA}. The merge is pushed; what is missing is the line saying what to do about it, so this pull request now reads as unreviewed. This needs \`statuses: write\` in the caller — see jeffwlawson/agent-workflows docs/ADOPTING.md §4."
+            || echo "::warning::Could not carry the \`${VERDICT_CONTEXT}\` verdict from ${OLD_SHA} on to ${NEW_SHA}. The merge is pushed; what is missing is the line saying what to do about it, so this pull request now reads as unreviewed. GitHub's reply is printed above: a 403 is a caller missing \`statuses: write\` (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
 
       - name: Comment on the PR
         if: steps.state.outputs.proceed == 'true' && success()

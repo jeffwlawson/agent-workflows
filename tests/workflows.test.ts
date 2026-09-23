@@ -1015,6 +1015,28 @@ describe("agent-review posts its verdict as a commit status", () => {
   });
 
   /**
+   * The failure arm's description is the one written here rather than in
+   * `VERDICTS`, so the test that keeps those free of characters GitHub refuses
+   * in a status (`422 Description doesn't accept 4-byte Unicode`, #121) cannot
+   * see it.
+   */
+  it("spells the error's description in characters a status accepts", () => {
+    const description = /-f "description=([^"]*)"/.exec(errorStep()?.run ?? "")?.[1] ?? "";
+
+    expect(description).not.toBe("");
+    expect([...description].filter((ch) => (ch.codePointAt(0) ?? 0) > 0xffff)).toEqual([]);
+  });
+
+  /**
+   * A refused post is ours as often as it is the adopter's. The warning used to
+   * name only the missing grant, so v0.3.0's rejected verdicts (a 422 on the
+   * description itself) read as every adopter's misconfiguration (#121).
+   */
+  it("does not blame the grant alone when the post is refused", () => {
+    expect(postStep()?.run ?? "").toContain("a 422 is the status itself being refused");
+  });
+
+  /**
    * The state and the line a human reads come from the runner's own derivation,
    * read out of the file it wrote. Deriving either here would be a second
    * description of #96's table — in YAML, where nothing can unit-test it.

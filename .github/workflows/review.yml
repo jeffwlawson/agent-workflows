@@ -716,7 +716,7 @@ jobs:
             args+=(-f "target_url=${REVIEW_URL}")
           fi
           gh api "${args[@]}" \
-            || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. This needs \`statuses: write\` in the caller — see jeffwlawson/agent-workflows docs/ADOPTING.md §4."
+            || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above: a 403 is a caller missing \`statuses: write\` (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
 
       # The marker for the filing half (#47): this PR's review recorded
       # out-of-scope findings, and a human still has a say before they become

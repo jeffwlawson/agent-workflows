@@ -581,25 +581,25 @@ describe("the verdict's commit status", () => {
       "approval recommended",
       "🟢 Approval recommended",
       "success",
-      "🟢 Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+      "Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
     ],
     [
       "changes recommended",
       "🟡 Changes recommended",
       "failure",
-      "🟡 Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+      "Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
     ],
     [
       "changes recommended after a fix round",
       "🟡 Changes recommended",
       "failure",
-      "🟡 Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+      "Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
     ],
     [
       "needs a closer look",
       "🔵 Needs a closer look",
       "failure",
-      "🔵 Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
+      "Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
     ],
   ] as const)(
     "states %s under its heading, with the state that shows it",
@@ -631,7 +631,23 @@ describe("the verdict's commit status", () => {
    */
   it("says the same thing on the status as the body says in two parts", () => {
     for (const row of Object.values(VERDICTS)) {
-      expect(row.description, row.verdict).toBe(`${row.heading}. ${row.nextStep}`);
+      expect(row.heading, row.verdict).toMatch(new RegExp(` ${row.label}$`));
+      expect(row.description, row.verdict).toBe(`${row.label}. ${row.nextStep}`);
+    }
+  });
+
+  /**
+   * GitHub refuses a status description holding any character outside the
+   * Basic Multilingual Plane (`422 Description doesn't accept 4-byte Unicode`),
+   * and every assessment marker is one. v0.3.0 shipped them there, so every
+   * verdict post was rejected — and the step's warning named a missing grant,
+   * which is why it read as an adopter's misconfiguration rather than ours
+   * (#121). The heading keeps its marker: a review body accepts it.
+   */
+  it("keeps every status description to characters GitHub accepts there", () => {
+    for (const row of Object.values(VERDICTS)) {
+      const astral = [...row.description].filter((ch) => (ch.codePointAt(0) ?? 0) > 0xffff);
+      expect(astral, row.verdict).toEqual([]);
     }
   });
 

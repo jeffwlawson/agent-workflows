@@ -104,8 +104,8 @@ export type Verdict =
 export interface VerdictRow {
   readonly verdict: Verdict;
   /**
-   * The heading the posted review body opens with, and the front of the status
-   * description. Copilot code review's own wording, so it is recognised rather
+   * The heading the posted review body opens with: the assessment's marker and
+   * its `label`. Copilot code review's own wording, so it is recognised rather
    * than learned — which is why it is a literal here rather than composed from
    * the key beside it.
    *
@@ -113,6 +113,17 @@ export interface VerdictRow {
    * the step, not the assessment.
    */
   readonly heading: string;
+  /**
+   * The heading without its marker, and the front of the status description.
+   *
+   * Two fields rather than one because the two surfaces accept different text.
+   * A review body takes the emoji; a commit status description refuses any
+   * character outside the Basic Multilingual Plane — `422 Description doesn't
+   * accept 4-byte Unicode` — and every marker here is one. v0.3.0 put the
+   * heading in the description, so every verdict it tried to post was
+   * rejected, and the round rule that reads them back saw none (#121).
+   */
+  readonly label: string;
   /**
    * The commit status's state. Only *approval recommended* is `success`: every
    * other row is something left to do, and a green tick beside one of those is
@@ -128,11 +139,12 @@ export interface VerdictRow {
    */
   readonly nextStep: string;
   /**
-   * What GitHub shows beside the status: `<heading>. <nextStep>`, written out
+   * What GitHub shows beside the status: `<label>. <nextStep>`, written out
    * rather than composed, so the line a maintainer reads is in this table
-   * verbatim. A test holds it equal to the two halves above, and holds it under
-   * GitHub's 140-character limit — which truncates where the character ran out
-   * rather than where the sentence ends.
+   * verbatim. A test holds it equal to the two halves above, under GitHub's
+   * 140-character limit — which truncates where the character ran out rather
+   * than where the sentence ends — and free of any character GitHub refuses
+   * there (see `label`).
    */
   readonly description: string;
 }
@@ -150,19 +162,21 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
   "approval recommended": {
     verdict: "approval recommended",
     heading: "🟢 Approval recommended",
+    label: "Approval recommended",
     state: "success",
     nextStep: "Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
     description:
-      "🟢 Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+      "Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
   },
   "changes recommended": {
     verdict: "changes recommended",
     heading: "🟡 Changes recommended",
+    label: "Changes recommended",
     state: "failure",
     nextStep:
       "Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
     description:
-      "🟡 Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+      "Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
   },
   // Same assessment, a different step: the fix round that was supposed to
   // settle these has already run. So the line stops promising an automatic
@@ -170,20 +184,22 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
   "changes recommended after a fix round": {
     verdict: "changes recommended after a fix round",
     heading: "🟡 Changes recommended",
+    label: "Changes recommended",
     state: "failure",
     nextStep:
       "A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
     description:
-      "🟡 Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+      "Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
   },
   "needs a closer look": {
     verdict: "needs a closer look",
     heading: "🔵 Needs a closer look",
+    label: "Needs a closer look",
     state: "failure",
     nextStep:
       "A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
     description:
-      "🔵 Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
+      "Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
   },
 };
 

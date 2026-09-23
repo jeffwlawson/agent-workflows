@@ -335,9 +335,10 @@ come up was *inside* one PRD.
 | Triggered by `agent:review` on a PR | ✅ | ✅ | |
 | Refuses when the PR is closed/merged | ✅ | ✅ | added #102. Without it, labelling a merged PR ran a full agent pass and then failed at `gh pr ready`, which cannot convert a merged PR — under a warning that blames a missing `AGENT_PAT` |
 | Structured output (schema-validated JSON from the agent) | ✅ | ✅ | |
-| Inline comments filtered to lines actually in the diff | ✅ | ✅ | GitHub rejects the whole review otherwise |
+| Findings placed against the diff rather than where the model said | ✅ | ➕ | GitHub rejects the **whole** review if one line anchor is off-hunk, so the anchor has to be checked either way. CVM filters; since #110 we reroute — an off-hunk anchor in a changed file becomes a **file-level** thread, and a finding in a file the PR never touched becomes an entry in the review body. No finding is dropped, which matters because the verdict counts findings the old filter could delete |
 | Posts a review summary | ✅ | ✅ | |
-| Posts inline comments | ✅ | ✅ | |
+| Posts inline comments | ✅ | ✅ | as GraphQL `addPullRequestReview` threads since #110 — REST review-create cannot open a file-level thread (422) and its `comments` field is deprecated in favour of `threads` |
+| **Every finding carries an id the workflow wrote** | ❌ | ➕ | #110. A hidden marker in each thread and each body entry, so a later round recognises a finding it has seen without matching its text. The model is told to write none: one it invented would be matched against a thread it never opened |
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query; skips resolved threads |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ❌ | the *review* does not reply — but `agent:fix` does, and resolves what it settled (§4) |
@@ -346,7 +347,7 @@ come up was *inside* one PRD.
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
 | `contents: read` (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits |
-| **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the inline comments, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
+| **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the findings, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
 
 ---
 
@@ -600,7 +601,7 @@ expensive to rediscover.
   **The group displaces one race rather than closing it, and review has to refuse the remainder.**
   A first draft of this said "the cost of serialising is a review that waits", which is the one cost
   it does not have. Review pins everything to the head SHA in its `labeled` payload — the checkout,
-  and `commit_id` on the posted review — and that payload is snapshotted at *label* time while the
+  and `commitOID` on the posted review — and that payload is snapshotted at *label* time while the
   group decides *start* time. So: a fix is running, a human labels `agent:review`, the run snapshots
   A and waits, the fix pushes B and frees the group, and review then reads A cleanly and reviews it.
   Reading-during-a-write became reading-after-one: no torn tree, but every inline comment lands on

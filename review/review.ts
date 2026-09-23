@@ -13,11 +13,11 @@ import {
 } from "../shared/common.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
+import { placeFindings, reviewMutation } from "../shared/review-findings.js";
 import {
   capFollowUps,
   countFixBeforeMerge,
   deriveVerdict,
-  filterInlineComments,
   renderFollowUpsBlock,
   renderReviewSummary,
   reviewOutputSchema,
@@ -122,9 +122,14 @@ try {
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),
   });
 
-  // Drop any inline comment that does not land on a changed line — GitHub
-  // rejects the whole review otherwise.
-  const validComments = filterInlineComments(result.output.inlineComments, context.diffLines);
+  // Where each finding goes, decided here from the diff rather than by the
+  // agent (#110). The guard that kept an unresolvable line anchor out of the
+  // payload is still the guard it was — one such anchor makes GitHub reject the
+  // whole review — but it now reroutes the finding to a thread on the file, or
+  // to the body when the file is not in the diff at all, instead of dropping
+  // it. A finding the verdict counted and the review never showed is the
+  // failure that change removes.
+  const placed = placeFindings(result.output.findings, context.diffLines);
   const headSha = sh("git rev-parse HEAD").trim();
 
   // The third channel, serialised into the body on the way out. It cannot stay
@@ -133,8 +138,8 @@ try {
   // or by anything else — after the pull request has merged.
   //
   // Capped here rather than in the schema. A fourth follow-up is not a broken
-  // review, and rejecting the output would lose the summary and every inline
-  // comment with it.
+  // review, and rejecting the output would lose the summary and every finding
+  // with it.
   //
   // **Appended on every run, including the run that recorded nothing**, where
   // it renders as the bare payload and shows a reader nothing at all. The list
@@ -165,25 +170,23 @@ try {
     verdict,
     output: result.output,
     roundNote: unreadableRoundNote(round),
+    placed,
   });
   const body = `${summary}\n\n${followUpsBlock}`;
 
-  writeJson("review_payload.json", {
-    commit_id: headSha,
-    event: "COMMENT",
-    body,
-    comments: validComments.map((c) => ({
-      path: c.path,
-      line: c.line,
-      side: "RIGHT",
-      // start_line/start_side turn the anchor into a range, which is what makes
-      // a multi-line ```suggestion replace all of it rather than just the last
-      // line. Omitted entirely for single-line comments — GitHub rejects
-      // start_line == line.
-      ...(c.startLine === undefined ? {} : { start_line: c.startLine, start_side: "RIGHT" }),
-      body: c.body,
-    })),
-  });
+  // A GraphQL request body, posted by the workflow with `gh api graphql
+  // --input`. REST `POST /pulls/{n}/reviews` cannot open a **file-level**
+  // thread — it answers one with a 422 — and its `comments` field is deprecated
+  // in favour of `threads` besides (#109, decision 5). `commitOID` pins the
+  // review to the head that was reviewed, exactly as `commit_id` did.
+  //
+  // Composed by a tested function rather than written out here, for the reason
+  // the body is: this file is a script with no test around it, and the shape it
+  // writes is the shape a `--jq` path in the workflow reads back.
+  writeJson(
+    "review_payload.json",
+    reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body, placed }),
+  );
   writeText("summary.md", summary);
 
   // What the workflow posts the commit status from — context, state and line.
@@ -218,7 +221,10 @@ try {
   console.log(
     `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output)} to fix before merge, checks ${ci}, round ${round.round}).`,
   );
-  console.log(`Inline comments: ${validComments.length} kept of ${result.output.inlineComments.length} produced.`);
+  const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
+  console.log(
+    `Findings: ${placed.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${placements("body")} in the body.`,
+  );
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));

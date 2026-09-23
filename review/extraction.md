@@ -2,32 +2,42 @@ Emit a single `<output>` block as the last thing in your response.
 
 Do not change files. Do not run commands. Do not include any text outside the `<output>` block.
 
-Each inline comment's `line` must be a line that appears in the diff above (a changed or context
-line on the new side). A comment on a line outside the diff is dropped.
+## Where each finding goes — `findings`
+
+Every finding names the `path` and `line` in the **source** that it is about. Where it is posted is
+not yours to decide and not yours to state: the workflow reads the diff and puts each finding on
+the line, on the file, or in the review body, in that order of preference. Nothing is dropped, so
+give the truest location you have rather than the nearest one inside the diff.
+
+`title` is one short line, as a reader scans it in a list of what is open — the claim, not the
+evidence. Under about twelve words.
+
+Give each finding **no id of any kind**. The workflow writes one and a finding carries it from
+round to round; one you invented would be matched against a thread you never opened.
 
 `startLine` is optional and turns the anchor into a range. Include it **only** when the body
 carries a ```suggestion block replacing more than one line: `startLine` is the first line
-replaced, `line` is the last. Every line in that range must also be in the diff, or the comment
-is dropped. Omit `startLine` for single-line comments.
+replaced, `line` is the last. A range with any line outside the diff is posted on the file instead,
+where a suggestion cannot be applied — so keep a suggestion's range inside the diff.
 
 ## Findings that must be fixed — `fixBeforeMerge`
 
 Every finding is one of two kinds, and this is the first: the change is wrong, unsafe, or does not
 do what the linked issue asked, and must not merge as it stands. Label each one
-**fix before merge** in the summary and in its inline comment, *and* restate it as one line in
+**fix before merge** in the summary and in its `findings` entry, *and* restate it as one line in
 `fixBeforeMerge`.
 
 Both, not either. The list is what is **counted** — the outcome posted to the pull request is
-derived from how many entries it has — and an inline comment is dropped before posting when its
-line is not in the diff, so a finding recorded only there can leave the review without leaving a
-trace. The list is one line each; the evidence stays in the summary and the comment.
+derived from how many entries it has — and the two are written independently, so either can be the
+one you left something out of. The list is one line each; the evidence stays in the summary and the
+finding.
 
 Nothing else is a finding. A style preference, a "consider…", a rename you would accept being
 overruled on: leave it out. Anything real but outside this pull request's scope goes to
 `followUps` below.
 
-Every inline comment `body` is under 120 words: the label, then the defect, then its consequence,
-then the code you mean. The examples below are the shape, not the subject matter.
+Every finding `body` is under 120 words: the label, then the defect, then its consequence, then the
+code you mean. The examples below are the shape, not the subject matter.
 
 ## When another pass will not settle it — `needsYou`
 
@@ -38,11 +48,11 @@ the one signal that says a human is needed.
 
 ## Out-of-scope findings — `followUps`
 
-A third channel, beside the summary and the inline comments, for a real problem this pull request
-does not own: a defect in a function the diff only calls, a missing test for behaviour it did not
-change, a value read twice. These are recorded on the pull request and filed as issues once it
-merges. The other two channels do not survive that: nobody reads a merged pull request's review,
-and an out-of-scope finding is usually off-diff, where an inline comment is dropped before posting.
+A third channel, beside the summary and the findings, for a real problem this pull request does not
+own: a defect in a function the diff only calls, a missing test for behaviour it did not change, a
+value read twice. These are recorded on the pull request and filed as issues once it merges. The
+other two channels do not survive that: nobody reads a merged pull request's review, and a
+`fixBeforeMerge` finding is a claim about *this* change, which an out-of-scope one is not.
 
 Every part of the bar is required, and a finding missing any of it belongs in the summary instead:
 
@@ -58,7 +68,7 @@ Excluded however true: style preferences, "consider adding tests someday", and r
 name a defect for.
 
 **This list is a complete restatement, every run.** *Raise only what is new* governs the summary and
-the inline comments; it does **not** govern this list. Only the most recent list is ever read, so a
+the findings; it does **not** govern this list. Only the most recent list is ever read, so a
 finding you raised in an earlier round and leave out of this one is lost — and an empty list is how
 a round says the earlier ones are no longer true. Re-record anything that still is.
 
@@ -71,12 +81,12 @@ dropped from the end, here, after you have written it; it is not yours to filter
 {
   "summary": "Under 250 words. No verdict — one is derived from `fixBeforeMerge`, `needsYou` and the check results, and prepended for you. Each finding worst first, one short paragraph each, quoting the code or check result it rests on.",
   "fixBeforeMerge": [
-    "One line per finding that must be fixed before this merges — the same findings the summary and the comments carry."
+    "One line per finding that must be fixed before this merges — the same findings the summary and the `findings` list carry."
   ],
   "needsYou": "Omit this field unless another pass cannot settle it; one line naming which of the three cases it is.",
-  "inlineComments": [
-    { "path": "src/example.ts", "line": 42, "body": "**Fix before merge.** `parse()` returns before the guard below it runs, so a malformed input reaches `apply()` unchecked." },
-    { "path": "src/helpers.ts", "startLine": 87, "line": 88, "body": "**Fix before merge.** This comment describes the old behaviour.\n\n```suggestion\n * Returns every match, not just the first — callers rely on the full\n * list, so narrowing it here would be a silent behaviour change.\n```" }
+  "findings": [
+    { "title": "parse() returns before its guard runs", "path": "src/example.ts", "line": 42, "body": "**Fix before merge.** `parse()` returns before the guard below it runs, so a malformed input reaches `apply()` unchecked." },
+    { "title": "a comment describes the old behaviour", "path": "src/helpers.ts", "startLine": 87, "line": 88, "body": "**Fix before merge.** This comment describes the old behaviour.\n\n```suggestion\n * Returns every match, not just the first — callers rely on the full\n * list, so narrowing it here would be a silent behaviour change.\n```" }
   ],
   "followUps": [
     { "title": "One line, as a human scans it in a triage list", "location": "src/other.ts:88", "body": "The evidence it is real, quoting what it rests on. Then why this pull request cannot fix it." }

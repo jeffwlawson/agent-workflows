@@ -1,28 +1,22 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
-
-export interface InlineComment {
-  readonly path: string;
-  /** Last line of the range — the only line when `startLine` is absent. */
-  readonly line: number;
-  /**
-   * First line of a multi-line range. Needed when a ```suggestion block
-   * replaces more than one line: GitHub applies the suggestion to exactly
-   * `startLine..line`, so a stale sentence spanning two lines cannot be fixed
-   * from a single-line anchor.
-   */
-  readonly startLine?: number;
-  readonly body: string;
-}
+import {
+  isFixBeforeMerge,
+  openingClaim,
+  parseFinding,
+  renderBodyFindings,
+  type Finding,
+  type PlacedFinding,
+} from "./review-findings.js";
 
 /**
  * A problem the review found and this pull request will not fix — a defect in a
  * function the diff only calls, a missing test for behaviour it did not change.
- * The third output channel, beside the summary and the inline comments (#47).
+ * The third output channel, beside the summary and the findings (#47).
  *
  * It exists because both of the other two lose it. A finding in the summary is
- * text on a review nobody reads once the PR has merged; an out-of-scope finding
- * is *off-diff* by construction, and an off-diff inline comment is dropped
- * before posting by `filterInlineComments` above.
+ * text on a review nobody reads once the PR has merged; and a `fixBeforeMerge`
+ * finding is about this pull request by definition, which an out-of-scope one
+ * is not.
  */
 export interface FollowUp {
   /** One line, as a human scans it in a triage list. */
@@ -41,22 +35,27 @@ export const MAX_FOLLOW_UPS = 3;
 
 export interface ReviewOutput {
   readonly summary: string;
-  readonly inlineComments: InlineComment[];
+  /**
+   * Every problem the review found in this pull request, as the model produced
+   * them. Where each one is posted — a line thread, a file-level thread or an
+   * entry in the body — is decided from the diff by `placeFindings`, not here
+   * and not by the model (#110).
+   */
+  readonly findings: Finding[];
   readonly followUps: FollowUp[];
   /**
    * One line per finding this pull request must not merge without fixing —
    * the other of the review's two finding types, beside `followUps` (#96).
    *
-   * A **restatement** of what the summary and the inline comments already say,
+   * A **restatement** of what the summary and the findings already say,
    * and that is its job: the verdict is derived from how many there are, and
    * counting them out of prose is the sentence nothing acted on that the
    * verdict replaced. The detail stays where a human reads it.
    *
-   * Not derived from the inline comments, which is the shape this could have
-   * taken and the one that breaks. `filterInlineComments` drops an anchor that
-   * is off-diff, so a finding whose line the model invented would leave the
-   * count as well as the review — turning *changes recommended* into *approval
-   * recommended* on exactly the reviews that found something.
+   * Not derived from the findings, which is the shape this could have taken.
+   * The two are written independently on purpose: either can be the one the
+   * model forgot, and the count below takes whichever is larger so that a
+   * finding recorded in only one of them still reaches the verdict.
    */
   readonly fixBeforeMerge: string[];
   /**
@@ -214,29 +213,12 @@ export interface VerdictInputs {
 }
 
 /**
- * The label every *fix before merge* inline comment opens with, exactly as the
- * prompt and the extraction brief spell it. A fixed token, read as one — the
- * count below looks for it at the start of a comment body and nowhere else,
- * because reading the summary for findings is the prose-parsing this whole
- * derivation exists to replace.
- */
-export const FIX_BEFORE_MERGE_LABEL = "Fix before merge";
-
-/**
- * The label at the head of a body, past whatever emphasis it was written in.
- * `(?![A-Za-z0-9])` rather than `\b`, because the emphasis it is most often
- * written in ends in `_` — a word character, so `\b` refuses the very case
- * `__Fix before merge__` this has to read.
- */
-const LABELLED = new RegExp(`^[\\s*_]*${FIX_BEFORE_MERGE_LABEL}(?![A-Za-z0-9])`, "i");
-
-/**
  * How many findings this pull request must not merge without fixing.
  *
  * The **larger** of the two places a finding is recorded, not the count of the
  * list alone. The model is asked to put every one of them in both, so either
  * can be the one it forgot — and a finding labelled `**Fix before merge.**` in
- * an inline comment but missing from `fixBeforeMerge` derives *approval
+ * a finding body but missing from `fixBeforeMerge` derives *approval
  * recommended*, which is the unsafe direction for the one signal meant to be
  * acted on without reading.
  *
@@ -244,32 +226,30 @@ const LABELLED = new RegExp(`^[\\s*_]*${FIX_BEFORE_MERGE_LABEL}(?![A-Za-z0-9])`,
  * findings: adding them would double-count every review that did as it was
  * asked.
  *
- * Counted over the inline comments **as produced**, before
- * `filterInlineComments` drops the off-diff anchors. A finding whose line the
- * model invented is still a finding; dropping it from the count as well as from
- * the review is how a review that found something ends up saying nothing is
- * wrong.
+ * Counted over the findings **as produced**, independently of where each one
+ * was placed. Placement is the workflow's decision and it can no longer lose a
+ * finding (#110), but the count must not depend on it either way: what a review
+ * found and where GitHub would let it be posted are two different questions.
  */
 export const countFixBeforeMerge = (output: ReviewOutput): number =>
-  Math.max(output.fixBeforeMerge.length, labelledComments(output).length);
+  Math.max(output.fixBeforeMerge.length, labelledFindings(output).length);
 
-/** The inline comments that carry the label, in the order the model produced them. */
-const labelledComments = (output: ReviewOutput): readonly InlineComment[] =>
-  output.inlineComments.filter((comment) => LABELLED.test(comment.body));
+/** The findings that carry the label, in the order the model produced them. */
+const labelledFindings = (output: ReviewOutput): readonly Finding[] =>
+  output.findings.filter(isFixBeforeMerge);
 
 /**
- * A labelled comment as one checklist line: its anchor, then the claim it
- * opens with.
+ * A labelled finding as one checklist line: its anchor, then the claim it opens
+ * with.
  *
- * Up to the comment's first line break rather than the whole body, which is
- * what keeps a ```suggestion block out of the list it would otherwise be
- * collapsed into. The comment is where the evidence and the fix live; the
- * checklist wants the claim and the place to find the rest.
+ * The claim rather than the title, and rather than the whole body. The title is
+ * the model's summary of itself and may be absent; the body is where the
+ * evidence and the fix live, and a ```suggestion block in a checklist is the
+ * list broken. `openingClaim` is the one description of that split.
  */
-const asChecklistLine = (comment: InlineComment): string => {
-  const [opening = ""] = comment.body.replace(LABELLED, "").split("\n");
-  const claim = opening.replace(/^[\s*_.:;,—–-]+/, "").trim();
-  const anchor = `\`${comment.path}:${comment.line}\``;
+const asChecklistLine = (finding: Finding): string => {
+  const claim = openingClaim(finding.body);
+  const anchor = `\`${finding.path}:${finding.line}\``;
 
   return claim === "" ? anchor : `${anchor} — ${claim}`;
 };
@@ -279,20 +259,20 @@ const asChecklistLine = (comment: InlineComment): string => {
  * **counted** from (#105).
  *
  * `fixBeforeMerge` alone was the shape that broke: the count takes the larger
- * of the list and the labelled comments, so in exactly the case that rule
- * exists for — a finding labelled `**Fix before merge.**` in a comment and left
- * off the list — the verdict said *changes recommended* over an empty
+ * of the list and the labelled findings, so in exactly the case that rule
+ * exists for — a finding labelled `**Fix before merge.**` in a finding body and
+ * left off the list — the verdict said *changes recommended* over an empty
  * checklist, and round 2 was told that checklist is the list of what to verify.
  *
- * So when the comments outnumber the list, they are recorded too. All of them,
+ * So when the findings outnumber the list, they are recorded too. All of them,
  * not the ones the list left out: the list is a *restatement* of the same
- * findings in the model's own words, and telling which comment a given line
+ * findings in the model's own words, and telling which finding a given line
  * restates is the prose-matching this derivation exists to avoid. A finding
  * written down twice costs a reader a moment; one written down nowhere is the
  * failure this is here to remove.
  */
 export const fixBeforeMergeChecklist = (output: ReviewOutput): readonly string[] => {
-  const labelled = labelledComments(output);
+  const labelled = labelledFindings(output);
   if (labelled.length <= output.fixBeforeMerge.length) return output.fixBeforeMerge;
 
   return [...output.fixBeforeMerge, ...labelled.map(asChecklistLine)];
@@ -321,19 +301,21 @@ const renderFixBeforeMerge = (findings: readonly string[]): string | undefined =
 };
 
 /**
- * The summary as it is posted: **five** parts in one fixed order, and the one
+ * The summary as it is posted: **six** parts in one fixed order, and the one
  * place that order is written down (#105).
  *
  * Each part is there because a reader needs it before the one after it — the
  * assessment and the step it implies, why another pass cannot settle it, how
- * the round was read, what to fix, and then the evidence — and two of them are
- * parts the review used to lose. `needsYou` reached the
- * derivation and nothing else, so the case the agent named ("the wrong thing
- * was built", "the issue itself was wrong") never reached the maintainer whose
- * decision it is. And `fixBeforeMerge` was posted nowhere at all, which left
- * round 2 verifying the last round's findings against summary prose: the fix
- * run resolves every thread it addressed, and resolved threads are dropped from
- * the feedback the next review is handed.
+ * the round was read, what to fix, what could not be threaded, and then the
+ * evidence — and three of them are parts the review used to lose. `needsYou`
+ * reached the derivation and nothing else, so the case the agent named ("the
+ * wrong thing was built", "the issue itself was wrong") never reached the
+ * maintainer whose decision it is. `fixBeforeMerge` was posted nowhere at all,
+ * which left round 2 verifying the last round's findings against summary prose:
+ * the fix run resolves every thread it addressed, and resolved threads are
+ * dropped from the feedback the next review is handed. And a finding GitHub
+ * could not be given an anchor for was dropped outright, which the body's
+ * `renderBodyFindings` part is what replaced (#110).
  *
  * Handed the review's whole output rather than the three fields it reads out of
  * it, so the checklist it renders cannot be a different set from the one
@@ -341,7 +323,7 @@ const renderFixBeforeMerge = (findings: readonly string[]): string | undefined =
  * and the one a caller passing `fixBeforeMerge` straight through would keep
  * open.
  *
- * A function rather than five lines in the runner, because this is the part of
+ * A function rather than six lines in the runner, because this is the part of
  * the review a human acts on and the runner is a script with no test around it.
  */
 export const renderReviewSummary = (parts: {
@@ -357,12 +339,25 @@ export const renderReviewSummary = (parts: {
   readonly output: ReviewOutput;
   /** The note a round that could not be established carries; see `shared/review-round.ts`. */
   readonly roundNote?: string | undefined;
+  /**
+   * The findings with their placements, from `placeFindings`. The ones GitHub
+   * has nowhere to thread are written here, with the id the workflow gave them
+   * (#110) — the body is the only surface a finding in an untouched file has,
+   * and before this it had none at all.
+   *
+   * Required rather than defaulted to empty, for the reason `round` is: the
+   * wrong default is the one with no symptom. A caller that forgot this posts a
+   * body with a finding missing from it and nothing saying so, which is the
+   * silent loss this slice exists to close.
+   */
+  readonly placed: readonly PlacedFinding[];
 }): string =>
   [
     `### ${parts.verdict.heading}\n\n${parts.verdict.nextStep}`,
     parts.output.needsYou,
     parts.roundNote,
     renderFixBeforeMerge(fixBeforeMergeChecklist(parts.output)),
+    renderBodyFindings(parts.placed),
     parts.output.summary,
   ]
     .filter((part) => part !== undefined && part !== "")
@@ -407,37 +402,6 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
   return VERDICTS["approval recommended"];
 };
 
-const positiveInt = (value: unknown, label: string): number => {
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    throw new Error(`${label} must be a positive integer`);
-  }
-  return value;
-};
-
-const parseInlineComment = (value: unknown): InlineComment => {
-  const record = asRecord(value, "inline comment");
-  const line = positiveInt(record["line"], "inline comment line");
-
-  const rawStart = record["startLine"] ?? record["start_line"];
-  let startLine: number | undefined;
-  if (rawStart !== undefined && rawStart !== null) {
-    startLine = positiveInt(rawStart, "inline comment startLine");
-    if (startLine > line) {
-      throw new Error("inline comment startLine must be <= line");
-    }
-    // A one-line "range" is just a single-line comment; GitHub rejects
-    // start_line == line, so normalise it away rather than fail the review.
-    if (startLine === line) startLine = undefined;
-  }
-
-  return {
-    path: asString(record["path"] ?? record["file"], "inline comment path"),
-    line,
-    ...(startLine === undefined ? {} : { startLine }),
-    body: asString(record["body"] ?? record["comment"], "inline comment body"),
-  };
-};
-
 const parseFollowUp = (value: unknown): FollowUp => {
   const record = asRecord(value, "follow-up");
   return {
@@ -465,8 +429,11 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
   const needsYou = optionalReason(record["needsYou"] ?? record["needs_you"], "needsYou");
   return {
     summary: asString(record["summary"], "summary"),
-    inlineComments: asArray(record["inlineComments"] ?? [], "inlineComments").map(
-      parseInlineComment,
+    // Both spellings, because the field was `inlineComments` until placement
+    // stopped being the model's to state (#110) and a model prompted for one
+    // shape still reaches for the other.
+    findings: asArray(record["findings"] ?? record["inlineComments"] ?? [], "findings").map(
+      parseFinding,
     ),
     // Absent is the ordinary case — most reviews find nothing out of scope —
     // so it defaults rather than being required. Nothing here rejects a list
@@ -487,43 +454,13 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
 });
 
 /**
- * Drop any inline comment whose (path, line) is not in the diff. The model
- * routinely invents plausible line numbers, and GitHub rejects the *entire*
- * review if even one comment is off-diff — so this filter is what stands
- * between a useful review and a 422 that posts nothing.
- */
-export const filterInlineComments = (
-  comments: readonly InlineComment[],
-  diffLines: Map<string, Set<number>>,
-): InlineComment[] =>
-  comments.filter((comment) => {
-    const fileLines = diffLines.get(comment.path);
-    if (!fileLines) {
-      console.warn(`Dropping comment for ${comment.path}:${comment.line}; file not in diff.`);
-      return false;
-    }
-    // Every line of a multi-line anchor must be in the diff, not just the end
-    // of the range — GitHub rejects the whole review otherwise.
-    const from = comment.startLine ?? comment.line;
-    for (let line = from; line <= comment.line; line++) {
-      if (!fileLines.has(line)) {
-        console.warn(
-          `Dropping comment for ${comment.path}:${from}-${comment.line}; line ${line} not in diff hunks.`,
-        );
-        return false;
-      }
-    }
-    return true;
-  });
-
-/**
  * Apply the cap, and report what it cost.
  *
  * Truncation rather than a schema error, deliberately: throwing would fail
- * extraction and lose the *whole* review — summary and inline comments with it
- * — and a model that emitted a fourth follow-up has not produced a broken
- * review. This sits beside `filterInlineComments` for that reason; both drop
- * bad output rather than rejecting the run.
+ * extraction and lose the *whole* review — summary and findings with it — and
+ * a model that emitted a fourth follow-up has not produced a broken review.
+ * It drops bad output rather than rejecting the run, which is the same choice
+ * `parseFinding` makes over a missing title.
  *
  * The first three, not a re-ranked three. The extraction prompt states the
  * ordering axis and states that anything past the third is dropped from the
@@ -647,7 +584,7 @@ export const parseFollowUpsBlock = (
  * opt-out — and the question it asks of them (*do I want these filed?*) is
  * answered by the titles alone. The bodies live only in the payload: a review
  * body has a hard 65,536-character ceiling whose overflow is a 422 that takes
- * the inline comments down with it, so the full stub text is not spent twice.
+ * the review's threads down with it, so the full stub text is not spent twice.
  *
  * **A run that recorded none writes the payload and nothing else** — the bare
  * comment, no `<details>`, invisible to a reader. That empty list is the

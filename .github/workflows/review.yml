@@ -665,9 +665,22 @@ jobs:
         # process `cwd`: the runner still does its git work in the checkout.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.3.0 -- agent-workflows review
 
+      # GraphQL `addPullRequestReview`, not REST `POST /pulls/{n}/reviews`, for
+      # the one thing REST cannot do: open a **file-level** thread in the same
+      # call as the review — it answers one with a 422 — which is where a
+      # finding goes when it is in a changed file but outside its hunks (#110).
+      # REST's `comments` field is deprecated in favour of `threads` besides.
+      #
+      # The whole request body is `review_payload.json`, written by the runner
+      # from a unit-tested function: `--input` sends a file verbatim, so nothing
+      # here composes a query or names a field. The endpoint is `graphql` rather
+      # than `/graphql` deliberately — that is what makes `gh` fail the step on
+      # an `errors` array, which GraphQL returns with HTTP 200 and which a raw
+      # path would read as success and post nothing.
+      #
       # The `id:` and the captured URL are the verdict's (#96): a commit status
       # carries one link, and the only place the posted review's own URL exists
-      # is the response to this POST. `--jq` rather than a second lookup — the
+      # is the response to this call. `--jq` rather than a second lookup — the
       # newest review on the pull request is not reliably this one.
       - name: Post PR review
         id: review
@@ -675,7 +688,7 @@ jobs:
         env:
           PAYLOAD: ${{ runner.temp }}/review_payload.json
         run: |
-          url=$(gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" --input "$PAYLOAD" --jq .html_url)
+          url=$(gh api graphql --input "$PAYLOAD" --jq .data.addPullRequestReview.pullRequestReview.url)
           echo "url=${url}" >> "$GITHUB_OUTPUT"
 
       # The verdict: what a maintainer does next, on the commit it is about.

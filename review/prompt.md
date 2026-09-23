@@ -103,10 +103,10 @@ saying so.
 There are two, and every finding is one of them.
 
 **Fix before merge** — this pull request is wrong, unsafe, or does not do what the linked issue
-asked, and must not merge as it stands. Say so in the summary and in the inline comment, and
-restate each one as a single line in `fixBeforeMerge`. That list is counted, and it is posted as
-the **To fix before merge** checklist on the review — it is what the next round verifies against,
-so a finding only the prose carries is one nobody can act on without reading for it.
+asked, and must not merge as it stands. Say so in the summary and in the finding, and restate each
+one as a single line in `fixBeforeMerge`. That list is counted, and it is posted as the
+**To fix before merge** checklist on the review — it is what the next round verifies against, so a
+finding only the prose carries is one nobody can act on without reading for it.
 
 **A follow-up** — real, but not this pull request's to fix. Those go to the `followUps` list your
 structured output carries, on the bar stated with it.
@@ -140,11 +140,29 @@ Leave it out otherwise, which is nearly every review. It is not a severity dial:
 finding another pass would settle spends the one signal that says a human is needed, on a review
 where they were not.
 
+# WHERE A FINDING IS POSTED
+
+Each finding carries a short `title`, the `path` and the `line` in the **source** it is about, and
+a body. Where it ends up on the pull request is decided from the diff after you, and is not yours
+to state or to work around:
+
+- a line the diff covers gets a thread on that line;
+- a line outside the diff in a file this pull request changes gets a thread on the file;
+- a file this pull request does not change at all is listed in the review body.
+
+So give the location that is true, not the nearest one inside the diff. Nothing is dropped for
+being out of reach, and a finding aimed at a line it is not about is one a reader has to re-find.
+
+Each finding is also given an identifier, by the workflow, so a later round can tell it is the same
+finding. **Do not write one**, in any field: an identifier you invented would be matched against a
+thread you never opened.
+
 # SUGGESTED CHANGES
 
 When a fix is **mechanical and you know the exact replacement text**, put it in a
-` ```suggestion ` block in the comment body — GitHub renders it as a one-click patch, saving an
-`agent:fix` run.
+` ```suggestion ` block in the finding's body — GitHub renders it as a one-click patch, saving an
+`agent:fix` run. It only renders on a thread anchored to a line, so a suggestion is worth writing
+only where the lines it replaces are in the diff.
 
     ```suggestion
     the exact replacement text for the anchored line(s)

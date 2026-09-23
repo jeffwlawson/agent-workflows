@@ -1056,10 +1056,12 @@ What is still PR-head-controlled is your `CONTEXT.md` and `CLAUDE.md`: an agent 
 applies superseded *conventions*. That is a weaker failure than running the wrong code, and the
 remedy is the same — refresh in-flight agent PRs with `agent:update-branch`.
 
-**Silence is ambiguous.** GitHub rejects an **entire** review if one inline comment anchors outside
-the diff, so a broken line filter posts nothing — identical to a review that found nothing. The
-runner logs `Inline comments: N kept of M produced`; trust that counter, not an agent's argument that
-its own filtering is sound.
+**Silence is ambiguous.** GitHub rejects an **entire** review if one line anchor falls outside the
+diff, so a broken placement posts nothing — identical to a review that found nothing. Since #110 an
+anchor it cannot resolve is rerouted rather than dropped: to a thread on the file, or to an entry in
+the review body when the file is not in the diff at all. The runner logs
+`Findings: N produced — a on a line, b on a file, c in the body`; trust that counter, not an agent's
+argument that its own placement is sound.
 
 ---
 

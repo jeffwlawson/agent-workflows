@@ -1,11 +1,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { parseDiffLines } from "../shared/diff-lines.js";
+import {
+  placeFindings,
+  reviewThreads,
+  type Finding,
+  type PlacedFinding,
+} from "../shared/review-findings.js";
 import {
   capFollowUps,
   countFixBeforeMerge,
   deriveVerdict,
-  filterInlineComments,
   fixBeforeMergeChecklist,
   FOLLOW_UPS_MARKER,
   hasFollowUpsBlock,
@@ -18,14 +24,15 @@ import {
   VERDICTS,
   type CiResult,
   type FollowUp,
-  type InlineComment,
   type ReviewOutput,
 } from "../shared/review-output.js";
 
 /**
  * These guard the review's posting path rather than the linter. GitHub rejects
- * an *entire* review if any one comment anchors outside the diff, so a bug here
- * does not degrade a review — it silently posts nothing.
+ * an *entire* review if any one anchor falls outside the diff, so a bug here
+ * does not degrade a review — it silently posts nothing. Where each finding is
+ * anchored, and what happens to one that cannot be, is
+ * `tests/review-findings.test.ts`.
  */
 
 const parse = (value: unknown) => {
@@ -36,7 +43,8 @@ const parse = (value: unknown) => {
   return (result as { value: ReviewOutput }).value;
 };
 
-const comment = (over: Partial<InlineComment> = {}): InlineComment => ({
+const finding = (over: Partial<Finding> = {}): Finding => ({
+  title: "t",
   path: "src/a.ts",
   line: 10,
   body: "x",
@@ -47,61 +55,50 @@ describe("reviewOutputSchema", () => {
   it("accepts a multi-line range and keeps startLine", () => {
     const out = parse({
       summary: "s",
-      inlineComments: [{ path: "src/a.ts", startLine: 8, line: 10, body: "b" }],
+      findings: [{ path: "src/a.ts", startLine: 8, line: 10, body: "b" }],
     });
-    expect(out.inlineComments[0]).toMatchObject({ startLine: 8, line: 10 });
+    expect(out.findings[0]).toMatchObject({ startLine: 8, line: 10 });
   });
 
   it("accepts snake_case start_line, since the model emits both", () => {
     const out = parse({
       summary: "s",
-      inlineComments: [{ path: "src/a.ts", start_line: 8, line: 10, body: "b" }],
+      findings: [{ path: "src/a.ts", start_line: 8, line: 10, body: "b" }],
     });
-    expect(out.inlineComments[0]?.startLine).toBe(8);
+    expect(out.findings[0]?.startLine).toBe(8);
+  });
+
+  /**
+   * And the field's own former name. `inlineComments` was what this list was
+   * called until placement stopped being the model's to state (#110); a model
+   * prompted for one shape still reaches for the other, and a review whose
+   * findings silently defaulted to empty would post *approval recommended*.
+   */
+  it("accepts the field's former name, since the model reaches for it", () => {
+    const out = parse({
+      summary: "s",
+      inlineComments: [{ path: "src/a.ts", line: 10, body: "b" }],
+    });
+    expect(out.findings).toHaveLength(1);
   });
 
   it("drops startLine when it equals line — GitHub rejects a zero-width range", () => {
     const out = parse({
       summary: "s",
-      inlineComments: [{ path: "src/a.ts", startLine: 10, line: 10, body: "b" }],
+      findings: [{ path: "src/a.ts", startLine: 10, line: 10, body: "b" }],
     });
-    expect(out.inlineComments[0]?.startLine).toBeUndefined();
+    expect(out.findings[0]?.startLine).toBeUndefined();
   });
 
   it("rejects an inverted range rather than posting a 422", () => {
     expect(() =>
-      parse({ summary: "s", inlineComments: [{ path: "src/a.ts", startLine: 11, line: 10, body: "b" }] }),
+      parse({ summary: "s", findings: [{ path: "src/a.ts", startLine: 11, line: 10, body: "b" }] }),
     ).toThrow(/startLine must be <= line/);
   });
 
-  it("omits startLine entirely for a single-line comment", () => {
-    const out = parse({ summary: "s", inlineComments: [{ path: "src/a.ts", line: 10, body: "b" }] });
-    expect("startLine" in (out.inlineComments[0] ?? {})).toBe(false);
-  });
-});
-
-describe("filterInlineComments", () => {
-  const diff = new Map([["src/a.ts", new Set([8, 9, 10])]]);
-
-  it("keeps a range whose every line is in the diff", () => {
-    expect(filterInlineComments([comment({ startLine: 8, line: 10 })], diff)).toHaveLength(1);
-  });
-
-  it("drops a range with a gap in the middle", () => {
-    const gappy = new Map([["src/a.ts", new Set([8, 10])]]);
-    expect(filterInlineComments([comment({ startLine: 8, line: 10 })], gappy)).toEqual([]);
-  });
-
-  it("drops a range that starts outside the diff even though its last line is inside", () => {
-    expect(filterInlineComments([comment({ startLine: 6, line: 10 })], diff)).toEqual([]);
-  });
-
-  it("still drops a single-line comment outside the diff", () => {
-    expect(filterInlineComments([comment({ line: 99 })], diff)).toEqual([]);
-  });
-
-  it("drops comments on a file absent from the diff", () => {
-    expect(filterInlineComments([comment({ path: "src/other.ts" })], diff)).toEqual([]);
+  it("omits startLine entirely for a single-line anchor", () => {
+    const out = parse({ summary: "s", findings: [{ path: "src/a.ts", line: 10, body: "b" }] });
+    expect("startLine" in (out.findings[0] ?? {})).toBe(false);
   });
 });
 
@@ -338,11 +335,9 @@ describe("parseFollowUpsBlock", () => {
  * count, and a verdict derived from prose is the sentence nothing acts on that
  * this replaced.
  *
- * Not the inline comments, which is the shape this could have taken and the
- * one that breaks: `filterInlineComments` drops an anchor that is off-diff, so
- * a fix-before-merge finding whose line the model invented would be dropped
- * from the count as well as from the review — turning *changes recommended*
- * into *approval recommended* on exactly the reviews that found something.
+ * Not derived from the findings, which is the shape this could have taken: the
+ * two lists are written independently, so either can be the one the model
+ * forgot, and the count takes whichever is larger.
  */
 describe("reviewOutputSchema: the two finding types", () => {
   it("defaults fixBeforeMerge to empty, which is the ordinary review", () => {
@@ -400,7 +395,7 @@ describe("reviewOutputSchema: the two finding types", () => {
 describe("deriveVerdict", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
     summary: "s",
-    inlineComments: [],
+    findings: [],
     followUps: [],
     fixBeforeMerge: [],
     ...over,
@@ -468,7 +463,7 @@ describe("deriveVerdict", () => {
    */
   it("counts a labelled inline comment the list left out", () => {
     const labelled = output({
-      inlineComments: [comment({ body: "**Fix before merge.** the guard runs after the return" })],
+      findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
     });
 
     expect(deriveVerdict(labelled, { ci: "green", round: 1 }).verdict).toBe("changes recommended");
@@ -488,7 +483,7 @@ describe("deriveVerdict", () => {
   it("reads the label past whatever emphasis it was written in", () => {
     for (const body of ["Fix before merge. x", "__Fix before merge__ x", "  **fix before merge:** x"]) {
       expect(
-        deriveVerdict(output({ inlineComments: [comment({ body })] }), { ci: "green", round: 1 })
+        deriveVerdict(output({ findings: [finding({ body })] }), { ci: "green", round: 1 })
           .verdict,
         body,
       ).toBe("changes recommended");
@@ -498,7 +493,7 @@ describe("deriveVerdict", () => {
   /** And an ordinary comment is not a finding: the label is a fixed token, read as one. */
   it("does not count a comment that merely mentions fixing something", () => {
     const chatty = output({
-      inlineComments: [comment({ body: "Worth a look before merge — fix before merge is the label." })],
+      findings: [finding({ body: "Worth a look before merge — fix before merge is the label." })],
     });
 
     expect(deriveVerdict(chatty, { ci: "green", round: 1 }).verdict).toBe("approval recommended");
@@ -507,7 +502,7 @@ describe("deriveVerdict", () => {
   it("counts one finding once when it is recorded in both places", () => {
     const both = output({
       fixBeforeMerge: ["the guard runs after the return"],
-      inlineComments: [comment({ body: "**Fix before merge.** the guard runs after the return" })],
+      findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
     });
 
     // The larger of the two, not the sum — and either way a fix is a fix, so
@@ -664,12 +659,12 @@ describe("the posted review body", () => {
   const SUMMARY = "The change does what the issue asked.";
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
     summary: SUMMARY,
-    inlineComments: [],
+    findings: [],
     followUps: [],
     fixBeforeMerge: [],
     ...over,
   });
-  const parts = { verdict: VERDICTS["changes recommended"], output: output() };
+  const parts = { verdict: VERDICTS["changes recommended"], output: output(), placed: [] };
 
   /**
    * The heading as a heading, so the assessment is what a reader's eye lands on
@@ -746,26 +741,30 @@ describe("the posted review body", () => {
 /**
  * The checklist is the set the **verdict was counted from** (#105), which
  * `fixBeforeMerge` alone is not: the count takes the larger of the list and the
- * labelled inline comments, so the case that rule exists for — a finding
- * labelled in a comment and left off the list — posted *changes recommended*
+ * labelled findings, so the case that rule exists for — a finding labelled in
+ * a finding body and left off the list — posted *changes recommended*
  * over an empty checklist. Round 2 is then told that checklist is what to
  * verify against, under a verdict line reading "no need to read them first".
  */
 describe("the checklist and the count are one set", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
     summary: "s",
-    inlineComments: [],
+    findings: [],
     followUps: [],
     fixBeforeMerge: [],
     ...over,
   });
   const body = (over: Partial<ReviewOutput>): string =>
-    renderReviewSummary({ verdict: VERDICTS["changes recommended"], output: output(over) });
+    renderReviewSummary({
+      verdict: VERDICTS["changes recommended"],
+      output: output(over),
+      placed: [],
+    });
 
-  it("records a labelled comment the list left out, anchored where it was made", () => {
+  it("records a labelled finding the list left out, anchored where it was made", () => {
     const missing = {
-      inlineComments: [
-        comment({
+      findings: [
+        finding({
           path: "src/queue.ts",
           line: 206,
           body: "**Fix before merge.** the guard runs after the return.",
@@ -782,10 +781,10 @@ describe("the checklist and the count are one set", () => {
    * Up to the comment's first line break, so a ```suggestion block stays in the
    * comment it belongs to rather than being collapsed into the list.
    */
-  it("takes the claim a comment opens with, not the fix it carries", () => {
+  it("takes the claim a finding opens with, not the fix it carries", () => {
     const suggested = body({
-      inlineComments: [
-        comment({
+      findings: [
+        finding({
           body: "__Fix before merge__ this comment describes the old behaviour.\n\n```suggestion\n * Returns every match\n```",
         }),
       ],
@@ -799,11 +798,11 @@ describe("the checklist and the count are one set", () => {
    * A review that did as it was asked renders its own words and nothing else:
    * the list accounts for every labelled comment, so the comments add nothing.
    */
-  it("renders the list alone when it accounts for every labelled comment", () => {
+  it("renders the list alone when it accounts for every labelled finding", () => {
     const both = {
       fixBeforeMerge: ["the guard runs after the return"],
-      inlineComments: [
-        comment({ body: "**Fix before merge.** the guard runs after the return" }),
+      findings: [
+        finding({ body: "**Fix before merge.** the guard runs after the return" }),
       ],
     };
 
@@ -818,18 +817,112 @@ describe("the checklist and the count are one set", () => {
    * finding written down twice costs a reader a moment; one written down
    * nowhere is the failure this exists to remove.
    */
-  it("records every labelled comment once the list is short, rather than guessing which", () => {
+  it("records every labelled finding once the list is short, rather than guessing which", () => {
     const short = {
       fixBeforeMerge: ["the guard runs after the return"],
-      inlineComments: [
-        comment({ path: "a.ts", body: "**Fix before merge.** the guard runs after the return" }),
-        comment({ path: "b.ts", body: "**Fix before merge.** the new test asserts the old behaviour" }),
+      findings: [
+        finding({ path: "a.ts", body: "**Fix before merge.** the guard runs after the return" }),
+        finding({ path: "b.ts", body: "**Fix before merge.** the new test asserts the old behaviour" }),
       ],
     };
 
     expect(countFixBeforeMerge(output(short))).toBe(2);
     expect(body(short)).toContain("- [ ] the guard runs after the return");
     expect(body(short)).toContain("`b.ts:10` — the new test asserts the old behaviour");
+  });
+});
+
+/**
+ * Every finding reaches the pull request, and the verdict counts every one of
+ * them — the two halves of #110 that a placement decision could quietly break.
+ *
+ * What this replaced dropped a finding whose anchor GitHub would reject, which
+ * made the count and the record disagree in the one direction that matters: a
+ * verdict saying *changes recommended* over a review showing nothing to change.
+ * So the property under test is not "the line threads are right", it is that
+ * **the three placements together lose nothing**.
+ */
+describe("no placement loses a finding", () => {
+  const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
+    summary: "s",
+    findings: [],
+    followUps: [],
+    fixBeforeMerge: [],
+    ...over,
+  });
+
+  // Real `git diff` output: one hunk on `src/queue.ts` covering new-side lines
+  // 8..12, and nothing at all on `src/other.ts`.
+  const DIFF_LINES = parseDiffLines(`diff --git a/src/queue.ts b/src/queue.ts
+index 0ff3bbb..c6ca7ae 100644
+--- a/src/queue.ts
++++ b/src/queue.ts
+@@ -8,4 +8,5 @@ export const drain = () => {
+ const eight = 8;
+ const nine = 9;
++const ten = 10;
+ const eleven = 11;
+ const twelve = 12;
+`);
+
+  const ON_A_LINE = finding({
+    path: "src/queue.ts",
+    line: 10,
+    title: "the guard runs after the return",
+    body: "**Fix before merge.** the guard runs after the return",
+  });
+  const PAST_THE_HUNKS = finding({
+    path: "src/queue.ts",
+    line: 400,
+    title: "the retry loop never terminates",
+    body: "**Fix before merge.** the retry loop never terminates",
+  });
+  const IN_AN_UNTOUCHED_FILE = finding({
+    path: "src/other.ts",
+    line: 88,
+    title: "the cache key omits the tenant",
+    body: "**Fix before merge.** the cache key omits the tenant",
+  });
+
+  const findings = [ON_A_LINE, PAST_THE_HUNKS, IN_AN_UNTOUCHED_FILE];
+  const placed: PlacedFinding[] = placeFindings(findings, DIFF_LINES);
+  const reviewed = output({ findings });
+
+  it("places one of each kind, from the diff", () => {
+    expect(placed.map((p) => p.placement)).toEqual(["line", "file", "body"]);
+  });
+
+  it("posts every one of them, in a thread or in the body", () => {
+    const body = renderReviewSummary({
+      verdict: VERDICTS["changes recommended"],
+      output: reviewed,
+      placed,
+    });
+    const posted = [...reviewThreads(placed).map((t) => t.body), body].join("\n");
+
+    for (const f of findings) expect(posted).toContain(f.title);
+  });
+
+  /**
+   * And the count is over the findings as produced, so it cannot depend on
+   * where they were put. Three findings, three placements, one verdict.
+   */
+  it("counts all three toward the verdict, whatever each one's placement", () => {
+    expect(countFixBeforeMerge(reviewed)).toBe(3);
+    expect(deriveVerdict(reviewed, { ci: "green", round: 1 }).verdict).toBe("changes recommended");
+  });
+
+  /** Each thread and each body entry carries the id the workflow wrote for it. */
+  it("gives every posted finding an id a later round can read back", () => {
+    const body = renderReviewSummary({
+      verdict: VERDICTS["changes recommended"],
+      output: reviewed,
+      placed,
+    });
+    const posted = [...reviewThreads(placed).map((t) => t.body), body].join("\n");
+
+    expect(new Set(placed.map((p) => p.id)).size).toBe(3);
+    for (const { id } of placed) expect(posted).toContain(`<!-- agent-finding ${id} -->`);
   });
 });
 

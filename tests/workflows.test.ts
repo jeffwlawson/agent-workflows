@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { isWorkflowBot } from "../shared/common.js";
+import { ADD_REVIEW_MUTATION } from "../shared/review-findings.js";
 import { FOLLOW_UPS_LABEL, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
 
 /**
@@ -1030,16 +1031,50 @@ describe("agent-review posts its verdict as a commit status", () => {
   /**
    * And links the review it is the verdict on, so the one line has somewhere to
    * go when a reader does want the detail. The URL is the posted review's own,
-   * which only the response to that POST carries.
+   * which only the response to the mutation carries.
    */
-  it("links the review it posted, by capturing the URL that POST returned", () => {
+  it("links the review it posted, by capturing the URL the mutation returned", () => {
     const post = stepNamed("Post PR review");
 
     expect(post?.id).toBe("review");
-    expect(post?.run ?? "").toContain("html_url");
+    expect(post?.run ?? "").toContain(".data.addPullRequestReview.pullRequestReview.url");
     expect(post?.run ?? "").toContain('"$GITHUB_OUTPUT"');
     expect(postStep()?.env?.["REVIEW_URL"]).toBe("${{ steps.review.outputs.url }}");
     expect(postStep()?.run ?? "").toContain("target_url=");
+  });
+
+  /**
+   * The review goes up through GraphQL, which is the only call that can open a
+   * **file-level** thread alongside the line ones (#110; REST review-create
+   * answers one with a 422, and its `comments` field is deprecated in favour of
+   * `threads`). The whole request body is the runner's file, sent verbatim:
+   * nothing in YAML composes a query or names a field, so the mutation has one
+   * description and it is the unit-tested one.
+   */
+  it("posts the review as the GraphQL mutation the runner wrote", () => {
+    const run = stepNamed("Post PR review")?.run ?? "";
+
+    expect(run).toContain("gh api graphql --input");
+    expect(stepNamed("Post PR review")?.env?.["PAYLOAD"]).toContain("review_payload.json");
+    // `graphql`, not `/graphql`: GraphQL returns its errors with HTTP 200, and
+    // it is the endpoint name that makes `gh` fail the step on one rather than
+    // capturing an empty URL and posting nothing.
+    expect(run).not.toContain("/graphql");
+    expect(run).not.toContain("/reviews");
+  });
+
+  /**
+   * And the `--jq` path is the mutation's own selection set. The two are one
+   * shape written in two files, which is exactly the pair that drifts: a
+   * renamed selection would leave the review posted and the verdict linking
+   * nothing, with nothing failing.
+   */
+  it("reads the url out of the selection the mutation asks for", () => {
+    const run = stepNamed("Post PR review")?.run ?? "";
+    const selections = run.match(/--jq \.data\.([\w.]+)/)?.[1]?.split(".") ?? [];
+
+    expect(selections).toHaveLength(3);
+    for (const selection of selections) expect(ADD_REVIEW_MUTATION).toContain(selection);
   });
 
   it("posts the verdict after the review it points at, and only if that posted", () => {

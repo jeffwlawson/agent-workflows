@@ -7,6 +7,13 @@ import {
 import { parseDiffLines } from "./diff-lines.js";
 
 export interface PullRequestContext {
+  /**
+   * The pull request's GraphQL node id. The review is posted through
+   * `addPullRequestReview`, whose input names the pull request by node id
+   * rather than by number (#110) — so it is read here, while the token is still
+   * in hand, and not by the step that posts.
+   */
+  readonly prId: string;
   readonly prTitle: string;
   readonly prBody: string;
   readonly issueNumber: string;
@@ -32,7 +39,8 @@ export interface PullRequestContext {
  * workflow uses to reply to human comments.
  */
 export const fetchPullRequestContext = (prNumber: string): PullRequestContext => {
-  const prView = JSON.parse(gh(["pr", "view", prNumber, "--json", "title,body"])) as {
+  const prView = JSON.parse(gh(["pr", "view", prNumber, "--json", "id,title,body"])) as {
+    id: string;
     title: string;
     body?: string | null;
   };
@@ -95,6 +103,7 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
   const diff = feedback.diff;
 
   return {
+    prId: prView.id,
     prTitle: prView.title,
     prBody: prView.body ?? "",
     issueNumber,

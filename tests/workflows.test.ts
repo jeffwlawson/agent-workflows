@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { isWorkflowBot } from "../shared/common.js";
-import { FOLLOW_UPS_LABEL, VERDICT_CONTEXT } from "../shared/review-output.js";
+import { FOLLOW_UPS_LABEL, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -3529,6 +3529,91 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
 
     expect(shared.length).toBeGreaterThan(0);
     for (const name of shared) expect(triage.get(name)).toBe(adopting.get(name));
+  });
+});
+
+/**
+ * The verdict is machine-readable so a maintainer does not have to read the
+ * review — which leaves exactly one thing that has to be written in prose:
+ * **what they do about it.** That is the adoption doc's, and it is the copy
+ * with no mechanism behind it. A `state` that changed, a description reworded,
+ * a fourth state added: the derivation is unit-tested and the doc is not, so
+ * the doc is where the loop and what an adopter was told it does come apart.
+ *
+ * Nothing here checks that the section reads well. What it checks is that the
+ * section is about the verdicts the code actually posts — the names, the lines
+ * GitHub shows and the states those lines arrive under — so a reader acting on
+ * it is acting on this release rather than on the one it was written against.
+ *
+ * And that the section stays *documentation*. Making `agent-review` a required
+ * check is a decision with a repository-wide cost — a verdict that is ever
+ * wrong blocks every merge, including the pull requests this loop never
+ * reviewed — so it is described for an adopter to take when they trust the
+ * verdicts, and nothing here takes it for them.
+ */
+describe("the adoption doc says what to do with each verdict", () => {
+  const ADOPTING = path.join("docs", "ADOPTING.md");
+
+  /** The section, by what its heading is about rather than by its number. */
+  const section = (): string =>
+    fs
+      .readFileSync(ADOPTING, "utf8")
+      .split(/^(?=## )/m)
+      .find((s) => /^## .*verdict/i.test(s.split("\n")[0] ?? "")) ?? "";
+
+  it("names every verdict, with the line it posts and the state it posts under", () => {
+    expect(section(), "docs/ADOPTING.md needs a section whose heading names the verdict").not.toBe(
+      "",
+    );
+    expect(section()).toContain(`\`${VERDICT_CONTEXT}\``);
+
+    for (const row of Object.values(VERDICTS)) {
+      expect(section()).toContain(row.verdict);
+      // The description verbatim, because it is what GitHub shows beside the
+      // status: a paraphrase here is an adopter told to do something other
+      // than what their own pull requests will tell them.
+      expect(section()).toContain(row.description);
+      expect(section()).toContain(`\`${row.state}\``);
+    }
+  });
+
+  /**
+   * The inbox pair, derived from the states rather than listed. `status:` is a
+   * search over the head commit's combined state, so one search per state a
+   * verdict can post is what makes the pair exhaustive — a fourth state, or a
+   * verdict moved from `failure` to `pending`, leaves open pull requests in
+   * neither search and fails here instead.
+   */
+  it("gives a search per state a verdict posts, so no open pull request is in neither", () => {
+    for (const state of new Set(Object.values(VERDICTS).map((row) => row.state))) {
+      expect(section()).toContain(`is:pr is:open status:${state}`);
+    }
+  });
+
+  /**
+   * Written where the adopter decides, and nowhere else. Branch protection is
+   * repository configuration a caller could reach — `init` runs in their
+   * checkout and the loop holds a token — and the point of documenting it is
+   * that it is theirs to switch on after the verdicts have earned it.
+   */
+  it("documents the required check without anything here enabling one", () => {
+    expect(section()).toMatch(/required status check/i);
+
+    const SKIPPED = new Set(["node_modules", "dist", "output", ".git", "tests"]);
+    const PROTECTION = /required_status_checks|branches\/[^\s"'`]*\/protection|\/rulesets\b/i;
+
+    const sourceUnder = (dir: string): readonly string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const rel = dir === "." ? entry.name : `${dir}/${entry.name}`;
+        if (entry.isDirectory()) return SKIPPED.has(entry.name) ? [] : sourceUnder(rel);
+        return /\.(ts|yml|yaml)$/.test(entry.name) ? [rel] : [];
+      });
+
+    const offenders = sourceUnder(".").filter((file) =>
+      PROTECTION.test(fs.readFileSync(file, "utf8")),
+    );
+
+    expect(offenders).toEqual([]);
   });
 });
 

@@ -366,6 +366,82 @@ gh label create "needs-triage"     --color D93F0B --description "Maintainer need
 
 ---
 
+## 3b. Reading the verdict
+
+Labels are how you drive the loop; this is how it answers. Every review ends in one of three
+verdicts, derived from what the review found rather than written in it, and posted as a **commit
+status** on the commit that was reviewed — context `agent-review`, linked to the review it is the
+verdict on. GitHub shows it in the merge box, so the outcome of a review is readable without
+opening the review.
+
+| Verdict | Commit status | What you do |
+|---|---|---|
+| **ready to merge** | `success` | Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge. |
+| **ready after a fix** | `failure` | Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically. |
+| **needs you** | `failure` | Read the review, then reply with your decision and add agent:fix. If the issue itself was wrong, close the PR instead. |
+
+The third column is the status description **verbatim** — what GitHub shows you is what is written
+here, and the same line opens the review summary, so the two cannot tell you different things. Only
+`needs you` asks you to read anything.
+
+`failure` on the middle row is not the loop disliking the change. It is a step left to do, and it is
+a `failure` because a green tick beside *add `agent:fix`* would say the opposite of what it means.
+Nothing merges or blocks on any of this by default, and making it do so is the last part of this
+section.
+
+**A run that failed is a fourth state and not a verdict.** It posts `error`, linked to the run:
+there is no verdict, and re-adding `agent:review` (§3) retries. The state worth knowing is the
+absent one — a commit with no `agent-review` status has not been reviewed, which is deliberate
+rather than a gap. A status belongs to a commit, so a push leaves the new head with no verdict
+instead of carrying a stale *ready to merge* over code nobody read. The status history on the pull
+request is also the whole record of what earlier rounds said; nothing else keeps one.
+
+If no verdict arrives on *any* pull request, the caller is missing `statuses: write` — the review
+still posts, so there is nothing on the pull request to say so. That is §4, and `doctor` reports it.
+
+**The loop keeps it current, and stops short of your hand.** A `fix` run that pushed asks for its
+own re-review, so a round closes itself out rather than leaving *add `agent:fix`* standing over a
+branch that was already fixed; a clean `agent:update-branch` refresh copies the verdict on to the
+merge commit it makes, and one that had to resolve conflicts asks for a review of what it wrote
+instead. What no workflow here does is add `agent:fix`. That label is the human hand in the loop,
+and the table above is where you are asked for it.
+
+### The pull request list as an inbox
+
+`status:` in a GitHub search reads the head commit's combined state, so a saved search per state
+covers every open pull request the loop has ruled on:
+
+- `is:pr is:open status:success` — ready to merge.
+- `is:pr is:open status:failure` — waiting on a fix, or on you.
+
+*Combined* means every check on the commit and not only this one. A pull request whose tests are red
+is in the second search whatever its verdict says, and one whose checks are still running is in
+neither. So the pair is a queue rather than a verdict filter — which is the right shape for it
+anyway, since the thing you act on is the line you read when you open one.
+
+### Making `agent-review` a required status check — later, if at all
+
+Once the verdicts have proven themselves, `agent-review` can go into your branch protection rule as
+a **required status check**: no merge until a review has posted `success` on the head commit.
+Nothing here does that and nothing here will — it is a repository setting, added by hand, and the
+reason to wait is that it moves who pays for a wrong verdict. Today one you disagree with costs you
+the minute it takes to read the review and merge anyway. Required, it blocks the merge until a
+review says otherwise, so a verdict that is flaky is a repository where nothing merges.
+
+Two consequences to weigh before switching it on rather than after:
+
+- **A pull request the loop never reviewed carries no status**, and a required check that is absent
+  is not a check that passed. Your own one-line fix, pushed and opened by hand, stops being
+  mergeable until you label it `agent:review`.
+- **The second round is strict on purpose.** A fix round that pushed gets a verification review,
+  and that round cannot answer *ready after a fix* — a finding that survived a fix round derives
+  *needs you* instead, on the grounds that a second fix has no more reason to settle it than the
+  first did. That is the right default while you are the one deciding what happens next. As a merge
+  gate it means the second round sends you to the review rather than round the loop again, which is
+  a good deal more of your attention than the un-gated version asks for.
+
+---
+
 ## 4. Files to write
 
 **Nothing in the loop is copied any more.** As of #98 every workflow in the loop is split in two: a
@@ -526,7 +602,8 @@ does — it is about installing the runner it runs.
 > step warns rather than failing, on the grounds that a posted review is worth more than the line
 > summarising it. So nothing on the pull request says the grant is missing, which is why `doctor`
 > reports it as an error. Newer than the five scopes above it, so a caller installed against an
-> earlier release has a review that works and a verdict that never arrives.
+> earlier release has a review that works and a verdict that never arrives. What the verdict says,
+> and what you do with each one, is §3b.
 
 > **`statuses: write` on update-branch is what keeps it**, for the same reason and with the same
 > silence when it is missing. A clean refresh copies the verdict from the commit that was reviewed

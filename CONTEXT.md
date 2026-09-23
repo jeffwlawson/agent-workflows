@@ -13,13 +13,19 @@ the middle. One workflow per label transition, near enough:
 |---|---|---|
 | `agent:implement` on an **issue** | `implement` or `implement-prd` | branch, implement, open a draft PR, request review |
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, mark ready |
-| `agent:fix` on a **PR** | `fix` | act on review feedback, reply, resolve threads |
+| `agent:fix` on a **PR** | `fix` | act on review feedback, reply, resolve threads, ask for a re-review if it pushed |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts |
 | `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
 sub-issue per run onto one branch, and re-adds its own label to advance.
+
+`fix` is the one row that adds a label of another row's: a run that pushed asks for the review of
+what it pushed, so the round it was given closes without a human labelling again. That is one hop
+and cannot cycle — review adds no trigger label of its own — and the review it asks for is a
+**second round**, which is barred from answering "ready after a fix" and so cannot ask for another
+fix (`docs/parity.md` §10). A fix run that pushed nothing asks for nothing.
 
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather

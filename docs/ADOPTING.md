@@ -549,10 +549,10 @@ does — it is about installing the runner it runs.
 
 > **`AGENT_PAT` defers two of these; it does not replace them, and `doctor` reports both as
 > failures whether or not you have one.** The checkout that pushes runs under
-> `${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}`, as do `gh pr create` and the `agent:review`
-> label that follows it on the `implement` pair. So with the PAT set, a caller missing
-> `contents: write` or `pull-requests: write` keeps working — until the token expires (§2), and
-> then loses a full agent pass to a 403 at the push. Nothing defers the calls the workflow token
+> `${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}`, as do `gh pr create` and every `agent:review`
+> label the loop adds itself — on the `implement` pair, and on a `fix` run that pushed. So with the
+> PAT set, a caller missing `contents: write` or `pull-requests: write` keeps working — until the
+> token expires (§2), and then loses a full agent pass to a 403 at the push. Nothing defers the calls the workflow token
 > serves: every label transition 403s the first time it runs, and on a **private** repository so
 > does `implement`'s preflight `gh pr list`, before any branch exists. The grants are what your
 > job has to hold; the PAT only decides when you find out.

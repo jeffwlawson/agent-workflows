@@ -22,6 +22,11 @@ import {
   VERDICT_CONTEXT,
   type CiResult,
 } from "../shared/review-output.js";
+import {
+  describeRound,
+  detectReviewRound,
+  unreadableRoundNote,
+} from "../shared/review-round.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
@@ -69,6 +74,15 @@ const readCiResult = (): CiResult => {
 try {
   const context = fetchPullRequestContext(PR_NUMBER);
 
+  // Which pass over this pull request this is, read off the repository before
+  // the token goes (#96). It changes what the agent is asked to do — round 2
+  // verifies that the last round's findings landed — and it changes what the
+  // derivation may conclude, which is the half that is not the agent's.
+  const round = detectReviewRound(PR_NUMBER);
+  console.log(
+    `Round: ${round.round}${round.unreadable === undefined ? "" : ` — assumed, because ${round.unreadable}`}.`,
+  );
+
   // A review proceeds on what survived a partial answer — but says so twice:
   // here, for whoever reads the run, and in the discussion the agent is handed.
   // An unreadable selection that is only *absent* is indistinguishable from a
@@ -99,6 +113,7 @@ try {
       LINKED_ISSUE: context.linkedIssue,
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
+      ROUND: describeRound(round),
       PR_DIFF: context.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
@@ -133,8 +148,14 @@ try {
   // the first thing a reader sees and the same sentence the commit status
   // carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
-  const verdict = deriveVerdict(result.output, { ci });
-  const summary = `${verdict.description}\n\n${result.output.summary}`;
+  const verdict = deriveVerdict(result.output, { ci, round: round.round });
+  // And a round nothing could establish says so in the body as well as in the
+  // brief. The agent was told it was a second round; what it cannot say — and
+  // what changes how a reader weighs the review — is that the round was the
+  // stricter reading rather than a fact about this pull request.
+  const summary = [verdict.description, unreadableRoundNote(round), result.output.summary]
+    .filter((part) => part !== undefined)
+    .join("\n\n");
   const body = `${summary}\n\n${followUpsBlock}`;
 
   writeJson("review_payload.json", {
@@ -181,7 +202,7 @@ try {
 
   console.log("Review complete.");
   console.log(
-    `Verdict: ${verdict.verdict} (${result.output.fixBeforeMerge.length} to fix before merge, checks ${ci}).`,
+    `Verdict: ${verdict.verdict} (${result.output.fixBeforeMerge.length} to fix before merge, checks ${ci}, round ${round.round}).`,
   );
   console.log(`Inline comments: ${validComments.length} kept of ${result.output.inlineComments.length} produced.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);

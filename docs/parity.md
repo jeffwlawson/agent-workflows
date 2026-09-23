@@ -547,6 +547,24 @@ expensive to rediscover.
 - **Never auto-cascade review → fix.** `agent:fix` → `agent:review` is safe *only* because review
   adds no trigger label, so every round still needs a human `agent:fix`. Automating the return leg
   closes a true cycle with no gate.
+
+  **Since #98 that safe leg is walked by the loop rather than by a human.** A `fix` run that
+  pushed adds `agent:review` itself, so a round closes itself out instead of leaving a fixed
+  branch whose verdict still reads "add agent:fix" — the state nothing re-checked, which is the
+  problem #96 exists to remove. Nothing above changes: review still adds no trigger label, so the
+  arrow stops at review, and `agent:fix` is still a human's to add.
+
+  A second bound now sits under the first, and it is what makes the leg safe to automate rather
+  than merely acyclic. The review a fix asks for is by construction a **round 2** (an earlier
+  verdict stands, and every commit since is the loop's own — `shared/review-round.ts`), and a
+  round-2 review can never produce "ready after a fix": findings that survived a fix round derive
+  "needs you" instead (#96 decision 5, enforced in `deriveVerdict`, not in the prompt). So the leg
+  cannot be walked twice off one human label — the second round's only outcomes are "ready to
+  merge" and a human.
+
+  And a fix run that pushed *nothing* requests nothing. The threads it replied to already say why
+  it declined, and the verdict standing on the head commit is still the right one: nothing has
+  happened for a review to be about.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
   is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this.
 

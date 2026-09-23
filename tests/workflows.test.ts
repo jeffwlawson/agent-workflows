@@ -1108,6 +1108,92 @@ describe("agent-review posts its verdict as a commit status", () => {
 });
 
 /**
+ * The fix round closes itself out (#96): a push asks for the review of what it
+ * pushed, instead of leaving a pull request whose verdict says "add agent:fix"
+ * on a branch where the fix has already landed.
+ *
+ * This is the `agent:fix` → `agent:review` leg that `docs/parity.md` §10
+ * already calls safe, and the property it rests on is unchanged — review adds
+ * no trigger label of its own, so there is no cycle to close. What is new is
+ * the bound underneath it: a round-2 review cannot answer "ready after a fix"
+ * (`deriveVerdict`), so this leg cannot be walked a second time off one human
+ * label.
+ *
+ * Nothing here has a runtime symptom when it breaks, which is why it is
+ * asserted against the workflow text. A request that never fires leaves a
+ * pushed fix sitting unreviewed and looking finished; one that fires on a run
+ * that pushed *nothing* asks for a review of a branch that did not move, which
+ * re-reviews the same commit and re-posts the verdict that already stood.
+ */
+describe("agent-fix asks for the re-review its own push needs", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const stepNamed = (name: string): Step | undefined => stepsOf(FIX).find((s) => s.name === name);
+  const request = (): Step | undefined => stepNamed("Request re-review");
+
+  /**
+   * Both arms of the push write the output, not just the one that pushed. An
+   * unset output is indistinguishable from a step that never ran, and those two
+   * differ in exactly what this gate has to know.
+   */
+  it("reports whether the branch actually moved", () => {
+    const push = stepNamed("Push branch");
+
+    expect(push?.id).toBe("push");
+    expect(push?.run ?? "").toContain('echo "pushed=true" >> "$GITHUB_OUTPUT"');
+    expect(push?.run ?? "").toContain('echo "pushed=false" >> "$GITHUB_OUTPUT"');
+  });
+
+  it("requests the review only when the fix pushed something", () => {
+    expect(request()?.if).toBe(
+      "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed == 'true'",
+    );
+    expect(request()?.run ?? "").toContain('--add-label "agent:review"');
+  });
+
+  /**
+   * Last of the success arms. The review reads the feedback on the pull
+   * request, so a request made before the replies and the top-level comments
+   * are posted starts a round that reads the round before it.
+   */
+  it("asks only once this run has said everything it has to say", () => {
+    const names = stepsOf(FIX).map((s) => s.name ?? "");
+
+    for (const earlier of ["Reply to and resolve review threads", "Post top-level comments"]) {
+      expect(names.indexOf("Request re-review")).toBeGreaterThan(names.indexOf(earlier));
+    }
+  });
+
+  /**
+   * The same PAT requirement every label transition in this loop carries: a
+   * label added with `GITHUB_TOKEN` triggers nothing, so the pull request would
+   * carry `agent:review` and simply sit there — the silent no-op
+   * `implement-prd`'s two adds are warned about in the same words.
+   */
+  it("warns loudly when AGENT_PAT is absent", () => {
+    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(request()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(request()?.run ?? "").toContain("::warning::");
+  });
+
+  /**
+   * …and fails the run when the add itself fails, naming the way out. The
+   * failure comment's generic remedy — re-add `agent:fix` — is the wrong one
+   * here: this run's threads are answered and resolved, so a second fix run
+   * finds nothing trusted to act on and refuses. Without the reason file the
+   * comment reads `(no reason file written)`, which is the signature of a run
+   * that never reached the runner at all.
+   */
+  it("fails with a reason a human can act on rather than swallowing the add", () => {
+    const run = request()?.run ?? "";
+
+    expect(run).toContain("set -euo pipefail");
+    expect(run).toContain("failure_reason.txt");
+    expect(run).toContain("exit 1");
+    expect(run).not.toContain("|| true");
+  });
+});
+
+/**
  * The filing half (#50): the workflow that turns a merged pull request's
  * recorded findings into triageable issues. Its own describe, and its own
  * constant, because it is the one `pull_request_target` reusable that is **not**

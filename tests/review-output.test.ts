@@ -401,21 +401,24 @@ describe("deriveVerdict", () => {
   });
 
   it("is ready to merge when nothing is wrong and the checks are green", () => {
-    expect(deriveVerdict(output(), { ci: "green" }).verdict).toBe("ready to merge");
+    expect(deriveVerdict(output(), { ci: "green", round: 1 }).verdict).toBe("ready to merge");
   });
 
   it("is ready after a fix when the findings are the only thing wrong", () => {
     expect(
       deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
         ci: "green",
+        round: 1,
       }).verdict,
     ).toBe("ready after a fix");
   });
 
   it("is needs you when the agent says a fix round cannot settle it", () => {
     expect(
-      deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), { ci: "green" })
-        .verdict,
+      deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), {
+        ci: "green",
+        round: 1,
+      }).verdict,
     ).toBe("needs you");
   });
 
@@ -429,7 +432,7 @@ describe("deriveVerdict", () => {
     ["red", "red"],
     ["unreadable", "unknown"],
   ])("is needs you when the checks are %s and the review found nothing", (_case, ci) => {
-    expect(deriveVerdict(output(), { ci: ci as CiResult }).verdict).toBe("needs you");
+    expect(deriveVerdict(output(), { ci: ci as CiResult, round: 1 }).verdict).toBe("needs you");
   });
 
   /**
@@ -441,6 +444,7 @@ describe("deriveVerdict", () => {
     expect(
       deriveVerdict(output({ fixBeforeMerge: ["the new test asserts the old behaviour"] }), {
         ci: "red",
+        round: 1,
       }).verdict,
     ).toBe("ready after a fix");
   });
@@ -449,8 +453,35 @@ describe("deriveVerdict", () => {
     expect(
       deriveVerdict(output({ fixBeforeMerge: ["a"], needsYou: "the wrong thing was built" }), {
         ci: "green",
+        round: 1,
       }).verdict,
     ).toBe("needs you");
+  });
+
+  /**
+   * **A round-2 review can never say "ready after a fix"** (#96, decision 5),
+   * and this is where that is enforced rather than in the prompt. The bound it
+   * holds is the loop's only one: `agent:fix` now asks for its own re-review,
+   * so a second round that could answer "add agent:fix" would be a cycle with
+   * no human in it. A prompt line would leave that to a model's judgement about
+   * its own output.
+   */
+  it("escalates a second round's findings to needs you rather than another fix", () => {
+    expect(
+      deriveVerdict(output({ fixBeforeMerge: ["the guard still runs after the return"] }), {
+        ci: "green",
+        round: 2,
+      }).verdict,
+    ).toBe("needs you");
+  });
+
+  /**
+   * And it is the *findings* that escalate, not the round. A fix round that
+   * worked is a pull request that is ready, which is the outcome the whole
+   * round exists to reach.
+   */
+  it("still reaches ready to merge in a second round that found nothing", () => {
+    expect(deriveVerdict(output(), { ci: "green", round: 2 }).verdict).toBe("ready to merge");
   });
 });
 

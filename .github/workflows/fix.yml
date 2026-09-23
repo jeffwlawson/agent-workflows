@@ -52,10 +52,12 @@ on:
         required: true
       AGENT_PAT:
         description: >-
-          User PAT, used to check the branch out and push it — a push made with
-          `GITHUB_TOKEN` starts no CI run on the resulting PR
-          (docs/ADOPTING.md §1). Optional: without it the push still lands, and
-          the PR simply gets no checks.
+          User PAT, used to check the branch out, push it, and add the
+          `agent:review` that asks for the re-review — neither a push nor a
+          label made with `GITHUB_TOKEN` triggers another workflow
+          (docs/ADOPTING.md §1). Optional, and both halves degrade rather than
+          fail: the push still lands and the PR simply gets no checks, and the
+          label still goes on but starts no review until a human re-adds it.
         required: false
 
 jobs:
@@ -232,15 +234,25 @@ jobs:
 
       # --force-with-lease pinned to the SHA we checked out: if anything else
       # advanced the branch during the run, refuse rather than clobber it.
+      #
+      # The output is what `Request re-review` below is gated on, and it is
+      # written on both arms rather than only on the one that pushed: an unset
+      # output is indistinguishable from a step that never ran, and the two
+      # differ in exactly the thing that step has to know. A push that *fails*
+      # writes neither, which is correct — `-e` ends the step there, and a
+      # branch that did not move is not one to ask for a review of.
       - name: Push branch
+        id: push
         if: steps.state.outputs.proceed == 'true' && success()
         run: |
           set -euo pipefail
           if [ -z "$(git log origin/"$BRANCH"..HEAD --oneline 2>/dev/null)" ]; then
             echo "No new commits — nothing to push."
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       # Reply into every thread the agent reported on, and resolve only the ones
       # it addressed. A declined thread keeps its reply but stays OPEN, so a
@@ -321,6 +333,49 @@ jobs:
               && echo "  posted comment ${i}" \
               || echo "  WARNING: failed to post comment ${i}"
           done
+
+      # The fix closes itself out: a push that changed the branch asks for the
+      # review of what it changed (#96). Last of the success arms, so the
+      # re-review is requested only once every thread has its reply and every
+      # top-level note is posted — the review reads that feedback, and a round
+      # that started first would read the round before it.
+      #
+      # **A run that pushed nothing requests nothing.** The threads it replied
+      # to already say why it declined, and the verdict standing on the head
+      # commit is still the right one: nothing has happened for a review to be
+      # about.
+      #
+      # This is the `agent:fix` → `agent:review` leg, which docs/parity.md §10
+      # already calls safe, and the invariant it rests on is unchanged: review
+      # adds no trigger label of its own, so this cannot cycle. What is new is
+      # the second bound under it — a round-2 review cannot answer "ready after
+      # a fix", so the leg cannot be walked twice off one human label.
+      #
+      # MUST use AGENT_PAT, like every other label this loop adds: a label
+      # added with GITHUB_TOKEN triggers nothing, so the PR would carry
+      # `agent:review` and simply sit there. Warn loudly rather than pretend it
+      # worked.
+      #
+      # And fail the run if the add itself fails, with a reason naming the way
+      # out. The generic remedy on the failure comment below — re-add
+      # `agent:fix` — is the wrong one here: this run's threads are answered
+      # and resolved, so a second fix run would find nothing trusted to act on
+      # and refuse.
+      - name: Request re-review
+        if: steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed == 'true'
+        env:
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
+            printf 'The fix is pushed, but `agent:review` could not be added, so no re-review was requested. Add `agent:review` to this PR by hand — re-adding `agent:fix` would find its threads already answered and refuse.\n' \
+              > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
+          fi
 
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && failure()

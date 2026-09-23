@@ -33,6 +33,30 @@ where it changes a conclusion you would otherwise draw.
 
 {{DISCUSSION}}
 
+# WHICH ROUND THIS IS
+
+{{ROUND}}
+
+**Round 1** is the review described everywhere else in this brief: read the change, and report what
+you find.
+
+**Round 2 is a verification pass.** An earlier review of this pull request stands, a fix round has
+pushed since, and the question is no longer *what is wrong with this change* but *did the last
+round's findings land, and did the new commits break anything?* In that case:
+
+- Take each finding the earlier review said had to be fixed before merge — they are in **EXISTING
+  FEEDBACK** above — and say, one at a time, whether the current change resolves it. One that did
+  not land is a `fixBeforeMerge` entry again, saying what is still missing rather than restating
+  the original finding.
+- Read the new commits for what they broke. A fix that resolves its own finding and regresses
+  something else is the failure this pass exists to catch, and nothing else is looking for it.
+- Anything else real you notice is a `followUps` entry, not a new thing to fix before merge. That
+  list is a complete restatement every round, so re-record the entries the earlier round listed
+  that are still true.
+- Open your summary by saying this is a verification of the earlier round. The reader is being
+  asked to look at a pull request they had already been told was nearly ready, and why is the first
+  thing they will want.
+
 # CI RESULTS
 
 The PR's other checks, waited for and collected before this review started. Some are

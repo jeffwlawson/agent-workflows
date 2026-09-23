@@ -135,16 +135,29 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
 };
 
 /**
+ * Which pass over this pull request a review is. 1 is the first review of these
+ * commits; 2 is the verification pass that follows a fix round's push, and is
+ * established from the repository rather than counted — see
+ * `shared/review-round.ts`.
+ *
+ * A union rather than a number, so the two values are the whole of it: a third
+ * round is a second round by everything that acts on this, and "how many times
+ * have we been round" is a question nothing here asks.
+ */
+export type ReviewRoundNumber = 1 | 2;
+
+/**
  * Everything the verdict depends on that is not in the review itself.
  *
- * An object rather than a positional argument because it is the seam the rest
- * of #96 arrives through: **which round this is** belongs here, and with it the
- * coercion that a round-2 review can never say "ready after a fix" — a second
- * round that still finds something to fix is a fix round that did not work,
- * which is a human's problem however clear the finding reads.
+ * An object rather than positional arguments, and `round` is required rather
+ * than defaulted: a default of 1 would be a caller that forgot the round
+ * silently getting the *weaker* reading, which is the one failure here with no
+ * symptom — a second round that says "ready after a fix" and sends the loop
+ * back around a fix that already did not work.
  */
 export interface VerdictInputs {
   readonly ci: CiResult;
+  readonly round: ReviewRoundNumber;
 }
 
 /**
@@ -160,7 +173,20 @@ export interface VerdictInputs {
  */
 export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): VerdictRow => {
   if (output.needsYou !== undefined) return VERDICTS["needs you"];
-  if (output.fixBeforeMerge.length > 0) return VERDICTS["ready after a fix"];
+  if (output.fixBeforeMerge.length > 0) {
+    // **A round-2 review can never say "ready after a fix"** (#96, decision 5),
+    // and it is enforced here rather than asked of the prompt. The fix round
+    // has already run and already pushed; findings that survived it are
+    // findings a second one has no more reason to settle than the first, and
+    // the loop's one bound is that a fix cannot ask for another fix. A prompt
+    // line would leave that bound to a model's judgement about its own output.
+    //
+    // It costs a true "ready after a fix" on the round where a fix broke
+    // something new and obvious, which reads as a human being asked to look at
+    // a PR they did not have to. That is the direction this is meant to fail
+    // in: the alternative is a cycle with no gate in it.
+    return inputs.round === 2 ? VERDICTS["needs you"] : VERDICTS["ready after a fix"];
+  }
   if (inputs.ci !== "green") return VERDICTS["needs you"];
   return VERDICTS["ready to merge"];
 };

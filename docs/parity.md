@@ -341,7 +341,7 @@ come up was *inside* one PRD.
 | **Every finding carries an id the workflow wrote** | ❌ | ➕ | #110. A hidden marker in each thread and each body entry, so a later round recognises a finding it has seen without matching its text. The model is told to write none: one it invented would be matched against a thread it never opened |
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query. Resolved threads are out of the rendered feedback, but no longer simply dropped: since #112 the query reads `resolvedBy`, and the ones a human closed come back as the *settled* list (below) |
 | **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review — round 1 included — is handed the open threads this loop opened and the open entries in the latest review body, each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
-| **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, and only a reply the **author gate** passed can close one at all |
+| **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
@@ -773,6 +773,14 @@ expensive to rediscover.
   finding that should have stayed open costs the decision — silently, since `resolutionReason` is
   readable nowhere afterwards. That is why the quote is the reply's whole content: a maintainer
   whose words were misread can see it in one glance and reopen the thread.
+
+  **The quote is evidence, not an attribution.** A `VerificationEntry` is `id`, `status` and `note`
+  — no field names *which* comment the review read as a refusal — so the closing reply says "this
+  review read a refusal here; the latest maintainer reply on the thread is this", and the brief
+  rules the decline on that same latest reply. Written the other way round it asserted "@x declined
+  this", which on a thread where two people spoke lands on whoever wrote last: a maintainer named
+  as having taken a decision they did not take, and — where the last word reversed an earlier
+  refusal — a finding retired on a reply asking for it to be fixed.
 - **A finding an earlier review missed counts against the merge, in every round.** A real problem a
   later review finds in code an earlier review already read is labelled *previously missed*, is a
   `fixBeforeMerge` finding like any other, and in round 2 therefore derives the round-2 *Changes
@@ -805,17 +813,44 @@ expensive to rediscover.
   line of text, and a record that badged what this round found and nothing it carried would be
   sorting half a list.
 - **The review body is a record, and its newest copy is the current statement.** Since #113 (#109,
-  decision 8) it is Copilot's overview in order — the assessment, one sentence naming what is
-  unresolved, the step in italics, `**Findings:** N`, then collapsible *Open* (this round's
-  entries marked *new*), *Resolved since last review* and *Previously missed*, then what the change
-  does, then the run. `shared/review-output.ts` is the one place that order is written down.
+  decision 8) it is Copilot's overview in order — `## Agent review`, the assessment, one sentence
+  naming what is unresolved, the step in italics, `**Findings:** N` with its severities, then
+  collapsible *Open* (this round's entries marked *new*), *Previously missed*, *Resolved since last
+  review* and *Follow-ups*, then *How this was checked* and *What changed in this PR*, then a rule
+  and the run. `shared/review-output.ts` is the one place that order is written down.
+
+  The heading is there because **every agent in the loop posts as `github-actions[bot]`**, so in a
+  timeline the overview and a fix run's thread replies are one author saying more things. The rule
+  above the run link is the body's **only** divider: between the groups it would read as a section
+  break in a list that is one record.
 
   Two rules make it a record rather than a rendering, and both are about which entries carry a
   finding id. An entry with **no thread** carries its id, because the newest body naming it is the
   only thing keeping it alive; an entry **with** one does not, because the thread is its record and
   a second copy is one a maintainer cannot close. And a **resolved** entry carries none in either
   case — an id written back would hand a closed finding to the next round as something still to
-  rule on.
+  rule on. A threaded entry carries a **link** instead, read off the thread's own comment; a fresh
+  finding carries neither, because its thread is opened by the same `addPullRequestReview` call
+  that posts the body and so has no URL while the body is being composed.
+- **The prose beside the record restates no finding, and is capped where it is read rather than
+  where it is asked for.** One 250-word `summary` mixed what the change is with what the reviewer
+  verified, and a prompt-only limit is one a model can talk its way past — #122's body was a
+  checklist and then every finding again as a paragraph. It is now `assessment` (one sentence
+  naming what is unresolved, under the heading, with a code-built fallback), `howChecked` (capped
+  in the schema, on every review) and `whatChanged` (a sentence and at most five lines, capped in
+  the schema).
+
+  `whatChanged` is also the one part of the body that is **not** on every review: it appears on the
+  first review of a pull request and on a later round 1 with commits nothing has described — a
+  human's push, or a conflict resolution — and is omitted on a round-2 verification and on a
+  re-review with nothing pushed since the last verdict (`describesTheChange`). Describing the
+  change again, at the top, to a reader handed that description last round is the body spending its
+  opening on something already read.
+- **A label name renders as code in the body and as plain text in the status, from one sentence.**
+  `VERDICTS` holds the plain wording because a commit status description renders no Markdown —
+  a backtick shows up in it literally — and the body decorates it on the way out. Two spellings in
+  the table would be two lines that can disagree, which is the failure the derived verdict exists
+  to remove.
 - **Every world-writable input is author-gated.** Issue and PR text reaches agents only from
   collaborators or our own bot. `agent:fix` pushes code, so an ungated input there steers commits.
 - **Agents never hold the GitHub token.** Context is fetched before the agent starts and the token

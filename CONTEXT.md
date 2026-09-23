@@ -59,14 +59,25 @@ decision. What makes the decline usable is the author gate rather than the readi
 decline typed by anyone at all is a finding that stays open.
 
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
-record, not a rendering of the latest pass: the assessment, one sentence on what is unresolved, the
-step, a count, then *Open*, *Resolved since last review* and *Previously missed*, then what the
-change does. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
+record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the
+review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,
+*Resolved since last review* and *Follow-ups*, then *How this was checked* and *What changed in
+this PR*, then a rule and the run. A group with nothing in it is omitted and that rule is the only
+divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
 and decides nothing else; a test permutes it across a review and holds the verdict identical. What
 makes it a record rather than a list is which entries carry a finding id: one with no thread does,
 because the newest body naming it is the only thing keeping it alive; one with a thread does not,
 because the thread is its record; and one this round closed carries none at all, or the next round
-would be handed a settled finding to rule on again.
+would be handed a settled finding to rule on again. A carried entry also carries a **link** to its
+thread, which sits under an older review; a fresh one cannot, because its thread is opened by the
+same call that posts the body.
+
+The prose beside the record is capped by the schema rather than asked for in the brief, and
+**restates no finding**: the findings are above it with their severities, and the one 250-word
+paragraph that mixed *what the change is* with *what the reviewer verified* is what made a body
+long enough to bury the record in it. *What changed in this PR* is also omitted on the rounds where
+the reader has already been handed it — a round-2 verification, and a re-review with nothing pushed
+since the last verdict (`shared/review-round.ts`'s `describesTheChange`).
 
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather

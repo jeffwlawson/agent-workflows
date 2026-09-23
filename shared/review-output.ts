@@ -8,6 +8,7 @@ import {
   parseSeverity,
   severityBadge,
   severityRank,
+  SEVERITIES,
   type Finding,
   type PlacedFinding,
   type Severity,
@@ -56,8 +57,68 @@ export interface FollowUp {
  */
 export const MAX_FOLLOW_UPS = 3;
 
-export interface ReviewOutput {
+/**
+ * What this pull request does, described and never evaluated (#109, decision 8
+ * as the maintainer settled it).
+ *
+ * Two fields rather than one paragraph, and both capped by the schema rather
+ * than only asked for in the brief: a prompt-only "under 250 words" is a limit
+ * with no enforcement behind it, and the body it produced ran long enough to
+ * bury the record above it.
+ */
+export interface WhatChanged {
+  /** One sentence. What this pull request is. */
   readonly summary: string;
+  /**
+   * What it changes, one line each. Description only — an evaluation belongs in
+   * a finding, where it is counted, or nowhere.
+   */
+  readonly changes: string[];
+}
+
+/** At most this many `changes` entries, enforced in the schema rather than asked for. */
+export const MAX_WHAT_CHANGED = 5;
+
+/**
+ * The hard limit on `howChecked`, in words. The brief asks for about a hundred;
+ * this is where that stops being a request.
+ *
+ * Truncated rather than refused, which is the choice `capFollowUps` and
+ * `parseFinding` both make: a reviewer that wrote a long paragraph about what
+ * it verified has not produced a broken review, and rejecting the output would
+ * lose every finding in it.
+ */
+export const MAX_HOW_CHECKED_WORDS = 100;
+
+export interface ReviewOutput {
+  /**
+   * **One sentence naming what is unresolved**, written by the review (#109,
+   * decision 8), and the line the body carries under its assessment heading.
+   *
+   * What it is for is the thing a count cannot say. *Changes recommended* is
+   * three words over one finding and over nine, and `**Findings:** 3` says how
+   * many rather than what — so this names the subjects: "Sequence validation,
+   * empty-column rules and undo-safe state handling have blocking defects."
+   *
+   * Optional, and a blank one is absent: the body falls back to a sentence
+   * built from the record, so a slot in the layout is never empty. Counts stay
+   * on the `**Findings:**` line and are not repeated here.
+   */
+  readonly assessment?: string;
+  /**
+   * What the reviewer actually verified — tests run, behaviour traced, files
+   * scanned. Rendered collapsed, on every review, under *How this was checked*.
+   *
+   * Capped at `MAX_HOW_CHECKED_WORDS`.
+   */
+  readonly howChecked?: string;
+  /**
+   * What the pull request does. Rendered collapsed under *What changed in this
+   * PR*, and **only on some reviews** — see `renderReviewBody`'s
+   * `showWhatChanged`, which is the caller's to decide because it is a fact
+   * about the round rather than about the review.
+   */
+  readonly whatChanged?: WhatChanged;
   /**
    * Every problem the review found in this pull request, as the model produced
    * them. Where each one is posted — a line thread, a file-level thread or an
@@ -338,6 +399,18 @@ export interface RecordEntry {
    * id written back would carry a closed finding into the next round.
    */
   readonly id?: string;
+  /**
+   * A link to the thread the entry lives in, where there is one to link to
+   * (#109, decision 8).
+   *
+   * Present on a **carried** entry and absent on a fresh one, which is a fact
+   * about GitHub rather than a choice: a fresh finding's thread is opened by
+   * the same `addPullRequestReview` call that posts this body, so its URL does
+   * not exist while the body is being composed — and its thread renders
+   * directly beneath the review anyway. A carried one's thread sits under an
+   * older review, several screens up, which is where the link earns its keep.
+   */
+  readonly url?: string;
   /** Whether this review is the one that raised it — rendered as *new*. */
   readonly isNew: boolean;
   /**
@@ -439,6 +512,7 @@ const carriedEntry = (finding: CarriedFinding, keepId: boolean): RecordEntry => 
   title: carriedClaim(finding),
   ...(finding.severity === undefined ? {} : { severity: finding.severity }),
   ...(keepId && finding.threadId === undefined ? { id: finding.id } : {}),
+  ...(finding.url === undefined ? {} : { url: finding.url }),
   isNew: false,
 });
 
@@ -494,8 +568,22 @@ export const reviewRecord = (parts: {
   readonly resolved: readonly CarriedFinding[];
 }): ReviewRecord => {
   const labelled = parts.placed.filter((placed) => isFixBeforeMerge(placed.finding));
-  const missed = labelled.filter((placed) => isPreviouslyMissed(placed.finding));
-  const fresh = labelled.filter((placed) => !isPreviouslyMissed(placed.finding));
+  // **And every finding the body is the only surface for**, labelled or not.
+  // A finding placed on a line or on a file gets a thread whatever it opens
+  // with, so a reader sees it either way; one placed in the body reaches a
+  // reader through this record and through nothing else, so a record that
+  // listed only the labelled ones posted an unlabelled one *nowhere* — with
+  // the runner still logging it as "in the body" and `docs/ADOPTING.md`
+  // telling an adopter to trust that counter.
+  //
+  // The label reader is lenient about how the label was written for the same
+  // reason (`labelled`, in `shared/review-findings.ts`); this is the case it
+  // cannot cover, where the model wrote no label at all.
+  const recorded = parts.placed.filter(
+    (placed) => isFixBeforeMerge(placed.finding) || placed.placement === "body",
+  );
+  const missed = recorded.filter((placed) => isPreviouslyMissed(placed.finding));
+  const fresh = recorded.filter((placed) => !isPreviouslyMissed(placed.finding));
 
   const open = worstFirst([
     ...fresh.map(placedEntry),
@@ -525,7 +613,11 @@ const entryLine = (entry: RecordEntry): string =>
   [
     "-",
     entry.severity === undefined ? undefined : severityBadge(entry.severity),
-    entry.title,
+    // Linked where there is a thread to link to, which is a carried entry and
+    // not a fresh one — see `RecordEntry.url`. The link wraps the title rather
+    // than sitting beside it as "(thread)", so the line a reader scans is the
+    // claim and the way to reach it is the claim.
+    entry.url === undefined ? entry.title : `[${entry.title}](${entry.url})`,
     entry.anchor === undefined ? undefined : `— \`${entry.anchor}\``,
     entry.isNew ? "*new*" : undefined,
     entry.id === undefined ? undefined : findingMarker(entry.id, entry.severity),
@@ -591,6 +683,49 @@ const renderGroup = (
 const plural = (count: number, one: string, many: string): string => (count === 1 ? one : many);
 
 /**
+ * The count line: how many are unresolved, and how they are rated.
+ *
+ * The number is `open` plus `missed` — what this pull request still owes — and
+ * the follow-ups are **not** in it, at any rating: they are what this pull
+ * request is not going to fix, and a count that mixed them would be a number a
+ * reader has to subtract before acting on.
+ *
+ * The breakdown lists only the ratings that occur, worst first, and is dropped
+ * entirely where nothing carries one — a restatement line has no finding behind
+ * it to rate, and `— 0 \`High\`, 0 \`Medium\`` is noise standing in for a fact.
+ */
+const findingsLine = (record: ReviewRecord): string => {
+  const entries = [...record.open, ...record.missed];
+  const counted = SEVERITIES.map((severity) => ({
+    severity,
+    count: entries.filter((entry) => entry.severity === severity).length,
+  })).filter(({ count }) => count > 0);
+
+  const breakdown = counted
+    .map(({ severity, count }) => `${count} ${severityBadge(severity)}`)
+    .join(", ");
+
+  return `**Findings:** ${record.findings}${breakdown === "" ? "" : ` — ${breakdown}`}`;
+};
+
+/**
+ * A label name the body mentions, rendered as code.
+ *
+ * One renderer rather than a second copy of each sentence, because the same
+ * words go to two surfaces that accept different text: a commit status
+ * description renders no Markdown at all, so backticks show up in it literally
+ * — `VERDICTS` therefore holds the plain wording, and this is what the body
+ * does to it on the way out. Every other place the loop names a label already
+ * writes it as code, and the review body was the one that did not.
+ *
+ * A label already in backticks is left alone, so this is safe to run over a
+ * line that was written with them.
+ */
+const BARE_LABEL = /(^|[^`])(agent:[a-z][a-z-]*)(?![`a-z-])/g;
+
+export const labelsAsCode = (line: string): string => line.replace(BARE_LABEL, "$1`$2`");
+
+/**
  * The one sentence under the heading: what is unresolved, in numbers.
  *
  * It is what the heading cannot say. *Changes recommended* is the same three
@@ -619,31 +754,86 @@ const unresolvedSentence = (record: ReviewRecord): string => {
 };
 
 /**
+ * The fixed heading the body opens with.
+ *
+ * Every agent in the loop posts as `github-actions[bot]`, so in the timeline a
+ * review overview and a fix run's thread replies look like the same author
+ * saying more things. A heading marks the one to read, and this wording matches
+ * the `agent-review` status and the `agent:review` label — the way Copilot's
+ * overview opens with "Copilot review overview".
+ *
+ * Level 2 rather than level 1: `#` renders very large inside a comment, and the
+ * assessment heading below it stays level 3.
+ */
+export const BODY_HEADING = "## Agent review";
+
+/**
+ * How this was checked, and what changed — the two collapsed sections that
+ * replaced one 250-word paragraph.
+ *
+ * Rendered from fields the schema caps rather than from prose the brief asked
+ * to be short, which is the whole of the change: the cap is the part a review
+ * cannot talk its way past.
+ */
+const renderHowChecked = (howChecked: string | undefined): string | undefined =>
+  howChecked === undefined
+    ? undefined
+    : ["<details>", "<summary><b>How this was checked</b></summary>", "", howChecked, "", "</details>"].join(
+        "\n",
+      );
+
+const renderWhatChanged = (whatChanged: WhatChanged | undefined): string | undefined => {
+  if (whatChanged === undefined) return undefined;
+
+  const lines = [
+    ...(whatChanged.summary === "" ? [] : [whatChanged.summary, ""]),
+    ...whatChanged.changes.map((change) => `- ${oneLine(change)}`),
+  ];
+  while (lines[lines.length - 1] === "") lines.pop();
+  if (lines.length === 0) return undefined;
+
+  return [
+    "<details>",
+    "<summary><b>What changed in this PR</b></summary>",
+    "",
+    ...lines,
+    "",
+    "</details>",
+  ].join("\n");
+};
+
+/**
  * The body as it is posted: the findings record decision 8 describes, in one
  * fixed order, and the one place that order is written down.
  *
- * The order is Copilot code review's own overview, which is the point — a
- * maintainer who has read one of those already knows where to look. The
- * assessment, then one sentence saying what is unresolved, then the step in
- * italics, then the count, then the three groups, then what the change does,
- * then the run that produced all of it.
+ * Top to bottom: the heading that says which comment this is, the assessment,
+ * the review's own sentence naming what is unresolved, the step in italics, the
+ * count, then *Open*, *Previously missed*, *Resolved since last review*,
+ * *Follow-ups*, *How this was checked* and *What changed in this PR*, then a
+ * rule and the run that produced it. The order is Copilot code review's own
+ * overview, which is the point — a maintainer who has read one of those already
+ * knows where to look.
  *
- * Three parts sit between the step and the count and are not in decision 8's
- * list, because they qualify the assessment rather than the record: `needsYou`
- * is why another pass will not settle it, and it reached the derivation and
- * nobody else until #105; the round note is how the round was established, and
- * is a fact about the run rather than about the change. Both belong above the
- * count, where a reader meets them before deciding what the count means.
+ * Three rules about the groups are worth stating because breaking one of them
+ * is invisible. **A group with nothing in it is omitted**, so a disclosure
+ * widget never opens on nothing. **What is owed is expanded and what is done is
+ * folded**: *Open* and *Previously missed* are what the verdict has just told a
+ * reader to act on — and *Previously missed* counts toward that verdict, which
+ * is why it is not collapsed the way Copilot collapses its equivalent — while
+ * *Resolved*, *Follow-ups* and the two prose sections start closed. And **the
+ * only horizontal rule in the body is the one above the run link**: a divider
+ * between groups reads as a section break in a list that is one record.
  *
- * What this replaced was a flat checklist of `fixBeforeMerge` lines with no
- * severity, no order, and no memory: a finding resolved since the last round
- * vanished with nothing saying it ever existed, and a finding the last round
- * missed read exactly like one it had never seen. The record is the same
- * information with the rounds kept in it.
+ * Two parts sit between the step and the count and are in none of that, because
+ * they qualify the assessment rather than the record: `needsYou` is why another
+ * pass will not settle it, and it reached the derivation and nobody else until
+ * #105; the round note is how the round was established, and is a fact about
+ * the run rather than about the change. Both belong above the count, where a
+ * reader meets them before deciding what the count means.
  *
- * A function rather than a dozen lines in the runner, because this is the part
- * of the review a human acts on and the runner is a script with no test around
- * it.
+ * A function rather than two dozen lines in the runner, because this is the
+ * part of the review a human acts on and the runner is a script with no test
+ * around it.
  */
 export const renderReviewBody = (parts: {
   /**
@@ -653,6 +843,10 @@ export const renderReviewBody = (parts: {
    * heading's marker (see `label`), so the two surfaces cannot say different
    * things — and the heading is *not* repeated inside the step, which is why
    * the status's `description` is not what is rendered here.
+   *
+   * The step is put through `labelsAsCode` on the way in: the body renders
+   * Markdown and the status does not, so the same sentence is written once and
+   * decorated for the surface it is going to.
    */
   readonly verdict: VerdictRow;
   /** The review as the agent produced it, which is what the verdict was derived from. */
@@ -689,6 +883,31 @@ export const renderReviewBody = (parts: {
    */
   readonly resolved: readonly CarriedFinding[];
   /**
+   * The out-of-scope findings this review recorded, already capped, and what
+   * the cap cost.
+   *
+   * Rendered as a group like the others rather than appended after the body,
+   * which is where they used to land — below the run link, looking unlike
+   * everything above them. The **payload** is unchanged and still goes out with
+   * every review, empty list included: the filing half reads it on merge, and a
+   * round that recorded nothing has to be able to say so.
+   */
+  readonly followUps: readonly FollowUp[];
+  readonly droppedFollowUps: number;
+  /**
+   * Whether *What changed in this PR* is rendered at all.
+   *
+   * The caller's, because it is a fact about the **round** and not about the
+   * review: it belongs on the first review of a pull request and on a later
+   * round-1 review with commits on it no verdict has seen — a human push, or a
+   * conflict resolution — and nowhere else. A round-2 verification pass is
+   * answering an earlier review's findings, and a re-review with nothing pushed
+   * since the last verdict would be describing a change it has already
+   * described. *How this was checked* carries no such rule and appears on every
+   * review.
+   */
+  readonly showWhatChanged: boolean;
+  /**
    * The run that produced this review. Optional — it is a link, and a review
    * that could not name its own run is still a review — so a caller outside
    * Actions renders a body without one rather than failing.
@@ -697,21 +916,48 @@ export const renderReviewBody = (parts: {
 }): string => {
   const record = reviewRecord(parts);
 
-  return [
+  // The review's own sentence, and a sentence built from the record where it
+  // wrote none. The fallback is not a lesser version of the same thing: it says
+  // how many and where they came from, where the field says *what* — but an
+  // empty slot in a fixed layout reads as a rendering fault, so the body never
+  // has one.
+  //
+  // Blank is absent here as well as in the schema. The schema normalises what a
+  // model emits, and this is the same question asked of whatever a caller was
+  // handed — a body with an empty line under its heading is the failure either
+  // one of them missing it produces.
+  const written = parts.output.assessment?.trim();
+  const assessment = written === undefined || written === "" ? unresolvedSentence(record) : written;
+
+  const body = [
+    BODY_HEADING,
     `### ${parts.verdict.heading}`,
-    unresolvedSentence(record),
-    `_${parts.verdict.nextStep}_`,
+    assessment,
+    `_${labelsAsCode(parts.verdict.nextStep)}_`,
     parts.output.needsYou,
-    parts.roundNote,
-    `**Findings:** ${record.findings}`,
+    parts.roundNote === undefined ? undefined : labelsAsCode(parts.roundNote),
+    findingsLine(record),
     renderGroup("Open", record.open, true),
-    renderGroup("Resolved since last review", record.resolved, false),
     renderGroup("Previously missed", record.missed, true),
-    parts.output.summary === "" ? undefined : `**What changed in this PR**\n\n${parts.output.summary}`,
-    parts.runUrl === undefined ? undefined : `_Posted by [this workflow run](${parts.runUrl})._`,
+    renderGroup("Resolved since last review", record.resolved, false),
+    renderFollowUpsGroup(parts.followUps, parts.droppedFollowUps),
+    renderHowChecked(parts.output.howChecked),
+    parts.showWhatChanged ? renderWhatChanged(parts.output.whatChanged) : undefined,
+    // The only rule in the body, and it is here rather than between the groups
+    // because this is the only place the subject changes: everything above is
+    // the review, and this is the run that posted it.
+    parts.runUrl === undefined
+      ? undefined
+      : `---\n\n_Posted by [this workflow run](${parts.runUrl})._`,
+    // Last, and invisible. The filing half reads the latest one off the body
+    // (#47), so it goes out on every review including the one that recorded
+    // nothing — which is how a round retracts an earlier round's list.
+    followUpsPayload(parts.followUps, parts.droppedFollowUps),
   ]
     .filter((part) => part !== undefined && part !== "")
     .join("\n\n");
+
+  return body;
 };
 
 /**
@@ -783,11 +1029,67 @@ const optionalReason = (value: unknown, label: string): string | undefined => {
   return asString(value, label);
 };
 
+/**
+ * `howChecked`, held to `MAX_HOW_CHECKED_WORDS`.
+ *
+ * Truncated rather than refused. The words are display — a collapsed section
+ * saying what the reviewer verified — and the review they are part of carries
+ * the findings, so losing it over a long paragraph is the trade `capFollowUps`
+ * and `parseFinding` both refuse to make. The ellipsis is what says the cap
+ * bit, so a reader is not left thinking the sentence ended there.
+ */
+const cappedWords = (text: string, limit: number): string => {
+  const words = text.trim().split(/\s+/);
+  return words.length <= limit ? text.trim() : `${words.slice(0, limit).join(" ")}…`;
+};
+
+/**
+ * `whatChanged`, held to `MAX_WHAT_CHANGED` entries.
+ *
+ * The first five, not a chosen five: the order is the reviewer's account of the
+ * change, and re-ranking it here would need a judgement about which parts
+ * matter that nothing in this file can make — the same rule the follow-up cap
+ * follows.
+ */
+const parseWhatChanged = (value: unknown): WhatChanged | undefined => {
+  if (value === undefined || value === null) return undefined;
+
+  // A model prompted for two fields may still answer with the one this
+  // replaced. A bare string is the summary with nothing under it, which renders
+  // as a section rather than being dropped.
+  if (typeof value === "string") {
+    const summary = value.trim();
+    return summary === "" ? undefined : { summary, changes: [] };
+  }
+
+  const record = asRecord(value, "whatChanged");
+  const summary = record["summary"];
+  return {
+    summary: typeof summary === "string" ? oneLine(summary) : "",
+    changes: asArray(record["changes"] ?? [], "whatChanged changes")
+      .map((change, index) => asString(change, `whatChanged change ${index + 1}`))
+      .slice(0, MAX_WHAT_CHANGED),
+  };
+};
+
 export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
   const record = asRecord(value, "review output");
   const needsYou = optionalReason(record["needsYou"] ?? record["needs_you"], "needsYou");
+  // Blank-normalised exactly as `needsYou` is: omitted, `null`, `""` and
+  // `"   "` all mean the same thing from a model, and read as present this
+  // would put an empty line where the body's one sentence should be.
+  const assessment = optionalReason(record["assessment"], "assessment");
+  const howChecked = optionalReason(record["howChecked"] ?? record["how_checked"], "howChecked");
+  // `summary` was one 250-word paragraph until the two fields split it, and a
+  // model prompted for the new shape still reaches for the old one. It is read
+  // as *what changed*, never as the assessment: the one thing the brief now
+  // forbids that paragraph is restating the findings, and feeding it to the
+  // sentence under the heading would be putting it back above them.
+  const whatChanged = parseWhatChanged(record["whatChanged"] ?? record["what_changed"] ?? record["summary"]);
   return {
-    summary: asString(record["summary"], "summary"),
+    ...(assessment === undefined ? {} : { assessment }),
+    ...(howChecked === undefined ? {} : { howChecked: cappedWords(howChecked, MAX_HOW_CHECKED_WORDS) }),
+    ...(whatChanged === undefined ? {} : { whatChanged }),
     // Both spellings, because the field was `inlineComments` until placement
     // stopped being the model's to state (#110) and a model prompted for one
     // shape still reaches for the other.
@@ -942,34 +1244,50 @@ export const parseFollowUpsBlock = (
 };
 
 /**
- * The block appended to the review body: one `<details>`, two readers.
+ * The payload, and nothing a reader can see.
  *
- * Visible and collapsed, because an opt-out the author cannot see is not an
- * opt-out — and the question it asks of them (*do I want these filed?*) is
- * answered by the titles alone. The bodies live only in the payload: a review
- * body has a hard 65,536-character ceiling whose overflow is a 422 that takes
- * the review's threads down with it, so the full stub text is not spent twice.
+ * **Written on every review, including the one that recorded nothing**, where
+ * it is the whole of what this contributes. That empty list is the
+ * *retraction*, and it is why this is called unconditionally: the filing half
+ * reads the latest list, so a round that recorded none has to be able to say
+ * so. Without it a round 2 that found the out-of-scope defect fixed leaves
+ * round 1's list standing as the newest, and the merge files a stub for work
+ * already done.
  *
- * **A run that recorded none writes the payload and nothing else** — the bare
- * comment, no `<details>`, invisible to a reader. That empty list is the
- * *retraction*, and it is why this is called on every review rather than only
- * on the ones with something to say: the reader takes the latest list, so a
- * round that records nothing has to be able to say so. Without it a round 2
- * that found the out-of-scope defect fixed leaves round 1's block standing as
- * the newest, and the merge files a stub for the thing the author just fixed.
- *
- * No `<details>` around it because there is nothing to offer: no finding to
- * show, and no opt-out to describe. An empty disclosure widget on every review
- * is how a channel teaches people to stop opening it.
+ * A review body has a hard 65,536-character ceiling whose overflow is a 422
+ * that takes the review's threads down with it, so the bodies live here and the
+ * visible group carries titles alone.
  */
-export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number): string => {
-  const payload = embeddableJson({
+export const followUpsPayload = (kept: readonly FollowUp[], dropped: number): string =>
+  `<!-- ${FOLLOW_UPS_MARKER} ${embeddableJson({
     version: FOLLOW_UPS_VERSION,
     dropped,
     followUps: kept,
-  });
-  const marker = `<!-- ${FOLLOW_UPS_MARKER} ${payload} -->`;
-  if (kept.length === 0) return marker;
+  })} -->`;
+
+/**
+ * The visible half: one collapsed group in the body, shaped like every other
+ * group in it (#109, decision 8 as the maintainer settled it).
+ *
+ * It used to be appended *after* the body, so it landed below the run link and
+ * looked unlike everything above it — the shape a reader learns to skip. What
+ * has not changed is what it is for: the opt-out has to be visible or it is not
+ * an opt-out, and the question it asks an author (*do I want these filed?*) is
+ * answered by the titles alone.
+ *
+ * Collapsed, and **not counted** on the `**Findings:**` line: that number is
+ * what blocks this pull request, and a follow-up is by definition what does
+ * not.
+ *
+ * `<code>` rather than backticks inside the `<summary>`, as `<b>` is used for
+ * the group names: the summary line is HTML, and Markdown inside one is not
+ * something to rely on for the sentence that teaches an author the opt-out.
+ */
+export const renderFollowUpsGroup = (
+  kept: readonly FollowUp[],
+  dropped: number,
+): string | undefined => {
+  if (kept.length === 0) return undefined;
 
   // Badged but **not reordered** — see `FollowUp.severity`. The order is the
   // reviewer's, the cap drops from the end of it, and the index into it is half
@@ -991,12 +1309,27 @@ export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number)
 
   return [
     "<details>",
-    `<summary>${kept.length} out-of-scope finding${kept.length === 1 ? "" : "s"} recorded to file when this pull request merges — remove the <code>${FOLLOW_UPS_LABEL}</code> label to skip them</summary>`,
+    `<summary><b>Follow-ups</b> — ${kept.length} · filed as issues on merge; remove <code>${FOLLOW_UPS_LABEL}</code> to skip</summary>`,
     "",
     ...items,
     ...truncation,
     "",
-    marker,
     "</details>",
   ].join("\n");
+};
+
+/**
+ * Both halves together, for the artifact a human debugging the run opens
+ * (`follow_ups.md`).
+ *
+ * The posted body composes the two separately — the group sits with the other
+ * groups and the payload goes last, invisibly — so this is not how the review
+ * is assembled. It is one call for "everything this run recorded", and having
+ * it here is what keeps the *format* described once: a second rendering in the
+ * runner would drift on the release that changes either half.
+ */
+export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number): string => {
+  const group = renderFollowUpsGroup(kept, dropped);
+  const payload = followUpsPayload(kept, dropped);
+  return group === undefined ? payload : `${group}\n\n${payload}`;
 };

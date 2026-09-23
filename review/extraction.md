@@ -36,11 +36,18 @@ dropped.
 - `landed` — the current code resolves it. The workflow closes its thread, quoting your `note` as
   the reason it closed.
 - `open` — it does not. It counts against this pull request exactly as one of your own findings
-  does, so do **not** also restate it in `fixBeforeMerge`: that counts it twice.
+  does, so do **not** write it up again anywhere: not in `fixBeforeMerge`, and not as one of your
+  own `findings`. Ruling it `open` is the whole of reporting it. A second write-up mints a second
+  identifier on the same problem — nothing matches them, by design — so it is counted twice, gets
+  a second thread, and is carried separately every round after.
 - `declined` — a maintainer replied on the thread refusing it ("won't fix", "this is intended").
   The workflow closes the thread as *won't fix*, quoting **them** rather than you, and it stops
   counting. This reports their decision; it is never yours to take. A reply you cannot read as a
   refusal is `open`, and so is one from anybody who is not a maintainer.
+
+  It must be the maintainer's **latest** reply on that thread. The workflow quotes that comment
+  and no other, so an earlier refusal a later reply revisits — "actually, please do fix this" — is
+  `open`. A thread is a conversation, and the last word in it is their position.
 
 `note` is one line, written to whoever raised the finding and whoever has to read the thread after
 it closes. An identifier you omit stays open, which is the safe direction and not a way to skip the
@@ -49,14 +56,16 @@ list.
 ## Findings that must be fixed — `fixBeforeMerge`
 
 Every finding is one of two kinds, and this is the first: the change is wrong, unsafe, or does not
-do what the linked issue asked, and must not merge as it stands. Label each one
-**fix before merge** in the summary and in its `findings` entry, *and* restate it as one line in
-`fixBeforeMerge`.
+do what the linked issue asked, and must not merge as it stands. Open its `findings` entry's body
+with **fix before merge**, *and* restate it as one line in `fixBeforeMerge`.
+
+Those two places and nowhere else. A finding is never restated in `whatChanged`, in `howChecked` or
+in `assessment` — those describe the change and the pass, and the record above them is where a
+finding is read and answered.
 
 Both, not either. The list is what is **counted** — the outcome posted to the pull request is
 derived from how many entries it has — and the two are written independently, so either can be the
-one you left something out of. The list is one line each; the evidence stays in the summary and the
-finding.
+one you left something out of. The list is one line each; the evidence stays in the finding.
 
 A real problem in code an earlier review of this pull request already read is **previously
 missed**: open its body with `**Previously missed.**` rather than `**Fix before merge.**`, and
@@ -71,6 +80,28 @@ overruled on: leave it out. Anything real but outside this pull request's scope 
 Every finding `body` is under 120 words: the label, then the defect, then its consequence, then the
 code you mean. The examples below are the shape, not the subject matter.
 
+## The three prose fields — `assessment`, `howChecked`, `whatChanged`
+
+They are three different jobs, and **none of them is a place to restate a finding**. Each finding
+is already above them in the posted body, with its severity and a link to where it was raised;
+saying it again here is the same problem read twice.
+
+- **`assessment`** — one sentence, under about 200 characters, naming **what is unresolved**:
+  *"Sequence validation, empty-column rules and undo-safe state handling are each wrong in a way
+  that has to be fixed first."*
+  The subjects, not the count — the count is on its own line below it. Where nothing is
+  unresolved, one sentence on why the change holds up. No verdict: one is derived from
+  `fixBeforeMerge`, `needsYou` and the check results, and it opens the body for you.
+- **`howChecked`** — under 100 words, and **truncated** past that rather than refused. What you
+  actually verified: which checks you ran or read, which behaviour you traced, which files you
+  read past the diff. It is what tells a reader how much weight this review carries. It is posted
+  on every review.
+- **`whatChanged`** — `summary`, one sentence saying what this pull request is, and `changes`, at
+  most **five** lines saying what it changes. Anything past the fifth is dropped from the end.
+  Description only: what the change *does*, never how well it does it. Some reviews do not post
+  this at all — a verification pass is not describing the change again — and which ones is decided
+  after you.
+
 ## When another pass will not settle it — `needsYou`
 
 One line naming which case it is — the wrong thing was built, the issue itself was wrong, or a
@@ -80,14 +111,14 @@ the one signal that says a human is needed.
 
 ## Out-of-scope findings — `followUps`
 
-A third channel, beside the summary and the findings, for a real problem this pull request does not
-own: a defect in a function the diff only calls, a missing test for behaviour it did not change, a
+A third channel, beside the findings, for a real problem this pull request does not own: a defect in a function the diff only calls, a missing test for behaviour it did not change, a
 value read twice. These are recorded on the pull request and filed as issues once it merges. The
-other two channels do not survive that: nobody reads a merged pull request's review, and a
+other channel does not survive that: nobody reads a merged pull request's review, and a
 `fixBeforeMerge` finding is a claim about *this* change, which an out-of-scope one is not.
 
-Every part of the bar is required, and a finding missing any of it belongs in the summary instead,
-and each one carries a `severity` like any other finding — it is written into the issue that is
+Every part of the bar is required, and a finding missing any of it is **left out** — there is no
+lesser channel to move it to, and a would-be follow-up you cannot evidence is one you have not
+established. Each one carries a `severity` like any other finding — it is written into the issue that is
 filed, where it is the first thing whoever triages it reads:
 
 - **a `location`** — `path` or `path:line`. **One path**, the one a reader should open first. It
@@ -101,8 +132,8 @@ filed, where it is the first thing whoever triages it reads:
 Excluded however true: style preferences, "consider adding tests someday", and refactors you cannot
 name a defect for.
 
-**This list is a complete restatement, every run.** *Raise only what is new* governs the summary and
-the findings; it does **not** govern this list. Only the most recent list is ever read, so a
+**This list is a complete restatement, every run.** *Raise only what is new* governs the findings;
+it does **not** govern this list. Only the most recent list is ever read, so a
 finding you raised in an earlier round and leave out of this one is lost — and an empty list is how
 a round says the earlier ones are no longer true. Re-record anything that still is.
 
@@ -115,9 +146,14 @@ would most want filed first.
 ```json
 <output>
 {
-  "summary": "Under 250 words, posted under **What changed in this PR** below the findings. What this pull request does, and how it holds up. Do not enumerate the findings again — each is listed above this with its severity and a link to where it was raised — so spend the words on what the change is and on what your confidence in it rests on. No verdict: one is derived from `fixBeforeMerge`, `needsYou` and the check results, and it opens the body for you.",
+  "assessment": "One sentence, under 200 characters, naming what is unresolved — the subjects, not the count.",
+  "howChecked": "Under 100 words. What you actually verified: the checks you ran, the behaviour you traced, the files you read.",
+  "whatChanged": {
+    "summary": "One sentence saying what this pull request is.",
+    "changes": ["What it changes, one line each. At most five. Description only, no evaluation."]
+  },
   "fixBeforeMerge": [
-    "One line per finding that must be fixed before this merges — the same findings the summary and the `findings` list carry."
+    "One line per finding that must be fixed before this merges — the same findings the `findings` list carries."
   ],
   "verified": [
     { "id": "f-1a2b3c4d", "status": "landed", "note": "The guard now runs before `apply()`, and a test covers the malformed input." },

@@ -27,6 +27,28 @@ export interface ReviewRound {
    * establish.
    */
   readonly unreadable?: string;
+  /**
+   * Whether this pull request carries commits **no verdict has been posted
+   * over** — the whole pull request on its first review, or whatever has landed
+   * since the last verdict on a later one.
+   *
+   * Beside `round` rather than derived from it, because the two answer
+   * different questions and the round conflates three cases this one separates:
+   * a first review (no verdict anywhere), a re-review with nothing pushed since
+   * the last verdict, and a round 1 a human's push or a conflict resolution
+   * made. All three are `round: 1`, and only the first and third are looking at
+   * code nothing has described yet.
+   *
+   * What reads it is *What changed in this PR*, which the body renders on those
+   * two and omits on the other (#109, decision 8 as the maintainer settled it):
+   * describing a change again, to a reader who was handed that description last
+   * round, spends the top of the body on something they have read.
+   *
+   * **False wherever the history could not be read.** The round goes to 2 in
+   * that case, which omits the section anyway, and a fact this file could not
+   * establish is not one to assert.
+   */
+  readonly unreviewedCommits: boolean;
 }
 
 /** One commit of the pull request, reduced to the three facts the round turns on. */
@@ -192,7 +214,11 @@ export const detectReviewRound = (prNumber: string): ReviewRound => {
   const repo = process.env["GH_REPO"] ?? "";
   const commits = readCommits(repo, prNumber);
   if (commits === undefined) {
-    return { round: 2, unreadable: "this pull request's commits could not be listed" };
+    return {
+      round: 2,
+      unreadable: "this pull request's commits could not be listed",
+      unreviewedCommits: false,
+    };
   }
 
   for (let i = commits.length - 1; i >= 0; i -= 1) {
@@ -204,6 +230,7 @@ export const detectReviewRound = (prNumber: string): ReviewRound => {
       return {
         round: 2,
         unreadable: `the commit statuses on ${commit.sha.slice(0, 7)} could not be read`,
+        unreviewedCommits: false,
       };
     }
     if (!reviewed) continue;
@@ -211,11 +238,30 @@ export const detectReviewRound = (prNumber: string): ReviewRound => {
     const since = commits.slice(i + 1);
     const onlyTheLoop = since.every((c) => c.author === LOOP_COMMIT_AUTHOR);
     const attempted = since.some((c) => c.author === LOOP_COMMIT_AUTHOR && c.parents < 2);
-    return { round: onlyTheLoop && attempted ? 2 : 1 };
+    return { round: onlyTheLoop && attempted ? 2 : 1, unreviewedCommits: since.length > 0 };
   }
 
-  return { round: 1 };
+  // No verdict anywhere on this pull request: the first review of it, and every
+  // commit on it is one nothing has described.
+  return { round: 1, unreviewedCommits: true };
 };
+
+/**
+ * Whether this review's body describes the change — *What changed in this PR*
+ * (#109, decision 8 as the maintainer settled it).
+ *
+ * The first review of a pull request, and any later **round 1** with commits on
+ * it no verdict has seen: a human's push, or a conflict resolution. Not a round
+ * 2, which is answering an earlier review's findings rather than meeting the
+ * change, and not a re-review with nothing pushed since the last verdict, which
+ * would be handing a reader a description they were handed last round.
+ *
+ * Here rather than in the runner, which is a script with no test around it, and
+ * not in the renderer, which knows nothing about rounds. One line, and it is
+ * the join of the two facts this file establishes.
+ */
+export const describesTheChange = (detected: ReviewRound): boolean =>
+  detected.round === 1 && detected.unreviewedCommits;
 
 /** The one line the prompt carries, so the agent knows which pass it is doing. */
 export const describeRound = (detected: ReviewRound): string => {

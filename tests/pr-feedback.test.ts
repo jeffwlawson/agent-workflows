@@ -1371,6 +1371,185 @@ describe("the findings an earlier review left open", () => {
 });
 
 /**
+ * **What a thread is anchored to**, which #110 gave a second answer.
+ *
+ * A null `line` used to mean one thing — GitHub calls a thread *outdated* once
+ * the code under it has moved — and now means two, because a **file-level**
+ * thread has no line and never had one. Told apart by `subjectType`, which is
+ * why that field is in the query.
+ *
+ * The failure is one a fix agent acts on. `src/queue.ts:? (outdated — the code
+ * here has changed since)` reaches the `inline` surface both agents read, the
+ * carried finding's one line, and the *Open* entries of the posted body — and
+ * it tells the agent the code moved when nothing did, which is the one reading
+ * that invites it to decline.
+ */
+describe("a thread anchored to a file rather than a line", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  const fileThread = (over: Record<string, unknown> = {}): unknown => ({
+    id: "PRRT_file",
+    isResolved: false,
+    subjectType: "FILE",
+    comments: {
+      nodes: [
+        {
+          path: "src/queue.ts",
+          line: null,
+          startLine: null,
+          originalLine: null,
+          originalStartLine: null,
+          body: "**Fix before merge.** the retry loop never terminates\n\n<!-- agent-finding f-1 -->",
+          ...AGENT,
+        },
+      ],
+    },
+    ...over,
+  });
+
+  it("says what it is, rather than that the code has moved", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [fileThread()] } }));
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.inline).toContain("src/queue.ts (the whole file)");
+    expect(feedback.inline).not.toContain("outdated");
+    expect(feedback.inline).not.toContain(":?");
+    expect(feedback.agentThreads[0]?.text).toBe(
+      "src/queue.ts (the whole file) — the retry loop never terminates",
+    );
+  });
+
+  /**
+   * And a line thread whose code *has* moved still says so. The two cases share
+   * a null `line` and nothing else, so the reading that fixed one must not
+   * have silenced the other.
+   */
+  it("still calls a moved line thread outdated", () => {
+    const moved = {
+      id: "PRRT_moved",
+      isResolved: false,
+      subjectType: "LINE",
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: null,
+            originalLine: 206,
+            body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-2 -->",
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [moved] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toContain(
+      "src/queue.ts:206 (outdated — the code here has changed since)",
+    );
+  });
+
+  /**
+   * A thread from before the field was selected answers nothing, and is read
+   * as a line thread — which is what every thread was until #110, and the
+   * reading that changes nothing for one.
+   */
+  it("reads a thread that answered no subjectType as a line thread", () => {
+    ghAnswers(() =>
+      response({ reviewThreads: { nodes: [fileThread({ subjectType: null })] } }),
+    );
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toContain(":?");
+  });
+});
+
+/**
+ * **A marker the model copied into its own body must not win.** The workflow
+ * appends its marker at the end of what it posts, so the *last* one is the one
+ * it wrote — and the `inline` surface renders markers verbatim into the prompt,
+ * which shows a model the exact syntax and this round's live ids.
+ *
+ * Read the first instead and a new thread impersonates an older finding:
+ * `carriedFindings` dedupes on the id, so one of the two threads becomes
+ * invisible and unclosable.
+ */
+describe("a body carrying two finding markers", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  it("is read as the marker the workflow wrote last", () => {
+    const doubled = {
+      id: "PRRT_one",
+      isResolved: false,
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: 206,
+            body: "**Fix before merge.** quoting <!-- agent-finding f-OLD high --> from the feedback\n\n<!-- agent-finding f-NEW low -->",
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [doubled] } }));
+
+    const [thread] = fetchPullRequestFeedback("12").agentThreads;
+    expect(thread?.findingId).toBe("f-NEW");
+    expect(thread?.severity).toBe("low");
+  });
+});
+
+/**
+ * **The link back to a thread** (#109, decision 8). A carried finding's thread
+ * sits under an older review, several screens up, and `path:line` as plain
+ * text is not something GitHub linkifies — so the URL is read here, off the
+ * comment that carries the marker, rather than composed from a number and a
+ * database id.
+ */
+describe("where a carried finding can be reached", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  const withUrl = (url: string | null): unknown => ({
+    id: "PRRT_one",
+    isResolved: false,
+    comments: {
+      nodes: [
+        {
+          url,
+          path: "src/queue.ts",
+          line: 206,
+          body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-1 -->",
+          ...AGENT,
+        },
+      ],
+    },
+  });
+
+  it("carries the comment's own permalink", () => {
+    ghAnswers(() =>
+      response({
+        reviewThreads: { nodes: [withUrl("https://github.com/o/r/pull/12#discussion_r1")] },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.url).toBe(
+      "https://github.com/o/r/pull/12#discussion_r1",
+    );
+    expect(fetchPullRequestContext("12").carriedFindings[0]?.url).toBe(
+      "https://github.com/o/r/pull/12#discussion_r1",
+    );
+  });
+
+  /** It is a link. A response that carried none renders an entry without one. */
+  it("carries no link rather than losing the finding", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [withUrl(null)] } }));
+
+    const [thread] = fetchPullRequestFeedback("12").agentThreads;
+    expect(thread?.url).toBeUndefined();
+    expect(thread?.findingId).toBe("f-1");
+  });
+});
+
+/**
  * **What a maintainer has already settled** (#109, decision 10; #112), read off
  * the two places a human can settle a finding: resolving its thread, and
  * replying to decline it.

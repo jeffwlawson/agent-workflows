@@ -423,24 +423,47 @@ other checks are for.
 
 ### Reading the review body
 
-The verdict is the one-line answer; the review body is the record it was derived from. It is laid
-out like Copilot code review's overview, in one fixed order: the assessment heading from the table
-above, one sentence saying what is unresolved, the next step in italics, `**Findings:** N`, then the
-findings in three collapsible groups, then what the change does, then a link to the run.
+The verdict is the one-line answer; the review body is the record it was derived from. It opens with
+`## Agent review`, which is how you tell it apart in a timeline where every agent in the loop posts
+as `github-actions[bot]`, and is then laid out like Copilot code review's overview, in one fixed
+order: the assessment heading from the table above, one sentence naming what is unresolved, the next
+step in italics, `**Findings:** N` with the severities behind it, then the findings in collapsible
+groups, then two collapsed sections on the review itself, then a rule and a link to the run. There
+is no other divider in it.
 
 The groups are the part worth learning, because they are what the body remembers from one round to
-the next:
+the next. They appear in this order, and one with nothing in it is left out rather than rendered
+empty:
 
 - **Open** — everything owed now: what this review found, and what an earlier review raised that
   this one could not verify as fixed. Entries this review is the first to raise are marked *new*,
   which is how a round that found nothing new and left three findings standing reads differently
   from a fresh review that went badly. Expanded on arrival.
+- **Previously missed** — findings this review made in code an earlier review had already read.
+  They count toward the verdict exactly like the rest, and they say the record was wrong about this
+  pull request rather than that the pull request got worse. Expanded, and rendered exactly like an
+  *Open* entry, because that is what it is with one more thing said about it.
 - **Resolved since last review** — findings an earlier review raised that this one checked against
   the current code and closed. Folded on arrival: it is the record's memory rather than your list.
   Nothing else keeps it, because a resolved thread drops out of the next round's view entirely.
-- **Previously missed** — findings this review made in code an earlier review had already read.
-  They count toward the verdict exactly like the rest, and they say the record was wrong about this
-  pull request rather than that the pull request got worse. Expanded on arrival.
+- **Follow-ups** — the out-of-scope findings this review recorded, filed as issues when the pull
+  request merges. Folded, and **not** in `**Findings:** N`: that number is what blocks this pull
+  request, and a follow-up is by definition what does not. Removing the `agent:follow-ups` label is
+  how you decline them.
+
+Two collapsed sections follow the groups, and neither is a place a finding is ever restated:
+
+- **How this was checked** — what the reviewer verified: checks it ran or read, behaviour it
+  traced, files it opened past the diff. It is how you weigh the review, and it is on every one.
+- **What changed in this PR** — one sentence and up to five lines describing the change. It appears
+  on the first review of a pull request, and again when commits have landed that no verdict has
+  seen — your own push, or a conflict resolution. A verification pass after a fix round omits it,
+  because you were handed that description last round.
+
+A carried entry's title is a **link to the thread it was raised in**, which is what saves you
+scrolling back through an older review to find it. A finding this review is the first to raise has
+no link, because its thread is opened by the same call that posts the body and renders directly
+beneath it.
 
 Every entry carries a **severity** — `High`, `Medium` or `Low` — and each group is sorted worst
 first. It is for reading and for ordering, and for nothing else: the verdict is not derived from it,

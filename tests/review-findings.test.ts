@@ -313,6 +313,50 @@ describe("the finding marker", () => {
   });
 });
 
+/**
+ * **A marker the model wrote is taken out of its body.** The prompt says to
+ * write no identifier of any kind, and this is the mechanical half of that —
+ * `docs/parity.md` §10: a channel the prompt bounds is also bounded
+ * mechanically.
+ *
+ * It is no longer hypothetical. The feedback surface renders live markers
+ * verbatim into the prompt, so the model is shown the exact syntax and this
+ * round's real ids; a body that copied one would post a thread carrying two,
+ * and a later round reading it would take the copied finding's identity for
+ * this one — two threads on one id, one of them invisible and unclosable.
+ */
+describe("an identifier the model smuggled into a body", () => {
+  it("is stripped before the workflow writes its own", () => {
+    const parsed = parseFinding({
+      path: "src/queue.ts",
+      line: 11,
+      body: `**Fix before merge.** the guard runs after the return\n\n${findingMarker("f-OLD", "high")}`,
+    });
+
+    expect(parsed.body).not.toContain("f-OLD");
+    expect(parseFindingMarkers(parsed.body)).toEqual([]);
+    expect(parsed.body.trimEnd()).toBe("**Fix before merge.** the guard runs after the return");
+  });
+
+  /**
+   * So the thread carries exactly one marker, and it is the workflow's. The
+   * reader takes the **last** one (`shared/pr-feedback.ts`), which is the
+   * second guard behind this one rather than a substitute for it.
+   */
+  it("leaves one marker on the posted thread, which is the one the workflow wrote", () => {
+    const parse = (value: unknown): Finding =>
+      parseFinding({ path: "src/queue.ts", line: 11, ...(value as object) });
+    const smuggled = parse({
+      body: `**Fix before merge.** a claim ${findingMarker("f-OLD")}`,
+    });
+
+    const [thread] = reviewThreads(place([smuggled]));
+
+    expect(thread?.body).not.toContain("f-OLD");
+    expect(parseFindingMarkers(thread?.body ?? "").map((m) => m.id)).toEqual(["f-1"]);
+  });
+});
+
 describe("reviewMutation", () => {
   const mutation = reviewMutation({
     pullRequestId: "PR_kwDOabc",
@@ -382,6 +426,20 @@ describe("a finding an earlier review missed", () => {
     "Previously missed: the cache key omits the tenant",
   ])("reads the label past whatever emphasis it was written in: %s", (body: string) => {
     expect(isPreviouslyMissed(missed(body))).toBe(true);
+    expect(openingClaim(body)).toBe("the cache key omits the tenant");
+  });
+
+  /**
+   * The drift a model actually produces. The label is what makes a finding
+   * *counted*, so a body the reader refuses is a finding the verdict does not
+   * see — and `^[\\s*_]*` refused both of these.
+   */
+  it.each([
+    "### Fix before merge\n\nthe cache key omits the tenant",
+    "> **Fix before merge.** the cache key omits the tenant",
+    "### Previously missed\n\nthe cache key omits the tenant",
+  ])("reads a label a model wrote as a heading or inside a quote: %s", (body: string) => {
+    expect(isFixBeforeMerge(missed(body))).toBe(true);
     expect(openingClaim(body)).toBe("the cache key omits the tenant");
   });
 

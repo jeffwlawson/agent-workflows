@@ -3943,20 +3943,47 @@ describe("the adoption doc says what to do with each verdict", () => {
       },
     });
 
-    // One entry in each of the three groups, so every heading is rendered.
+    // One entry in every group, so every heading a reader can meet is rendered.
     const body = renderReviewBody({
       verdict: VERDICTS["changes recommended"],
-      output: { summary: "", findings: [], followUps: [], fixBeforeMerge: [], verified: [] },
+      output: {
+        findings: [],
+        followUps: [],
+        fixBeforeMerge: [],
+        verified: [],
+        howChecked: "Ran the suite.",
+        whatChanged: { summary: "It moves thread resolution to the review.", changes: [] },
+      },
       placed: [
         labelled("f-open", FIX_BEFORE_MERGE_LABEL),
         labelled("f-missed", PREVIOUSLY_MISSED_LABEL, { severity: "low" }),
       ],
       stillOpen: [],
       resolved: [{ id: "f-done", threadId: "PRRT_one", text: "the cache key omits the tenant" }],
+      followUps: [
+        {
+          title: "Leak in parse()",
+          location: "src/other.ts:88",
+          body: "evidence",
+          severity: "medium",
+        },
+      ],
+      droppedFollowUps: 0,
+      showWhatChanged: true,
     });
 
+    // `<b>` names a group; `Follow-ups` carries a trailing clause in its own
+    // summary line, so the name is taken from the bold element rather than
+    // from the line.
     const groups = [...body.matchAll(/<summary><b>(.*?)<\/b>/g)].map(([, title]) => title ?? "");
-    expect(groups).toHaveLength(3);
+    expect(groups).toEqual([
+      "Open",
+      "Previously missed",
+      "Resolved since last review",
+      "Follow-ups",
+      "How this was checked",
+      "What changed in this PR",
+    ]);
     for (const group of groups) {
       expect(group).not.toBe("");
       expect(section()).toContain(`**${group}**`);

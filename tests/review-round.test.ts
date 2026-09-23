@@ -12,6 +12,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
 import { execFileSync } from "node:child_process";
 import {
   describeRound,
+  describesTheChange,
   detectReviewRound,
   LOOP_COMMIT_AUTHOR,
   unreadableRoundNote,
@@ -134,7 +135,7 @@ describe("detectReviewRound", () => {
   it("is round 1 when no commit carries a verdict yet", () => {
     ghAnswers({ commits: [[commit(FIRST), commit(HEAD)]], statuses: statuses() });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1 });
+    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
   });
 
   /**
@@ -148,7 +149,7 @@ describe("detectReviewRound", () => {
       statuses: statuses({ [MIDDLE]: [verdict()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 2 });
+    expect(detectReviewRound("12")).toEqual({ round: 2, unreviewedCommits: true });
   });
 
   /**
@@ -163,7 +164,7 @@ describe("detectReviewRound", () => {
       statuses: statuses({ [MIDDLE]: [verdict()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1 });
+    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
   });
 
   /**
@@ -180,7 +181,7 @@ describe("detectReviewRound", () => {
       },
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1 });
+    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
   });
 
   /**
@@ -195,7 +196,7 @@ describe("detectReviewRound", () => {
       statuses: statuses({ [FIRST]: [verdict("error")] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1 });
+    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
   });
 
   it("takes the latest verdict, not the first one it can find", () => {
@@ -207,7 +208,7 @@ describe("detectReviewRound", () => {
     // Read from FIRST it would be round 1 either way; what this pins is that a
     // human commit *after the latest* verdict is what decides, so an older
     // verdict cannot be the one a later loop-only stretch is measured from.
-    expect(detectReviewRound("12")).toEqual({ round: 1 });
+    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
   });
 
   /**
@@ -227,7 +228,7 @@ describe("detectReviewRound", () => {
       statuses: statuses({ [HEAD]: [verdict()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1 });
+    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: false });
   });
 
   /**
@@ -243,7 +244,7 @@ describe("detectReviewRound", () => {
       statuses: statuses({ [MIDDLE]: [verdict()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1 });
+    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
   });
 
   /** And a fix that was attempted stays a round 2, merge or no merge after it. */
@@ -253,7 +254,7 @@ describe("detectReviewRound", () => {
       statuses: statuses({ [FIRST]: [verdict()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 2 });
+    expect(detectReviewRound("12")).toEqual({ round: 2, unreviewedCommits: true });
   });
 
   it("reads every page, so a long pull request's head is not off the end", () => {
@@ -262,7 +263,7 @@ describe("detectReviewRound", () => {
       statuses: statuses({ [MIDDLE]: [verdict()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 2 });
+    expect(detectReviewRound("12")).toEqual({ round: 2, unreviewedCommits: true });
   });
 
   /**
@@ -288,7 +289,73 @@ describe("detectReviewRound", () => {
       }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 2 });
+    expect(detectReviewRound("12")).toEqual({ round: 2, unreviewedCommits: true });
+  });
+
+  /**
+   * **Whether there is code on this pull request nothing has described yet**,
+   * which the round alone cannot say: three different situations are all
+   * `round: 1`, and only two of them are looking at unreviewed commits.
+   *
+   * What reads it is *What changed in this PR*, rendered on those two and
+   * omitted on the third (#109, decision 8 as the maintainer settled it). The
+   * failure it prevents is silent and cheap to reintroduce — a body that
+   * describes the change again, at the top, to a reader who was handed that
+   * description last round.
+   */
+  describe("whether commits have landed that no verdict has seen", () => {
+    it("says yes on the first review, where no verdict exists anywhere", () => {
+      ghAnswers({ commits: [[commit(FIRST), commit(HEAD)]], statuses: statuses() });
+
+      expect(detectReviewRound("12").unreviewedCommits).toBe(true);
+    });
+
+    it("says no on a re-review with nothing pushed since the last verdict", () => {
+      ghAnswers({
+        commits: [[commit(FIRST), commit(HEAD)]],
+        statuses: statuses({ [HEAD]: [verdict()] }),
+      });
+
+      expect(detectReviewRound("12").unreviewedCommits).toBe(false);
+    });
+
+    it("says yes on a round 1 a human's push made", () => {
+      ghAnswers({
+        commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD, "A Maintainer")]],
+        statuses: statuses({ [MIDDLE]: [verdict()] }),
+      });
+
+      expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
+    });
+
+    /**
+     * And nothing at all where the history could not be read. The round goes
+     * to 2 there, which omits the section anyway; asserting a fact this file
+     * could not establish is the habit worth not having.
+     */
+    it("claims nothing when the commits could not be listed", () => {
+      ghAnswers({ commits: "gh: Not Found", statuses: statuses() });
+
+      expect(detectReviewRound("12").unreviewedCommits).toBe(false);
+    });
+  });
+
+  /**
+   * The join the body reads: whether this review describes the change at all.
+   *
+   * Here rather than in the runner, which has no test around it, and not in the
+   * renderer, which knows nothing about rounds.
+   */
+  describe("describesTheChange", () => {
+    it.each([
+      ["a first review", { round: 1, unreviewedCommits: true }, true],
+      ["a round 1 a push made", { round: 1, unreviewedCommits: true }, true],
+      ["a re-review with nothing pushed", { round: 1, unreviewedCommits: false }, false],
+      ["a verification pass", { round: 2, unreviewedCommits: true }, false],
+      ["an unreadable history", { round: 2, unreviewedCommits: false }, false],
+    ] as const)("is %s: %o", (_case, detected, expected) => {
+      expect(describesTheChange(detected)).toBe(expected);
+    });
   });
 
   describe("an unreadable history is round 2, and says so", () => {
@@ -351,8 +418,8 @@ describe("detectReviewRound", () => {
 
 describe("what a round is reported as", () => {
   it("tells the agent which pass it is doing", () => {
-    expect(describeRound({ round: 1 })).toContain("round 1");
-    expect(describeRound({ round: 2 })).toContain("round 2");
+    expect(describeRound({ round: 1, unreviewedCommits: true })).toContain("round 1");
+    expect(describeRound({ round: 2, unreviewedCommits: true })).toContain("round 2");
   });
 
   /**
@@ -362,14 +429,18 @@ describe("what a round is reported as", () => {
    * hardest state here to notice from the outside.
    */
   it("says a round it could not establish was the stricter reading", () => {
-    const detected = { round: 2, unreadable: "this pull request's commits could not be listed" } as const;
+    const detected = {
+      round: 2,
+      unreadable: "this pull request's commits could not be listed",
+      unreviewedCommits: false,
+    } as const;
 
     expect(describeRound(detected)).toContain("could not be listed");
     expect(unreadableRoundNote(detected)).toContain("could not be listed");
   });
 
   it("adds nothing to the summary of a round it did establish", () => {
-    expect(unreadableRoundNote({ round: 2 })).toBeUndefined();
-    expect(unreadableRoundNote({ round: 1 })).toBeUndefined();
+    expect(unreadableRoundNote({ round: 2, unreviewedCommits: true })).toBeUndefined();
+    expect(unreadableRoundNote({ round: 1, unreviewedCommits: true })).toBeUndefined();
   });
 });

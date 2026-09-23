@@ -31,7 +31,7 @@ it is. Where a refused selection renders one of these surfaces, what that surfac
 *unknown* rather than empty — the feedback shown may be incomplete, or there may be none of it
 shown at all — so do not read that absence as agreement or as a complete list. Where it renders
 none of them, what you were shown is complete and the refusal is recorded for its own sake.
-Review from what you were given, and say in your summary that a feedback surface was unreadable
+Review from what you were given, and say in `howChecked` that a feedback surface was unreadable
 where it changes a conclusion you would otherwise draw.
 
 {{DISCUSSION}}
@@ -59,9 +59,9 @@ round's findings land, and did the new commits break anything?* In that case:
 - Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
   stated with that list. It is a complete restatement every round, so re-record the entries the
   earlier round listed that are still true.
-- Open your summary by saying this is a verification of the earlier round. The reader is being
-  asked to look at a pull request they had already been told was nearly ready, and why is the first
-  thing they will want.
+- Say in `howChecked` that this pass is a verification of the earlier round, and what you checked
+  the earlier findings against. The reader is being asked to look at a pull request they had
+  already been told was nearly ready, and why is the first thing they will want.
 
 # FINDINGS AN EARLIER REVIEW LEFT OPEN
 
@@ -81,8 +81,12 @@ been settled: a human may have pushed the fix, or the finding may have been wron
 
 What follows from your answer is not yours to do and not yours to state. A finding you rule
 `landed` has its thread closed by the workflow, with your line as the reason. One you rule `open`
-counts against this pull request exactly as a finding of your own would, so do not restate it in
-`fixBeforeMerge` — it is already counted, and restating it counts it twice.
+counts against this pull request exactly as a finding of your own would, so **ruling it `open` is
+the whole of reporting it**: do not write it up again in `fixBeforeMerge`, and do not write it up
+again as one of your own `findings`. Identifiers are the workflow's and text is never matched, so
+a second write-up is a second finding — counted twice, given a second thread, and carried
+separately every round after. If there is more to say about it than the line beside its
+identifier, say it in that line.
 
 One you say nothing about **stays open**. That is deliberate, and it is the safe direction rather
 than an invitation to leave the list half-done: a finding nobody has checked is not a finding
@@ -98,6 +102,12 @@ A reply you cannot read as a decline leaves the thread `open`. Somebody explaini
 asking a question, or saying they will get to it has not declined anything, and reading a maybe as
 a no closes a finding nobody settled. Open is the safe direction here as everywhere else — a
 maintainer who meant to decline can say so again, and the next review will read it.
+
+**Their latest reply on the thread is the only one you may rule on.** The workflow quotes that
+comment and no other when it closes, so a refusal somebody has since revisited — "won't fix", then
+"actually, please do fix this" — is `open`. Two maintainers on one thread work the same way: the
+last of them is the position, and a thread closed under somebody else's words is a decision nobody
+took.
 
 Only a reply the workflow has **already gated** can close a thread this way. You will not see an
 untrusted author's comment at all, and a decline you attribute to one leaves the thread open
@@ -180,7 +190,7 @@ it. Saying the change is clean is a finding; wishing it were different is not.
 **The outcome is derived, not written.** A verdict, and the next step a human should take, is
 computed from `fixBeforeMerge`, from `needsYou` below and from the check results, then posted
 where GitHub shows it. So do not state a verdict of your own: what decides it is what you
-record, not what the summary calls it.
+record, not what your prose calls it.
 
 Quote the code or check result each finding rests on — a reader should be able to check you
 without re-deriving your reasoning.
@@ -204,6 +214,24 @@ Severity is **display and ordering only**. It is read by nobody deciding anythin
 comes from how many findings there are, from `needsYou` and from the check results, exactly as it
 did before severities existed. It is there so the worst thing you found is the first thing the
 reader meets. Rate honestly — inflating one buys nothing and costs the reader the ordering.
+
+# WHAT YOU WRITE BESIDE THE FINDINGS
+
+Three prose fields, and **none of them restates a finding.** Every finding is already in the
+posted body above them, with its severity and a link to where it was raised, so a second telling
+is the same problem read twice — which is exactly what made the body long enough to bury the
+record in it.
+
+- **`assessment`** — one sentence, under about 200 characters, naming **what is unresolved**:
+  *"Sequence validation, empty-column rules and undo-safe state handling are each wrong in a way
+  that has to be fixed first."*
+  Name the subjects, not the number — the count is on its own line below it, and the assessment is
+  what the count cannot say. Where nothing is unresolved, one sentence on why the change holds up.
+- **`howChecked`** — under 100 words on what you actually verified: the checks you ran or read,
+  the behaviour you traced, the files you opened past the diff. It is how a reader weighs this
+  review. Every review carries one.
+- **`whatChanged`** — one sentence on what this pull request is, and at most five lines on what it
+  changes. Description only: what it *does*, never how well. Not every review posts this one.
 
 # WHEN ANOTHER PASS WILL NOT SETTLE IT
 

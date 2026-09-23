@@ -18,6 +18,8 @@ import {
   FOLLOW_UPS_MARKER,
   hasFollowUpsBlock,
   MAX_FOLLOW_UPS,
+  MAX_HOW_CHECKED_WORDS,
+  MAX_WHAT_CHANGED,
   parseFollowUpsBlock,
   renderFollowUpsBlock,
   renderReviewBody,
@@ -139,6 +141,78 @@ const payloadOf = (block: string): { version: number; dropped: number; followUps
   if (!match?.[1]) throw new Error("no payload comment in the block");
   return JSON.parse(match[1]) as { version: number; dropped: number; followUps: FollowUp[] };
 };
+
+/**
+ * **The three prose fields**, and the two of them the schema holds to a size.
+ *
+ * A prompt-only "under 250 words" is a limit with nothing behind it, and the
+ * body it produced ran long enough to bury the record above it. So the cap is
+ * here, where a review cannot talk its way past it — and it **truncates**
+ * rather than refuses, which is the choice `capFollowUps` and `parseFinding`
+ * both make: a reviewer that wrote a long paragraph has not produced a broken
+ * review, and refusing it would lose every finding in it.
+ */
+describe("reviewOutputSchema: the prose beside the findings", () => {
+  it("keeps the review's assessment, and reads a blank one as absent", () => {
+    expect(parse({ assessment: "Undo-safe state handling is wrong here." }).assessment).toBe(
+      "Undo-safe state handling is wrong here.",
+    );
+    for (const blank of [undefined, null, "", "   "]) {
+      expect(parse({ assessment: blank }).assessment).toBeUndefined();
+    }
+  });
+
+  it("truncates howChecked at the hard limit rather than losing the review", () => {
+    const long = Array.from({ length: MAX_HOW_CHECKED_WORDS + 40 }, (_, i) => `w${i}`).join(" ");
+
+    const kept = parse({ howChecked: long }).howChecked ?? "";
+
+    expect(kept.split(/\s+/)).toHaveLength(MAX_HOW_CHECKED_WORDS);
+    expect(kept.endsWith("…")).toBe(true);
+    expect(kept.startsWith("w0 w1 ")).toBe(true);
+  });
+
+  it("leaves a howChecked inside the limit exactly as written", () => {
+    expect(parse({ howChecked: "Ran the suite; traced `apply()`." }).howChecked).toBe(
+      "Ran the suite; traced `apply()`.",
+    );
+  });
+
+  it("keeps the first five changes and drops the rest from the end", () => {
+    const changes = ["a", "b", "c", "d", "e", "f", "g"];
+
+    expect(parse({ whatChanged: { summary: "s", changes } }).whatChanged).toEqual({
+      summary: "s",
+      changes: ["a", "b", "c", "d", "e"],
+    });
+    expect(MAX_WHAT_CHANGED).toBe(5);
+  });
+
+  /**
+   * `summary` was one 250-word paragraph until the two fields split it, and a
+   * model prompted for the new shape still reaches for the old one. It is read
+   * as *what changed* and never as the assessment: the one thing the brief now
+   * forbids that paragraph is restating the findings, and feeding it to the
+   * sentence under the heading would be putting it back above them.
+   */
+  it("reads the field this replaced as what changed, never as the assessment", () => {
+    const out = parse({ summary: "It moves thread resolution to the review." });
+
+    expect(out.whatChanged).toEqual({
+      summary: "It moves thread resolution to the review.",
+      changes: [],
+    });
+    expect(out.assessment).toBeUndefined();
+  });
+
+  it("carries none of the three when the model wrote none of them", () => {
+    const out = parse({});
+
+    expect(out.assessment).toBeUndefined();
+    expect(out.howChecked).toBeUndefined();
+    expect(out.whatChanged).toBeUndefined();
+  });
+});
 
 describe("reviewOutputSchema: follow-ups", () => {
   it("defaults followUps to empty when the model emits none", () => {
@@ -399,7 +473,6 @@ describe("reviewOutputSchema: the two finding types", () => {
  */
 describe("deriveVerdict", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
-    summary: "s",
     findings: [],
     followUps: [],
     fixBeforeMerge: [],
@@ -742,9 +815,7 @@ describe("the verdict's commit status", () => {
  * records is the set the verdict was counted from.
  */
 describe("the posted review body", () => {
-  const SUMMARY = "The change does what the issue asked.";
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
-    summary: SUMMARY,
     findings: [],
     followUps: [],
     fixBeforeMerge: [],
@@ -757,9 +828,27 @@ describe("the posted review body", () => {
     placed: [],
     stillOpen: [],
     resolved: [],
+    followUps: [],
+    droppedFollowUps: 0,
+    showWhatChanged: true,
   };
   const render = (over: Partial<Parameters<typeof renderReviewBody>[0]> = {}): string =>
     renderReviewBody({ ...parts, ...over });
+
+  /** The same finding, in code an earlier review had already read. */
+  const missedFinding = (over: Partial<Finding> = {}): PlacedFinding[] => [
+    {
+      id: "f-missed",
+      placement: "line",
+      finding: finding({
+        path: "src/queue.ts",
+        line: 206,
+        title: "the guard runs after the return",
+        body: "**Previously missed.** the guard runs after the return",
+        ...over,
+      }),
+    },
+  ];
 
   /** One labelled finding on a line the diff covers, placed with a known id. */
   const placedFinding = (over: Partial<Finding> = {}): PlacedFinding[] => [
@@ -777,21 +866,58 @@ describe("the posted review body", () => {
   ];
 
   /**
-   * Decision 8's order, which is Copilot code review's overview: the assessment
-   * a reader recognises, what is unresolved, the step to take, then the count
-   * that sizes it. The step is italic and does **not** repeat the heading,
-   * which is what makes this a rendering of the verdict row rather than the
-   * status line pasted in.
+   * Decision 8's order, which is Copilot code review's overview: the heading
+   * that says which comment this is, the assessment a reader recognises, what
+   * is unresolved, the step to take, then the count that sizes it. The step is
+   * italic and does **not** repeat the heading, which is what makes this a
+   * rendering of the verdict row rather than the status line pasted in.
    */
-  it("opens with the assessment, a sentence, the step in italics, then the count", () => {
+  it("opens with its own heading, the assessment, a sentence, the step, then the count", () => {
     const body = render({ placed: placedFinding() });
 
-    expect(body.startsWith("### 🟡 Changes recommended\n\n")).toBe(true);
+    // Level 2, because `#` renders very large inside a comment — and the
+    // assessment heading stays level 3 directly beneath it.
+    expect(body.startsWith("## Agent review\n\n### 🟡 Changes recommended\n\n")).toBe(true);
     expect(body).toContain("1 finding is open.");
-    expect(body).toContain(`_${parts.verdict.nextStep}_`);
     expect(body).not.toContain(parts.verdict.description);
     expect(body.indexOf("1 finding is open.")).toBeLessThan(body.indexOf("**Findings:** 1"));
-    expect(body.indexOf(`_${parts.verdict.nextStep}_`)).toBeLessThan(body.indexOf("**Findings:**"));
+    expect(body.indexOf("_The fixes are clear.")).toBeLessThan(body.indexOf("**Findings:**"));
+  });
+
+  /**
+   * **Every agent in the loop posts as `github-actions[bot]`**, so in the
+   * timeline a review overview and a fix run's thread replies are the same
+   * author saying more things. The heading is what marks the one to read, and
+   * it matches the `agent-review` status and the `agent:review` label the way
+   * Copilot's overview opens with "Copilot review overview".
+   */
+  it("names itself in the first line, and puts the assessment in the second", () => {
+    const [first = "", second = ""] = render()
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+
+    expect(first).toBe("## Agent review");
+    expect(second).toBe(`### ${VERDICTS["changes recommended"].heading}`);
+  });
+
+  /**
+   * **A label name renders as code in the body and as plain text in the
+   * status**, from one copy of the sentence. A status description renders no
+   * Markdown at all, so a backtick shows up in it literally — which is why
+   * `VERDICTS` holds the plain wording and the body decorates it on the way
+   * out, rather than the table holding two spellings that can disagree.
+   */
+  it("renders a label name as code in the body, and leaves the status plain", () => {
+    const body = render();
+
+    expect(body).toContain("_The fixes are clear. Add `agent:fix` to start a fix round");
+    expect(body).not.toContain("Add agent:fix");
+    for (const row of Object.values(VERDICTS)) expect(row.description).not.toContain("`");
+  });
+
+  /** And any other label a line this file composes happens to name. */
+  it("renders a label in the round note as code too", () => {
+    expect(render({ roundNote: "_Re-run by adding agent:review._" })).toContain("`agent:review`");
   });
 
   /**
@@ -812,6 +938,41 @@ describe("the posted review body", () => {
     expect(render()).toContain("Nothing is open on this pull request.");
     expect(render()).toContain("**Findings:** 0");
   });
+
+  /**
+   * **The review's own sentence wins**, which is the point of the field: a
+   * count says how many and this says *what*, and the count is already on its
+   * own line two below. Modelled on Copilot's, which names the subjects.
+   */
+  it("carries the review's own sentence under the heading, in place of the count", () => {
+    const assessment = "Sequence validation and undo-safe state handling are each wrong here.";
+    const body = render({ placed: placedFinding(), output: output({ assessment }) });
+
+    expect(body).toContain(`### 🟡 Changes recommended\n\n${assessment}\n\n_`);
+    expect(body).not.toContain("1 finding is open.");
+    // Once, not twice: the sentence's job is to be the first thing read, and a
+    // second copy lower down is the body repeating itself.
+    expect(body.split(assessment)).toHaveLength(2);
+    // And the counting stays where a reader looks for it.
+    expect(body).toContain("**Findings:** 1");
+  });
+
+  /**
+   * A blank one is an absent one — the same four shapes `needsYou` normalises —
+   * because an empty line in a fixed layout reads as a rendering fault. The
+   * fallback says less, and saying less is not the same as saying nothing.
+   */
+  it.each([undefined, "", "   "] as const)(
+    "falls back to a sentence built from the record when the field is %p",
+    (assessment) => {
+      const built = render({
+        placed: placedFinding(),
+        output: output(assessment === undefined ? {} : { assessment }),
+      });
+
+      expect(built).toContain("1 finding is open.");
+    },
+  );
 
   /**
    * And says what closed, which is the half a body with no memory could not:
@@ -847,19 +1008,55 @@ describe("the posted review body", () => {
   });
 
   /**
-   * Collapsible, not collapsed. *Open* is what the verdict has just told a
-   * reader to act on, so a disclosure widget over it would be one more click
-   * between the line and the work; *Resolved since last review* is the record's
-   * memory and starts folded.
+   * Collapsible, not collapsed. *Open* and *Previously missed* are what the
+   * verdict has just told a reader to act on, so a disclosure widget over
+   * either would be one more click between the line and the work — and
+   * *Previously missed* counts toward that verdict, which is why it is not
+   * folded the way Copilot folds its equivalent. *Resolved since last review*
+   * is the record's memory and starts closed.
    */
   it("expands what is owed and folds what is done", () => {
     const body = render({
-      placed: placedFinding(),
+      placed: [...placedFinding(), ...missedFinding()],
       resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding" }],
     });
 
     expect(body).toContain("<details open>\n<summary><b>Open</b> — 1</summary>");
+    expect(body).toContain("<details open>\n<summary><b>Previously missed</b> — 1</summary>");
     expect(body).toContain("<details>\n<summary><b>Resolved since last review</b> — 1</summary>");
+  });
+
+  /**
+   * And in that order: what is owed, then what the record was wrong about,
+   * then what closed. *Resolved* used to sit between the two expanded groups,
+   * which put a folded widget in the middle of the list a reader is acting on.
+   */
+  it("orders the groups Open, Previously missed, Resolved", () => {
+    const body = render({
+      placed: [...placedFinding(), ...missedFinding()],
+      resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding" }],
+    });
+
+    expect([...body.matchAll(/<summary><b>(.*?)<\/b>/g)].map(([, title]) => title)).toEqual([
+      "Open",
+      "Previously missed",
+      "Resolved since last review",
+    ]);
+  });
+
+  /**
+   * A *previously missed* entry is formatted exactly like an *Open* one —
+   * badge, claim, anchor, the *new* mark — because it is one, with one more
+   * thing said about it. A group that rendered its entries differently would
+   * read as a lesser kind of finding, which is the opposite of decision 4.
+   */
+  it("renders a previously missed entry exactly as it renders an open one", () => {
+    const missed = render({ placed: missedFinding({ severity: "high" }) });
+    const open = render({ placed: placedFinding({ severity: "high" }) });
+    const entryOf = (body: string): string =>
+      body.split("\n").find((line) => line.startsWith("- ")) ?? "";
+
+    expect(entryOf(missed)).toBe(entryOf(open));
   });
 
   it("drops a group with nothing in it rather than showing an empty widget", () => {
@@ -1059,22 +1256,150 @@ describe("the posted review body", () => {
   });
 
   /**
-   * The prose last but one, under a heading that says what it is for. The
-   * findings are above it as a list, so the summary's job is the change rather
-   * than a second telling of them.
+   * **A carried entry links to the thread it lives in** (#109, decision 8).
+   * That thread sits under an *older* review, several screens up, which is
+   * where a link earns its keep — and where `path:line` as plain text, which
+   * GitHub does not linkify, left a reader to go and find it.
    */
-  it("puts the agent's prose under what changed, after the record", () => {
-    const body = render({ placed: placedFinding() });
+  it("links a carried entry to the thread it was raised in", () => {
+    const body = render({
+      stillOpen: [
+        {
+          id: "f-1",
+          threadId: "PRRT_one",
+          url: "https://github.com/o/r/pull/12#discussion_r1",
+          text: "src/a.ts:4 — the cache key omits the tenant",
+        },
+      ],
+    });
 
-    expect(body).toContain(`**What changed in this PR**\n\n${SUMMARY}`);
-    expect(body.indexOf("**Findings:**")).toBeLessThan(body.indexOf("**What changed in this PR**"));
+    expect(body).toContain(
+      "- [src/a.ts:4 — the cache key omits the tenant](https://github.com/o/r/pull/12#discussion_r1)",
+    );
   });
 
-  it("links the run that produced it, and renders none when it has no run to name", () => {
-    expect(render({ runUrl: "https://github.com/o/r/actions/runs/7" })).toContain(
-      "_Posted by [this workflow run](https://github.com/o/r/actions/runs/7)._",
+  /**
+   * And a **fresh** one carries none, which is a fact about GitHub rather than
+   * a choice: its thread is opened by the same `addPullRequestReview` call that
+   * posts this body, so there is no URL to write while the body is being
+   * composed — and its thread renders directly beneath this review anyway.
+   */
+  it("leaves a fresh entry unlinked, since its thread does not exist yet", () => {
+    expect(render({ placed: placedFinding() })).not.toContain("](http");
+  });
+
+  /**
+   * The follow-ups are a **group** now, shaped like the others and placed with
+   * them, rather than a block appended below the run link where it looked
+   * unlike everything above it. Collapsed, because it is not what blocks this
+   * pull request — and **not counted** on the `**Findings:**` line for the same
+   * reason.
+   */
+  it("renders the follow-ups as a collapsed group after Resolved, uncounted", () => {
+    const body = render({
+      placed: placedFinding(),
+      followUps: [followUp({ title: "Leak in parse()", location: "src/other.ts:88" })],
+    });
+
+    expect(body).toContain("<details>\n<summary><b>Follow-ups</b> — 1 ·");
+    expect(body).toMatch(/remove <code>agent:follow-ups<\/code> to skip/);
+    expect(body).toContain("- `Medium` **Leak in parse()** — `src/other.ts:88`");
+    // Uncounted: the number is what blocks this pull request, and a follow-up
+    // is by definition what does not.
+    expect(body).toContain("**Findings:** 1");
+    expect(body.indexOf("<summary><b>Open</b>")).toBeLessThan(
+      body.indexOf("<summary><b>Follow-ups</b>"),
     );
+  });
+
+  /**
+   * **The payload is untouched** — content, version and all — and goes out on
+   * every review including the one that recorded nothing. The filing half reads
+   * it on merge, and an empty list is how a round retracts an earlier round's.
+   */
+  it("carries the follow-ups payload unchanged, empty list included", () => {
+    const list = [followUp({ title: "Leak in parse()", location: "src/other.ts:88" })];
+
+    expect(parseFollowUpsBlock(render({ followUps: list, droppedFollowUps: 2 }))).toEqual({
+      followUps: list,
+      dropped: 2,
+    });
+
+    const empty = render();
+    expect(empty).not.toContain("<summary><b>Follow-ups</b>");
+    expect(hasFollowUpsBlock(empty)).toBe(true);
+    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0 });
+  });
+
+  /**
+   * *How this was checked* is what tells a reader how much weight the review
+   * carries, and it is on every one of them. Collapsed, because it is
+   * supporting evidence rather than the answer.
+   */
+  it("folds how this was checked under the record, on every review", () => {
+    const body = render({ output: output({ howChecked: "Ran the suite; traced `apply()`." }) });
+
+    expect(body).toContain(
+      "<details>\n<summary><b>How this was checked</b></summary>\n\nRan the suite; traced `apply()`.",
+    );
+    expect(body.indexOf("**Findings:**")).toBeLessThan(body.indexOf("How this was checked"));
+  });
+
+  /**
+   * *What changed in this PR* is a sentence and up to five lines, and it is the
+   * last thing in the body before the run — the description a reader wants once
+   * they know what is owed, rather than the paragraph they had to read past.
+   */
+  it("folds what changed last, as a sentence over its bullets", () => {
+    const body = render({
+      output: output({
+        howChecked: "Ran the suite.",
+        whatChanged: { summary: "It moves thread resolution to the review.", changes: ["a", "b"] },
+      }),
+    });
+
+    expect(body).toContain(
+      "<details>\n<summary><b>What changed in this PR</b></summary>\n\nIt moves thread resolution to the review.\n\n- a\n- b",
+    );
+    expect(body.indexOf("How this was checked")).toBeLessThan(
+      body.indexOf("What changed in this PR"),
+    );
+  });
+
+  /**
+   * And it is omitted where the caller says so — a round-2 verification pass,
+   * or a re-review with nothing pushed since the last verdict. Describing the
+   * change again, at the top, to a reader who was handed that description last
+   * round is the body spending its opening on something already read.
+   */
+  it("omits what changed entirely when the round is not one that describes the change", () => {
+    const whatChanged = { summary: "It moves thread resolution to the review.", changes: [] };
+    const body = render({ output: output({ whatChanged }), showWhatChanged: false });
+
+    expect(body).not.toContain("What changed in this PR");
+    expect(body).not.toContain("It moves thread resolution to the review.");
+  });
+
+  /**
+   * **One horizontal rule in the whole body, directly above the run link.** A
+   * divider between the groups reads as a section break in a list that is one
+   * record; this one is where the subject actually changes — everything above
+   * is the review, and this is the run that posted it.
+   */
+  it("links the run under the body's only rule, and renders neither without one", () => {
+    const body = render({
+      placed: placedFinding(),
+      followUps: [followUp()],
+      output: output({ howChecked: "Ran the suite.", whatChanged: { summary: "x", changes: [] } }),
+      runUrl: "https://github.com/o/r/actions/runs/7",
+    });
+
+    expect(body).toContain(
+      "---\n\n_Posted by [this workflow run](https://github.com/o/r/actions/runs/7)._",
+    );
+    expect(body.split("\n").filter((line) => line.trim() === "---")).toHaveLength(1);
     expect(render()).not.toContain("workflow run");
+    expect(render().split("\n")).not.toContain("---");
   });
 });
 
@@ -1088,7 +1413,6 @@ describe("the posted review body", () => {
  */
 describe("the record and the count are one set", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
-    summary: "s",
     findings: [],
     followUps: [],
     fixBeforeMerge: [],
@@ -1114,6 +1438,9 @@ describe("the record and the count are one set", () => {
       placed: place(over),
       stillOpen: [],
       resolved: [],
+      followUps: [],
+      droppedFollowUps: 0,
+      showWhatChanged: true,
     });
 
   it("records a labelled finding the list left out, anchored where it was made", () => {
@@ -1201,6 +1528,87 @@ describe("the record and the count are one set", () => {
 });
 
 /**
+ * **A finding placed in the body reaches the record whatever it opens with.**
+ *
+ * A finding on a line or on a file gets a thread however its body is written,
+ * so a reader meets it either way. One in a file this pull request never
+ * touches has no thread at all — the record is its only surface — so a record
+ * that listed only the *labelled* findings posted an unlabelled one **nowhere**
+ * and said nothing about having done so, while the runner logged it as "in the
+ * body" and `docs/ADOPTING.md` told an adopter to trust that counter.
+ *
+ * The label reader is lenient about how the label was written for the same
+ * reason (`tests/review-findings.test.ts`); this is the case it cannot cover.
+ */
+describe("a finding the body is the only surface for", () => {
+  const output = (findings: Finding[]): ReviewOutput => ({
+    findings,
+    followUps: [],
+    fixBeforeMerge: [],
+    verified: [],
+  });
+  const unlabelled = finding({
+    path: "src/other.ts",
+    line: 88,
+    title: "the cache key omits the tenant",
+    body: "`key()` hashes the id and not the tenant.",
+  });
+  const place = (findings: Finding[]): PlacedFinding[] =>
+    placeFindings(findings, new Map(), () => "f-b");
+
+  it("is recorded even though it carries neither label", () => {
+    const placed = place([unlabelled]);
+    const record = reviewRecord({
+      output: output([unlabelled]),
+      placed,
+      stillOpen: [],
+      resolved: [],
+    });
+
+    expect(placed[0]?.placement).toBe("body");
+    expect(record.open.map((entry) => entry.title)).toEqual(["the cache key omits the tenant"]);
+  });
+
+  it("is quoted in full in the posted body, with the id a later round reads back", () => {
+    const body = renderReviewBody({
+      verdict: VERDICTS["changes recommended"],
+      output: output([unlabelled]),
+      placed: place([unlabelled]),
+      stillOpen: [],
+      resolved: [],
+      followUps: [],
+      droppedFollowUps: 0,
+      showWhatChanged: true,
+    });
+
+    expect(body).toContain("the cache key omits the tenant");
+    expect(body).toContain("  `key()` hashes the id and not the tenant.");
+    expect(carriedFindings({ threads: [], latestReviewBody: body }).map((f) => f.id)).toEqual([
+      "f-b",
+    ]);
+  });
+
+  /**
+   * And a **thread**'s finding is not pulled into the record by this: the
+   * thread is its record, and a second copy in the body is one a maintainer
+   * cannot close by resolving the thread.
+   */
+  it("does not record an unlabelled finding that got a thread of its own", () => {
+    const threaded = finding({ path: "src/queue.ts", line: 10, body: "a passing remark" });
+    const placed = placeFindings(
+      [threaded],
+      new Map([["src/queue.ts", new Set([10])]]),
+      () => "f-t",
+    );
+
+    expect(placed[0]?.placement).toBe("line");
+    expect(
+      reviewRecord({ output: output([threaded]), placed, stillOpen: [], resolved: [] }).open,
+    ).toEqual([]);
+  });
+});
+
+/**
  * **Severity decides nothing** (#109, decision 9). It is the property that
  * makes the rest of the record readable, and it is also the property most
  * likely to grow into a fourth verdict input by accident — which is exactly the
@@ -1220,7 +1628,6 @@ describe("severity changes no outcome", () => {
   );
 
   const reviewed = (severities: readonly Severity[]): ReviewOutput => ({
-    summary: "s",
     findings: severities.map((severity, index) =>
       finding({
         path: `src/${index}.ts`,
@@ -1281,7 +1688,6 @@ describe("severity changes no outcome", () => {
  */
 describe("no placement loses a finding", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
-    summary: "s",
     findings: [],
     followUps: [],
     fixBeforeMerge: [],
@@ -1337,6 +1743,9 @@ index 0ff3bbb..c6ca7ae 100644
       placed,
       stillOpen: [],
       resolved: [],
+      followUps: [],
+      droppedFollowUps: 0,
+      showWhatChanged: true,
     });
     const posted = [...reviewThreads(placed).map((t) => t.body), body].join("\n");
 
@@ -1362,6 +1771,9 @@ index 0ff3bbb..c6ca7ae 100644
       placed,
       stillOpen: [],
       resolved: [],
+      followUps: [],
+      droppedFollowUps: 0,
+      showWhatChanged: true,
     });
     const posted = [...reviewThreads(placed).map((t) => t.body), body].join("\n");
 
@@ -1383,6 +1795,13 @@ describe("the review's finding vocabulary", () => {
     ["prompt.md", PROMPT],
     ["extraction.md", EXTRACTION],
   ] as const;
+  /**
+   * The brief without its emphasis or its wrapping, for a test about what it
+   * *says*: `do **not** write it up again` is the same instruction as `do not
+   * write it up again`, and a test that could tell them apart would fail on a
+   * reword that changed nothing.
+   */
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
 
   it.each(halves)("%s labels a finding fix before merge", (_half, text) => {
     expect(text).toContain("fix before merge");
@@ -1419,6 +1838,67 @@ describe("the review's finding vocabulary", () => {
 
   it.each(halves)("%s says the severity decides nothing", (_half, text) => {
     expect(text).toMatch(/display and ordering only/);
+  });
+
+  /**
+   * **A finding is never restated in the prose**, and this is the guard on the
+   * instruction rather than on the output.
+   *
+   * The two halves said opposite things for a release: line 118 of the brief
+   * said the summary is posted under *What changed in this PR* and must not
+   * enumerate the findings, while three other lines told the model to label
+   * each finding "in the summary". A model given both does both — #122's body
+   * was a checklist and then every finding again as a paragraph — and nothing
+   * downstream could tell.
+   *
+   * Pinned on the phrasing that caused it: the label named beside the place it
+   * is written. A brief that starts saying "in the summary" again fails here
+   * rather than on somebody's pull request.
+   */
+  it.each(halves)("%s never tells the model to put a finding in the summary", (_half, text) => {
+    for (const line of text.split("\n")) {
+      if (!/fix before merge/i.test(line)) continue;
+      expect(line.toLowerCase(), line).not.toContain("in the summary");
+    }
+    expect(text.toLowerCase()).not.toContain("the summary and the finding");
+  });
+
+  /**
+   * And the field that paragraph became. Two of them, because one 250-word
+   * `summary` mixed what the change is with what the reviewer verified — and
+   * the assessment sentence is a third, which is what the heading cannot say.
+   */
+  it.each(halves)("%s asks for the three prose fields by name", (_half, text) => {
+    for (const field of ["assessment", "howChecked", "whatChanged"]) {
+      expect(text, field).toContain(field);
+    }
+  });
+
+  /**
+   * **Ruling a carried finding `open` is the whole of reporting it.** The
+   * brief forbade restating it in `fixBeforeMerge` and said nothing about
+   * `findings`, which is where the rest of it says every finding goes — and
+   * nothing dedupes, by design: ids are the workflow's and text is never
+   * matched. So a re-raise mints a second thread, a second id and a second
+   * entry in the count, carried separately every round after.
+   */
+  it.each(halves)("%s forbids writing an open carried finding up again", (_half, text) => {
+    expect(plain(text)).toMatch(/not (?:also )?(?:write it up again|restate it)/i);
+    // Both lists named together, so the instruction cannot be read as covering
+    // one of them — `fixBeforeMerge` was the only one it named.
+    expect(plain(text)).toMatch(
+      /(fixBeforeMerge[^.]{0,160}`findings`|`findings`[^.]{0,160}fixBeforeMerge)/,
+    );
+  });
+
+  /**
+   * And that a decline rests on the maintainer's **latest** reply, which is the
+   * only comment the workflow quotes when it closes. Without the rule the
+   * review can read one comment and the thread can close under another's
+   * words — including one that reversed the refusal.
+   */
+  it.each(halves)("%s rules a decline on the maintainer's latest reply", (_half, text) => {
+    expect(plain(text)).toMatch(/latest reply/i);
   });
 
   it("names needsYou and the three cases it is for", () => {

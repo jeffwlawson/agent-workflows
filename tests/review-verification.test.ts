@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { findingMarker } from "../shared/review-findings.js";
 import {
   carriedFindings,
+  declineReply,
   parseVerification,
   renderCarriedFindings,
   renderSettledFindings,
@@ -367,6 +368,39 @@ describe("a maintainer's decision settles a finding", () => {
       ]);
       expect(resolutions[0]?.reply).toContain("@maintainer");
       expect(stillOpen.map((f) => f.id)).toEqual(["f-2"]);
+    });
+
+    /**
+     * **What the closing reply may honestly claim.** A `VerificationEntry` is
+     * `id`, `status` and `note` — no field names *which* comment the review
+     * read as a refusal — so "@x declined this" would be an attribution this
+     * file invented, and on a thread where two people spoke it lands on
+     * whoever happened to write last.
+     *
+     * So it states the evidence instead: this is the latest maintainer reply
+     * on the thread, and that is the only one a review may rule on
+     * (`maintainerReplyOn`). A misreading is then legible rather than
+     * disguised — a quoted question is plainly not a refusal, and reopening is
+     * one click — where an attribution would put somebody's name on a decision
+     * they never took.
+     */
+    it("quotes the reply as evidence rather than asserting who declined", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const reply = declineReply(REPLY);
+
+      expect(reply).toContain("This review read a maintainer's refusal on this thread.");
+      expect(reply).toContain("The latest maintainer reply on it, from @maintainer:");
+      expect(reply).not.toContain("@maintainer declined this");
+      // And it says whose judgement did *not* close it, which is the reading
+      // that must not collapse into the other one.
+      expect(reply).toContain("never on the review's own judgement");
+    });
+
+    /** A reply carrying its own blank lines, list or fence stays inside the quote. */
+    it("quotes a multi-line reply line by line", () => {
+      const reply = declineReply({ login: "maintainer", body: "Won't fix.\n\n- intended\n- tested" });
+
+      expect(reply).toContain("> Won't fix.\n>\n> - intended\n> - tested");
     });
 
     /** And a verified fix still closes as addressed, which is the other reason. */

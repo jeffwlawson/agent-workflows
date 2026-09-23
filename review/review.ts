@@ -32,6 +32,7 @@ import {
 } from "../shared/review-output.js";
 import {
   describeRound,
+  describesTheChange,
   detectReviewRound,
   unreadableRoundNote,
 } from "../shared/review-round.js";
@@ -165,17 +166,17 @@ try {
   // or by anything else — after the pull request has merged.
   //
   // Capped here rather than in the schema. A fourth follow-up is not a broken
-  // review, and rejecting the output would lose the summary and every finding
-  // with it.
+  // review, and rejecting the output would lose every finding with it.
   //
-  // **Appended on every run, including the run that recorded nothing**, where
-  // it renders as the bare payload and shows a reader nothing at all. The list
-  // is a complete restatement each round and the filing half reads the latest
-  // one, so recording none has to be sayable: otherwise round 1's findings stay
-  // the newest thing on the pull request and a merge after round 2 fixed them
-  // files a stub for work already done.
+  // **Posted on every run, including the run that recorded nothing**, where the
+  // group renders not at all and the payload goes out alone. The list is a
+  // complete restatement each round and the filing half reads the latest one,
+  // so recording none has to be sayable: otherwise round 1's findings stay the
+  // newest thing on the pull request and a merge after round 2 fixed them files
+  // a stub for work already done. Both halves are `renderReviewBody`'s to
+  // place; what is written here is the artifact a human debugging the run
+  // opens.
   const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(result.output.followUps);
-  const followUpsBlock = renderFollowUpsBlock(followUps, droppedFollowUps);
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
@@ -197,6 +198,11 @@ try {
   // test around it (#105). It is handed the output whole rather than the fields
   // it reads, so the record it renders is the set the verdict above was counted
   // from and not a second reading of it (#113).
+  //
+  // The follow-ups are a group in it now rather than a block appended after it
+  // (#109, decision 8 as the maintainer settled it), and the payload the filing
+  // half reads on merge goes out last and invisibly — so the posted body is
+  // what this returns, with nothing concatenated on afterwards.
   const reviewBody = renderReviewBody({
     verdict,
     output: result.output,
@@ -204,9 +210,16 @@ try {
     placed,
     stillOpen,
     resolved,
+    followUps,
+    droppedFollowUps,
+    // *What changed in this PR* describes the change, so it is rendered where
+    // there is a change nothing has described. Which rounds those are is
+    // `describesTheChange`'s, beside the detection it reads — a fact about the
+    // round rather than about the review, and one this file has no test around
+    // it to hold.
+    showWhatChanged: describesTheChange(round),
     runUrl: workflowRunUrl(),
   });
-  const postedBody = `${reviewBody}\n\n${followUpsBlock}`;
 
   // A GraphQL request body, posted by the workflow with `gh api graphql
   // --input`. REST `POST /pulls/{n}/reviews` cannot open a **file-level**
@@ -219,7 +232,7 @@ try {
   // writes is the shape a `--jq` path in the workflow reads back.
   writeJson(
     "review_payload.json",
-    reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body: postedBody, placed }),
+    reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body: reviewBody, placed }),
   );
   writeText("summary.md", reviewBody);
 
@@ -260,7 +273,9 @@ try {
   // Keyed on the findings rather than on the block, which is no longer the same
   // question: the block is posted either way, and a retraction is precisely the
   // run that must not mark the pull request.
-  if (followUps.length > 0) writeText("follow_ups.md", followUpsBlock);
+  if (followUps.length > 0) {
+    writeText("follow_ups.md", renderFollowUpsBlock(followUps, droppedFollowUps));
+  }
 
   console.log("Review complete.");
   console.log(

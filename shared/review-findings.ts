@@ -203,14 +203,23 @@ export const PREVIOUSLY_MISSED_LABEL = "Previously missed";
  * `(?![A-Za-z0-9])` rather than `\b`, because the emphasis it is most often
  * written in ends in `_` — a word character, so `\b` refuses the very case
  * `__Fix before merge__` this has to read.
+ *
+ * `#` and `>` are in the class for the drift a model actually produces —
+ * `### Fix before merge` and `> **Fix before merge.**` — and the reason to
+ * admit them is what refusing them costs: the label is what makes a finding
+ * *counted*, so a body the label reader does not recognise is a finding the
+ * verdict does not see. Leniency here is the safe direction, and the
+ * unlabelled case is covered too (`reviewRecord` records a body-placed finding
+ * whatever it opens with).
  */
-const labelled = (label: string): RegExp => new RegExp(`^[\\s*_]*${label}(?![A-Za-z0-9])`, "i");
+const labelled = (label: string): RegExp =>
+  new RegExp(`^[\\s*_#>]*${label}(?![A-Za-z0-9])`, "i");
 
 const MISSED = labelled(PREVIOUSLY_MISSED_LABEL);
 const LABELS = [labelled(FIX_BEFORE_MERGE_LABEL), MISSED] as const;
 
 /** The punctuation and emphasis a label leaves behind it. */
-const LEADING = /^[\s*_.:;,—–-]+/;
+const LEADING = /^[\s*_#>.:;,—–-]+/;
 
 /**
  * Whether a finding is one this pull request must not merge without fixing.
@@ -245,11 +254,16 @@ export const isPreviouslyMissed = (finding: Finding): boolean => MISSED.test(fin
  * shape the prompt asks for and `**Previously missed.**` is the shape a model
  * reaches for, and a single pass over the first would leave the second in the
  * one-line surfaces this feeds.
+ *
+ * And the **next** line where stripping the label leaves nothing, which is
+ * what a model writing the label as a heading produces: `### Fix before
+ * merge`, then a blank line, then the claim. The label reader admits that
+ * shape, so this has to as well — a finding that counted toward the verdict
+ * and entered the record as a blank line is the same silence with an extra
+ * step in it.
  */
-export const openingClaim = (body: string): string => {
-  const [opening = ""] = body.split("\n");
-
-  let claim = opening.replace(LEADING, "");
+const strippedOfLabels = (line: string): string => {
+  let claim = line.replace(LEADING, "");
   for (let stripped = true; stripped; ) {
     stripped = false;
     for (const label of LABELS) {
@@ -261,6 +275,14 @@ export const openingClaim = (body: string): string => {
     }
   }
   return claim.trim();
+};
+
+export const openingClaim = (body: string): string => {
+  const lines = body.split("\n");
+  const claim = strippedOfLabels(lines[0] ?? "");
+  if (claim !== "") return claim;
+
+  return strippedOfLabels(lines.slice(1).find((line) => line.trim() !== "") ?? "");
 };
 
 /**
@@ -306,6 +328,24 @@ const MARKER = new RegExp(`<!--\\s*${FINDING_MARKER}\\s+(\\S+?)(?:\\s+(high|medi
 /** A checklist's own furniture, which is the list's rather than the entry's. */
 const LIST_ITEM = /^[-*]\s+(\[[ xX]\]\s+)?/;
 
+/** Every marker in a body, for the stripper below. */
+const EVERY_MARKER = new RegExp(MARKER.source, "g");
+
+/**
+ * A body with every finding marker taken out of it.
+ *
+ * The prompt tells the model to write no identifier of any kind, and this is
+ * the mechanical half of that instruction (`docs/parity.md` §10: a channel the
+ * prompt bounds is also bounded mechanically). It is no longer a hypothetical
+ * risk: the feedback surface renders live markers verbatim into the prompt, so
+ * the model is shown the exact syntax and this round's real ids, and a body
+ * that copied one would post a thread carrying two — the copied one and the
+ * workflow's, on one thread, with a later round unable to tell which finding it
+ * is about.
+ */
+const withoutMarkers = (body: string): string =>
+  body.replace(EVERY_MARKER, "").replace(/[^\S\n]+$/gm, "");
+
 export const parseFindingMarkers = (body: string): MarkedEntry[] => {
   const lines = body.split("\n");
 
@@ -341,7 +381,9 @@ const positiveInt = (value: unknown, label: string): number => {
 /**
  * A finding as the model emitted it. Any `id` it wrote is dropped here by
  * having nowhere to go — the identity is the workflow's, and one the model
- * invented would be matched against a thread it never opened.
+ * invented would be matched against a thread it never opened. A marker it wrote
+ * into its **body** is taken out for the same reason, by `withoutMarkers`:
+ * having nowhere to go is not a guard where the id can be smuggled in as prose.
  */
 export const parseFinding = (value: unknown): Finding => {
   const record = asRecord(value, "finding");
@@ -359,7 +401,7 @@ export const parseFinding = (value: unknown): Finding => {
     if (startLine === line) startLine = undefined;
   }
 
-  const body = asString(record["body"] ?? record["comment"], "finding body");
+  const body = withoutMarkers(asString(record["body"] ?? record["comment"], "finding body"));
   const rawTitle = record["title"];
   const title = typeof rawTitle === "string" && rawTitle.trim() !== "" ? rawTitle : openingClaim(body);
 

@@ -38,6 +38,17 @@ export interface CarriedFinding {
    */
   readonly severity?: Severity;
   /**
+   * A link to the thread it lives in, where the response carried one — the
+   * record entry's link back to where it was raised (#109, decision 8).
+   *
+   * It matters most here rather than on a fresh finding: a fresh finding's
+   * thread is opened by the same mutation that posts the body, so its URL does
+   * not exist yet, and its thread renders directly beneath that review anyway.
+   * A carried one's thread sits under an older review, which is where a reader
+   * has to be taken rather than told to scroll.
+   */
+  readonly url?: string;
+  /**
    * A maintainer's own word on this finding, where one of them answered the
    * thread it lives in (#109, decision 10).
    *
@@ -83,7 +94,14 @@ export interface AgentThread {
   readonly text: string;
   /** The rating on the marker the review that raised it wrote, where it carries one. */
   readonly severity?: Severity;
-  /** The latest thing a maintainer said on it, where one of them did. */
+  /** The thread's own permalink, where the response carried one. */
+  readonly url?: string;
+  /**
+   * The **latest** thing a maintainer said on it, where one of them did — and
+   * the only reply a review may rule `declined` on, which is what keeps the
+   * reply the review read and the reply the thread closes on one comment. See
+   * `maintainerReplyOn` in `shared/pr-feedback.ts`.
+   */
   readonly maintainerReply?: MaintainerReply;
 }
 
@@ -117,7 +135,8 @@ export interface SettledFinding {
  * round already closed.
  *
  * The body half carries only the findings with no thread, because a threaded
- * finding's id is deliberately left off the body (`renderStillOpen`): the
+ * finding's id is deliberately left off the body (`carriedEntry`, in
+ * `shared/review-output.ts`): the
  * thread is its record, and a maintainer who resolves one by hand has settled
  * it. So the two sources should be disjoint. **The thread still wins** where
  * they are not — a body posted by another version, or an id somehow written
@@ -140,6 +159,7 @@ export const carriedFindings = (parts: {
       threadId: thread.threadId,
       text: thread.text,
       ...(thread.severity === undefined ? {} : { severity: thread.severity }),
+      ...(thread.url === undefined ? {} : { url: thread.url }),
       ...(thread.maintainerReply === undefined ? {} : { maintainerReply: thread.maintainerReply }),
     });
   }
@@ -299,6 +319,16 @@ export const resolutionReply = (entry: VerificationEntry): string =>
  * what lets the maintainer see that in one glance and reopen the thread, while
  * a paraphrase would close their thread under a sentence they did not write.
  *
+ * What it quotes is the **latest** maintainer reply on the thread, which is the
+ * only one a review may rule on (`maintainerReplyOn`), and it is written as
+ * *this is the reply the review read as a refusal* rather than as *@x declined
+ * this*. The difference is the whole of what this reply can honestly claim: no
+ * field on a `VerificationEntry` names which comment the review read, so an
+ * assertion about who decided would be this file inventing an attribution on a
+ * thread where two people spoke. Stating the evidence instead leaves a
+ * misreading legible — a quoted question is plainly not a decline — where an
+ * attribution would put a maintainer's name on a decision they never took.
+ *
  * Quoted line by line rather than as one block, so a reply carrying its own
  * blank lines, list or fence stays inside the quote instead of ending it half
  * way through.
@@ -311,11 +341,11 @@ export const declineReply = (reply: MaintainerReply): string => {
     .join("\n");
 
   return [
-    `**Closed as won't fix.** @${reply.login} declined this:`,
+    `**Closed as won't fix.** This review read a maintainer's refusal on this thread. The latest maintainer reply on it, from @${reply.login}:`,
     "",
     quoted,
     "",
-    "_Closed on the maintainer's word. A review never overrules a maintainer; reopen this thread if it read your reply wrongly._",
+    "_Closed on a maintainer's reply, never on the review's own judgement — a review cannot decline a finding itself. If that reply was not a refusal, reopen this thread._",
   ].join("\n");
 };
 

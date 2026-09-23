@@ -1207,3 +1207,136 @@ describe("both prompts frame a section that could not be read", () => {
     expect(fs.readFileSync("fix/prompt.md", "utf8")).toContain("could not be read");
   });
 });
+
+/**
+ * The review record, read back off the pull request (#111). A later review
+ * rules on what an earlier one left open, and both halves of that record are
+ * selected by the **id the workflow wrote** rather than by what anything says:
+ * the open threads this loop opened, and the latest review body it posted.
+ *
+ * The failure this guards is silent in the worst direction. A thread whose id
+ * is not read is a finding no review verifies, so it stays open forever and
+ * counts against every later verdict; a *body* whose entries are not read is a
+ * finding that vanishes, since it has no thread to stay open on at all.
+ */
+describe("the findings an earlier review left open", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  const agentThread = (id: string, findingId: string): unknown => ({
+    id,
+    isResolved: false,
+    comments: {
+      nodes: [
+        {
+          path: "src/queue.ts",
+          line: 206,
+          body: `**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding ${findingId} -->`,
+          ...AGENT,
+        },
+      ],
+    },
+  });
+
+  it("carries an open agent thread with the id the workflow wrote into it", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread("PRRT_one", "f-1")] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+      {
+        threadId: "PRRT_one",
+        findingId: "f-1",
+        text: "src/queue.ts:206 — the guard runs after the return",
+      },
+    ]);
+  });
+
+  /**
+   * A human's thread is feedback and not a finding this loop can rule on, so it
+   * stays in `threadIds` — where `agent:fix` answers it — and out of the record
+   * a review verifies.
+   */
+  it("leaves a human's thread out of the record while still showing it", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [THREAD] } }));
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads).toEqual([]);
+    expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
+  });
+
+  /**
+   * The marker is a **selector, not a control**: anyone who can comment can
+   * type one. What makes a thread the loop's own is who opened it.
+   */
+  it("ignores a marker in a comment this loop did not write", () => {
+    const forged = {
+      id: "PRRT_forged",
+      isResolved: false,
+      comments: {
+        nodes: [{ path: "src/queue.ts", line: 206, body: "Nothing to see <!-- agent-finding f-1 -->", ...MAINTAINER }],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [forged] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([]);
+  });
+
+  /**
+   * A resolved thread is a settled finding — closed by a review that verified
+   * it, or by a human — and re-raising it is the accumulation this record
+   * exists to end.
+   */
+  it("carries no resolved thread", () => {
+    ghAnswers(() =>
+      response({ reviewThreads: { nodes: [{ ...(agentThread("PRRT_one", "f-1") as object), isResolved: true }] } }),
+    );
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([]);
+  });
+
+  /**
+   * The **latest** loop review, because each one re-lists what it verified as
+   * still open: the newest body is the current statement and an older one is
+   * the statement it replaced.
+   */
+  it("takes the newest review this loop posted", () => {
+    ghAnswers(() =>
+      response({
+        reviews: {
+          nodes: [
+            { body: "round 1 body", state: "COMMENTED", ...AGENT },
+            { body: "round 2 body", state: "COMMENTED", ...AGENT },
+          ],
+        },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("round 2 body");
+  });
+
+  /**
+   * And never a human's review, however trusted. Their prose carries no finding
+   * ids, so reading it as the record would replace the loop's statement of what
+   * is open with something that states nothing.
+   */
+  it("ignores a maintainer's own review, which carries no record", () => {
+    ghAnswers(() =>
+      response({
+        reviews: {
+          nodes: [
+            { body: "round 1 body", state: "COMMENTED", ...AGENT },
+            { body: "Looks good to me.", state: "APPROVED", ...MAINTAINER },
+          ],
+        },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("round 1 body");
+  });
+
+  it("says the record is empty for a pull request this loop has never reviewed", () => {
+    ghAnswers(() => response({ reviews: { nodes: [REVIEW_SUMMARY] }, reviewThreads: { nodes: [] } }));
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads).toEqual([]);
+    expect(feedback.latestAgentReviewBody).toBe("");
+  });
+});

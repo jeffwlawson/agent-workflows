@@ -3,8 +3,13 @@ import { parseDiffLines } from "../shared/diff-lines.js";
 import {
   FINDING_MARKER,
   findingMarker,
+  isFixBeforeMerge,
+  isPreviouslyMissed,
   newFindingId,
+  openingClaim,
+  parseFindingMarkers,
   placeFindings,
+  PREVIOUSLY_MISSED_LABEL,
   renderBodyFindings,
   reviewMutation,
   reviewThreads,
@@ -296,5 +301,108 @@ describe("reviewMutation", () => {
   /** It has to survive `JSON.stringify` — the runner writes it to a file. */
   it("round-trips as JSON", () => {
     expect(JSON.parse(JSON.stringify(mutation))).toEqual(mutation);
+  });
+});
+
+/**
+ * *Previously missed* (#109, decision 4): a real problem a later review finds
+ * in code an earlier review already read.
+ *
+ * It counts as *fix before merge*, and that is the decision rather than a
+ * detail of it — a finding the record missed says the record was wrong about
+ * this pull request, which is a stronger reason to stop the merge than an
+ * ordinary finding rather than a weaker one. Before #111 the round-2 brief sent
+ * these to `followUps`, where they were filed as issues after the merge they
+ * should have stopped.
+ */
+describe("a finding an earlier review missed", () => {
+  const missed = (body: string): Finding => finding({ body });
+
+  it("counts toward the merge on its own label", () => {
+    expect(isFixBeforeMerge(missed("**Previously missed.** the cache key omits the tenant"))).toBe(
+      true,
+    );
+    expect(isPreviouslyMissed(missed("**Previously missed.** the cache key omits the tenant"))).toBe(
+      true,
+    );
+  });
+
+  /** The same emphasis tolerance the other label has, for the same reason. */
+  it.each([
+    "**Previously missed.** the cache key omits the tenant",
+    "__Previously missed__ — the cache key omits the tenant",
+    "Previously missed: the cache key omits the tenant",
+  ])("reads the label past whatever emphasis it was written in: %s", (body: string) => {
+    expect(isPreviouslyMissed(missed(body))).toBe(true);
+    expect(openingClaim(body)).toBe("the cache key omits the tenant");
+  });
+
+  it("is not read into a finding that merely says something was missed", () => {
+    const body = "**Fix before merge.** the earlier round previously missed a case here";
+
+    expect(isPreviouslyMissed(missed(body))).toBe(false);
+    expect(isFixBeforeMerge(missed(body))).toBe(true);
+  });
+
+  /**
+   * Both labels at once is the shape the brief asks for when a model writes the
+   * ordinary label too, and the claim has to survive it: this is the line the
+   * checklist and the body entry are built from.
+   */
+  it("strips both labels off the claim, in either order", () => {
+    expect(openingClaim("**Fix before merge — previously missed.** the cache key omits the tenant")).toBe(
+      "the cache key omits the tenant",
+    );
+    expect(openingClaim("**Previously missed — fix before merge.** the cache key omits the tenant")).toBe(
+      "the cache key omits the tenant",
+    );
+  });
+
+  it("spells the label in one place", () => {
+    expect(PREVIOUSLY_MISSED_LABEL).toBe("Previously missed");
+  });
+});
+
+/**
+ * Reading ids back out of a body, which is what lets a finding with no thread
+ * survive a round (#111). A body entry has no surface of its own to stay open
+ * on, so the *newest* review body naming it is the whole of its record — and a
+ * parser that could not find it there would lose it silently, one round after
+ * it was raised.
+ *
+ * One rule covers both places a marker is written, which is what keeps the
+ * marker one format: the rest of the marker's own line, or the next non-empty
+ * line where it sits alone.
+ */
+describe("parseFindingMarkers", () => {
+  it("reads a body-findings entry, whose marker sits above its heading", () => {
+    const body = renderBodyFindings(
+      place([finding({ path: "src/other.ts", line: 88, title: "the cache key omits the tenant" })]),
+    );
+
+    expect(parseFindingMarkers(body ?? "")).toEqual([
+      { id: "f-1", text: "`src/other.ts:88` — the cache key omits the tenant" },
+    ]);
+  });
+
+  it("reads a checklist entry, whose marker sits at the end of its line", () => {
+    const body = `- [ ] \`src/queue.ts:206\` — the guard runs after the return ${findingMarker("f-7")}`;
+
+    expect(parseFindingMarkers(body)).toEqual([
+      { id: "f-7", text: "`src/queue.ts:206` — the guard runs after the return" },
+    ]);
+  });
+
+  it("finds every marker in a body, in the order they appear", () => {
+    const body = [
+      `- [ ] one ${findingMarker("f-1")}`,
+      `- [ ] two ${findingMarker("f-2")}`,
+    ].join("\n");
+
+    expect(parseFindingMarkers(body).map((e) => e.id)).toEqual(["f-1", "f-2"]);
+  });
+
+  it("finds nothing in a body that carries none", () => {
+    expect(parseFindingMarkers("### 🟢 Approval recommended\n\nNothing to fix.")).toEqual([]);
   });
 });

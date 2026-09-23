@@ -82,16 +82,20 @@ If nothing genuinely needs changing, make no commit and say so.
 
 After the work, you will be asked to report one outcome per review thread you were shown —
 whether you **addressed** it or **declined** it, and a reply under 100 words explaining which.
-Those replies are posted publicly into the threads, and addressed threads are then resolved, so
-write them for the person who left the comment.
+Those replies are posted publicly into the threads, so write them for the person who left the
+comment.
+
+**You close nothing.** Every thread you reply to stays open, whichever outcome you report; the next
+review reads the code and closes the ones it can see are fixed. You are the author of the fix, so
+your report is a claim about it and not a verification of it — which is why it is worth writing
+plainly enough for someone else to check.
 
 The test is **"is anything still outstanding?"**, not "did I personally change something?". A
-comment that an earlier commit already satisfied is **addressed** — say so and let it close. Use
-**declined** only when you disagree or are deliberately not acting, so the thread stays open for
-a human to push back on.
+comment that an earlier commit already satisfied is **addressed** — say so, and the next review
+will confirm it. Use **declined** only when you disagree or are deliberately not acting.
 
-Keep track as you go of which thread each change answers; you cannot resolve a thread you never
-decided about.
+Keep track as you go of which thread each change answers; a thread you never decided about gets no
+reply at all.
 
 # TOP-LEVEL COMMENTS
 
@@ -118,7 +122,8 @@ string" is as locatable as an inline comment and does not need the diff-line mac
 You may say a follow-up issue is needed. You cannot file it, and the workflow will not: filing is
 a separate, human-labelled step. Say what the issue would be and stop there.
 
-Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself. Do not
-resolve review threads yourself. The workflow does all of that from your reported outcomes.
+Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself. Do not resolve
+review threads — not yourself, and not by asking for it: nothing you report resolves one. The
+workflow posts your replies and leaves every thread open.
 
 When complete, output `<promise>COMPLETE</promise>`.

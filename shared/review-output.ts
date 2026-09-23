@@ -1,5 +1,6 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
 import {
+  findingMarker,
   isFixBeforeMerge,
   openingClaim,
   parseFinding,
@@ -7,6 +8,11 @@ import {
   type Finding,
   type PlacedFinding,
 } from "./review-findings.js";
+import {
+  parseVerification,
+  type CarriedFinding,
+  type VerificationEntry,
+} from "./review-verification.js";
 
 /**
  * A problem the review found and this pull request will not fix — a defect in a
@@ -58,6 +64,17 @@ export interface ReviewOutput {
    * finding recorded in only one of them still reaches the verdict.
    */
   readonly fixBeforeMerge: string[];
+  /**
+   * One ruling per finding an earlier review of this pull request left open:
+   * did it land, or is it still owed (#111)?
+   *
+   * The review's own answer about somebody else's finding, which is why it is
+   * a field of its own rather than more `findings`. What it decides is not the
+   * review's to act on either — a landed finding is resolved by the workflow,
+   * with the reason stated in the thread, and one still open is counted toward
+   * this review's verdict. See `shared/review-verification.ts`.
+   */
+  readonly verified: VerificationEntry[];
   /**
    * The agent's judgement that **another pass over this branch will not settle
    * it**, in one line naming which case it is: the wrong thing was built, the
@@ -210,6 +227,20 @@ export type ReviewRoundNumber = 1 | 2;
 export interface VerdictInputs {
   readonly ci: CiResult;
   readonly round: ReviewRoundNumber;
+  /**
+   * How many findings an **earlier** review raised that this one checked and
+   * found still open (#111, and #109 decision 1).
+   *
+   * They count exactly as this review's own do: a finding lives until a review
+   * verifies it fixed, so one that has survived a round is more reason to stop
+   * the merge than a fresh one, not less. A review that found nothing new and
+   * three things still unfixed is not an approval.
+   *
+   * Required rather than defaulted to zero, for the reason `round` is required:
+   * a caller that forgot it recommends approving a pull request with unfixed
+   * findings on it, which is the one failure here with no symptom.
+   */
+  readonly stillOpen: number;
 }
 
 /**
@@ -225,6 +256,11 @@ export interface VerdictInputs {
  * Larger rather than the sum, because the two are restatements of one set of
  * findings: adding them would double-count every review that did as it was
  * asked.
+ *
+ * **This review's own findings, and not the ones it carried.** What an earlier
+ * review left open is verified rather than re-found (#111) and reaches the
+ * verdict through `VerdictInputs.stillOpen`; counting it here as well would
+ * make every still-open finding worth two.
  *
  * Counted over the findings **as produced**, independently of where each one
  * was placed. Placement is the workflow's decision and it can no longer lose a
@@ -293,29 +329,69 @@ export const fixBeforeMergeChecklist = (output: ReviewOutput): readonly string[]
  */
 const renderFixBeforeMerge = (findings: readonly string[]): string | undefined => {
   if (findings.length === 0) return undefined;
-  // One line each, for the same reason a follow-up title is collapsed: a
-  // finding the model wrapped cannot be allowed to break the list it sits in.
-  const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
   return ["**To fix before merge**", "", ...findings.map((f) => `- [ ] ${oneLine(f)}`)].join("\n");
 };
 
 /**
- * The summary as it is posted: **six** parts in one fixed order, and the one
+ * One line each, for the same reason a follow-up title is collapsed: a finding
+ * the model wrapped cannot be allowed to break the list it sits in.
+ */
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+/**
+ * The findings an earlier review raised that this one checked and found **still
+ * open** (#111).
+ *
+ * A section of its own rather than more lines on the checklist above: these are
+ * not this review's findings, and a reader deciding what to do next is owed the
+ * difference between "the new round found this" and "the last round asked for
+ * this and it has not happened yet".
+ *
+ * **A finding with no thread keeps its id here, and one with a thread does
+ * not.** That asymmetry is the whole of what makes the body a record. A
+ * body-recorded finding — one in a file the pull request never touched (#110) —
+ * has no surface of its own to stay open on, so the newest review body naming
+ * it is the only thing keeping it alive across rounds. A threaded one has the
+ * thread, and writing its id here as well would give it a second life the
+ * thread cannot end: a maintainer who resolves a thread by hand would find the
+ * finding raised again out of the body, which is the one place this must not
+ * overrule them.
+ *
+ * Open rather than collapsed, for the reason the checklist above is: the
+ * verdict has just counted these, so a disclosure widget over them is one more
+ * click between the line and the work.
+ */
+const renderStillOpen = (stillOpen: readonly CarriedFinding[]): string | undefined => {
+  if (stillOpen.length === 0) return undefined;
+
+  const entry = (finding: CarriedFinding): string =>
+    finding.threadId === undefined
+      ? `- [ ] ${oneLine(finding.text)} ${findingMarker(finding.id)}`
+      : `- [ ] ${oneLine(finding.text)}`;
+
+  return ["**Still open from an earlier review**", "", ...stillOpen.map(entry)].join("\n");
+};
+
+/**
+ * The summary as it is posted: **seven** parts in one fixed order, and the one
  * place that order is written down (#105).
  *
  * Each part is there because a reader needs it before the one after it — the
  * assessment and the step it implies, why another pass cannot settle it, how
- * the round was read, what to fix, what could not be threaded, and then the
- * evidence — and three of them are parts the review used to lose. `needsYou`
- * reached the derivation and nothing else, so the case the agent named ("the
- * wrong thing was built", "the issue itself was wrong") never reached the
- * maintainer whose decision it is. `fixBeforeMerge` was posted nowhere at all,
- * which left round 2 verifying the last round's findings against summary prose:
- * the fix run resolves every thread it addressed, and resolved threads are
- * dropped from the feedback the next review is handed. And a finding GitHub
- * could not be given an anchor for was dropped outright, which the body's
- * `renderBodyFindings` part is what replaced (#110).
+ * the round was read, what to fix, what an earlier round asked for and still
+ * has not got, what could not be threaded, and then the evidence — and four of
+ * them are parts the review used to lose. `needsYou` reached the derivation and
+ * nothing else, so the case the agent named ("the wrong thing was built", "the
+ * issue itself was wrong") never reached the maintainer whose decision it is.
+ * `fixBeforeMerge` was posted nowhere at all, which left round 2 verifying the
+ * last round's findings against summary prose: the fix run resolved every
+ * thread it addressed, and resolved threads are dropped from the feedback the
+ * next review is handed. A finding GitHub could not be given an anchor for was
+ * dropped outright, which the body's `renderBodyFindings` part is what replaced
+ * (#110). And an earlier round's unfixed finding was nobody's to restate, which
+ * `renderStillOpen` is (#111) — the fixer no longer closes anything, so what
+ * stays open stays visible.
  *
  * Handed the review's whole output rather than the three fields it reads out of
  * it, so the checklist it renders cannot be a different set from the one
@@ -323,7 +399,7 @@ const renderFixBeforeMerge = (findings: readonly string[]): string | undefined =
  * and the one a caller passing `fixBeforeMerge` straight through would keep
  * open.
  *
- * A function rather than six lines in the runner, because this is the part of
+ * A function rather than seven lines in the runner, because this is the part of
  * the review a human acts on and the runner is a script with no test around it.
  */
 export const renderReviewSummary = (parts: {
@@ -351,12 +427,25 @@ export const renderReviewSummary = (parts: {
    * silent loss this slice exists to close.
    */
   readonly placed: readonly PlacedFinding[];
+  /**
+   * The earlier reviews' findings this one checked and found still open, from
+   * `verifyCarried`. Written under their own heading, each with the id it has
+   * carried since it was raised (#111).
+   *
+   * Required rather than defaulted, for the reason `placed` is: the wrong
+   * default is the one with no symptom. A caller that forgot this posts a body
+   * whose checklist is shorter than the count the verdict was derived from —
+   * the exact disagreement #105 closed — and, for a finding with no thread of
+   * its own, drops the only record that it is still open.
+   */
+  readonly stillOpen: readonly CarriedFinding[];
 }): string =>
   [
     `### ${parts.verdict.heading}\n\n${parts.verdict.nextStep}`,
     parts.output.needsYou,
     parts.roundNote,
     renderFixBeforeMerge(fixBeforeMergeChecklist(parts.output)),
+    renderStillOpen(parts.stillOpen),
     renderBodyFindings(parts.placed),
     parts.output.summary,
   ]
@@ -376,7 +465,11 @@ export const renderReviewSummary = (parts: {
  */
 export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): VerdictRow => {
   if (output.needsYou !== undefined) return VERDICTS["needs a closer look"];
-  if (countFixBeforeMerge(output) > 0) {
+  // This review's findings **and** the earlier ones it checked and found still
+  // open. Added rather than maximised, unlike the two halves inside
+  // `countFixBeforeMerge`: those are two restatements of one set of findings,
+  // and these are two disjoint sets — one this review found, one it verified.
+  if (countFixBeforeMerge(output) + inputs.stillOpen > 0) {
     // **A round-2 review can never produce the round-1 row** (#96, decision 5),
     // and it is enforced here rather than asked of the prompt. The fix round
     // has already run and already pushed; findings that survived it are
@@ -449,6 +542,11 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
       record["fixBeforeMerge"] ?? record["fix_before_merge"] ?? [],
       "fixBeforeMerge",
     ).map((finding, index) => asString(finding, `fix-before-merge finding ${index + 1}`)),
+    // Absent is an ordinary answer too — the first review of a pull request
+    // has nothing carried to rule on. An id this review was not given is
+    // dropped later, by `verifyCarried`, rather than here: what the model may
+    // rule on is a fact about the run and not about the shape of its output.
+    verified: asArray(record["verified"] ?? [], "verified").map(parseVerification),
     ...(needsYou === undefined ? {} : { needsYou }),
   };
 });
@@ -607,9 +705,6 @@ export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number)
   const marker = `<!-- ${FOLLOW_UPS_MARKER} ${payload} -->`;
   if (kept.length === 0) return marker;
 
-  // One line each. A title is meant to be one line; whitespace-collapsing it
-  // means a model that wrapped one cannot break the list it sits in.
-  const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
   const items = kept.map((f) => `- **${oneLine(f.title)}** — \`${oneLine(f.location)}\``);
 
   // Said here as well as after the merge, because this is the half that is

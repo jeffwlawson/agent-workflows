@@ -20,6 +20,21 @@ carries a ```suggestion block replacing more than one line: `startLine` is the f
 replaced, `line` is the last. A range with any line outside the diff is posted on the file instead,
 where a suggestion cannot be applied — so keep a suggestion's range inside the diff.
 
+## Findings an earlier review left open — `verified`
+
+One entry per identifier you were given under **FINDINGS AN EARLIER REVIEW LEFT OPEN**, using the
+identifier exactly as it was given. Do not invent one — an identifier that was not handed to you is
+dropped.
+
+- `landed` — the current code resolves it. The workflow closes its thread, quoting your `note` as
+  the reason it closed.
+- `open` — it does not. It counts against this pull request exactly as one of your own findings
+  does, so do **not** also restate it in `fixBeforeMerge`: that counts it twice.
+
+`note` is one line, written to whoever raised the finding and whoever has to read the thread after
+it closes. An identifier you omit stays open, which is the safe direction and not a way to skip the
+list.
+
 ## Findings that must be fixed — `fixBeforeMerge`
 
 Every finding is one of two kinds, and this is the first: the change is wrong, unsafe, or does not
@@ -31,6 +46,12 @@ Both, not either. The list is what is **counted** — the outcome posted to the 
 derived from how many entries it has — and the two are written independently, so either can be the
 one you left something out of. The list is one line each; the evidence stays in the summary and the
 finding.
+
+A real problem in code an earlier review of this pull request already read is **previously
+missed**: open its body with `**Previously missed.**` rather than `**Fix before merge.**`, and
+restate it in `fixBeforeMerge` like any other. It counts the same way. Do not send it to
+`followUps` — it is this pull request's to fix, and the record having missed it is the reason to
+say so rather than a reason to defer it.
 
 Nothing else is a finding. A style preference, a "consider…", a rename you would accept being
 overruled on: leave it out. Anything real but outside this pull request's scope goes to
@@ -83,6 +104,10 @@ dropped from the end, here, after you have written it; it is not yours to filter
   "fixBeforeMerge": [
     "One line per finding that must be fixed before this merges — the same findings the summary and the `findings` list carry."
   ],
+  "verified": [
+    { "id": "f-1a2b3c4d", "status": "landed", "note": "The guard now runs before `apply()`, and a test covers the malformed input." },
+    { "id": "f-5e6f7a8b", "status": "open", "note": "Still returns early on an empty list, so the count is unchanged." }
+  ],
   "needsYou": "Omit this field unless another pass cannot settle it; one line naming which of the three cases it is.",
   "findings": [
     { "title": "parse() returns before its guard runs", "path": "src/example.ts", "line": 42, "body": "**Fix before merge.** `parse()` returns before the guard below it runs, so a malformed input reaches `apply()` unchecked." },
@@ -95,5 +120,5 @@ dropped from the end, here, after you have written it; it is not yours to filter
 </output>
 ```
 
-Use an empty array for any of the three lists with no entries, and leave `needsYou` out entirely
-unless it applies.
+Use an empty array for any of the four lists with no entries — `verified` is empty when you were
+given no open findings to rule on — and leave `needsYou` out entirely unless it applies.

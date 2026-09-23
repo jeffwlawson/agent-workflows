@@ -7,18 +7,23 @@ export interface ThreadOutcome {
   /**
    * `addressed` — the comment's concern is satisfied in the current HEAD.
    * That includes work done by an *earlier* commit, not only by this run: a
-   * thread with nothing outstanding should close regardless of which commit
-   * settled it. The workflow replies and **resolves**.
+   * thread with nothing outstanding is one a review should be able to close,
+   * regardless of which commit settled it.
    *
-   * `declined` — you disagree, or deliberately are not acting. The workflow
-   * replies with the reason and leaves the thread **open** so a human can push
-   * back; resolving a decline would let the agent quietly bury a disagreement.
+   * `declined` — you disagree, or deliberately are not acting.
+   *
+   * **Neither closes the thread**, since #111: a fix run replies and resolves
+   * nothing, and a thread closes when a *review* has read the code and verified
+   * the finding is gone (#109, decision 1). So this is a claim recorded in the
+   * reply, and the difference it makes is to what the reply says rather than to
+   * what happens to the thread — which is the point, because the author of a
+   * fix is the one party that cannot check it.
    *
    * The split is deliberately "is anything still outstanding?", not "did I
    * personally change something?". An earlier, narrower wording ("the code was
    * changed to satisfy the comment") made the agent classify already-handled
-   * threads as declined, so they stayed open forever — reviving exactly the
-   * accumulation this reply/resolve machinery exists to prevent.
+   * threads as declined, and a reply that understates what has been done is a
+   * review round spent re-checking work nobody claimed.
    */
   readonly status: "addressed" | "declined";
   /** Markdown reply posted into the thread. */

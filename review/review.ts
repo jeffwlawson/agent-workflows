@@ -13,7 +13,7 @@ import {
 } from "../shared/common.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
-import { placeFindings, reviewMutation } from "../shared/review-findings.js";
+import { isPreviouslyMissed, placeFindings, reviewMutation } from "../shared/review-findings.js";
 import {
   capFollowUps,
   countFixBeforeMerge,
@@ -29,6 +29,7 @@ import {
   detectReviewRound,
   unreadableRoundNote,
 } from "../shared/review-round.js";
+import { renderCarriedFindings, verifyCarried } from "../shared/review-verification.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
@@ -116,6 +117,7 @@ try {
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
       ROUND: describeRound(round),
+      OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
       PR_DIFF: context.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
@@ -130,6 +132,19 @@ try {
   // it. A finding the verdict counted and the review never showed is the
   // failure that change removes.
   const placed = placeFindings(result.output.findings, context.diffLines);
+
+  // What the review said about the findings it was handed: which threads the
+  // workflow closes, and which findings are still owed (#111). The reviewer
+  // decides this and the fixer no longer does — a fix run replies and resolves
+  // nothing, so the only thing that closes a finding is a pass that read the
+  // code afterwards.
+  //
+  // A carried finding the review said nothing about stays open. That is the
+  // safe direction and it is `verifyCarried`'s to take, not this file's.
+  const { resolutions, stillOpen } = verifyCarried(
+    context.carriedFindings,
+    result.output.verified,
+  );
   const headSha = sh("git rev-parse HEAD").trim();
 
   // The third channel, serialised into the body on the way out. It cannot stay
@@ -155,7 +170,11 @@ try {
   // outcome is the first thing a reader sees and the same words the commit
   // status carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
-  const verdict = deriveVerdict(result.output, { ci, round: round.round });
+  const verdict = deriveVerdict(result.output, {
+    ci,
+    round: round.round,
+    stillOpen: stillOpen.length,
+  });
   // And a round nothing could establish says so in the body as well as in the
   // brief. The agent was told it was a second round; what it cannot say — and
   // what changes how a reader weighs the review — is that the round was the
@@ -171,6 +190,7 @@ try {
     output: result.output,
     roundNote: unreadableRoundNote(round),
     placed,
+    stillOpen,
   });
   const body = `${summary}\n\n${followUpsBlock}`;
 
@@ -188,6 +208,17 @@ try {
     reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body, placed }),
   );
   writeText("summary.md", summary);
+
+  // The threads this review verified, for the workflow step that closes them.
+  // Written on every run, empty list included: the step reads the file rather
+  // than deciding anything, and "there was nothing to resolve" is an answer it
+  // should not have to infer from a missing file.
+  //
+  // The reply is composed here rather than in YAML for the reason the body is:
+  // it is the only record of *why* a thread closed — GitHub takes
+  // `resolutionReason` and then exposes it nowhere — and this file is a script
+  // with no test around it.
+  writeJson("thread_resolutions.json", resolutions);
 
   // What the workflow posts the commit status from — context, state and line.
   // A file rather than a step output, for the same reason the payload above is
@@ -222,8 +253,12 @@ try {
     `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output)} to fix before merge, checks ${ci}, round ${round.round}).`,
   );
   const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
+  const missed = result.output.findings.filter(isPreviouslyMissed).length;
   console.log(
-    `Findings: ${placed.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${placements("body")} in the body.`,
+    `Findings: ${placed.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${placements("body")} in the body; ${missed} in code an earlier review had already read.`,
+  );
+  console.log(
+    `Earlier findings: ${context.carriedFindings.length} open before this review — ${resolutions.length} verified fixed and resolved, ${stillOpen.length} still open.`,
   );
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {

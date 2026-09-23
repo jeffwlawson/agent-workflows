@@ -3,11 +3,13 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseDiffLines } from "../shared/diff-lines.js";
 import {
+  findingMarker,
   placeFindings,
   reviewThreads,
   type Finding,
   type PlacedFinding,
 } from "../shared/review-findings.js";
+import { carriedFindings } from "../shared/review-verification.js";
 import {
   capFollowUps,
   countFixBeforeMerge,
@@ -398,11 +400,12 @@ describe("deriveVerdict", () => {
     findings: [],
     followUps: [],
     fixBeforeMerge: [],
+    verified: [],
     ...over,
   });
 
   it("recommends approval when nothing is wrong and the checks are green", () => {
-    expect(deriveVerdict(output(), { ci: "green", round: 1 }).verdict).toBe("approval recommended");
+    expect(deriveVerdict(output(), { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe("approval recommended");
   });
 
   it("recommends changes when the findings are the only thing wrong", () => {
@@ -410,6 +413,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
         ci: "green",
         round: 1,
+        stillOpen: 0,
       }).verdict,
     ).toBe("changes recommended");
   });
@@ -419,6 +423,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), {
         ci: "green",
         round: 1,
+        stillOpen: 0,
       }).verdict,
     ).toBe("needs a closer look");
   });
@@ -433,7 +438,7 @@ describe("deriveVerdict", () => {
     ["red", "red"],
     ["unreadable", "unknown"],
   ])("needs a closer look when the checks are %s and the review found nothing", (_case, ci) => {
-    expect(deriveVerdict(output(), { ci: ci as CiResult, round: 1 }).verdict).toBe(
+    expect(deriveVerdict(output(), { ci: ci as CiResult, round: 1, stillOpen: 0 }).verdict).toBe(
       "needs a closer look",
     );
   });
@@ -448,6 +453,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["the new test asserts the old behaviour"] }), {
         ci: "red",
         round: 1,
+        stillOpen: 0,
       }).verdict,
     ).toBe("changes recommended");
   });
@@ -466,8 +472,8 @@ describe("deriveVerdict", () => {
       findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
     });
 
-    expect(deriveVerdict(labelled, { ci: "green", round: 1 }).verdict).toBe("changes recommended");
-    expect(deriveVerdict(labelled, { ci: "green", round: 2 }).verdict).toBe(
+    expect(deriveVerdict(labelled, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(labelled, { ci: "green", round: 2, stillOpen: 0 }).verdict).toBe(
       "changes recommended after a fix round",
     );
   });
@@ -483,7 +489,7 @@ describe("deriveVerdict", () => {
   it("reads the label past whatever emphasis it was written in", () => {
     for (const body of ["Fix before merge. x", "__Fix before merge__ x", "  **fix before merge:** x"]) {
       expect(
-        deriveVerdict(output({ findings: [finding({ body })] }), { ci: "green", round: 1 })
+        deriveVerdict(output({ findings: [finding({ body })] }), { ci: "green", round: 1, stillOpen: 0 })
           .verdict,
         body,
       ).toBe("changes recommended");
@@ -496,7 +502,7 @@ describe("deriveVerdict", () => {
       findings: [finding({ body: "Worth a look before merge — fix before merge is the label." })],
     });
 
-    expect(deriveVerdict(chatty, { ci: "green", round: 1 }).verdict).toBe("approval recommended");
+    expect(deriveVerdict(chatty, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe("approval recommended");
   });
 
   it("counts one finding once when it is recorded in both places", () => {
@@ -507,7 +513,7 @@ describe("deriveVerdict", () => {
 
     // The larger of the two, not the sum — and either way a fix is a fix, so
     // what this pins is the arithmetic rather than the verdict.
-    expect(deriveVerdict(both, { ci: "green", round: 1 }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(both, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe("changes recommended");
     expect(countFixBeforeMerge(both)).toBe(1);
   });
 
@@ -516,6 +522,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["a"], needsYou: "the wrong thing was built" }), {
         ci: "green",
         round: 1,
+        stillOpen: 0,
       }).verdict,
     ).toBe("needs a closer look");
   });
@@ -536,6 +543,7 @@ describe("deriveVerdict", () => {
     const second = deriveVerdict(output({ fixBeforeMerge: ["the guard still runs after the return"] }), {
       ci: "green",
       round: 2,
+      stillOpen: 0,
     });
 
     expect(second.verdict).toBe("changes recommended after a fix round");
@@ -555,7 +563,61 @@ describe("deriveVerdict", () => {
    * round exists to reach.
    */
   it("still recommends approval in a second round that found nothing", () => {
-    expect(deriveVerdict(output(), { ci: "green", round: 2 }).verdict).toBe("approval recommended");
+    expect(deriveVerdict(output(), { ci: "green", round: 2, stillOpen: 0 }).verdict).toBe(
+      "approval recommended",
+    );
+  });
+
+  /**
+   * A finding this review **carried** rather than found: an earlier round
+   * raised it, this one checked and it is still not fixed (#111). It counts
+   * exactly as one of this review's own would — a review that found nothing new
+   * and three things still unfixed is not an approval, and the fixer no longer
+   * closes anything, so nothing else would stop it.
+   */
+  it("recommends changes when the only thing wrong is what an earlier round asked for", () => {
+    expect(deriveVerdict(output(), { ci: "green", round: 1, stillOpen: 1 }).verdict).toBe(
+      "changes recommended",
+    );
+  });
+
+  /**
+   * Added rather than maximised, unlike the two halves inside
+   * `countFixBeforeMerge`: those are two restatements of one set of findings,
+   * these are two disjoint sets. What makes the distinction visible is the
+   * round-2 row, which either source alone is enough to reach.
+   */
+  it("carries an earlier round's unfixed finding into the round-2 line", () => {
+    expect(deriveVerdict(output(), { ci: "green", round: 2, stillOpen: 2 }).verdict).toBe(
+      "changes recommended after a fix round",
+    );
+  });
+
+  /**
+   * *Previously missed* (#109, decision 4) — a real problem in code an earlier
+   * review already read. It is a fix-before-merge finding carrying one extra
+   * statement, so in round 2 it derives the round-2 row like any other, and
+   * **never** round 1's: the maintainer reads and replies rather than the loop
+   * going round again.
+   *
+   * This is the rule #96 set and this slice changed. Such a finding used to be
+   * a `followUps` entry — filed as an issue after the merge it should have
+   * stopped (`docs/parity.md` §10).
+   */
+  it("gives a previously-missed finding the round it was found in, never round 1's line", () => {
+    const missed = output({
+      findings: [
+        finding({ body: "**Previously missed.** the cache key omits the tenant" }),
+      ],
+    });
+
+    expect(countFixBeforeMerge(missed)).toBe(1);
+    expect(deriveVerdict(missed, { ci: "green", round: 2, stillOpen: 0 }).verdict).toBe(
+      "changes recommended after a fix round",
+    );
+    expect(deriveVerdict(missed, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe(
+      "changes recommended",
+    );
   });
 });
 
@@ -662,9 +724,15 @@ describe("the posted review body", () => {
     findings: [],
     followUps: [],
     fixBeforeMerge: [],
+    verified: [],
     ...over,
   });
-  const parts = { verdict: VERDICTS["changes recommended"], output: output(), placed: [] };
+  const parts = {
+    verdict: VERDICTS["changes recommended"],
+    output: output(),
+    placed: [],
+    stillOpen: [],
+  };
 
   /**
    * The heading as a heading, so the assessment is what a reader's eye lands on
@@ -736,6 +804,55 @@ describe("the posted review body", () => {
 
     expect(body).toContain("_Reviewed as a second round._");
   });
+
+  /**
+   * What an earlier round asked for and has still not got (#111), under its own
+   * heading rather than mixed into this review's checklist: a reader deciding
+   * what to do next is owed the difference between "the new round found this"
+   * and "the last round asked for this and nothing has happened".
+   */
+  it("lists what an earlier review left open, under a heading of its own", () => {
+    const body = renderReviewSummary({
+      ...parts,
+      stillOpen: [{ id: "f-1", threadId: "PRRT_one", text: "`src/queue.ts:206` — the guard runs after the return" }],
+    });
+
+    expect(body).toContain("**Still open from an earlier review**");
+    expect(body).toContain("- [ ] `src/queue.ts:206` — the guard runs after the return");
+    expect(body).not.toContain("**To fix before merge**");
+  });
+
+  /**
+   * And a threaded one is listed **without** its id: the thread is its record,
+   * and a second copy in the body is one a maintainer cannot close. Resolving a
+   * thread by hand is how they settle a finding, and a body that named it again
+   * would raise it in the next round anyway.
+   */
+  it("leaves the id off a finding whose thread is already the record", () => {
+    const threaded = { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return" };
+    const body = renderReviewSummary({ ...parts, stillOpen: [threaded] });
+
+    expect(body).not.toContain(findingMarker("f-1"));
+    expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([]);
+  });
+
+  it("carries no such section when the earlier rounds are settled", () => {
+    expect(renderReviewSummary(parts)).not.toContain("Still open from an earlier review");
+  });
+
+  /**
+   * And each entry keeps its id, which is what makes the body a **record**
+   * rather than a rendering. A finding in a file this pull request never
+   * touched has no thread to stay open on (#110), so the newest review body
+   * naming it is the only thing keeping it alive — and the next round reads it
+   * back off exactly this line.
+   */
+  it("keeps a thread-less finding alive by writing its id back into the body", () => {
+    const stillOpen = [{ id: "f-9", text: "`src/other.ts:88` — the cache key omits the tenant" }];
+    const body = renderReviewSummary({ ...parts, stillOpen });
+
+    expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual(stillOpen);
+  });
 });
 
 /**
@@ -752,6 +869,7 @@ describe("the checklist and the count are one set", () => {
     findings: [],
     followUps: [],
     fixBeforeMerge: [],
+    verified: [],
     ...over,
   });
   const body = (over: Partial<ReviewOutput>): string =>
@@ -759,6 +877,7 @@ describe("the checklist and the count are one set", () => {
       verdict: VERDICTS["changes recommended"],
       output: output(over),
       placed: [],
+      stillOpen: [],
     });
 
   it("records a labelled finding the list left out, anchored where it was made", () => {
@@ -848,6 +967,7 @@ describe("no placement loses a finding", () => {
     findings: [],
     followUps: [],
     fixBeforeMerge: [],
+    verified: [],
     ...over,
   });
 
@@ -897,6 +1017,7 @@ index 0ff3bbb..c6ca7ae 100644
       verdict: VERDICTS["changes recommended"],
       output: reviewed,
       placed,
+      stillOpen: [],
     });
     const posted = [...reviewThreads(placed).map((t) => t.body), body].join("\n");
 
@@ -909,7 +1030,9 @@ index 0ff3bbb..c6ca7ae 100644
    */
   it("counts all three toward the verdict, whatever each one's placement", () => {
     expect(countFixBeforeMerge(reviewed)).toBe(3);
-    expect(deriveVerdict(reviewed, { ci: "green", round: 1 }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(reviewed, { ci: "green", round: 1, stillOpen: 0 }).verdict).toBe(
+      "changes recommended",
+    );
   });
 
   /** Each thread and each body entry carries the id the workflow wrote for it. */
@@ -918,6 +1041,7 @@ index 0ff3bbb..c6ca7ae 100644
       verdict: VERDICTS["changes recommended"],
       output: reviewed,
       placed,
+      stillOpen: [],
     });
     const posted = [...reviewThreads(placed).map((t) => t.body), body].join("\n");
 

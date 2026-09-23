@@ -195,6 +195,8 @@ interface Step {
   readonly name?: string;
   readonly id?: string;
   readonly if?: string;
+  /** A step whose failure must not fail the run — the tidying after a posted review. */
+  readonly "continue-on-error"?: boolean;
   readonly uses?: string;
   readonly run?: string;
   readonly env?: Record<string, string>;
@@ -1224,7 +1226,10 @@ describe("agent-fix asks for the re-review its own push needs", () => {
   it("asks only once this run has said everything it has to say", () => {
     const names = stepsOf(FIX).map((s) => s.name ?? "");
 
-    for (const earlier of ["Reply to and resolve review threads", "Post top-level comments"]) {
+    for (const earlier of ["Reply to review threads", "Post top-level comments"]) {
+      // `toContain` first: a renamed step makes `indexOf` return -1, which every
+      // "is after" assertion passes vacuously.
+      expect(names).toContain(earlier);
       expect(names.indexOf("Request re-review")).toBeGreaterThan(names.indexOf(earlier));
     }
   });
@@ -1309,6 +1314,103 @@ describe("agent-fix asks for the re-review its own push needs", () => {
  * feature being off; a copy that fired on the conflicts path would put "ready to
  * merge" on code an agent wrote and nobody read.
  */
+/**
+ * **The reviewer closes a thread and the fixer never does** (#109, decision 1;
+ * #111). Two halves in two workflows, asserted together because either one
+ * alone is a loop that loses findings: a fixer that still resolved would close
+ * its own work unchecked, and a reviewer that resolved nothing would leave
+ * every finding open for ever, counting against every later verdict.
+ *
+ * Neither half has a runtime symptom. A resolved thread is dropped from the
+ * feedback the next review is handed, so a fixer closing its own threads
+ * produces a review that looks clean because it cannot see what it is meant to
+ * check — the failure #105 patched with a body checklist and this moved the
+ * cause of.
+ */
+describe("the reviewer closes a thread, and the fix run never does", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const RESOLVE_MUTATION = "resolveReviewThread";
+  const resolveStep = (): Step | undefined =>
+    stepsOf(REVIEW).find((s) => s.name === "Resolve the threads this review verified");
+
+  /**
+   * Over the file's whole text rather than its steps: the mutation is a string
+   * inside a `run:` block, and what is being asserted is that no step anywhere
+   * in the workflow performs it — including one added later for another reason.
+   */
+  it("has no step in agent-fix that resolves anything", () => {
+    expect(fs.readFileSync(FIX, "utf8")).not.toContain(RESOLVE_MUTATION);
+  });
+
+  /**
+   * And it still replies to every thread, which is the half that stays. "I
+   * looked and declined" is worth saying out loud, and the reply is what the
+   * next review reads before it rules.
+   */
+  it("still replies in every thread the fix run was shown", () => {
+    const reply = stepsOf(FIX).find((s) => s.name === "Reply to review threads");
+
+    expect(reply?.run ?? "").toContain("addPullRequestReviewThreadReply");
+    expect(reply?.env?.["OUTCOMES"]).toBe("${{ runner.temp }}/thread_outcomes.json");
+  });
+
+  /**
+   * The reviewer's half, from the file the runner wrote. The step composes
+   * nothing: which threads close, and what the reply says, are decided by a
+   * unit-tested derivation (`verifyCarried`) and read out of JSON here.
+   */
+  it("resolves what the review verified, from the file the runner wrote", () => {
+    expect(resolveStep()?.env?.["RESOLUTIONS"]).toBe("${{ runner.temp }}/thread_resolutions.json");
+    expect(resolveStep()?.run ?? "").toContain(RESOLVE_MUTATION);
+  });
+
+  /**
+   * With the reason GitHub takes and then shows nobody. `resolutionReason` is
+   * validated on the way in and exposed on no field afterwards, so the reply is
+   * the only record of why a finding closed — which is why the reply is posted
+   * and not merely offered.
+   */
+  it("closes it as addressed, and says so where a human can read it", () => {
+    const run = resolveStep()?.run ?? "";
+
+    expect(run).toContain("resolutionReason:ADDRESSED");
+    expect(run).toContain("addPullRequestReviewThreadReply");
+    expect(run.indexOf("addPullRequestReviewThreadReply")).toBeLessThan(run.indexOf(RESOLVE_MUTATION));
+  });
+
+  /**
+   * After the verdict, and never able to take it down. A thread that will not
+   * close is a thread a human closes; a review posted without its verdict is
+   * the state the whole feature exists to prevent.
+   */
+  it("runs after the verdict is posted, and cannot fail the run", () => {
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(names).toContain("Post the verdict as a commit status");
+    expect(names.indexOf("Resolve the threads this review verified")).toBeGreaterThan(
+      names.indexOf("Post the verdict as a commit status"),
+    );
+    expect(resolveStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+    expect(resolveStep()?.["continue-on-error"]).toBe(true);
+  });
+
+  /**
+   * And it spends a scope the job already had. Resolving a thread is a
+   * pull-request write, not a `contents:` one — review stays the agent that
+   * structurally cannot touch the branch (docs/parity.md §10), and an adopter
+   * current on the pin needs no new grant for this.
+   */
+  it("needs nothing the review job was not already granted", () => {
+    expect(jobOf(REVIEW).permissions).toEqual({
+      checks: "read",
+      contents: "read",
+      packages: "read",
+      "pull-requests": "write",
+      statuses: "write",
+    });
+  });
+});
+
 describe("agent-update-branch carries the verdict, or asks for the round it made necessary", () => {
   const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
   const stepNamed = (name: string): Step | undefined =>

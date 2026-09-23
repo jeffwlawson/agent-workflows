@@ -5,6 +5,7 @@ import {
   type UnreadableSelection,
 } from "./pr-feedback.js";
 import { parseDiffLines } from "./diff-lines.js";
+import { carriedFindings, type CarriedFinding } from "./review-verification.js";
 
 export interface PullRequestContext {
   /**
@@ -27,6 +28,17 @@ export interface PullRequestContext {
    * own log, where a human debugging the run reads it.
    */
   readonly unreadableFeedback: readonly UnreadableSelection[];
+  /**
+   * What an earlier review of this pull request raised and nothing has verified
+   * fixed yet — the open threads this loop opened, and the open entries in the
+   * latest review body it posted (#111).
+   *
+   * Handed to **every** review, round 1 included. A human may have pushed the
+   * fix, and "is this still true of the code in front of me" has the same
+   * answer whoever wrote the commit; a record only round 2 read would be one
+   * that a human's push silently emptied.
+   */
+  readonly carriedFindings: readonly CarriedFinding[];
   readonly diff: string;
   readonly diffLines: Map<string, Set<number>>;
 }
@@ -111,6 +123,13 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
     linkedIssue,
     discussion,
     unreadableFeedback: feedback.unreadable,
+    // Assembled here rather than in the fetch, which reads GitHub surfaces and
+    // reports what it read. Which of those surfaces a finding is recorded on,
+    // and which copy wins when it is on both, is the review's question.
+    carriedFindings: carriedFindings({
+      threads: feedback.agentThreads,
+      latestReviewBody: feedback.latestAgentReviewBody,
+    }),
     diff,
     diffLines: parseDiffLines(diff),
   };

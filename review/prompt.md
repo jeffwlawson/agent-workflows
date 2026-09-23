@@ -16,7 +16,8 @@ is the full list of what you must not do.
 
 Feedback already on this PR — earlier review summaries, unresolved inline threads (replies
 included), and conversation comments — plus any collaborator comments on the linked issue.
-Resolved threads are omitted deliberately: they have been handled.
+Resolved threads are omitted deliberately: a thread is closed by a review that checked the code and
+found the finding fixed, or by a human, so one that is gone is one that is settled.
 
 **Raise only what is new.** A point already made below and since addressed gets one line
 acknowledging it; one still outstanding may be reinforced. Treat maintainer steering as
@@ -44,20 +45,46 @@ you find.
 pushed since, and the question is no longer *what is wrong with this change* but *did the last
 round's findings land, and did the new commits break anything?* In that case:
 
-- Take each finding the earlier review said had to be fixed before merge and say, one at a time,
-  whether the current change resolves it. They are the **To fix before merge** checklist in that
-  review's body, under **EXISTING FEEDBACK** above — that checklist is the list, not the inline
-  threads, which the fix round resolves and which are dropped from what you were handed. One that
-  did not land is a `fixBeforeMerge` entry again, saying what is still missing rather than
-  restating the original finding.
+- Rule on every open finding, as the section below says. That is the pass.
 - Read the new commits for what they broke. A fix that resolves its own finding and regresses
   something else is the failure this pass exists to catch, and nothing else is looking for it.
-- Anything else real you notice is a `followUps` entry, not a new thing to fix before merge. That
-  list is a complete restatement every round, so re-record the entries the earlier round listed
-  that are still true.
+- A real problem you find in code an earlier review of this pull request already read is
+  **previously missed**: report it as a finding like any other, label it as the section below
+  says, and restate it in `fixBeforeMerge`. It is this pull request's to fix before it merges —
+  the record was wrong about the change, which is a stronger reason to stop the merge than an
+  ordinary finding rather than a weaker one. It does **not** go to `followUps`, which is where an
+  earlier version of this brief sent it.
+- Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
+  stated with that list. It is a complete restatement every round, so re-record the entries the
+  earlier round listed that are still true.
 - Open your summary by saying this is a verification of the earlier round. The reader is being
   asked to look at a pull request they had already been told was nearly ready, and why is the first
   thing they will want.
+
+# FINDINGS AN EARLIER REVIEW LEFT OPEN
+
+These were raised by an earlier review of this pull request and nothing has verified them fixed.
+Each carries the identifier the workflow gave it when it was posted; the evidence is on the thread
+it was raised in, under **EXISTING FEEDBACK** above, or in that review's body.
+
+{{OPEN_FINDINGS}}
+
+**Rule on every one of them, by identifier, in `verified`.** For each: `landed` if the current code
+resolves it, `open` if it does not, and one line saying why. Check the code in front of you rather
+than a claim that it was fixed — a reply saying a finding was addressed is an assertion, and
+verifying it is the whole of this job.
+
+This is asked of **every** review, this round included. A finding does not need a fix round to have
+been settled: a human may have pushed the fix, or the finding may have been wrong.
+
+What follows from your answer is not yours to do and not yours to state. A finding you rule
+`landed` has its thread closed by the workflow, with your line as the reason. One you rule `open`
+counts against this pull request exactly as a finding of your own would, so do not restate it in
+`fixBeforeMerge` — it is already counted, and restating it counts it twice.
+
+One you say nothing about **stays open**. That is deliberate, and it is the safe direction rather
+than an invitation to leave the list half-done: a finding nobody has checked is not a finding
+anybody has settled.
 
 # CI RESULTS
 
@@ -105,11 +132,16 @@ There are two, and every finding is one of them.
 **Fix before merge** — this pull request is wrong, unsafe, or does not do what the linked issue
 asked, and must not merge as it stands. Say so in the summary and in the finding, and restate each
 one as a single line in `fixBeforeMerge`. That list is counted, and it is posted as the
-**To fix before merge** checklist on the review — it is what the next round verifies against, so a
-finding only the prose carries is one nobody can act on without reading for it.
+**To fix before merge** checklist on the review — so a finding only the prose carries is one nobody
+can act on without reading for it.
 
 **A follow-up** — real, but not this pull request's to fix. Those go to the `followUps` list your
 structured output carries, on the bar stated with it.
+
+**Previously missed** is the first kind with one more thing said about it: a real problem in code
+an earlier review of this pull request already read. Open its body with `**Previously missed.**`
+instead of `**Fix before merge.**` and restate it in `fixBeforeMerge` like any other. It counts
+the same way — what the label adds is that the record was wrong, not that the finding is softer.
 
 **Nothing else is posted.** A style preference, a "consider…", a rename you would accept being
 overruled on: if it is not worth fixing, it is not worth the time of the person who has to read

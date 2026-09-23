@@ -340,8 +340,9 @@ come up was *inside* one PRD.
 | Posts inline comments | ✅ | ✅ | as GraphQL `addPullRequestReview` threads since #110 — REST review-create cannot open a file-level thread (422) and its `comments` field is deprecated in favour of `threads` |
 | **Every finding carries an id the workflow wrote** | ❌ | ➕ | #110. A hidden marker in each thread and each body entry, so a later round recognises a finding it has seen without matching its text. The model is told to write none: one it invented would be matched against a thread it never opened |
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query; skips resolved threads |
+| **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review — round 1 included — is handed the open threads this loop opened and the open entries in the latest review body, each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
-| **Replies in review threads** | ✅ | ❌ | the *review* does not reply — but `agent:fix` does, and resolves what it settled (§4) |
+| **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
@@ -365,7 +366,7 @@ come up was *inside* one PRD.
 | Agent may **decline** feedback with a reason | ✅ | ✅ | explicit in both prompts |
 | Pushes with `--force-with-lease` pinned to the run's head SHA | ✅ | ✅ | |
 | **Posts thread replies back** | ✅ | ✅ | one reply per thread, `addressed` or `declined`, with the reason |
-| **Resolves the threads it addressed** | ❌ | ➕ | declines stay **open** so a human can push back |
+| **Resolves the threads it addressed** | ❌ | ❌ | it did until #111 and now resolves **nothing**: the author of a fix marked its own work done, and a resolved thread is dropped from what the next review is shown, so the pass that checks it could not see it. The reviewer closes threads now (§3), and `addressed` / `declined` is a claim recorded in the reply |
 | **Posts new inline comments** | ✅ | ❌ | **decision, not omission** — see below |
 | **Posts top-level comments** | ✅ | ✅ | ours states in the prompt what the channel is *for*; CVM has the field and no guidance anywhere |
 
@@ -377,9 +378,11 @@ listens on `issues:` only; and every other workflow in this repo holds **file na
 `-pr` suffix is redundant besides — it triggers on `pull_request_target` and refuses on a closed or
 merged PR, so it cannot run on anything else.
 
-Ours converses in-thread and closes what it settled; CVM replies but never resolves, so its
-threads accumulate until a human clears them. Since #78 it can also *raise* something that belongs
-to no thread, as a top-level comment on the PR conversation — the channel that was missing when
+Ours converses in-thread; CVM replies too, and neither closes a thread. The difference is what
+happens next: ours are closed by the **review** that verifies them (§3, #111), so they neither
+accumulate until a human clears them nor close on the word of the run that wrote the fix. Since #78
+it can also *raise* something that belongs to no thread, as a top-level comment on the PR
+conversation — the channel that was missing when
 #63's documented bug ended up buried in a test-file comment, and when #77 offered an option
 (`open a follow-up and reference it`) the agent had no way to take.
 
@@ -489,7 +492,7 @@ parent — and §10 records why the sub-issues stay out of it.
 ## 9. If we closed the gaps, in order
 
 Done since first written: **conversational replies + resolution** (#49/#50 — and ours also
-*resolves* threads, which CVM does not), **`agent-update-branch`** (#52, motivated by a real trap,
+*resolves* threads, which CVM does not; since #111 it is the review that closes them, not the fix), **`agent-update-branch`** (#52, motivated by a real trap,
 not theory — see `friction.md`), **implement → review auto-cascade**, **review marks the
 PR ready** (it had become a manual step on every agent PR), **`agent-implement-prd`** (#92 — the
 execution half of the PRD tier, which had been off this list entirely), and **the publish contract
@@ -721,8 +724,37 @@ expensive to rediscover.
   is not — the remedy the comment gives is re-adding `agent:review`, and `Transition labels`
   removes `agent:blocked` on the way in. So the objection above (a stale label nobody clears)
   applies to the terminal-state refusal only.
-- **Only `addressed` resolves a thread.** A `declined` thread keeps its reply and stays open, so a
-  human can push back; auto-resolving a decline lets an agent bury a disagreement silently.
+- **The reviewer closes a thread; the fixer never does.** Since #111 (#109, decision 1) an
+  `agent:fix` run replies in every thread it was shown — `addressed` or `declined`, with the reason
+  — and resolves none of them. A thread closes when a **review** has read the current code and
+  ruled the finding landed, with `resolutionReason: ADDRESSED` and a reply saying why, or when a
+  human closes it.
+
+  This used to read "*only `addressed` resolves a thread*", which bounded the right hazard on the
+  wrong side. Auto-resolving a *decline* would let an agent bury a disagreement; auto-resolving an
+  *addressed* one let it mark its own work done — and because a resolved thread is dropped from the
+  feedback the next review is handed, the one pass whose job is "did it land?" could not see what
+  it was checking. #105 patched that with a checklist in the review body; moving the close to the
+  reviewer is the cause rather than the symptom.
+
+  Every review does it, round 1 included: a human may have pushed the fix, and "is this still true
+  of the code in front of me" has the same answer whoever wrote the commit. A finding the review
+  says nothing about **stays open**, which is the direction this has to fail in — a finding nobody
+  checked is not a finding anybody settled.
+- **A finding an earlier review missed counts against the merge, in every round.** A real problem a
+  later review finds in code an earlier review already read is labelled *previously missed*, is a
+  `fixBeforeMerge` finding like any other, and in round 2 therefore derives the round-2 *Changes
+  recommended* (#109, decision 4; `shared/review-findings.ts`).
+
+  **This changes #96's round-2 rule**, which sent everything a verification pass newly noticed to
+  `followUps` — filed as an issue *after* the merge it should have stopped. The reasoning then was
+  that round 2 is a verification pass and not a fresh review, which is right about its *job* and
+  wrong about this case: a finding in code the record already covered says the record was wrong
+  about this pull request, which is a stronger reason to stop the merge than an ordinary finding
+  rather than a weaker one. What is unchanged is the bound around it — a round-2 review still
+  cannot produce the round-1 row, so a previously-missed finding asks a maintainer to read and
+  reply rather than sending the loop round again. Genuinely out-of-scope findings still go to
+  `followUps`, on the bar stated with that list.
 - **Every world-writable input is author-gated.** Issue and PR text reaches agents only from
   collaborators or our own bot. `agent:fix` pushes code, so an ungated input there steers commits.
 - **Agents never hold the GitHub token.** Context is fetched before the agent starts and the token
@@ -775,6 +807,16 @@ expensive to rediscover.
   costs nothing: the review → fix handoff runs through `reviews`/`reviewThreads`, not `comments`.
   It also keeps `hasFeedback` honest — a PR with every thread resolved and no human input still
   refuses, rather than finding "feedback" the agent wrote itself.
+
+  **Narrowed by #111, knowingly.** A fix run's thread replies used to leave the `inline` surface by
+  being *resolved*; now nothing resolves them until a review does, so a second `agent:fix` run on
+  the same round reads its own replies back. Accepted rather than filtered, on two grounds. The
+  reply is not an instruction — it is this agent's answer to somebody else's finding, and the
+  finding above it is still what the prompt asks it to decide about — and the thread is the surface
+  the *review* has to read to verify the claim, so a marker that hid it from one workflow would
+  have to be read by the other. What it costs is a second fix run answering a thread twice, which
+  is visible on the pull request; the failure the invariant is about is a workflow silently
+  building what it asked for, and nothing here does that.
 - **A channel the prompt bounds is also bounded mechanically.** Prompt guidance sets intent; it is
   not a control. `filterOutcomes` drops invented thread ids because a model invents them, and
   `filterTopLevelComments` caps a run at two comments and drops verbatim repeats of ones already
@@ -782,7 +824,7 @@ expensive to rediscover.
   would leave three copies of the same note, and three issues once #79 harvests them.
 - **An optional channel never has veto power over the mandatory one.** A malformed top-level
   comment is dropped with a warning, not thrown on: throwing would burn both extraction retries and
-  take every thread reply and resolve down with it. A malformed *thread outcome* still throws — that
+  take every thread reply down with it. A malformed *thread outcome* still throws — that
   is the payload the run exists to produce.
 - **Draft means the pipeline has not finished, not that the agent is still typing.** Review marks
   the PR ready, and only on `success()`. So a PR left in draft after a run is a PR whose automated

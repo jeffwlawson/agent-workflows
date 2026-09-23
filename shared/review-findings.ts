@@ -97,12 +97,33 @@ export const newFindingId = (): string => `f-${randomUUID().replace(/-/g, "").sl
 export const FIX_BEFORE_MERGE_LABEL = "Fix before merge";
 
 /**
- * The label at the head of a body, past whatever emphasis it was written in.
+ * The label a finding carries when it is a real problem this pull request
+ * introduced *and an earlier review of it already read that code* (#109,
+ * decision 4).
+ *
+ * It counts as *fix before merge* exactly like the label above — which is the
+ * decision, and the thing that makes it worth a second spelling rather than a
+ * sentence in the prose. A missed finding says the review record was wrong
+ * about this pull request, and that is a stronger reason to stop the merge
+ * than an ordinary finding, not a weaker one. Before #111 the round-2 prompt
+ * sent these to `followUps`, where they were filed after the merge they should
+ * have stopped (`docs/parity.md` §10).
+ */
+export const PREVIOUSLY_MISSED_LABEL = "Previously missed";
+
+/**
+ * A label at the head of a body, past whatever emphasis it was written in.
  * `(?![A-Za-z0-9])` rather than `\b`, because the emphasis it is most often
  * written in ends in `_` — a word character, so `\b` refuses the very case
  * `__Fix before merge__` this has to read.
  */
-const LABELLED = new RegExp(`^[\\s*_]*${FIX_BEFORE_MERGE_LABEL}(?![A-Za-z0-9])`, "i");
+const labelled = (label: string): RegExp => new RegExp(`^[\\s*_]*${label}(?![A-Za-z0-9])`, "i");
+
+const MISSED = labelled(PREVIOUSLY_MISSED_LABEL);
+const LABELS = [labelled(FIX_BEFORE_MERGE_LABEL), MISSED] as const;
+
+/** The punctuation and emphasis a label leaves behind it. */
+const LEADING = /^[\s*_.:;,—–-]+/;
 
 /**
  * Whether a finding is one this pull request must not merge without fixing.
@@ -111,21 +132,96 @@ const LABELLED = new RegExp(`^[\\s*_]*${FIX_BEFORE_MERGE_LABEL}(?![A-Za-z0-9])`,
  * looks like stays in this file: the verdict counts these and the body lists
  * them, and two readings of the same emphasis is how one of them starts
  * counting a finding the other does not.
+ *
+ * **Either label answers yes.** A *previously missed* finding is a
+ * fix-before-merge finding with a second thing said about it, so a body that
+ * carries only that label is still counted — which is what stops the decision
+ * resting on the model also remembering to write the first one.
  */
-export const isFixBeforeMerge = (finding: Finding): boolean => LABELLED.test(finding.body);
+export const isFixBeforeMerge = (finding: Finding): boolean =>
+  LABELS.some((label) => label.test(finding.body));
+
+/** Whether an earlier review had already read the code this finding is about. */
+export const isPreviouslyMissed = (finding: Finding): boolean => MISSED.test(finding.body);
 
 /**
- * The claim a finding's body opens with: the label stripped, up to the first
+ * The claim a finding's body opens with: the labels stripped, up to the first
  * line break.
  *
  * Up to the line break rather than the whole body, which is what keeps a
  * ```suggestion block out of the one-line surfaces this feeds. The body is
  * where the evidence and the fix live; a list wants the claim and a way to
  * reach the rest.
+ *
+ * Stripped in a loop rather than once, because a finding may carry both labels
+ * and in either order — `**Fix before merge — previously missed.**` is the
+ * shape the prompt asks for and `**Previously missed.**` is the shape a model
+ * reaches for, and a single pass over the first would leave the second in the
+ * one-line surfaces this feeds.
  */
 export const openingClaim = (body: string): string => {
-  const [opening = ""] = body.replace(LABELLED, "").split("\n");
-  return opening.replace(/^[\s*_.:;,—–-]+/, "").trim();
+  const [opening = ""] = body.split("\n");
+
+  let claim = opening.replace(LEADING, "");
+  for (let stripped = true; stripped; ) {
+    stripped = false;
+    for (const label of LABELS) {
+      const next = claim.replace(label, "");
+      if (next !== claim) {
+        claim = next.replace(LEADING, "");
+        stripped = true;
+      }
+    }
+  }
+  return claim.trim();
+};
+
+/**
+ * Every finding id written into a body, with the line each one labels.
+ *
+ * The **reader** of `findingMarker`, and here rather than beside its callers
+ * for the reason `parseFollowUpsBlock` sits beside its renderer: the marker and
+ * the text it selects are one format, and a parser living with the half that
+ * reads it is a second description of that format, drifting on the release that
+ * changes either.
+ *
+ * One rule covers both places a marker is written, which is what keeps it one
+ * format: **the entry is the rest of the marker's own line, or the next
+ * non-empty line where the marker sits alone.** A body finding's marker is
+ * written on its own line above the heading it introduces; a carried finding
+ * with no thread of its own is written at the end of the checklist line it
+ * belongs to.
+ *
+ * Deliberately not a parse of the *whole* entry. What a later review needs off
+ * an earlier body is the id — which is identity — and one line a human can read
+ * beside it. The evidence stays where it was posted.
+ */
+export interface MarkedEntry {
+  readonly id: string;
+  /** The line the marker labels, stripped of its list marker and emphasis. */
+  readonly text: string;
+}
+
+const MARKER = new RegExp(`<!--\\s*${FINDING_MARKER}\\s+(\\S+)\\s*-->`);
+
+/** A checklist's own furniture, which is the list's rather than the entry's. */
+const LIST_ITEM = /^[-*]\s+(\[[ xX]\]\s+)?/;
+
+export const parseFindingMarkers = (body: string): MarkedEntry[] => {
+  const lines = body.split("\n");
+
+  return lines.flatMap((line, index) => {
+    const id = line.match(MARKER)?.[1];
+    if (id === undefined) return [];
+
+    const onItsLine = line.replace(MARKER, "").trim();
+    const text =
+      onItsLine === ""
+        ? (lines.slice(index + 1).find((later) => later.trim() !== "") ?? "").trim()
+        : onItsLine;
+
+    return [{ id, text: text.replace(LIST_ITEM, "").replace(/^\*\*|\*\*$/g, "").trim() }];
+  });
 };
 
 /** One line, so a model that wrapped a title cannot break the entry it heads. */

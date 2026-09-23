@@ -1,5 +1,7 @@
-import { ghOutcome, git, isTrustedAuthor, type GhOutcome } from "./common.js";
+import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
+import { openingClaim, parseFindingMarkers } from "./review-findings.js";
+import type { AgentThread } from "./review-verification.js";
 
 /**
  * The three rendered feedback surfaces, named the same as the fields carrying
@@ -68,6 +70,27 @@ export interface PullRequestFeedback {
   readonly all: string;
   /** Node ids of the unresolved threads shown to the agent, for reply/resolve. */
   readonly threadIds: readonly string[];
+  /**
+   * The unresolved threads **this loop opened**, each with the finding id the
+   * workflow wrote into it (#110) — the open half of the review record a later
+   * review verifies against (#111).
+   *
+   * A subset of `threadIds` and not a replacement for it: the fix runner
+   * answers every thread it was shown, a human's included, while only the
+   * loop's own threads carry a finding a review can rule on.
+   */
+  readonly agentThreads: readonly AgentThread[];
+  /**
+   * The body of the **latest** review this loop posted, or `""` when it has
+   * posted none.
+   *
+   * The current statement of what is open, rather than one of several: each
+   * review re-lists the findings it verified as still open, so the newest body
+   * supersedes the one before it. Returned whole rather than parsed, because
+   * what a reader wants out of it differs by caller and the format is
+   * `shared/review-findings.ts`'s to describe.
+   */
+  readonly latestAgentReviewBody: string;
   /**
    * Bodies of the top-level comments `agent:fix` already posted on this PR —
    * kept out of every rendered surface above, and returned only so a new run
@@ -615,6 +638,17 @@ export const diffCommandAgainstBase = (baseRef: string | undefined): readonly st
  * Saying so matters: an agent handed a bare line number cannot tell whether it
  * describes today's code or code that has since moved.
  */
+/**
+ * The finding id a comment carries, or `undefined` for one that carries none —
+ * a human's comment, a reply, or a review posted before ids existed.
+ *
+ * The first, where a comment somehow holds two. A thread's finding marker is
+ * written once, at the end of the body the review posted; a second would mean
+ * the review quoted another finding's, and the one this loop wrote is the one
+ * it wrote first.
+ */
+const findingIdIn = (body: string): string | undefined => parseFindingMarkers(body)[0]?.id;
+
 const anchorOf = (c: GqlThreadComment): string => {
   const outdated = c.line === null || c.line === undefined;
   const end = c.line ?? c.originalLine;
@@ -743,6 +777,39 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     })
     .join("\n\n---\n\n");
 
+  // The loop's own open findings, selected by the id the workflow wrote into
+  // each thread rather than by what the thread says — text is never matched
+  // across rounds (#109, decision 2). The marker is a selector and not a
+  // control, exactly as the follow-ups block's is: anyone who can comment can
+  // type one, so the thread counts as the loop's own only where the comment
+  // carrying it is the workflow bot's.
+  const agentThreads = threads.flatMap((thread): AgentThread[] => {
+    const marked = thread.comments.find(
+      (c) => isWorkflowBot(c.author?.login ?? undefined) && findingIdIn(c.body ?? "") !== undefined,
+    );
+    const findingId = marked === undefined ? undefined : findingIdIn(marked.body ?? "");
+    if (marked === undefined || findingId === undefined) return [];
+
+    // `anchorOf` and not a bare `path:line`, so a thread whose code has moved
+    // says so wherever this line is shown. It is left unfenced for that
+    // reason: the anchor may carry the *outdated* clause, and a code span
+    // around a sentence is a sentence in a code span.
+    const claim = openingClaim(marked.body ?? "");
+    return [{ threadId: thread.id, findingId, text: `${anchorOf(marked)} — ${claim}` }];
+  });
+
+  // The newest review this loop posted, which is the one whose body is current.
+  // `isWorkflowBot` rather than `isTrustedAuthor`: the question is "did this
+  // loop write it", and the wider gate would admit a maintainer's own review,
+  // whose body carries no finding ids and whose prose is not a record to verify
+  // against.
+  const latestAgentReviewBody =
+    present(pr?.reviews?.nodes)
+      .filter((review) => isWorkflowBot(review.author?.login ?? undefined))
+      .map((review) => (review.body ?? "").trim())
+      .filter((body) => body !== "")
+      .pop() ?? "";
+
   const all = [
     summaries && `### Review summaries\n\n${summaries}`,
     inline && `### Inline comments (unresolved threads)\n\n${inline}`,
@@ -757,6 +824,8 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     conversation,
     all,
     threadIds: threads.map((t) => t.id),
+    agentThreads,
+    latestAgentReviewBody,
     priorTopLevelComments,
     diff: git(diffCommandAgainstBase(process.env["BASE_REF"])),
     // Deliberately computed from `all`, which no longer contains our own

@@ -165,9 +165,9 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
     heading: "🟢 Approval recommended",
     label: "Approval recommended",
     state: "success",
-    nextStep: "Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+    nextStep: "Nothing left to fix. Merge when ready; follow-ups are filed as issues on merge.",
     description:
-      "Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+      "Approval recommended. Nothing left to fix. Merge when ready; follow-ups are filed as issues on merge.",
   },
   "changes recommended": {
     verdict: "changes recommended",
@@ -175,9 +175,9 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
     label: "Changes recommended",
     state: "failure",
     nextStep:
-      "Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+      "The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically.",
     description:
-      "Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+      "Changes recommended. The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically.",
   },
   // Same assessment, a different step: the fix round that was supposed to
   // settle these has already run. So the line stops promising an automatic
@@ -188,9 +188,9 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
     label: "Changes recommended",
     state: "failure",
     nextStep:
-      "A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+      "A fix round didn't settle these. Read the review, add guidance where it helps, then add agent:fix.",
     description:
-      "Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+      "Changes recommended. A fix round didn't settle these. Read the review, add guidance where it helps, then add agent:fix.",
   },
   "needs a closer look": {
     verdict: "needs a closer look",
@@ -198,9 +198,9 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
     label: "Needs a closer look",
     state: "failure",
     nextStep:
-      "A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
+      "A fix round can't settle this alone. Read the review, add guidance, then add agent:fix or close the PR.",
     description:
-      "Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
+      "Needs a closer look. A fix round can't settle this alone. Read the review, add guidance, then add agent:fix or close the PR.",
   },
 };
 

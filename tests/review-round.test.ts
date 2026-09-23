@@ -187,7 +187,7 @@ describe("detectReviewRound", () => {
    * `error` is the review saying *there is no verdict* — the run died before it
    * reviewed anything. Counting it would make the retry after every failed run
    * a verification pass over findings that were never posted, and a round-2 run
-   * with findings can only answer "a fix round did not settle these".
+   * with findings can only answer "a fix round didn't settle these".
    */
   it("ignores an error status, which is a run that produced no verdict", () => {
     ghAnswers({

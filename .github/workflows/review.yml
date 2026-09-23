@@ -823,7 +823,7 @@ jobs:
         run: |
           gh api --method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}" \
             -f "context=agent-review" -f "state=error" -f "target_url=${RUN_URL}" \
-            -f "description=The review run failed, so there is no verdict. See the run, then re-add agent:review to retry." \
+            -f "description=The review run failed, so there's no verdict. Check the run, then re-add agent:review." \
             || echo "::warning::Could not post the failed \`agent-review\` verdict for ${HEAD_SHA}. The failure comment on the pull request is the only record of this run."
 
       - name: Always remove in-progress

@@ -546,7 +546,7 @@ describe("deriveVerdict", () => {
     expect(second.verdict).toBe("changes recommended after a fix round");
     expect(second.heading).toBe(VERDICTS["changes recommended"].heading);
     expect(second.nextStep).toBe(
-      "A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+      "A fix round didn't settle these. Read the review, add guidance where it helps, then add agent:fix.",
     );
     // Never the round-1 step, which promises an automatic re-review the loop
     // will not start: this round is the one that was supposed to settle it.
@@ -581,25 +581,25 @@ describe("the verdict's commit status", () => {
       "approval recommended",
       "🟢 Approval recommended",
       "success",
-      "Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+      "Approval recommended. Nothing left to fix. Merge when ready; follow-ups are filed as issues on merge.",
     ],
     [
       "changes recommended",
       "🟡 Changes recommended",
       "failure",
-      "Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+      "Changes recommended. The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically.",
     ],
     [
       "changes recommended after a fix round",
       "🟡 Changes recommended",
       "failure",
-      "Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+      "Changes recommended. A fix round didn't settle these. Read the review, add guidance where it helps, then add agent:fix.",
     ],
     [
       "needs a closer look",
       "🔵 Needs a closer look",
       "failure",
-      "Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
+      "Needs a closer look. A fix round can't settle this alone. Read the review, add guidance, then add agent:fix or close the PR.",
     ],
   ] as const)(
     "states %s under its heading, with the state that shows it",
@@ -624,10 +624,11 @@ describe("the verdict's commit status", () => {
   });
 
   /**
-   * The status line is the heading and the step, and the body is the heading
-   * over the step — two renderings of one row. Written out rather than composed
-   * so the table reads as what a maintainer sees, which leaves exactly one way
-   * for them to drift, and this is it.
+   * Two renderings of one row. The body is the heading over the step; the status
+   * line is the `label` — the heading without its marker, which a description
+   * refuses — and the step. Written out rather than composed so the table reads
+   * as what a maintainer sees, which leaves exactly one way for them to drift,
+   * and this is it.
    */
   it("says the same thing on the status as the body says in two parts", () => {
     for (const row of Object.values(VERDICTS)) {
@@ -765,7 +766,7 @@ describe("the posted review body", () => {
  * labelled inline comments, so the case that rule exists for — a finding
  * labelled in a comment and left off the list — posted *changes recommended*
  * over an empty checklist. Round 2 is then told that checklist is what to
- * verify against, under a verdict line reading "no need to read them first".
+ * verify against, under a verdict line saying the fixes are clear.
  */
 describe("the checklist and the count are one set", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({

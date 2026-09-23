@@ -254,6 +254,19 @@ export const REQUIRED_PERMISSIONS: readonly {
     absence: "private",
   },
   {
+    permission: "statuses",
+    value: "write",
+    workflows: ["review"],
+    why:
+      "the review's verdict — what to do about it next — is posted as an `agent-review` commit " +
+      "status on the reviewed commit, and a status is its own scope rather than part of " +
+      "`pull-requests: write`. Without it the review posts, the run stays green, and no verdict " +
+      "appears: the step warns rather than failing, because a posted review is worth more than " +
+      "its verdict. So nothing on the pull request says the grant is missing, and the loop looks " +
+      "like one whose verdicts are switched off",
+    absence: "always",
+  },
+  {
     permission: "contents",
     value: "read",
     workflows: ["review"],

@@ -1,6 +1,9 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   capFollowUps,
+  deriveVerdict,
   filterInlineComments,
   FOLLOW_UPS_MARKER,
   hasFollowUpsBlock,
@@ -8,8 +11,12 @@ import {
   parseFollowUpsBlock,
   renderFollowUpsBlock,
   reviewOutputSchema,
+  VERDICT_CONTEXT,
+  VERDICTS,
+  type CiResult,
   type FollowUp,
   type InlineComment,
+  type ReviewOutput,
 } from "../shared/review-output.js";
 
 /**
@@ -23,7 +30,7 @@ const parse = (value: unknown) => {
   if ("issues" in result && result.issues) {
     throw new Error(result.issues.map((i) => i.message).join("; "));
   }
-  return (result as { value: { inlineComments: InlineComment[]; followUps: FollowUp[] } }).value;
+  return (result as { value: ReviewOutput }).value;
 };
 
 const comment = (over: Partial<InlineComment> = {}): InlineComment => ({
@@ -318,5 +325,219 @@ describe("parseFollowUpsBlock", () => {
     const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[{"title":"t","body":"b"}]} -->`;
 
     expect(() => parseFollowUpsBlock(body)).toThrow(/location/);
+  });
+});
+
+/**
+ * The two finding types (#97). Every finding is *fix before merge* or a
+ * follow-up, and the first of those has to be **countable from the structured
+ * output** rather than read out of the summary: the verdict is derived from the
+ * count, and a verdict derived from prose is the sentence nothing acts on that
+ * this replaced.
+ *
+ * Not the inline comments, which is the shape this could have taken and the
+ * one that breaks: `filterInlineComments` drops an anchor that is off-diff, so
+ * a fix-before-merge finding whose line the model invented would be dropped
+ * from the count as well as from the review — turning "ready after a fix" into
+ * "ready to merge" on exactly the reviews that found something.
+ */
+describe("reviewOutputSchema: the two finding types", () => {
+  it("defaults fixBeforeMerge to empty, which is the ordinary review", () => {
+    expect(parse({ summary: "s" }).fixBeforeMerge).toEqual([]);
+  });
+
+  it("accepts snake_case fix_before_merge, since the model emits both", () => {
+    const out = parse({ summary: "s", fix_before_merge: ["the guard runs after the return"] });
+
+    expect(out.fixBeforeMerge).toEqual(["the guard runs after the return"]);
+  });
+
+  it("refuses a finding that is not a line of text", () => {
+    expect(() => parse({ summary: "s", fixBeforeMerge: [{ title: "x" }] })).toThrow(
+      /fix-before-merge finding/,
+    );
+  });
+
+  it("keeps needsYou when the model named the case", () => {
+    expect(parse({ summary: "s", needsYou: "the issue asked for the opposite" }).needsYou).toBe(
+      "the issue asked for the opposite",
+    );
+  });
+
+  it("accepts snake_case needs_you, since the model emits both", () => {
+    expect(parse({ summary: "s", needs_you: "CI fails and the diff does not explain it" }).needsYou)
+      .toBe("CI fails and the diff does not explain it");
+  });
+
+  /**
+   * Absent is the answer on nearly every review, and a model asked for an
+   * optional string says so in three ways. All three have to mean the same
+   * thing: read as *present*, an empty string is a review that sends every
+   * pull request to a human with no reason given.
+   */
+  it.each([
+    ["omitted", {}],
+    ["null", { needsYou: null }],
+    ["empty", { needsYou: "" }],
+    ["whitespace", { needsYou: "  " }],
+  ])("reads %s needsYou as absent", (_case: string, over: Record<string, unknown>) => {
+    expect(parse({ summary: "s", ...over }).needsYou).toBeUndefined();
+  });
+});
+
+/**
+ * The three verdicts, derived rather than written (#96 decision 2). The order
+ * of the arms is the whole of it: each one is reachable, and a rearrangement
+ * that made an earlier arm swallow a later one would still pass a test that
+ * only checked the outcomes it happens to produce.
+ */
+describe("deriveVerdict", () => {
+  const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
+    summary: "s",
+    inlineComments: [],
+    followUps: [],
+    fixBeforeMerge: [],
+    ...over,
+  });
+
+  it("is ready to merge when nothing is wrong and the checks are green", () => {
+    expect(deriveVerdict(output(), { ci: "green" }).verdict).toBe("ready to merge");
+  });
+
+  it("is ready after a fix when the findings are the only thing wrong", () => {
+    expect(
+      deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
+        ci: "green",
+      }).verdict,
+    ).toBe("ready after a fix");
+  });
+
+  it("is needs you when the agent says a fix round cannot settle it", () => {
+    expect(
+      deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), { ci: "green" })
+        .verdict,
+    ).toBe("needs you");
+  });
+
+  /**
+   * The arm with no finding behind it: the checks are red and the review found
+   * nothing to fix, so nobody has said what a fix round would even change.
+   * That is a human's problem by construction, and it is the case a derivation
+   * keyed only on findings would call *ready to merge*.
+   */
+  it.each([
+    ["red", "red"],
+    ["unreadable", "unknown"],
+  ])("is needs you when the checks are %s and the review found nothing", (_case, ci) => {
+    expect(deriveVerdict(output(), { ci: ci as CiResult }).verdict).toBe("needs you");
+  });
+
+  /**
+   * And red checks *with* findings stay a fix, because the findings are the
+   * explanation: the fix round has something to aim at, and the re-review is
+   * what re-reads the checks.
+   */
+  it("is ready after a fix when red checks come with findings that explain them", () => {
+    expect(
+      deriveVerdict(output({ fixBeforeMerge: ["the new test asserts the old behaviour"] }), {
+        ci: "red",
+      }).verdict,
+    ).toBe("ready after a fix");
+  });
+
+  it("prefers needs you over a fix-before-merge finding", () => {
+    expect(
+      deriveVerdict(output({ fixBeforeMerge: ["a"], needsYou: "the wrong thing was built" }), {
+        ci: "green",
+      }).verdict,
+    ).toBe("needs you");
+  });
+});
+
+/**
+ * The commit status each verdict posts. The descriptions are quoted from #96's
+ * table rather than read back out of the constant — an expectation derived from
+ * the thing it tests moves when that thing is wrong, and this one is the whole
+ * of what a maintainer sees: the promise of the feature is that the status line
+ * is enough, so a reworded one is a different feature.
+ */
+describe("the verdict's commit status", () => {
+  it("posts under a context of its own", () => {
+    expect(VERDICT_CONTEXT).toBe("agent-review");
+  });
+
+  it.each([
+    [
+      "ready to merge",
+      "success",
+      "Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+    ],
+    [
+      "ready after a fix",
+      "failure",
+      "Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+    ],
+    [
+      "needs you",
+      "failure",
+      "Read the review, then reply with your decision and add agent:fix. If the issue itself was wrong, close the PR instead.",
+    ],
+  ] as const)("states %s's next step, and the state that shows it", (verdict, state, next) => {
+    expect(VERDICTS[verdict].state).toBe(state);
+    expect(VERDICTS[verdict].description).toBe(next);
+    expect(VERDICTS[verdict].verdict).toBe(verdict);
+  });
+
+  /**
+   * GitHub truncates a status description past 140 characters, and truncates it
+   * where the character ran out rather than where the sentence ends. The line
+   * is the feature, so a line that arrives half-written is the feature broken
+   * in the one place nothing else reports.
+   */
+  it("keeps every next step inside GitHub's 140-character limit", () => {
+    for (const row of Object.values(VERDICTS)) {
+      expect(row.description.length, row.verdict).toBeLessThanOrEqual(140);
+    }
+  });
+});
+
+/**
+ * The prompt half of the same decision. Two finding types reach the model as
+ * words, and the retired one is the reason the PRD exists: *judgement call* —
+ * "a preference you would accept being overruled on" — absorbed everything real
+ * but not dangerous, so every review had to be read to find out which it was.
+ */
+describe("the review's finding vocabulary", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const EXTRACTION = fs.readFileSync(path.join("review", "extraction.md"), "utf8");
+  const halves = [
+    ["prompt.md", PROMPT],
+    ["extraction.md", EXTRACTION],
+  ] as const;
+
+  it.each(halves)("%s labels a finding fix before merge", (_half, text) => {
+    expect(text).toContain("fix before merge");
+  });
+
+  it.each(halves)("%s offers neither retired label", (_half, text) => {
+    expect(text.toLowerCase()).not.toContain("judgement call");
+    expect(text.toLowerCase()).not.toContain("blocking");
+  });
+
+  it.each(halves)("%s asks for the countable list by name", (_half, text) => {
+    expect(text).toContain("fixBeforeMerge");
+  });
+
+  /**
+   * And the field that says a fix round is not the answer, with the three cases
+   * #96 names. Without them it is a severity dial, and a severity dial is the
+   * thing that was just retired.
+   */
+  it("names needsYou and the three cases it is for", () => {
+    expect(PROMPT).toContain("needsYou");
+    expect(EXTRACTION).toContain("needsYou");
+    expect(PROMPT).toContain("the wrong thing was built");
+    expect(PROMPT).toContain("the issue itself was wrong");
+    expect(PROMPT).toMatch(/cannot say why/);
   });
 });

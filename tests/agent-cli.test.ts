@@ -1125,6 +1125,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       "  contents: read",
       "  packages: read",
       "  pull-requests: write",
+      "  statuses: write",
     ]);
 
     const { code, err } = await check(root, healthy());

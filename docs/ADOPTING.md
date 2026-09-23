@@ -500,14 +500,14 @@ jobs:
 
 The permissions per workflow, which are what each job actually spends:
 
-| Caller | `checks` | `contents` | `issues` | `packages` | `pull-requests` |
-|---|---|---|---|---|---|
-| `agent-implement` | — | write | write | read | write |
-| `agent-implement-prd` | — | write | write | read | write |
-| `agent-review` | **read** | **read** | — | read | write |
-| `agent-fix` | — | write | — | read | write |
-| `agent-update-branch` | — | write | — | read | write |
-| `agent-follow-ups` | — | read | **write** | read | write |
+| Caller | `checks` | `contents` | `issues` | `packages` | `pull-requests` | `statuses` |
+|---|---|---|---|---|---|---|
+| `agent-implement` | — | write | write | read | write | — |
+| `agent-implement-prd` | — | write | write | read | write | — |
+| `agent-review` | **read** | **read** | — | read | write | **write** |
+| `agent-fix` | — | write | — | read | write | — |
+| `agent-update-branch` | — | write | — | read | write | — |
+| `agent-follow-ups` | — | read | **write** | read | write | — |
 
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
@@ -519,6 +519,14 @@ does — it is about installing the runner it runs.
 > issues with `GITHUB_TOKEN`, so there is no `AGENT_PAT` either — a repository without the PAT
 > files exactly as much as one with it. Adding either to your caller is not harmless: GitHub
 > refuses a `secrets:` entry the called workflow does not declare, before the job starts.
+
+> **`statuses: write` on review is what posts the verdict**, and it is a scope of its own rather
+> than part of `pull-requests: write` — a commit status is attached to a commit, not to a pull
+> request. Without it the review posts, the run stays green and no verdict appears anywhere: the
+> step warns rather than failing, on the grounds that a posted review is worth more than the line
+> summarising it. So nothing on the pull request says the grant is missing, which is why `doctor`
+> reports it as an error. Newer than the five scopes above it, so a caller installed against an
+> earlier release has a review that works and a verdict that never arrives.
 
 > **`checks: read` on review is the row that only a private repository needs — and it is not
 > optional there.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a

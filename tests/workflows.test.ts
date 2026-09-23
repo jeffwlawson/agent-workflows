@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { FOLLOW_UPS_LABEL } from "../shared/review-output.js";
+import { FOLLOW_UPS_LABEL, VERDICT_CONTEXT } from "../shared/review-output.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -713,12 +713,18 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     for (const name of ["fixtures", "CI", "CI / verify", "CI / fix-lint", "build / fixtures"]) {
       expect(name).not.toMatch(excluded);
     }
-    // Both jq filters — the one that decides whether to keep waiting and the
-    // one that writes the list into the prompt. A pattern only the second used
-    // would still deadlock on a queued agent job.
+    // Every jq pass over the check runs carries it — the one that decides
+    // whether to keep waiting, the one that writes the list into the prompt,
+    // and the one that reduces them to the verdict's single word (#96). Counted
+    // against the passes rather than against a literal, so a fourth arrives
+    // here as a failure rather than as a pattern nobody extended: one that
+    // skipped this would deadlock on a queued agent job, or read a sibling
+    // agent's failure as this commit's CI.
+    const passes = [...(waitStep().run ?? "").matchAll(/\.\[\]\.check_runs\[\]/g)];
     const filters = [...(waitStep().run ?? "").matchAll(/test\(\\"\$\{AGENT_CHECKS\}\\"\)/g)];
 
-    expect(filters).toHaveLength(2);
+    expect(passes.length).toBeGreaterThanOrEqual(3);
+    expect(filters).toHaveLength(passes.length);
   });
 
   /**
@@ -948,6 +954,156 @@ describe("agent-review marks a PR whose review recorded follow-ups", () => {
 
     expect(run).toContain("::warning::");
     expect(run).not.toContain("|| true");
+  });
+});
+
+/**
+ * The verdict (#96): an outcome a maintainer can act on without reading the
+ * review, posted where GitHub already shows the state of a commit.
+ *
+ * A commit status rather than a comment or a label, for one property neither of
+ * those has — it is attached to a **commit**. A new commit carries no verdict
+ * until one is posted for it, so a stale "ready to merge" cannot survive a
+ * push, and the status history is the only record of what past rounds said.
+ *
+ * Nothing here has a runtime symptom when it breaks. A status posted under the
+ * wrong context is a second opinion nobody reconciles; one posted on the wrong
+ * commit is a verdict about a tree that was not reviewed; and a run that fails
+ * without posting one leaves the last verdict standing, which is the stale
+ * "ready" this design exists to make impossible.
+ */
+describe("agent-review posts its verdict as a commit status", () => {
+  const stepNamed = (name: string): Step | undefined =>
+    stepsOf(REVIEW).find((s) => s.name === name);
+  const postStep = (): Step | undefined => stepNamed("Post the verdict as a commit status");
+  const errorStep = (): Step | undefined => stepNamed("Post an error verdict");
+
+  /**
+   * On the SHA the payload named, which is the same one the checkout, the CI
+   * wait and the review's own `commit_id` are pinned to — and which the
+   * pre-flight above refuses to proceed past if the branch has moved. Reading
+   * the live head here instead would post a verdict about a diff nobody read.
+   */
+  it.each([
+    ["the verdict", "Post the verdict as a commit status"],
+    ["an error", "Post an error verdict"],
+  ])("posts %s on the commit that was reviewed", (_case: string, name: string) => {
+    const step = stepNamed(name);
+
+    expect(step?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(step?.run ?? "").toContain('/statuses/${HEAD_SHA}');
+  });
+
+  /**
+   * One context, and one place it is written. A reader of these statuses
+   * selects on it — it is how a later round tells the loop's own verdict from
+   * anything else that can post a status — so a drift between the halves is a
+   * verdict nothing recognises.
+   *
+   * The failure arm is the exception and has to be: a run that failed wrote no
+   * `verdict.json` for it to read, so that one literal is held here instead.
+   */
+  it("posts the verdict under the context the runner wrote", () => {
+    expect(VERDICT_CONTEXT).toBe("agent-review");
+    expect(postStep()?.run ?? "").toContain(".context");
+    expect(postStep()?.run ?? "").toContain("context=${context}");
+  });
+
+  it("posts an error under that same context, spelled out", () => {
+    expect(errorStep()?.run ?? "").toContain(`context=${VERDICT_CONTEXT}`);
+  });
+
+  /**
+   * The state and the line a human reads come from the runner's own derivation,
+   * read out of the file it wrote. Deriving either here would be a second
+   * description of #96's table — in YAML, where nothing can unit-test it.
+   */
+  it("takes the state and the next step from what the runner derived", () => {
+    const run = postStep()?.run ?? "";
+
+    expect(run).toContain("${RUNNER_TEMP}/verdict.json");
+    expect(run).toContain(".state");
+    expect(run).toContain(".description");
+  });
+
+  /**
+   * And links the review it is the verdict on, so the one line has somewhere to
+   * go when a reader does want the detail. The URL is the posted review's own,
+   * which only the response to that POST carries.
+   */
+  it("links the review it posted, by capturing the URL that POST returned", () => {
+    const post = stepNamed("Post PR review");
+
+    expect(post?.id).toBe("review");
+    expect(post?.run ?? "").toContain("html_url");
+    expect(post?.run ?? "").toContain('"$GITHUB_OUTPUT"');
+    expect(postStep()?.env?.["REVIEW_URL"]).toBe("${{ steps.review.outputs.url }}");
+    expect(postStep()?.run ?? "").toContain("target_url=");
+  });
+
+  it("posts the verdict after the review it points at, and only if that posted", () => {
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(postStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+    expect(names.indexOf(postStep()?.name ?? "")).toBeGreaterThan(names.indexOf("Post PR review"));
+  });
+
+  /**
+   * A failed run posts `error` rather than nothing. Nothing is the dangerous
+   * answer: the previous verdict on this commit stays the newest, so a run that
+   * died half way reads from the outside exactly like the review that said
+   * "ready to merge".
+   */
+  it("posts error when the run failed", () => {
+    const step = errorStep();
+
+    expect(step?.if).toBe("steps.state.outputs.proceed == 'true' && failure()");
+    expect(step?.run ?? "").toContain("state=error");
+
+    // Below every step it is the arm for, the verdict's own posting included:
+    // a `failure()` step covers what precedes it, so one placed beside the
+    // success arm would miss the failure that leaves no status at all.
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(
+      names.indexOf(postStep()?.name ?? ""),
+    );
+  });
+
+  /**
+   * Neither posting may fail the run. The likeliest cause is an adopter whose
+   * caller predates the `statuses: write` grant, and a posted review is worth
+   * more than its verdict — `setup/doctor.ts` is what names that grant, where
+   * the adopter is looking for it. A warning keeps the failure visible; `||
+   * true` would leave a loop that posts no verdicts and looks healthy, which is
+   * the shape the marker step above is written against too.
+   */
+  it.each([
+    ["the verdict", "Post the verdict as a commit status"],
+    ["an error", "Post an error verdict"],
+  ])("warns rather than failing when %s cannot be posted", (_case: string, name: string) => {
+    const run = stepNamed(name)?.run ?? "";
+
+    expect(run).toContain("::warning::");
+    expect(run).not.toContain("|| true");
+  });
+
+  /**
+   * The CI half of the derivation, which the runner must not read out of the
+   * prose the same step writes for the agent. One word, from the check runs'
+   * own `conclusion`, with the same two exclusions the evidence above uses —
+   * a queued sibling agent job is not a red check.
+   */
+  it("hands the runner the checks' result as a word, not as prose", () => {
+    const wait = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
+    const agent = stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent");
+
+    expect(wait?.run ?? "").toContain('${RUNNER_TEMP}/ci_result.txt');
+    expect(agent?.env?.["CI_RESULT_FILE"]).toBe("${{ runner.temp }}/ci_result.txt");
+    // Distinct from the evidence file: one is what the agent reads, the other
+    // is what the verdict is derived from, and collapsing them would put the
+    // derivation back in the prose it was taken out of.
+    expect(agent?.env?.["CI_STATUS_FILE"]).toBe("${{ runner.temp }}/ci_status.md");
   });
 });
 
@@ -1632,6 +1788,11 @@ describe("agent-review tells its caller what it cannot know", () => {
       // that is about the toolchain rather than about the review.
       packages: "read",
       "pull-requests": "write",
+      // The verdict (#96). A commit status is not a pull-request write, so
+      // nothing this job already held covers it — without the grant the review
+      // posts and no verdict appears, which is the one failure here that looks
+      // like the feature simply being off.
+      statuses: "write",
     });
   });
 
@@ -1660,13 +1821,18 @@ describe("agent-review tells its caller what it cannot know", () => {
    * is the one case with no error to read when it is wrong, so it does not get
    * to depend on a heuristic.
    */
-  it("excludes its own check run from the wait, in both filters", () => {
+  it("excludes its own check run from the wait, in every filter", () => {
     const step = waitStep();
 
     expect(step.env?.["SELF_CHECK"]).toBe("${{ inputs.self-check }}");
+    // Counted against the jq passes over the check runs rather than against a
+    // literal: the verdict's word is a third one (#96), and a fourth must fail
+    // here rather than quietly reading this job's own run as evidence.
+    const passes = [...(step.run ?? "").matchAll(/\.\[\]\.check_runs\[\]/g)];
     const filters = [...(step.run ?? "").matchAll(/select\(\.name != env\.SELF_CHECK\)/g)];
 
-    expect(filters).toHaveLength(2);
+    expect(passes.length).toBeGreaterThanOrEqual(3);
+    expect(filters).toHaveLength(passes.length);
   });
 
   /**

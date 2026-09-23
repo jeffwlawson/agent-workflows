@@ -10,12 +10,31 @@ carries a ```suggestion block replacing more than one line: `startLine` is the f
 replaced, `line` is the last. Every line in that range must also be in the diff, or the comment
 is dropped. Omit `startLine` for single-line comments.
 
-Label every finding **blocking** or **judgement call**, in both the summary and inline comments.
-Blocking means the change is wrong or unsafe as it stands. A judgement call is a preference you
-would accept being overruled on. The label carries the weight, so the prose does not have to.
+## Findings that must be fixed — `fixBeforeMerge`
+
+Every finding is one of two kinds, and this is the first: the change is wrong, unsafe, or does not
+do what the linked issue asked, and must not merge as it stands. Label each one
+**fix before merge** in the summary and in its inline comment, *and* restate it as one line in
+`fixBeforeMerge`.
+
+Both, not either. The list is what is **counted** — the outcome posted to the pull request is
+derived from how many entries it has — and an inline comment is dropped before posting when its
+line is not in the diff, so a finding recorded only there can leave the review without leaving a
+trace. The list is one line each; the evidence stays in the summary and the comment.
+
+Nothing else is a finding. A style preference, a "consider…", a rename you would accept being
+overruled on: leave it out. Anything real but outside this pull request's scope goes to
+`followUps` below.
 
 Every inline comment `body` is under 120 words: the label, then the defect, then its consequence,
 then the code you mean. The examples below are the shape, not the subject matter.
+
+## When another pass will not settle it — `needsYou`
+
+One line naming which case it is — the wrong thing was built, the issue itself was wrong, or a
+check fails and the diff does not explain why. Omit the field entirely on every other review; it
+is not a severity dial, and a review that sets it for a finding another pass would settle spends
+the one signal that says a human is needed.
 
 ## Out-of-scope findings — `followUps`
 
@@ -50,10 +69,14 @@ dropped from the end, here, after you have written it; it is not yours to filter
 ```json
 <output>
 {
-  "summary": "Under 250 words. Open with the verdict — merge, merge with changes, or do not merge — then each finding worst first, one short paragraph each, quoting the code or check result it rests on.",
+  "summary": "Under 250 words. No verdict — one is derived from `fixBeforeMerge`, `needsYou` and the check results, and prepended for you. Each finding worst first, one short paragraph each, quoting the code or check result it rests on.",
+  "fixBeforeMerge": [
+    "One line per finding that must be fixed before this merges — the same findings the summary and the comments carry."
+  ],
+  "needsYou": "Omit this field unless another pass cannot settle it; one line naming which of the three cases it is.",
   "inlineComments": [
-    { "path": "src/example.ts", "line": 42, "body": "**Blocking.** `parse()` returns before the guard below it runs, so a malformed input reaches `apply()` unchecked." },
-    { "path": "src/helpers.ts", "startLine": 87, "line": 88, "body": "**Judgement call.** This comment describes the old behaviour.\n\n```suggestion\n * Returns every match, not just the first — callers rely on the full\n * list, so narrowing it here would be a silent behaviour change.\n```" }
+    { "path": "src/example.ts", "line": 42, "body": "**Fix before merge.** `parse()` returns before the guard below it runs, so a malformed input reaches `apply()` unchecked." },
+    { "path": "src/helpers.ts", "startLine": 87, "line": 88, "body": "**Fix before merge.** This comment describes the old behaviour.\n\n```suggestion\n * Returns every match, not just the first — callers rely on the full\n * list, so narrowing it here would be a silent behaviour change.\n```" }
   ],
   "followUps": [
     { "title": "One line, as a human scans it in a triage list", "location": "src/other.ts:88", "body": "The evidence it is real, quoting what it rests on. Then why this pull request cannot fix it." }
@@ -62,4 +85,5 @@ dropped from the end, here, after you have written it; it is not yours to filter
 </output>
 ```
 
-Use an empty array for either list when it has no entries.
+Use an empty array for any of the three lists with no entries, and leave `needsYou` out entirely
+unless it applies.

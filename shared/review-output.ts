@@ -43,7 +43,127 @@ export interface ReviewOutput {
   readonly summary: string;
   readonly inlineComments: InlineComment[];
   readonly followUps: FollowUp[];
+  /**
+   * One line per finding this pull request must not merge without fixing —
+   * the other of the review's two finding types, beside `followUps` (#96).
+   *
+   * A **restatement** of what the summary and the inline comments already say,
+   * and that is its job: the verdict is derived from how many there are, and
+   * counting them out of prose is the sentence nothing acted on that the
+   * verdict replaced. The detail stays where a human reads it.
+   *
+   * Not derived from the inline comments, which is the shape this could have
+   * taken and the one that breaks. `filterInlineComments` drops an anchor that
+   * is off-diff, so a finding whose line the model invented would leave the
+   * count as well as the review — turning "ready after a fix" into "ready to
+   * merge" on exactly the reviews that found something.
+   */
+  readonly fixBeforeMerge: string[];
+  /**
+   * The agent's judgement that **another pass over this branch will not settle
+   * it**, in one line naming which case it is: the wrong thing was built, the
+   * issue itself was wrong, or a check fails and the diff does not explain why.
+   *
+   * Absent on nearly every review, and that is the point — it is what tells a
+   * maintainer they have to read this one rather than act on it, so a review
+   * that sets it for an ordinary finding spends the only signal that says so.
+   */
+  readonly needsYou?: string;
 }
+
+/**
+ * What the pull request's other checks said when the review ran, collected by
+ * the workflow from the check-runs API rather than read out of the prose the
+ * same step hands the agent.
+ *
+ * `unknown` is its own value and is **not** folded into `red`: a review that
+ * could not see CI has not seen a failure, it has seen nothing. Both send a
+ * finding-free review to a human, and they say different things about why.
+ */
+export type CiResult = "green" | "red" | "unknown";
+
+/** One of three, derived from a review rather than written in it (#96). */
+export type Verdict = "ready to merge" | "ready after a fix" | "needs you";
+
+export interface VerdictRow {
+  readonly verdict: Verdict;
+  /**
+   * The commit status's state. Only "ready to merge" is `success`: the other
+   * two are things left to do, and a green tick beside them is the verdict
+   * saying the opposite of what it means.
+   */
+  readonly state: "success" | "failure";
+  /**
+   * The next human step, and the whole promise of the feature — this line is
+   * what makes the outcome actionable without reading the review.
+   *
+   * Under GitHub's 140-character limit for a status description, which
+   * truncates where the character ran out rather than where the sentence ends.
+   * A test holds each of these to it.
+   */
+  readonly description: string;
+}
+
+/**
+ * The context the verdict is posted under. One per commit per context, so a
+ * later review of the same commit replaces its own verdict and nothing else —
+ * and a new commit carries none until one is posted for it, which is what stops
+ * a stale "ready" surviving a push.
+ */
+export const VERDICT_CONTEXT = "agent-review";
+
+/** The table, verbatim. #96 decision 2 is the copy a human argues with. */
+export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
+  "ready to merge": {
+    verdict: "ready to merge",
+    state: "success",
+    description:
+      "Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+  },
+  "ready after a fix": {
+    verdict: "ready after a fix",
+    state: "failure",
+    description:
+      "Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+  },
+  "needs you": {
+    verdict: "needs you",
+    state: "failure",
+    description:
+      "Read the review, then reply with your decision and add agent:fix. If the issue itself was wrong, close the PR instead.",
+  },
+};
+
+/**
+ * Everything the verdict depends on that is not in the review itself.
+ *
+ * An object rather than a positional argument because it is the seam the rest
+ * of #96 arrives through: **which round this is** belongs here, and with it the
+ * coercion that a round-2 review can never say "ready after a fix" — a second
+ * round that still finds something to fix is a fix round that did not work,
+ * which is a human's problem however clear the finding reads.
+ */
+export interface VerdictInputs {
+  readonly ci: CiResult;
+}
+
+/**
+ * The verdict, from the review and the checks and nothing else.
+ *
+ * The order of the arms is the whole of it. The agent's own "a fix round will
+ * not settle this" comes first, because it is a statement about the findings
+ * rather than one more of them. Findings come next, *including* when the checks
+ * are red: red checks with findings have an explanation and something for a fix
+ * round to aim at. Red or unreadable checks with **nothing** behind them is the
+ * case with no finding to act on at all, and it is precisely the one a
+ * derivation keyed only on findings would call ready to merge.
+ */
+export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): VerdictRow => {
+  if (output.needsYou !== undefined) return VERDICTS["needs you"];
+  if (output.fixBeforeMerge.length > 0) return VERDICTS["ready after a fix"];
+  if (inputs.ci !== "green") return VERDICTS["needs you"];
+  return VERDICTS["ready to merge"];
+};
 
 const positiveInt = (value: unknown, label: string): number => {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
@@ -85,8 +205,22 @@ const parseFollowUp = (value: unknown): FollowUp => {
   };
 };
 
+/**
+ * An optional string comes back from a model in four shapes — omitted, `null`,
+ * `""` and `"   "` — and all four mean the same thing here.
+ * Read as present, a blank one is a review that sends every pull request to a
+ * human and gives no reason for it, which is the verdict at its least useful
+ * and the hardest state to notice from the outside.
+ */
+const optionalReason = (value: unknown, label: string): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" && value.trim().length === 0) return undefined;
+  return asString(value, label);
+};
+
 export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
   const record = asRecord(value, "review output");
+  const needsYou = optionalReason(record["needsYou"] ?? record["needs_you"], "needsYou");
   return {
     summary: asString(record["summary"], "summary"),
     inlineComments: asArray(record["inlineComments"] ?? [], "inlineComments").map(
@@ -98,6 +232,15 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
     followUps: asArray(record["followUps"] ?? record["follow_ups"] ?? [], "followUps").map(
       parseFollowUp,
     ),
+    // Absent is the ordinary case here too — a clean review finds nothing to
+    // fix — so this defaults rather than being required. Uncapped, unlike the
+    // follow-ups: the count *is* the verdict, and truncating it would be this
+    // file deciding a pull request is closer to mergeable than the review said.
+    fixBeforeMerge: asArray(
+      record["fixBeforeMerge"] ?? record["fix_before_merge"] ?? [],
+      "fixBeforeMerge",
+    ).map((finding, index) => asString(finding, `fix-before-merge finding ${index + 1}`)),
+    ...(needsYou === undefined ? {} : { needsYou }),
   };
 });
 

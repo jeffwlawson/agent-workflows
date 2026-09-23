@@ -15,9 +15,12 @@ import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   capFollowUps,
+  deriveVerdict,
   filterInlineComments,
   renderFollowUpsBlock,
   reviewOutputSchema,
+  VERDICT_CONTEXT,
+  type CiResult,
 } from "../shared/review-output.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
@@ -39,6 +42,27 @@ const readCiStatus = (): string => {
     return fs.readFileSync(file, "utf8").trim() || "(no other checks reported.)";
   } catch {
     return "(CI results were not available.)";
+  }
+};
+
+/**
+ * The same checks as one word, written by the same workflow step — and the
+ * half of the verdict that is not the agent's to decide.
+ *
+ * Deliberately not read out of the prose above: that file is evidence for the
+ * agent, and a derivation that parsed it would be a second description of a
+ * format written two steps away. Anything this cannot read is `unknown`, which
+ * the derivation treats as "not green" — a review that could not see the checks
+ * is not one that can say a pull request is ready to merge.
+ */
+const readCiResult = (): CiResult => {
+  const file = process.env["CI_RESULT_FILE"];
+  if (!file) return "unknown";
+  try {
+    const value = fs.readFileSync(file, "utf8").trim();
+    return value === "green" || value === "red" ? value : "unknown";
+  } catch {
+    return "unknown";
   }
 };
 
@@ -103,7 +127,15 @@ try {
   // files a stub for work already done.
   const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(result.output.followUps);
   const followUpsBlock = renderFollowUpsBlock(followUps, droppedFollowUps);
-  const body = `${result.output.summary}\n\n${followUpsBlock}`;
+
+  // The verdict, derived from the review and the checks rather than written by
+  // the agent (#96). Its next-step line opens the summary, so the outcome is
+  // the first thing a reader sees and the same sentence the commit status
+  // carries — one statement in two places, not two that can disagree.
+  const ci = readCiResult();
+  const verdict = deriveVerdict(result.output, { ci });
+  const summary = `${verdict.description}\n\n${result.output.summary}`;
+  const body = `${summary}\n\n${followUpsBlock}`;
 
   writeJson("review_payload.json", {
     commit_id: headSha,
@@ -121,7 +153,20 @@ try {
       body: c.body,
     })),
   });
-  writeText("summary.md", result.output.summary);
+  writeText("summary.md", summary);
+
+  // What the workflow posts the commit status from — context, state and line.
+  // A file rather than a step output, for the same reason the payload above is
+  // one: the step that posts cannot read this process, and the table all three
+  // come from is tested here rather than restated in YAML. The only copy of the
+  // context that is *not* read from here is the one the failure arm posts,
+  // which by definition runs on a review that wrote no file.
+  writeJson("verdict.json", {
+    context: VERDICT_CONTEXT,
+    verdict: verdict.verdict,
+    state: verdict.state,
+    description: verdict.description,
+  });
 
   // How the workflow knows to mark the pull request: a step cannot read this
   // process's memory, and the marker label has to go on when — and only when —
@@ -135,6 +180,9 @@ try {
   if (followUps.length > 0) writeText("follow_ups.md", followUpsBlock);
 
   console.log("Review complete.");
+  console.log(
+    `Verdict: ${verdict.verdict} (${result.output.fixBeforeMerge.length} to fix before merge, checks ${ci}).`,
+  );
   console.log(`Inline comments: ${validComments.length} kept of ${result.output.inlineComments.length} produced.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {

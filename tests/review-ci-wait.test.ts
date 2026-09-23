@@ -134,6 +134,11 @@ interface Outcome {
   readonly stderr: string;
   /** What the step collected for the agent — `RUNNER_TEMP/ci_status.md`. */
   readonly evidence: string;
+  /**
+   * And the one word the verdict is derived from — `RUNNER_TEMP/ci_result.txt`.
+   * Empty when the step wrote none, which the runner reads as `unknown` too.
+   */
+  readonly ciResult: string;
 }
 
 /**
@@ -196,12 +201,14 @@ const runWaitStep = (options: {
   });
 
   const collected = path.join(temp, "ci_status.md");
+  const verdictHalf = path.join(temp, "ci_result.txt");
 
   return {
     status: result.status,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
     evidence: fs.existsSync(collected) ? fs.readFileSync(collected, "utf8") : "",
+    ciResult: fs.existsSync(verdictHalf) ? fs.readFileSync(verdictHalf, "utf8").trim() : "",
   };
 };
 
@@ -364,6 +371,41 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain("::error::");
     expect(outcome.evidence).toContain("Timed out waiting for 1 check(s)");
+    // A check that has not passed has not passed: the verdict reads a still
+    // pending one with the failures rather than waiting for it a second time.
+    expect(outcome.ciResult).toBe("red");
+  });
+
+  /**
+   * The verdict's CI half (#96), which is the same check runs reduced to one
+   * word. It is a *separate* pass over the API rather than a parse of the
+   * evidence above, so it gets its own scenarios: the derivation reads anything
+   * but `green` as "a human is needed", and a word that said `green` on a
+   * commit whose checks are red is the one failure here that ends in a merge.
+   */
+  it.each([
+    ["green when every non-agent check passed", "success", "green"],
+    ["red when one of them failed", "failure", "red"],
+    ["green for a check that was neutral", "neutral", "green"],
+    ["green for a check that was skipped", "skipped", "green"],
+  ])("is %s", (_case: string, conclusion: string, expected: string) => {
+    const outcome = runWaitStep({
+      pages: [PAGE_ONE, page([...PAGE_TWO, done("deploy", conclusion)])],
+      waitSeconds: "0",
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.ciResult).toBe(expected);
+  });
+
+  /**
+   * And the agent jobs are excluded from it on exactly the grounds they are
+   * excluded from the wait: a sibling agent job queued behind this one is not
+   * evidence about the diff, and reading its `queued` as a red check would send
+   * every review with a pending `fix` to a human.
+   */
+  it("is green when the only unfinished checks are agent jobs", () => {
+    expect(runWaitStep({ waitSeconds: "0" }).ciResult).toBe("green");
   });
 
   /**
@@ -398,6 +440,10 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     // has. What tells them apart is gh's own stderr, which reaches the log
     // only because the step stopped sending it to `/dev/null`.
     expect(outcome.stdout).toContain(said);
+    // And the verdict's half says it does not know, rather than defaulting to
+    // the one value that would let the review call a pull request ready.
+    expect(outcome.ciResult).toBe("unknown");
+    expect(outcome.stdout).toContain("::warning::Could not decide whether this commit's checks are green");
   });
 
   /**

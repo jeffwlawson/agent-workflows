@@ -348,8 +348,9 @@ jobs:
       # This is the `agent:fix` → `agent:review` leg, which docs/parity.md §10
       # already calls safe, and the invariant it rests on is unchanged: review
       # adds no trigger label of its own, so this cannot cycle. What is new is
-      # the second bound under it — a round-2 review cannot answer "ready after
-      # a fix", so the leg cannot be walked twice off one human label.
+      # the second bound under it — a round-2 review cannot answer with the
+      # round-1 "Changes recommended" line, the one that promises an automatic
+      # re-review, so the leg cannot be walked twice off one human label.
       #
       # MUST use AGENT_PAT, like every other label this loop adds: a label
       # added with GITHUB_TOKEN triggers nothing, so the PR would carry

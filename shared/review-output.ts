@@ -135,7 +135,8 @@ export interface VerdictRow {
    * what makes the outcome actionable without reading the review.
    *
    * The body carries this on its own, under the heading; the status carries it
-   * behind the heading, because a status has one line and no formatting.
+   * behind `label` — the heading without its marker, which a description
+   * refuses — because a status has one line and no formatting.
    */
   readonly nextStep: string;
   /**

@@ -873,7 +873,7 @@ describe("PR workflows refuse a closed or merged PR", () => {
 
 /**
  * The refusal the shared group made necessary. Review pins everything to the
- * head SHA in its `labeled` payload — the checkout, and `commit_id` on the
+ * head SHA in its `labeled` payload — the checkout, and `commitOID` on the
  * posted review — and that payload is snapshotted at label time, so a review
  * queued behind a fix starts once the fix has pushed and still reviews the
  * pre-fix commit. Serialising turned reading-during-a-write into
@@ -997,7 +997,7 @@ describe("agent-review posts its verdict as a commit status", () => {
 
   /**
    * On the SHA the payload named, which is the same one the checkout, the CI
-   * wait and the review's own `commit_id` are pinned to — and which the
+   * wait and the review's own `commitOID` are pinned to — and which the
    * pre-flight above refuses to proceed past if the branch has moved. Reading
    * the live head here instead would post a verdict about a diff nobody read.
    */
@@ -1411,6 +1411,32 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
     expect(run).toContain("resolutionReason:ADDRESSED");
     expect(run).toContain("addPullRequestReviewThreadReply");
     expect(run.indexOf("addPullRequestReviewThreadReply")).toBeLessThan(run.indexOf(RESOLVE_MUTATION));
+  });
+
+  /**
+   * **And a reply that failed takes the resolve down with it**, which ordering
+   * alone does not buy: the assertion above passed for a release in which the
+   * reply's failure arm was an `echo` and the thread closed anyway.
+   *
+   * `resolutionReason` is readable nowhere afterwards, so the reply is the
+   * whole record of why a finding closed — and on the `WONT_FIX` arm it is the
+   * maintainer's quoted words, which is what lets a misreading be seen and
+   * reopened in one glance (`declineReply`). A thread that closes without it is
+   * settled with nothing saying by whom or on what. Leaving it open is the
+   * direction every other unreadable thing in this loop fails in.
+   *
+   * Asserted over the text *between* the two mutations, so what is pinned is
+   * "the reply's failure skips this iteration" rather than a wording.
+   */
+  it("leaves a thread open when the reply that is its only record failed", () => {
+    const run = resolveStep()?.run ?? "";
+    const between = run.slice(
+      run.indexOf("addPullRequestReviewThreadReply"),
+      run.indexOf(RESOLVE_MUTATION),
+    );
+
+    expect(between).toContain("continue");
+    expect(between).toMatch(/reply failed/i);
   });
 
   /**

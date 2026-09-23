@@ -627,7 +627,7 @@ expensive to rediscover.
   at push time — `--force-with-lease` pinned to the same payload SHA — so review, which publishes
   rather than fails, is the only one that needed a check, and it makes it in its own preflight
   (#105). It refuses rather than re-targeting the live tip: a review is a statement about the commit
-  a human pointed at, re-pointing it would drag `commit_id` and the CI wait to a SHA nobody
+  a human pointed at, re-pointing it would drag `commitOID` and the CI wait to a SHA nobody
   labelled, and re-adding the label is one action.
 
   **What `cancel-in-progress: false` actually buys**, since it is not a queue and the difference

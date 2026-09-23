@@ -158,7 +158,7 @@ jobs:
       #
       # The second refusal is the one the shared concurrency group makes
       # necessary. Everything this job reads is pinned to the head SHA in the
-      # `labeled` payload — the checkout below, and `commit_id` on the posted
+      # `labeled` payload — the checkout below, and `commitOID` on the posted
       # review, which is `git rev-parse HEAD` of that checkout. The payload is
       # snapshotted at label time, and joining `agent-pr-*` means the run can
       # start long after: label `agent:review` while a fix is running and the
@@ -172,7 +172,7 @@ jobs:
       #
       # Refuse rather than re-target the current tip: a review is a statement
       # about the commit a human pointed at, and re-pointing it at whatever
-      # arrived since would also need the CI wait and `commit_id` moved to the
+      # arrived since would also need the CI wait and `commitOID` moved to the
       # new SHA. Re-adding the label after the mutate finishes is one action and
       # reviews the right thing. An unreadable `gh pr view` proceeds rather than
       # refuses — an API blip is not evidence the branch moved.
@@ -738,8 +738,13 @@ jobs:
       #
       # `resolutionReason` is recorded by GitHub and exposed nowhere afterwards
       # — no field on `PullRequestReviewThread` reads it back — so the reply is
-      # the record, and it is posted first for that reason: a thread that closes
-      # with no reply loses the only statement of why.
+      # the record. It is posted first for that reason, and the resolve is
+      # **gated on it**: a thread that closes with no reply loses the only
+      # statement of why, and on the `WONT_FIX` arm what is lost is the
+      # maintainer's quoted words, which is the whole of what makes a
+      # misreading visible. Ordering alone does not prevent that — only the
+      # `continue` does. A reply that would not post therefore leaves its
+      # thread open, which is the direction this loop fails in everywhere else.
       #
       # Two reasons, and which one a thread closes on is decided by
       # `verifyCarried` and read out of the file, never derived here: a finding
@@ -788,7 +793,7 @@ jobs:
                 ) { clientMutationId }
               }' >/dev/null \
               && echo "  replied to ${tid}" \
-              || echo "  WARNING: reply failed for ${tid}"
+              || { echo "  WARNING: reply failed for ${tid}; leaving the thread open, since a thread that closes with no reply loses the only record of why."; continue; }
 
             if [ "$reason" = "WONT_FIX" ]; then
               mutation='

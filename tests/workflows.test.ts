@@ -1225,7 +1225,7 @@ describe("agent-fix asks for the re-review its own push needs", () => {
   /**
    * In the log **and** on the pull request (#105). A warning annotation is on a
    * run nobody opens, and what it contradicts is the verdict line the
-   * maintainer acted on: "A re-review runs automatically" is what they were
+   * maintainer acted on: "a re-review follows automatically" is what they were
    * told, and without the PAT the label goes on and nothing fires.
    */
   it("says on the pull request, not only in the log, that no review will start", () => {

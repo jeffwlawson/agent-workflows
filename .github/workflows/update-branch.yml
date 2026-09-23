@@ -412,7 +412,7 @@ jobs:
       # needs a non-merge loop commit since the last verdict, and a resolution
       # leaves only the merge (#105). Which is the reading that suits it: the
       # earlier round's findings have not been attempted, so a verification pass
-      # over them would answer with the round-2 line — "a fix round did not
+      # over them would answer with the round-2 line — "a fix round didn't
       # settle these" — on the strength of the base branch having moved, about
       # findings no fix round ever saw.
       #

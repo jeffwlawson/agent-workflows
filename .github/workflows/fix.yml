@@ -376,8 +376,8 @@ jobs:
           fi
           if [ "$HAS_PAT" != "true" ]; then
             # Both, and the comment is the one that reaches anybody (#105). The
-            # verdict this run's fix was made against promised "A re-review runs
-            # automatically", and without the PAT it does not: the label goes
+            # verdict this run's fix was made against promised "a re-review
+            # follows automatically", and without the PAT it does not: the label goes
             # on, nothing fires, and the only sign of it is a warning annotation
             # on a run nobody opens. One line on the pull request, where the
             # maintainer who added `agent:fix` is already looking.

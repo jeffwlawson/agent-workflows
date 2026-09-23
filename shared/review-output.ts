@@ -409,9 +409,9 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
     //
     // The two rows share a heading and differ in the step, which is where the
     // bound lives: the round-1 line promises an automatic re-review, and the
-    // round-2 line asks the maintainer to read the review and reply first. The
-    // key differs too, so the automatic fix PRD #101 describes can fire on the
-    // round-1 case and on nothing else.
+    // round-2 line asks the maintainer to read the review first, guidance
+    // optional. The key differs too, so the automatic fix PRD #101 describes
+    // can fire on the round-1 case and on nothing else.
     //
     // It costs a true round-1 answer on the round where a fix broke something
     // new and obvious, which reads as a human being asked to look at a PR they

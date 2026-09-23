@@ -469,8 +469,8 @@ Three consequences to weigh before switching it on rather than after:
   you were going to do anyway.
 - **The second round is strict on purpose.** A fix round that pushed gets a verification review,
   and that round cannot answer with the first-round *Changes recommended* line — a finding that
-  survived a fix round gets the second-round one instead, which asks you to read the review and
-  reply before labelling, on the grounds that a second fix has no more reason to settle it than the
+  survived a fix round gets the second-round one instead, which asks you to read the review (adding
+  guidance where it helps) before labelling again, on the grounds that a second fix has no more reason to settle it than the
   first did. That is the right default while you are the one deciding what happens next. As a merge
   gate it means the second round sends you to the review rather than round the loop again, which is
   a good deal more of your attention than the un-gated version asks for.

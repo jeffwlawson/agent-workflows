@@ -1,4 +1,5 @@
 import { isWorkflowBot } from "./common.js";
+import { severityBadge } from "./review-findings.js";
 import {
   capFollowUps,
   embeddableJson,
@@ -398,12 +399,16 @@ const relationLine = (stub: FilingStub, path: string): string =>
   ].join("");
 
 /**
- * The stub body: the agent's two prose beats, then the location line, then
- * provenance, then the relation if there is one, then the key.
+ * The stub body: the agent's two prose beats, then the location and severity
+ * lines, then provenance, then the relation if there is one, then the key.
  *
  * The title is not repeated as a heading — GitHub renders it already. The
  * location line is for a human and is **never read back**: every match runs on
- * the payload, which carries its own verbatim copy of the same string.
+ * the payload, which carries its own verbatim copy of the same string. The
+ * severity is read back off the payload the same way, and is carried here
+ * because this is the surface it is for (#109, decision 9): a triage list is
+ * read at a glance, and this issue outlives the pull request whose review
+ * rated it.
  *
  * Provenance links the review the block was *read* from, which is the latest
  * one, and says so in words. Walking back through nine reviews to find the
@@ -428,6 +433,8 @@ const stubBody = (
     followUp.body.trim(),
     "",
     `**Location:** \`${oneLine(followUp.location)}\``,
+    "",
+    `**Severity:** ${severityBadge(followUp.severity)}`,
     "",
     "---",
     "",

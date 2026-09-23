@@ -1,5 +1,5 @@
 import { asRecord, asString } from "./common.js";
-import { parseFindingMarkers } from "./review-findings.js";
+import { parseFindingMarkers, type Severity } from "./review-findings.js";
 
 /**
  * A finding an earlier review of this pull request raised and **nothing has yet
@@ -26,6 +26,17 @@ export interface CarriedFinding {
   readonly threadId?: string;
   /** One line: where it is and what it claims, as the review that raised it wrote it. */
   readonly text: string;
+  /**
+   * The rating the review that raised it gave it, read back off the marker the
+   * workflow wrote (#109, decision 9). Absent where the finding was posted by a
+   * release that wrote no severity, which the record renders as a badge-less
+   * entry rather than inventing one.
+   *
+   * Never re-rated here. Severity is the judgement of the review that found the
+   * problem, and a later round that quietly moved it would make the record
+   * disagree with the thread it came from.
+   */
+  readonly severity?: Severity;
   /**
    * A maintainer's own word on this finding, where one of them answered the
    * thread it lives in (#109, decision 10).
@@ -70,6 +81,8 @@ export interface AgentThread {
   readonly findingId: string;
   /** Where the thread is anchored and what its first comment claims. */
   readonly text: string;
+  /** The rating on the marker the review that raised it wrote, where it carries one. */
+  readonly severity?: Severity;
   /** The latest thing a maintainer said on it, where one of them did. */
   readonly maintainerReply?: MaintainerReply;
 }
@@ -126,6 +139,7 @@ export const carriedFindings = (parts: {
       id: thread.findingId,
       threadId: thread.threadId,
       text: thread.text,
+      ...(thread.severity === undefined ? {} : { severity: thread.severity }),
       ...(thread.maintainerReply === undefined ? {} : { maintainerReply: thread.maintainerReply }),
     });
   }
@@ -133,7 +147,11 @@ export const carriedFindings = (parts: {
   for (const entry of parseFindingMarkers(parts.latestReviewBody)) {
     if (seen.has(entry.id)) continue;
     seen.add(entry.id);
-    carried.push({ id: entry.id, text: entry.text });
+    carried.push({
+      id: entry.id,
+      text: entry.text,
+      ...(entry.severity === undefined ? {} : { severity: entry.severity }),
+    });
   }
 
   return carried;
@@ -330,7 +348,21 @@ export const declineReply = (reply: MaintainerReply): string => {
 export const verifyCarried = (
   carried: readonly CarriedFinding[],
   verified: readonly VerificationEntry[],
-): { resolutions: ThreadResolution[]; stillOpen: CarriedFinding[] } => {
+): {
+  resolutions: ThreadResolution[];
+  stillOpen: CarriedFinding[];
+  /**
+   * Every carried finding that stopped being open on this round, whatever
+   * closed it — the record's *Resolved since last review* (#109, decision 8).
+   *
+   * Not the same list as `resolutions`, and that is why it is a third field
+   * rather than a projection of the second. A landed finding with no thread
+   * produces no resolution at all, because there is nothing to close; it still
+   * closed, and a reader is owed the line saying so. What the two lists agree
+   * on is that neither includes a finding still owed.
+   */
+  resolved: CarriedFinding[];
+} => {
   const known = new Map(carried.map((finding) => [finding.id, finding] as const));
   const reported = new Map<string, VerificationEntry>();
 
@@ -348,6 +380,7 @@ export const verifyCarried = (
 
   const resolutions: ThreadResolution[] = [];
   const stillOpen: CarriedFinding[] = [];
+  const resolved: CarriedFinding[] = [];
 
   for (const finding of carried) {
     const entry = reported.get(finding.id);
@@ -382,6 +415,7 @@ export const verifyCarried = (
         reason: "WONT_FIX",
         reply: declineReply(finding.maintainerReply),
       });
+      resolved.push(finding);
       continue;
     }
     if (finding.threadId !== undefined) {
@@ -392,7 +426,11 @@ export const verifyCarried = (
         reply: resolutionReply(entry),
       });
     }
+    // Including the body-recorded one, which has no thread and so no
+    // resolution: it closes by no longer being re-listed, and the record is the
+    // only place that closure is ever visible.
+    resolved.push(finding);
   }
 
-  return { resolutions, stillOpen };
+  return { resolutions, stillOpen, resolved };
 };

@@ -7,12 +7,15 @@ import {
   isPreviouslyMissed,
   newFindingId,
   openingClaim,
+  parseFinding,
   parseFindingMarkers,
+  parseSeverity,
   placeFindings,
   PREVIOUSLY_MISSED_LABEL,
-  renderBodyFindings,
   reviewMutation,
   reviewThreads,
+  severityBadge,
+  severityRank,
   type Finding,
   type PlacedFinding,
 } from "../shared/review-findings.js";
@@ -60,6 +63,7 @@ const finding = (over: Partial<Finding> = {}): Finding => ({
   path: "src/queue.ts",
   line: 10,
   body: "**Fix before merge.** the guard runs after the return",
+  severity: "medium",
   ...over,
 });
 
@@ -161,7 +165,7 @@ describe("the id is the workflow's to write", () => {
     expect("id" in (output.findings[0] ?? {})).toBe(false);
 
     const [thread] = reviewThreads(place(output.findings));
-    expect(thread?.body).toContain(findingMarker("f-1"));
+    expect(thread?.body).toContain(findingMarker("f-1", "medium"));
     expect(thread?.body).not.toContain("f-modelwrote");
   });
 
@@ -226,42 +230,86 @@ describe("reviewThreads", () => {
       expect(thread.body.trimEnd().endsWith("-->")).toBe(true);
       expect(thread.body.match(new RegExp(FINDING_MARKER, "g"))).toHaveLength(1);
     }
-    expect(threads[0]?.body).toContain(findingMarker("f-1"));
-    expect(threads[1]?.body).toContain(findingMarker("f-2"));
+    expect(threads[0]?.body).toContain(findingMarker("f-1", "medium"));
+    expect(threads[1]?.body).toContain(findingMarker("f-2", "medium"));
   });
 });
 
-describe("renderBodyFindings", () => {
-  const rendered = (findings: readonly Finding[]): string | undefined =>
-    renderBodyFindings(place(findings));
-
-  it("is absent when every finding found a thread", () => {
-    expect(rendered([finding({ line: 11 }), finding({ line: 400 })])).toBeUndefined();
+/**
+ * Severity is display and ordering (#109, decision 9), and the properties worth
+ * holding are the ones that keep it from becoming anything else: it never loses
+ * a review, it never *invents* a rating that reads as the model's, and it
+ * survives a round so the record can sort a carried finding beside a fresh one.
+ */
+describe("severity", () => {
+  it.each([
+    ["High", "high"],
+    ["  medium  ", "medium"],
+    ["LOW", "low"],
+  ] as const)("reads %s in whatever casing the model wrote it", (written, expected) => {
+    expect(parseSeverity(written)).toBe(expected);
   });
 
-  it("lists an untouched file's finding with its anchor, its title, its id and its evidence", () => {
-    const body = rendered([
-      finding({
-        path: "src/other.ts",
-        line: 88,
-        title: "the retry loop never terminates",
-        body: "**Fix before merge.** `retry()` decrements a counter it never reads.",
-      }),
-    ]);
+  /**
+   * The middle, for anything absent or unrecognised. `high` would make every
+   * unlabelled finding shout and `low` would bury one, and refusing the output
+   * would lose the whole review over a display field.
+   */
+  it.each([undefined, null, "", "critical", 3] as const)(
+    "defaults %s to the middle rather than refusing it",
+    (written) => {
+      expect(parseSeverity(written)).toBe("medium");
+    },
+  );
 
-    expect(body).toContain("`src/other.ts:88`");
-    expect(body).toContain("the retry loop never terminates");
-    expect(body).toContain(findingMarker("f-1"));
-    expect(body).toContain("`retry()` decrements a counter it never reads.");
+  it("defaults a finding the model rated nothing, rather than losing it", () => {
+    const parsed = parseFinding({ path: "src/a.ts", line: 4, body: "b" });
+
+    expect(parsed.severity).toBe("medium");
   });
 
-  /** A title the model wrapped cannot be allowed to break the entry it heads. */
-  it("keeps a wrapped title on one line", () => {
-    const body = rendered([
-      finding({ path: "src/other.ts", title: "the retry loop\n  never terminates" }),
-    ]);
+  /** Text, never one of GitHub's severity images — decision 9 rules the hotlink out. */
+  it("renders a badge as text rather than an image", () => {
+    expect(severityBadge("high")).toBe("`High`");
+    expect(severityBadge("low")).toBe("`Low`");
+    expect(severityBadge("medium")).not.toContain("http");
+  });
 
-    expect(body).toContain("the retry loop never terminates");
+  it("ranks worst first, and an unrated entry last of all", () => {
+    expect(severityRank("high")).toBeLessThan(severityRank("medium"));
+    expect(severityRank("medium")).toBeLessThan(severityRank("low"));
+    expect(severityRank("low")).toBeLessThan(severityRank(undefined));
+  });
+});
+
+/**
+ * The marker carries the rating beside the id because a later round has nowhere
+ * else to read it from: a carried finding arrives as an id and one line of
+ * text, so without this the record would badge what this round found and
+ * nothing it carried.
+ */
+describe("the finding marker", () => {
+  it("writes the severity beside the id, and reads both back", () => {
+    expect(parseFindingMarkers(`- a claim ${findingMarker("f-1", "high")}`)).toEqual([
+      { id: "f-1", severity: "high", text: "a claim" },
+    ]);
+  });
+
+  /**
+   * And a marker from a release that wrote no severity still yields its id.
+   * Identity is the half that has to survive a format this version has not met
+   * — a body it cannot read is a finding raised again in the next round.
+   */
+  it("still reads the id off a marker written before severities existed", () => {
+    expect(parseFindingMarkers(`- a claim ${findingMarker("f-1")}`)).toEqual([
+      { id: "f-1", text: "a claim" },
+    ]);
+  });
+
+  it("puts the finding's severity on the thread it opens", () => {
+    const threads = reviewThreads(place([finding({ line: 11, severity: "high" })]));
+
+    expect(threads[0]?.body).toContain(findingMarker("f-1", "high"));
   });
 });
 
@@ -375,12 +423,12 @@ describe("a finding an earlier review missed", () => {
  * line where it sits alone.
  */
 describe("parseFindingMarkers", () => {
-  it("reads a body-findings entry, whose marker sits above its heading", () => {
-    const body = renderBodyFindings(
-      place([finding({ path: "src/other.ts", line: 88, title: "the cache key omits the tenant" })]),
+  it("reads an entry whose marker sits alone above it", () => {
+    const body = [findingMarker("f-1"), "", "**`src/other.ts:88` — the cache key omits the tenant**"].join(
+      "\n",
     );
 
-    expect(parseFindingMarkers(body ?? "")).toEqual([
+    expect(parseFindingMarkers(body)).toEqual([
       { id: "f-1", text: "`src/other.ts:88` — the cache key omits the tenant" },
     ]);
   });

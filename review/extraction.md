@@ -12,6 +12,13 @@ give the truest location you have rather than the nearest one inside the diff.
 `title` is one short line, as a reader scans it in a list of what is open — the claim, not the
 evidence. Under about twelve words.
 
+`severity` is `high`, `medium` or `low`, on **every** finding and every `followUps` entry. `high`
+breaks something or ships the wrong behaviour; `medium` is a real defect with a bounded blast
+radius; `low` is a real but small defect — one you can name, with a consequence you can state,
+that happens to be cheap. `low` is not a place to put a preference: those are not posted at any
+severity. It is display and ordering only, and changes no outcome; an omitted or unrecognised one
+is read as `medium`.
+
 Give each finding **no id of any kind**. The workflow writes one and a finding carries it from
 round to round; one you invented would be matched against a thread you never opened.
 
@@ -79,7 +86,9 @@ value read twice. These are recorded on the pull request and filed as issues onc
 other two channels do not survive that: nobody reads a merged pull request's review, and a
 `fixBeforeMerge` finding is a claim about *this* change, which an out-of-scope one is not.
 
-Every part of the bar is required, and a finding missing any of it belongs in the summary instead:
+Every part of the bar is required, and a finding missing any of it belongs in the summary instead,
+and each one carries a `severity` like any other finding — it is written into the issue that is
+filed, where it is the first thing whoever triages it reads:
 
 - **a `location`** — `path` or `path:line`. **One path**, the one a reader should open first. It
   is also read back verbatim once the pull request merges: a filed issue is keyed on this exact
@@ -99,12 +108,14 @@ a round says the earlier ones are no longer true. Re-record anything that still 
 
 Order them by **the worst consequence if nobody ever fixes it** — not by how hard each is to fix,
 and not by how confident you are in it. List the three most serious. Anything past the third is
-dropped from the end, here, after you have written it; it is not yours to filter.
+dropped from the end, here, after you have written it; it is not yours to filter. The order is
+yours and is kept as you wrote it: nothing re-ranks this list by `severity`, so put the one you
+would most want filed first.
 
 ```json
 <output>
 {
-  "summary": "Under 250 words. No verdict — one is derived from `fixBeforeMerge`, `needsYou` and the check results, and prepended for you. Each finding worst first, one short paragraph each, quoting the code or check result it rests on.",
+  "summary": "Under 250 words, posted under **What changed in this PR** below the findings. What this pull request does, and how it holds up. Do not enumerate the findings again — each is listed above this with its severity and a link to where it was raised — so spend the words on what the change is and on what your confidence in it rests on. No verdict: one is derived from `fixBeforeMerge`, `needsYou` and the check results, and it opens the body for you.",
   "fixBeforeMerge": [
     "One line per finding that must be fixed before this merges — the same findings the summary and the `findings` list carry."
   ],
@@ -115,11 +126,11 @@ dropped from the end, here, after you have written it; it is not yours to filter
   ],
   "needsYou": "Omit this field unless another pass cannot settle it; one line naming which of the three cases it is.",
   "findings": [
-    { "title": "parse() returns before its guard runs", "path": "src/example.ts", "line": 42, "body": "**Fix before merge.** `parse()` returns before the guard below it runs, so a malformed input reaches `apply()` unchecked." },
-    { "title": "a comment describes the old behaviour", "path": "src/helpers.ts", "startLine": 87, "line": 88, "body": "**Fix before merge.** This comment describes the old behaviour.\n\n```suggestion\n * Returns every match, not just the first — callers rely on the full\n * list, so narrowing it here would be a silent behaviour change.\n```" }
+    { "title": "parse() returns before its guard runs", "path": "src/example.ts", "line": 42, "severity": "high", "body": "**Fix before merge.** `parse()` returns before the guard below it runs, so a malformed input reaches `apply()` unchecked." },
+    { "title": "a comment describes the old behaviour", "path": "src/helpers.ts", "startLine": 87, "line": 88, "severity": "low", "body": "**Fix before merge.** This comment describes the old behaviour.\n\n```suggestion\n * Returns every match, not just the first — callers rely on the full\n * list, so narrowing it here would be a silent behaviour change.\n```" }
   ],
   "followUps": [
-    { "title": "One line, as a human scans it in a triage list", "location": "src/other.ts:88", "body": "The evidence it is real, quoting what it rests on. Then why this pull request cannot fix it." }
+    { "title": "One line, as a human scans it in a triage list", "location": "src/other.ts:88", "severity": "medium", "body": "The evidence it is real, quoting what it rests on. Then why this pull request cannot fix it." }
   ]
 }
 </output>

@@ -160,10 +160,10 @@ saying so.
 There are two, and every finding is one of them.
 
 **Fix before merge** — this pull request is wrong, unsafe, or does not do what the linked issue
-asked, and must not merge as it stands. Say so in the summary and in the finding, and restate each
-one as a single line in `fixBeforeMerge`. That list is counted, and it is posted as the
-**To fix before merge** checklist on the review — so a finding only the prose carries is one nobody
-can act on without reading for it.
+asked, and must not merge as it stands. Say so in the finding, and restate each one as a single
+line in `fixBeforeMerge`. That list is counted, and every finding is listed in the review's
+findings record under **Open** — so a finding only the prose carries is one nobody can act on
+without reading for it.
 
 **A follow-up** — real, but not this pull request's to fix. Those go to the `followUps` list your
 structured output carries, on the bar stated with it.
@@ -184,6 +184,26 @@ record, not what the summary calls it.
 
 Quote the code or check result each finding rests on — a reader should be able to check you
 without re-deriving your reasoning.
+
+# HOW BAD EACH ONE IS
+
+Every finding and every follow-up carries a `severity`: `high`, `medium` or `low`.
+
+- **high** — it breaks something, loses data, or ships the wrong behaviour to a user.
+- **medium** — a real defect with a bounded blast radius: one path, one case, one caller.
+- **low** — **a real but small defect.** Something you can name as wrong, with a consequence you
+  can state, that happens to be cheap: an off-by-one in a log line, a message naming the wrong
+  field, a test that passes for the wrong reason.
+
+`low` is **not** a place to put a preference. The bar for reporting anything has not moved: a
+style choice, a "consider…", a rename you would accept being overruled on is not posted at any
+severity. If you cannot name the defect and its consequence, it is not a `low` finding, it is not
+a finding.
+
+Severity is **display and ordering only**. It is read by nobody deciding anything: the outcome
+comes from how many findings there are, from `needsYou` and from the check results, exactly as it
+did before severities existed. It is there so the worst thing you found is the first thing the
+reader meets. Rate honestly — inflating one buys nothing and costs the reader the ordering.
 
 # WHEN ANOTHER PASS WILL NOT SETTLE IT
 

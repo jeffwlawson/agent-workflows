@@ -28,6 +28,7 @@ const followUp = (over: Partial<FollowUp> = {}): FollowUp => ({
   title: "parse() drops the guard",
   location: "src/a.ts:12",
   body: "Evidence it is real. Then why this pull request cannot fix it.",
+  severity: "medium",
   ...over,
 });
 
@@ -661,6 +662,16 @@ describe("planFollowUps: the stub it plans", () => {
     // The human-facing location keeps the line the agent gave. It is never read
     // back — matching is on the payload — so it costs nothing to be precise.
     expect(issue.body).toContain("src/a.ts:12");
+  });
+
+  /**
+   * The stub is the surface severity is *for* (#109, decision 9): it outlives
+   * the pull request whose review rated it, and a triage list is read at a
+   * glance. Carried in the body rather than only in the payload, because the
+   * payload is for the matcher and this line is for the person triaging.
+   */
+  it("carries the severity the review gave it", () => {
+    expect(filed({ severity: "high" }).body).toContain("**Severity:** `High`");
   });
 
   /**

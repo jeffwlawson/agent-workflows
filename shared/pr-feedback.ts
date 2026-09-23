@@ -1,6 +1,6 @@
 import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
-import { openingClaim, parseFindingMarkers } from "./review-findings.js";
+import { openingClaim, parseFindingMarkers, type Severity } from "./review-findings.js";
 import type { AgentThread, MaintainerReply, SettledFinding } from "./review-verification.js";
 
 /**
@@ -675,6 +675,15 @@ export const diffCommandAgainstBase = (baseRef: string | undefined): readonly st
  */
 const findingIdIn = (body: string): string | undefined => parseFindingMarkers(body)[0]?.id;
 
+/**
+ * And the severity written beside it, where the marker carries one. Same
+ * marker, same reader, same "the first one wins" rule — a finding's rating
+ * belongs to the review that raised it, so it is read back rather than
+ * re-derived (#109, decision 9).
+ */
+const findingSeverityIn = (body: string): Severity | undefined =>
+  parseFindingMarkers(body)[0]?.severity;
+
 const anchorOf = (c: GqlThreadComment): string => {
   const outdated = c.line === null || c.line === undefined;
   const end = c.line ?? c.originalLine;
@@ -701,18 +710,24 @@ const anchorOf = (c: GqlThreadComment): string => {
  */
 const findingOn = (
   comments: readonly GqlThreadComment[],
-): { readonly findingId: string; readonly text: string } | undefined => {
+): { readonly findingId: string; readonly severity?: Severity; readonly text: string } | undefined => {
   const marked = comments.find(
     (c) => isWorkflowBot(c.author?.login ?? undefined) && findingIdIn(c.body ?? "") !== undefined,
   );
   const findingId = marked === undefined ? undefined : findingIdIn(marked.body ?? "");
   if (marked === undefined || findingId === undefined) return undefined;
 
+  const severity = findingSeverityIn(marked.body ?? "");
+
   // `anchorOf` and not a bare `path:line`, so a thread whose code has moved
   // says so wherever this line is shown. It is left unfenced for that reason:
   // the anchor may carry the *outdated* clause, and a code span around a
   // sentence is a sentence in a code span.
-  return { findingId, text: `${anchorOf(marked)} — ${openingClaim(marked.body ?? "")}` };
+  return {
+    findingId,
+    ...(severity === undefined ? {} : { severity }),
+    text: `${anchorOf(marked)} — ${openingClaim(marked.body ?? "")}`,
+  };
 };
 
 /**
@@ -892,6 +907,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
         threadId: thread.id,
         findingId: found.findingId,
         text: found.text,
+        ...(found.severity === undefined ? {} : { severity: found.severity }),
         ...(reply === undefined ? {} : { maintainerReply: reply }),
       },
     ];
@@ -912,7 +928,12 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     if (!thread.isResolved || resolvedBy === undefined || isWorkflowBot(resolvedBy)) return [];
 
     const found = findingOn(thread.comments);
-    return found === undefined ? [] : [{ ...found, resolvedBy }];
+    // The severity is deliberately dropped here rather than carried: a settled
+    // finding is shown to the reviewer as an instruction not to raise it again,
+    // and a rating on something nobody may act on is an invitation to weigh it.
+    return found === undefined
+      ? []
+      : [{ findingId: found.findingId, text: found.text, resolvedBy }];
   });
 
   // The newest review this loop posted, which is the one whose body is current.

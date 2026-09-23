@@ -8,18 +8,24 @@ import {
   required,
   scrubGitHubTokens,
   sh,
+  workflowRunUrl,
   writeJson,
   writeText,
 } from "../shared/common.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
-import { isPreviouslyMissed, placeFindings, reviewMutation } from "../shared/review-findings.js";
+import {
+  isPreviouslyMissed,
+  placeFindings,
+  reviewMutation,
+  type Severity,
+} from "../shared/review-findings.js";
 import {
   capFollowUps,
   countFixBeforeMerge,
   deriveVerdict,
   renderFollowUpsBlock,
-  renderReviewSummary,
+  renderReviewBody,
   reviewOutputSchema,
   VERDICT_CONTEXT,
   type CiResult,
@@ -147,14 +153,14 @@ try {
   //
   // A carried finding the review said nothing about stays open. That is the
   // safe direction and it is `verifyCarried`'s to take, not this file's.
-  const { resolutions, stillOpen } = verifyCarried(
+  const { resolutions, stillOpen, resolved } = verifyCarried(
     context.carriedFindings,
     result.output.verified,
   );
   const headSha = sh("git rev-parse HEAD").trim();
 
   // The third channel, serialised into the body on the way out. It cannot stay
-  // a sibling of `summary` in the posted artifact: a review has one body, and
+  // a sibling of the findings in the posted artifact: a review has one body, and
   // the body is the only part of a review that is still readable — by a human
   // or by anything else — after the pull request has merged.
   //
@@ -172,7 +178,7 @@ try {
   const followUpsBlock = renderFollowUpsBlock(followUps, droppedFollowUps);
 
   // The verdict, derived from the review and the checks rather than written by
-  // the agent (#96). Its heading and next-step line open the summary, so the
+  // the agent (#96). Its heading and next-step line open the body, so the
   // outcome is the first thing a reader sees and the same words the commit
   // status carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
@@ -186,19 +192,21 @@ try {
   // what changes how a reader weighs the review — is that the round was the
   // stricter reading rather than a fact about this pull request.
   //
-  // What the body is made of, and in what order, is `renderReviewSummary`'s:
-  // it is the part of the review a human acts on, and this file is a script
-  // with no test around it (#105). It is handed the output whole rather than
-  // the fields it reads, so the checklist it renders is the set the verdict
-  // above was counted from and not a second reading of it.
-  const summary = renderReviewSummary({
+  // What the body is made of, and in what order, is `renderReviewBody`'s: it is
+  // the part of the review a human acts on, and this file is a script with no
+  // test around it (#105). It is handed the output whole rather than the fields
+  // it reads, so the record it renders is the set the verdict above was counted
+  // from and not a second reading of it (#113).
+  const reviewBody = renderReviewBody({
     verdict,
     output: result.output,
     roundNote: unreadableRoundNote(round),
     placed,
     stillOpen,
+    resolved,
+    runUrl: workflowRunUrl(),
   });
-  const body = `${summary}\n\n${followUpsBlock}`;
+  const postedBody = `${reviewBody}\n\n${followUpsBlock}`;
 
   // A GraphQL request body, posted by the workflow with `gh api graphql
   // --input`. REST `POST /pulls/{n}/reviews` cannot open a **file-level**
@@ -211,9 +219,9 @@ try {
   // writes is the shape a `--jq` path in the workflow reads back.
   writeJson(
     "review_payload.json",
-    reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body, placed }),
+    reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body: postedBody, placed }),
   );
-  writeText("summary.md", summary);
+  writeText("summary.md", reviewBody);
 
   // The threads this review verified, for the workflow step that closes them.
   // Written on every run, empty list included: the step reads the file rather
@@ -263,6 +271,12 @@ try {
   console.log(
     `Findings: ${placed.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${placements("body")} in the body; ${missed} in code an earlier review had already read.`,
   );
+  // The ratings, for a human explaining why the record reads the way it does.
+  // They change no outcome above (#113) — which is exactly why the log is the
+  // only place this run says them out loud besides the body.
+  const rated = (severity: Severity): number =>
+    result.output.findings.filter((f) => f.severity === severity).length;
+  console.log(`Severity: ${rated("high")} high, ${rated("medium")} medium, ${rated("low")} low.`);
   // Split by reason rather than counted together: "the code was fixed" and "a
   // maintainer said no" are the two ways a finding stops counting, and a human
   // reading this log to explain a verdict needs to know which one happened.

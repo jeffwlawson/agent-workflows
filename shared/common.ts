@@ -423,6 +423,23 @@ const PR_HEADING_JQ = `"# " + .title + "\n\n" + (.body // "")`;
  * conflicted: an unreadable `gh pr view` is an API blip, not a reason to abandon
  * a merge resolution, so the fallback is the reference itself.
  */
+/**
+ * The Actions run this process is part of, or `undefined` off a runner.
+ *
+ * Composed from the three variables every Actions step is given rather than
+ * from an input the workflow sets, because that is what they are: a step that
+ * had to pass them could forget to, and there is nothing a runner could do
+ * about a link it was not handed. `undefined` rather than a guess, so a caller
+ * renders no link instead of a dead one.
+ */
+export const workflowRunUrl = (): string | undefined => {
+  const server = process.env["GITHUB_SERVER_URL"];
+  const repo = process.env["GITHUB_REPOSITORY"];
+  const runId = process.env["GITHUB_RUN_ID"];
+  if (!server || !repo || !runId) return undefined;
+  return `${server}/${repo}/actions/runs/${runId}`;
+};
+
 export const fetchPullRequestHeading = (prNumber: string): string =>
   safeGh(["pr", "view", prNumber, "--json", "title,body", "--jq", PR_HEADING_JQ]) ||
   `PR #${prNumber}`;

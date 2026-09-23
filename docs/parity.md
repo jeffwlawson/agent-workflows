@@ -773,6 +773,35 @@ expensive to rediscover.
   cannot produce the round-1 row, so a previously-missed finding asks a maintainer to read and
   reply rather than sending the loop round again. Genuinely out-of-scope findings still go to
   `followUps`, on the bar stated with that list.
+- **Severity is display and ordering, and nothing reads it that decides anything.** Since #113
+  (#109, decision 9) every finding and every follow-up carries `high` / `medium` / `low`. The
+  review body sorts each group worst first and badges each entry; `deriveVerdict` never sees it,
+  the routing between the two finding types never sees it, and the follow-up cap never sees it.
+  A test permutes the ratings across a review and holds the verdict, the count and the kept
+  follow-ups identical.
+
+  That is the whole of the bargain, and it is the one #96 struck when it retired *judgement call*:
+  a dial the model turns that changes the outcome means every review has to be read to find out
+  which way it was turned. `low` is a **real but small defect** — nameable, with a stateable
+  consequence — and not a place to put the preferences that are still posted nowhere at any
+  rating.
+
+  The rating is written into the finding's own marker by the workflow, beside the id, because it
+  has nowhere else to survive a round: a carried finding reaches a later review as an id and one
+  line of text, and a record that badged what this round found and nothing it carried would be
+  sorting half a list.
+- **The review body is a record, and its newest copy is the current statement.** Since #113 (#109,
+  decision 8) it is Copilot's overview in order — the assessment, one sentence naming what is
+  unresolved, the step in italics, `**Findings:** N`, then collapsible *Open* (this round's
+  entries marked *new*), *Resolved since last review* and *Previously missed*, then what the change
+  does, then the run. `shared/review-output.ts` is the one place that order is written down.
+
+  Two rules make it a record rather than a rendering, and both are about which entries carry a
+  finding id. An entry with **no thread** carries its id, because the newest body naming it is the
+  only thing keeping it alive; an entry **with** one does not, because the thread is its record and
+  a second copy is one a maintainer cannot close. And a **resolved** entry carries none in either
+  case — an id written back would hand a closed finding to the next round as something still to
+  rule on.
 - **Every world-writable input is author-gated.** Issue and PR text reaches agents only from
   collaborators or our own bot. `agent:fix` pushes code, so an ungated input there steers commits.
 - **Agents never hold the GitHub token.** Context is fetched before the agent starts and the token

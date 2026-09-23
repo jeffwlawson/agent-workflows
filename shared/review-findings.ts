@@ -2,6 +2,72 @@ import { randomUUID } from "node:crypto";
 import { asRecord, asString } from "./common.js";
 
 /**
+ * How bad a finding is, for **display and ordering and nothing else** (#109,
+ * decision 9).
+ *
+ * It is deliberately not a fourth verdict input: `deriveVerdict` never reads
+ * it, and a test permutes every finding's severity and holds the verdict
+ * identical. The reason is the one that retired *judgement call* in #96 — a
+ * dial the model turns decides the outcome, and every review then has to be
+ * read to find out which way it was turned. What severity buys instead is a
+ * reader's eye: three high findings and one low read differently from four of
+ * each, and the list is sorted so the first one they meet is the worst.
+ *
+ * **Low is a real but small defect, never a nit.** The bar for posting anything
+ * at all has not moved: a preference, a "consider…", a rename the reviewer
+ * would accept being overruled on is still not posted, at any severity. A
+ * severity that meant "I was not sure this was worth saying" would be that bar
+ * quietly reopened.
+ */
+export type Severity = "high" | "medium" | "low";
+
+/** Worst first, which is both the display order and the sort key below. */
+export const SEVERITIES: readonly Severity[] = ["high", "medium", "low"];
+
+/**
+ * What a finding is rated when the model said nothing, or said something this
+ * does not recognise.
+ *
+ * The middle, not the top and not the bottom. This is display, so the failure
+ * to avoid is a default that *says* something: `high` would make every
+ * unlabelled finding shout, and `low` would bury one. Losing the review over a
+ * missing severity is out of the question for the reason a missing title does
+ * not lose it either.
+ */
+export const DEFAULT_SEVERITY: Severity = "medium";
+
+const isSeverity = (value: string): value is Severity =>
+  (SEVERITIES as readonly string[]).includes(value);
+
+/** Any casing the model reaches for, and `DEFAULT_SEVERITY` for anything else. */
+export const parseSeverity = (value: unknown): Severity => {
+  if (typeof value !== "string") return DEFAULT_SEVERITY;
+  const normalised = value.trim().toLowerCase();
+  return isSeverity(normalised) ? normalised : DEFAULT_SEVERITY;
+};
+
+/**
+ * The badge as written: **text, never an image**.
+ *
+ * GitHub serves severity chips as assets on its own domain, and hotlinking one
+ * puts a third-party request — and a dead image on the day the URL moves — into
+ * a body that has to stay readable for as long as the pull request exists
+ * (#109, decision 9). A code span renders as a chip in every GitHub surface
+ * and in a plain-text reader alike.
+ */
+export const severityBadge = (severity: Severity): string =>
+  `\`${severity.charAt(0).toUpperCase()}${severity.slice(1)}\``;
+
+/**
+ * Worst first, and **stable** within a severity: the order the review produced
+ * its findings in is the order it thought about them, and nothing here knows
+ * better. An entry with no severity at all sorts last — those are the
+ * restatement lines the record falls back to, which carry no finding to rate.
+ */
+export const severityRank = (severity: Severity | undefined): number =>
+  severity === undefined ? SEVERITIES.length : SEVERITIES.indexOf(severity);
+
+/**
  * One problem the review found in this pull request, as the model produced it.
  *
  * Called a *finding* rather than an inline comment because where it is posted
@@ -31,6 +97,12 @@ export interface Finding {
    */
   readonly startLine?: number;
   readonly body: string;
+  /**
+   * Always present after parsing, defaulted rather than required — see
+   * `DEFAULT_SEVERITY`. Read by the record's ordering and by nothing that
+   * decides anything.
+   */
+  readonly severity: Severity;
 }
 
 /**
@@ -71,8 +143,23 @@ export interface PlacedFinding {
  */
 export const FINDING_MARKER = "agent-finding";
 
-/** The marker as written. One format, one place it is spelled. */
-export const findingMarker = (id: string): string => `<!-- ${FINDING_MARKER} ${id} -->`;
+/**
+ * The marker as written. One format, one place it is spelled.
+ *
+ * The severity rides along with the id because it has nowhere else to survive a
+ * round. A finding's severity is the model's, written once by the review that
+ * raised it; the rounds after that read the finding back off the thread as an
+ * id and one line of text, so without this the record would show a badge on
+ * what this round found and nothing on what it carried — and the sort that puts
+ * the worst first would be sorting half a list.
+ *
+ * Written by the workflow, exactly as the id is, and read back by
+ * `parseFindingMarkers`. It is omitted where there is none to write — a marker
+ * from a release before this one, re-emitted — and a reader defaults those, so
+ * an old body stays readable rather than becoming a parse failure.
+ */
+export const findingMarker = (id: string, severity?: Severity): string =>
+  `<!-- ${FINDING_MARKER} ${id}${severity === undefined ? "" : ` ${severity}`} -->`;
 
 /**
  * A fresh id, unrelated to the finding's text or its place in the list.
@@ -198,11 +285,23 @@ export const openingClaim = (body: string): string => {
  */
 export interface MarkedEntry {
   readonly id: string;
+  /**
+   * The rating the review that raised it gave it, where the marker carries one.
+   * Absent for a marker written before severities existed, which the reader
+   * defaults rather than refusing — see `findingMarker`.
+   */
+  readonly severity?: Severity;
   /** The line the marker labels, stripped of its list marker and emphasis. */
   readonly text: string;
 }
 
-const MARKER = new RegExp(`<!--\\s*${FINDING_MARKER}\\s+(\\S+)\\s*-->`);
+/**
+ * The id, then optionally the severity. The severity is matched against the
+ * three words rather than as another `\S+`, so a marker this version does not
+ * understand loses the trailing token rather than the id — identity is the half
+ * that must survive a format it has not met.
+ */
+const MARKER = new RegExp(`<!--\\s*${FINDING_MARKER}\\s+(\\S+?)(?:\\s+(high|medium|low))?\\s*-->`);
 
 /** A checklist's own furniture, which is the list's rather than the entry's. */
 const LIST_ITEM = /^[-*]\s+(\[[ xX]\]\s+)?/;
@@ -211,8 +310,10 @@ export const parseFindingMarkers = (body: string): MarkedEntry[] => {
   const lines = body.split("\n");
 
   return lines.flatMap((line, index) => {
-    const id = line.match(MARKER)?.[1];
+    const match = line.match(MARKER);
+    const id = match?.[1];
     if (id === undefined) return [];
+    const severity = match?.[2];
 
     const onItsLine = line.replace(MARKER, "").trim();
     const text =
@@ -220,24 +321,14 @@ export const parseFindingMarkers = (body: string): MarkedEntry[] => {
         ? (lines.slice(index + 1).find((later) => later.trim() !== "") ?? "").trim()
         : onItsLine;
 
-    return [{ id, text: text.replace(LIST_ITEM, "").replace(/^\*\*|\*\*$/g, "").trim() }];
+    return [
+      {
+        id,
+        ...(severity === undefined ? {} : { severity: parseSeverity(severity) }),
+        text: text.replace(LIST_ITEM, "").replace(/^\*\*|\*\*$/g, "").trim(),
+      },
+    ];
   });
-};
-
-/** One line, so a model that wrapped a title cannot break the entry it heads. */
-const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
-
-/**
- * A body entry's heading: where it is, then what it is. The title is dropped
- * where there is none to show rather than leaving a dangling dash — a finding
- * whose body was empty enough to yield no claim is still a finding, and the
- * anchor alone is a reader's way in.
- */
-const headingOf = (entry: PlacedFinding): string => {
-  const anchor = `\`${entry.finding.path}:${entry.finding.line}\``;
-  const title = oneLine(entry.finding.title);
-
-  return title === "" ? `**${anchor}**` : `**${anchor} — ${title}**`;
 };
 
 const positiveInt = (value: unknown, label: string): number => {
@@ -278,6 +369,7 @@ export const parseFinding = (value: unknown): Finding => {
     line,
     ...(startLine === undefined ? {} : { startLine }),
     body,
+    severity: parseSeverity(record["severity"]),
   };
 };
 
@@ -338,7 +430,7 @@ export interface ReviewThread {
  * reads back — and a hidden comment ahead of it displaces both for no gain.
  */
 const threadBody = (placed: PlacedFinding): string =>
-  `${placed.finding.body}\n\n${findingMarker(placed.id)}`;
+  `${placed.finding.body}\n\n${findingMarker(placed.id, placed.finding.severity)}`;
 
 /** The threads the mutation carries — every placed finding except the body ones. */
 export const reviewThreads = (placed: readonly PlacedFinding[]): ReviewThread[] =>
@@ -361,32 +453,6 @@ export const reviewThreads = (placed: readonly PlacedFinding[]): ReviewThread[] 
             body: threadBody(p),
           },
     );
-
-/**
- * The findings with no thread, rendered into the review body.
- *
- * `undefined` rather than an empty string when there are none, so the caller
- * composing the body drops the section rather than leaving a heading over
- * nothing — the same shape the checklist uses.
- *
- * The evidence is carried here in full, unlike the body's one-line checklist.
- * A threaded finding has somewhere else to keep it; this one does not, and a
- * list of anchors with no reasoning is a finding a reader cannot check.
- */
-export const renderBodyFindings = (placed: readonly PlacedFinding[]): string | undefined => {
-  const entries = placed.filter((p) => p.placement === "body");
-  if (entries.length === 0) return undefined;
-
-  return [
-    "**Findings with no thread**",
-    "",
-    "Each is in a file this pull request does not change, so there is no diff line to anchor a thread to.",
-    // The marker on its own line with a blank line either side: an HTML block
-    // that ran into the heading under it would take the heading with it, and
-    // the entry a reader sees is the half this is here to keep.
-    ...entries.flatMap((entry) => ["", findingMarker(entry.id), "", headingOf(entry), "", entry.finding.body]),
-  ].join("\n");
-};
 
 /**
  * The mutation, in the shape the GraphQL endpoint takes a request body in.

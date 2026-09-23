@@ -270,7 +270,23 @@ describe("verifyCarried", () => {
   });
 
   it("has nothing to do on the first review of a pull request", () => {
-    expect(verifyCarried([], [])).toEqual({ resolutions: [], stillOpen: [] });
+    expect(verifyCarried([], [])).toEqual({ resolutions: [], stillOpen: [], resolved: [] });
+  });
+
+  /**
+   * And what closed is reported separately from what was *resolved on GitHub*,
+   * because a body-recorded finding has no thread to close: it stops being
+   * re-listed, and the record is the only place that closure is ever visible.
+   */
+  it("reports a landed body entry as resolved though there is no thread to close", () => {
+    const { resolutions, resolved, stillOpen } = verifyCarried(
+      [{ id: "f-9", text: "`src/other.ts:88` — the cache key omits the tenant" }],
+      [landed("f-9")],
+    );
+
+    expect(resolutions).toEqual([]);
+    expect(stillOpen).toEqual([]);
+    expect(resolved.map((f) => f.id)).toEqual(["f-9"]);
   });
 });
 

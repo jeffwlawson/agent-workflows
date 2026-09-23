@@ -1250,6 +1250,35 @@ describe("the findings an earlier review left open", () => {
   });
 
   /**
+   * And the rating beside it, which is how a finding's severity survives a
+   * round: a carried finding reaches a later review as an id and one line, so
+   * without this the record could badge what the round found and nothing it
+   * carried (#113).
+   */
+  it("carries the severity the marker holds, and none where it holds none", () => {
+    const rated = {
+      id: "PRRT_two",
+      isResolved: false,
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: 206,
+            body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-2 high -->",
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() =>
+      response({ reviewThreads: { nodes: [agentThread("PRRT_one", "f-1"), rated] } }),
+    );
+
+    const threads = fetchPullRequestFeedback("12").agentThreads;
+    expect(threads.map((t) => t.severity)).toEqual([undefined, "high"]);
+  });
+
+  /**
    * A human's thread is feedback and not a finding this loop can rule on, so it
    * stays in `threadIds` — where `agent:fix` answers it — and out of the record
    * a review verifies.

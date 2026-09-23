@@ -443,7 +443,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * And the other CI surface (#105). Check runs are an Actions concept; a
    * repository whose CI reports through the commit-status API has none to
    * read, so a word derived from check runs alone calls that commit green and
-   * lets the review answer "ready to merge" over a red one.
+   * lets the review recommend approving a red one.
    */
   it.each([
     ["red when a commit status failed", [status("ci/build", "failure")], "red"],
@@ -458,8 +458,8 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * With one context skipped, and it is this job's own answer. `agent-review`
    * is the context the verdict is posted under, so counting it would feed the
    * last round's verdict into the next round's evidence: every "ready after a
-   * fix" — a `failure` status — would derive "needs you" one round later, off
-   * nothing but its own reply.
+   * "changes recommended" — a `failure` status — would derive "needs a closer
+   * look" one round later, off nothing but its own reply.
    */
   it("ignores the verdict's own context, which is this job's previous answer", () => {
     const outcome = runWaitStep({

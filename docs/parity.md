@@ -557,11 +557,13 @@ expensive to rediscover.
   A second bound now sits under the first, and it is what makes the leg safe to automate rather
   than merely acyclic. The review a fix asks for is by construction a **round 2** (an earlier
   verdict stands, every commit since is the loop's own, and at least one of them is a non-merge
-  commit — `shared/review-round.ts`), and a round-2 review can never produce "ready after a fix":
-  findings that survived a fix round derive "needs you" instead (#96 decision 5, enforced in
-  `deriveVerdict`, not in the prompt). So the leg
-  cannot be walked twice off one human label — the second round's only outcomes are "ready to
-  merge" and a human.
+  commit — `shared/review-round.ts`), and a round-2 review can never produce the **round-1**
+  *Changes recommended*: findings that survived a fix round get the round-2 row instead, whose line
+  drops the promise of an automatic re-review and asks the maintainer to read and reply first (#96
+  decision 5, enforced in `deriveVerdict`, not in the prompt). The two rows share a heading and
+  differ in the next step and in the key `verdict.json` carries, which is what an automatic fix
+  would have to match on. So the leg cannot be walked twice off one human label — the second
+  round's only outcomes are *Approval recommended* and a human.
 
   And a fix run that pushed *nothing* requests nothing. The threads it replied to already say why
   it declined, and the verdict standing on the head commit is still the right one: nothing has
@@ -574,9 +576,10 @@ expensive to rediscover.
   apply, because the review a resolution asks for is a **round 1**: round 2 needs a non-merge loop
   commit since the verdict, and a resolution leaves only a merge commit. That is the reading rather
   than a gap in it (#105). The findings of the verdict a conflict interrupted have never been
-  attempted, so counting the merge as a fix round would escalate them to "needs you" — spending a
-  human on a base branch moving, which is the one thing on this leg nobody chose. What is worth
-  saying twice is which arrow this is *not*: no workflow in the loop adds `agent:fix`.
+  attempted, so counting the merge as a fix round would answer them with "a fix round did not
+  settle these" — spending a human on a base branch moving, and on findings no fix round ever saw,
+  which is the one thing on this leg nobody chose. What is worth saying twice is which arrow this
+  is *not*: no workflow in the loop adds `agent:fix`.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
   is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this.
 

@@ -369,32 +369,38 @@ gh label create "needs-triage"     --color D93F0B --description "Maintainer need
 ## 3b. Reading the verdict
 
 Labels are how you drive the loop; this is how it answers. Every review ends in one of three
-verdicts, derived from what the review found rather than written in it, and posted as a **commit
+assessments, derived from what the review found rather than written in it, and posted as a **commit
 status** on the commit that was reviewed — context `agent-review`, linked to the review it is the
 verdict on. GitHub shows it in the merge box, so the outcome of a review is readable without
 opening the review.
 
-| Verdict | Commit status | What you do |
+The three are **GitHub's own**: they are the headings Copilot code review opens every overview
+with, taken verbatim. If you have read one of those, you already know what ours mean.
+
+| Verdict | Commit status | What GitHub shows you |
 |---|---|---|
-| **ready to merge** | `success` | Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge. |
-| **ready after a fix** | `failure` | Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically. |
-| **needs you** | `failure` | Read the review, then reply with your decision and add agent:fix. If the issue itself was wrong, close the PR instead. |
+| **🟢 Approval recommended** | `success` | 🟢 Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge. |
+| **🟡 Changes recommended** | `failure` | 🟡 Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically. |
+| **🟡 Changes recommended**, after a fix round | `failure` | 🟡 Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix. |
+| **🔵 Needs a closer look** | `failure` | 🔵 Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR. |
 
 The third column is the status description **verbatim** — what GitHub shows you is what is written
-here, and the same line opens the review summary, so the two cannot tell you different things. Only
-`needs you` asks you to read anything.
+here, and the same words open the review summary, so the two cannot tell you different things.
+Three headings and four rows: *Changes recommended* has a first-round line and a second-round one,
+because a fix round that has already run and not settled the findings is the same assessment with a
+different next step. Only the last two rows ask you to read anything.
 
-`failure` on the middle row is not the loop disliking the change. It is a step left to do, and it is
-a `failure` because a green tick beside *add `agent:fix`* would say the opposite of what it means.
-Nothing merges or blocks on any of this by default, and making it do so is the last part of this
-section.
+`failure` on anything but the first row is not the loop disliking the change. It is a step left to
+do, and it is a `failure` because a green tick beside *add `agent:fix`* would say the opposite of
+what it means. Nothing merges or blocks on any of this by default, and making it do so is the last
+part of this section.
 
 **A run that failed is a fourth state and not a verdict.** It posts `error`, linked to the run:
 there is no verdict, and re-adding `agent:review` (§3) retries. The state worth knowing is the
 absent one — a commit with no `agent-review` status has not been reviewed, which is deliberate
 rather than a gap. A status belongs to a commit, so a push leaves the new head with no verdict
-instead of carrying a stale *ready to merge* over code nobody read. The status history on the pull
-request is also the whole record of what earlier rounds said; nothing else keeps one.
+instead of carrying a stale *approval recommended* over code nobody read. The status history on
+the pull request is also the whole record of what earlier rounds said; nothing else keeps one.
 
 If no verdict arrives on *any* pull request, the caller is missing `statuses: write` — the review
 still posts, so there is nothing on the pull request to say so. That is §4, and `doctor` reports it.
@@ -418,7 +424,7 @@ other checks are for.
 covers the open pull requests the loop has ruled on:
 
 - `is:pr is:open status:failure` — waiting on a fix, or on you. **This is the inbox to work from.**
-- `is:pr is:open status:success` — ready to merge, where it works. See the trap below.
+- `is:pr is:open status:success` — approval recommended, where it works. See the trap below.
 
 *Combined* means everything on the commit and not only this one — and **check runs count too**, not
 just commit statuses: a pull request with no commit status at all still appears under
@@ -459,8 +465,9 @@ Two consequences to weigh before switching it on rather than after:
   verdict alongside the diff that produced it — which on a branch that edits `.github/workflows/`
   you were going to do anyway.
 - **The second round is strict on purpose.** A fix round that pushed gets a verification review,
-  and that round cannot answer *ready after a fix* — a finding that survived a fix round derives
-  *needs you* instead, on the grounds that a second fix has no more reason to settle it than the
+  and that round cannot answer with the first-round *Changes recommended* line — a finding that
+  survived a fix round gets the second-round one instead, which asks you to read the review and
+  reply before labelling, on the grounds that a second fix has no more reason to settle it than the
   first did. That is the right default while you are the one deciding what happens next. As a merge
   gate it means the second round sends you to the review rather than round the loop again, which is
   a good deal more of your attention than the un-gated version asks for.

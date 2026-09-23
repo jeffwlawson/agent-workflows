@@ -55,8 +55,8 @@ export interface ReviewOutput {
    * Not derived from the inline comments, which is the shape this could have
    * taken and the one that breaks. `filterInlineComments` drops an anchor that
    * is off-diff, so a finding whose line the model invented would leave the
-   * count as well as the review — turning "ready after a fix" into "ready to
-   * merge" on exactly the reviews that found something.
+   * count as well as the review — turning *changes recommended* into *approval
+   * recommended* on exactly the reviews that found something.
    */
   readonly fixBeforeMerge: string[];
   /**
@@ -82,24 +82,57 @@ export interface ReviewOutput {
  */
 export type CiResult = "green" | "red" | "unknown";
 
-/** One of three, derived from a review rather than written in it (#96). */
-export type Verdict = "ready to merge" | "ready after a fix" | "needs you";
+/**
+ * What a review answers, derived from what it found rather than written in it
+ * (#96). Three of them a reader has met before: the names are GitHub's own
+ * Copilot code review headings, verbatim, so anyone who has read one of those
+ * already knows what ours mean.
+ *
+ * Four keys and three headings, because *changes recommended* has a round-1
+ * case and a round-2 one — the same heading, a different next step — and they
+ * have to be told apart by something a machine reads. The key is that
+ * something, and a consumer matches it **exactly**: the automatic fix PRD #101
+ * describes fires on the round-1 case alone, and the round-1 key is a prefix of
+ * the round-2 one.
+ */
+export type Verdict =
+  | "approval recommended"
+  | "changes recommended"
+  | "changes recommended after a fix round"
+  | "needs a closer look";
 
 export interface VerdictRow {
   readonly verdict: Verdict;
   /**
-   * The commit status's state. Only "ready to merge" is `success`: the other
-   * two are things left to do, and a green tick beside them is the verdict
-   * saying the opposite of what it means.
+   * The heading the posted review body opens with, and the front of the status
+   * description. Copilot code review's own wording, so it is recognised rather
+   * than learned — which is why it is a literal here rather than composed from
+   * the key beside it.
+   *
+   * Shared by the two *changes recommended* rows: what differs between those is
+   * the step, not the assessment.
+   */
+  readonly heading: string;
+  /**
+   * The commit status's state. Only *approval recommended* is `success`: every
+   * other row is something left to do, and a green tick beside one of those is
+   * the verdict saying the opposite of what it means.
    */
   readonly state: "success" | "failure";
   /**
    * The next human step, and the whole promise of the feature — this line is
    * what makes the outcome actionable without reading the review.
    *
-   * Under GitHub's 140-character limit for a status description, which
-   * truncates where the character ran out rather than where the sentence ends.
-   * A test holds each of these to it.
+   * The body carries this on its own, under the heading; the status carries it
+   * behind the heading, because a status has one line and no formatting.
+   */
+  readonly nextStep: string;
+  /**
+   * What GitHub shows beside the status: `<heading>. <nextStep>`, written out
+   * rather than composed, so the line a maintainer reads is in this table
+   * verbatim. A test holds it equal to the two halves above, and holds it under
+   * GitHub's 140-character limit — which truncates where the character ran out
+   * rather than where the sentence ends.
    */
   readonly description: string;
 }
@@ -108,29 +141,49 @@ export interface VerdictRow {
  * The context the verdict is posted under. One per commit per context, so a
  * later review of the same commit replaces its own verdict and nothing else —
  * and a new commit carries none until one is posted for it, which is what stops
- * a stale "ready" surviving a push.
+ * a stale approval surviving a push.
  */
 export const VERDICT_CONTEXT = "agent-review";
 
 /** The table, verbatim. #96 decision 2 is the copy a human argues with. */
 export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
-  "ready to merge": {
-    verdict: "ready to merge",
+  "approval recommended": {
+    verdict: "approval recommended",
+    heading: "🟢 Approval recommended",
     state: "success",
+    nextStep: "Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
     description:
-      "Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+      "🟢 Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
   },
-  "ready after a fix": {
-    verdict: "ready after a fix",
+  "changes recommended": {
+    verdict: "changes recommended",
+    heading: "🟡 Changes recommended",
     state: "failure",
-    description:
+    nextStep:
       "Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
-  },
-  "needs you": {
-    verdict: "needs you",
-    state: "failure",
     description:
-      "Read the review, then reply with your decision and add agent:fix. If the issue itself was wrong, close the PR instead.",
+      "🟡 Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+  },
+  // Same assessment, a different step: the fix round that was supposed to
+  // settle these has already run. So the line stops promising an automatic
+  // re-review and asks for the decision first.
+  "changes recommended after a fix round": {
+    verdict: "changes recommended after a fix round",
+    heading: "🟡 Changes recommended",
+    state: "failure",
+    nextStep:
+      "A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+    description:
+      "🟡 Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+  },
+  "needs a closer look": {
+    verdict: "needs a closer look",
+    heading: "🔵 Needs a closer look",
+    state: "failure",
+    nextStep:
+      "A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
+    description:
+      "🔵 Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
   },
 };
 
@@ -152,8 +205,8 @@ export type ReviewRoundNumber = 1 | 2;
  * An object rather than positional arguments, and `round` is required rather
  * than defaulted: a default of 1 would be a caller that forgot the round
  * silently getting the *weaker* reading, which is the one failure here with no
- * symptom — a second round that says "ready after a fix" and sends the loop
- * back around a fix that already did not work.
+ * symptom — a second round that promises an automatic re-review and sends the
+ * loop back around a fix that already did not work.
  */
 export interface VerdictInputs {
   readonly ci: CiResult;
@@ -183,9 +236,9 @@ const LABELLED = new RegExp(`^[\\s*_]*${FIX_BEFORE_MERGE_LABEL}(?![A-Za-z0-9])`,
  * The **larger** of the two places a finding is recorded, not the count of the
  * list alone. The model is asked to put every one of them in both, so either
  * can be the one it forgot — and a finding labelled `**Fix before merge.**` in
- * an inline comment but missing from `fixBeforeMerge` derives *ready to merge*,
- * which is the unsafe direction for the one signal meant to be acted on without
- * reading.
+ * an inline comment but missing from `fixBeforeMerge` derives *approval
+ * recommended*, which is the unsafe direction for the one signal meant to be
+ * acted on without reading.
  *
  * Larger rather than the sum, because the two are restatements of one set of
  * findings: adding them would double-count every review that did as it was
@@ -229,8 +282,9 @@ const renderFixBeforeMerge = (findings: readonly string[]): string | undefined =
  * The summary as it is posted: four parts in one fixed order, and the one place
  * that order is written down (#105).
  *
- * Each part is there because a reader needs it before the one after it — what
- * to do, why it cannot be automated, what to fix, and then the evidence — and
+ * Each part is there because a reader needs it before the one after it — the
+ * assessment and the step it implies, why it cannot be automated, what to fix,
+ * and then the evidence — and
  * two of them are parts the review used to lose. `needsYou` reached the
  * derivation and nothing else, so the case the agent named ("the wrong thing
  * was built", "the issue itself was wrong") never reached the maintainer whose
@@ -243,8 +297,14 @@ const renderFixBeforeMerge = (findings: readonly string[]): string | undefined =
  * the review a human acts on and the runner is a script with no test around it.
  */
 export const renderReviewSummary = (parts: {
-  /** The verdict's next-step line — the same sentence the commit status carries. */
-  readonly verdict: string;
+  /**
+   * The row the derivation chose. The body opens with its heading and then its
+   * next step — the same two halves the commit status carries as one line, so
+   * the two surfaces cannot say different things — and the heading is *not*
+   * repeated inside the step, which is why the status's `description` is not
+   * what is rendered here.
+   */
+  readonly verdict: VerdictRow;
   readonly needsYou?: string | undefined;
   /** The note a round that could not be established carries; see `shared/review-round.ts`. */
   readonly roundNote?: string | undefined;
@@ -252,7 +312,7 @@ export const renderReviewSummary = (parts: {
   readonly summary: string;
 }): string =>
   [
-    parts.verdict,
+    `### ${parts.verdict.heading}\n\n${parts.verdict.nextStep}`,
     parts.needsYou,
     parts.roundNote,
     renderFixBeforeMerge(parts.fixBeforeMerge),
@@ -270,26 +330,34 @@ export const renderReviewSummary = (parts: {
  * are red: red checks with findings have an explanation and something for a fix
  * round to aim at. Red or unreadable checks with **nothing** behind them is the
  * case with no finding to act on at all, and it is precisely the one a
- * derivation keyed only on findings would call ready to merge.
+ * derivation keyed only on findings would recommend approving.
  */
 export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): VerdictRow => {
-  if (output.needsYou !== undefined) return VERDICTS["needs you"];
+  if (output.needsYou !== undefined) return VERDICTS["needs a closer look"];
   if (countFixBeforeMerge(output) > 0) {
-    // **A round-2 review can never say "ready after a fix"** (#96, decision 5),
+    // **A round-2 review can never produce the round-1 row** (#96, decision 5),
     // and it is enforced here rather than asked of the prompt. The fix round
     // has already run and already pushed; findings that survived it are
     // findings a second one has no more reason to settle than the first, and
     // the loop's one bound is that a fix cannot ask for another fix. A prompt
     // line would leave that bound to a model's judgement about its own output.
     //
-    // It costs a true "ready after a fix" on the round where a fix broke
-    // something new and obvious, which reads as a human being asked to look at
-    // a PR they did not have to. That is the direction this is meant to fail
-    // in: the alternative is a cycle with no gate in it.
-    return inputs.round === 2 ? VERDICTS["needs you"] : VERDICTS["ready after a fix"];
+    // The two rows share a heading and differ in the step, which is where the
+    // bound lives: the round-1 line promises an automatic re-review, and the
+    // round-2 line asks the maintainer to read the review and reply first. The
+    // key differs too, so the automatic fix PRD #101 describes can fire on the
+    // round-1 case and on nothing else.
+    //
+    // It costs a true round-1 answer on the round where a fix broke something
+    // new and obvious, which reads as a human being asked to look at a PR they
+    // did not have to. That is the direction this is meant to fail in: the
+    // alternative is a cycle with no gate in it.
+    return inputs.round === 2
+      ? VERDICTS["changes recommended after a fix round"]
+      : VERDICTS["changes recommended"];
   }
-  if (inputs.ci !== "green") return VERDICTS["needs you"];
-  return VERDICTS["ready to merge"];
+  if (inputs.ci !== "green") return VERDICTS["needs a closer look"];
+  return VERDICTS["approval recommended"];
 };
 
 const positiveInt = (value: unknown, label: string): number => {

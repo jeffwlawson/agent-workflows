@@ -25,11 +25,11 @@ sub-issue per run onto one branch, and re-adds its own label to advance.
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
 first row. A run that pushed asks for the review of what it pushed, so the round it was given
 closes without a human labelling again. That is one hop and cannot cycle: review adds no trigger
-label of its own. The review a **fix** asks for is a **second round**, which is barred from
-answering "ready after a fix" and so cannot ask for another fix (`docs/parity.md` §10); the review
-a **conflict resolution** asks for is a full round 1, because round 2 needs a non-merge loop commit
-since the verdict and a resolution leaves only a merge. A fix run that pushed nothing asks for
-nothing.
+label of its own. The review a **fix** asks for is a **second round**, which is barred from the
+round-1 *Changes recommended* — the line that promises an automatic re-review — and so cannot ask
+for another fix round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a
+full round 1, because round 2 needs a non-merge loop commit since the verdict and a resolution
+leaves only a merge. A fix run that pushed nothing asks for nothing.
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a

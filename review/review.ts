@@ -60,7 +60,7 @@ const readCiStatus = (): string => {
  * agent, and a derivation that parsed it would be a second description of a
  * format written two steps away. Anything this cannot read is `unknown`, which
  * the derivation treats as "not green" — a review that could not see the checks
- * is not one that can say a pull request is ready to merge.
+ * is not one that can recommend approving a pull request.
  */
 const readCiResult = (): CiResult => {
   const file = process.env["CI_RESULT_FILE"];
@@ -146,9 +146,9 @@ try {
   const followUpsBlock = renderFollowUpsBlock(followUps, droppedFollowUps);
 
   // The verdict, derived from the review and the checks rather than written by
-  // the agent (#96). Its next-step line opens the summary, so the outcome is
-  // the first thing a reader sees and the same sentence the commit status
-  // carries — one statement in two places, not two that can disagree.
+  // the agent (#96). Its heading and next-step line open the summary, so the
+  // outcome is the first thing a reader sees and the same words the commit
+  // status carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
   const verdict = deriveVerdict(result.output, { ci, round: round.round });
   // And a round nothing could establish says so in the body as well as in the
@@ -160,7 +160,7 @@ try {
   // it is the part of the review a human acts on, and this file is a script
   // with no test around it (#105).
   const summary = renderReviewSummary({
-    verdict: verdict.description,
+    verdict,
     needsYou: result.output.needsYou,
     roundNote: unreadableRoundNote(round),
     fixBeforeMerge: result.output.fixBeforeMerge,
@@ -192,6 +192,10 @@ try {
   // come from is tested here rather than restated in YAML. The only copy of the
   // context that is *not* read from here is the one the failure arm posts,
   // which by definition runs on a review that wrote no file.
+  //
+  // `verdict` is the row's key rather than its heading, because the round-1 and
+  // round-2 rows share a heading and a reader of this file has to tell them
+  // apart — PRD #101's automatic fix may fire on the round-1 case and no other.
   writeJson("verdict.json", {
     context: VERDICT_CONTEXT,
     verdict: verdict.verdict,

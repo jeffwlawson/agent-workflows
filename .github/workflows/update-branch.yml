@@ -302,7 +302,7 @@ jobs:
       # selects on, because this writes what that reads. The **context**, and
       # the **creator**: a status is a thing any token holding `statuses: write`
       # can post under any context it likes, so without the second a refresh
-      # would launder an outside integration's "ready to merge" on to a commit.
+      # would launder an outside integration's approval on to a commit.
       # The creator narrows it to *a workflow in this repository* and no
       # further — `github-actions[bot]` is the account every workflow here posts
       # as, not only the loop's — which is the bound the round rule is safe
@@ -389,8 +389,9 @@ jobs:
       # needs a non-merge loop commit since the last verdict, and a resolution
       # leaves only the merge (#105). Which is the reading that suits it: the
       # earlier round's findings have not been attempted, so a verification pass
-      # over them would escalate them to "needs you" on the strength of the base
-      # branch having moved.
+      # over them would answer with the round-2 line — "a fix round did not
+      # settle these" — on the strength of the base branch having moved, about
+      # findings no fix round ever saw.
       #
       # So this is the other half of the step above, not an addition to it: a
       # clean merge carries the old verdict forward because it is still true,

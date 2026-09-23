@@ -25,8 +25,8 @@ import { VERDICT_CONTEXT } from "../shared/review-output.js";
  *
  * The consequence of getting it wrong is asymmetric, and these tests are
  * written around that asymmetry. Reading a first round as a second makes the
- * review stricter — a fix-before-merge finding becomes "needs you" — and costs
- * a human a look they did not owe. Reading a second as a first lets a fix round
+ * review stricter — a fix-before-merge finding is answered "a fix round did not
+ * settle these" — and costs a human a look they did not owe. Reading a second as a first lets a fix round
  * that did not work ask for another one, which is the cycle the loop is built
  * not to have. So every case that cannot be established lands on 2.
  */
@@ -187,7 +187,7 @@ describe("detectReviewRound", () => {
    * `error` is the review saying *there is no verdict* — the run died before it
    * reviewed anything. Counting it would make the retry after every failed run
    * a verification pass over findings that were never posted, and a round-2 run
-   * with findings can only say "needs you".
+   * with findings can only answer "a fix round did not settle these".
    */
   it("ignores an error status, which is a run that produced no verdict", () => {
     ghAnswers({
@@ -233,9 +233,9 @@ describe("detectReviewRound", () => {
   /**
    * A conflict resolution is a **merge** commit under the loop's own identity,
    * so without the third condition it would make the next review a round 2 —
-   * and a pull request sitting at "ready after a fix" that then hit conflicts
-   * would have its never-attempted findings escalated to "needs you" by nothing
-   * more than the base branch moving (#105).
+   * and a pull request sitting at *changes recommended* that then hit conflicts
+   * would have its never-attempted findings answered with the round-2 line by
+   * nothing more than the base branch moving (#105).
    */
   it("is round 1 when the only loop commit since the verdict is a merge", () => {
     ghAnswers({

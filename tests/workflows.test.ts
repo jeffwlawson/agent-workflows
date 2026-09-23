@@ -964,7 +964,7 @@ describe("agent-review marks a PR whose review recorded follow-ups", () => {
  *
  * A commit status rather than a comment or a label, for one property neither of
  * those has — it is attached to a **commit**. A new commit carries no verdict
- * until one is posted for it, so a stale "ready to merge" cannot survive a
+ * until one is posted for it, so a stale approval cannot survive a
  * push, and the status history is the only record of what past rounds said.
  *
  * Nothing here has a runtime symptom when it breaks. A status posted under the
@@ -1052,8 +1052,8 @@ describe("agent-review posts its verdict as a commit status", () => {
   /**
    * A failed run posts `error` rather than nothing. Nothing is the dangerous
    * answer: the previous verdict on this commit stays the newest, so a run that
-   * died half way reads from the outside exactly like the review that said
-   * "ready to merge".
+   * died half way reads from the outside exactly like the review that
+   * recommended approval.
    */
   it("posts error when the run failed", () => {
     const step = errorStep();
@@ -1098,8 +1098,8 @@ describe("agent-review posts its verdict as a commit status", () => {
   /**
    * Check runs are an Actions concept, and CI that reports through the
    * commit-status API has none — so a word derived from check runs alone calls
-   * that commit green and lets the review answer "ready to merge" over a red
-   * one (#105). Both surfaces, and the verdict's **own** context skipped: it is
+   * that commit green and lets the review recommend approving a red one
+   * (#105). Both surfaces, and the verdict's **own** context skipped: it is
    * the answer this job is about to post, so counting it would feed each
    * round's verdict into the next round's evidence.
    */
@@ -1145,7 +1145,8 @@ describe("agent-review posts its verdict as a commit status", () => {
  * This is the `agent:fix` → `agent:review` leg that `docs/parity.md` §10
  * already calls safe, and the property it rests on is unchanged — review adds
  * no trigger label of its own, so there is no cycle to close. What is new is
- * the bound underneath it: a round-2 review cannot answer "ready after a fix"
+ * the bound underneath it: a round-2 review cannot answer with the round-1
+ * *Changes recommended* line, the one that promises an automatic re-review
  * (`deriveVerdict`), so this leg cannot be walked a second time off one human
  * label.
  *
@@ -1320,7 +1321,7 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
   /**
    * And copies only the loop's own. A status is a thing any token holding
    * `statuses: write` can post under any context it likes, so the creator is
-   * what stops a refresh laundering somebody else's "ready to merge" on to a
+   * what stops a refresh laundering somebody else's approval on to a
    * commit — the same two conditions `verdictOn` selects on, because this writes
    * what that reads.
    */
@@ -3634,7 +3635,11 @@ describe("the adoption doc says what to do with each verdict", () => {
     expect(section()).toContain(`\`${VERDICT_CONTEXT}\``);
 
     for (const row of Object.values(VERDICTS)) {
-      expect(section()).toContain(row.verdict);
+      // The heading rather than the key: the heading is what an adopter sees on
+      // their own pull requests, and the key is the machine-readable half only
+      // `verdict.json` carries. Four rows share three headings, and the
+      // descriptions below are what tell the two that share one apart here.
+      expect(section()).toContain(row.heading);
       // The description verbatim, because it is what GitHub shows beside the
       // status: a paraphrase here is an adopter told to do something other
       // than what their own pull requests will tell them.

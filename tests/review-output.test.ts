@@ -340,8 +340,8 @@ describe("parseFollowUpsBlock", () => {
  * Not the inline comments, which is the shape this could have taken and the
  * one that breaks: `filterInlineComments` drops an anchor that is off-diff, so
  * a fix-before-merge finding whose line the model invented would be dropped
- * from the count as well as from the review — turning "ready after a fix" into
- * "ready to merge" on exactly the reviews that found something.
+ * from the count as well as from the review — turning *changes recommended*
+ * into *approval recommended* on exactly the reviews that found something.
  */
 describe("reviewOutputSchema: the two finding types", () => {
   it("defaults fixBeforeMerge to empty, which is the ordinary review", () => {
@@ -388,10 +388,13 @@ describe("reviewOutputSchema: the two finding types", () => {
 });
 
 /**
- * The three verdicts, derived rather than written (#96 decision 2). The order
- * of the arms is the whole of it: each one is reachable, and a rearrangement
- * that made an earlier arm swallow a later one would still pass a test that
- * only checked the outcomes it happens to produce.
+ * The verdicts, derived rather than written (#96 decision 2), and named after
+ * GitHub's own Copilot code review headings so that a reader who has met one of
+ * those already knows what ours mean.
+ *
+ * The order of the arms is the whole of it: each one is reachable, and a
+ * rearrangement that made an earlier arm swallow a later one would still pass a
+ * test that only checked the outcomes it happens to produce.
  */
 describe("deriveVerdict", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
@@ -402,39 +405,41 @@ describe("deriveVerdict", () => {
     ...over,
   });
 
-  it("is ready to merge when nothing is wrong and the checks are green", () => {
-    expect(deriveVerdict(output(), { ci: "green", round: 1 }).verdict).toBe("ready to merge");
+  it("recommends approval when nothing is wrong and the checks are green", () => {
+    expect(deriveVerdict(output(), { ci: "green", round: 1 }).verdict).toBe("approval recommended");
   });
 
-  it("is ready after a fix when the findings are the only thing wrong", () => {
+  it("recommends changes when the findings are the only thing wrong", () => {
     expect(
       deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
         ci: "green",
         round: 1,
       }).verdict,
-    ).toBe("ready after a fix");
+    ).toBe("changes recommended");
   });
 
-  it("is needs you when the agent says a fix round cannot settle it", () => {
+  it("needs a closer look when the agent says a fix round cannot settle it", () => {
     expect(
       deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), {
         ci: "green",
         round: 1,
       }).verdict,
-    ).toBe("needs you");
+    ).toBe("needs a closer look");
   });
 
   /**
    * The arm with no finding behind it: the checks are red and the review found
    * nothing to fix, so nobody has said what a fix round would even change.
    * That is a human's problem by construction, and it is the case a derivation
-   * keyed only on findings would call *ready to merge*.
+   * keyed only on findings would recommend approving.
    */
   it.each([
     ["red", "red"],
     ["unreadable", "unknown"],
-  ])("is needs you when the checks are %s and the review found nothing", (_case, ci) => {
-    expect(deriveVerdict(output(), { ci: ci as CiResult, round: 1 }).verdict).toBe("needs you");
+  ])("needs a closer look when the checks are %s and the review found nothing", (_case, ci) => {
+    expect(deriveVerdict(output(), { ci: ci as CiResult, round: 1 }).verdict).toBe(
+      "needs a closer look",
+    );
   });
 
   /**
@@ -442,20 +447,20 @@ describe("deriveVerdict", () => {
    * explanation: the fix round has something to aim at, and the re-review is
    * what re-reads the checks.
    */
-  it("is ready after a fix when red checks come with findings that explain them", () => {
+  it("recommends changes when red checks come with findings that explain them", () => {
     expect(
       deriveVerdict(output({ fixBeforeMerge: ["the new test asserts the old behaviour"] }), {
         ci: "red",
         round: 1,
       }).verdict,
-    ).toBe("ready after a fix");
+    ).toBe("changes recommended");
   });
 
   /**
    * The list is a restatement of findings the inline comments already carry, so
    * either of the two can be the one the model forgot — and only one of the two
    * mistakes has a consequence. A finding labelled **Fix before merge.** in a
-   * comment but left off the list derives *ready to merge*, which puts the
+   * comment but left off the list derives *approval recommended*, which puts the
    * unsafe answer on the one signal meant to be acted on without reading
    * (#105). Counted as the larger of the two, so a review that did as it was
    * asked is not double-counted.
@@ -465,8 +470,10 @@ describe("deriveVerdict", () => {
       inlineComments: [comment({ body: "**Fix before merge.** the guard runs after the return" })],
     });
 
-    expect(deriveVerdict(labelled, { ci: "green", round: 1 }).verdict).toBe("ready after a fix");
-    expect(deriveVerdict(labelled, { ci: "green", round: 2 }).verdict).toBe("needs you");
+    expect(deriveVerdict(labelled, { ci: "green", round: 1 }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(labelled, { ci: "green", round: 2 }).verdict).toBe(
+      "changes recommended after a fix round",
+    );
   });
 
   /**
@@ -483,7 +490,7 @@ describe("deriveVerdict", () => {
         deriveVerdict(output({ inlineComments: [comment({ body })] }), { ci: "green", round: 1 })
           .verdict,
         body,
-      ).toBe("ready after a fix");
+      ).toBe("changes recommended");
     }
   });
 
@@ -493,7 +500,7 @@ describe("deriveVerdict", () => {
       inlineComments: [comment({ body: "Worth a look before merge — fix before merge is the label." })],
     });
 
-    expect(deriveVerdict(chatty, { ci: "green", round: 1 }).verdict).toBe("ready to merge");
+    expect(deriveVerdict(chatty, { ci: "green", round: 1 }).verdict).toBe("approval recommended");
   });
 
   it("counts one finding once when it is recorded in both places", () => {
@@ -504,43 +511,55 @@ describe("deriveVerdict", () => {
 
     // The larger of the two, not the sum — and either way a fix is a fix, so
     // what this pins is the arithmetic rather than the verdict.
-    expect(deriveVerdict(both, { ci: "green", round: 1 }).verdict).toBe("ready after a fix");
+    expect(deriveVerdict(both, { ci: "green", round: 1 }).verdict).toBe("changes recommended");
     expect(countFixBeforeMerge(both)).toBe(1);
   });
 
-  it("prefers needs you over a fix-before-merge finding", () => {
+  it("prefers a closer look over a fix-before-merge finding", () => {
     expect(
       deriveVerdict(output({ fixBeforeMerge: ["a"], needsYou: "the wrong thing was built" }), {
         ci: "green",
         round: 1,
       }).verdict,
-    ).toBe("needs you");
+    ).toBe("needs a closer look");
   });
 
   /**
-   * **A round-2 review can never say "ready after a fix"** (#96, decision 5),
+   * **A round-2 review can never produce the round-1 row** (#96, decision 5),
    * and this is where that is enforced rather than in the prompt. The bound it
    * holds is the loop's only one: `agent:fix` now asks for its own re-review,
-   * so a second round that could answer "add agent:fix" would be a cycle with
-   * no human in it. A prompt line would leave that to a model's judgement about
-   * its own output.
+   * so a second round that could promise another automatic one would be a cycle
+   * with no human in it. A prompt line would leave that to a model's judgement
+   * about its own output.
+   *
+   * The two rows share a heading, so what is pinned here is the *line* and the
+   * key — which is the whole of the difference a reader and PRD #101's
+   * automatic fix each act on.
    */
-  it("escalates a second round's findings to needs you rather than another fix", () => {
-    expect(
-      deriveVerdict(output({ fixBeforeMerge: ["the guard still runs after the return"] }), {
-        ci: "green",
-        round: 2,
-      }).verdict,
-    ).toBe("needs you");
+  it("gives a second round's findings the round-2 line, never the round-1 one", () => {
+    const second = deriveVerdict(output({ fixBeforeMerge: ["the guard still runs after the return"] }), {
+      ci: "green",
+      round: 2,
+    });
+
+    expect(second.verdict).toBe("changes recommended after a fix round");
+    expect(second.heading).toBe(VERDICTS["changes recommended"].heading);
+    expect(second.nextStep).toBe(
+      "A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
+    );
+    // Never the round-1 step, which promises an automatic re-review the loop
+    // will not start: this round is the one that was supposed to settle it.
+    expect(second.nextStep).not.toBe(VERDICTS["changes recommended"].nextStep);
+    expect(second.description).not.toContain("automatically");
   });
 
   /**
-   * And it is the *findings* that escalate, not the round. A fix round that
-   * worked is a pull request that is ready, which is the outcome the whole
+   * And it is the *findings* that change the line, not the round. A fix round
+   * that worked is a pull request that is ready, which is the outcome the whole
    * round exists to reach.
    */
-  it("still reaches ready to merge in a second round that found nothing", () => {
-    expect(deriveVerdict(output(), { ci: "green", round: 2 }).verdict).toBe("ready to merge");
+  it("still recommends approval in a second round that found nothing", () => {
+    expect(deriveVerdict(output(), { ci: "green", round: 2 }).verdict).toBe("approval recommended");
   });
 });
 
@@ -558,24 +577,61 @@ describe("the verdict's commit status", () => {
 
   it.each([
     [
-      "ready to merge",
+      "approval recommended",
+      "🟢 Approval recommended",
       "success",
-      "Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
+      "🟢 Approval recommended. Ready to merge. Nothing left to fix; any follow-ups are filed as issues when you merge.",
     ],
     [
-      "ready after a fix",
+      "changes recommended",
+      "🟡 Changes recommended",
       "failure",
-      "Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
+      "🟡 Changes recommended. Add agent:fix. The fixes are clear, so no need to read them first. A re-review runs automatically.",
     ],
     [
-      "needs you",
+      "changes recommended after a fix round",
+      "🟡 Changes recommended",
       "failure",
-      "Read the review, then reply with your decision and add agent:fix. If the issue itself was wrong, close the PR instead.",
+      "🟡 Changes recommended. A fix round did not settle these. Read the review, then reply with your decision and add agent:fix.",
     ],
-  ] as const)("states %s's next step, and the state that shows it", (verdict, state, next) => {
-    expect(VERDICTS[verdict].state).toBe(state);
-    expect(VERDICTS[verdict].description).toBe(next);
-    expect(VERDICTS[verdict].verdict).toBe(verdict);
+    [
+      "needs a closer look",
+      "🔵 Needs a closer look",
+      "failure",
+      "🔵 Needs a closer look. A fix round cannot settle this. Read the review, then reply with your decision or close the PR.",
+    ],
+  ] as const)(
+    "states %s under its heading, with the state that shows it",
+    (verdict, heading, state, description) => {
+      expect(VERDICTS[verdict].heading).toBe(heading);
+      expect(VERDICTS[verdict].state).toBe(state);
+      expect(VERDICTS[verdict].description).toBe(description);
+      expect(VERDICTS[verdict].verdict).toBe(verdict);
+    },
+  );
+
+  /**
+   * Three headings over four rows, and the two that share one are the round-1
+   * and round-2 *changes recommended* cases. The heading is the assessment and
+   * the step is what differs, so a reader meets three answers and a machine
+   * meets four.
+   */
+  it("offers the three headings Copilot code review uses, and no fourth", () => {
+    expect(new Set(Object.values(VERDICTS).map((row) => row.heading))).toEqual(
+      new Set(["🟢 Approval recommended", "🟡 Changes recommended", "🔵 Needs a closer look"]),
+    );
+  });
+
+  /**
+   * The status line is the heading and the step, and the body is the heading
+   * over the step — two renderings of one row. Written out rather than composed
+   * so the table reads as what a maintainer sees, which leaves exactly one way
+   * for them to drift, and this is it.
+   */
+  it("says the same thing on the status as the body says in two parts", () => {
+    for (const row of Object.values(VERDICTS)) {
+      expect(row.description, row.verdict).toBe(`${row.heading}. ${row.nextStep}`);
+    }
   });
 
   /**
@@ -605,15 +661,22 @@ describe("the verdict's commit status", () => {
  */
 describe("the posted review body", () => {
   const parts = {
-    verdict: "Add agent:fix. The fixes are clear, so no need to read them first.",
+    verdict: VERDICTS["changes recommended"],
     fixBeforeMerge: [] as readonly string[],
     summary: "The change does what the issue asked.",
   };
 
-  it("opens with the verdict and closes with the summary", () => {
+  /**
+   * The heading as a heading, so the assessment is what a reader's eye lands on
+   * — and the step under it **without the heading repeated**, which is what
+   * makes this a rendering of the row rather than the status line pasted in.
+   */
+  it("opens with the verdict as a heading over its next step", () => {
     const body = renderReviewSummary(parts);
 
-    expect(body.startsWith(parts.verdict)).toBe(true);
+    expect(body.startsWith("### 🟡 Changes recommended\n\n")).toBe(true);
+    expect(body).toContain(parts.verdict.nextStep);
+    expect(body).not.toContain(parts.verdict.description);
     expect(body.endsWith(parts.summary)).toBe(true);
   });
 
@@ -624,7 +687,9 @@ describe("the posted review body", () => {
     // Above the summary, because it is why the reader is being asked to read
     // one: a reason found underneath the evidence is a reason they reach after
     // deciding they had to.
-    expect(body.indexOf("the issue asked for the opposite")).toBeLessThan(body.indexOf(parts.summary));
+    expect(body.indexOf("the issue asked for the opposite")).toBeLessThan(
+      body.indexOf(parts.summary),
+    );
   });
 
   it("renders each finding as a checklist entry, open rather than collapsed", () => {

@@ -108,16 +108,16 @@ const readCommits = (repo: string, prNumber: string): readonly Commit[] | undefi
  * repository* and no further, because `github-actions[bot]` is the account
  * every workflow here posts as, not only the loop's. That is enough for the
  * round question and not enough for a merge gate: a forged verdict can only
- * promote a pull request to a second round, and a second round cannot produce
- * "ready after a fix", so it is a way to make a review stricter rather than a
- * way to make it pass. The merge-gate half of that caveat is `docs/ADOPTING.md`
+ * promote a pull request to a second round, and a second round cannot promise
+ * an automatic re-review, so it is a way to make a review stricter rather than
+ * a way to make it pass. The merge-gate half of that caveat is `docs/ADOPTING.md`
  * §3b's.
  *
  * **Not `error`**, because that state is the review saying *there is no
  * verdict*: the run died before it reviewed anything. Counting it would make
  * every retry after a failed run a verification pass over findings that were
- * never posted — which can only end in "needs you", on a pull request nobody
- * has reviewed yet.
+ * never posted — which can only end in "a fix round did not settle these", on a
+ * pull request nobody has reviewed yet.
  *
  * Paginated, and flattened the way `readCommits` flattens its pages. The page
  * is thirty statuses and this endpoint returns one entry per *post* rather than
@@ -167,8 +167,8 @@ const verdictOn = (repo: string, sha: string): boolean | undefined => {
  * The third condition is what keeps a **conflict resolution** out (#105). An
  * `update-branch` run commits under the same identity as a fix run, so without
  * it the review that run asks for would be a round 2 — and a pull request at
- * "ready after a fix" that then hit conflicts would have its never-attempted
- * findings escalated to "needs you" by nothing but a merge. `update-branch`
+ * *changes recommended* that then hit conflicts would have its never-attempted
+ * findings answered with the round-2 line, by nothing but a merge. `update-branch`
  * writes merge commits and a fix run writes ordinary ones, and the commits API
  * gives `parents` for each, so "has anything been *attempted* since the
  * verdict" is answerable rather than assumed. A conflict-only update is a full

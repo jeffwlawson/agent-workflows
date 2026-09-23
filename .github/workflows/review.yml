@@ -503,15 +503,14 @@ jobs:
           # repository whose CI reports through the commit-status API — most
           # things outside Actions, and every `create-status` integration — has
           # no check run to read at all, so a derivation over check runs alone
-          # calls that commit green and can answer "ready to merge" over a red
-          # one.
+          # calls that commit green and can recommend approving a red one.
           #
           # `agent-review` is excluded by context, and that exclusion is the
           # whole reason this can be read at all: it is the context this very
           # job posts the verdict under, so counting it would make a `failure`
           # verdict on the previous round part of the evidence for the next one
-          # — and every "ready after a fix" would derive "needs you" one round
-          # later, by reading its own answer back.
+          # — and every "changes recommended" would derive "needs a closer look"
+          # one round later, by reading its own answer back.
           #
           # `pending` counts with the failures for the same reason a queued
           # check run does: a status that has not passed has not passed, and
@@ -806,7 +805,7 @@ jobs:
       # And a run that failed says so in the same place, rather than leaving the
       # last verdict standing. Silence is the dangerous answer here: a status is
       # per commit and per context, so a review that died half way reads from
-      # the outside exactly like one that said "ready to merge" — right up until
+      # the outside exactly like one that recommended approval — right up until
       # someone merges on it.
       #
       # Last of the failure arms, so every step above it is covered — including

@@ -32,7 +32,7 @@ on:
 
 jobs:
   follow-ups:
-    uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.3.0
+    uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.3.1
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs — and
     # `issues: write` is the one this workflow exists for. The agent that raised

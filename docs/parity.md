@@ -864,6 +864,14 @@ expensive to rediscover.
   re-review with nothing pushed since the last verdict (`describesTheChange`). Describing the
   change again, at the top, to a reader handed that description last round is the body spending its
   opening on something already read.
+- **The latest agent review is read from the end of the connection, never the front of the first
+  page.** GitHub returns a pull request's reviews oldest-first, so `reviews(first:50)` and a `.pop()`
+  is "the newest of the fifty oldest" — correct until the fifty-first review and wrong for ever
+  after (#125). The findings record is always read out of the latest review body, so past that point
+  every later round is handed a record from long ago: findings the rounds since closed come back by
+  id as still open, with nothing on the pull request saying why. `reviews(last:50)` is the same one
+  page taken from the end, and the fixture that holds it honours the pagination argument — one that
+  returned every node whatever was asked would pass on the broken query too.
 - **A label name renders as code in the body and as plain text in the status, from one sentence.**
   `VERDICTS` holds the plain wording because a commit status description renders no Markdown —
   a backtick shows up in it literally — and the body decorates it on the way out. Two spellings in

@@ -1368,6 +1368,48 @@ describe("the findings an earlier review left open", () => {
     expect(feedback.agentThreads).toEqual([]);
     expect(feedback.latestAgentReviewBody).toBe("");
   });
+
+  /**
+   * **Past fifty reviews, "latest" was the fiftieth oldest** (#125; #127,
+   * decision 4).
+   *
+   * GitHub returns a review connection oldest-first, so `reviews(first:50)`
+   * hands back the fifty *oldest* and the last node of that page is the newest
+   * of those — the newest review only while a pull request has had fewer than
+   * fifty. Past that the findings record read into every later round is a
+   * body from long ago: findings the rounds since verified and closed come
+   * back by id as still open, with nothing on the pull request to say why, and
+   * the round that closed them cannot close them again because it already did.
+   *
+   * The stand-in below **honours the pagination argument**, which is the whole
+   * of what makes this a test rather than a restatement: a fixture that
+   * returned all fifty-one nodes whatever was asked would pass on the broken
+   * query too, since the reader takes the last node either way.
+   */
+  it("reads the newest review on a pull request with more than fifty of them", () => {
+    // Fifty human reviews, then the loop's — so the newest page holds the one
+    // that matters and the oldest page holds none of it.
+    const nodes = [
+      ...Array.from({ length: 50 }, (_unused, n) => ({
+        body: `human review ${n}`,
+        state: "COMMENTED",
+        ...MAINTAINER,
+      })),
+      { body: "the current record", state: "COMMENTED", ...AGENT },
+    ];
+
+    spawned.mockImplementation(((file: string, args: readonly string[]) => {
+      if (file === "git") return "";
+      const query = args[args.indexOf("-f") + 1] ?? "";
+      const page = /reviews\((first|last):(\d+)\)/.exec(query);
+      if (page === null) throw new Error("the query asks for no page of reviews");
+      const size = Number(page[2]);
+      const paged = page[1] === "first" ? nodes.slice(0, size) : nodes.slice(-size);
+      return response(pullRequest({ reviews: { nodes: paged } }));
+    }) as never);
+
+    expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("the current record");
+  });
 });
 
 /**

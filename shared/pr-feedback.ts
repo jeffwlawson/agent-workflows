@@ -137,6 +137,17 @@ export interface PullRequestFeedback {
  * `SURFACE_OF_SELECTION` in the same change — without one, an error on it is
  * unplaceable, which is read as trust-bearing and makes the run refuse.
  *
+ * `reviews` is the one selection taken from the **end** of its connection
+ * (#127, decision 4; #125). GitHub returns reviews oldest-first, so `first:50`
+ * on a pull request with more than fifty of them returns the fifty *oldest* —
+ * and `latestAgentReviewBody` below, reading the last node of that page, hands
+ * every later round the findings record of a review from long ago. Past the
+ * fiftieth review that is not a stale link but a resurrection: findings later
+ * rounds closed come back as still open, by id, with nothing on the pull
+ * request to say why. `last:` is the cheap half of decision 4 — the same one
+ * page, taken from the end — and it improves the rendered summaries for the
+ * same reason, since the newest fifty are the ones a reviewer needs.
+ *
  * That refusal is loud about an omission and silent about a **rename**: alias a
  * selection here, or follow a field of GitHub's that moves, and the query keeps
  * working while every error under it arrives unplaceable — a run refused on the
@@ -150,7 +161,7 @@ query($owner:String!,$repo:String!,$number:Int!) {
   repository(owner:$owner,name:$repo) {
     pullRequest(number:$number) {
       comments(first:100) { nodes { body author { login } authorAssociation } }
-      reviews(first:50) { nodes { body state author { login } authorAssociation } }
+      reviews(last:50) { nodes { body state author { login } authorAssociation } }
       reviewThreads(first:100) {
         nodes {
           id
@@ -1017,6 +1028,11 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
   // loop write it", and the wider gate would admit a maintainer's own review,
   // whose body carries no finding ids and whose prose is not a record to verify
   // against.
+  //
+  // **The last node of the last page**, which is what `reviews(last:50)` in the
+  // query makes this: `.pop()` over a page taken from the *front* is the newest
+  // of the fifty oldest, which is only the newest review while a pull request
+  // has had fewer than fifty (#125).
   const latestAgentReviewBody =
     present(pr?.reviews?.nodes)
       .filter((review) => isWorkflowBot(review.author?.login ?? undefined))

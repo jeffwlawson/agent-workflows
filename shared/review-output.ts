@@ -751,11 +751,17 @@ const findingsLine = (record: ReviewRecord): string => {
  * silence #110 removed, one door along.
  *
  * Directly under the count, because it is what the count does not say.
+ *
+ * It states where the finding could not go, and **not** why: "nothing this
+ * change causes it" is the demotion's inference, and it is false for a path
+ * error (`pathErrors`), whose `needsYou` warning sits two lines above this
+ * one. A line that asserted it would contradict that warning for the one case
+ * the warning exists for.
  */
 const movedSentence = (moved: number): string | undefined =>
   moved === 0
     ? undefined
-    : `_${moved} ${plural(moved, "finding was", "findings were")} moved to follow-ups: ${plural(moved, "its anchor is", "their anchors are")} in no file this pull request changes, so nothing this pull request changes causes ${plural(moved, "it", "them")}._`;
+    : `_${moved} ${plural(moved, "finding was", "findings were")} moved to follow-ups: ${plural(moved, "its anchor is", "their anchors are")} in no file this pull request changes, so there was nowhere in the diff to open a thread on ${plural(moved, "it", "them")}._`;
 
 /**
  * A label name the body mentions, rendered as code.

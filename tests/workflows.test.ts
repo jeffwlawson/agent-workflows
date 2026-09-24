@@ -1630,6 +1630,25 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
   });
 
   /**
+   * And it hedges in both directions. The arm is reached because the `GET`
+   * failed, so "there is no verdict" is not the only thing it cannot assert —
+   * neither is "a verdict stands on ${OLD_SHA}", which is the same collapse
+   * the other way round. A pull request nobody has reviewed yet "refreshes
+   * like any other", and told a verdict stands where none does, a reader reads
+   * the remedy as an offer rather than the fix.
+   */
+  it("does not assert a verdict on the commit it could not read", () => {
+    const run = copy()?.run ?? "";
+    const read = run.slice(0, run.indexOf('if [ -z "$verdict" ]'));
+    const warning = read.slice(read.indexOf("::warning::"));
+
+    expect(warning).toContain("could not tell whether there was one");
+    // The remedy is what the reader does, not an alternative to a verdict the
+    // step has just said it cannot see.
+    expect(warning).not.toMatch(/if you would rather/i);
+  });
+
+  /**
    * And the same on the write. This copies `.description` verbatim, so a
    * description GitHub refuses is refused here too — the 422 that lost every
    * v0.3.0 verdict (#121) would have lost every carried one as well. A warning

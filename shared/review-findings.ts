@@ -651,15 +651,19 @@ const spellingsOf = (path: string): string[] => {
  * review says why a human has to look (`pathErrorNote`), which puts the verdict
  * on *needs a closer look*.
  *
- * `repoFiles` is every file at the reviewed head. A file the change deleted is
- * not in it, and needs no exception: it is in the diff, so a finding about it
- * is never unanchored.
+ * `isFile` answers for one path at the reviewed head. A question per path
+ * rather than a list of the tree, because a repository-wide list is unbounded
+ * output — past `execSync`'s 1 MiB buffer on a large repository, which killed
+ * the review after the agent run was paid for — while the paths asked about
+ * are only the unanchored ones, usually none. A file the change deleted is
+ * not at the head, and needs no exception: it is in the diff, so a finding
+ * about it is never unanchored.
  */
 export const pathErrors = (
   unanchored: readonly Finding[],
-  repoFiles: ReadonlySet<string>,
+  isFile: (path: string) => boolean,
 ): Finding[] =>
-  unanchored.filter((finding) => !spellingsOf(finding.path).some((candidate) => repoFiles.has(candidate)));
+  unanchored.filter((finding) => !spellingsOf(finding.path).some((candidate) => isFile(candidate)));
 
 /**
  * What the review says about `pathErrors`, as the reason it needs a human —

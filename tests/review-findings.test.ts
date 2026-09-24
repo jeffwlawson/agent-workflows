@@ -96,7 +96,8 @@ const unanchored = (findings: readonly Finding[]): Finding[] =>
  * file at all is a slip in the review, so it must not turn into a green verdict.
  */
 describe("pathErrors", () => {
-  const repo = new Set(["src/queue.ts", "src/other.ts", "b/queue.ts", "src/café.ts"]);
+  const files = new Set(["src/queue.ts", "src/other.ts", "b/queue.ts", "src/café.ts"]);
+  const repo = (path: string): boolean => files.has(path);
 
   it("passes over a real file the change did not touch — that one is a follow-up", () => {
     expect(pathErrors([finding({ path: "src/other.ts" })], repo)).toEqual([]);
@@ -109,6 +110,17 @@ describe("pathErrors", () => {
     ["a directory really called b", "b/queue.ts"],
   ])("recognises a real file under %s", (_case, path) => {
     expect(pathErrors([finding({ path })], repo)).toEqual([]);
+  });
+
+  /**
+   * Asked per path, and only of the unanchored ones — never the whole tree,
+   * whose listing is unbounded output on a large repository.
+   */
+  it("asks about nothing when every finding was placed", () => {
+    const asked: string[] = [];
+    pathErrors([], (path) => (asked.push(path), true));
+
+    expect(asked).toEqual([]);
   });
 
   it("reports a path that is no file in the repository", () => {

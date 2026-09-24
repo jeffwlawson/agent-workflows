@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
@@ -160,8 +161,7 @@ try {
   // blocker in a file the change did touch. Those still go to the follow-ups
   // with the rest — the record stays one set — but the review says a human has
   // to look, so the verdict cannot come out green over them (`pathErrors`).
-  const repoFiles = new Set(sh("git ls-tree -r -z --name-only HEAD").split("\0").filter(Boolean));
-  const pathErrorReason = pathErrorNote(pathErrors(unanchored, repoFiles));
+  const pathErrorReason = pathErrorNote(pathErrors(unanchored, isFileAtHead));
   const output =
     pathErrorReason === undefined
       ? result.output
@@ -345,4 +345,26 @@ try {
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * Whether `path` is a file at the reviewed head — one `git cat-file` per path
+ * asked about, which prints a single word rather than the tree, so no size of
+ * repository can overflow what is read back. Argv, not a shell string: the
+ * path is the model's, and a path may legally hold anything a shell parses.
+ * Anything git cannot answer — no such path, a directory, an unreadable
+ * object — is "not a file", which is the loud direction: it asks a human.
+ */
+function isFileAtHead(candidate: string): boolean {
+  if (candidate === "") return false;
+  try {
+    return (
+      execFileSync("git", ["cat-file", "-t", `HEAD:${candidate}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "blob"
+    );
+  } catch {
+    return false;
+  }
 }

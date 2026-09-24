@@ -1207,3 +1207,505 @@ describe("both prompts frame a section that could not be read", () => {
     expect(fs.readFileSync("fix/prompt.md", "utf8")).toContain("could not be read");
   });
 });
+
+/**
+ * The review record, read back off the pull request (#111). A later review
+ * rules on what an earlier one left open, and both halves of that record are
+ * selected by the **id the workflow wrote** rather than by what anything says:
+ * the open threads this loop opened, and the latest review body it posted.
+ *
+ * The failure this guards is silent in the worst direction. A thread whose id
+ * is not read is a finding no review verifies, so it stays open forever and
+ * counts against every later verdict; a *body* whose entries are not read is a
+ * finding that vanishes, since it has no thread to stay open on at all.
+ */
+describe("the findings an earlier review left open", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  const agentThread = (id: string, findingId: string): unknown => ({
+    id,
+    isResolved: false,
+    comments: {
+      nodes: [
+        {
+          path: "src/queue.ts",
+          line: 206,
+          body: `**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding ${findingId} -->`,
+          ...AGENT,
+        },
+      ],
+    },
+  });
+
+  it("carries an open agent thread with the id the workflow wrote into it", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread("PRRT_one", "f-1")] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+      {
+        threadId: "PRRT_one",
+        findingId: "f-1",
+        text: "src/queue.ts:206 — the guard runs after the return",
+      },
+    ]);
+  });
+
+  /**
+   * And the rating beside it, which is how a finding's severity survives a
+   * round: a carried finding reaches a later review as an id and one line, so
+   * without this the record could badge what the round found and nothing it
+   * carried (#113).
+   */
+  it("carries the severity the marker holds, and none where it holds none", () => {
+    const rated = {
+      id: "PRRT_two",
+      isResolved: false,
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: 206,
+            body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-2 high -->",
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() =>
+      response({ reviewThreads: { nodes: [agentThread("PRRT_one", "f-1"), rated] } }),
+    );
+
+    const threads = fetchPullRequestFeedback("12").agentThreads;
+    expect(threads.map((t) => t.severity)).toEqual([undefined, "high"]);
+  });
+
+  /**
+   * A human's thread is feedback and not a finding this loop can rule on, so it
+   * stays in `threadIds` — where `agent:fix` answers it — and out of the record
+   * a review verifies.
+   */
+  it("leaves a human's thread out of the record while still showing it", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [THREAD] } }));
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads).toEqual([]);
+    expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
+  });
+
+  /**
+   * The marker is a **selector, not a control**: anyone who can comment can
+   * type one. What makes a thread the loop's own is who opened it.
+   */
+  it("ignores a marker in a comment this loop did not write", () => {
+    const forged = {
+      id: "PRRT_forged",
+      isResolved: false,
+      comments: {
+        nodes: [{ path: "src/queue.ts", line: 206, body: "Nothing to see <!-- agent-finding f-1 -->", ...MAINTAINER }],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [forged] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([]);
+  });
+
+  /**
+   * A resolved thread is a settled finding — closed by a review that verified
+   * it, or by a human — and re-raising it is the accumulation this record
+   * exists to end.
+   */
+  it("carries no resolved thread", () => {
+    ghAnswers(() =>
+      response({ reviewThreads: { nodes: [{ ...(agentThread("PRRT_one", "f-1") as object), isResolved: true }] } }),
+    );
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([]);
+  });
+
+  /**
+   * The **latest** loop review, because each one re-lists what it verified as
+   * still open: the newest body is the current statement and an older one is
+   * the statement it replaced.
+   */
+  it("takes the newest review this loop posted", () => {
+    ghAnswers(() =>
+      response({
+        reviews: {
+          nodes: [
+            { body: "round 1 body", state: "COMMENTED", ...AGENT },
+            { body: "round 2 body", state: "COMMENTED", ...AGENT },
+          ],
+        },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("round 2 body");
+  });
+
+  /**
+   * And never a human's review, however trusted. Their prose carries no finding
+   * ids, so reading it as the record would replace the loop's statement of what
+   * is open with something that states nothing.
+   */
+  it("ignores a maintainer's own review, which carries no record", () => {
+    ghAnswers(() =>
+      response({
+        reviews: {
+          nodes: [
+            { body: "round 1 body", state: "COMMENTED", ...AGENT },
+            { body: "Looks good to me.", state: "APPROVED", ...MAINTAINER },
+          ],
+        },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("round 1 body");
+  });
+
+  it("says the record is empty for a pull request this loop has never reviewed", () => {
+    ghAnswers(() => response({ reviews: { nodes: [REVIEW_SUMMARY] }, reviewThreads: { nodes: [] } }));
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads).toEqual([]);
+    expect(feedback.latestAgentReviewBody).toBe("");
+  });
+});
+
+/**
+ * **What a thread is anchored to**, which #110 gave a second answer.
+ *
+ * A null `line` used to mean one thing — GitHub calls a thread *outdated* once
+ * the code under it has moved — and now means two, because a **file-level**
+ * thread has no line and never had one. Told apart by `subjectType`, which is
+ * why that field is in the query.
+ *
+ * The failure is one a fix agent acts on. `src/queue.ts:? (outdated — the code
+ * here has changed since)` reaches the `inline` surface both agents read, the
+ * carried finding's one line, and the *Open* entries of the posted body — and
+ * it tells the agent the code moved when nothing did, which is the one reading
+ * that invites it to decline.
+ */
+describe("a thread anchored to a file rather than a line", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  const fileThread = (over: Record<string, unknown> = {}): unknown => ({
+    id: "PRRT_file",
+    isResolved: false,
+    subjectType: "FILE",
+    comments: {
+      nodes: [
+        {
+          path: "src/queue.ts",
+          line: null,
+          startLine: null,
+          originalLine: null,
+          originalStartLine: null,
+          body: "**Fix before merge.** the retry loop never terminates\n\n<!-- agent-finding f-1 -->",
+          ...AGENT,
+        },
+      ],
+    },
+    ...over,
+  });
+
+  it("says what it is, rather than that the code has moved", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [fileThread()] } }));
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.inline).toContain("src/queue.ts (the whole file)");
+    expect(feedback.inline).not.toContain("outdated");
+    expect(feedback.inline).not.toContain(":?");
+    expect(feedback.agentThreads[0]?.text).toBe(
+      "src/queue.ts (the whole file) — the retry loop never terminates",
+    );
+  });
+
+  /**
+   * And a line thread whose code *has* moved still says so. The two cases share
+   * a null `line` and nothing else, so the reading that fixed one must not
+   * have silenced the other.
+   */
+  it("still calls a moved line thread outdated", () => {
+    const moved = {
+      id: "PRRT_moved",
+      isResolved: false,
+      subjectType: "LINE",
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: null,
+            originalLine: 206,
+            body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-2 -->",
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [moved] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toContain(
+      "src/queue.ts:206 (outdated — the code here has changed since)",
+    );
+  });
+
+  /**
+   * A thread from before the field was selected answers nothing, and is read
+   * as a line thread — which is what every thread was until #110, and the
+   * reading that changes nothing for one.
+   */
+  it("reads a thread that answered no subjectType as a line thread", () => {
+    ghAnswers(() =>
+      response({ reviewThreads: { nodes: [fileThread({ subjectType: null })] } }),
+    );
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toContain(":?");
+  });
+});
+
+/**
+ * **A marker the model copied into its own body must not win.** The workflow
+ * appends its marker at the end of what it posts, so the *last* one is the one
+ * it wrote — and the `inline` surface renders markers verbatim into the prompt,
+ * which shows a model the exact syntax and this round's live ids.
+ *
+ * Read the first instead and a new thread impersonates an older finding:
+ * `carriedFindings` dedupes on the id, so one of the two threads becomes
+ * invisible and unclosable.
+ */
+describe("a body carrying two finding markers", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  it("is read as the marker the workflow wrote last", () => {
+    const doubled = {
+      id: "PRRT_one",
+      isResolved: false,
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: 206,
+            body: "**Fix before merge.** quoting <!-- agent-finding f-OLD high --> from the feedback\n\n<!-- agent-finding f-NEW low -->",
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [doubled] } }));
+
+    const [thread] = fetchPullRequestFeedback("12").agentThreads;
+    expect(thread?.findingId).toBe("f-NEW");
+    expect(thread?.severity).toBe("low");
+  });
+});
+
+/**
+ * **The link back to a thread** (#109, decision 8). A carried finding's thread
+ * sits under an older review, several screens up, and `path:line` as plain
+ * text is not something GitHub linkifies — so the URL is read here, off the
+ * comment that carries the marker, rather than composed from a number and a
+ * database id.
+ */
+describe("where a carried finding can be reached", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  const withUrl = (url: string | null): unknown => ({
+    id: "PRRT_one",
+    isResolved: false,
+    comments: {
+      nodes: [
+        {
+          url,
+          path: "src/queue.ts",
+          line: 206,
+          body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-1 -->",
+          ...AGENT,
+        },
+      ],
+    },
+  });
+
+  it("carries the comment's own permalink", () => {
+    ghAnswers(() =>
+      response({
+        reviewThreads: { nodes: [withUrl("https://github.com/o/r/pull/12#discussion_r1")] },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.url).toBe(
+      "https://github.com/o/r/pull/12#discussion_r1",
+    );
+    expect(fetchPullRequestContext("12").carriedFindings[0]?.url).toBe(
+      "https://github.com/o/r/pull/12#discussion_r1",
+    );
+  });
+
+  /** It is a link. A response that carried none renders an entry without one. */
+  it("carries no link rather than losing the finding", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [withUrl(null)] } }));
+
+    const [thread] = fetchPullRequestFeedback("12").agentThreads;
+    expect(thread?.url).toBeUndefined();
+    expect(thread?.findingId).toBe("f-1");
+  });
+});
+
+/**
+ * **What a maintainer has already settled** (#109, decision 10; #112), read off
+ * the two places a human can settle a finding: resolving its thread, and
+ * replying to decline it.
+ *
+ * Both halves fail silently. A human-resolved thread that is not recognised as
+ * theirs is a finding the next review re-finds and re-posts, with nothing
+ * anywhere saying it was already closed on purpose; and a decline attributed to
+ * an author the gate never passed is the loop closing its own finding on the
+ * word of anyone who can type in a public pull request.
+ */
+describe("a finding the maintainer has settled", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+
+  const finding = (findingId: string): unknown => ({
+    path: "src/queue.ts",
+    line: 206,
+    body: `**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding ${findingId} -->`,
+    ...AGENT,
+  });
+
+  /** A thread of this loop's, with whatever the scenario needs said after it. */
+  const agentThread = (over: Record<string, unknown> = {}, ...replies: unknown[]): unknown => ({
+    id: "PRRT_one",
+    isResolved: false,
+    comments: { nodes: [finding("f-1"), ...replies] },
+    ...over,
+  });
+
+  it("reads a thread a human resolved as settled, naming who settled it", () => {
+    ghAnswers(() =>
+      response({
+        reviewThreads: {
+          nodes: [agentThread({ isResolved: true, resolvedBy: { login: "maintainer" } })],
+        },
+      }),
+    );
+
+    expect(fetchPullRequestFeedback("12").settledFindings).toEqual([
+      {
+        findingId: "f-1",
+        resolvedBy: "maintainer",
+        text: "src/queue.ts:206 — the guard runs after the return",
+      },
+    ]);
+  });
+
+  /**
+   * What the acceptance of #112 is about, at the one seam that can hold it: the
+   * finding is **not** in what the next review is handed as open, so nothing
+   * re-lists it and no verdict counts it, and it *is* in the section that tells
+   * the reviewer it is settled. Whether the agent then re-derives the same
+   * problem from the diff is the prompt's half; this is the half a test can own.
+   */
+  it("hands a human-resolved finding to the next review as settled, never as open", () => {
+    ghAnswers(() =>
+      response({
+        reviewThreads: {
+          nodes: [agentThread({ isResolved: true, resolvedBy: { login: "maintainer" } })],
+        },
+      }),
+    );
+
+    const context = fetchPullRequestContext("12");
+
+    expect(context.carriedFindings).toEqual([]);
+    expect(context.settledFindings.map((f) => f.findingId)).toEqual(["f-1"]);
+  });
+
+  /**
+   * A thread this loop closed is not a maintainer's decision, and telling a
+   * later review it may never raise the finding again would make an
+   * `ADDRESSED` resolution permanent — so a fix that regressed could never be
+   * reported.
+   */
+  it("reads a thread this loop resolved as nothing of the kind", () => {
+    ghAnswers(() =>
+      response({
+        reviewThreads: {
+          nodes: [agentThread({ isResolved: true, resolvedBy: { login: "github-actions[bot]" } })],
+        },
+      }),
+    );
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.settledFindings).toEqual([]);
+    expect(feedback.agentThreads).toEqual([]);
+  });
+
+  /**
+   * `resolvedBy` is nullable, so a refusal there nulls the field and leaves the
+   * thread. Unknown is not "a human did it": the safe reading is the one that
+   * changes nothing, since the alternative silences a finding on evidence
+   * nobody has.
+   */
+  it("claims nothing about a resolved thread whose resolver it could not read", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({ isResolved: true })] } }));
+
+    expect(fetchPullRequestFeedback("12").settledFindings).toEqual([]);
+  });
+
+  it("carries a maintainer's reply on an open thread, for the workflow to quote", () => {
+    const reply = { body: "Won't fix — the duplicate write is intended here.", ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, reply)] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+      {
+        threadId: "PRRT_one",
+        findingId: "f-1",
+        text: "src/queue.ts:206 — the guard runs after the return",
+        maintainerReply: {
+          login: "maintainer",
+          body: "Won't fix — the duplicate write is intended here.",
+        },
+      },
+    ]);
+  });
+
+  /**
+   * **The gate, and the whole reason this is read here rather than by the
+   * agent.** Every feedback surface on a public pull request is world-writable,
+   * so a decline is only a maintainer's where the author association says so —
+   * and an untrusted one is not merely un-quoted, it is never rendered either,
+   * so the review cannot read it and then be believed about it.
+   */
+  it("carries no reply from an author the gate refuses", () => {
+    const drive = { body: "Won't fix, this is intended.", author: { login: "stranger" }, authorAssociation: "NONE" };
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, drive)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads[0]?.maintainerReply).toBeUndefined();
+    expect(feedback.inline).not.toContain("Won't fix");
+  });
+
+  /**
+   * The loop's own replies are not a decline whoever wrote them — `agent:fix`
+   * answers every thread it was shown, and `isTrustedAuthor` passes the
+   * workflow bot on purpose, so the narrower question "did a human say this"
+   * has to be asked separately.
+   */
+  it("does not mistake the loop's own reply for a maintainer's", () => {
+    const ours = { body: "Declined: the duplicate write is intended.", ...AGENT };
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, ours)] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.maintainerReply).toBeUndefined();
+  });
+
+  /** The newest one, which is the maintainer's current position on the finding. */
+  it("takes the maintainer's latest word where they said more than one thing", () => {
+    const first = { body: "Hmm, maybe.", ...MAINTAINER };
+    const second = { body: "Won't fix — intended.", ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, first, second)] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.maintainerReply?.body).toBe(
+      "Won't fix — intended.",
+    );
+  });
+});

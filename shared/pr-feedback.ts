@@ -1,5 +1,7 @@
-import { ghOutcome, git, isTrustedAuthor, type GhOutcome } from "./common.js";
+import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
+import { lastFindingMarker, openingClaim, type Severity } from "./review-findings.js";
+import type { AgentThread, MaintainerReply, SettledFinding } from "./review-verification.js";
 
 /**
  * The three rendered feedback surfaces, named the same as the fields carrying
@@ -69,6 +71,39 @@ export interface PullRequestFeedback {
   /** Node ids of the unresolved threads shown to the agent, for reply/resolve. */
   readonly threadIds: readonly string[];
   /**
+   * The unresolved threads **this loop opened**, each with the finding id the
+   * workflow wrote into it (#110) — the open half of the review record a later
+   * review verifies against (#111).
+   *
+   * A subset of `threadIds` and not a replacement for it: the fix runner
+   * answers every thread it was shown, a human's included, while only the
+   * loop's own threads carry a finding a review can rule on.
+   */
+  readonly agentThreads: readonly AgentThread[];
+  /**
+   * The findings on this pull request a **human** has closed — threads this
+   * loop opened whose `resolvedBy` is somebody other than the workflow bot
+   * (#109, decision 10; #112).
+   *
+   * Disjoint from `agentThreads` by construction, which is what the pair is
+   * for: one is what a review is asked to rule on, the other what it is told
+   * not to raise again. A resolved thread used to be dropped here and nowhere
+   * recorded, so a maintainer's decision survived exactly as long as no later
+   * review happened to re-derive the finding from the diff.
+   */
+  readonly settledFindings: readonly SettledFinding[];
+  /**
+   * The body of the **latest** review this loop posted, or `""` when it has
+   * posted none.
+   *
+   * The current statement of what is open, rather than one of several: each
+   * review re-lists the findings it verified as still open, so the newest body
+   * supersedes the one before it. Returned whole rather than parsed, because
+   * what a reader wants out of it differs by caller and the format is
+   * `shared/review-findings.ts`'s to describe.
+   */
+  readonly latestAgentReviewBody: string;
+  /**
    * Bodies of the top-level comments `agent:fix` already posted on this PR —
    * kept out of every rendered surface above, and returned only so a new run
    * can avoid posting the same note twice.
@@ -120,9 +155,11 @@ query($owner:String!,$repo:String!,$number:Int!) {
         nodes {
           id
           isResolved
+          subjectType
+          resolvedBy { login }
           comments(first:50) {
             nodes {
-              path line startLine originalLine originalStartLine
+              url path line startLine originalLine originalStartLine
               body author { login } authorAssociation
             }
           }
@@ -138,6 +175,13 @@ interface GqlAuthored {
   authorAssociation?: string;
 }
 interface GqlThreadComment extends GqlAuthored {
+  /**
+   * The comment's own permalink, which is what a record entry links to. Read
+   * here rather than composed from the pull request number and a database id:
+   * a link this file built would be a second description of a URL GitHub
+   * already returns, and a wrong one lands a reader on the wrong thread.
+   */
+  url?: string | null;
   path?: string | null;
   line?: number | null;
   startLine?: number | null;
@@ -148,6 +192,31 @@ interface GqlThreadComment extends GqlAuthored {
 interface GqlThread {
   id?: string;
   isResolved?: boolean;
+  /**
+   * `LINE` or `FILE` — what the thread is attached to, and the only thing that
+   * tells a **file-level** thread's absent line from an *outdated* one's (#110
+   * opened threads on files, and `anchorOf` below read a null `line` as the
+   * code having moved).
+   *
+   * Nullable in this type for the reason `resolvedBy` is: a release before
+   * this one selected no such field, and a refusal on it nulls the field
+   * rather than the thread. Unknown is read as `LINE`, which is what every
+   * thread was until #110 and is the reading that changes nothing for one.
+   */
+  subjectType?: string | null;
+  /**
+   * Who closed it, and the whole of what decision 10 turns on: a thread this
+   * loop resolved is a finding it verified, and one anybody else resolved is a
+   * finding a human settled (#112).
+   *
+   * `PullRequestReviewThread.resolvedBy: Actor` is **nullable**, so it is null
+   * on an open thread and null again where an error on it null-propagated no
+   * further than the field — the thread and its comments survive either way.
+   * Those two are not told apart here and do not need to be: the reader below
+   * treats an unknown resolver as *not established*, which on an open thread
+   * is the truth and on a refused field is the reading that changes nothing.
+   */
+  resolvedBy?: { login?: string } | null;
   comments?: { nodes?: (GqlThreadComment | null)[] | null } | null;
 }
 
@@ -608,19 +677,161 @@ export const diffCommandAgainstBase = (baseRef: string | undefined): readonly st
 };
 
 /**
+ * The finding marker a comment carries, or `undefined` for one that carries
+ * none — a human's comment, a reply, or a review posted before ids existed.
+ *
+ * **`lastFindingMarker`, not a reader of this file's own.** This was one, and
+ * it disagreed with `parseFindingMarkers` about a line holding two markers:
+ * this half took the last, that half took the first, and a line holding two is
+ * exactly the line the question matters on. One function, one answer — the
+ * last, because the workflow appends its own at the end of what it posts
+ * (`threadBody`), so an earlier one is a marker the body quoted.
+ *
+ * It matters because the `inline` surface renders markers verbatim into the
+ * prompt, so a model is shown the exact syntax and the live ids. Read the wrong
+ * one and a finding that copied a marker impersonates the finding it copied:
+ * two threads on one id, one of them invisible to `carriedFindings` and
+ * unclosable.
+ *
+ * Markers are stripped from every string a model wrote before any of it is
+ * posted (`withoutFindingMarkers`, at each output schema), which is the guard
+ * this backs up rather than replaces.
+ */
+const findingIdIn = (body: string): string | undefined => lastFindingMarker(body)?.id;
+
+/**
+ * And the severity written beside it, where the marker carries one. Same
+ * marker, same reader, same "the last one wins" rule — a finding's rating
+ * belongs to the review that raised it, so it is read back rather than
+ * re-derived (#109, decision 9).
+ */
+const findingSeverityIn = (body: string): Severity | undefined =>
+  lastFindingMarker(body)?.severity;
+
+/**
+ * Whether a thread hangs on a **file** rather than on a line — `subjectType`
+ * read back, with the pre-#110 reading for a thread that answered nothing.
+ */
+const isFileLevel = (thread: { readonly subjectType?: string | null | undefined }): boolean =>
+  thread.subjectType === "FILE";
+
+/**
  * Where a thread comment points, and whether that anchor is still live.
  *
  * `line` is null once the code under a comment has changed — GitHub calls this
  * *outdated* and keeps `originalLine` as the position it was written against.
  * Saying so matters: an agent handed a bare line number cannot tell whether it
  * describes today's code or code that has since moved.
+ *
+ * **A file-level thread has no line and never had one** (#110), so a null
+ * `line` acquired a second cause that has nothing to do with the code moving.
+ * Told apart by the thread's `subjectType` rather than guessed at from the
+ * comment: `src/queue.ts:? (outdated — the code here has changed since)` tells
+ * a fix agent the code moved when nothing did, which is the one reading that
+ * invites it to decline.
  */
-const anchorOf = (c: GqlThreadComment): string => {
+const anchorOf = (c: GqlThreadComment, fileLevel = false): string => {
+  if (fileLevel) return `${c.path ?? "unknown"} (the whole file)`;
+
   const outdated = c.line === null || c.line === undefined;
   const end = c.line ?? c.originalLine;
   const start = c.startLine ?? c.originalStartLine;
   const range = start !== null && start !== undefined && start !== end ? `${start}-${end}` : `${end ?? "?"}`;
   return `${c.path ?? "unknown"}:${range}${outdated ? " (outdated — the code here has changed since)" : ""}`;
+};
+
+/**
+ * The finding a thread of this loop's is about: its id, and the one line the
+ * review that raised it opened with.
+ *
+ * Selected by the marker the workflow wrote, and only where the comment
+ * carrying it is the workflow bot's. The marker is a **selector, not a
+ * control** — anyone who can comment can type one — so what makes a thread the
+ * loop's own is who opened it, exactly as it is for the follow-ups block.
+ *
+ * Shared by the two readers below because they ask the same question of the
+ * same threads and differ only in what has happened to them since: one wants
+ * the open ones so a review can rule on them, the other the ones a human closed
+ * so it will not. Two copies of this would drift on the release that changes
+ * how a finding is marked, and the half that drifted would go quiet rather than
+ * wrong.
+ */
+const findingOn = (
+  thread: {
+    readonly subjectType?: string | null | undefined;
+    readonly comments: readonly GqlThreadComment[];
+  },
+): {
+  readonly findingId: string;
+  readonly severity?: Severity;
+  readonly text: string;
+  readonly url?: string;
+} | undefined => {
+  const marked = thread.comments.find(
+    (c) => isWorkflowBot(c.author?.login ?? undefined) && findingIdIn(c.body ?? "") !== undefined,
+  );
+  const findingId = marked === undefined ? undefined : findingIdIn(marked.body ?? "");
+  if (marked === undefined || findingId === undefined) return undefined;
+
+  const severity = findingSeverityIn(marked.body ?? "");
+  // The comment's own permalink, which is the link a record entry carries back
+  // to the thread a later round has to reach (#109, decision 8). Optional
+  // because it is a link: a response that did not carry one renders an entry
+  // without it rather than losing the finding.
+  const url = marked.url ?? undefined;
+
+  // `anchorOf` and not a bare `path:line`, so a thread whose code has moved
+  // says so wherever this line is shown — and so a file-level thread says what
+  // it is instead of claiming the code moved. It is left unfenced for that
+  // reason: the anchor may carry a clause, and a code span around a sentence is
+  // a sentence in a code span.
+  return {
+    findingId,
+    ...(severity === undefined ? {} : { severity }),
+    ...(url === undefined ? {} : { url }),
+    text: `${anchorOf(marked, isFileLevel(thread))} — ${openingClaim(marked.body ?? "")}`,
+  };
+};
+
+/**
+ * The last thing a **maintainer** said in a thread, which is what a review may
+ * be permitted to close it on (#109, decision 10).
+ *
+ * Two filters, and neither is the other. `isTrustedAuthor` is the author gate
+ * and has already run over these comments — the world-writable surface never
+ * gets this far — but it passes the workflow bot deliberately, which is what
+ * makes the review → fix handoff work. So the bot is excluded again here: a
+ * fix run replies "declined, this is intended" in every thread it was shown,
+ * and reading that as a maintainer's decision would let the loop close its own
+ * findings on its own say-so, which is the whole failure #111 moved the cause
+ * of.
+ *
+ * The **latest**, and that is a rule rather than a convenience: it is the only
+ * reply a review may rule `declined` on, and both halves of the brief say so
+ * (`review/prompt.md`, `review/extraction.md`). A thread is a conversation, so
+ * an earlier refusal a later reply revisits is not the maintainer's position —
+ * and the closing reply quotes exactly this comment, so "the reply the review
+ * read" and "the reply the thread closes on" cannot be two different comments.
+ * Without the rule they can: a maintainer declines, somebody else asks a
+ * question after them, and the thread closes quoting the question.
+ *
+ * What is not guaranteed is that the review obeyed it — a reading is prose and
+ * this file matches none. What *is* guaranteed is that the misreading is
+ * visible: the closing reply carries this comment verbatim, so a reply that is
+ * plainly not a decline is one glance from being reopened (`declineReply`).
+ */
+const maintainerReplyOn = (
+  comments: readonly GqlThreadComment[],
+): MaintainerReply | undefined => {
+  const reply = comments.filter((c) => !isWorkflowBot(c.author?.login ?? undefined)).pop();
+  const login = reply?.author?.login;
+
+  // An anonymous reply is nobody's decision. A login is what the closing reply
+  // quotes *by*, so one this file cannot name is one a maintainer reading the
+  // thread could not recognise as theirs.
+  return reply === undefined || login === undefined
+    ? undefined
+    : { login, body: (reply.body ?? "").trim() };
 };
 
 /**
@@ -718,30 +929,100 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
 
   // Grouped by thread, not flattened: the fix agent has to name a thread to
   // reply to or resolve it, so thread identity must survive into the prompt.
-  const threads = present(pr?.reviewThreads?.nodes)
-    .filter((thread): thread is GqlThread & { id: string } =>
-      thread.isResolved !== true && typeof thread.id === "string",
-    )
+  //
+  // Resolved threads are kept this far rather than filtered out at the top, and
+  // that is the change #112 rests on: a thread a **human** closed is a decision
+  // a later review has to be told about, and "it is gone from the feedback"
+  // cannot say that. They are split below, and only the open ones are rendered
+  // or answered.
+  const allThreads = present(pr?.reviewThreads?.nodes)
+    .filter((thread): thread is GqlThread & { id: string } => typeof thread.id === "string")
     .map((thread) => {
       const trusted = present(thread.comments?.nodes).filter(
         (c) =>
           isTrustedAuthor(c.authorAssociation, c.author?.login ?? undefined) &&
           (c.body ?? "").trim().length > 0,
       );
-      return { id: thread.id, comments: trusted };
+      return {
+        id: thread.id,
+        isResolved: thread.isResolved === true,
+        subjectType: thread.subjectType ?? undefined,
+        resolvedBy: thread.resolvedBy?.login ?? undefined,
+        comments: trusted,
+      };
     })
     .filter((thread) => thread.comments.length > 0);
+
+  const threads = allThreads.filter((thread) => !thread.isResolved);
 
   const inline = threads
     .map((thread) => {
       const first = thread.comments[0];
-      const header = `**${anchorOf(first!)}** — thread \`${thread.id}\``;
+      const header = `**${anchorOf(first!, isFileLevel(thread))}** — thread \`${thread.id}\``;
       const body = thread.comments
         .map((c) => `@${c.author?.login ?? "unknown"}:\n${(c.body ?? "").trim()}`)
         .join("\n\n");
       return `${header}\n\n${body}`;
     })
     .join("\n\n---\n\n");
+
+  // The loop's own open findings, selected by the id the workflow wrote into
+  // each thread rather than by what the thread says — text is never matched
+  // across rounds (#109, decision 2); see `findingOn` for what makes a thread
+  // the loop's own. Each carries a maintainer's reply where one exists, because
+  // a review may rule the finding declined and only that reply lets the
+  // workflow act on the ruling (#112).
+  const agentThreads = threads.flatMap((thread): AgentThread[] => {
+    const found = findingOn(thread);
+    if (found === undefined) return [];
+
+    const reply = maintainerReplyOn(thread.comments);
+    return [
+      {
+        threadId: thread.id,
+        findingId: found.findingId,
+        text: found.text,
+        ...(found.severity === undefined ? {} : { severity: found.severity }),
+        ...(found.url === undefined ? {} : { url: found.url }),
+        ...(reply === undefined ? {} : { maintainerReply: reply }),
+      },
+    ];
+  });
+
+  // The findings a **human** closed (#109, decision 10). Read off the same
+  // threads, by who resolved them: this loop resolves what it has verified
+  // fixed, so its own resolutions are settled findings in a different sense —
+  // re-raising one is how a regressed fix gets reported, and telling a later
+  // review it may never mention them again would make every `ADDRESSED` close
+  // permanent.
+  //
+  // An unknown resolver establishes nothing and is carried nowhere. The cost is
+  // a maintainer's decision this run cannot see; the alternative is silencing a
+  // finding on the strength of a field that did not answer.
+  const settledFindings = allThreads.flatMap((thread): SettledFinding[] => {
+    const resolvedBy = thread.resolvedBy;
+    if (!thread.isResolved || resolvedBy === undefined || isWorkflowBot(resolvedBy)) return [];
+
+    const found = findingOn(thread);
+    // The severity is deliberately dropped here rather than carried: a settled
+    // finding is shown to the reviewer as an instruction not to raise it again,
+    // and a rating on something nobody may act on is an invitation to weigh it.
+    return found === undefined
+      ? []
+      : [{ findingId: found.findingId, text: found.text, resolvedBy }];
+  });
+
+  // The newest review this loop posted, which is the one whose body is current.
+  // `isWorkflowBot` rather than `isTrustedAuthor`: the question is "did this
+  // loop write it", and the wider gate would admit a maintainer's own review,
+  // whose body carries no finding ids and whose prose is not a record to verify
+  // against.
+  const latestAgentReviewBody =
+    present(pr?.reviews?.nodes)
+      .filter((review) => isWorkflowBot(review.author?.login ?? undefined))
+      .map((review) => (review.body ?? "").trim())
+      .filter((body) => body !== "")
+      .pop() ?? "";
 
   const all = [
     summaries && `### Review summaries\n\n${summaries}`,
@@ -757,6 +1038,9 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     conversation,
     all,
     threadIds: threads.map((t) => t.id),
+    agentThreads,
+    settledFindings,
+    latestAgentReviewBody,
     priorTopLevelComments,
     diff: git(diffCommandAgainstBase(process.env["BASE_REF"])),
     // Deliberately computed from `all`, which no longer contains our own

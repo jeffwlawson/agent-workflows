@@ -3,7 +3,21 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { isWorkflowBot } from "../shared/common.js";
-import { FOLLOW_UPS_LABEL, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
+import {
+  ADD_REVIEW_MUTATION,
+  FIX_BEFORE_MERGE_LABEL,
+  type Finding,
+  type PlacedFinding,
+  PREVIOUSLY_MISSED_LABEL,
+  SEVERITIES,
+  severityBadge,
+} from "../shared/review-findings.js";
+import {
+  FOLLOW_UPS_LABEL,
+  renderReviewBody,
+  VERDICT_CONTEXT,
+  VERDICTS,
+} from "../shared/review-output.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -194,6 +208,8 @@ interface Step {
   readonly name?: string;
   readonly id?: string;
   readonly if?: string;
+  /** A step whose failure must not fail the run — the tidying after a posted review. */
+  readonly "continue-on-error"?: boolean;
   readonly uses?: string;
   readonly run?: string;
   readonly env?: Record<string, string>;
@@ -857,7 +873,7 @@ describe("PR workflows refuse a closed or merged PR", () => {
 
 /**
  * The refusal the shared group made necessary. Review pins everything to the
- * head SHA in its `labeled` payload — the checkout, and `commit_id` on the
+ * head SHA in its `labeled` payload — the checkout, and `commitOID` on the
  * posted review — and that payload is snapshotted at label time, so a review
  * queued behind a fix starts once the fix has pushed and still reviews the
  * pre-fix commit. Serialising turned reading-during-a-write into
@@ -981,7 +997,7 @@ describe("agent-review posts its verdict as a commit status", () => {
 
   /**
    * On the SHA the payload named, which is the same one the checkout, the CI
-   * wait and the review's own `commit_id` are pinned to — and which the
+   * wait and the review's own `commitOID` are pinned to — and which the
    * pre-flight above refuses to proceed past if the branch has moved. Reading
    * the live head here instead would post a verdict about a diff nobody read.
    */
@@ -1052,16 +1068,50 @@ describe("agent-review posts its verdict as a commit status", () => {
   /**
    * And links the review it is the verdict on, so the one line has somewhere to
    * go when a reader does want the detail. The URL is the posted review's own,
-   * which only the response to that POST carries.
+   * which only the response to the mutation carries.
    */
-  it("links the review it posted, by capturing the URL that POST returned", () => {
+  it("links the review it posted, by capturing the URL the mutation returned", () => {
     const post = stepNamed("Post PR review");
 
     expect(post?.id).toBe("review");
-    expect(post?.run ?? "").toContain("html_url");
+    expect(post?.run ?? "").toContain(".data.addPullRequestReview.pullRequestReview.url");
     expect(post?.run ?? "").toContain('"$GITHUB_OUTPUT"');
     expect(postStep()?.env?.["REVIEW_URL"]).toBe("${{ steps.review.outputs.url }}");
     expect(postStep()?.run ?? "").toContain("target_url=");
+  });
+
+  /**
+   * The review goes up through GraphQL, which is the only call that can open a
+   * **file-level** thread alongside the line ones (#110; REST review-create
+   * answers one with a 422, and its `comments` field is deprecated in favour of
+   * `threads`). The whole request body is the runner's file, sent verbatim:
+   * nothing in YAML composes a query or names a field, so the mutation has one
+   * description and it is the unit-tested one.
+   */
+  it("posts the review as the GraphQL mutation the runner wrote", () => {
+    const run = stepNamed("Post PR review")?.run ?? "";
+
+    expect(run).toContain("gh api graphql --input");
+    expect(stepNamed("Post PR review")?.env?.["PAYLOAD"]).toContain("review_payload.json");
+    // `graphql`, not `/graphql`: GraphQL returns its errors with HTTP 200, and
+    // it is the endpoint name that makes `gh` fail the step on one rather than
+    // capturing an empty URL and posting nothing.
+    expect(run).not.toContain("/graphql");
+    expect(run).not.toContain("/reviews");
+  });
+
+  /**
+   * And the `--jq` path is the mutation's own selection set. The two are one
+   * shape written in two files, which is exactly the pair that drifts: a
+   * renamed selection would leave the review posted and the verdict linking
+   * nothing, with nothing failing.
+   */
+  it("reads the url out of the selection the mutation asks for", () => {
+    const run = stepNamed("Post PR review")?.run ?? "";
+    const selections = run.match(/--jq \.data\.([\w.]+)/)?.[1]?.split(".") ?? [];
+
+    expect(selections).toHaveLength(3);
+    for (const selection of selections) expect(ADD_REVIEW_MUTATION).toContain(selection);
   });
 
   it("posts the verdict after the review it points at, and only if that posted", () => {
@@ -1211,7 +1261,10 @@ describe("agent-fix asks for the re-review its own push needs", () => {
   it("asks only once this run has said everything it has to say", () => {
     const names = stepsOf(FIX).map((s) => s.name ?? "");
 
-    for (const earlier of ["Reply to and resolve review threads", "Post top-level comments"]) {
+    for (const earlier of ["Reply to review threads", "Post top-level comments"]) {
+      // `toContain` first: a renamed step makes `indexOf` return -1, which every
+      // "is after" assertion passes vacuously.
+      expect(names).toContain(earlier);
       expect(names.indexOf("Request re-review")).toBeGreaterThan(names.indexOf(earlier));
     }
   });
@@ -1296,6 +1349,149 @@ describe("agent-fix asks for the re-review its own push needs", () => {
  * feature being off; a copy that fired on the conflicts path would put "ready to
  * merge" on code an agent wrote and nobody read.
  */
+/**
+ * **The reviewer closes a thread and the fixer never does** (#109, decision 1;
+ * #111). Two halves in two workflows, asserted together because either one
+ * alone is a loop that loses findings: a fixer that still resolved would close
+ * its own work unchecked, and a reviewer that resolved nothing would leave
+ * every finding open for ever, counting against every later verdict.
+ *
+ * Neither half has a runtime symptom. A resolved thread is dropped from the
+ * feedback the next review is handed, so a fixer closing its own threads
+ * produces a review that looks clean because it cannot see what it is meant to
+ * check — the failure #105 patched with a body checklist and this moved the
+ * cause of.
+ */
+describe("the reviewer closes a thread, and the fix run never does", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const RESOLVE_MUTATION = "resolveReviewThread";
+  const resolveStep = (): Step | undefined =>
+    stepsOf(REVIEW).find((s) => s.name === "Resolve the threads this review verified");
+
+  /**
+   * Over the file's whole text rather than its steps: the mutation is a string
+   * inside a `run:` block, and what is being asserted is that no step anywhere
+   * in the workflow performs it — including one added later for another reason.
+   */
+  it("has no step in agent-fix that resolves anything", () => {
+    expect(fs.readFileSync(FIX, "utf8")).not.toContain(RESOLVE_MUTATION);
+  });
+
+  /**
+   * And it still replies to every thread, which is the half that stays. "I
+   * looked and declined" is worth saying out loud, and the reply is what the
+   * next review reads before it rules.
+   */
+  it("still replies in every thread the fix run was shown", () => {
+    const reply = stepsOf(FIX).find((s) => s.name === "Reply to review threads");
+
+    expect(reply?.run ?? "").toContain("addPullRequestReviewThreadReply");
+    expect(reply?.env?.["OUTCOMES"]).toBe("${{ runner.temp }}/thread_outcomes.json");
+  });
+
+  /**
+   * The reviewer's half, from the file the runner wrote. The step composes
+   * nothing: which threads close, and what the reply says, are decided by a
+   * unit-tested derivation (`verifyCarried`) and read out of JSON here.
+   */
+  it("resolves what the review verified, from the file the runner wrote", () => {
+    expect(resolveStep()?.env?.["RESOLUTIONS"]).toBe("${{ runner.temp }}/thread_resolutions.json");
+    expect(resolveStep()?.run ?? "").toContain(RESOLVE_MUTATION);
+  });
+
+  /**
+   * With the reason GitHub takes and then shows nobody. `resolutionReason` is
+   * validated on the way in and exposed on no field afterwards, so the reply is
+   * the only record of why a finding closed — which is why the reply is posted
+   * and not merely offered.
+   */
+  it("closes it as addressed, and says so where a human can read it", () => {
+    const run = resolveStep()?.run ?? "";
+
+    expect(run).toContain("resolutionReason:ADDRESSED");
+    expect(run).toContain("addPullRequestReviewThreadReply");
+    expect(run.indexOf("addPullRequestReviewThreadReply")).toBeLessThan(run.indexOf(RESOLVE_MUTATION));
+  });
+
+  /**
+   * **And a reply that failed takes the resolve down with it**, which ordering
+   * alone does not buy: the assertion above passed for a release in which the
+   * reply's failure arm was an `echo` and the thread closed anyway.
+   *
+   * `resolutionReason` is readable nowhere afterwards, so the reply is the
+   * whole record of why a finding closed — and on the `WONT_FIX` arm it is the
+   * maintainer's quoted words, which is what lets a misreading be seen and
+   * reopened in one glance (`declineReply`). A thread that closes without it is
+   * settled with nothing saying by whom or on what. Leaving it open is the
+   * direction every other unreadable thing in this loop fails in.
+   *
+   * Asserted over the text *between* the two mutations, so what is pinned is
+   * "the reply's failure skips this iteration" rather than a wording.
+   */
+  it("leaves a thread open when the reply that is its only record failed", () => {
+    const run = resolveStep()?.run ?? "";
+    const between = run.slice(
+      run.indexOf("addPullRequestReviewThreadReply"),
+      run.indexOf(RESOLVE_MUTATION),
+    );
+
+    expect(between).toContain("continue");
+    expect(between).toMatch(/reply failed/i);
+  });
+
+  /**
+   * And as **won't fix** where a maintainer declined it (#109, decision 10;
+   * #112) — a distinction this step cannot derive and must not try to. Which
+   * reason a thread closes on is `verifyCarried`'s, read out of the file as the
+   * reply is, and the enum is spelled out on both arms because it is an enum
+   * literal in the document rather than a variable GitHub would coerce.
+   *
+   * The branch is on a fixed list rather than on whatever the file says, for
+   * the reason every other reader of a generated file here is: a value this
+   * step does not recognise closes the thread as addressed, which is the
+   * reading that loses a nuance rather than the one that interpolates an
+   * unknown string into a GraphQL document.
+   */
+  it("closes it as won't fix where a maintainer declined it", () => {
+    const run = resolveStep()?.run ?? "";
+
+    expect(run).toContain("resolutionReason:WONT_FIX");
+    expect(run).toContain(".reason");
+  });
+
+  /**
+   * After the verdict, and never able to take it down. A thread that will not
+   * close is a thread a human closes; a review posted without its verdict is
+   * the state the whole feature exists to prevent.
+   */
+  it("runs after the verdict is posted, and cannot fail the run", () => {
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(names).toContain("Post the verdict as a commit status");
+    expect(names.indexOf("Resolve the threads this review verified")).toBeGreaterThan(
+      names.indexOf("Post the verdict as a commit status"),
+    );
+    expect(resolveStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+    expect(resolveStep()?.["continue-on-error"]).toBe(true);
+  });
+
+  /**
+   * And it spends a scope the job already had. Resolving a thread is a
+   * pull-request write, not a `contents:` one — review stays the agent that
+   * structurally cannot touch the branch (docs/parity.md §10), and an adopter
+   * current on the pin needs no new grant for this.
+   */
+  it("needs nothing the review job was not already granted", () => {
+    expect(jobOf(REVIEW).permissions).toEqual({
+      checks: "read",
+      contents: "read",
+      packages: "read",
+      "pull-requests": "write",
+      statuses: "write",
+    });
+  });
+});
+
 describe("agent-update-branch carries the verdict, or asks for the round it made necessary", () => {
   const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
   const stepNamed = (name: string): Step | undefined =>
@@ -3731,7 +3927,8 @@ describe("the adoption doc says what to do with each verdict", () => {
     expect(section()).toMatch(/required status check/i);
 
     const SKIPPED = new Set(["node_modules", "dist", "output", ".git", "tests"]);
-    const PROTECTION = /required_status_checks|branches\/[^\s"'`]*\/protection|\/rulesets\b/i;
+    const PROTECTION =
+      /required_status_checks|required_conversation_resolution|branches\/[^\s"'`]*\/protection|\/rulesets\b/i;
 
     const sourceUnder = (dir: string): readonly string[] =>
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -3745,6 +3942,113 @@ describe("the adoption doc says what to do with each verdict", () => {
     );
 
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * The body an adopter reads is now a **record** (#109, decision 8), and the
+   * section that tells them what to do with a verdict is where they meet it.
+   *
+   * Derived from a rendered body rather than transcribed, for the reason the
+   * verdict rows above are: the group headings, the badges and the *new* mark
+   * are what a maintainer sees on their own pull requests, and a doc that names
+   * three groups the renderer no longer writes is a reader looking for
+   * something that is not there. Renaming a group is then a failure here rather
+   * than a discovery on somebody else's repository.
+   */
+  it("names the groups, the badges and the *new* mark the body actually renders", () => {
+    const labelled = (id: string, label: string, over: Partial<Finding> = {}): PlacedFinding => ({
+      id,
+      placement: "line",
+      finding: {
+        title: "the guard runs after the return",
+        path: "src/queue.ts",
+        line: 206,
+        body: `**${label}.** the guard runs after the return`,
+        severity: "high",
+        ...over,
+      },
+    });
+
+    // One entry in every group, so every heading a reader can meet is rendered.
+    const body = renderReviewBody({
+      verdict: VERDICTS["changes recommended"],
+      output: {
+        findings: [],
+        followUps: [],
+        fixBeforeMerge: [],
+        verified: [],
+        howChecked: "Ran the suite.",
+        whatChanged: { summary: "It moves thread resolution to the review.", changes: [] },
+      },
+      placed: [
+        labelled("f-open", FIX_BEFORE_MERGE_LABEL),
+        labelled("f-missed", PREVIOUSLY_MISSED_LABEL, { severity: "low" }),
+      ],
+      stillOpen: [],
+      resolved: [{ id: "f-done", threadId: "PRRT_one", text: "the cache key omits the tenant" }],
+      followUps: [
+        {
+          title: "Leak in parse()",
+          location: "src/other.ts:88",
+          body: "evidence",
+          severity: "medium",
+        },
+      ],
+      droppedFollowUps: 0,
+      showWhatChanged: true,
+    });
+
+    // `<b>` names a group; `Follow-ups` carries a trailing clause in its own
+    // summary line, so the name is taken from the bold element rather than
+    // from the line.
+    const groups = [...body.matchAll(/<summary><b>(.*?)<\/b>/g)].map(([, title]) => title ?? "");
+    expect(groups).toEqual([
+      "Open",
+      "Previously missed",
+      "Resolved since last review",
+      "Follow-ups",
+      "How this was checked",
+      "What changed in this PR",
+    ]);
+    for (const group of groups) {
+      expect(group).not.toBe("");
+      expect(section()).toContain(`**${group}**`);
+    }
+
+    // The badge as the body writes it — a code span, never one of GitHub's
+    // severity images (decision 9) — so a reader is told the spelling they see.
+    for (const severity of SEVERITIES) expect(section()).toContain(severityBadge(severity));
+    expect(section()).toContain("*new*");
+  });
+
+  /**
+   * Who closes a thread, which #111 moved. An adopter reading a review sees
+   * threads open and close without either half naming itself, and the two
+   * wrong conclusions are symmetrical: that the fix run's `addressed` reply
+   * settled something, or that an open thread means no fix run has been near
+   * it. Both are corrected by one sentence, and this is where it has to be.
+   */
+  it("says the review closes threads and the fix run does not", () => {
+    expect(section()).toMatch(/the review[^.]{0,60}resolves\b/i);
+    expect(section()).toMatch(/`agent:fix`[^.]{0,80}resolves none/i);
+    // And the consequence a reader draws the wrong conclusion from without
+    // it: a thread the fix run declined is nobody's to close but yours.
+    expect(section()).toMatch(/declined[^.]{0,120}stays open/i);
+  });
+
+  /**
+   * The second optional gate (#109, decision 11), written under the same rule
+   * as the first: described for an adopter to switch on once the resolutions
+   * have earned it, and switched on by nothing here. The file scan in the test
+   * above is the half that holds the second clause — its pattern covers the
+   * setting this one is about.
+   */
+  it("documents conversation resolution as an optional gate, beside the required check", () => {
+    expect(section()).toMatch(/conversation resolution/i);
+    // What it costs is the part an adopter cannot infer from GitHub's own
+    // wording: the reviewer's resolutions become the merge gate, so a finding
+    // the fix run declined holds the merge until a human rules on it.
+    expect(section()).toMatch(/declined[^.]{0,200}stay open/i);
   });
 });
 

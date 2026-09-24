@@ -8,27 +8,40 @@ import {
   required,
   scrubGitHubTokens,
   sh,
+  workflowRunUrl,
   writeJson,
   writeText,
 } from "../shared/common.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
+  isPreviouslyMissed,
+  placeFindings,
+  reviewMutation,
+  type Severity,
+} from "../shared/review-findings.js";
+import {
   capFollowUps,
   countFixBeforeMerge,
   deriveVerdict,
-  filterInlineComments,
   renderFollowUpsBlock,
-  renderReviewSummary,
+  renderReviewBody,
   reviewOutputSchema,
   VERDICT_CONTEXT,
   type CiResult,
 } from "../shared/review-output.js";
 import {
   describeRound,
+  describesTheChange,
   detectReviewRound,
   unreadableRoundNote,
 } from "../shared/review-round.js";
+import {
+  renderCarriedFindings,
+  renderSettledFindings,
+  verifyCarried,
+  type ResolutionReason,
+} from "../shared/review-verification.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
@@ -116,75 +129,123 @@ try {
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
       ROUND: describeRound(round),
+      OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
+      SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),
       PR_DIFF: context.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),
   });
 
-  // Drop any inline comment that does not land on a changed line — GitHub
-  // rejects the whole review otherwise.
-  const validComments = filterInlineComments(result.output.inlineComments, context.diffLines);
+  // Where each finding goes, decided here from the diff rather than by the
+  // agent (#110). The guard that kept an unresolvable line anchor out of the
+  // payload is still the guard it was — one such anchor makes GitHub reject the
+  // whole review — but it now reroutes the finding to a thread on the file, or
+  // to the body when the file is not in the diff at all, instead of dropping
+  // it. A finding the verdict counted and the review never showed is the
+  // failure that change removes.
+  const placed = placeFindings(result.output.findings, context.diffLines);
+
+  // What the review said about the findings it was handed: which threads the
+  // workflow closes, and which findings are still owed (#111). The reviewer
+  // decides this and the fixer no longer does — a fix run replies and resolves
+  // nothing, so the only thing that closes a finding is a pass that read the
+  // code afterwards.
+  //
+  // A carried finding the review said nothing about stays open. That is the
+  // safe direction and it is `verifyCarried`'s to take, not this file's.
+  const { resolutions, stillOpen, resolved } = verifyCarried(
+    context.carriedFindings,
+    result.output.verified,
+  );
   const headSha = sh("git rev-parse HEAD").trim();
 
   // The third channel, serialised into the body on the way out. It cannot stay
-  // a sibling of `summary` in the posted artifact: a review has one body, and
+  // a sibling of the findings in the posted artifact: a review has one body, and
   // the body is the only part of a review that is still readable — by a human
   // or by anything else — after the pull request has merged.
   //
   // Capped here rather than in the schema. A fourth follow-up is not a broken
-  // review, and rejecting the output would lose the summary and every inline
-  // comment with it.
+  // review, and rejecting the output would lose every finding with it.
   //
-  // **Appended on every run, including the run that recorded nothing**, where
-  // it renders as the bare payload and shows a reader nothing at all. The list
-  // is a complete restatement each round and the filing half reads the latest
-  // one, so recording none has to be sayable: otherwise round 1's findings stay
-  // the newest thing on the pull request and a merge after round 2 fixed them
-  // files a stub for work already done.
+  // **Posted on every run, including the run that recorded nothing**, where the
+  // group renders not at all and the payload goes out alone. The list is a
+  // complete restatement each round and the filing half reads the latest one,
+  // so recording none has to be sayable: otherwise round 1's findings stay the
+  // newest thing on the pull request and a merge after round 2 fixed them files
+  // a stub for work already done. Both halves are `renderReviewBody`'s to
+  // place; what is written here is the artifact a human debugging the run
+  // opens.
   const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(result.output.followUps);
-  const followUpsBlock = renderFollowUpsBlock(followUps, droppedFollowUps);
 
   // The verdict, derived from the review and the checks rather than written by
-  // the agent (#96). Its heading and next-step line open the summary, so the
+  // the agent (#96). Its heading and next-step line open the body, so the
   // outcome is the first thing a reader sees and the same words the commit
   // status carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
-  const verdict = deriveVerdict(result.output, { ci, round: round.round });
+  const verdict = deriveVerdict(result.output, {
+    ci,
+    round: round.round,
+    stillOpen: stillOpen.length,
+  });
   // And a round nothing could establish says so in the body as well as in the
   // brief. The agent was told it was a second round; what it cannot say — and
   // what changes how a reader weighs the review — is that the round was the
   // stricter reading rather than a fact about this pull request.
   //
-  // What the body is made of, and in what order, is `renderReviewSummary`'s:
-  // it is the part of the review a human acts on, and this file is a script
-  // with no test around it (#105). It is handed the output whole rather than
-  // the fields it reads, so the checklist it renders is the set the verdict
-  // above was counted from and not a second reading of it.
-  const summary = renderReviewSummary({
+  // What the body is made of, and in what order, is `renderReviewBody`'s: it is
+  // the part of the review a human acts on, and this file is a script with no
+  // test around it (#105). It is handed the output whole rather than the fields
+  // it reads, so the record it renders is the set the verdict above was counted
+  // from and not a second reading of it (#113).
+  //
+  // The follow-ups are a group in it now rather than a block appended after it
+  // (#109, decision 8 as the maintainer settled it), and the payload the filing
+  // half reads on merge goes out last and invisibly — so the posted body is
+  // what this returns, with nothing concatenated on afterwards.
+  const reviewBody = renderReviewBody({
     verdict,
     output: result.output,
     roundNote: unreadableRoundNote(round),
+    placed,
+    stillOpen,
+    resolved,
+    followUps,
+    droppedFollowUps,
+    // *What changed in this PR* describes the change, so it is rendered where
+    // there is a change nothing has described. Which rounds those are is
+    // `describesTheChange`'s, beside the detection it reads — a fact about the
+    // round rather than about the review, and one this file has no test around
+    // it to hold.
+    showWhatChanged: describesTheChange(round),
+    runUrl: workflowRunUrl(),
   });
-  const body = `${summary}\n\n${followUpsBlock}`;
 
-  writeJson("review_payload.json", {
-    commit_id: headSha,
-    event: "COMMENT",
-    body,
-    comments: validComments.map((c) => ({
-      path: c.path,
-      line: c.line,
-      side: "RIGHT",
-      // start_line/start_side turn the anchor into a range, which is what makes
-      // a multi-line ```suggestion replace all of it rather than just the last
-      // line. Omitted entirely for single-line comments — GitHub rejects
-      // start_line == line.
-      ...(c.startLine === undefined ? {} : { start_line: c.startLine, start_side: "RIGHT" }),
-      body: c.body,
-    })),
-  });
-  writeText("summary.md", summary);
+  // A GraphQL request body, posted by the workflow with `gh api graphql
+  // --input`. REST `POST /pulls/{n}/reviews` cannot open a **file-level**
+  // thread — it answers one with a 422 — and its `comments` field is deprecated
+  // in favour of `threads` besides (#109, decision 5). `commitOID` pins the
+  // review to the head that was reviewed, exactly as `commit_id` did.
+  //
+  // Composed by a tested function rather than written out here, for the reason
+  // the body is: this file is a script with no test around it, and the shape it
+  // writes is the shape a `--jq` path in the workflow reads back.
+  writeJson(
+    "review_payload.json",
+    reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body: reviewBody, placed }),
+  );
+  writeText("summary.md", reviewBody);
+
+  // The threads this review verified, for the workflow step that closes them.
+  // Written on every run, empty list included: the step reads the file rather
+  // than deciding anything, and "there was nothing to resolve" is an answer it
+  // should not have to infer from a missing file.
+  //
+  // The reply is composed here rather than in YAML for the reason the body is:
+  // it is the only record of *why* a thread closed — GitHub takes
+  // `resolutionReason` and then exposes it nowhere — and this file is a script
+  // with no test around it.
+  writeJson("thread_resolutions.json", resolutions);
 
   // What the workflow posts the commit status from — context, state and line.
   // A file rather than a step output, for the same reason the payload above is
@@ -212,13 +273,34 @@ try {
   // Keyed on the findings rather than on the block, which is no longer the same
   // question: the block is posted either way, and a retraction is precisely the
   // run that must not mark the pull request.
-  if (followUps.length > 0) writeText("follow_ups.md", followUpsBlock);
+  if (followUps.length > 0) {
+    writeText("follow_ups.md", renderFollowUpsBlock(followUps, droppedFollowUps));
+  }
 
   console.log("Review complete.");
   console.log(
     `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output)} to fix before merge, checks ${ci}, round ${round.round}).`,
   );
-  console.log(`Inline comments: ${validComments.length} kept of ${result.output.inlineComments.length} produced.`);
+  const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
+  const missed = result.output.findings.filter(isPreviouslyMissed).length;
+  console.log(
+    `Findings: ${placed.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${placements("body")} in the body; ${missed} in code an earlier review had already read.`,
+  );
+  // The ratings, for a human explaining why the record reads the way it does.
+  // They change no outcome above (#113) — which is exactly why the log is the
+  // only place this run says them out loud besides the body.
+  const rated = (severity: Severity): number =>
+    result.output.findings.filter((f) => f.severity === severity).length;
+  console.log(`Severity: ${rated("high")} high, ${rated("medium")} medium, ${rated("low")} low.`);
+  // Split by reason rather than counted together: "the code was fixed" and "a
+  // maintainer said no" are the two ways a finding stops counting, and a human
+  // reading this log to explain a verdict needs to know which one happened.
+  const closedAs = (reason: ResolutionReason): number =>
+    resolutions.filter((r) => r.reason === reason).length;
+  console.log(
+    `Earlier findings: ${context.carriedFindings.length} open before this review — ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${stillOpen.length} still open.`,
+  );
+  console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));

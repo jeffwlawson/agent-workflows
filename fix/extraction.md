@@ -8,10 +8,11 @@ Omit threads you did not consider.
 
 - `addressed` — nothing is outstanding: the comment's concern is satisfied in the current HEAD.
   Use this **whether you fixed it in this run or an earlier commit already did** — the question
-  is whether anything is still owed, not whether you personally changed something. The thread
-  will be **resolved**.
-- `declined` — you disagree, or are deliberately not acting. The thread stays **open** so a human
-  can push back. Say plainly why, in the reply.
+  is whether anything is still owed, not whether you personally changed something.
+- `declined` — you disagree, or are deliberately not acting. Say plainly why, in the reply.
+
+Both leave the thread **open**. Neither outcome closes anything: the next review checks the code
+and closes what it finds fixed, so what you are writing is the claim it checks.
 
 Every reply is **under 100 words**, written to the person who left the comment: what you did, then
 why, then the commit if there is one. The examples below are the shape, not a length target.

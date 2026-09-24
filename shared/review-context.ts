@@ -5,8 +5,20 @@ import {
   type UnreadableSelection,
 } from "./pr-feedback.js";
 import { parseDiffLines } from "./diff-lines.js";
+import {
+  carriedFindings,
+  type CarriedFinding,
+  type SettledFinding,
+} from "./review-verification.js";
 
 export interface PullRequestContext {
+  /**
+   * The pull request's GraphQL node id. The review is posted through
+   * `addPullRequestReview`, whose input names the pull request by node id
+   * rather than by number (#110) — so it is read here, while the token is still
+   * in hand, and not by the step that posts.
+   */
+  readonly prId: string;
   readonly prTitle: string;
   readonly prBody: string;
   readonly issueNumber: string;
@@ -20,6 +32,29 @@ export interface PullRequestContext {
    * own log, where a human debugging the run reads it.
    */
   readonly unreadableFeedback: readonly UnreadableSelection[];
+  /**
+   * What an earlier review of this pull request raised and nothing has verified
+   * fixed yet — the open threads this loop opened, and the open entries in the
+   * latest review body it posted (#111).
+   *
+   * Handed to **every** review, round 1 included. A human may have pushed the
+   * fix, and "is this still true of the code in front of me" has the same
+   * answer whoever wrote the commit; a record only round 2 read would be one
+   * that a human's push silently emptied.
+   */
+  readonly carriedFindings: readonly CarriedFinding[];
+  /**
+   * What a **maintainer** has already closed on this pull request (#109,
+   * decision 10). Handed to every review as settled, so the one thing it is
+   * never asked to do is raise it again.
+   *
+   * Beside `carriedFindings` rather than inside it, because the two are
+   * opposite instructions: rule on these, leave those alone. A single list with
+   * a flag on it would make "settled" one more property of a finding a review
+   * is answering about, and a review that answered would be overruling a human
+   * by filling in a field.
+   */
+  readonly settledFindings: readonly SettledFinding[];
   readonly diff: string;
   readonly diffLines: Map<string, Set<number>>;
 }
@@ -32,7 +67,8 @@ export interface PullRequestContext {
  * workflow uses to reply to human comments.
  */
 export const fetchPullRequestContext = (prNumber: string): PullRequestContext => {
-  const prView = JSON.parse(gh(["pr", "view", prNumber, "--json", "title,body"])) as {
+  const prView = JSON.parse(gh(["pr", "view", prNumber, "--json", "id,title,body"])) as {
+    id: string;
     title: string;
     body?: string | null;
   };
@@ -95,6 +131,7 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
   const diff = feedback.diff;
 
   return {
+    prId: prView.id,
     prTitle: prView.title,
     prBody: prView.body ?? "",
     issueNumber,
@@ -102,6 +139,14 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
     linkedIssue,
     discussion,
     unreadableFeedback: feedback.unreadable,
+    // Assembled here rather than in the fetch, which reads GitHub surfaces and
+    // reports what it read. Which of those surfaces a finding is recorded on,
+    // and which copy wins when it is on both, is the review's question.
+    carriedFindings: carriedFindings({
+      threads: feedback.agentThreads,
+      latestReviewBody: feedback.latestAgentReviewBody,
+    }),
+    settledFindings: feedback.settledFindings,
     diff,
     diffLines: parseDiffLines(diff),
   };

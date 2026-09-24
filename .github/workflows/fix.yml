@@ -254,15 +254,22 @@ jobs:
           git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
-      # Reply into every thread the agent reported on, and resolve only the ones
-      # it addressed. A declined thread keeps its reply but stays OPEN, so a
-      # human can push back — auto-resolving a decline would let the agent
-      # quietly bury a disagreement.
+      # Reply into every thread the agent reported on, and resolve **none** of
+      # them (#111, and #109 decision 1). The reply still says whether the run
+      # addressed the comment or declined it, and why; what it no longer does is
+      # close the thread on the strength of its own claim.
       #
-      # Both are GraphQL mutations keyed on the thread node id, so no REST
-      # comment-id lookup is needed. Runs even when the agent made no commits:
-      # "I looked and declined" is still worth saying out loud.
-      - name: Reply to and resolve review threads
+      # The author of a fix marking its own work done is what this removes: a
+      # resolved thread is dropped from the feedback the next review
+      # is handed, so the one pass whose job is "did it land?" could not see
+      # what it was checking. A thread now closes when a **review** has read the
+      # code and verified it — `review.yml`'s `Resolve the threads this review
+      # verified` — or when a human closes it.
+      #
+      # A GraphQL mutation keyed on the thread node id, so no REST comment-id
+      # lookup is needed. Runs even when the agent made no commits: "I looked
+      # and declined" is still worth saying out loud.
+      - name: Reply to review threads
         if: steps.state.outputs.proceed == 'true' && success()
         continue-on-error: true
         env:
@@ -284,17 +291,8 @@ jobs:
                   input:{pullRequestReviewThreadId:$threadId, body:$body}
                 ) { clientMutationId }
               }' >/dev/null \
-              && echo "  replied to ${tid}" \
+              && echo "  replied to ${tid} (${status})" \
               || echo "  WARNING: reply failed for ${tid}"
-
-            if [ "$status" = "addressed" ]; then
-              gh api graphql -f threadId="$tid" -f query='
-                mutation($threadId:ID!) {
-                  resolveReviewThread(input:{threadId:$threadId}) { clientMutationId }
-                }' >/dev/null \
-                && echo "  resolved ${tid}" \
-                || echo "  WARNING: resolve failed for ${tid}"
-            fi
           done
 
       # Findings that belong to no thread: something out of scope noticed while
@@ -359,9 +357,10 @@ jobs:
       #
       # And fail the run if the add itself fails, with a reason naming the way
       # out. The generic remedy on the failure comment below — re-add
-      # `agent:fix` — is the wrong one here: this run's threads are answered
-      # and resolved, so a second fix run would find nothing trusted to act on
-      # and refuse.
+      # `agent:fix` — is the wrong one here: this run's threads are answered but
+      # still **open**, because only a review closes one now (#111), so a second
+      # fix run would read its own replies back and work the same feedback
+      # again. What is missing is the review, so the remedy names the review.
       - name: Request re-review
         if: steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed == 'true'
         env:
@@ -370,7 +369,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
-            printf 'The fix is pushed, but `agent:review` could not be added, so no re-review was requested. Add `agent:review` to this PR by hand — re-adding `agent:fix` would find its threads already answered and refuse.\n' \
+            printf 'The fix is pushed, but `agent:review` could not be added, so no re-review was requested. Add `agent:review` to this PR by hand — re-adding `agent:fix` would work the same threads again, since a thread stays open until a review verifies the fix landed.\n' \
               > "${RUNNER_TEMP}/failure_reason.txt"
             exit 1
           fi
@@ -392,9 +391,9 @@ jobs:
       # push is a step that can fail on a branch that already moved: the thread
       # replies, the top-level comments and the re-review this run asks for.
       # "Re-add `agent:fix` to retry" is the wrong answer to all three — the
-      # threads are answered and resolved by then, so a second fix run finds
-      # nothing it trusts to act on and refuses, which is exactly what the
-      # re-review step's own reason file says.
+      # threads are answered by then, and since #111 they stay open until a
+      # review verifies the fix, so a second fix run re-reads feedback this one
+      # has already acted on and answers it twice.
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && failure()
         env:
@@ -407,7 +406,7 @@ jobs:
           fi
           outcome="Re-add \`agent:fix\` to retry."
           if [ "$PUSHED" = "true" ]; then
-            outcome="The fix is pushed; what failed came after it, so re-adding \`agent:fix\` would find its threads already answered and refuse. Act on the reason above instead."
+            outcome="The fix is pushed; what failed came after it, so re-adding \`agent:fix\` would work threads this run has already answered. Act on the reason above instead."
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           printf '`agent:fix` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\n%s\n' "$reason" "$RUN_URL" "$outcome" > "$body_file"

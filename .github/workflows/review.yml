@@ -158,7 +158,7 @@ jobs:
       #
       # The second refusal is the one the shared concurrency group makes
       # necessary. Everything this job reads is pinned to the head SHA in the
-      # `labeled` payload — the checkout below, and `commit_id` on the posted
+      # `labeled` payload — the checkout below, and `commitOID` on the posted
       # review, which is `git rev-parse HEAD` of that checkout. The payload is
       # snapshotted at label time, and joining `agent-pr-*` means the run can
       # start long after: label `agent:review` while a fix is running and the
@@ -172,7 +172,7 @@ jobs:
       #
       # Refuse rather than re-target the current tip: a review is a statement
       # about the commit a human pointed at, and re-pointing it at whatever
-      # arrived since would also need the CI wait and `commit_id` moved to the
+      # arrived since would also need the CI wait and `commitOID` moved to the
       # new SHA. Re-adding the label after the mutate finishes is one action and
       # reviews the right thing. An unreadable `gh pr view` proceeds rather than
       # refuses — an API blip is not evidence the branch moved.
@@ -665,9 +665,22 @@ jobs:
         # process `cwd`: the runner still does its git work in the checkout.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.3.1 -- agent-workflows review
 
+      # GraphQL `addPullRequestReview`, not REST `POST /pulls/{n}/reviews`, for
+      # the one thing REST cannot do: open a **file-level** thread in the same
+      # call as the review — it answers one with a 422 — which is where a
+      # finding goes when it is in a changed file but outside its hunks (#110).
+      # REST's `comments` field is deprecated in favour of `threads` besides.
+      #
+      # The whole request body is `review_payload.json`, written by the runner
+      # from a unit-tested function: `--input` sends a file verbatim, so nothing
+      # here composes a query or names a field. The endpoint is `graphql` rather
+      # than `/graphql` deliberately — that is what makes `gh` fail the step on
+      # an `errors` array, which GraphQL returns with HTTP 200 and which a raw
+      # path would read as success and post nothing.
+      #
       # The `id:` and the captured URL are the verdict's (#96): a commit status
       # carries one link, and the only place the posted review's own URL exists
-      # is the response to this POST. `--jq` rather than a second lookup — the
+      # is the response to this call. `--jq` rather than a second lookup — the
       # newest review on the pull request is not reliably this one.
       - name: Post PR review
         id: review
@@ -675,7 +688,7 @@ jobs:
         env:
           PAYLOAD: ${{ runner.temp }}/review_payload.json
         run: |
-          url=$(gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" --input "$PAYLOAD" --jq .html_url)
+          url=$(gh api graphql --input "$PAYLOAD" --jq .data.addPullRequestReview.pullRequestReview.url)
           echo "url=${url}" >> "$GITHUB_OUTPUT"
 
       # The verdict: what a maintainer does next, on the commit it is about.
@@ -717,6 +730,91 @@ jobs:
           fi
           gh api "${args[@]}" \
             || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above: a 403 is a caller missing \`statuses: write\` (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
+
+      # The threads this review checked and found fixed (#111, and #109 decision
+      # 1). The **reviewer** closes a finding and the fixer never does: a fix run
+      # replies and resolves nothing, so nothing is marked done by the run that
+      # claims to have done it.
+      #
+      # `resolutionReason` is recorded by GitHub and exposed nowhere afterwards
+      # — no field on `PullRequestReviewThread` reads it back — so the reply is
+      # the record. It is posted first for that reason, and the resolve is
+      # **gated on it**: a thread that closes with no reply loses the only
+      # statement of why, and on the `WONT_FIX` arm what is lost is the
+      # maintainer's quoted words, which is the whole of what makes a
+      # misreading visible. Ordering alone does not prevent that — only the
+      # `continue` does. A reply that would not post therefore leaves its
+      # thread open, which is the direction this loop fails in everywhere else.
+      #
+      # Two reasons, and which one a thread closes on is decided by
+      # `verifyCarried` and read out of the file, never derived here: a finding
+      # the review verified fixed closes as `ADDRESSED`, and one a maintainer
+      # declined closes as `WONT_FIX` with their words quoted back (#109,
+      # decision 10). The enum is spelled out on both arms because it is a
+      # literal in the document rather than a variable GitHub would coerce —
+      # and the branch is on a fixed list, so a value this step does not
+      # recognise closes as addressed instead of putting an unknown string into
+      # a mutation.
+      #
+      # Both mutations spend `pull-requests: write`, which this job already holds
+      # for its label edits, and nothing else. Resolving a thread is not a
+      # `contents:` write, which is the scope this job deliberately does not
+      # have (docs/parity.md §10) — a review still cannot touch the branch.
+      #
+      # Whole-step `continue-on-error`, like `agent-fix`'s reply step: a thread
+      # that would not close is a thread a human closes, and a posted review and
+      # its verdict are worth more than the tidying after them. The per-mutation
+      # `||` is what keeps one bad id from taking the rest of the list with it.
+      #
+      # After the verdict, on purpose. This step talks to the same API the two
+      # before it do, and the verdict is the line a maintainer acts on — so
+      # anything that can go slowly or wrong here happens once the pull request
+      # already carries the answer.
+      - name: Resolve the threads this review verified
+        if: steps.state.outputs.proceed == 'true' && success()
+        continue-on-error: true
+        env:
+          RESOLUTIONS: ${{ runner.temp }}/thread_resolutions.json
+        run: |
+          set -uo pipefail
+          [ -f "$RESOLUTIONS" ] || { echo "No resolutions file; nothing to resolve."; exit 0; }
+          count=$(jq 'length' "$RESOLUTIONS")
+          echo "Resolving ${count} verified thread(s)."
+
+          for i in $(seq 0 $((count - 1))); do
+            tid=$(jq -r ".[$i].threadId" "$RESOLUTIONS")
+            body=$(jq -r ".[$i].reply" "$RESOLUTIONS")
+            reason=$(jq -r ".[$i].reason" "$RESOLUTIONS")
+
+            gh api graphql -f threadId="$tid" -f body="$body" -f query='
+              mutation($threadId:ID!,$body:String!) {
+                addPullRequestReviewThreadReply(
+                  input:{pullRequestReviewThreadId:$threadId, body:$body}
+                ) { clientMutationId }
+              }' >/dev/null \
+              && echo "  replied to ${tid}" \
+              || { echo "  WARNING: reply failed for ${tid}; leaving the thread open, since a thread that closes with no reply loses the only record of why."; continue; }
+
+            if [ "$reason" = "WONT_FIX" ]; then
+              mutation='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(
+                    input:{threadId:$threadId, resolutionReason:WONT_FIX}
+                  ) { clientMutationId }
+                }'
+            else
+              mutation='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(
+                    input:{threadId:$threadId, resolutionReason:ADDRESSED}
+                  ) { clientMutationId }
+                }'
+            fi
+
+            gh api graphql -f threadId="$tid" -f query="$mutation" >/dev/null \
+              && echo "  resolved ${tid} (${reason})" \
+              || echo "  WARNING: resolve failed for ${tid}"
+          done
 
       # The marker for the filing half (#47): this PR's review recorded
       # out-of-scope findings, and a human still has a say before they become

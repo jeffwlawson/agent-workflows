@@ -335,18 +335,21 @@ come up was *inside* one PRD.
 | Triggered by `agent:review` on a PR | ✅ | ✅ | |
 | Refuses when the PR is closed/merged | ✅ | ✅ | added #102. Without it, labelling a merged PR ran a full agent pass and then failed at `gh pr ready`, which cannot convert a merged PR — under a warning that blames a missing `AGENT_PAT` |
 | Structured output (schema-validated JSON from the agent) | ✅ | ✅ | |
-| Inline comments filtered to lines actually in the diff | ✅ | ✅ | GitHub rejects the whole review otherwise |
+| Findings placed against the diff rather than where the model said | ✅ | ➕ | GitHub rejects the **whole** review if one line anchor is off-hunk, so the anchor has to be checked either way. CVM filters; since #110 we reroute — an off-hunk anchor in a changed file becomes a **file-level** thread, and a finding in a file the PR never touched becomes an entry in the review body. No finding is dropped, which matters because the verdict counts findings the old filter could delete |
 | Posts a review summary | ✅ | ✅ | |
-| Posts inline comments | ✅ | ✅ | |
-| Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query; skips resolved threads |
+| Posts inline comments | ✅ | ✅ | as GraphQL `addPullRequestReview` threads since #110 — REST review-create cannot open a file-level thread (422) and its `comments` field is deprecated in favour of `threads` |
+| **Every finding carries an id the workflow wrote** | ❌ | ➕ | #110. A hidden marker in each thread and each body entry, so a later round recognises a finding it has seen without matching its text. The model is told to write none: one it invented would be matched against a thread it never opened |
+| Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query. Resolved threads are out of the rendered feedback, but no longer simply dropped: since #112 the query reads `resolvedBy`, and the ones a human closed come back as the *settled* list (below) |
+| **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review — round 1 included — is handed the open threads this loop opened and the open entries in the latest review body, each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
+| **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
-| **Replies in review threads** | ✅ | ❌ | the *review* does not reply — but `agent:fix` does, and resolves what it settled (§4) |
+| **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
 | `contents: read` (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits |
-| **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the inline comments, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
+| **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the findings, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
 
 ---
 
@@ -364,7 +367,7 @@ come up was *inside* one PRD.
 | Agent may **decline** feedback with a reason | ✅ | ✅ | explicit in both prompts |
 | Pushes with `--force-with-lease` pinned to the run's head SHA | ✅ | ✅ | |
 | **Posts thread replies back** | ✅ | ✅ | one reply per thread, `addressed` or `declined`, with the reason |
-| **Resolves the threads it addressed** | ❌ | ➕ | declines stay **open** so a human can push back |
+| **Resolves the threads it addressed** | ❌ | ❌ | it did until #111 and now resolves **nothing**: the author of a fix marked its own work done, and a resolved thread is dropped from what the next review is shown, so the pass that checks it could not see it. The reviewer closes threads now (§3), and `addressed` / `declined` is a claim recorded in the reply |
 | **Posts new inline comments** | ✅ | ❌ | **decision, not omission** — see below |
 | **Posts top-level comments** | ✅ | ✅ | ours states in the prompt what the channel is *for*; CVM has the field and no guidance anywhere |
 
@@ -376,9 +379,11 @@ listens on `issues:` only; and every other workflow in this repo holds **file na
 `-pr` suffix is redundant besides — it triggers on `pull_request_target` and refuses on a closed or
 merged PR, so it cannot run on anything else.
 
-Ours converses in-thread and closes what it settled; CVM replies but never resolves, so its
-threads accumulate until a human clears them. Since #78 it can also *raise* something that belongs
-to no thread, as a top-level comment on the PR conversation — the channel that was missing when
+Ours converses in-thread; CVM replies too, and neither closes a thread. The difference is what
+happens next: ours are closed by the **review** that verifies them (§3, #111), so they neither
+accumulate until a human clears them nor close on the word of the run that wrote the fix. Since #78
+it can also *raise* something that belongs to no thread, as a top-level comment on the PR
+conversation — the channel that was missing when
 #63's documented bug ended up buried in a test-file comment, and when #77 offered an option
 (`open a follow-up and reference it`) the agent had no way to take.
 
@@ -488,7 +493,7 @@ parent — and §10 records why the sub-issues stay out of it.
 ## 9. If we closed the gaps, in order
 
 Done since first written: **conversational replies + resolution** (#49/#50 — and ours also
-*resolves* threads, which CVM does not), **`agent-update-branch`** (#52, motivated by a real trap,
+*resolves* threads, which CVM does not; since #111 it is the review that closes them, not the fix), **`agent-update-branch`** (#52, motivated by a real trap,
 not theory — see `friction.md`), **implement → review auto-cascade**, **review marks the
 PR ready** (it had become a manual step on every agent PR), **`agent-implement-prd`** (#92 — the
 execution half of the PRD tier, which had been off this list entirely), and **the publish contract
@@ -554,6 +559,15 @@ expensive to rediscover.
   problem #96 exists to remove. Nothing above changes: review still adds no trigger label, so the
   arrow stops at review, and `agent:fix` is still a human's to add.
 
+  **And since #111 the leg is load-bearing rather than tidying.** A fix run resolves nothing, so
+  the review it asks for is the pass that *ends* the round's findings: it reads the code the fix
+  wrote, closes what landed and counts what did not. "A round closes itself out" used to mean the
+  verdict got refreshed, with the threads already closed by the run that wrote the fix; it now
+  means the findings themselves are ruled on by something other than their fixer. What this costs
+  is that the leg is no longer optional in practice — a round nobody reviews again is a round whose
+  threads all stay open — and that is the right cost, because the alternative is the fixer
+  closing them.
+
   A second bound now sits under the first, and it is what makes the leg safe to automate rather
   than merely acyclic. The review a fix asks for is by construction a **round 2** (an earlier
   verdict stands, every commit since is the loop's own, and at least one of them is a non-merge
@@ -567,7 +581,12 @@ expensive to rediscover.
 
   And a fix run that pushed *nothing* requests nothing. The threads it replied to already say why
   it declined, and the verdict standing on the head commit is still the right one: nothing has
-  happened for a review to be about.
+  happened for a review to be about. Those threads stay **open**, which is the same answer #111
+  gives everywhere else and lands here as a statement about who decides: a finding the loop
+  declined is not a finding the loop may retire, so the round ends on a maintainer reading the
+  decline and resolving the thread or pushing back. That is also what makes the optional
+  "require conversation resolution" gate mean something (`docs/ADOPTING.md` §3b) — under it, the
+  merge waits on exactly that reading.
 
   **Since #99 `update-branch` walks the same leg**, on the half of its work an agent wrote: a
   conflict resolution adds `agent:review` and a clean merge does not, because a clean merge carries
@@ -600,7 +619,7 @@ expensive to rediscover.
   **The group displaces one race rather than closing it, and review has to refuse the remainder.**
   A first draft of this said "the cost of serialising is a review that waits", which is the one cost
   it does not have. Review pins everything to the head SHA in its `labeled` payload — the checkout,
-  and `commit_id` on the posted review — and that payload is snapshotted at *label* time while the
+  and `commitOID` on the posted review — and that payload is snapshotted at *label* time while the
   group decides *start* time. So: a fix is running, a human labels `agent:review`, the run snapshots
   A and waits, the fix pushes B and frees the group, and review then reads A cleanly and reviews it.
   Reading-during-a-write became reading-after-one: no torn tree, but every inline comment lands on
@@ -608,7 +627,7 @@ expensive to rediscover.
   at push time — `--force-with-lease` pinned to the same payload SHA — so review, which publishes
   rather than fails, is the only one that needed a check, and it makes it in its own preflight
   (#105). It refuses rather than re-targeting the live tip: a review is a statement about the commit
-  a human pointed at, re-pointing it would drag `commit_id` and the CI wait to a SHA nobody
+  a human pointed at, re-pointing it would drag `commitOID` and the CI wait to a SHA nobody
   labelled, and re-adding the label is one action.
 
   **What `cancel-in-progress: false` actually buys**, since it is not a queue and the difference
@@ -720,8 +739,136 @@ expensive to rediscover.
   is not — the remedy the comment gives is re-adding `agent:review`, and `Transition labels`
   removes `agent:blocked` on the way in. So the objection above (a stale label nobody clears)
   applies to the terminal-state refusal only.
-- **Only `addressed` resolves a thread.** A `declined` thread keeps its reply and stays open, so a
-  human can push back; auto-resolving a decline lets an agent bury a disagreement silently.
+- **The reviewer closes a thread; the fixer never does.** Since #111 (#109, decision 1) an
+  `agent:fix` run replies in every thread it was shown — `addressed` or `declined`, with the reason
+  — and resolves none of them. A thread closes when a **review** has read the current code and
+  ruled the finding landed, with `resolutionReason: ADDRESSED` and a reply saying why, or when a
+  human closes it.
+
+  This used to read "*only `addressed` resolves a thread*", which bounded the right hazard on the
+  wrong side. Auto-resolving a *decline* would let an agent bury a disagreement; auto-resolving an
+  *addressed* one let it mark its own work done — and because a resolved thread is dropped from the
+  feedback the next review is handed, the one pass whose job is "did it land?" could not see what
+  it was checking. #105 patched that with a checklist in the review body; moving the close to the
+  reviewer is the cause rather than the symptom.
+
+  Every review does it, round 1 included: a human may have pushed the fix, and "is this still true
+  of the code in front of me" has the same answer whoever wrote the commit. A finding the review
+  says nothing about **stays open**, which is the direction this has to fail in — a finding nobody
+  checked is not a finding anybody settled.
+- **A maintainer's decision on a finding is final, and the loop may not revisit it.** Since #112
+  (#109, decision 10) a thread a *human* resolved is passed to every later review as settled, with
+  the instruction not to raise it again **including by rephrasing** — the record matches findings by
+  id and never by text, so a re-derived finding gets a new id and nothing downstream could tell it
+  was the settled one coming back. And a thread where a maintainer replied declining the finding is
+  closed by the reviewer as `WONT_FIX`, quoting their reply, and stops counting toward the verdict.
+
+  The review reports the decline; it never takes one. It has no `declined` to reach for on its own
+  authority, a reply it cannot read as a refusal leaves the thread **open**, and — the half that is
+  structural rather than asked for — a decline closes a thread only where a reply that passed
+  `isTrustedAuthor` is on the thread. Every feedback surface on a public pull request is
+  world-writable, so a gate the *agent* applied would be one a comment could argue its way past.
+
+  The asymmetry is deliberate: an open finding that should have closed costs a round, and a closed
+  finding that should have stayed open costs the decision — silently, since `resolutionReason` is
+  readable nowhere afterwards. That is why the quote is the reply's whole content: a maintainer
+  whose words were misread can see it in one glance and reopen the thread.
+
+  **The quote is evidence, not an attribution.** A `VerificationEntry` is `id`, `status` and `note`
+  — no field names *which* comment the review read as a refusal — so the closing reply says "this
+  review read a refusal here; the latest maintainer reply on the thread is this", and the brief
+  rules the decline on that same latest reply. Written the other way round it asserted "@x declined
+  this", which on a thread where two people spoke lands on whoever wrote last: a maintainer named
+  as having taken a decision they did not take, and — where the last word reversed an earlier
+  refusal — a finding retired on a reply asking for it to be fixed.
+- **A finding an earlier review missed counts against the merge, in every round.** A real problem a
+  later review finds in code an earlier review already read is labelled *previously missed*, is a
+  `fixBeforeMerge` finding like any other, and in round 2 therefore derives the round-2 *Changes
+  recommended* (#109, decision 4; `shared/review-findings.ts`).
+
+  **This changes #96's round-2 rule**, which sent everything a verification pass newly noticed to
+  `followUps` — filed as an issue *after* the merge it should have stopped. The reasoning then was
+  that round 2 is a verification pass and not a fresh review, which is right about its *job* and
+  wrong about this case: a finding in code the record already covered says the record was wrong
+  about this pull request, which is a stronger reason to stop the merge than an ordinary finding
+  rather than a weaker one. What is unchanged is the bound around it — a round-2 review still
+  cannot produce the round-1 row, so a previously-missed finding asks a maintainer to read and
+  reply rather than sending the loop round again. Genuinely out-of-scope findings still go to
+  `followUps`, on the bar stated with that list.
+- **A label on a finding is presentation, and one predicate decides what counts.** Every entry in
+  `findings` is fix-before-merge by definition — #96's decision 1 leaves a finding two kinds and
+  `followUps` is the other — so `countFixBeforeMerge` and `reviewRecord` both take *every* finding,
+  whatever its placement and whatever its body opens with, plus the carried findings ruled still
+  open. `**Findings:** N` is therefore the record's own size, entry for entry, and a test asserts
+  that equality over every shape of review rather than over an example.
+
+  A predicate over the label was a **second definition of "a finding counts"**, and the two
+  disagreed in the unsafe direction twice. In a file the pull request never touches there is no
+  thread, so the record is the only surface: an unlabelled finding was recorded and counted
+  nowhere, and the review posted *Approval recommended* and a `success` status over a populated
+  *Open* group. On a diff line it got a thread and an id and still reached no group and no count in
+  the round that raised it — then counted through `stillOpen` in every round after, so the same
+  finding was non-blocking when found and blocking for ever after with no code change between.
+
+  The label is still asked for in both halves of the brief, because it is the first thing a human
+  reads on the thread. What it may never be again is a thing the machinery reads: the one
+  survivor is *previously missed*, which selects a **group** and not a count.
+- **Severity is display and ordering, and nothing reads it that decides anything.** Since #113
+  (#109, decision 9) every finding and every follow-up carries `high` / `medium` / `low`. The
+  review body sorts each group worst first and badges each entry; `deriveVerdict` never sees it,
+  the routing between the two finding types never sees it, and the follow-up cap never sees it.
+  A test permutes the ratings across a review and holds the verdict, the count and the kept
+  follow-ups identical.
+
+  That is the whole of the bargain, and it is the one #96 struck when it retired *judgement call*:
+  a dial the model turns that changes the outcome means every review has to be read to find out
+  which way it was turned. `low` is a **real but small defect** — nameable, with a stateable
+  consequence — and not a place to put the preferences that are still posted nowhere at any
+  rating.
+
+  The rating is written into the finding's own marker by the workflow, beside the id, because it
+  has nowhere else to survive a round: a carried finding reaches a later review as an id and one
+  line of text, and a record that badged what this round found and nothing it carried would be
+  sorting half a list.
+- **The review body is a record, and its newest copy is the current statement.** Since #113 (#109,
+  decision 8) it is Copilot's overview in order — `## Agent review`, the assessment, one sentence
+  naming what is unresolved, the step in italics, `**Findings:** N` with its severities, then
+  collapsible *Open* (this round's entries marked *new*), *Previously missed*, *Resolved since last
+  review* and *Follow-ups*, then *How this was checked* and *What changed in this PR*, then a rule
+  and the run. `shared/review-output.ts` is the one place that order is written down.
+
+  The heading is there because **every agent in the loop posts as `github-actions[bot]`**, so in a
+  timeline the overview and a fix run's thread replies are one author saying more things. The rule
+  above the run link is the body's **only** divider: between the groups it would read as a section
+  break in a list that is one record.
+
+  Two rules make it a record rather than a rendering, and both are about which entries carry a
+  finding id. An entry with **no thread** carries its id, because the newest body naming it is the
+  only thing keeping it alive; an entry **with** one does not, because the thread is its record and
+  a second copy is one a maintainer cannot close. And a **resolved** entry carries none in either
+  case — an id written back would hand a closed finding to the next round as something still to
+  rule on. A threaded entry carries a **link** instead, read off the thread's own comment; a fresh
+  finding carries neither, because its thread is opened by the same `addPullRequestReview` call
+  that posts the body and so has no URL while the body is being composed.
+- **The prose beside the record restates no finding, and is capped where it is read rather than
+  where it is asked for.** One 250-word `summary` mixed what the change is with what the reviewer
+  verified, and a prompt-only limit is one a model can talk its way past — #122's body was a
+  checklist and then every finding again as a paragraph. It is now `assessment` (one sentence
+  naming what is unresolved, under the heading, with a code-built fallback), `howChecked` (capped
+  in the schema, on every review) and `whatChanged` (a sentence and at most five lines, capped in
+  the schema).
+
+  `whatChanged` is also the one part of the body that is **not** on every review: it appears on the
+  first review of a pull request and on a later round 1 with commits nothing has described — a
+  human's push, or a conflict resolution — and is omitted on a round-2 verification and on a
+  re-review with nothing pushed since the last verdict (`describesTheChange`). Describing the
+  change again, at the top, to a reader handed that description last round is the body spending its
+  opening on something already read.
+- **A label name renders as code in the body and as plain text in the status, from one sentence.**
+  `VERDICTS` holds the plain wording because a commit status description renders no Markdown —
+  a backtick shows up in it literally — and the body decorates it on the way out. Two spellings in
+  the table would be two lines that can disagree, which is the failure the derived verdict exists
+  to remove.
 - **Every world-writable input is author-gated.** Issue and PR text reaches agents only from
   collaborators or our own bot. `agent:fix` pushes code, so an ungated input there steers commits.
 - **Agents never hold the GitHub token.** Context is fetched before the agent starts and the token
@@ -774,14 +921,40 @@ expensive to rediscover.
   costs nothing: the review → fix handoff runs through `reviews`/`reviewThreads`, not `comments`.
   It also keeps `hasFeedback` honest — a PR with every thread resolved and no human input still
   refuses, rather than finding "feedback" the agent wrote itself.
+
+  **Narrowed by #111, knowingly.** A fix run's thread replies used to leave the `inline` surface by
+  being *resolved*; now nothing resolves them until a review does, so a second `agent:fix` run on
+  the same round reads its own replies back. Accepted rather than filtered, on two grounds. The
+  reply is not an instruction — it is this agent's answer to somebody else's finding, and the
+  finding above it is still what the prompt asks it to decide about — and the thread is the surface
+  the *review* has to read to verify the claim, so a marker that hid it from one workflow would
+  have to be read by the other. What it costs is a second fix run answering a thread twice, which
+  is visible on the pull request; the failure the invariant is about is a workflow silently
+  building what it asked for, and nothing here does that.
 - **A channel the prompt bounds is also bounded mechanically.** Prompt guidance sets intent; it is
   not a control. `filterOutcomes` drops invented thread ids because a model invents them, and
   `filterTopLevelComments` caps a run at two comments and drops verbatim repeats of ones already
   posted, because "silence is the default" is otherwise aspirational — three `agent:fix` rounds
   would leave three copies of the same note, and three issues once #79 harvests them.
+
+  **And the bound is on the channel, not on a field of it.** The brief tells the model to write no
+  finding id of any kind; the half that enforces it is `withoutFindingMarkers`, run over the
+  **whole output** at each schema boundary — `reviewOutputSchema` and `fixOutputSchema` — rather
+  than called per field. The per-field version stripped `body` and left `title`, `assessment`,
+  `howChecked`, `whatChanged` and a follow-up's three strings, so the sentence above was true of
+  one field of five and the marker the prompt forbids reached the posted body through the other
+  four. Walking the value is what makes a field added later bounded without anyone remembering to,
+  which is the property the enumeration could not have.
+
+  The reading side is one function for the same reason. `parseFindingMarkers` and the reader in
+  `shared/pr-feedback.ts` disagreed about a line holding two markers — first against last — and a
+  line holding two is the only line the question is about. There is one now
+  (`lastFindingMarker`), it takes the **last**, because the workflow writes its own last, and it
+  shares its regex with the stripper: what is removed and what is recognised are the same set by
+  construction, so there is no marker that survives the strip and is still read as an id.
 - **An optional channel never has veto power over the mandatory one.** A malformed top-level
   comment is dropped with a warning, not thrown on: throwing would burn both extraction retries and
-  take every thread reply and resolve down with it. A malformed *thread outcome* still throws — that
+  take every thread reply down with it. A malformed *thread outcome* still throws — that
   is the payload the run exists to produce.
 - **Draft means the pipeline has not finished, not that the agent is still typing.** Review marks
   the PR ready, and only on `success()`. So a PR left in draft after a run is a PR whose automated

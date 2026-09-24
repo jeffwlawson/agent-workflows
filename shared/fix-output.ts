@@ -1,4 +1,5 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
+import { withoutFindingMarkers } from "./review-findings.js";
 
 /** What the fix agent decided about one review thread. */
 export interface ThreadOutcome {
@@ -7,18 +8,23 @@ export interface ThreadOutcome {
   /**
    * `addressed` — the comment's concern is satisfied in the current HEAD.
    * That includes work done by an *earlier* commit, not only by this run: a
-   * thread with nothing outstanding should close regardless of which commit
-   * settled it. The workflow replies and **resolves**.
+   * thread with nothing outstanding is one a review should be able to close,
+   * regardless of which commit settled it.
    *
-   * `declined` — you disagree, or deliberately are not acting. The workflow
-   * replies with the reason and leaves the thread **open** so a human can push
-   * back; resolving a decline would let the agent quietly bury a disagreement.
+   * `declined` — you disagree, or deliberately are not acting.
+   *
+   * **Neither closes the thread**, since #111: a fix run replies and resolves
+   * nothing, and a thread closes when a *review* has read the code and verified
+   * the finding is gone (#109, decision 1). So this is a claim recorded in the
+   * reply, and the difference it makes is to what the reply says rather than to
+   * what happens to the thread — which is the point, because the author of a
+   * fix is the one party that cannot check it.
    *
    * The split is deliberately "is anything still outstanding?", not "did I
    * personally change something?". An earlier, narrower wording ("the code was
    * changed to satisfy the comment") made the agent classify already-handled
-   * threads as declined, so they stayed open forever — reviving exactly the
-   * accumulation this reply/resolve machinery exists to prevent.
+   * threads as declined, and a reply that understates what has been done is a
+   * review round spent re-checking work nobody claimed.
    */
   readonly status: "addressed" | "declined";
   /** Markdown reply posted into the thread. */
@@ -109,8 +115,21 @@ const parseTopLevelComments = (value: unknown): TopLevelComment[] => {
     .filter((comment): comment is TopLevelComment => comment !== null);
 };
 
-export const fixOutputSchema = standardSchema<FixOutput>((value) => {
-  const record = asRecord(value, "fix output");
+/**
+ * **The same one boundary the review's output has** — every string below this
+ * line is the model's, and a finding marker in any of them is gone before any
+ * of it is read (`withoutFindingMarkers`).
+ *
+ * A fix run is shown the live markers too: the `inline` surface renders a
+ * thread's comments verbatim, so this agent is handed the exact syntax and this
+ * round's real ids exactly as the reviewer is. Its replies are posted **by the
+ * workflow bot**, which is what makes a copied marker reachable — the reader
+ * that decides which thread is one of this loop's findings looks for a marker
+ * in a bot-authored comment, so a reply quoting one could hand a later review a
+ * finding on a thread this loop never opened, under a closed finding's id.
+ */
+export const fixOutputSchema = standardSchema<FixOutput>((raw) => {
+  const record = asRecord(withoutFindingMarkers(raw), "fix output");
   return {
     threadOutcomes: asArray(record["threadOutcomes"] ?? [], "threadOutcomes").map(parseOutcome),
     topLevelComments: parseTopLevelComments(

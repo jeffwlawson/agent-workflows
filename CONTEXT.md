@@ -12,8 +12,8 @@ the middle. One workflow per label transition, near enough:
 | Label | Fires | Does |
 |---|---|---|
 | `agent:implement` on an **issue** | `implement` or `implement-prd` | branch, implement, open a draft PR, request review |
-| `agent:review` on a **PR** | `review` | wait for CI, review the diff, mark ready |
-| `agent:fix` on a **PR** | `fix` | act on review feedback, reply, resolve threads, ask for a re-review if it pushed |
+| `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
+| `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread and close none, ask for a re-review if it pushed |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
 | `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
 
@@ -24,18 +24,60 @@ sub-issue per run onto one branch, and re-adds its own label to advance.
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
 first row. A run that pushed asks for the review of what it pushed, so the round it was given
-closes without a human labelling again. That is one hop and cannot cycle: review adds no trigger
-label of its own. The review a **fix** asks for is a **second round**, which is barred from the
-round-1 *Changes recommended* — the line that promises an automatic re-review — and so cannot ask
-for another fix round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a
-full round 1, because round 2 needs a non-merge loop commit since the verdict and a resolution
-leaves only a merge. A fix run that pushed nothing asks for nothing.
+closes without a human labelling again. Since #111 that leg is also what **ends** the round: a fix
+run resolves nothing, so the review it asks for is the pass that reads the fix and closes the
+findings that landed. That is one hop and cannot cycle: review adds no trigger label of its own.
+The review a **fix** asks for is a **second round**, which is barred from the round-1 *Changes
+recommended* — the line that promises an automatic re-review — and so cannot ask for another fix
+round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a full round 1,
+because round 2 needs a non-merge loop commit since the verdict and a resolution leaves only a
+merge. A fix run that pushed nothing asks for nothing — and leaves every thread it answered open,
+so a round it declined its way through ends on a human rather than on another pass.
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
 commit status belongs to a commit, so without the copy every merge into a base branch would wipe
 the verdict off every open PR that refreshes against it. A **conflict resolution** is the loop
 writing code no review has seen, so it copies nothing and asks.
+
+**The reviewer closes a finding; the fixer never does** (#109, decision 1). A `fix` run replies in
+every thread and resolves none of them, and every review — round 1 or round 2 — takes the findings
+an earlier review left open, rules on each by the id the workflow wrote into it, and resolves the
+ones the current code settles. That is not tidiness: a resolved thread is dropped from the feedback
+the next review is handed, so while the fixer closed its own threads the one pass whose job is *did
+it land?* could not see what it was checking. Round 1 does it too, because a human may have pushed
+the fix and the question has the same answer whoever wrote the commit.
+
+**And a maintainer's decision outranks both** (#109, decision 10). A thread a *human* resolved is
+handed to every later review as settled, with the instruction not to raise it again in any wording;
+a thread where a maintainer **replied** declining the finding is closed by the reviewer as
+`WONT_FIX`, quoting them, and stops counting. The review never overrules a maintainer and never
+declines on its own authority — a reply it cannot read as a refusal leaves the thread open, which
+is the safe direction because an open finding costs a round and a wrongly closed one costs the
+decision. What makes the decline usable is the author gate rather than the reading: only a reply
+`isTrustedAuthor` passed reaches the agent at all, and only one it passed can close a thread, so a
+decline typed by anyone at all is a finding that stays open.
+
+**And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
+record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the
+review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,
+*Resolved since last review* and *Follow-ups*, then *How this was checked* and *What changed in
+this PR*, then a rule and the run. A group with nothing in it is omitted and that rule is the only
+divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
+and decides nothing else; a test permutes it across a review and holds the verdict identical. What
+makes it a record rather than a list is which entries carry a finding id: one with no thread does,
+because the newest body naming it is the only thing keeping it alive; one with a thread does not,
+because the thread is its record; and one this round closed carries none at all, or the next round
+would be handed a settled finding to rule on again. A carried entry also carries a **link** to its
+thread, which sits under an older review; a fresh one cannot, because its thread is opened by the
+same call that posts the body.
+
+The prose beside the record is capped by the schema rather than asked for in the brief, and
+**restates no finding**: the findings are above it with their severities, and the one 250-word
+paragraph that mixed *what the change is* with *what the reviewer verified* is what made a body
+long enough to bury the record in it. *What changed in this PR* is also omitted on the rounds where
+the reader has already been handed it — a round-2 verification, and a re-review with nothing pushed
+since the last verdict (`shared/review-round.ts`'s `describesTheChange`).
 
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather

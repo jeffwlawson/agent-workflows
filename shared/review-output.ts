@@ -52,8 +52,13 @@ export interface FollowUp {
 }
 
 /**
- * At most this many per review. Enforced by `capFollowUps` and *never* by the
+ * At most this many **out-of-scope** follow-ups per review — the ones the
+ * model records in `followUps`. Enforced by `capFollowUps` and *never* by the
  * schema — see the comment there.
+ *
+ * Not a bound on the recorded list as a whole. Findings the diff could not
+ * anchor are moved to follow-ups ahead of these and are exempt (#127), so the
+ * list runs past this by exactly their number — see `recordFollowUps`.
  */
 export const MAX_FOLLOW_UPS = 3;
 

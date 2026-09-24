@@ -1,4 +1,5 @@
 import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
+import { parseNameStatus } from "./diff-lines.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
 import { lastFindingMarker, openingClaim, type Severity } from "./review-findings.js";
 import type { AgentThread, MaintainerReply, SettledFinding } from "./review-verification.js";
@@ -112,6 +113,12 @@ export interface PullRequestFeedback {
   /** Diff of the branch against the PR's base branch merge-base (three-dot). */
   readonly diff: string;
   /**
+   * Every file that diff changes, read from git's machine format rather than
+   * out of the patch (`parseNameStatus`). What decides which files a finding
+   * can be anchored in; see `keyedByChangedFiles`.
+   */
+  readonly changedFiles: readonly string[];
+  /**
    * False when nothing trusted was **rendered**. Deliberately not the whole
    * question any more: it cannot tell "every surface answered and had nothing"
    * from "a surface was refused", and those two want opposite actions. Read it
@@ -137,6 +144,17 @@ export interface PullRequestFeedback {
  * `SURFACE_OF_SELECTION` in the same change — without one, an error on it is
  * unplaceable, which is read as trust-bearing and makes the run refuse.
  *
+ * `reviews` is the one selection taken from the **end** of its connection
+ * (#127, decision 4; #125). GitHub returns reviews oldest-first, so `first:50`
+ * on a pull request with more than fifty of them returns the fifty *oldest* —
+ * and `latestAgentReviewBody` below, reading the last node of that page, hands
+ * every later round the findings record of a review from long ago. Past the
+ * fiftieth review that is not a stale link but a resurrection: findings later
+ * rounds closed come back as still open, by id, with nothing on the pull
+ * request to say why. `last:` is the cheap half of decision 4 — the same one
+ * page, taken from the end — and it improves the rendered summaries for the
+ * same reason, since the newest fifty are the ones a reviewer needs.
+ *
  * That refusal is loud about an omission and silent about a **rename**: alias a
  * selection here, or follow a field of GitHub's that moves, and the query keeps
  * working while every error under it arrives unplaceable — a run refused on the
@@ -150,7 +168,7 @@ query($owner:String!,$repo:String!,$number:Int!) {
   repository(owner:$owner,name:$repo) {
     pullRequest(number:$number) {
       comments(first:100) { nodes { body author { login } authorAssociation } }
-      reviews(first:50) { nodes { body state author { login } authorAssociation } }
+      reviews(last:50) { nodes { body state author { login } authorAssociation } }
       reviewThreads(first:100) {
         nodes {
           id
@@ -644,6 +662,12 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * silently mis-filter; the fallback to it was deliberately removed once already
  * (see review-context.ts) — do not reintroduce it.
  *
+ * `core.quotePath=false` so a non-ASCII path is shown as itself — `café.ts`,
+ * not `"caf\303\251.ts"`. The model reads this diff and copies paths out of
+ * it, and a finding whose path matches no key is demoted (#127); an escaped
+ * spelling is one more way to miss. `parseDiffLines` still undoes quoting,
+ * because a `"`, a `\` or a control character is quoted under any setting.
+ *
  * Refuses an absent or empty base rather than defaulting to one. It defaulted
  * to `main` until #98, which is the same silent wrong-branch failure one level
  * down: on a `master` repo every review diffed against a ref that did not
@@ -666,14 +690,34 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * which admits org-adjacent or better (#68). Neither is what makes this call
  * safe: the argv form is, and it holds however the ref got here.
  */
-export const diffCommandAgainstBase = (baseRef: string | undefined): readonly string[] => {
+export const diffCommandAgainstBase = (baseRef: string | undefined): readonly string[] => [
+  "-c",
+  "core.quotePath=false",
+  "diff",
+  threeDotRange(baseRef),
+];
+
+/**
+ * The same diff as `diffCommandAgainstBase`, as the list of files it changes:
+ * the same range, so the two cannot describe different changes. `-z` is what
+ * makes the list exact — see `parseNameStatus`.
+ */
+export const changedFilesCommandAgainstBase = (baseRef: string | undefined): readonly string[] => [
+  "diff",
+  "--name-status",
+  "-z",
+  threeDotRange(baseRef),
+];
+
+/** `<base>...HEAD`, refusing an absent base — the reasons are on `diffCommandAgainstBase`. */
+const threeDotRange = (baseRef: string | undefined): string => {
   const base = (baseRef ?? "").trim();
   if (!base) {
     throw new Error(
       "BASE_REF is empty. The workflow sets it from the pull request's base ref, falling back to its `default-branch` input; without it this diff would have to guess a branch, and a wrong guess is a review that silently comments on the wrong lines (#71).",
     );
   }
-  return ["diff", `${base}...HEAD`];
+  return `${base}...HEAD`;
 };
 
 /**
@@ -1017,6 +1061,11 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
   // loop write it", and the wider gate would admit a maintainer's own review,
   // whose body carries no finding ids and whose prose is not a record to verify
   // against.
+  //
+  // **The last node of the last page**, which is what `reviews(last:50)` in the
+  // query makes this: `.pop()` over a page taken from the *front* is the newest
+  // of the fifty oldest, which is only the newest review while a pull request
+  // has had fewer than fifty (#125).
   const latestAgentReviewBody =
     present(pr?.reviews?.nodes)
       .filter((review) => isWorkflowBot(review.author?.login ?? undefined))
@@ -1043,6 +1092,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     latestAgentReviewBody,
     priorTopLevelComments,
     diff: git(diffCommandAgainstBase(process.env["BASE_REF"])),
+    changedFiles: parseNameStatus(git(changedFilesCommandAgainstBase(process.env["BASE_REF"]))),
     // Deliberately computed from `all`, which no longer contains our own
     // top-level comments: a PR with every thread resolved and no human input
     // must still refuse, rather than find "feedback" the agent wrote itself.

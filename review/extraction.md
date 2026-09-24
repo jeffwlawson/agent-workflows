@@ -4,10 +4,20 @@ Do not change files. Do not run commands. Do not include any text outside the `<
 
 ## Where each finding goes — `findings`
 
-Every finding names the `path` and `line` in the **source** that it is about. Where it is posted is
-not yours to decide and not yours to state: the workflow reads the diff and puts each finding on
-the line, on the file, or in the review body, in that order of preference. Nothing is dropped, so
-give the truest location you have rather than the nearest one inside the diff.
+Every finding names the `path` and `line` it is **anchored** at, and that anchor is always
+something this pull request changed. Where it is posted is not yours to decide and not yours to
+state: the workflow reads the diff and puts each finding on the line or on the file, in that order
+of preference.
+
+A problem in a file this pull request does not touch is anchored at **the change that causes it**,
+with the untouched `path:line` named in the body — on `src/api.ts:42`: *"This changes the signature
+of `parse()`, but `docs/api.md:18` still describes the old one."* A finding about untouched code
+that no change causes is not this pull request's to fix: put it in `followUps` instead.
+
+The workflow enforces that rather than trusting it. A finding whose `path` is in no file this pull
+request changes is **moved to `followUps`** — filed when the pull request merges, with the body
+saying it was moved — so it stops counting toward the verdict. Nothing is dropped; what an anchor
+away from the change costs is the finding's power to stop the merge.
 
 `title` is one short line, as a reader scans it in a list of what is open — the claim, not the
 evidence. Under about twelve words.
@@ -166,6 +176,7 @@ would most want filed first.
   "needsYou": "Omit this field unless another pass cannot settle it; one line naming which of the three cases it is.",
   "findings": [
     { "title": "parse() returns before its guard runs", "path": "src/example.ts", "line": 42, "severity": "high", "body": "**Fix before merge.** `parse()` returns before the guard below it runs, so a malformed input reaches `apply()` unchecked." },
+    { "title": "the signature change leaves the docs wrong", "path": "src/api.ts", "line": 42, "severity": "medium", "body": "**Fix before merge.** This changes the signature of `parse()`, but `docs/api.md:18` still describes the old one. Anchored at the change, because that is what makes the other file wrong." },
     { "title": "a comment describes the old behaviour", "path": "src/helpers.ts", "startLine": 87, "line": 88, "severity": "low", "body": "**Fix before merge.** This comment describes the old behaviour.\n\n```suggestion\n * Returns every match, not just the first — callers rely on the full\n * list, so narrowing it here would be a silent behaviour change.\n```" }
   ],
   "followUps": [

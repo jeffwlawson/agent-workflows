@@ -10,6 +10,8 @@ import {
   parseFinding,
   parseFindingMarkers,
   parseSeverity,
+  pathErrorNote,
+  pathErrors,
   placeFindings,
   PREVIOUSLY_MISSED_LABEL,
   reviewMutation,
@@ -30,11 +32,12 @@ import { carriedFindings } from "../shared/review-verification.js";
 
 /**
  * Where a finding is posted is the workflow's decision, taken from the diff —
- * never the model's, which routinely invents a plausible line number. Three
- * placements, and the point of having three is that **none of them is
- * "nowhere"**: the filter this replaced dropped an off-hunk anchor outright, so
- * a review that found something could post a verdict counting it and no record
- * of what it was.
+ * never the model's, which routinely invents a plausible line number. Two
+ * placements, and both of them are a thread: an off-hunk anchor in a changed
+ * file becomes a thread on the file rather than being dropped, which is what
+ * kept a review from counting a finding it posted no record of. An anchor in a
+ * file the diff does not cover reaches neither, and since #127 leaves here as a
+ * follow-up rather than as an entry nobody can answer.
  *
  * The fixture is real `git diff` output. `src/queue.ts` is changed and its one
  * hunk covers new-side lines 8..15; `docs/notes.md` is changed too, so the
@@ -81,7 +84,69 @@ const counting = (): (() => string) => {
 };
 
 const place = (findings: readonly Finding[]): PlacedFinding[] =>
-  placeFindings(findings, DIFF_LINES, counting());
+  placeFindings(findings, DIFF_LINES, counting()).placed;
+
+/** The other half of the same call: what the diff gave no anchor to. */
+const unanchored = (findings: readonly Finding[]): Finding[] =>
+  placeFindings(findings, DIFF_LINES, counting()).unanchored;
+
+/**
+ * **A path that names nothing is not "outside the change".** Demotion rests on
+ * the path being a real file the pull request did not touch. A path that is no
+ * file at all is a slip in the review, so it must not turn into a green verdict.
+ */
+describe("pathErrors", () => {
+  const files = new Set(["src/queue.ts", "src/other.ts", "b/queue.ts", "src/café.ts"]);
+  const repo = (path: string): boolean => files.has(path);
+
+  it("passes over a real file the change did not touch — that one is a follow-up", () => {
+    expect(pathErrors([finding({ path: "src/other.ts" })], repo)).toEqual([]);
+  });
+
+  it.each([
+    ["a leading ./", "./src/other.ts"],
+    ["surrounding space", " src/other.ts "],
+    ["git's quoting", '"b/src/caf\\303\\251.ts"'],
+    ["a directory really called b", "b/queue.ts"],
+  ])("recognises a real file under %s", (_case, path) => {
+    expect(pathErrors([finding({ path })], repo)).toEqual([]);
+  });
+
+  /**
+   * Asked per path, and only of the unanchored ones — never the whole tree,
+   * whose listing is unbounded output on a large repository.
+   */
+  it("asks about nothing when every finding was placed", () => {
+    const asked: string[] = [];
+    pathErrors([], (path) => (asked.push(path), true));
+
+    expect(asked).toEqual([]);
+  });
+
+  it("reports a path that is no file in the repository", () => {
+    const typo = finding({ path: "src/qeueu.ts" });
+
+    expect(pathErrors([typo, finding({ path: "src/other.ts" })], repo)).toEqual([typo]);
+  });
+});
+
+describe("pathErrorNote", () => {
+  it("says nothing when every path is a real file", () => {
+    expect(pathErrorNote([])).toBeUndefined();
+  });
+
+  it("names each path once and says why a human has to look", () => {
+    const note = pathErrorNote([
+      finding({ path: "src/qeueu.ts" }),
+      finding({ path: "src/qeueu.ts", line: 20 }),
+      finding({ path: "lib/nope.ts" }),
+    ]);
+
+    expect(note).toContain("3 findings name a path that is no file in this repository");
+    expect(note).toContain("(`src/qeueu.ts`, `lib/nope.ts`)");
+    expect(note).toContain("can hide a real blocker");
+  });
+});
 
 describe("placeFindings", () => {
   it("threads a finding on a line inside a hunk", () => {
@@ -120,22 +185,170 @@ describe("placeFindings", () => {
 
   /**
    * And a file the pull request never touched has no thread of any kind to hang
-   * on, so it goes to the body with its `path:line` — the third placement, and
-   * the one that used to be silence.
+   * on — not even a file-level one. Since #127 that is not a third placement
+   * but the answer that takes the finding out of the review: nothing the change
+   * did causes it, so it is a follow-up rather than a blocker, and it leaves
+   * here in the other list.
    */
-  it("puts a finding in an untouched file in the review body", () => {
-    expect(place([finding({ path: "src/other.ts", line: 88 })])[0]?.placement).toBe("body");
+  it("places nothing for a finding in a file the pull request never touched", () => {
+    const findings = [finding({ path: "src/other.ts", line: 88 })];
+
+    expect(place(findings)).toEqual([]);
+    expect(unanchored(findings)).toEqual(findings);
   });
 
-  it("keeps every finding, whichever way it was placed", () => {
-    const placed = place([
+  /**
+   * **One reason, not two.** "Nothing this pull request changed causes it" is
+   * inferred from a lookup failing, and that inference is only sound while the
+   * lookup can fail for that reason alone. The keys are sliced off `+++ b/` and
+   * `parseFinding` stores the model's path verbatim, so before this a model
+   * that wrote `./src/queue.ts` — or the `b/` prefix it read off the diff
+   * header, or a trailing space — had its finding demoted out of the count: no
+   * thread, no record entry, *approval recommended* and a `success` status over
+   * a blocker the review meant.
+   *
+   * So a miss is retried against the spellings a model reaches for. The anchor
+   * comes back in the **diff's** spelling, not the model's, because the thread
+   * is posted under this path and GitHub matches it against the diff the same
+   * way this map does — a placement that then fails to post is the whole review
+   * rejected.
+   */
+  it.each([
+    ["a leading ./", "./src/queue.ts"],
+    ["the diff header's b/", "b/src/queue.ts"],
+    ["the diff header's a/", "a/src/queue.ts"],
+    ["a leading /", "/src/queue.ts"],
+    ["surrounding space", "  src/queue.ts "],
+    ["both at once", " ./src/queue.ts"],
+  ])("anchors a finding whose path carries %s", (_case, path) => {
+    const placed = place([finding({ path, line: 11 })]);
+
+    expect(placed[0]?.placement).toBe("line");
+    expect(placed[0]?.finding.path).toBe("src/queue.ts");
+    expect(reviewThreads(placed)[0]?.path).toBe("src/queue.ts");
+  });
+
+  /**
+   * And nothing is normalised into existence. A repository whose diff really
+   * does hold `b/queue.ts` matches on the first try, so the stripping below it
+   * is never reached and its finding is not silently re-pointed at `queue.ts`.
+   */
+  it("prefers the spelling the diff holds over the one stripping would produce", () => {
+    const lines = parseDiffLines(`diff --git a/b/queue.ts b/b/queue.ts
+index 0ff3bbb..c6ca7ae 100644
+--- a/b/queue.ts
++++ b/b/queue.ts
+@@ -8,6 +8,7 @@
+ const eight = 8;
++const nine = 9;
+ const ten = 10;
+`);
+    const { placed } = placeFindings([finding({ path: "b/queue.ts", line: 9 })], lines, counting());
+
+    expect(placed[0]?.finding.path).toBe("b/queue.ts");
+    expect(placed[0]?.placement).toBe("line");
+  });
+
+  /**
+   * A path copied out of the diff the way git quoted it — the `b/` inside the
+   * quotes, the bytes octal-escaped — meets the key at the real path, which is
+   * also the spelling the thread is posted under.
+   */
+  it("anchors a finding whose path is the diff's quoted spelling", () => {
+    const lines = parseDiffLines(`diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"
+index 422c2b7..55dce13 100644
+--- "a/src/caf\\303\\251.ts"
++++ "b/src/caf\\303\\251.ts"
+@@ -1,2 +1,2 @@
+ a
+-b
++B
+`);
+    const { placed } = placeFindings(
+      [finding({ path: '"b/src/caf\\303\\251.ts"', line: 2 })],
+      lines,
+      counting(),
+    );
+
+    expect(placed[0]?.finding.path).toBe("src/café.ts");
+    expect(placed[0]?.placement).toBe("line");
+  });
+
+  /** A path no spelling reaches is still unanchored, which is the arm the rest rests on. */
+  it("moves a finding whose path no spelling of it is in the diff", () => {
+    expect(unanchored([finding({ path: "./src/other.ts", line: 88 })])).toHaveLength(1);
+  });
+
+  /**
+   * **A file the change deleted, renamed or rewrote wholesale is still a file
+   * the change touched** (#127). None of them names a new side — a deletion
+   * writes `+++ /dev/null`, and a pure rename, a binary change and a mode
+   * change write no `+++` line at all — so the diff holds no line for a thread
+   * to anchor at, and `parseDiffLines` keys each of them with an empty set for
+   * that reason (`shared/diff-lines.ts`).
+   *
+   * What that buys is the arm below: a file-level thread. Read as unanchored
+   * instead, "you deleted `src/gone.ts`, which `src/index.ts` still imports"
+   * would be subtracted from the count and filed as a follow-up — a finding
+   * anchored at precisely what the change *did*, demoted for having been
+   * anchored well.
+   */
+  it.each([
+    ["a file it deleted", "src/gone.ts"],
+    ["a file it renamed with no other change", "src/renamed.ts"],
+    ["a file it changed in binary", "assets/logo.png"],
+    ["a file whose mode alone it changed", "scripts/deploy.sh"],
+  ])("threads a finding about %s on the file", (_case, path) => {
+    const lines = parseDiffLines(`diff --git a/src/gone.ts b/src/gone.ts
+deleted file mode 100644
+index 422c2b7..0000000
+--- a/src/gone.ts
++++ /dev/null
+@@ -1,2 +0,0 @@
+-const a = 1;
+-const b = 2;
+diff --git a/src/was.ts b/src/renamed.ts
+similarity index 100%
+rename from src/was.ts
+rename to src/renamed.ts
+diff --git a/assets/logo.png b/assets/logo.png
+index 742c16a..b0e7c0e 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ
+diff --git a/scripts/deploy.sh b/scripts/deploy.sh
+old mode 100644
+new mode 100755
+`);
+    const { placed, unanchored: moved } = placeFindings([finding({ path, line: 1 })], lines, counting());
+
+    expect(moved).toEqual([]);
+    expect(placed[0]?.placement).toBe("file");
+    // A file-level thread, which is the one shape GitHub takes here: the path
+    // and no line at all.
+    expect(reviewThreads(placed)).toEqual([{ path, body: expect.stringContaining("the guard") }]);
+  });
+
+  /**
+   * And it carries **no id**, which is the mechanical half of "it is not a
+   * finding this pull request owns": an id exists so a later round recognises
+   * something it raised, and this is never raised.
+   */
+  it("spends no id on a finding it could not anchor", () => {
+    const placed = place([finding({ path: "src/other.ts", line: 88 }), finding({ line: 11 })]);
+
+    expect(placed.map((p) => p.id)).toEqual(["f-1"]);
+  });
+
+  it("keeps every finding, whichever list it went to", () => {
+    const findings = [
       finding({ line: 11 }),
       finding({ line: 400 }),
       finding({ path: "src/other.ts", line: 88 }),
-    ]);
+    ];
+    const { placed, unanchored: moved } = placeFindings(findings, DIFF_LINES, counting());
 
-    expect(placed.map((p) => p.placement)).toEqual(["line", "file", "body"]);
-    expect(placed.map((p) => p.finding.line)).toEqual([11, 400, 88]);
+    expect(placed.map((p) => p.placement)).toEqual(["line", "file"]);
+    expect(placed.map((p) => p.finding.line)).toEqual([11, 400]);
+    expect(moved.map((f) => f.line)).toEqual([88]);
   });
 
   it("gives each finding its own id, in order", () => {
@@ -221,8 +434,15 @@ describe("reviewThreads", () => {
     expect("side" in (thread ?? {})).toBe(false);
   });
 
-  it("makes no thread for a finding placed in the body", () => {
-    expect(reviewThreads(place([finding({ path: "src/other.ts", line: 88 })]))).toEqual([]);
+  /**
+   * Nothing is filtered here any more, and nothing needs to be: every placement
+   * `placeFindings` returns is one GitHub will open a thread for, so the count
+   * of threads is the count of placed findings.
+   */
+  it("opens a thread for every placed finding", () => {
+    const placed = place([finding({ line: 11 }), finding({ line: 400 })]);
+
+    expect(reviewThreads(placed)).toHaveLength(placed.length);
   });
 
   /**
@@ -366,8 +586,8 @@ describe("an identifier the model smuggled into its output", () => {
       },
       {
         title: `the cache key omits the tenant ${LIVE}`,
-        path: "src/other.ts",
-        line: 88,
+        path: "docs/notes.md",
+        line: 2,
         severity: "low",
         body: `**Fix before merge.** \`key()\` hashes the id and not the tenant ${CLOSED}`,
       },
@@ -422,11 +642,12 @@ describe("an identifier the model smuggled into its output", () => {
    */
   it("posts only the markers the workflow wrote, across the body and every thread", () => {
     const output = parse(SMUGGLED);
-    const placed = placeFindings(output.findings, DIFF_LINES, counting());
+    const { placed } = placeFindings(output.findings, DIFF_LINES, counting());
     const body = renderReviewBody({
       verdict: VERDICTS["changes recommended"],
       output,
       placed,
+      movedToFollowUps: 0,
       stillOpen: [],
       resolved: [],
       followUps: output.followUps,
@@ -456,6 +677,7 @@ describe("an identifier the model smuggled into its output", () => {
       verdict: VERDICTS["approval recommended"],
       output: clean,
       placed: [],
+      movedToFollowUps: 0,
       stillOpen: [],
       resolved: [],
       followUps: [],
@@ -467,7 +689,12 @@ describe("an identifier the model smuggled into its output", () => {
 
     expect(carried).toEqual([]);
     expect(
-      deriveVerdict(parse({}), { ci: "green", round: 2, stillOpen: carried.length }).verdict,
+      deriveVerdict(parse({}), {
+        ci: "green",
+        round: 2,
+        stillOpen: carried.length,
+        movedToFollowUps: 0,
+      }).verdict,
     ).toBe("approval recommended");
   });
 });

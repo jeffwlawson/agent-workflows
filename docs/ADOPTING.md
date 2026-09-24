@@ -451,6 +451,10 @@ empty:
   request, and a follow-up is by definition what does not. Removing the `agent:follow-ups` label is
   how you decline them.
 
+  A finding the review meant to block on can land here too, and the body says so in a line under
+  the count: *"1 finding was moved to follow-ups"*. That is a finding whose anchor was in no file
+  the pull request changes — see below.
+
 Two collapsed sections follow the groups, and neither is a place a finding is ever restated:
 
 - **How this was checked** — what the reviewer verified: checks it ran or read, behaviour it
@@ -472,10 +476,22 @@ findings get the same assessment as three `High` ones. That is deliberate — a 
 that changes the outcome is one you have to check on every review to find out which way it was
 turned. `Low` means a real but small defect; preferences are still posted nowhere, at any rating.
 
-An entry quoted in full, with its evidence indented under it, is a finding in a file this pull
-request does not change. GitHub has no diff line to hang a thread on there, so the body is the only
-place it can live. Every other entry is the one-line version of a thread, and the thread is where
-you answer it.
+**Nearly every entry is the one-line version of a thread**, and the thread is where you answer it.
+That holds for a finding about a file the pull request never touches too: such a problem is caused
+by something the change did, so the review anchors it at that change and names the untouched
+location in the thread — *"This changes the signature, but `docs/api.md:18` still describes the old
+one"* on `src/api.ts:42`. You reply, decline or resolve it exactly as you would any other.
+
+Two kinds of entry are the exception, and neither has a thread to answer on: a `fixBeforeMerge` line
+the review restated without a matching finding, and — on a pull request that was already open when
+you upgraded past #127 — an entry an older review wrote for a finding in a file that pull request
+never changed. Both count toward the verdict, and both close by a later review no longer listing
+them rather than by anything you can click.
+
+If nothing in the diff causes it, it was never this pull request's to fix. The workflow does not
+take the review's word for that: a finding anchored in a file the pull request does not change is
+**moved to the follow-ups**, filed when it merges, and the line under the count says how many were
+moved and why. Nothing is dropped; what changes is that it no longer holds the merge.
 
 **The review resolves a thread; an `agent:fix` run resolves none.** A fix run replies in every
 thread it was shown — `addressed` or `declined`, with its reason — and leaves all of them open. What
@@ -564,11 +580,15 @@ with it:
 - **A finding the loop was wrong about still holds the merge.** The cost is one click — resolve the
   thread — but it is your click, on every one of them, and on a busy repository that is the cost
   you are actually signing up for.
-- **It gates the threads, not the whole record.** A finding in a file the pull request never
-  touches has no thread to resolve, so this setting cannot see it; it is in the review body under
-  *Open* and it counts toward the verdict, which is what the required check gates. The two settings
-  cover different halves of the same record, which is an argument for running both rather than for
-  picking one.
+- **It gates the threads, and the threads are now nearly the whole record.** Almost every finding
+  that counts toward the verdict is a thread you can answer — a finding about an untouched file is
+  anchored at the change that causes it, and one nothing in the change causes is a follow-up rather
+  than a blocker. So this setting and the required check cover much the same set from two
+  directions: the check gates the verdict, this gates each finding in it. Two kinds of entry still
+  count with no thread behind them — a body entry a review posted before #127, on a pull request
+  that was already open then, and a `fixBeforeMerge` line the review restated without a matching
+  finding — and clearing either is a re-review's job rather than this setting's. Running both is
+  still the argument, since a verdict is one line and a finding is a decision.
 - **Give the resolutions a few rounds first.** Which threads close is a judgement the review now
   makes on its own, against code a fix run wrote, and it is the newest thing in the loop. Watch a
   handful of rounds and read what it closed and what it left open before you make those closures
@@ -1161,10 +1181,13 @@ remedy is the same — refresh in-flight agent PRs with `agent:update-branch`.
 
 **Silence is ambiguous.** GitHub rejects an **entire** review if one line anchor falls outside the
 diff, so a broken placement posts nothing — identical to a review that found nothing. Since #110 an
-anchor it cannot resolve is rerouted rather than dropped: to a thread on the file, or to an entry in
-the review body when the file is not in the diff at all. The runner logs
-`Findings: N produced — a on a line, b on a file, c in the body`; trust that counter, not an agent's
-argument that its own placement is sound.
+anchor it cannot resolve is rerouted rather than dropped: to a thread on the file when the diff
+covers no such line in it — the anchor has drifted past the hunks, or the change deleted, renamed or
+rewrote the file and it has no lines to cover — and since #127 to the follow-ups when the file is
+not in the diff at all.
+The runner logs `Findings: N produced — a on a line, b on a file, c moved to follow-ups for having
+no anchor in the diff`; trust that counter, not an agent's argument that its own placement is
+sound.
 
 ---
 

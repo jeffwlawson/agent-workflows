@@ -51,9 +51,15 @@ describe("carriedFindings", () => {
   });
 
   /**
-   * A finding in a file the pull request never touched has no thread at all
-   * (#110), so the review body is the only record of it. It is carried with no
-   * `threadId`, which is what tells the caller there is nothing to resolve.
+   * A **body entry** has no thread at all, so the review body is the only record
+   * of it. It is carried with no `threadId`, which is what tells the caller
+   * there is nothing to resolve.
+   *
+   * Nothing writes one since #127 — a finding with no anchor in the diff is a
+   * follow-up now, not an entry nobody can answer — and this path is kept for
+   * the entries v0.4.0 left on pull requests that were open at the upgrade
+   * (#127, decision 5). They are carried and verified exactly as before until
+   * they close, because the entry is the only record that the finding exists.
    */
   it("carries an entry from the latest review body, with no thread", () => {
     const body = [
@@ -215,9 +221,9 @@ describe("verifyCarried", () => {
   });
 
   /**
-   * A body-recorded finding has no thread, so there is nothing to close: it
-   * lands by ceasing to be re-listed, and must not become a resolution naming a
-   * thread that does not exist.
+   * A body-recorded finding — a legacy one, per #127 decision 5 — has no thread,
+   * so there is nothing to close: it lands by ceasing to be re-listed, and must
+   * not become a resolution naming a thread that does not exist.
    */
   it("closes a landed body entry by leaving it out of both lists", () => {
     const { resolutions, stillOpen } = verifyCarried(CARRIED, [
@@ -276,8 +282,9 @@ describe("verifyCarried", () => {
 
   /**
    * And what closed is reported separately from what was *resolved on GitHub*,
-   * because a body-recorded finding has no thread to close: it stops being
-   * re-listed, and the record is the only place that closure is ever visible.
+   * because a legacy body-recorded finding has no thread to close: it stops
+   * being re-listed, and the record is the only place that closure is ever
+   * visible.
    */
   it("reports a landed body entry as resolved though there is no thread to close", () => {
     const { resolutions, resolved, stillOpen } = verifyCarried(
@@ -429,7 +436,10 @@ describe("a maintainer's decision settles a finding", () => {
     /**
      * A body-recorded finding has no thread for anybody to reply on, so a
      * decline of one is a ruling about a conversation that cannot have
-     * happened. It stays open and keeps counting.
+     * happened. It stays open and keeps counting — which is #124 as it is felt
+     * from inside: a legacy entry can be closed only by being ruled *fixed*,
+     * and that is why #127 stopped creating them rather than teaching the
+     * maintainer another way to settle one.
      */
     it("leaves a declined body entry open, since no maintainer could have replied", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

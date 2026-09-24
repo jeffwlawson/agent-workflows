@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asRecord, asString } from "./common.js";
+import { unquotePath } from "./diff-lines.js";
 
 /**
  * How bad a finding is, for **display and ordering and nothing else** (#109,
@@ -73,8 +74,8 @@ export const severityRank = (severity: Severity | undefined): number =>
  * Called a *finding* rather than an inline comment because where it is posted
  * is no longer part of what it is (#110). The model says what is wrong and
  * where in the source it is; `placeFindings` below decides whether that becomes
- * a line thread, a file-level thread or an entry in the review body, and the
- * model is told nothing about which.
+ * a line thread or a file-level thread — or, where the diff does not reach it
+ * at all, a follow-up — and the model is told nothing about which.
  */
 export interface Finding {
   /**
@@ -108,21 +109,30 @@ export interface Finding {
 /**
  * Where a finding is posted, decided here from the diff.
  *
- * Three values, and the reason there are three is that **none of them is
- * "nowhere"**. What this replaced was a filter: an anchor outside the diff
- * hunks was dropped before posting, because one unresolvable anchor makes
- * GitHub reject the entire review. That guard is still here — it is the `file`
- * and `body` arms — but it now reroutes the finding instead of deleting it, so
- * a review can no longer count a finding toward its verdict and post no record
- * of what it was.
+ * Two values, and **both of them are on the diff** (#127, decision 1). A
+ * fix-before-merge finding is a claim about this pull request, so there is
+ * always a changed place to attach it to — a line the diff covers, or, where
+ * the diff covers no such line, the changed file itself. The `body`
+ * arm that used to sit under these is gone: a finding posted where GitHub can
+ * open no thread is one a maintainer cannot reply to, cannot decline and
+ * cannot resolve, and one of those could hold a pull request at *Changes
+ * recommended* for ever (#124).
+ *
+ * What replaced it is not the filter that came before either. An anchor in a
+ * file this pull request never touches does not go nowhere: it goes to
+ * `followUps`, by `placeFindings` below, and the review body says so.
  */
 export type Placement =
   /** Anchored in a hunk (or its context lines): a thread on the line. */
   | "line"
-  /** In a file the pull request changes, past its hunks: a thread on the file. */
-  | "file"
-  /** In a file the pull request never touches: an entry in the review body. */
-  | "body";
+  /**
+   * In a file the pull request changes, with no line in it the anchor can
+   * take: a thread on the file. Past the hunks is one way to get here; the
+   * other is a file with no new side to have hunks in — a deletion, a pure
+   * rename, a binary change, a mode change — which `parseDiffLines` keys with
+   * an empty set for exactly this arm to read.
+   */
+  | "file";
 
 export interface PlacedFinding {
   /**
@@ -503,8 +513,42 @@ export const parseFinding = (value: unknown): Finding => {
 };
 
 /**
+ * The findings split by whether this pull request gives them anywhere to hang.
+ *
+ * Two lists rather than one with a third placement on it, because the two
+ * halves leave by different doors: `placed` is posted as threads and counted
+ * toward the verdict, and `unanchored` is not posted at all — it becomes a
+ * follow-up, filed when the pull request merges.
+ */
+export interface PlacedFindings {
+  readonly placed: PlacedFinding[];
+  /**
+   * The findings whose `path` is in no hunk of this diff because it is in no
+   * file of it, under any spelling `diffKeyOf` recognises — nothing this pull
+   * request changed causes them, so by #127 decision 3 they are not this pull
+   * request's to fix before merge.
+   *
+   * They carry no id: an id exists so a later round can recognise a finding it
+   * has already raised, and these are never raised. A follow-up's identity is
+   * the issue that gets filed for it.
+   */
+  readonly unanchored: Finding[];
+}
+
+/**
  * Where each finding goes, and what it is called. The placement is read off the
  * diff the review was given; the id is assigned here.
+ *
+ * **A finding with no anchor in the diff is not posted** (#127, decision 3).
+ * The model is told to anchor a problem in an untouched file at the change that
+ * causes it — that is what makes it this pull request's — so a `path` the diff
+ * does not cover is the review saying, mechanically, that nothing here causes
+ * it. This is the deterministic half of that instruction: the workflow decides
+ * it from the diff rather than asking the model to classify its own finding,
+ * and the caller records what comes back in `followUps`.
+ *
+ * The `path` is resolved against the diff's own spelling first (`diffKeyOf`),
+ * because the inference above only holds if the lookup can fail for one reason.
  *
  * `nextId` is a parameter so a test can name the ids it then asserts on. It is
  * the only non-deterministic thing in this file, and defaulting it keeps the
@@ -514,25 +558,139 @@ export const placeFindings = (
   findings: readonly Finding[],
   diffLines: Map<string, Set<number>>,
   nextId: () => string = newFindingId,
-): PlacedFinding[] =>
-  findings.map((finding) => ({
-    id: nextId(),
-    placement: placementOf(finding, diffLines),
-    finding,
-  }));
+): PlacedFindings => {
+  const placed: PlacedFinding[] = [];
+  const unanchored: Finding[] = [];
 
-const placementOf = (finding: Finding, diffLines: Map<string, Set<number>>): Placement => {
-  const fileLines = diffLines.get(finding.path);
-  // Not a file this pull request touches, so there is no thread of any kind to
-  // hang it on — GitHub will not open one against a file that is not in the
-  // diff. The body is the only surface left.
-  if (!fileLines) return "body";
+  for (const finding of findings) {
+    const key = diffKeyOf(finding.path, diffLines);
+    if (key === undefined) {
+      unanchored.push(finding);
+      continue;
+    }
 
+    // Rewritten to the diff's spelling rather than the model's, and only ever
+    // to one the diff has: GitHub matches a thread's `path` against the diff
+    // the same way this map does, so a finding placed under `./src/api.ts`
+    // would be a placement that then fails to post — and one unpostable thread
+    // is the whole review rejected.
+    const anchored = key === finding.path ? finding : { ...finding, path: key };
+    const placement = placementOf(anchored, diffLines.get(key));
+    placed.push({ id: nextId(), placement, finding: anchored });
+  }
+
+  return { placed, unanchored };
+};
+
+/**
+ * The leading noise a model puts in front of a path it read out of a diff: the
+ * `a/` and `b/` of `diff --git`, and the `./` or `/` of a path it re-rooted.
+ * Repeated because `./b/src/api.ts` is one model away.
+ */
+const PATH_NOISE = /^(?:\.\/|\/|a\/|b\/)+/;
+
+/**
+ * The key this diff holds for a `path`, or `undefined` where it holds none.
+ *
+ * The lookup is the whole of "nothing this pull request changed causes it"
+ * (#127, decision 3), and that inference is only sound while it can fail for
+ * exactly one reason — the file is not in the diff. Two others were found and
+ * closed, and both cost a real blocker its place in the count rather than only
+ * its thread: *approval recommended* and a `success` status over a finding the
+ * review meant to stop the merge with.
+ *
+ * **The spelling.** `parseFinding` stores the model's path verbatim, so
+ * `./src/api.ts`, `b/src/api.ts` or a trailing space missed a key of
+ * `src/api.ts`. A miss is retried against the spellings a model reaches for,
+ * and **only a candidate the diff actually holds is accepted**. Nothing is
+ * normalised into existence: a repository with a directory genuinely called
+ * `b` keeps its `b/queue.ts`, because that key matches on the first try and
+ * the stripping below is never reached.
+ *
+ * **The quoting.** A path git had to escape is shown to the model quoted, and
+ * a model that copies it copies the quotes. That spelling is undone the way
+ * the keys' own is (`unquotePath`), so the two meet at the real path.
+ *
+ * **The key that was never written.** A deletion, a pure rename, a binary
+ * change and a mode change name no new side, so keys sliced off `+++ b/` alone
+ * held none of them — and "you deleted `src/gone.ts`, which `src/index.ts`
+ * still imports" is a finding anchored at exactly what the change did. That is
+ * fixed where the keys are written rather than here (`shared/diff-lines.ts`):
+ * every file the diff touches is a key, and one with no new side is an empty
+ * one, which `placementOf` reads as a file-level thread.
+ */
+const diffKeyOf = (path: string, diffLines: Map<string, Set<number>>): string | undefined =>
+  spellingsOf(path).find((candidate) => diffLines.has(candidate));
+
+/**
+ * The spellings of a model's `path` worth trying, most literal first — so a
+ * repository with a directory really called `b` matches `b/queue.ts` before
+ * the stripping that would turn it into `queue.ts`.
+ *
+ * A path copied out of the diff as git quoted it — `"b/caf\303\251.ts"` — is
+ * unquoted before the noise comes off, since the `b/` is inside the quotes.
+ * Malformed quoting keeps the text as it was, which then misses.
+ */
+const spellingsOf = (path: string): string[] => {
+  const trimmed = path.trim();
+  const unquoted = unquotePath(trimmed) ?? trimmed;
+  return [path, trimmed, unquoted.replace(PATH_NOISE, "")];
+};
+
+/**
+ * The unanchored findings whose `path` is **no file in the repository** under
+ * any spelling `spellingsOf` tries.
+ *
+ * `placeFindings` reads a path outside the diff as "nothing this pull request
+ * changed causes it", and that holds for a real file the change did not touch.
+ * It does not hold for a path that names nothing: that is the review
+ * mistyping, or quoting, or inventing a location, and the finding behind it may
+ * be a blocker in a file the change did touch. Demoting it would turn a slip in
+ * a string into *approval recommended* and a green status. So these are still
+ * recorded as follow-ups — the record stays one set with the count — but the
+ * review says why a human has to look (`pathErrorNote`), which puts the verdict
+ * on *needs a closer look*.
+ *
+ * `isFile` answers for one path at the reviewed head. A question per path
+ * rather than a list of the tree, because a repository-wide list is unbounded
+ * output — past `execSync`'s 1 MiB buffer on a large repository, which killed
+ * the review after the agent run was paid for — while the paths asked about
+ * are only the unanchored ones, usually none. A file the change deleted is
+ * not at the head, and needs no exception: it is in the diff, so a finding
+ * about it is never unanchored.
+ */
+export const pathErrors = (
+  unanchored: readonly Finding[],
+  isFile: (path: string) => boolean,
+): Finding[] =>
+  unanchored.filter((finding) => !spellingsOf(finding.path).some((candidate) => isFile(candidate)));
+
+/**
+ * What the review says about `pathErrors`, as the reason it needs a human —
+ * or `undefined` where there are none. Names each path, so a reader can see
+ * the slip without opening the follow-ups.
+ */
+export const pathErrorNote = (errors: readonly Finding[]): string | undefined => {
+  if (errors.length === 0) return undefined;
+  const paths = [...new Set(errors.map((finding) => `\`${finding.path.trim()}\``))].join(", ");
+  const count = errors.length === 1 ? "A finding names" : `${errors.length} findings name`;
+  return `${count} a path that is no file in this repository (${paths}), so the diff could not place ${errors.length === 1 ? "it" : "them"}. ${errors.length === 1 ? "It is" : "They are"} recorded as follow-ups, but a mistyped path can hide a real blocker in a file this pull request changed. Check ${errors.length === 1 ? "it" : "each"} before merging.`;
+};
+
+/**
+ * The placement of a finding in a file the diff **does** hold, from that file's
+ * covered lines.
+ *
+ * Takes the lines rather than the map because the question of *which* file is
+ * already answered by the time this runs — `diffKeyOf` decides it, and a second
+ * lookup here would be a second answer to it.
+ */
+const placementOf = (finding: Finding, fileLines: Set<number> | undefined): Placement => {
   // Every line of a range must be in a hunk, not just the end of it: GitHub
   // rejects the whole review over any one of them.
   const from = finding.startLine ?? finding.line;
   for (let line = from; line <= finding.line; line++) {
-    if (!fileLines.has(line)) return "file";
+    if (!fileLines?.has(line)) return "file";
   }
   return "line";
 };
@@ -561,27 +719,33 @@ export interface ReviewThread {
 const threadBody = (placed: PlacedFinding): string =>
   `${placed.finding.body}\n\n${findingMarker(placed.id, placed.finding.severity)}`;
 
-/** The threads the mutation carries — every placed finding except the body ones. */
+/**
+ * The threads the mutation carries — **one per placed finding**, with nothing
+ * filtered out.
+ *
+ * Every finding that reaches here has a thread by construction since #127:
+ * `placeFindings` returns only the two threadable placements, and the ones it
+ * cannot anchor never enter this list. The filter that used to stand here was
+ * the half that made a body entry possible.
+ */
 export const reviewThreads = (placed: readonly PlacedFinding[]): ReviewThread[] =>
-  placed
-    .filter((p) => p.placement !== "body")
-    .map((p) =>
-      p.placement === "file"
-        ? { path: p.finding.path, body: threadBody(p) }
-        : {
-            path: p.finding.path,
-            line: p.finding.line,
-            side: "RIGHT" as const,
-            // startLine/startSide turn the anchor into a range, which is what
-            // makes a multi-line ```suggestion replace all of it rather than
-            // just the last line. Omitted entirely for a single line — GitHub
-            // rejects startLine == line.
-            ...(p.finding.startLine === undefined
-              ? {}
-              : { startLine: p.finding.startLine, startSide: "RIGHT" as const }),
-            body: threadBody(p),
-          },
-    );
+  placed.map((p) =>
+    p.placement === "file"
+      ? { path: p.finding.path, body: threadBody(p) }
+      : {
+          path: p.finding.path,
+          line: p.finding.line,
+          side: "RIGHT" as const,
+          // startLine/startSide turn the anchor into a range, which is what
+          // makes a multi-line ```suggestion replace all of it rather than
+          // just the last line. Omitted entirely for a single line — GitHub
+          // rejects startLine == line.
+          ...(p.finding.startLine === undefined
+            ? {}
+            : { startLine: p.finding.startLine, startSide: "RIGHT" as const }),
+          body: threadBody(p),
+        },
+  );
 
 /**
  * The mutation, in the shape the GraphQL endpoint takes a request body in.

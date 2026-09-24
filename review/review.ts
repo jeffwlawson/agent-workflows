@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
@@ -16,14 +17,16 @@ import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
+  pathErrorNote,
+  pathErrors,
   placeFindings,
   reviewMutation,
   type Severity,
 } from "../shared/review-findings.js";
 import {
-  capFollowUps,
   countFixBeforeMerge,
   deriveVerdict,
+  recordFollowUps,
   renderFollowUpsBlock,
   renderReviewBody,
   reviewOutputSchema,
@@ -140,11 +143,33 @@ try {
   // Where each finding goes, decided here from the diff rather than by the
   // agent (#110). The guard that kept an unresolvable line anchor out of the
   // payload is still the guard it was — one such anchor makes GitHub reject the
-  // whole review — but it now reroutes the finding to a thread on the file, or
-  // to the body when the file is not in the diff at all, instead of dropping
-  // it. A finding the verdict counted and the review never showed is the
-  // failure that change removes.
-  const placed = placeFindings(result.output.findings, context.diffLines);
+  // whole review — but it reroutes the finding to a thread on the file instead
+  // of dropping it. A finding the verdict counted and the review never showed
+  // is the failure that change removed.
+  //
+  // And a finding in a file this pull request never touched is not posted as a
+  // blocking finding at all (#127, decision 3): there is no thread for a
+  // maintainer to answer it on, so it would count against a merge nobody could
+  // release it from (#124). The brief asks the model to anchor such a problem
+  // at the change that causes it; where it did not, nothing in the diff causes
+  // it, and `unanchored` is what comes back — recorded below as a follow-up.
+  const { placed, unanchored } = placeFindings(result.output.findings, context.diffLines);
+
+  // **Unless the path names nothing.** "Outside the diff" only means "not this
+  // pull request's" for a file that exists; a path that is no file at the
+  // reviewed head is a slip in the review, and the finding behind it may be a
+  // blocker in a file the change did touch. Those still go to the follow-ups
+  // with the rest — the record stays one set — but the review says a human has
+  // to look, so the verdict cannot come out green over them (`pathErrors`).
+  const unplaceable = pathErrors(unanchored, isFileAtHead);
+  const pathErrorReason = pathErrorNote(unplaceable);
+  const output =
+    pathErrorReason === undefined
+      ? result.output
+      : {
+          ...result.output,
+          needsYou: [result.output.needsYou, pathErrorReason].filter(Boolean).join("\n\n"),
+        };
 
   // What the review said about the findings it was handed: which threads the
   // workflow closes, and which findings are still owed (#111). The reviewer
@@ -156,7 +181,7 @@ try {
   // safe direction and it is `verifyCarried`'s to take, not this file's.
   const { resolutions, stillOpen, resolved } = verifyCarried(
     context.carriedFindings,
-    result.output.verified,
+    output.verified,
   );
   const headSha = sh("git rev-parse HEAD").trim();
 
@@ -176,17 +201,30 @@ try {
   // a stub for work already done. Both halves are `renderReviewBody`'s to
   // place; what is written here is the artifact a human debugging the run
   // opens.
-  const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(result.output.followUps);
+  //
+  // The findings the diff gave no anchor to lead the list and are exempt from
+  // that cap: a moved finding is one the review meant to stop the merge with,
+  // already off the count and out of the record, so the follow-ups are the last
+  // door it has. `recordFollowUps` owns both halves — the order and the
+  // exemption — because the payload carries the length of the exempt prefix and
+  // a list assembled anywhere else would name the wrong entries to the filing
+  // run.
+  const {
+    followUps,
+    dropped: droppedFollowUps,
+    moved: movedFollowUps,
+  } = recordFollowUps(unanchored, output.followUps, unplaceable);
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
   // outcome is the first thing a reader sees and the same words the commit
   // status carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
-  const verdict = deriveVerdict(result.output, {
+  const verdict = deriveVerdict(output, {
     ci,
     round: round.round,
     stillOpen: stillOpen.length,
+    movedToFollowUps: unanchored.length,
   });
   // And a round nothing could establish says so in the body as well as in the
   // brief. The agent was told it was a second round; what it cannot say — and
@@ -205,9 +243,10 @@ try {
   // what this returns, with nothing concatenated on afterwards.
   const reviewBody = renderReviewBody({
     verdict,
-    output: result.output,
+    output,
     roundNote: unreadableRoundNote(round),
     placed,
+    movedToFollowUps: movedFollowUps,
     stillOpen,
     resolved,
     followUps,
@@ -274,23 +313,26 @@ try {
   // question: the block is posted either way, and a retraction is precisely the
   // run that must not mark the pull request.
   if (followUps.length > 0) {
-    writeText("follow_ups.md", renderFollowUpsBlock(followUps, droppedFollowUps));
+    writeText(
+      "follow_ups.md",
+      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps),
+    );
   }
 
   console.log("Review complete.");
   console.log(
-    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output)} to fix before merge, checks ${ci}, round ${round.round}).`,
+    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(output, unanchored.length)} to fix before merge, checks ${ci}, round ${round.round}).`,
   );
   const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
-  const missed = result.output.findings.filter(isPreviouslyMissed).length;
+  const missed = output.findings.filter(isPreviouslyMissed).length;
   console.log(
-    `Findings: ${placed.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${placements("body")} in the body; ${missed} in code an earlier review had already read.`,
+    `Findings: ${output.findings.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${unanchored.length} moved to follow-ups for having no anchor in the diff; ${missed} in code an earlier review had already read.`,
   );
   // The ratings, for a human explaining why the record reads the way it does.
   // They change no outcome above (#113) — which is exactly why the log is the
   // only place this run says them out loud besides the body.
   const rated = (severity: Severity): number =>
-    result.output.findings.filter((f) => f.severity === severity).length;
+    output.findings.filter((f) => f.severity === severity).length;
   console.log(`Severity: ${rated("high")} high, ${rated("medium")} medium, ${rated("low")} low.`);
   // Split by reason rather than counted together: "the code was fixed" and "a
   // maintainer said no" are the two ways a finding stops counting, and a human
@@ -304,4 +346,26 @@ try {
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * Whether `path` is a file at the reviewed head — one `git cat-file` per path
+ * asked about, which prints a single word rather than the tree, so no size of
+ * repository can overflow what is read back. Argv, not a shell string: the
+ * path is the model's, and a path may legally hold anything a shell parses.
+ * Anything git cannot answer — no such path, a directory, an unreadable
+ * object — is "not a file", which is the loud direction: it asks a human.
+ */
+function isFileAtHead(candidate: string): boolean {
+  if (candidate === "") return false;
+  try {
+    return (
+      execFileSync("git", ["cat-file", "-t", `HEAD:${candidate}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "blob"
+    );
+  } catch {
+    return false;
+  }
 }

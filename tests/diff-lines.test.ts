@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDiffLines } from "../shared/diff-lines.js";
+import { keyedByChangedFiles, parseDiffLines, parseNameStatus } from "../shared/diff-lines.js";
 
 /**
  * `parseDiffLines` builds the allow-list that inline review comments are
@@ -232,8 +232,8 @@ index 81d69cd..0bfc124 100644
 
 describe("parseDiffLines — deleted file", () => {
   // A modified file followed by a deleted one whose name sorts later. The
-  // deletion emits `+++ /dev/null`, which does not match the `+++ b/` prefix the
-  // parser keys on, so `currentFile` is never repointed at zzz.txt.
+  // deletion emits `+++ /dev/null`, so its path is never named on a `+++ b/`
+  // line; the `diff --git` header above it is the only place it appears.
   const withDeletion = `diff --git a/keep.txt b/keep.txt
 index 0f7bc76..de98044 100644
 --- a/keep.txt
@@ -252,19 +252,340 @@ index b77b4eb..0000000
 -y
 `;
 
-  it("never makes the deleted file a key of its own", () => {
-    expect(parseDiffLines(withDeletion).has("zzz.txt")).toBe(false);
+  /**
+   * **A key, and an empty one** (#127). The file is one this pull request
+   * changes, so a finding about it must be anchorable — an empty set is a
+   * file-level thread, which is the only anchor GitHub has for a deleted file
+   * either. Keyed off `+++ b/` alone it was no key at all, and
+   * `placeFindings` reads a missing key as "nothing this pull request changed
+   * causes it" and moves the finding to the follow-ups: "you deleted
+   * `zzz.txt`, which `keep.txt` still reads" stopped blocking the merge.
+   */
+  it("keys the deleted file with no line to anchor at", () => {
+    const parsed = parseDiffLines(withDeletion);
+
+    expect(parsed.has("zzz.txt")).toBe(true);
+    expect([...(parsed.get("zzz.txt") ?? [])]).toEqual([]);
   });
 
-  // The invariant "no line is attributed to a file that does not own it" holds.
-  // `+++ /dev/null` leaves `currentFile` on keep.txt and the deletion's hunk
-  // header (`@@ -1,2 +0,0 @@`) resets the counter to 0, but the deletion's body
-  // is only removed lines (which never advance the counter) and the diff's
-  // trailing newline is stripped before splitting — so no phantom line 0 leaks
-  // into keep.txt. Its set is exactly its own real range, 1–3.
+  // The invariant "no line is attributed to a file that does not own it" holds,
+  // and since #127 it holds by construction rather than by luck: the deletion's
+  // `diff --git` header clears `currentFile`, so its `@@ -1,2 +0,0 @@` resets a
+  // counter nothing is reading. It held before that too — the deletion's body
+  // is only removed lines, which never advance the counter, and the trailing
+  // newline is stripped before splitting — but on those two facts rather than
+  // on the parser having stopped pointing at keep.txt.
   it("attributes no phantom line to the file preceding a deletion", () => {
     const keep = linesOf(withDeletion, "keep.txt");
     expect(keep.has(0)).toBe(false); // no phantom sourced from the deletion
     expect(exactly(withDeletion, "keep.txt")).toEqual([1, 2, 3]);
+  });
+});
+
+/**
+ * **The three other ways a changed file names no new side** (#127).
+ *
+ * A deletion at least writes `+++ /dev/null`. A pure rename, a binary change
+ * and a mode change write no `+++` line at all, so keying off `+++ b/` alone
+ * left each of them out of the map entirely — and since #127 a path the map
+ * does not hold is read as "nothing this pull request changed causes it", which
+ * demotes a finding about a file the pull request plainly did change out of the
+ * verdict's count and out of the record.
+ *
+ * Each is keyed, with an empty set, which `placeFindings` reads as a file-level
+ * thread — the only anchor GitHub has for any of them either. The diff below is
+ * real `git diff` output for all three in one change.
+ */
+describe("parseDiffLines — a changed file with no new side", () => {
+  const noNewSide = `diff --git a/bin.dat b/bin.dat
+index 742c16a..b0e7c0e 100644
+Binary files a/bin.dat and b/bin.dat differ
+diff --git a/mode.sh b/mode.sh
+old mode 100644
+new mode 100755
+diff --git a/gone.txt b/new.txt
+similarity index 100%
+rename from gone.txt
+rename to new.txt
+`;
+
+  it.each(["bin.dat", "mode.sh", "new.txt"])("keys %s with no line to anchor at", (file) => {
+    const parsed = parseDiffLines(noNewSide);
+
+    expect(parsed.has(file)).toBe(true);
+    expect([...(parsed.get(file) ?? [])]).toEqual([]);
+  });
+
+  /** And a rename is keyed by where the file now is, which is where GitHub shows it. */
+  it("keys a rename by its destination and not by its source", () => {
+    expect(parseDiffLines(noNewSide).has("gone.txt")).toBe(false);
+  });
+
+  /**
+   * A rename that also changed lines writes both — `rename to` and then
+   * `+++ b/` — and the second must fill the set the first opened rather than
+   * replace it with an empty one.
+   */
+  it("fills in the lines of a rename that also changed some", () => {
+    const renameWithEdit = `diff --git a/old.txt b/new.txt
+similarity index 60%
+rename from old.txt
+rename to new.txt
+index 422c2b7..b2e9670 100644
+--- a/old.txt
++++ b/new.txt
+@@ -1,2 +1,3 @@
+ a
++b
+ c
+`;
+
+    expect(exactly(renameWithEdit, "new.txt")).toEqual([1, 2, 3]);
+  });
+
+  /**
+   * **A path with a space in it, read rather than guessed at.** Git quotes
+   * neither half of `diff --git a/<src> b/<dst>`, so `a/x y b/x y` could be
+   * `x` renamed to `y b/x y`. It is only readable because the two halves are
+   * known to be equal — which is every header but a rename's, and a rename
+   * names its destination on a line of its own.
+   */
+  it("reads a symmetric header whose path contains a space", () => {
+    const spaced = `diff --git a/src/my notes.md b/src/my notes.md
+old mode 100644
+new mode 100755
+`;
+
+    expect([...parseDiffLines(spaced).keys()]).toEqual(["src/my notes.md"]);
+  });
+
+  /**
+   * A quoted header is read, not skipped. Git quotes a path the same way on
+   * both halves, so two quoted strings that name `a/P` and `b/P` are as
+   * unambiguous as the unquoted symmetric form — and skipping them left a
+   * non-ASCII file's mode change with no key, which since #127 demotes every
+   * finding about it.
+   */
+  it("reads a symmetric header whose halves are quoted", () => {
+    const quoted = `diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"
+old mode 100644
+new mode 100755
+`;
+
+    expect([...parseDiffLines(quoted).keys()]).toEqual(["src/café.ts"]);
+  });
+
+  /** And a header it cannot read is still left alone rather than keyed on a guess. */
+  it("keys nothing from a header whose quoting is malformed", () => {
+    const malformed = `diff --git "a/src/caf\\q.ts" "b/src/caf\\q.ts"
+old mode 100644
+new mode 100755
+`;
+
+    expect([...parseDiffLines(malformed).keys()]).toEqual([]);
+  });
+});
+
+/**
+ * **Paths as git writes them.** Every key must be the real path — it is what a
+ * finding's `path` is matched against, and a miss demotes the finding (#127) —
+ * and git decorates a path two ways on the lines this reads. Each diff below is
+ * real `git diff` output.
+ */
+describe("parseDiffLines — quoted and spaced paths", () => {
+  // Default `core.quotePath`: a non-ASCII path is quoted, octal-escaped by
+  // byte, on every line that names it.
+  const nonAscii = `diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"
+index 422c2b7..55dce13 100644
+--- "a/caf\\303\\251.ts"
++++ "b/caf\\303\\251.ts"
+@@ -1,2 +1,2 @@
+ a
+-b
++B
+`;
+
+  it("keys a quoted new side by its decoded path, with its lines", () => {
+    expect([...parseDiffLines(nonAscii).keys()]).toEqual(["café.ts"]);
+    expect(exactly(nonAscii, "café.ts")).toEqual([1, 2]);
+  });
+
+  // A `"` is quoted under any `core.quotePath`, which is why the parser
+  // unquotes even though the diff command turns the setting off.
+  const doubleQuote = `diff --git "a/quo\\"te.ts" "b/quo\\"te.ts"
+index bca70f3..d169a2f 100644
+--- "a/quo\\"te.ts"
++++ "b/quo\\"te.ts"
+@@ -1 +1 @@
+-q
++q2
+`;
+
+  it("decodes an escaped quote in a path", () => {
+    expect(exactly(doubleQuote, 'quo"te.ts')).toEqual([1]);
+  });
+
+  it("decodes a quoted rename destination", () => {
+    const rename = `diff --git a/old.ts "b/new \\303\\251.ts"
+similarity index 100%
+rename from old.ts
+rename to "new \\303\\251.ts"
+`;
+
+    expect([...parseDiffLines(rename).keys()]).toEqual(["new é.ts"]);
+  });
+
+  // With `core.quotePath=false`, which is how the review's diff is made: the
+  // path arrives as itself and needs nothing undone.
+  it("reads an unquoted non-ASCII path as it is", () => {
+    const plain = `diff --git a/café.ts b/café.ts
+index 422c2b7..55dce13 100644
+--- a/café.ts
++++ b/café.ts
+@@ -1,2 +1,2 @@
+ a
+-b
++B
+`;
+
+    expect(exactly(plain, "café.ts")).toEqual([1, 2]);
+  });
+
+  // Git ends a `---`/`+++` line with a tab when the path has a space in it.
+  const spaced = `diff --git a/sp ace.ts b/sp ace.ts
+index 587be6b..b77b4eb 100644
+--- a/sp ace.ts\t
++++ b/sp ace.ts\t
+@@ -1 +1,2 @@
+ x
++y
+`;
+
+  it("keys a spaced path without the tab git appends, with its lines", () => {
+    expect([...parseDiffLines(spaced).keys()]).toEqual(["sp ace.ts"]);
+    expect(exactly(spaced, "sp ace.ts")).toEqual([1, 2]);
+  });
+
+  // Both at once: git writes the tab *outside* the closing quote.
+  it("keys a path that is both quoted and spaced, with its lines", () => {
+    const both = `diff --git "a/quo\\"te x.ts" "b/quo\\"te x.ts"
+index b680253..e094993 100644
+--- "a/quo\\"te x.ts"\t
++++ "b/quo\\"te x.ts"\t
+@@ -1 +1,2 @@
+ z
++w
+`;
+
+    expect([...parseDiffLines(both).keys()]).toEqual(['quo"te x.ts']);
+    expect(exactly(both, 'quo"te x.ts')).toEqual([1, 2]);
+  });
+});
+
+/**
+ * **Inside a hunk, every line is content.** An added line whose text starts
+ * `++` arrives as `+++…`, which a parser matching on prefixes reads as a file
+ * header. The hunk's `@@` counts say where it ends, so it is consumed by count.
+ */
+describe("parseDiffLines — content that looks like a header", () => {
+  it("counts an added line that starts with ++, and numbers the rest from it", () => {
+    const increment = `diff --git a/inc.c b/inc.c
+index 7388135..82769a4 100644
+--- a/inc.c
++++ b/inc.c
+@@ -1,2 +1,3 @@
+-i
++++i;
+ j
++k
+`;
+
+    expect(exactly(increment, "inc.c")).toEqual([1, 2, 3]);
+  });
+
+  it("does not follow a +++ b/ line inside a hunk to a file that is not there", () => {
+    const lookalike = `diff --git a/md.md b/md.md
+new file mode 100644
+index 0000000..b4ebec0
+--- /dev/null
++++ b/md.md
+@@ -0,0 +1,3 @@
++x
++++ b/ghost.ts
++y
+`;
+
+    expect([...parseDiffLines(lookalike).keys()]).toEqual(["md.md"]);
+    expect(exactly(lookalike, "md.md")).toEqual([1, 2, 3]);
+  });
+
+  it("reads the next file's header once a hunk's counts are spent", () => {
+    const twoFiles = `diff --git a/a.ts b/a.ts
+index 1111111..2222222 100644
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-old
++new
+diff --git a/b.ts b/b.ts
+index 3333333..4444444 100644
+--- a/b.ts
++++ b/b.ts
+@@ -3,2 +3,3 @@
+ c
++d
+ e
+`;
+
+    expect(exactly(twoFiles, "a.ts")).toEqual([1]);
+    expect(exactly(twoFiles, "b.ts")).toEqual([3, 4, 5]);
+  });
+});
+
+/**
+ * **Which files are in the diff comes from git's file list**, not the patch.
+ * `git diff --name-status -z` is NUL-separated and never quoted, so it has none
+ * of the decorations the patch parser has to undo. Each input below is real
+ * output, NULs written as `\0`.
+ */
+describe("parseNameStatus", () => {
+  it("reads every status, the destination of a rename, and raw non-ASCII, quoted and spaced names", () => {
+    const raw = "M\0café.ts\0M\0inc.c\0R100\0old.ts\0new é.ts\0M\0quo\"te.ts\0M\0sp ace.ts\0";
+
+    expect(parseNameStatus(raw)).toEqual(["café.ts", "inc.c", "new é.ts", 'quo"te.ts', "sp ace.ts"]);
+  });
+
+  it("names a deleted file, since the change touched it", () => {
+    expect(parseNameStatus("D\0inc.c\0A\0md.md\0")).toEqual(["inc.c", "md.md"]);
+  });
+
+  it("reads a copy by its destination", () => {
+    expect(parseNameStatus("C075\0src/a.ts\0src/b.ts\0")).toEqual(["src/b.ts"]);
+  });
+
+  it("reads nothing out of an empty diff", () => {
+    expect(parseNameStatus("")).toEqual([]);
+  });
+});
+
+describe("keyedByChangedFiles", () => {
+  it("keys a changed file the patch parser could not name, with no lines", () => {
+    const keyed = keyedByChangedFiles(new Map([["a.ts", new Set([1])]]), ["a.ts", "gone.ts"]);
+
+    expect([...keyed.keys()]).toEqual(["a.ts", "gone.ts"]);
+    expect([...(keyed.get("gone.ts") ?? [])]).toEqual([]);
+    expect([...(keyed.get("a.ts") ?? [])]).toEqual([1]);
+  });
+
+  it("drops a key the parser produced for a file git does not list", () => {
+    const keyed = keyedByChangedFiles(
+      new Map([
+        ["a.ts", new Set([1])],
+        ["ghost.ts", new Set([2])],
+      ]),
+      ["a.ts"],
+    );
+
+    expect([...keyed.keys()]).toEqual(["a.ts"]);
   });
 });

@@ -253,16 +253,36 @@ where they were not.
 
 # WHERE A FINDING IS POSTED
 
-Each finding carries a short `title`, the `path` and the `line` in the **source** it is about, and
-a body. Where it ends up on the pull request is decided from the diff after you, and is not yours
-to state or to work around:
+Each finding carries a short `title`, the `path` and the `line` it is **anchored** at, and a body.
+Where it ends up on the pull request is decided from the diff after you, and is not yours to state
+or to work around:
 
 - a line the diff covers gets a thread on that line;
-- a line outside the diff in a file this pull request changes gets a thread on the file;
-- a file this pull request does not change at all is listed in the review body.
+- a line outside the diff in a file this pull request changes gets a thread on the file.
 
-So give the location that is true, not the nearest one inside the diff. Nothing is dropped for
-being out of reach, and a finding aimed at a line it is not about is one a reader has to re-find.
+**Every finding is anchored at something this pull request changed.** That is not a formatting
+rule, it is what makes it a finding: a maintainer has to be able to reply to it, push back on it
+and resolve it, and GitHub gives them nowhere to do any of that on a file the pull request does not
+touch — not even a file-level thread.
+
+**A problem in a file this pull request does not touch is anchored at the change that causes it.**
+If the change did not cause it, it is not this pull request's to fix. So there is always a changed
+line to point at — the one that makes the other file wrong — and the untouched `path:line` goes in
+the finding's text, where a reader can follow it. On `src/api.ts:42`:
+
+> **Fix before merge.** This changes the signature of `parse()`, but `docs/api.md:18` still
+> describes the old one.
+
+**If nothing in the diff causes it, it is a follow-up.** Put it in `followUps`, on the bar stated
+with that list, rather than in `findings`. The workflow checks this and does not take your word for
+it: a finding whose `path` is in no file this pull request changes is **moved to `followUps`**,
+filed when the pull request merges, and the review body says it was moved and why. Nothing is lost
+— but a finding anchored away from the change stops counting against the merge, so anchoring it at
+the cause is the whole of keeping it.
+
+Give the anchor that is true, and never the nearest line inside the diff to something else. A
+finding aimed at a line it is not about is one a reader has to re-find, and one a fix round will
+change the wrong code for.
 
 Each finding is also given an identifier, by the workflow, so a later round can tell it is the same
 finding. **Do not write one**, in any field: an identifier you invented would be matched against a

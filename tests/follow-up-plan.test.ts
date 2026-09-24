@@ -35,7 +35,7 @@ const followUp = (over: Partial<FollowUp> = {}): FollowUp => ({
 /** A review from the workflow bot, carrying whatever findings it is given. */
 const review = (findings: readonly FollowUp[], over: Partial<FilingReview> = {}): FilingReview => ({
   author: "github-actions",
-  body: `A summary.\n\n${renderFollowUpsBlock(findings, 0)}`,
+  body: `A summary.\n\n${renderFollowUpsBlock(findings, 0, 0)}`,
   lastEditedAt: null,
   url: REVIEW_URL,
   ...over,
@@ -853,12 +853,64 @@ describe("planFollowUps: what the merged pull request is told", () => {
   it("repeats the truncation note when the cap bit, and omits it when it did not", () => {
     const truncated = plan([], [], {
       reviews: [
-        { author: "github-actions", body: renderFollowUpsBlock([followUp()], 2), lastEditedAt: null, url: REVIEW_URL },
+        { author: "github-actions", body: renderFollowUpsBlock([followUp()], 2, 0), lastEditedAt: null, url: REVIEW_URL },
       ],
     });
 
     expect(truncated.report).toMatch(/2 further findings were dropped by the cap/);
     expect(plan([followUp()]).report).not.toMatch(/dropped/i);
+  });
+
+  /**
+   * **The belt caps the same half the review runner capped** (#127).
+   *
+   * The cap is applied again at the end that holds `issues: write`, for a
+   * payload that did not come from a review runner. A payload that did can now
+   * be longer than the cap — the findings the diff gave no anchor to are exempt
+   * from it, since for them it is a deletion rather than an announced loss — so
+   * a belt that re-capped the whole list would cut a legitimate four back to
+   * three and undo at the filing end exactly what the posting end kept.
+   *
+   * `moved` is the length of the exempt prefix, written by the same function
+   * that builds the list. Read as zero on a payload that carries none, which is
+   * every block written before this existed.
+   */
+  it("files past the cap for the findings the payload marks as moved", () => {
+    const four = [1, 2, 3, 4].map((n) => followUp({ title: `moved ${n}`, location: `src/${n}.ts:1` }));
+    const result = plan([], [], {
+      reviews: [
+        {
+          author: "github-actions",
+          body: renderFollowUpsBlock(four, 0, 4),
+          lastEditedAt: null,
+          url: REVIEW_URL,
+        },
+      ],
+    });
+
+    expect(result.issues.map((i) => i.title)).toEqual(["moved 1", "moved 2", "moved 3", "moved 4"]);
+    expect(result.report).not.toMatch(/dropped/i);
+  });
+
+  /** And a prefix of one leaves the cap to bite on the model's three behind it. */
+  it("still caps the out-of-scope entries behind the exempt prefix", () => {
+    const list = [
+      followUp({ title: "moved", location: "src/moved.ts:1" }),
+      ...[0, 1, 2, 3].map((n) => followUp({ title: `t${n}`, location: `src/t${n}.ts:1` })),
+    ];
+    const result = plan([], [], {
+      reviews: [
+        {
+          author: "github-actions",
+          body: renderFollowUpsBlock(list, 0, 1),
+          lastEditedAt: null,
+          url: REVIEW_URL,
+        },
+      ],
+    });
+
+    expect(result.issues.map((i) => i.title)).toEqual(["moved", "t0", "t1", "t2"]);
+    expect(result.report).toMatch(/1 further finding was dropped by the cap/);
   });
 
   /** Removed only on success, so a failed run leaves the retry affordance. */
@@ -940,6 +992,8 @@ describe("the stub key and the review block version independently", () => {
       "../shared/review-output.js"
     );
 
-    expect(render([], 0)).toBe(`<!-- ${marker} {"version":1,"dropped":0,"followUps":[]} -->`);
+    expect(render([], 0, 0)).toBe(
+      `<!-- ${marker} {"version":1,"dropped":0,"moved":0,"followUps":[]} -->`,
+    );
   });
 });

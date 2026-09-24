@@ -4,7 +4,7 @@ import {
   unreadableNote,
   type UnreadableSelection,
 } from "./pr-feedback.js";
-import { parseDiffLines } from "./diff-lines.js";
+import { keyedByChangedFiles, parseDiffLines } from "./diff-lines.js";
 import {
   carriedFindings,
   type CarriedFinding,
@@ -148,6 +148,8 @@ export const fetchPullRequestContext = (prNumber: string): PullRequestContext =>
     }),
     settledFindings: feedback.settledFindings,
     diff,
-    diffLines: parseDiffLines(diff),
+    // The files come from git's file list and the lines from the patch — see
+    // `keyedByChangedFiles` for why the list, not the patch, decides the keys.
+    diffLines: keyedByChangedFiles(parseDiffLines(diff), feedback.changedFiles),
   };
 };

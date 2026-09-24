@@ -4028,6 +4028,7 @@ describe("the adoption doc says what to do with each verdict", () => {
         labelled("f-open", FIX_BEFORE_MERGE_LABEL),
         labelled("f-missed", PREVIOUSLY_MISSED_LABEL, { severity: "low" }),
       ],
+      movedToFollowUps: 0,
       stillOpen: [],
       resolved: [{ id: "f-done", threadId: "PRRT_one", text: "the cache key omits the tenant" }],
       followUps: [

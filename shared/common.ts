@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import * as sandcastle from "@ai-hero/sandcastle";
 
@@ -187,15 +187,26 @@ export const safeGh = (args: readonly string[], options: GhOptions = {}): string
 
 /** What `gh` did, when the caller has to rule on the answer rather than on the exit code. */
 export interface GhOutcome {
-  /** True when `gh` exited zero. */
+  /**
+   * True when `gh` ran and exited zero. A kill by signal is not a zero exit,
+   * and neither is a binary that never started.
+   */
   readonly ok: boolean;
   /** What `gh` printed to stdout — present on a non-zero exit too, and often the whole answer. */
   readonly stdout: string;
-  /** What `gh` printed to stderr, which is where it explains a refusal in words. */
+  /**
+   * What `gh` printed to stderr, which is where it explains a refusal in words.
+   * Carried on **every** path, the zero-exit one included: `gh` warns there
+   * while exiting zero, and a caller ruling on the answer rather than on the
+   * exit code is exactly the one those words are for (#90).
+   */
   readonly stderr: string;
 }
 
-/** `execFileSync` hands back whatever the stdio encoding produced; normalise it to text. */
+/**
+ * `spawnSync` hands back whatever the stdio encoding produced, and `null` on
+ * both streams when the binary never ran at all; normalise it to text.
+ */
 const capturedText = (value: unknown): string =>
   typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
 
@@ -215,14 +226,33 @@ const capturedText = (value: unknown): string =>
  * So this is for the caller that must *inspect* what came back: a response is
  * the evidence, the exit code is not. Deliberately not a widening of `safeGh`,
  * whose swallowing is load-bearing where it is used.
+ *
+ * And spawned here rather than run through `gh()`, which is what makes `stderr`
+ * true on both paths. `execFileSync` returns stdout and puts stderr only on the
+ * object it throws, so built on it this wrapper reported `stderr: ""` on every
+ * zero exit while its own interface said stderr is where a refusal is explained
+ * — and `gh` exits zero with words on stderr, beside an answer that may still
+ * be unusable (#90). `spawnSync` reports instead of throwing: both streams
+ * captured, the exit status beside them, which is the shape this returns
+ * anyway. `gh()` and `safeGh()` keep `execFileSync` — their contract is a
+ * stdout string and a throw, and every caller of those two reads it that way.
+ *
+ * `ok` is therefore a judgement made here rather than one the call stack made
+ * by throwing. Both ways a run ends without an exit code — killed by a signal,
+ * or a binary that never started — leave `status` null, and neither is success.
  */
 export const ghOutcome = (args: readonly string[], options: GhOptions = {}): GhOutcome => {
-  try {
-    return { ok: true, stdout: gh([...args], options), stderr: "" };
-  } catch (error) {
-    const thrown = error as { stdout?: unknown; stderr?: unknown };
-    return { ok: false, stdout: capturedText(thrown.stdout), stderr: capturedText(thrown.stderr) };
-  }
+  const result = spawnSync("gh", [...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+  });
+
+  return {
+    ok: result.error === undefined && result.status === 0,
+    stdout: capturedText(result.stdout),
+    stderr: capturedText(result.stderr),
+  };
 };
 
 /**

@@ -3,16 +3,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
-// Only the two process-spawning exports are replaced; the rest of the module is
-// left intact, because anything else in the graph that reaches for
+// Only the three process-spawning exports are replaced; the rest of the module
+// is left intact, because anything else in the graph that reaches for
 // `node:child_process` must keep working.
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   execFileSync: vi.fn(),
   execSync: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import {
   agentModel,
   fetchPullRequestHeading,
@@ -26,6 +27,10 @@ import {
 
 const spawned = vi.mocked(execFileSync);
 const shelled = vi.mocked(execSync);
+// The third spawn, and the only one `ghOutcome` uses: `execFileSync` hands back
+// stdout and surfaces stderr only on the object it throws, so a wrapper whose
+// interface carries stderr on *every* path cannot be built on it (#90).
+const captured = vi.mocked(spawnSync);
 
 // The real thing, reached past the mock above, so one test below can put the jq
 // program through an actual jq rather than through an assertion about its text.
@@ -298,13 +303,34 @@ describe("safeGh — argv, with the swallowing safeSh had", () => {
  * output back.
  */
 describe("ghOutcome — the output survives a non-zero exit", () => {
+  /**
+   * What `spawnSync` hands back, in the fields this wrapper reads. Written as a
+   * fixture rather than as a literal per test because the interesting cases are
+   * the ones where the three disagree — a zero exit that still printed to
+   * stderr, a failure that captured nothing at all.
+   */
+  const exits = (
+    status: number | null,
+    stdout: string | null,
+    stderr: string | null,
+    error?: Error,
+  ): void => {
+    captured.mockReturnValue({
+      status,
+      stdout,
+      stderr,
+      ...(error === undefined ? {} : { error }),
+    } as never);
+  };
+
   beforeEach(() => {
     spawned.mockReset();
     shelled.mockReset();
+    captured.mockReset();
   });
 
   it("reports a zero exit with its stdout", () => {
-    spawned.mockReturnValue('{"data":{}}');
+    exits(0, '{"data":{}}', "");
 
     expect(ghOutcome(["api", "graphql", "-f", "query={}"])).toEqual({
       ok: true,
@@ -314,14 +340,31 @@ describe("ghOutcome — the output survives a non-zero exit", () => {
     expect(shelled).not.toHaveBeenCalled();
   });
 
+  /**
+   * The half the interface promised and did not deliver (#90). `stderr` is
+   * documented as "where it explains a refusal in words", and a caller reading
+   * it — `spokenReason`, which prefers it to stdout — was handed `""` on every
+   * zero exit, because the wrapper ran through `gh()` and `execFileSync` throws
+   * stderr away on the path where it does not throw.
+   *
+   * It is not an empty stream on that path. `gh` warns on stderr while exiting
+   * zero, and the caller here is one that rules on the *answer* rather than on
+   * the exit code: an unparseable body beside `gh: HTTP 502` is a response gh
+   * explained, and reporting the body instead loses the explanation.
+   */
+  it("carries what gh printed to stderr beside a zero exit", () => {
+    exits(0, "<html>502 Bad Gateway</html>", "gh: HTTP 502 from api.github.com\n");
+
+    expect(ghOutcome(["api", "graphql", "-f", "query={}"])).toEqual({
+      ok: true,
+      stdout: "<html>502 Bad Gateway</html>",
+      stderr: "gh: HTTP 502 from api.github.com\n",
+    });
+  });
+
   it("hands back the payload gh printed before exiting non-zero", () => {
     const partial = '{"data":{"repository":{"collaborators":null}},"errors":[{"type":"FORBIDDEN"}]}';
-    spawned.mockImplementation(() => {
-      const error = new Error("Command failed") as Error & { stdout: string; stderr: string };
-      error.stdout = partial;
-      error.stderr = "gh: You do not have permission to view repository collaborators.\n";
-      throw error;
-    });
+    exits(1, partial, "gh: You do not have permission to view repository collaborators.\n");
 
     const outcome = ghOutcome(["api", "graphql", "-f", "query={}"]);
 
@@ -330,27 +373,45 @@ describe("ghOutcome — the output survives a non-zero exit", () => {
     expect(outcome.stderr).toContain("do not have permission");
   });
 
-  // A failure with nothing on it at all — a missing binary throws an ENOENT
-  // carrying no captured output. It must read as empty text, not as `undefined`
-  // reaching a caller that is about to `JSON.parse` it.
+  // A failure with nothing on it at all — a missing binary never runs, so
+  // `spawnSync` reports the spawn error with both streams null. They must read
+  // as empty text, not as `undefined` reaching a caller that is about to
+  // `JSON.parse` it.
   it("reports empty text when the failure carried no output", () => {
-    spawned.mockImplementation(() => {
-      throw new Error("spawn gh ENOENT");
-    });
+    exits(null, null, null, new Error("spawn gh ENOENT"));
 
     expect(ghOutcome(["api", "graphql"])).toEqual({ ok: false, stdout: "", stderr: "" });
   });
 
+  /**
+   * `spawnSync` reports rather than throws, so "did it work?" is a judgement
+   * this wrapper makes rather than one the call stack makes for it — and the
+   * two ways a run ends without an exit code are exactly the two a naive
+   * `status === 0` gets wrong in opposite directions. A signal leaves `status`
+   * null, which is not zero and must not read as success; a spawn error leaves
+   * it null too and may arrive beside output from nothing at all.
+   */
+  it("reads a kill by signal as a failure, not as a zero exit", () => {
+    captured.mockReturnValue({ status: null, signal: "SIGTERM", stdout: "", stderr: "" } as never);
+
+    expect(ghOutcome(["api", "graphql"]).ok).toBe(false);
+  });
+
   it("reaches gh through argv, with no shell", () => {
-    spawned.mockReturnValue("{}");
+    exits(0, "{}", "");
 
     ghOutcome(["api", "graphql", "-F", "number=$(id)"]);
 
-    const [file, args, options] = spawned.mock.calls.at(-1)!;
+    const [file, args, options] = captured.mock.calls.at(-1)!;
     expect(file).toBe("gh");
     expect(args).toEqual(["api", "graphql", "-F", "number=$(id)"]);
     expect(options).not.toHaveProperty("shell");
+    // Both streams piped is the mechanism of the fix, and stdin stays ignored:
+    // a `gh` that decides to prompt must fail rather than wait on a runner with
+    // nobody at the keyboard.
+    expect(options?.stdio).toEqual(["ignore", "pipe", "pipe"]);
     expect(shelled).not.toHaveBeenCalled();
+    expect(spawned).not.toHaveBeenCalled();
   });
 });
 

@@ -619,18 +619,58 @@ const PATH_NOISE = /^(?:\.\/|\/|a\/|b\/)+/;
  * every file the diff touches is a key, and one with no new side is an empty
  * one, which `placementOf` reads as a file-level thread.
  */
-const diffKeyOf = (path: string, diffLines: Map<string, Set<number>>): string | undefined => {
-  if (diffLines.has(path)) return path;
+const diffKeyOf = (path: string, diffLines: Map<string, Set<number>>): string | undefined =>
+  spellingsOf(path).find((candidate) => diffLines.has(candidate));
 
+/**
+ * The spellings of a model's `path` worth trying, most literal first — so a
+ * repository with a directory really called `b` matches `b/queue.ts` before
+ * the stripping that would turn it into `queue.ts`.
+ *
+ * A path copied out of the diff as git quoted it — `"b/caf\303\251.ts"` — is
+ * unquoted before the noise comes off, since the `b/` is inside the quotes.
+ * Malformed quoting keeps the text as it was, which then misses.
+ */
+const spellingsOf = (path: string): string[] => {
   const trimmed = path.trim();
-  if (diffLines.has(trimmed)) return trimmed;
-
-  // A path copied out of the diff as git quoted it — `"b/caf\303\251.ts"` —
-  // is unquoted before the noise comes off, since the `b/` is inside the
-  // quotes. Malformed quoting keeps the text as it was, which then misses.
   const unquoted = unquotePath(trimmed) ?? trimmed;
-  const stripped = unquoted.replace(PATH_NOISE, "");
-  return diffLines.has(stripped) ? stripped : undefined;
+  return [path, trimmed, unquoted.replace(PATH_NOISE, "")];
+};
+
+/**
+ * The unanchored findings whose `path` is **no file in the repository** under
+ * any spelling `spellingsOf` tries.
+ *
+ * `placeFindings` reads a path outside the diff as "nothing this pull request
+ * changed causes it", and that holds for a real file the change did not touch.
+ * It does not hold for a path that names nothing: that is the review
+ * mistyping, or quoting, or inventing a location, and the finding behind it may
+ * be a blocker in a file the change did touch. Demoting it would turn a slip in
+ * a string into *approval recommended* and a green status. So these are still
+ * recorded as follow-ups — the record stays one set with the count — but the
+ * review says why a human has to look (`pathErrorNote`), which puts the verdict
+ * on *needs a closer look*.
+ *
+ * `repoFiles` is every file at the reviewed head. A file the change deleted is
+ * not in it, and needs no exception: it is in the diff, so a finding about it
+ * is never unanchored.
+ */
+export const pathErrors = (
+  unanchored: readonly Finding[],
+  repoFiles: ReadonlySet<string>,
+): Finding[] =>
+  unanchored.filter((finding) => !spellingsOf(finding.path).some((candidate) => repoFiles.has(candidate)));
+
+/**
+ * What the review says about `pathErrors`, as the reason it needs a human —
+ * or `undefined` where there are none. Names each path, so a reader can see
+ * the slip without opening the follow-ups.
+ */
+export const pathErrorNote = (errors: readonly Finding[]): string | undefined => {
+  if (errors.length === 0) return undefined;
+  const paths = [...new Set(errors.map((finding) => `\`${finding.path.trim()}\``))].join(", ");
+  const count = errors.length === 1 ? "A finding names" : `${errors.length} findings name`;
+  return `${count} a path that is no file in this repository (${paths}), so the diff could not place ${errors.length === 1 ? "it" : "them"}. ${errors.length === 1 ? "It is" : "They are"} recorded as follow-ups, but a mistyped path can hide a real blocker in a file this pull request changed. Check ${errors.length === 1 ? "it" : "each"} before merging.`;
 };
 
 /**

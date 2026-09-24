@@ -922,6 +922,14 @@ expensive to rediscover.
   hunk by its `@@` counts: an added line whose text starts `++` arrives as `+++…`, and read by
   prefix it was a header — skipped, numbering the rest of the file one short.
 
+  Each of those was one more decoration the patch parser had not learned yet, found one review
+  round at a time. So **the patch no longer decides which files are in the diff**: git's file list
+  does (`git diff --name-status -z`, NUL-separated and never quoted), and the patch only numbers the
+  lines. And the inference is narrowed to the case it is true of — a *real file* the change did not
+  touch. A path that is no file at the reviewed head is a slip in the review, and the finding behind
+  it may be a blocker in a file the change did touch; it is still recorded as a follow-up, but the
+  review says a human has to look, so the verdict is *needs a closer look* rather than green.
+
   Three things ride along. The count and the record stay one set — `countFixBeforeMerge` subtracts
   exactly the findings `placeFindings` did not place, so `**Findings:** N` is still the record's own
   size. The **cap on the follow-ups does not reach a moved finding**: the cap is a survivable,

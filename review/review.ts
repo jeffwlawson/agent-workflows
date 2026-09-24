@@ -16,6 +16,8 @@ import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
+  pathErrorNote,
+  pathErrors,
   placeFindings,
   reviewMutation,
   type Severity,
@@ -152,6 +154,22 @@ try {
   // it, and `unanchored` is what comes back — recorded below as a follow-up.
   const { placed, unanchored } = placeFindings(result.output.findings, context.diffLines);
 
+  // **Unless the path names nothing.** "Outside the diff" only means "not this
+  // pull request's" for a file that exists; a path that is no file at the
+  // reviewed head is a slip in the review, and the finding behind it may be a
+  // blocker in a file the change did touch. Those still go to the follow-ups
+  // with the rest — the record stays one set — but the review says a human has
+  // to look, so the verdict cannot come out green over them (`pathErrors`).
+  const repoFiles = new Set(sh("git ls-tree -r -z --name-only HEAD").split("\0").filter(Boolean));
+  const pathErrorReason = pathErrorNote(pathErrors(unanchored, repoFiles));
+  const output =
+    pathErrorReason === undefined
+      ? result.output
+      : {
+          ...result.output,
+          needsYou: [result.output.needsYou, pathErrorReason].filter(Boolean).join("\n\n"),
+        };
+
   // What the review said about the findings it was handed: which threads the
   // workflow closes, and which findings are still owed (#111). The reviewer
   // decides this and the fixer no longer does — a fix run replies and resolves
@@ -162,7 +180,7 @@ try {
   // safe direction and it is `verifyCarried`'s to take, not this file's.
   const { resolutions, stillOpen, resolved } = verifyCarried(
     context.carriedFindings,
-    result.output.verified,
+    output.verified,
   );
   const headSha = sh("git rev-parse HEAD").trim();
 
@@ -194,14 +212,14 @@ try {
     followUps,
     dropped: droppedFollowUps,
     moved: movedFollowUps,
-  } = recordFollowUps(unanchored, result.output.followUps);
+  } = recordFollowUps(unanchored, output.followUps);
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
   // outcome is the first thing a reader sees and the same words the commit
   // status carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
-  const verdict = deriveVerdict(result.output, {
+  const verdict = deriveVerdict(output, {
     ci,
     round: round.round,
     stillOpen: stillOpen.length,
@@ -224,7 +242,7 @@ try {
   // what this returns, with nothing concatenated on afterwards.
   const reviewBody = renderReviewBody({
     verdict,
-    output: result.output,
+    output,
     roundNote: unreadableRoundNote(round),
     placed,
     movedToFollowUps: movedFollowUps,
@@ -302,18 +320,18 @@ try {
 
   console.log("Review complete.");
   console.log(
-    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output, unanchored.length)} to fix before merge, checks ${ci}, round ${round.round}).`,
+    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(output, unanchored.length)} to fix before merge, checks ${ci}, round ${round.round}).`,
   );
   const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
-  const missed = result.output.findings.filter(isPreviouslyMissed).length;
+  const missed = output.findings.filter(isPreviouslyMissed).length;
   console.log(
-    `Findings: ${result.output.findings.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${unanchored.length} moved to follow-ups for having no anchor in the diff; ${missed} in code an earlier review had already read.`,
+    `Findings: ${output.findings.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${unanchored.length} moved to follow-ups for having no anchor in the diff; ${missed} in code an earlier review had already read.`,
   );
   // The ratings, for a human explaining why the record reads the way it does.
   // They change no outcome above (#113) — which is exactly why the log is the
   // only place this run says them out loud besides the body.
   const rated = (severity: Severity): number =>
-    result.output.findings.filter((f) => f.severity === severity).length;
+    output.findings.filter((f) => f.severity === severity).length;
   console.log(`Severity: ${rated("high")} high, ${rated("medium")} medium, ${rated("low")} low.`);
   // Split by reason rather than counted together: "the code was fixed" and "a
   // maintainer said no" are the two ways a finding stops counting, and a human

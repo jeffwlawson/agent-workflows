@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDiffLines } from "../shared/diff-lines.js";
+import { keyedByChangedFiles, parseDiffLines, parseNameStatus } from "../shared/diff-lines.js";
 
 /**
  * `parseDiffLines` builds the allow-list that inline review comments are
@@ -465,6 +465,21 @@ index 587be6b..b77b4eb 100644
     expect([...parseDiffLines(spaced).keys()]).toEqual(["sp ace.ts"]);
     expect(exactly(spaced, "sp ace.ts")).toEqual([1, 2]);
   });
+
+  // Both at once: git writes the tab *outside* the closing quote.
+  it("keys a path that is both quoted and spaced, with its lines", () => {
+    const both = `diff --git "a/quo\\"te x.ts" "b/quo\\"te x.ts"
+index b680253..e094993 100644
+--- "a/quo\\"te x.ts"\t
++++ "b/quo\\"te x.ts"\t
+@@ -1 +1,2 @@
+ z
++w
+`;
+
+    expect([...parseDiffLines(both).keys()]).toEqual(['quo"te x.ts']);
+    expect(exactly(both, 'quo"te x.ts')).toEqual([1, 2]);
+  });
 });
 
 /**
@@ -524,5 +539,53 @@ index 3333333..4444444 100644
 
     expect(exactly(twoFiles, "a.ts")).toEqual([1]);
     expect(exactly(twoFiles, "b.ts")).toEqual([3, 4, 5]);
+  });
+});
+
+/**
+ * **Which files are in the diff comes from git's file list**, not the patch.
+ * `git diff --name-status -z` is NUL-separated and never quoted, so it has none
+ * of the decorations the patch parser has to undo. Each input below is real
+ * output, NULs written as `\0`.
+ */
+describe("parseNameStatus", () => {
+  it("reads every status, the destination of a rename, and raw non-ASCII, quoted and spaced names", () => {
+    const raw = "M\0café.ts\0M\0inc.c\0R100\0old.ts\0new é.ts\0M\0quo\"te.ts\0M\0sp ace.ts\0";
+
+    expect(parseNameStatus(raw)).toEqual(["café.ts", "inc.c", "new é.ts", 'quo"te.ts', "sp ace.ts"]);
+  });
+
+  it("names a deleted file, since the change touched it", () => {
+    expect(parseNameStatus("D\0inc.c\0A\0md.md\0")).toEqual(["inc.c", "md.md"]);
+  });
+
+  it("reads a copy by its destination", () => {
+    expect(parseNameStatus("C075\0src/a.ts\0src/b.ts\0")).toEqual(["src/b.ts"]);
+  });
+
+  it("reads nothing out of an empty diff", () => {
+    expect(parseNameStatus("")).toEqual([]);
+  });
+});
+
+describe("keyedByChangedFiles", () => {
+  it("keys a changed file the patch parser could not name, with no lines", () => {
+    const keyed = keyedByChangedFiles(new Map([["a.ts", new Set([1])]]), ["a.ts", "gone.ts"]);
+
+    expect([...keyed.keys()]).toEqual(["a.ts", "gone.ts"]);
+    expect([...(keyed.get("gone.ts") ?? [])]).toEqual([]);
+    expect([...(keyed.get("a.ts") ?? [])]).toEqual([1]);
+  });
+
+  it("drops a key the parser produced for a file git does not list", () => {
+    const keyed = keyedByChangedFiles(
+      new Map([
+        ["a.ts", new Set([1])],
+        ["ghost.ts", new Set([2])],
+      ]),
+      ["a.ts"],
+    );
+
+    expect([...keyed.keys()]).toEqual(["a.ts"]);
   });
 });

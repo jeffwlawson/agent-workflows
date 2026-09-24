@@ -1,4 +1,5 @@
 import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
+import { parseNameStatus } from "./diff-lines.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
 import { lastFindingMarker, openingClaim, type Severity } from "./review-findings.js";
 import type { AgentThread, MaintainerReply, SettledFinding } from "./review-verification.js";
@@ -111,6 +112,12 @@ export interface PullRequestFeedback {
   readonly priorTopLevelComments: readonly string[];
   /** Diff of the branch against the PR's base branch merge-base (three-dot). */
   readonly diff: string;
+  /**
+   * Every file that diff changes, read from git's machine format rather than
+   * out of the patch (`parseNameStatus`). What decides which files a finding
+   * can be anchored in; see `keyedByChangedFiles`.
+   */
+  readonly changedFiles: readonly string[];
   /**
    * False when nothing trusted was **rendered**. Deliberately not the whole
    * question any more: it cannot tell "every surface answered and had nothing"
@@ -683,14 +690,34 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * which admits org-adjacent or better (#68). Neither is what makes this call
  * safe: the argv form is, and it holds however the ref got here.
  */
-export const diffCommandAgainstBase = (baseRef: string | undefined): readonly string[] => {
+export const diffCommandAgainstBase = (baseRef: string | undefined): readonly string[] => [
+  "-c",
+  "core.quotePath=false",
+  "diff",
+  threeDotRange(baseRef),
+];
+
+/**
+ * The same diff as `diffCommandAgainstBase`, as the list of files it changes:
+ * the same range, so the two cannot describe different changes. `-z` is what
+ * makes the list exact — see `parseNameStatus`.
+ */
+export const changedFilesCommandAgainstBase = (baseRef: string | undefined): readonly string[] => [
+  "diff",
+  "--name-status",
+  "-z",
+  threeDotRange(baseRef),
+];
+
+/** `<base>...HEAD`, refusing an absent base — the reasons are on `diffCommandAgainstBase`. */
+const threeDotRange = (baseRef: string | undefined): string => {
   const base = (baseRef ?? "").trim();
   if (!base) {
     throw new Error(
       "BASE_REF is empty. The workflow sets it from the pull request's base ref, falling back to its `default-branch` input; without it this diff would have to guess a branch, and a wrong guess is a review that silently comments on the wrong lines (#71).",
     );
   }
-  return ["-c", "core.quotePath=false", "diff", `${base}...HEAD`];
+  return `${base}...HEAD`;
 };
 
 /**
@@ -1065,6 +1092,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     latestAgentReviewBody,
     priorTopLevelComments,
     diff: git(diffCommandAgainstBase(process.env["BASE_REF"])),
+    changedFiles: parseNameStatus(git(changedFilesCommandAgainstBase(process.env["BASE_REF"]))),
     // Deliberately computed from `all`, which no longer contains our own
     // top-level comments: a PR with every thread resolved and no human input
     // must still refuse, rather than find "feedback" the agent wrote itself.

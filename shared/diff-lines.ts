@@ -154,17 +154,22 @@ const DEV_NULL = "/dev/null";
 /**
  * The path a `+++` line names, from what follows `+++ `.
  *
- * Two decorations come off before the `b/`. A path git had to escape arrives
- * **quoted** — `"b/caf\303\251.ts"` for any non-ASCII name under the default
- * `core.quotePath`, and for a `"`, a `\` or a control character under any
- * setting. And a path with a **space** in it gets a trailing tab, which git
- * writes so that `patch` can find where the name ends; sliced off `+++ b/`
- * as it stood, the file's lines were keyed under `my notes.md\t` while its
- * header keyed an empty `my notes.md`, and every finding in it fell back to a
- * file-level thread.
+ * Two decorations come off before the `b/`, and a path can carry both. A path
+ * git had to escape arrives **quoted** — `"b/caf\303\251.ts"` for any
+ * non-ASCII name under the default `core.quotePath`, and for a `"`, a `\` or a
+ * control character under any setting. And a path with a **space** in it gets
+ * a trailing tab, which git writes so that `patch` can find where the name
+ * ends — *outside* the closing quote when there is one.
+ *
+ * So the tab comes off first. Unquoting first leaves `unquotePath` trailing
+ * text, and it declines the whole string: `+++ "b/quo\"te x.ts"\t` keyed
+ * nothing, and every line in the file lost its anchor. Stripping it first is
+ * safe because a literal tab is never part of a path git prints — a tab in a
+ * name is written `\t`, inside the quotes.
  */
 const newSidePath = (side: string): string | undefined => {
-  const path = side.startsWith('"') ? unquotePath(side) : side.replace(/\t$/, "");
+  const named = side.replace(/\t$/, "");
+  const path = unquotePath(named);
   return path?.startsWith("b/") ? path.slice(2) : undefined;
 };
 
@@ -264,3 +269,60 @@ const readQuoted = (text: string): { value: string; end: number } | undefined =>
   }
   return undefined;
 };
+
+/**
+ * The paths a `git diff --name-status -z` names, one per changed file: the
+ * destination of a rename or a copy, and the path of everything else —
+ * including a deletion, which is a file the change touched.
+ *
+ * **This is what decides which files are in the diff**, not the patch text.
+ * `-z` is git's format for programs: NUL-separated, and never quoted or
+ * decorated, so there is nothing to undo and no spelling to get wrong. The
+ * patch parser above had to learn each of git's decorations in turn — a
+ * deletion, a rename, a quoted name, a spaced one — and each one it had not
+ * learned yet was a file missing from the map. Since #127 a missing file
+ * demotes every finding in it, so the list the demotion rests on is read from
+ * the format that cannot be misread. The patch is still what numbers the lines.
+ *
+ * Every status git documents is read. One it adds later is skipped rather
+ * than guessed at, and its path is lost with it — so a new status is a change
+ * here, with a test.
+ */
+export const parseNameStatus = (raw: string): string[] => {
+  const fields = raw.split("\0");
+  const paths: string[] = [];
+  let i = 0;
+  while (i < fields.length) {
+    const status = fields[i] ?? "";
+    // `R100` and `C075` carry a similarity score and name two paths, source
+    // then destination; every other status names one.
+    if (/^[RC]\d*$/.test(status)) {
+      const destination = fields[i + 2];
+      if (destination) paths.push(destination);
+      i += 3;
+    } else if (/^[ADMTUXB]$/.test(status)) {
+      const path = fields[i + 1];
+      if (path) paths.push(path);
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  return paths;
+};
+
+/**
+ * The map `placeFindings` reads: **one key per changed file** from
+ * `parseNameStatus`, each with the lines the patch gave it, or none.
+ *
+ * The file list decides the keys in both directions. A changed file the patch
+ * parser could not name still gets a key, with no lines — a file-level thread
+ * rather than a demotion. And a key the parser produced for a file git does not
+ * list is dropped: nothing a thread could anchor at, and a thread on a file not
+ * in the pull request is the whole review rejected.
+ */
+export const keyedByChangedFiles = (
+  lines: ReadonlyMap<string, Set<number>>,
+  changedFiles: readonly string[],
+): Map<string, Set<number>> =>
+  new Map(changedFiles.map((path) => [path, lines.get(path) ?? new Set<number>()]));

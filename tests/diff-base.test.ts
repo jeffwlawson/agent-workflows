@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffCommandAgainstBase } from "../shared/pr-feedback.js";
+import { changedFilesCommandAgainstBase, diffCommandAgainstBase } from "../shared/pr-feedback.js";
 
 /**
  * The review's inline-comment allow-list is built from the same diff GitHub uses
@@ -58,5 +58,20 @@ describe("diffCommandAgainstBase", () => {
     for (const ref of ["$(id)", "a;id", "a|id", "a&b", "back`tick`"]) {
       expect(diffCommandAgainstBase(ref)).toEqual(["-c", "core.quotePath=false", "diff", `${ref}...HEAD`]);
     }
+  });
+});
+
+/**
+ * The file list must describe the same change as the patch — same base, same
+ * three dots — or the keys and the lines come from two different diffs.
+ */
+describe("changedFilesCommandAgainstBase", () => {
+  it("lists the same range as the diff, NUL-separated", () => {
+    expect(changedFilesCommandAgainstBase("main")).toEqual(["diff", "--name-status", "-z", "main...HEAD"]);
+    expect(diffCommandAgainstBase("main").at(-1)).toBe("main...HEAD");
+  });
+
+  it("refuses an empty base the way the diff does", () => {
+    expect(() => changedFilesCommandAgainstBase("  ")).toThrow(/BASE_REF is empty/);
   });
 });

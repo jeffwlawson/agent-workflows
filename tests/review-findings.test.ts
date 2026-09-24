@@ -10,6 +10,8 @@ import {
   parseFinding,
   parseFindingMarkers,
   parseSeverity,
+  pathErrorNote,
+  pathErrors,
   placeFindings,
   PREVIOUSLY_MISSED_LABEL,
   reviewMutation,
@@ -87,6 +89,52 @@ const place = (findings: readonly Finding[]): PlacedFinding[] =>
 /** The other half of the same call: what the diff gave no anchor to. */
 const unanchored = (findings: readonly Finding[]): Finding[] =>
   placeFindings(findings, DIFF_LINES, counting()).unanchored;
+
+/**
+ * **A path that names nothing is not "outside the change".** Demotion rests on
+ * the path being a real file the pull request did not touch. A path that is no
+ * file at all is a slip in the review, so it must not turn into a green verdict.
+ */
+describe("pathErrors", () => {
+  const repo = new Set(["src/queue.ts", "src/other.ts", "b/queue.ts", "src/café.ts"]);
+
+  it("passes over a real file the change did not touch — that one is a follow-up", () => {
+    expect(pathErrors([finding({ path: "src/other.ts" })], repo)).toEqual([]);
+  });
+
+  it.each([
+    ["a leading ./", "./src/other.ts"],
+    ["surrounding space", " src/other.ts "],
+    ["git's quoting", '"b/src/caf\\303\\251.ts"'],
+    ["a directory really called b", "b/queue.ts"],
+  ])("recognises a real file under %s", (_case, path) => {
+    expect(pathErrors([finding({ path })], repo)).toEqual([]);
+  });
+
+  it("reports a path that is no file in the repository", () => {
+    const typo = finding({ path: "src/qeueu.ts" });
+
+    expect(pathErrors([typo, finding({ path: "src/other.ts" })], repo)).toEqual([typo]);
+  });
+});
+
+describe("pathErrorNote", () => {
+  it("says nothing when every path is a real file", () => {
+    expect(pathErrorNote([])).toBeUndefined();
+  });
+
+  it("names each path once and says why a human has to look", () => {
+    const note = pathErrorNote([
+      finding({ path: "src/qeueu.ts" }),
+      finding({ path: "src/qeueu.ts", line: 20 }),
+      finding({ path: "lib/nope.ts" }),
+    ]);
+
+    expect(note).toContain("3 findings name a path that is no file in this repository");
+    expect(note).toContain("(`src/qeueu.ts`, `lib/nope.ts`)");
+    expect(note).toContain("can hide a real blocker");
+  });
+});
 
 describe("placeFindings", () => {
   it("threads a finding on a line inside a hunk", () => {

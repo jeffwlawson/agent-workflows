@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asRecord, asString } from "./common.js";
+import { unquotePath } from "./diff-lines.js";
 
 /**
  * How bad a finding is, for **display and ordering and nothing else** (#109,
@@ -606,6 +607,10 @@ const PATH_NOISE = /^(?:\.\/|\/|a\/|b\/)+/;
  * `b` keeps its `b/queue.ts`, because that key matches on the first try and
  * the stripping below is never reached.
  *
+ * **The quoting.** A path git had to escape is shown to the model quoted, and
+ * a model that copies it copies the quotes. That spelling is undone the way
+ * the keys' own is (`unquotePath`), so the two meet at the real path.
+ *
  * **The key that was never written.** A deletion, a pure rename, a binary
  * change and a mode change name no new side, so keys sliced off `+++ b/` alone
  * held none of them — and "you deleted `src/gone.ts`, which `src/index.ts`
@@ -620,7 +625,11 @@ const diffKeyOf = (path: string, diffLines: Map<string, Set<number>>): string | 
   const trimmed = path.trim();
   if (diffLines.has(trimmed)) return trimmed;
 
-  const stripped = trimmed.replace(PATH_NOISE, "");
+  // A path copied out of the diff as git quoted it — `"b/caf\303\251.ts"` —
+  // is unquoted before the noise comes off, since the `b/` is inside the
+  // quotes. Malformed quoting keeps the text as it was, which then misses.
+  const unquoted = unquotePath(trimmed) ?? trimmed;
+  const stripped = unquoted.replace(PATH_NOISE, "");
   return diffLines.has(stripped) ? stripped : undefined;
 };
 

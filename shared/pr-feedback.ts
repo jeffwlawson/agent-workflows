@@ -655,6 +655,12 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * silently mis-filter; the fallback to it was deliberately removed once already
  * (see review-context.ts) — do not reintroduce it.
  *
+ * `core.quotePath=false` so a non-ASCII path is shown as itself — `café.ts`,
+ * not `"caf\303\251.ts"`. The model reads this diff and copies paths out of
+ * it, and a finding whose path matches no key is demoted (#127); an escaped
+ * spelling is one more way to miss. `parseDiffLines` still undoes quoting,
+ * because a `"`, a `\` or a control character is quoted under any setting.
+ *
  * Refuses an absent or empty base rather than defaulting to one. It defaulted
  * to `main` until #98, which is the same silent wrong-branch failure one level
  * down: on a `master` repo every review diffed against a ref that did not
@@ -684,7 +690,7 @@ export const diffCommandAgainstBase = (baseRef: string | undefined): readonly st
       "BASE_REF is empty. The workflow sets it from the pull request's base ref, falling back to its `default-branch` input; without it this diff would have to guess a branch, and a wrong guess is a review that silently comments on the wrong lines (#71).",
     );
   }
-  return ["diff", `${base}...HEAD`];
+  return ["-c", "core.quotePath=false", "diff", `${base}...HEAD`];
 };
 
 /**

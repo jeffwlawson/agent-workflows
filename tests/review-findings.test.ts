@@ -189,6 +189,31 @@ index 0ff3bbb..c6ca7ae 100644
     expect(placed[0]?.placement).toBe("line");
   });
 
+  /**
+   * A path copied out of the diff the way git quoted it — the `b/` inside the
+   * quotes, the bytes octal-escaped — meets the key at the real path, which is
+   * also the spelling the thread is posted under.
+   */
+  it("anchors a finding whose path is the diff's quoted spelling", () => {
+    const lines = parseDiffLines(`diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"
+index 422c2b7..55dce13 100644
+--- "a/src/caf\\303\\251.ts"
++++ "b/src/caf\\303\\251.ts"
+@@ -1,2 +1,2 @@
+ a
+-b
++B
+`);
+    const { placed } = placeFindings(
+      [finding({ path: '"b/src/caf\\303\\251.ts"', line: 2 })],
+      lines,
+      counting(),
+    );
+
+    expect(placed[0]?.finding.path).toBe("src/café.ts");
+    expect(placed[0]?.placement).toBe("line");
+  });
+
   /** A path no spelling reaches is still unanchored, which is the arm the rest rests on. */
   it("moves a finding whose path no spelling of it is in the diff", () => {
     expect(unanchored([finding({ path: "./src/other.ts", line: 88 })])).toHaveLength(1);

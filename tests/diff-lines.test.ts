@@ -360,17 +360,169 @@ new mode 100755
   });
 
   /**
-   * And a header it cannot read is left alone rather than keyed on a guess. A
-   * non-ASCII path arrives quoted (`core.quotepath`), which is neither half of
-   * the symmetric form — a wrong key would anchor a thread at a file that does
-   * not exist, and one unpostable thread is the whole review rejected.
+   * A quoted header is read, not skipped. Git quotes a path the same way on
+   * both halves, so two quoted strings that name `a/P` and `b/P` are as
+   * unambiguous as the unquoted symmetric form — and skipping them left a
+   * non-ASCII file's mode change with no key, which since #127 demotes every
+   * finding about it.
    */
-  it("keys nothing from a header it cannot read without guessing", () => {
+  it("reads a symmetric header whose halves are quoted", () => {
     const quoted = `diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"
 old mode 100644
 new mode 100755
 `;
 
-    expect([...parseDiffLines(quoted).keys()]).toEqual([]);
+    expect([...parseDiffLines(quoted).keys()]).toEqual(["src/café.ts"]);
+  });
+
+  /** And a header it cannot read is still left alone rather than keyed on a guess. */
+  it("keys nothing from a header whose quoting is malformed", () => {
+    const malformed = `diff --git "a/src/caf\\q.ts" "b/src/caf\\q.ts"
+old mode 100644
+new mode 100755
+`;
+
+    expect([...parseDiffLines(malformed).keys()]).toEqual([]);
+  });
+});
+
+/**
+ * **Paths as git writes them.** Every key must be the real path — it is what a
+ * finding's `path` is matched against, and a miss demotes the finding (#127) —
+ * and git decorates a path two ways on the lines this reads. Each diff below is
+ * real `git diff` output.
+ */
+describe("parseDiffLines — quoted and spaced paths", () => {
+  // Default `core.quotePath`: a non-ASCII path is quoted, octal-escaped by
+  // byte, on every line that names it.
+  const nonAscii = `diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"
+index 422c2b7..55dce13 100644
+--- "a/caf\\303\\251.ts"
++++ "b/caf\\303\\251.ts"
+@@ -1,2 +1,2 @@
+ a
+-b
++B
+`;
+
+  it("keys a quoted new side by its decoded path, with its lines", () => {
+    expect([...parseDiffLines(nonAscii).keys()]).toEqual(["café.ts"]);
+    expect(exactly(nonAscii, "café.ts")).toEqual([1, 2]);
+  });
+
+  // A `"` is quoted under any `core.quotePath`, which is why the parser
+  // unquotes even though the diff command turns the setting off.
+  const doubleQuote = `diff --git "a/quo\\"te.ts" "b/quo\\"te.ts"
+index bca70f3..d169a2f 100644
+--- "a/quo\\"te.ts"
++++ "b/quo\\"te.ts"
+@@ -1 +1 @@
+-q
++q2
+`;
+
+  it("decodes an escaped quote in a path", () => {
+    expect(exactly(doubleQuote, 'quo"te.ts')).toEqual([1]);
+  });
+
+  it("decodes a quoted rename destination", () => {
+    const rename = `diff --git a/old.ts "b/new \\303\\251.ts"
+similarity index 100%
+rename from old.ts
+rename to "new \\303\\251.ts"
+`;
+
+    expect([...parseDiffLines(rename).keys()]).toEqual(["new é.ts"]);
+  });
+
+  // With `core.quotePath=false`, which is how the review's diff is made: the
+  // path arrives as itself and needs nothing undone.
+  it("reads an unquoted non-ASCII path as it is", () => {
+    const plain = `diff --git a/café.ts b/café.ts
+index 422c2b7..55dce13 100644
+--- a/café.ts
++++ b/café.ts
+@@ -1,2 +1,2 @@
+ a
+-b
++B
+`;
+
+    expect(exactly(plain, "café.ts")).toEqual([1, 2]);
+  });
+
+  // Git ends a `---`/`+++` line with a tab when the path has a space in it.
+  const spaced = `diff --git a/sp ace.ts b/sp ace.ts
+index 587be6b..b77b4eb 100644
+--- a/sp ace.ts\t
++++ b/sp ace.ts\t
+@@ -1 +1,2 @@
+ x
++y
+`;
+
+  it("keys a spaced path without the tab git appends, with its lines", () => {
+    expect([...parseDiffLines(spaced).keys()]).toEqual(["sp ace.ts"]);
+    expect(exactly(spaced, "sp ace.ts")).toEqual([1, 2]);
+  });
+});
+
+/**
+ * **Inside a hunk, every line is content.** An added line whose text starts
+ * `++` arrives as `+++…`, which a parser matching on prefixes reads as a file
+ * header. The hunk's `@@` counts say where it ends, so it is consumed by count.
+ */
+describe("parseDiffLines — content that looks like a header", () => {
+  it("counts an added line that starts with ++, and numbers the rest from it", () => {
+    const increment = `diff --git a/inc.c b/inc.c
+index 7388135..82769a4 100644
+--- a/inc.c
++++ b/inc.c
+@@ -1,2 +1,3 @@
+-i
++++i;
+ j
++k
+`;
+
+    expect(exactly(increment, "inc.c")).toEqual([1, 2, 3]);
+  });
+
+  it("does not follow a +++ b/ line inside a hunk to a file that is not there", () => {
+    const lookalike = `diff --git a/md.md b/md.md
+new file mode 100644
+index 0000000..b4ebec0
+--- /dev/null
++++ b/md.md
+@@ -0,0 +1,3 @@
++x
++++ b/ghost.ts
++y
+`;
+
+    expect([...parseDiffLines(lookalike).keys()]).toEqual(["md.md"]);
+    expect(exactly(lookalike, "md.md")).toEqual([1, 2, 3]);
+  });
+
+  it("reads the next file's header once a hunk's counts are spent", () => {
+    const twoFiles = `diff --git a/a.ts b/a.ts
+index 1111111..2222222 100644
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-old
++new
+diff --git a/b.ts b/b.ts
+index 3333333..4444444 100644
+--- a/b.ts
++++ b/b.ts
+@@ -3,2 +3,3 @@
+ c
++d
+ e
+`;
+
+    expect(exactly(twoFiles, "a.ts")).toEqual([1]);
+    expect(exactly(twoFiles, "b.ts")).toEqual([3, 4, 5]);
   });
 });

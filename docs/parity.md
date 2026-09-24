@@ -893,7 +893,7 @@ expensive to rediscover.
   body-only *Previously missed* entries never block.
 
   That deterministic arm has to be able to fail for **one reason only** — the file is not in the
-  diff — or the inference under it is unsound. Two other reasons were found, and each costs a real
+  diff — or the inference under it is unsound. Three other reasons were found, and each costs a real
   blocker its place in the count rather than only its thread.
 
   The **spelling**: the model's `path` is stored verbatim, so `./src/api.ts`, `b/src/api.ts` or a
@@ -908,9 +908,19 @@ expensive to rediscover.
   was demoted for having been anchored well. `parseDiffLines` now keys **every file the diff
   touches**, and one with no new side is an empty set, which `placeFindings` reads as a file-level
   thread. That is the only anchor GitHub has for any of them either. Its `diff --git` header is read
-  rather than guessed at: git quotes neither half, so `a/x y b/x y` is ambiguous until the halves
-  are known to be equal — which is every header but a rename's, and a rename names its destination
-  on a `rename to` line of its own.
+  rather than guessed at: an unquoted `a/x y b/x y` is ambiguous until the halves are known to be
+  equal — which is every header but a rename's, and a rename names its destination on a `rename to`
+  line of its own.
+
+  The **key written wrong**: git decorates a path it prints. One it has to escape is quoted and
+  octal-escaped by byte — every non-ASCII name under the default `core.quotePath`, and a `"`, `\` or
+  control character under any setting — and one with a space gets a trailing tab on its `+++` line.
+  Sliced off verbatim, both keyed a path no file has, so a finding on a non-ASCII file was demoted
+  and one on a spaced file lost its line. `parseDiffLines` undoes both wherever a path appears, the
+  review's diff is made with `core.quotePath=false` so the model copies real paths, and
+  `placeFindings` unquotes a path the model copied quoted anyway. The same parser now consumes each
+  hunk by its `@@` counts: an added line whose text starts `++` arrives as `+++…`, and read by
+  prefix it was a header — skipped, numbering the rest of the file one short.
 
   Three things ride along. The count and the record stay one set — `countFixBeforeMerge` subtracts
   exactly the findings `placeFindings` did not place, so `**Findings:** N` is still the record's own

@@ -17,13 +17,15 @@ import { diffCommandAgainstBase } from "../shared/pr-feedback.js";
  */
 describe("diffCommandAgainstBase", () => {
   it("diffs against the given base, three-dot, HEAD on the right", () => {
-    expect(diffCommandAgainstBase("main")).toEqual(["diff", "main...HEAD"]);
+    expect(diffCommandAgainstBase("main")).toEqual(["-c", "core.quotePath=false", "diff", "main...HEAD"]);
   });
 
   it("uses the PR's real base on a stacked PR, not a literal main", () => {
     // A PR based on the intermediate branch of a stack. Diffing against `main`
     // here would fold that branch's commits into the allow-list and diff.
     expect(diffCommandAgainstBase("agent/issue-68-stacked")).toEqual([
+      "-c",
+      "core.quotePath=false",
       "diff",
       "agent/issue-68-stacked...HEAD",
     ]);
@@ -32,7 +34,7 @@ describe("diffCommandAgainstBase", () => {
   it("keeps the three-dot form — two-dot has different semantics and mis-filters", () => {
     // Exactly three dots between base and HEAD: `<base>...HEAD` is changes since
     // the merge-base, which is what GitHub shows.
-    expect(diffCommandAgainstBase("release/1.x")).toEqual(["diff", "release/1.x...HEAD"]);
+    expect(diffCommandAgainstBase("release/1.x")).toEqual(["-c", "core.quotePath=false", "diff", "release/1.x...HEAD"]);
   });
 
   /**
@@ -54,7 +56,7 @@ describe("diffCommandAgainstBase", () => {
     // in a branch name (verified 2026-08-02). Under the old string form these
     // reached `/bin/sh`; as argv the ref stays a single, unparsed argument.
     for (const ref of ["$(id)", "a;id", "a|id", "a&b", "back`tick`"]) {
-      expect(diffCommandAgainstBase(ref)).toEqual(["diff", `${ref}...HEAD`]);
+      expect(diffCommandAgainstBase(ref)).toEqual(["-c", "core.quotePath=false", "diff", `${ref}...HEAD`]);
     }
   });
 });

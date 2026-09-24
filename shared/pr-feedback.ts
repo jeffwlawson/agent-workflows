@@ -1,11 +1,6 @@
 import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
-import {
-  openingClaim,
-  parseFindingMarkers,
-  type MarkedEntry,
-  type Severity,
-} from "./review-findings.js";
+import { lastFindingMarker, openingClaim, type Severity } from "./review-findings.js";
 import type { AgentThread, MaintainerReply, SettledFinding } from "./review-verification.js";
 
 /**
@@ -685,23 +680,24 @@ export const diffCommandAgainstBase = (baseRef: string | undefined): readonly st
  * The finding marker a comment carries, or `undefined` for one that carries
  * none — a human's comment, a reply, or a review posted before ids existed.
  *
- * **The last, where a comment holds two.** The workflow appends its own marker
- * at the end of the body it posts (`threadBody`), so the last one is the one
- * this loop wrote; an earlier one is a marker the body quoted — and the
- * `inline` surface now renders markers verbatim into the prompt, so a model is
- * shown the exact syntax and the live ids. Reading the first would let a
- * finding that copied one impersonate the finding it copied: two threads on one
- * id, one of them invisible to `carriedFindings` and unclosable.
+ * **`lastFindingMarker`, not a reader of this file's own.** This was one, and
+ * it disagreed with `parseFindingMarkers` about a line holding two markers:
+ * this half took the last, that half took the first, and a line holding two is
+ * exactly the line the question matters on. One function, one answer — the
+ * last, because the workflow appends its own at the end of what it posts
+ * (`threadBody`), so an earlier one is a marker the body quoted.
  *
- * The marker is stripped from a model's body before it is posted
- * (`parseFinding`), which is the guard this backs up rather than replaces.
+ * It matters because the `inline` surface renders markers verbatim into the
+ * prompt, so a model is shown the exact syntax and the live ids. Read the wrong
+ * one and a finding that copied a marker impersonates the finding it copied:
+ * two threads on one id, one of them invisible to `carriedFindings` and
+ * unclosable.
+ *
+ * Markers are stripped from every string a model wrote before any of it is
+ * posted (`withoutFindingMarkers`, at each output schema), which is the guard
+ * this backs up rather than replaces.
  */
-const markerIn = (body: string): MarkedEntry | undefined => {
-  const markers = parseFindingMarkers(body);
-  return markers[markers.length - 1];
-};
-
-const findingIdIn = (body: string): string | undefined => markerIn(body)?.id;
+const findingIdIn = (body: string): string | undefined => lastFindingMarker(body)?.id;
 
 /**
  * And the severity written beside it, where the marker carries one. Same
@@ -709,7 +705,8 @@ const findingIdIn = (body: string): string | undefined => markerIn(body)?.id;
  * belongs to the review that raised it, so it is read back rather than
  * re-derived (#109, decision 9).
  */
-const findingSeverityIn = (body: string): Severity | undefined => markerIn(body)?.severity;
+const findingSeverityIn = (body: string): Severity | undefined =>
+  lastFindingMarker(body)?.severity;
 
 /**
  * Whether a thread hangs on a **file** rather than on a line — `subjectType`

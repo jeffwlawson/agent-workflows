@@ -4,6 +4,7 @@ import {
   FINDING_MARKER,
   findingMarker,
   isPreviouslyMissed,
+  lastFindingMarker,
   newFindingId,
   openingClaim,
   parseFinding,
@@ -18,7 +19,14 @@ import {
   type Finding,
   type PlacedFinding,
 } from "../shared/review-findings.js";
-import { reviewOutputSchema, type ReviewOutput } from "../shared/review-output.js";
+import {
+  deriveVerdict,
+  renderReviewBody,
+  reviewOutputSchema,
+  VERDICTS,
+  type ReviewOutput,
+} from "../shared/review-output.js";
+import { carriedFindings } from "../shared/review-verification.js";
 
 /**
  * Where a finding is posted is the workflow's decision, taken from the diff —
@@ -140,15 +148,16 @@ describe("placeFindings", () => {
   });
 });
 
-describe("the id is the workflow's to write", () => {
-  const parse = (value: unknown): ReviewOutput => {
-    const result = reviewOutputSchema["~standard"].validate(value);
-    if ("issues" in result && result.issues) {
-      throw new Error(result.issues.map((i) => i.message).join("; "));
-    }
-    return (result as { value: ReviewOutput }).value;
-  };
+/** The schema, which is the boundary every string the model wrote comes through. */
+const parse = (value: unknown): ReviewOutput => {
+  const result = reviewOutputSchema["~standard"].validate(value);
+  if ("issues" in result && result.issues) {
+    throw new Error(result.issues.map((i) => i.message).join("; "));
+  }
+  return (result as { value: ReviewOutput }).value;
+};
 
+describe("the id is the workflow's to write", () => {
   /**
    * A model-written id would be matched against a thread it did not open. The
    * schema has no field for one, so an id in the output is dropped before
@@ -313,46 +322,185 @@ describe("the finding marker", () => {
 });
 
 /**
- * **A marker the model wrote is taken out of its body.** The prompt says to
- * write no identifier of any kind, and this is the mechanical half of that —
- * `docs/parity.md` §10: a channel the prompt bounds is also bounded
- * mechanically.
+ * **A marker the model wrote is taken out of every string it wrote it in.**
  *
- * It is no longer hypothetical. The feedback surface renders live markers
+ * The prompt says to write no identifier of any kind, and this is the
+ * mechanical half of that — `docs/parity.md` §10: a channel the prompt bounds
+ * is also bounded mechanically. The strip runs once, over the whole output, at
+ * the schema boundary (`withoutFindingMarkers`), which is what makes that
+ * sentence true of the *channel* rather than of one field of it.
+ *
+ * It was true of one field of five for a release. `body` was stripped and
+ * `title` was not, and neither were `assessment`, `howChecked`, `whatChanged`
+ * or a follow-up's three strings — so a marker in any of them reached the
+ * posted body intact. This is deliberately a test of the whole surface rather
+ * than of the field that was reported: the next field added is the one nobody
+ * would remember to write a case for.
+ *
+ * The risk is not hypothetical. The feedback surface renders live markers
  * verbatim into the prompt, so the model is shown the exact syntax and this
- * round's real ids; a body that copied one would post a thread carrying two,
- * and a later round reading it would take the copied finding's identity for
- * this one — two threads on one id, one of them invisible and unclosable.
+ * round's real ids.
  */
-describe("an identifier the model smuggled into a body", () => {
-  it("is stripped before the workflow writes its own", () => {
-    const parsed = parseFinding({
-      path: "src/queue.ts",
-      line: 11,
-      body: `**Fix before merge.** the guard runs after the return\n\n${findingMarker("f-OLD", "high")}`,
-    });
+describe("an identifier the model smuggled into its output", () => {
+  /** An id this round really handed over, and one an earlier round closed. */
+  const LIVE = findingMarker("f-live", "high");
+  const CLOSED = findingMarker("f-closed", "low");
 
-    expect(parsed.body).not.toContain("f-OLD");
-    expect(parseFindingMarkers(parsed.body)).toEqual([]);
-    expect(parsed.body.trimEnd()).toBe("**Fix before merge.** the guard runs after the return");
+  /** One in every string field the schema reads, under both spellings of id. */
+  const SMUGGLED = {
+    assessment: `The guard and the cache key are each wrong. ${LIVE}`,
+    howChecked: `Re-read the thread ${CLOSED} and the guard.`,
+    whatChanged: {
+      summary: `It moves the guard above the return. ${LIVE}`,
+      changes: [`the guard moved ${CLOSED}`, `a test was added ${LIVE}`],
+    },
+    needsYou: `the issue asked for the opposite ${CLOSED}`,
+    fixBeforeMerge: [`the guard runs after the return ${LIVE}`],
+    findings: [
+      {
+        title: `the guard runs after the return ${CLOSED}`,
+        path: "src/queue.ts",
+        line: 11,
+        severity: "high",
+        body: `**Fix before merge.** the guard runs after the return ${LIVE}`,
+      },
+      {
+        title: `the cache key omits the tenant ${LIVE}`,
+        path: "src/other.ts",
+        line: 88,
+        severity: "low",
+        body: `**Fix before merge.** \`key()\` hashes the id and not the tenant ${CLOSED}`,
+      },
+    ],
+    followUps: [
+      {
+        title: `Leak in parse() ${CLOSED}`,
+        location: `src/other.ts:88 ${LIVE}`,
+        body: `evidence it is real ${CLOSED}`,
+        severity: "medium",
+      },
+    ],
+    verified: [{ id: "f-1", status: "open", note: `still returns early ${LIVE}` }],
+  };
+
+  /** Every string anywhere in a parsed output, however deeply nested. */
+  const stringsIn = (value: unknown): string[] => {
+    if (typeof value === "string") return [value];
+    if (Array.isArray(value)) return value.flatMap(stringsIn);
+    if (typeof value === "object" && value !== null) {
+      return Object.values(value as Record<string, unknown>).flatMap(stringsIn);
+    }
+    return [];
+  };
+
+  it("leaves no marker in any field of the parsed output", () => {
+    const strings = stringsIn(parse(SMUGGLED));
+
+    // The fixture has to actually reach every field, or this passes by being
+    // about nothing: eleven strings carried a marker going in.
+    expect(strings.length).toBeGreaterThan(10);
+    for (const written of strings) expect(written, written).not.toContain(FINDING_MARKER);
+  });
+
+  it("keeps the words around it, rather than losing the field", () => {
+    const output = parse(SMUGGLED);
+
+    expect(output.assessment).toBe("The guard and the cache key are each wrong.");
+    expect(output.howChecked).toBe("Re-read the thread  and the guard.");
+    expect(output.whatChanged?.changes).toEqual(["the guard moved", "a test was added"]);
+    expect(output.needsYou).toBe("the issue asked for the opposite");
+    expect(output.findings[0]?.title).toBe("the guard runs after the return");
+    expect(output.followUps[0]?.location).toBe("src/other.ts:88");
+    expect(output.verified[0]?.note).toBe("still returns early");
   });
 
   /**
-   * So the thread carries exactly one marker, and it is the workflow's. The
-   * reader takes the **last** one (`shared/pr-feedback.ts`), which is the
-   * second guard behind this one rather than a substitute for it.
+   * And the end of it: what a later round reads back off the pull request is
+   * the ids **this** workflow assigned, and no others. Asserted over everything
+   * posted — the review body and every thread it opens — because a marker that
+   * reached either is one a later round would rule on.
    */
-  it("leaves one marker on the posted thread, which is the one the workflow wrote", () => {
-    const parse = (value: unknown): Finding =>
-      parseFinding({ path: "src/queue.ts", line: 11, ...(value as object) });
-    const smuggled = parse({
-      body: `**Fix before merge.** a claim ${findingMarker("f-OLD")}`,
+  it("posts only the markers the workflow wrote, across the body and every thread", () => {
+    const output = parse(SMUGGLED);
+    const placed = placeFindings(output.findings, DIFF_LINES, counting());
+    const body = renderReviewBody({
+      verdict: VERDICTS["changes recommended"],
+      output,
+      placed,
+      stillOpen: [],
+      resolved: [],
+      followUps: output.followUps,
+      droppedFollowUps: 0,
+      showWhatChanged: true,
+    });
+    const posted = [body, ...reviewThreads(placed).map((t) => t.body)].join("\n");
+
+    expect(parseFindingMarkers(posted).map((m) => m.id).sort()).toEqual(["f-1", "f-2"]);
+    for (const id of ["f-live", "f-closed"]) expect(posted).not.toContain(id);
+  });
+
+  /**
+   * **The reviewer's own case**, which is why this is a fix-before-merge rather
+   * than a tidy-up: a marker in `howChecked` carried a closed finding's id into
+   * the posted body, where the next round reads the body as the record of what
+   * is still open. Ran as reported, it turned round N's *approval recommended*
+   * into round N+1's *changes recommended* with no code change between them,
+   * under a fragment of the previous review's prose.
+   */
+  it("does not let a marker in the prose change the next round's verdict", () => {
+    const clean = parse({
+      assessment: "The change holds up.",
+      howChecked: `Re-read the thread ${CLOSED} and the guard.`,
+    });
+    const body = renderReviewBody({
+      verdict: VERDICTS["approval recommended"],
+      output: clean,
+      placed: [],
+      stillOpen: [],
+      resolved: [],
+      followUps: [],
+      droppedFollowUps: 0,
+      showWhatChanged: true,
     });
 
-    const [thread] = reviewThreads(place([smuggled]));
+    const carried = carriedFindings({ threads: [], latestReviewBody: body });
 
-    expect(thread?.body).not.toContain("f-OLD");
-    expect(parseFindingMarkers(thread?.body ?? "").map((m) => m.id)).toEqual(["f-1"]);
+    expect(carried).toEqual([]);
+    expect(
+      deriveVerdict(parse({}), { ci: "green", round: 2, stillOpen: carried.length }).verdict,
+    ).toBe("approval recommended");
+  });
+});
+
+/**
+ * **One reader, and it takes the last marker on the line.** The workflow writes
+ * its own last — at the end of a thread body and at the end of a record entry —
+ * so an earlier one on the same line is a marker the line quoted.
+ *
+ * Both halves used to answer this differently: `parseFindingMarkers` took the
+ * first marker on a line and `shared/pr-feedback.ts` took the last, so the one
+ * line the question matters on was the one they disagreed about. There is one
+ * function now, and these are its two entry points.
+ */
+describe("a line carrying two markers", () => {
+  it("is read as the last of them, whole-body and per-line alike", () => {
+    const line = `- a claim ${findingMarker("f-OLD", "high")} and ${findingMarker("f-NEW", "low")}`;
+
+    expect(parseFindingMarkers(line)).toEqual([
+      { id: "f-NEW", severity: "low", text: "a claim  and" },
+    ]);
+    expect(lastFindingMarker(line)).toEqual({ id: "f-NEW", severity: "low", text: "a claim  and" });
+  });
+
+  /** Across lines too, where the workflow's own is on the last of them. */
+  it("is read as the last of them across a body", () => {
+    const body = `quoting ${findingMarker("f-OLD")}\n\n${findingMarker("f-NEW")}\n\na claim`;
+
+    expect(lastFindingMarker(body)?.id).toBe("f-NEW");
+  });
+
+  it("carries no marker where a body holds none", () => {
+    expect(lastFindingMarker("### \ud83d\udfe2 Approval recommended")).toBeUndefined();
   });
 });
 

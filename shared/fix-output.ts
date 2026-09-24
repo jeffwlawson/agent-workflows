@@ -1,4 +1,5 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
+import { withoutFindingMarkers } from "./review-findings.js";
 
 /** What the fix agent decided about one review thread. */
 export interface ThreadOutcome {
@@ -114,8 +115,21 @@ const parseTopLevelComments = (value: unknown): TopLevelComment[] => {
     .filter((comment): comment is TopLevelComment => comment !== null);
 };
 
-export const fixOutputSchema = standardSchema<FixOutput>((value) => {
-  const record = asRecord(value, "fix output");
+/**
+ * **The same one boundary the review's output has** — every string below this
+ * line is the model's, and a finding marker in any of them is gone before any
+ * of it is read (`withoutFindingMarkers`).
+ *
+ * A fix run is shown the live markers too: the `inline` surface renders a
+ * thread's comments verbatim, so this agent is handed the exact syntax and this
+ * round's real ids exactly as the reviewer is. Its replies are posted **by the
+ * workflow bot**, which is what makes a copied marker reachable — the reader
+ * that decides which thread is one of this loop's findings looks for a marker
+ * in a bot-authored comment, so a reply quoting one could hand a later review a
+ * finding on a thread this loop never opened, under a closed finding's id.
+ */
+export const fixOutputSchema = standardSchema<FixOutput>((raw) => {
+  const record = asRecord(withoutFindingMarkers(raw), "fix output");
   return {
     threadOutcomes: asArray(record["threadOutcomes"] ?? [], "threadOutcomes").map(parseOutcome),
     topLevelComments: parseTopLevelComments(

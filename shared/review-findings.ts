@@ -330,34 +330,98 @@ const MARKER = new RegExp(`<!--\\s*${FINDING_MARKER}\\s+(\\S+?)(?:\\s+(high|medi
 /** A checklist's own furniture, which is the list's rather than the entry's. */
 const LIST_ITEM = /^[-*]\s+(\[[ xX]\]\s+)?/;
 
-/** Every marker in a body, for the stripper below. */
+/**
+ * Every marker in a body — the one regex both halves below run on.
+ *
+ * That it is one regex is the guarantee rather than a tidiness: what the
+ * stripper removes and what the reader recognises are the same set by
+ * construction, so there is no marker a model can write that survives the
+ * strip and is still read as an id.
+ */
 const EVERY_MARKER = new RegExp(MARKER.source, "g");
 
 /**
- * A body with every finding marker taken out of it.
+ * A string with every finding marker taken out of it.
  *
  * The prompt tells the model to write no identifier of any kind, and this is
  * the mechanical half of that instruction (`docs/parity.md` §10: a channel the
  * prompt bounds is also bounded mechanically). It is no longer a hypothetical
  * risk: the feedback surface renders live markers verbatim into the prompt, so
- * the model is shown the exact syntax and this round's real ids, and a body
- * that copied one would post a thread carrying two — the copied one and the
- * workflow's, on one thread, with a later round unable to tell which finding it
- * is about.
+ * the model is shown the exact syntax and this round's real ids, and a string
+ * that copied one would post a thread — or a body entry — carrying two, with a
+ * later round unable to tell which finding it is about.
  */
-const withoutMarkers = (body: string): string =>
-  body.replace(EVERY_MARKER, "").replace(/[^\S\n]+$/gm, "");
+const withoutMarkers = (text: string): string =>
+  text.replace(EVERY_MARKER, "").replace(/[^\S\n]+$/gm, "");
+
+/**
+ * The same strip over **every string a model wrote**, wherever it sits in the
+ * output — the one boundary, rather than a call per field.
+ *
+ * Field by field is how this was first done and how it failed: `body` was
+ * stripped and `title` was not, and neither were `assessment`, `howChecked`,
+ * `whatChanged` or a follow-up's three strings. A marker in any of them reached
+ * the posted body intact, and one in `howChecked` was enough to turn a round's
+ * *approval recommended* into the next round's *changes recommended* under a
+ * fragment of the previous review's prose.
+ *
+ * So it walks the value rather than naming the fields: a field added later is
+ * stripped without anyone remembering to, which is the property the per-field
+ * version could not have. It runs on the **raw** output, before the parsers
+ * below, so nothing downstream of a schema ever sees a marker it did not write
+ * — including the fallbacks, like the title `parseFinding` derives from a body.
+ *
+ * A string whose whole content was a marker is left empty, and the parser that
+ * wanted it refuses it exactly as it refuses an empty one. That is the right
+ * reading: a field holding nothing but an identifier the model was told not to
+ * write is a field it did not fill in.
+ */
+export const withoutFindingMarkers = (value: unknown): unknown => {
+  if (typeof value === "string") return withoutMarkers(value);
+  if (Array.isArray(value)) return value.map(withoutFindingMarkers);
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        withoutFindingMarkers(entry),
+      ]),
+    );
+  }
+  return value;
+};
+
+/**
+ * The **last** marker on a line, where it holds more than one.
+ *
+ * The workflow writes its own marker last — at the end of a thread body
+ * (`threadBody`) and at the end of a record entry (`entryLine`) — so the last
+ * one is this loop's and an earlier one is a marker the line quoted. Reading
+ * the first lets a copied id displace the workflow's own, which is a thread
+ * carrying an identity that belongs to another finding.
+ *
+ * One rule, in one place. The reader over a whole body (`lastFindingMarker`)
+ * takes the last marker in it, and this takes the last on a line; a reader that
+ * disagreed with this one on which of two markers counts would hand two halves
+ * of this loop two different findings for one thread.
+ */
+const lastMarkerOn = (line: string): RegExpMatchArray | undefined => {
+  const matches = [...line.matchAll(EVERY_MARKER)];
+  return matches[matches.length - 1];
+};
 
 export const parseFindingMarkers = (body: string): MarkedEntry[] => {
   const lines = body.split("\n");
 
   return lines.flatMap((line, index) => {
-    const match = line.match(MARKER);
+    const match = lastMarkerOn(line);
     const id = match?.[1];
-    if (id === undefined) return [];
-    const severity = match?.[2];
+    if (match === undefined || id === undefined) return [];
+    const severity = match[2];
 
-    const onItsLine = line.replace(MARKER, "").trim();
+    // Every marker off the line, not just the one that won: the text is what a
+    // human reads beside the id, and a quoted marker left in it would be
+    // rendered back into the next round's body as prose.
+    const onItsLine = line.replace(EVERY_MARKER, "").trim();
     const text =
       onItsLine === ""
         ? (lines.slice(index + 1).find((later) => later.trim() !== "") ?? "").trim()
@@ -373,6 +437,21 @@ export const parseFindingMarkers = (body: string): MarkedEntry[] => {
   });
 };
 
+/**
+ * The marker a body carries, or `undefined` for one that carries none — a
+ * human's comment, a reply, or a review posted before ids existed.
+ *
+ * **The last**, by the rule `lastMarkerOn` states: the workflow writes its own
+ * last, so an earlier one is quoted rather than assigned. Exported because it
+ * is the only way anything outside this file should ask "which finding is this
+ * body about" — `shared/pr-feedback.ts` had its own, and the two disagreed on a
+ * line holding two markers, which is precisely the line the question matters on.
+ */
+export const lastFindingMarker = (body: string): MarkedEntry | undefined => {
+  const markers = parseFindingMarkers(body);
+  return markers[markers.length - 1];
+};
+
 const positiveInt = (value: unknown, label: string): number => {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${label} must be a positive integer`);
@@ -383,9 +462,15 @@ const positiveInt = (value: unknown, label: string): number => {
 /**
  * A finding as the model emitted it. Any `id` it wrote is dropped here by
  * having nowhere to go — the identity is the workflow's, and one the model
- * invented would be matched against a thread it never opened. A marker it wrote
- * into its **body** is taken out for the same reason, by `withoutMarkers`:
- * having nowhere to go is not a guard where the id can be smuggled in as prose.
+ * invented would be matched against a thread it never opened.
+ *
+ * A marker it wrote into any **string** is already gone by the time this runs:
+ * `withoutFindingMarkers` is applied to the whole output at the schema
+ * boundary, for the reason above — having nowhere to go is not a guard where
+ * the id can be smuggled in as prose. Deliberately not re-stripped here. This
+ * used to be the one field that stripped, and the four that did not were the
+ * hole; a second call would say the rule is a field's to remember, which is
+ * how the first four came to forget it.
  */
 export const parseFinding = (value: unknown): Finding => {
   const record = asRecord(value, "finding");
@@ -403,7 +488,7 @@ export const parseFinding = (value: unknown): Finding => {
     if (startLine === line) startLine = undefined;
   }
 
-  const body = withoutMarkers(asString(record["body"] ?? record["comment"], "finding body"));
+  const body = asString(record["body"] ?? record["comment"], "finding body");
   const rawTitle = record["title"];
   const title = typeof rawTitle === "string" && rawTitle.trim() !== "" ? rawTitle : openingClaim(body);
 

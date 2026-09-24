@@ -8,6 +8,7 @@ import {
   severityBadge,
   severityRank,
   SEVERITIES,
+  withoutFindingMarkers,
   type Finding,
   type PlacedFinding,
   type Severity,
@@ -1077,8 +1078,19 @@ const parseWhatChanged = (value: unknown): WhatChanged | undefined => {
   };
 };
 
-export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
-  const record = asRecord(value, "review output");
+/**
+ * **The one boundary a finding marker is stripped at** (`withoutFindingMarkers`).
+ *
+ * Every string below this line is the model's, and the whole output goes
+ * through the strip before any of it is read — titles and bodies,
+ * `assessment`, `howChecked`, `whatChanged` and its bullets, `needsYou`, a
+ * follow-up's title, body and location, and whatever is added next. The
+ * per-field version of this stripped `body` alone, so a marker in `howChecked`
+ * reached the posted body and carried a closed finding's id into the next
+ * round as a fragment of prose.
+ */
+export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
+  const record = asRecord(withoutFindingMarkers(raw), "review output");
   const needsYou = optionalReason(record["needsYou"] ?? record["needs_you"], "needsYou");
   // Blank-normalised exactly as `needsYou` is: omitted, `null`, `""` and
   // `"   "` all mean the same thing from a model, and read as present this

@@ -936,6 +936,22 @@ expensive to rediscover.
   `filterTopLevelComments` caps a run at two comments and drops verbatim repeats of ones already
   posted, because "silence is the default" is otherwise aspirational — three `agent:fix` rounds
   would leave three copies of the same note, and three issues once #79 harvests them.
+
+  **And the bound is on the channel, not on a field of it.** The brief tells the model to write no
+  finding id of any kind; the half that enforces it is `withoutFindingMarkers`, run over the
+  **whole output** at each schema boundary — `reviewOutputSchema` and `fixOutputSchema` — rather
+  than called per field. The per-field version stripped `body` and left `title`, `assessment`,
+  `howChecked`, `whatChanged` and a follow-up's three strings, so the sentence above was true of
+  one field of five and the marker the prompt forbids reached the posted body through the other
+  four. Walking the value is what makes a field added later bounded without anyone remembering to,
+  which is the property the enumeration could not have.
+
+  The reading side is one function for the same reason. `parseFindingMarkers` and the reader in
+  `shared/pr-feedback.ts` disagreed about a line holding two markers — first against last — and a
+  line holding two is the only line the question is about. There is one now
+  (`lastFindingMarker`), it takes the **last**, because the workflow writes its own last, and it
+  shares its regex with the stripper: what is removed and what is recognised are the same set by
+  construction, so there is no marker that survives the strip and is still read as an id.
 - **An optional channel never has veto power over the mandatory one.** A malformed top-level
   comment is dropped with a warning, not thrown on: throwing would burn both extraction retries and
   take every thread reply down with it. A malformed *thread outcome* still throws — that

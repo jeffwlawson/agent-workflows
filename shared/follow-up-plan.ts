@@ -497,7 +497,7 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
     );
   }
 
-  let block: { followUps: FollowUp[]; dropped: number } | undefined;
+  let block: { followUps: FollowUp[]; dropped: number; moved: number } | undefined;
   try {
     block = parseFollowUpsBlock(review.body);
   } catch (error) {
@@ -514,7 +514,17 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
   // Capped again, at the end that holds `issues: write`. The review runner
   // already applied it, so this bites only on a payload that did not come from
   // one — and the note below stays truthful either way.
-  const { kept, dropped: over } = capFollowUps(block.followUps);
+  //
+  // On the same half the review runner capped, which is the out-of-scope list
+  // after the exempt prefix the payload's `moved` names (#127). Re-capping the
+  // whole list would cut a review that legitimately recorded four — three
+  // out-of-scope findings behind one the diff gave no anchor to — back to
+  // three, filing nothing for the last of the model's and undoing at the filing
+  // end exactly what the exemption kept at the posting end. A payload with no
+  // `moved` reads zero, which is every block written before this existed.
+  const exempt = block.followUps.slice(0, block.moved);
+  const { kept: capped, dropped: over } = capFollowUps(block.followUps.slice(block.moved));
+  const kept = [...exempt, ...capped];
   const dropped = block.dropped + over;
 
   const issues: PlannedIssue[] = [];

@@ -25,6 +25,7 @@ import {
   MAX_HOW_CHECKED_WORDS,
   MAX_WHAT_CHANGED,
   parseFollowUpsBlock,
+  recordFollowUps,
   renderFollowUpsBlock,
   renderReviewBody,
   PREVIOUSLY_MISSED_SUBTITLE,
@@ -32,7 +33,6 @@ import {
   reviewRecord,
   VERDICT_CONTEXT,
   VERDICTS,
-  withMovedFindings,
   type CiResult,
   type FollowUp,
   type ReviewOutput,
@@ -269,16 +269,23 @@ describe("capFollowUps", () => {
 });
 
 /**
- * **A moved finding leads the follow-ups** (#127, decision 3).
+ * **A moved finding leads the follow-ups, and the cap does not reach it**
+ * (#127, decision 3).
  *
- * The cap drops from the end, so this order is what decides which findings
- * survive to be filed. A moved one is a finding the review believed had to be
- * fixed before the pull request merged; the rest of the list is what it wrote
- * knowing it was out of scope. Appending would spend the three slots on the
- * weaker claims and drop the stronger one, which is a blocker lost to a note
- * about a function the diff only calls.
+ * Leading is the ordinary half: the order is the filing order, and a finding
+ * the review meant to stop the merge with reads ahead of a note about a
+ * function the diff only calls.
+ *
+ * Exempt is the half that matters. The cap is a *survivable* loss for the
+ * model's list — it wrote that list knowing it was out of scope and was told in
+ * the brief where it would be cut, and the body and the post-merge report both
+ * announce what went. For a moved finding it is not a loss at all but a
+ * deletion: it is already off the `**Findings:**` count and out of the record,
+ * so the follow-ups are the last surface it has. Four unanchored findings
+ * behind a plain `slice(0, 3)` put the fourth nowhere — no thread, no record
+ * entry, no payload, no stub — under a body stating that four were moved.
  */
-describe("withMovedFindings", () => {
+describe("recordFollowUps", () => {
   const moved = (over: Partial<Finding> = {}): Finding => ({
     title: "the cache key omits the tenant",
     path: "src/other.ts",
@@ -289,13 +296,14 @@ describe("withMovedFindings", () => {
   });
 
   it("puts the moved findings in front of the ones the model recorded", () => {
-    const list = withMovedFindings([moved()], followUps(2));
+    const { followUps: list, moved: prefix } = recordFollowUps([moved()], followUps(2));
 
     expect(list.map((f) => f.title)).toEqual(["the cache key omits the tenant", "t0", "t1"]);
+    expect(prefix).toBe(1);
   });
 
   it("keeps the finding whole, and says how it got here", () => {
-    const [entry] = withMovedFindings([moved()], []);
+    const [entry] = recordFollowUps([moved()], []).followUps;
 
     expect(entry).toMatchObject({
       title: "the cache key omits the tenant",
@@ -306,26 +314,51 @@ describe("withMovedFindings", () => {
     expect(entry?.body).toContain("moved");
   });
 
-  /**
-   * And the cap then spends its slots on the moved ones first. Stated over the
-   * pair rather than over the order alone, because "first" is only worth
-   * anything as the thing the cap reads.
-   */
-  it("survives the cap that the model's own entries lose to", () => {
-    const { kept, dropped } = capFollowUps(withMovedFindings([moved()], followUps(3)));
+  /** The cap reads the model's list, and reads it from the start of that list. */
+  it("spends the cap on the model's entries, not on the slots the moved ones took", () => {
+    const { followUps: list, dropped } = recordFollowUps([moved()], followUps(4));
 
-    expect(kept.map((f) => f.title)).toEqual(["the cache key omits the tenant", "t0", "t1"]);
+    expect(list.map((f) => f.title)).toEqual([
+      "the cache key omits the tenant",
+      "t0",
+      "t1",
+      "t2",
+    ]);
     expect(dropped).toBe(1);
   });
 
+  /**
+   * And past the cap in *moved* findings the list simply runs longer, because
+   * the alternative is deleting one. This is the case the body's
+   * "4 findings were moved" line would otherwise be counting over three.
+   */
+  it("keeps every moved finding, however many the diff gave no anchor to", () => {
+    const four = [1, 2, 3, 4].map((n) => moved({ title: `moved ${n}`, line: n }));
+    const { followUps: list, moved: prefix, dropped } = recordFollowUps(four, followUps(1));
+
+    expect(list).toHaveLength(5);
+    expect(list.slice(0, 4).map((f) => f.title)).toEqual([
+      "moved 1",
+      "moved 2",
+      "moved 3",
+      "moved 4",
+    ]);
+    expect(prefix).toBe(4);
+    expect(dropped).toBe(0);
+  });
+
   it("changes nothing where nothing was moved", () => {
-    expect(withMovedFindings([], followUps(2))).toEqual(followUps(2));
+    expect(recordFollowUps([], followUps(2))).toEqual({
+      followUps: followUps(2),
+      moved: 0,
+      dropped: 0,
+    });
   });
 });
 
 describe("renderFollowUpsBlock", () => {
   it("is collapsed, and its summary line names the gesture that opts out", () => {
-    const block = renderFollowUpsBlock(followUps(1), 0);
+    const block = renderFollowUpsBlock(followUps(1), 0, 0);
 
     expect(block).toContain("<details>");
     expect(block).toContain("</details>");
@@ -342,7 +375,7 @@ describe("renderFollowUpsBlock", () => {
    * that the titles already answer.
    */
   it("renders titles and locations only", () => {
-    const block = renderFollowUpsBlock([followUp({ title: "Leak", location: "src/a.ts:12", body: "PROSE" })], 0);
+    const block = renderFollowUpsBlock([followUp({ title: "Leak", location: "src/a.ts:12", body: "PROSE" })], 0, 0);
     const visible = block.split(`<!-- ${FOLLOW_UPS_MARKER}`)[0] ?? "";
 
     expect(visible).toContain("Leak");
@@ -358,16 +391,16 @@ describe("renderFollowUpsBlock", () => {
   it("states the truncation when the cap bit, and says nothing when it did not", () => {
     const visible = (block: string): string => block.split(`<!-- ${FOLLOW_UPS_MARKER}`)[0] ?? "";
 
-    expect(visible(renderFollowUpsBlock(followUps(3), 2))).toMatch(/2 more were dropped/);
-    expect(visible(renderFollowUpsBlock(followUps(3), 0))).not.toMatch(/dropped/i);
+    expect(visible(renderFollowUpsBlock(followUps(3), 2, 0))).toMatch(/2 more were dropped/);
+    expect(visible(renderFollowUpsBlock(followUps(3), 0, 0))).not.toMatch(/dropped/i);
   });
 
   it("carries a versioned payload a reader can parse back", () => {
     const list = [followUp({ title: "Leak", location: "src/a.ts:12", body: "evidence, then why not here" })];
 
-    const payload = payloadOf(renderFollowUpsBlock(list, 1));
+    const payload = payloadOf(renderFollowUpsBlock(list, 1, 0));
 
-    expect(payload).toEqual({ version: 1, dropped: 1, followUps: list });
+    expect(payload).toEqual({ version: 1, dropped: 1, moved: 0, followUps: list });
   });
 
   /**
@@ -379,7 +412,7 @@ describe("renderFollowUpsBlock", () => {
   it("survives a body that contains an HTML comment terminator", () => {
     const list = [followUp({ body: "the guard is <!-- gone --> entirely" })];
 
-    expect(payloadOf(renderFollowUpsBlock(list, 0)).followUps).toEqual(list);
+    expect(payloadOf(renderFollowUpsBlock(list, 0, 0)).followUps).toEqual(list);
   });
 
   it("names the marker a reader selects on", () => {
@@ -395,12 +428,14 @@ describe("renderFollowUpsBlock", () => {
    * teaches people to stop opening it.
    */
   it("writes the empty list as a bare payload, with nothing for a reader to see", () => {
-    const block = renderFollowUpsBlock([], 0);
+    const block = renderFollowUpsBlock([], 0, 0);
 
-    expect(block).toBe(`<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[]} -->`);
+    expect(block).toBe(
+      `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"moved":0,"followUps":[]} -->`,
+    );
     expect(block).not.toContain("<details>");
     expect(hasFollowUpsBlock(block)).toBe(true);
-    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0 });
+    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0 });
   });
 });
 
@@ -419,14 +454,15 @@ describe("parseFollowUpsBlock", () => {
   it("reads back what the renderer wrote, findings and cap alike", () => {
     const list = [followUp({ title: "Leak", location: "src/a.ts:12", body: "evidence" })];
 
-    expect(parseFollowUpsBlock(renderFollowUpsBlock(list, 2))).toEqual({
+    expect(parseFollowUpsBlock(renderFollowUpsBlock(list, 2, 0))).toEqual({
       followUps: list,
       dropped: 2,
+      moved: 0,
     });
   });
 
   it("finds the block wherever it sits in a review body", () => {
-    const body = `A summary, with prose above and below.\n\n${renderFollowUpsBlock(followUps(1), 0)}\n\nMore prose.`;
+    const body = `A summary, with prose above and below.\n\n${renderFollowUpsBlock(followUps(1), 0, 0)}\n\nMore prose.`;
 
     expect(parseFollowUpsBlock(body)?.followUps).toHaveLength(1);
   });
@@ -437,8 +473,8 @@ describe("parseFollowUpsBlock", () => {
    */
   it("takes the last block when a body somehow carries two", () => {
     const body = [
-      renderFollowUpsBlock([followUp({ location: "src/quoted.ts" })], 0),
-      renderFollowUpsBlock([followUp({ location: "src/real.ts" })], 0),
+      renderFollowUpsBlock([followUp({ location: "src/quoted.ts" })], 0, 0),
+      renderFollowUpsBlock([followUp({ location: "src/real.ts" })], 0, 0),
     ].join("\n\n");
 
     expect(parseFollowUpsBlock(body)?.followUps.map((f) => f.location)).toEqual(["src/real.ts"]);
@@ -460,6 +496,32 @@ describe("parseFollowUpsBlock", () => {
     expect(() => parseFollowUpsBlock(`<!-- ${FOLLOW_UPS_MARKER} {"version":1, -->`)).toThrow(
       /readable JSON/,
     );
+  });
+
+  /**
+   * `moved` was added to a payload that keeps its version (#127): it says how
+   * many entries at the front of the list the cap must not reach, and a block
+   * written before it existed marked none — which is the behaviour that release
+   * had. Bumping the version instead would make an *older* filing run refuse
+   * the block outright and file nothing at all, which is the worse half of the
+   * same compatibility question.
+   */
+  it("reads a block with no exempt prefix as exempting nothing", () => {
+    const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[]} -->`;
+
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0 });
+  });
+
+  /**
+   * And it is an index into the list, so it is clamped to it. A prefix longer
+   * than the list would exempt the whole of one this block did not come from —
+   * the cap at the filing end is a belt against exactly that payload.
+   */
+  it("clamps an exempt prefix longer than the list it indexes", () => {
+    const body = renderFollowUpsBlock([followUp()], 0, 9);
+
+    expect(parseFollowUpsBlock(body)?.moved).toBe(1);
+    expect(parseFollowUpsBlock(renderFollowUpsBlock([followUp()], 0, -1))?.moved).toBe(0);
   });
 
   it("refuses a finding missing one of its three fields", () => {
@@ -1449,12 +1511,13 @@ describe("the posted review body", () => {
     expect(parseFollowUpsBlock(render({ followUps: list, droppedFollowUps: 2 }))).toEqual({
       followUps: list,
       dropped: 2,
+      moved: 0,
     });
 
     const empty = render();
     expect(empty).not.toContain("<summary><b>Follow-ups</b>");
     expect(hasFollowUpsBlock(empty)).toBe(true);
-    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0 });
+    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0 });
   });
 
   /**
@@ -1995,7 +2058,7 @@ index 0ff3bbb..c6ca7ae 100644
 
   const findings = [ON_A_LINE, PAST_THE_HUNKS, IN_AN_UNTOUCHED_FILE];
   const { placed, unanchored } = placeFindings(findings, DIFF_LINES);
-  const followUps = withMovedFindings(unanchored, []);
+  const { followUps } = recordFollowUps(unanchored, []);
   const reviewed = output({ findings, followUps });
   const render = (): string =>
     renderReviewBody({
@@ -2068,6 +2131,47 @@ index 0ff3bbb..c6ca7ae 100644
     expect(posted.indexOf("**Findings:** 2")).toBeLessThan(
       posted.indexOf("moved to follow-ups"),
     );
+  });
+
+  /**
+   * **The sentence counts what is there.** Four unanchored findings behind one
+   * cap on one list leave the fourth on no surface at all — it is subtracted
+   * from the count, absent from the record, and absent from the payload the
+   * filing run reads — under a body stating that four were moved. So the number
+   * the body states, the entries in the group and the exempt prefix in the
+   * payload are one quantity, asserted here as one.
+   */
+  it("moves four findings to a list of four, and says four", () => {
+    const four = [1, 2, 3, 4].map((n) =>
+      finding({
+        path: "src/other.ts",
+        line: n,
+        title: `untouched finding ${n}`,
+        body: `**Fix before merge.** untouched finding ${n}`,
+      }),
+    );
+    const { placed: none, unanchored: moved } = placeFindings(four, DIFF_LINES);
+    const recorded = recordFollowUps(moved, []);
+    const reviewedFour = output({ findings: four, followUps: recorded.followUps });
+    const posted = renderReviewBody({
+      verdict: VERDICTS["approval recommended"],
+      output: reviewedFour,
+      placed: none,
+      movedToFollowUps: recorded.moved,
+      stillOpen: [],
+      resolved: [],
+      followUps: recorded.followUps,
+      droppedFollowUps: recorded.dropped,
+      showWhatChanged: true,
+    });
+
+    expect(posted).toContain("4 findings were moved to follow-ups");
+    expect(posted).toContain("<summary><b>Follow-ups</b> — 4");
+    for (const f of four) expect(posted).toContain(f.title);
+    // And the payload, which is the surface that outlives the pull request: the
+    // exempt prefix is all four, so the cap at the filing end reaches none.
+    expect(parseFollowUpsBlock(posted)).toMatchObject({ moved: 4, dropped: 0 });
+    expect(parseFollowUpsBlock(posted)?.followUps).toHaveLength(4);
   });
 
   it("says nothing about moving where it moved nothing", () => {

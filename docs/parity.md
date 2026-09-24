@@ -892,12 +892,26 @@ expensive to rediscover.
   915 public overviews none of its findings sat in a file the pull request did not change, and its
   body-only *Previously missed* entries never block.
 
-  Two things ride along. The count and the record stay one set — `countFixBeforeMerge` subtracts
+  That deterministic arm has to be able to fail for **one reason only**, or the inference under it
+  is unsound. The lookup is `path` against the keys sliced off `+++ b/`, and the model's `path` is
+  stored verbatim — so `./src/api.ts`, `b/src/api.ts` or a trailing space against a key of
+  `src/api.ts` is a second reason, and one that now costs a real blocker its place in the count
+  rather than only its thread. `placeFindings` retries a miss against those spellings and accepts
+  only a candidate the diff actually holds, anchoring the finding under the diff's own spelling
+  because that is what GitHub matches a thread against too.
+
+  Three things ride along. The count and the record stay one set — `countFixBeforeMerge` subtracts
   exactly the findings `placeFindings` did not place, so `**Findings:** N` is still the record's own
-  size. And the **body entries v0.4.0 already wrote** are carried and verified as before until they
-  close (decision 5), because the entry is the only record that such a finding exists: a version
-  that stopped reading them would drop a fix-before-merge finding off every pull request open at the
-  upgrade, silently.
+  size. The **cap on the follow-ups does not reach a moved finding**: the cap is a survivable,
+  announced loss for a list the model wrote knowing it was out of scope and was told where it would
+  be cut, and for a moved finding it is a deletion, since that finding is already off the count and
+  out of the record and the follow-ups are the last surface it has. So `recordFollowUps` caps the
+  model's half and puts the moved ones in front of the result, the list can run past
+  `MAX_FOLLOW_UPS` by exactly the number of unanchored findings, and the payload carries the length
+  of that exempt prefix so the cap the filing end re-applies bites on the same half. And the **body
+  entries v0.4.0 already wrote** are carried and verified as before until they close (decision 5),
+  because the entry is the only record that such a finding exists: a version that stopped reading
+  them would drop a fix-before-merge finding off every pull request open at the upgrade, silently.
 - **The latest agent review is read from the end of the connection, never the front of the first
   page.** GitHub returns a pull request's reviews oldest-first, so `reviews(first:50)` and a `.pop()`
   is "the newest of the fifty oldest" — correct until the fifty-first review and wrong for ever

@@ -21,14 +21,13 @@ import {
   type Severity,
 } from "../shared/review-findings.js";
 import {
-  capFollowUps,
   countFixBeforeMerge,
   deriveVerdict,
+  recordFollowUps,
   renderFollowUpsBlock,
   renderReviewBody,
   reviewOutputSchema,
   VERDICT_CONTEXT,
-  withMovedFindings,
   type CiResult,
 } from "../shared/review-output.js";
 import {
@@ -184,13 +183,18 @@ try {
   // place; what is written here is the artifact a human debugging the run
   // opens.
   //
-  // The findings the diff gave no anchor to lead the list, so the cap — which
-  // drops from the end — spends its three slots on those before the
-  // out-of-scope notes: a moved finding is one the review meant to stop the
-  // merge with, which outranks a note about a function the diff only calls.
-  const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(
-    withMovedFindings(unanchored, result.output.followUps),
-  );
+  // The findings the diff gave no anchor to lead the list and are exempt from
+  // that cap: a moved finding is one the review meant to stop the merge with,
+  // already off the count and out of the record, so the follow-ups are the last
+  // door it has. `recordFollowUps` owns both halves — the order and the
+  // exemption — because the payload carries the length of the exempt prefix and
+  // a list assembled anywhere else would name the wrong entries to the filing
+  // run.
+  const {
+    followUps,
+    dropped: droppedFollowUps,
+    moved: movedFollowUps,
+  } = recordFollowUps(unanchored, result.output.followUps);
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
@@ -223,7 +227,7 @@ try {
     output: result.output,
     roundNote: unreadableRoundNote(round),
     placed,
-    movedToFollowUps: unanchored.length,
+    movedToFollowUps: movedFollowUps,
     stillOpen,
     resolved,
     followUps,
@@ -290,7 +294,10 @@ try {
   // question: the block is posted either way, and a retraction is precisely the
   // run that must not mark the pull request.
   if (followUps.length > 0) {
-    writeText("follow_ups.md", renderFollowUpsBlock(followUps, droppedFollowUps));
+    writeText(
+      "follow_ups.md",
+      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps),
+    );
   }
 
   console.log("Review complete.");

@@ -517,8 +517,9 @@ export interface PlacedFindings {
   readonly placed: PlacedFinding[];
   /**
    * The findings whose `path` is in no hunk of this diff because it is in no
-   * file of it — nothing this pull request changed causes them, so by #127
-   * decision 3 they are not this pull request's to fix before merge.
+   * file of it, under any spelling `diffKeyOf` recognises — nothing this pull
+   * request changed causes them, so by #127 decision 3 they are not this pull
+   * request's to fix before merge.
    *
    * They carry no id: an id exists so a later round can recognise a finding it
    * has already raised, and these are never raised. A follow-up's identity is
@@ -539,6 +540,9 @@ export interface PlacedFindings {
  * it from the diff rather than asking the model to classify its own finding,
  * and the caller records what comes back in `followUps`.
  *
+ * The `path` is resolved against the diff's own spelling first (`diffKeyOf`),
+ * because the inference above only holds if the lookup can fail for one reason.
+ *
  * `nextId` is a parameter so a test can name the ids it then asserts on. It is
  * the only non-deterministic thing in this file, and defaulting it keeps the
  * runner's call to the two things it actually decides.
@@ -552,34 +556,74 @@ export const placeFindings = (
   const unanchored: Finding[] = [];
 
   for (const finding of findings) {
-    const placement = placementOf(finding, diffLines);
-    if (placement === undefined) unanchored.push(finding);
-    else placed.push({ id: nextId(), placement, finding });
+    const key = diffKeyOf(finding.path, diffLines);
+    if (key === undefined) {
+      unanchored.push(finding);
+      continue;
+    }
+
+    // Rewritten to the diff's spelling rather than the model's, and only ever
+    // to one the diff has: GitHub matches a thread's `path` against the diff
+    // the same way this map does, so a finding placed under `./src/api.ts`
+    // would be a placement that then fails to post — and one unpostable thread
+    // is the whole review rejected.
+    const anchored = key === finding.path ? finding : { ...finding, path: key };
+    const placement = placementOf(anchored, diffLines.get(key));
+    placed.push({ id: nextId(), placement, finding: anchored });
   }
 
   return { placed, unanchored };
 };
 
 /**
- * The placement, or `undefined` for a finding this pull request has nowhere to
- * put — which is the answer that sends it to `followUps` rather than a third
- * placement, for the reason `Placement` gives.
+ * The leading noise a model puts in front of a path it read out of a diff: the
+ * `a/` and `b/` of `diff --git`, and the `./` or `/` of a path it re-rooted.
+ * Repeated because `./b/src/api.ts` is one model away.
  */
-const placementOf = (
-  finding: Finding,
-  diffLines: Map<string, Set<number>>,
-): Placement | undefined => {
-  const fileLines = diffLines.get(finding.path);
-  // Not a file this pull request touches, so there is no thread of any kind to
-  // hang it on — GitHub will not open one against a file that is not in the
-  // diff, not even a file-level one.
-  if (!fileLines) return undefined;
+const PATH_NOISE = /^(?:\.\/|\/|a\/|b\/)+/;
 
+/**
+ * The key this diff holds for a `path`, or `undefined` where it holds none.
+ *
+ * The lookup is the whole of "nothing this pull request changed causes it"
+ * (#127, decision 3), and that inference is only sound while it can fail for
+ * exactly one reason. An exact-string `get` against keys sliced off `+++ b/`
+ * fails for a second: `parseFinding` stores the model's path verbatim, so
+ * `./src/api.ts`, `b/src/api.ts` or a trailing space against a key of
+ * `src/api.ts` used to cost the finding its thread and now costs it its place
+ * in the count — *approval recommended* and a `success` status over a real
+ * blocker.
+ *
+ * So a miss is retried against the spellings a model reaches for, and **only a
+ * candidate the diff actually holds is accepted**. Nothing is normalised into
+ * existence: a repository with a directory genuinely called `b` keeps its
+ * `b/queue.ts`, because that key matches on the first try and the stripping
+ * below is never reached.
+ */
+const diffKeyOf = (path: string, diffLines: Map<string, Set<number>>): string | undefined => {
+  if (diffLines.has(path)) return path;
+
+  const trimmed = path.trim();
+  if (diffLines.has(trimmed)) return trimmed;
+
+  const stripped = trimmed.replace(PATH_NOISE, "");
+  return diffLines.has(stripped) ? stripped : undefined;
+};
+
+/**
+ * The placement of a finding in a file the diff **does** hold, from that file's
+ * covered lines.
+ *
+ * Takes the lines rather than the map because the question of *which* file is
+ * already answered by the time this runs — `diffKeyOf` decides it, and a second
+ * lookup here would be a second answer to it.
+ */
+const placementOf = (finding: Finding, fileLines: Set<number> | undefined): Placement => {
   // Every line of a range must be in a hunk, not just the end of it: GitHub
   // rejects the whole review over any one of them.
   const from = finding.startLine ?? finding.line;
   for (let line = from; line <= finding.line; line++) {
-    if (!fileLines.has(line)) return "file";
+    if (!fileLines?.has(line)) return "file";
   }
   return "line";
 };

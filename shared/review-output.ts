@@ -945,8 +945,15 @@ export const renderReviewBody = (parts: {
    */
   readonly resolved: readonly CarriedFinding[];
   /**
-   * The out-of-scope findings this review recorded, already capped, and what
-   * the cap cost.
+   * This review's whole follow-up list, from `recordFollowUps`: the moved
+   * findings first, then the out-of-scope ones the cap kept. And what the cap
+   * cost, which is a number about the second half alone.
+   *
+   * **The moved ones lead it**, and that is a fact this relies on rather than
+   * one it checks: `movedToFollowUps` above is written into the payload as the
+   * length of the exempt prefix, so a caller that appended them instead would
+   * exempt the wrong entries at the filing end. One function builds the list and
+   * the count together for that reason.
    *
    * Rendered as a group like the others rather than appended after the body,
    * which is where they used to land — below the run link, looking unlike
@@ -1015,7 +1022,7 @@ export const renderReviewBody = (parts: {
     // Last, and invisible. The filing half reads the latest one off the body
     // (#47), so it goes out on every review including the one that recorded
     // nothing — which is how a round retracts an earlier round's list.
-    followUpsPayload(parts.followUps, parts.droppedFollowUps),
+    followUpsPayload(parts.followUps, parts.droppedFollowUps, parts.movedToFollowUps),
   ]
     .filter((part) => part !== undefined && part !== "")
     .join("\n\n");
@@ -1207,6 +1214,14 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
  * ordering axis and states that anything past the third is dropped from the
  * end, so the order is a contract the model can be held to; re-deriving one
  * here would need a seriousness judgement nothing in this file can make.
+ *
+ * **The model's out-of-scope list, and only that.** A moved finding is not in
+ * what this is handed — `recordFollowUps` caps this half and then puts the
+ * moved ones in front of the result — because the cap's whole justification is
+ * that the model wrote the list knowing it was out of scope and was told where
+ * it would be cut. A finding the review meant to stop the merge with was told
+ * nothing of the kind, and dropping one leaves it on no surface at all: not a
+ * thread, not the count, not the payload the filing run reads.
  */
 export const capFollowUps = (
   followUps: readonly FollowUp[],
@@ -1252,20 +1267,50 @@ export const movedFollowUp = (finding: Finding): FollowUp => ({
   severity: finding.severity,
 });
 
+/** The review's whole follow-up list, and how it is divided. */
+export interface RecordedFollowUps {
+  /** The moved findings, then what survived the cap. In filing order. */
+  readonly followUps: FollowUp[];
+  /**
+   * How many entries at the **front** of that list are moved findings — the
+   * length of the exempt prefix, written into the payload so the filing end can
+   * apply the same cap to the same half (`shared/follow-up-plan.ts`).
+   *
+   * A count rather than a flag on each entry, because a flag would be a field
+   * the *model* can write: `parseFollowUp` reads a model's answer and a payload
+   * through the same door, and an entry that exempts itself from the cap is a
+   * control handed to the thing the cap exists to bound.
+   */
+  readonly moved: number;
+  /** What the cap cost — out-of-scope entries only, by the rule above. */
+  readonly dropped: number;
+}
+
 /**
  * The review's follow-ups: the moved findings first, then the ones the model
- * recorded as out of scope.
+ * recorded as out of scope, capped.
  *
- * **First, not appended**, and the cap is why. It drops from the end, so the
- * order decides what survives — and a moved finding is one the review believed
- * had to be fixed before merge, which is a stronger claim than anything in a
- * list the model wrote knowing it was out of scope. Losing the blocker to keep
- * a note about a function the diff only calls is the wrong way round.
+ * **First and exempt**, which are two separate facts about them. First, because
+ * the order is the filing order and a finding the review meant to stop the
+ * merge with reads ahead of a note about a function the diff only calls. Exempt,
+ * because the cap can only be the announced, survivable loss it is for a list
+ * whose writer was told where it would be cut — and for these it is the last
+ * door out: an unanchored finding is already off the count and out of the
+ * record, so a cap that dropped one would delete it. The body would then state
+ * *"4 findings were moved to follow-ups"* over three, and no stub would ever be
+ * filed for the fourth.
+ *
+ * So the list can run past `MAX_FOLLOW_UPS`, and only ever by the number of
+ * findings the diff gave no anchor to.
  */
-export const withMovedFindings = (
+export const recordFollowUps = (
   unanchored: readonly Finding[],
   followUps: readonly FollowUp[],
-): FollowUp[] => [...unanchored.map(movedFollowUp), ...followUps];
+): RecordedFollowUps => {
+  const moved = unanchored.map(movedFollowUp);
+  const { kept, dropped } = capFollowUps(followUps);
+  return { followUps: [...moved, ...kept], moved: moved.length, dropped };
+};
 
 /**
  * What a reader selects the payload on, and nothing more than that. The
@@ -1343,7 +1388,7 @@ export const hasFollowUpsBlock = (body: string): boolean =>
  */
 export const parseFollowUpsBlock = (
   body: string,
-): { followUps: FollowUp[]; dropped: number } | undefined => {
+): { followUps: FollowUp[]; dropped: number; moved: number } | undefined => {
   const matches = [...body.matchAll(BLOCK)];
   const raw = matches[matches.length - 1]?.[1];
   if (raw === undefined) return undefined;
@@ -1364,9 +1409,18 @@ export const parseFollowUpsBlock = (
   }
 
   const dropped = record["dropped"];
+  const followUps = asArray(record["followUps"] ?? [], "followUps").map(parseFollowUp);
+  // Absent on a payload written before the moved findings existed, which reads
+  // as "none of these are exempt" — the behaviour that release had, applied to
+  // the list it wrote. Clamped to the list because it is an index into it, and
+  // an exempt prefix longer than the list would exempt the whole of one this
+  // block did not come from.
+  const moved = record["moved"];
   return {
-    followUps: asArray(record["followUps"] ?? [], "followUps").map(parseFollowUp),
+    followUps,
     dropped: typeof dropped === "number" && dropped > 0 ? Math.floor(dropped) : 0,
+    moved:
+      typeof moved === "number" && moved > 0 ? Math.min(Math.floor(moved), followUps.length) : 0,
   };
 };
 
@@ -1384,11 +1438,24 @@ export const parseFollowUpsBlock = (
  * A review body has a hard 65,536-character ceiling whose overflow is a 422
  * that takes the review's threads down with it, so the bodies live here and the
  * visible group carries titles alone.
+ *
+ * `moved` is the length of the exempt prefix (`recordFollowUps`), carried so the
+ * cap the filing end re-applies bites on the same half this one capped. Without
+ * it that second cap — a belt at the end holding `issues: write` — would cut a
+ * list of four back to three and file nothing for the moved finding this end
+ * deliberately kept. The field is additive and the version stays `1`: a reader
+ * that has never heard of it reads `0` and caps exactly as it does today, where
+ * a bump would make it refuse the block and file nothing at all.
  */
-export const followUpsPayload = (kept: readonly FollowUp[], dropped: number): string =>
+export const followUpsPayload = (
+  kept: readonly FollowUp[],
+  dropped: number,
+  moved: number,
+): string =>
   `<!-- ${FOLLOW_UPS_MARKER} ${embeddableJson({
     version: FOLLOW_UPS_VERSION,
     dropped,
+    moved,
     followUps: kept,
   })} -->`;
 
@@ -1426,12 +1493,17 @@ export const renderFollowUpsGroup = (
   // Said here as well as after the merge, because this is the half that is
   // actionable: it reaches the author while the pull request is still open and
   // raising the dropped finding by hand is still cheap.
+  //
+  // *Out-of-scope* is load-bearing since the list can be longer than the cap: a
+  // moved finding is exempt (`recordFollowUps`), so a sentence claiming only
+  // three entries are listed would be false above four and would name the wrong
+  // population for the loss either way.
   const truncation =
     dropped === 0
       ? []
       : [
           "",
-          `Only the ${MAX_FOLLOW_UPS} most serious are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`,
+          `Only the ${MAX_FOLLOW_UPS} most serious out-of-scope findings are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`,
         ];
 
   return [
@@ -1455,8 +1527,12 @@ export const renderFollowUpsGroup = (
  * it here is what keeps the *format* described once: a second rendering in the
  * runner would drift on the release that changes either half.
  */
-export const renderFollowUpsBlock = (kept: readonly FollowUp[], dropped: number): string => {
+export const renderFollowUpsBlock = (
+  kept: readonly FollowUp[],
+  dropped: number,
+  moved: number,
+): string => {
   const group = renderFollowUpsGroup(kept, dropped);
-  const payload = followUpsPayload(kept, dropped);
+  const payload = followUpsPayload(kept, dropped, moved);
   return group === undefined ? payload : `${group}\n\n${payload}`;
 };

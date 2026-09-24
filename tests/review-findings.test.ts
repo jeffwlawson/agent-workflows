@@ -138,6 +138,63 @@ describe("placeFindings", () => {
   });
 
   /**
+   * **One reason, not two.** "Nothing this pull request changed causes it" is
+   * inferred from a lookup failing, and that inference is only sound while the
+   * lookup can fail for that reason alone. The keys are sliced off `+++ b/` and
+   * `parseFinding` stores the model's path verbatim, so before this a model
+   * that wrote `./src/queue.ts` — or the `b/` prefix it read off the diff
+   * header, or a trailing space — had its finding demoted out of the count: no
+   * thread, no record entry, *approval recommended* and a `success` status over
+   * a blocker the review meant.
+   *
+   * So a miss is retried against the spellings a model reaches for. The anchor
+   * comes back in the **diff's** spelling, not the model's, because the thread
+   * is posted under this path and GitHub matches it against the diff the same
+   * way this map does — a placement that then fails to post is the whole review
+   * rejected.
+   */
+  it.each([
+    ["a leading ./", "./src/queue.ts"],
+    ["the diff header's b/", "b/src/queue.ts"],
+    ["the diff header's a/", "a/src/queue.ts"],
+    ["a leading /", "/src/queue.ts"],
+    ["surrounding space", "  src/queue.ts "],
+    ["both at once", " ./src/queue.ts"],
+  ])("anchors a finding whose path carries %s", (_case, path) => {
+    const placed = place([finding({ path, line: 11 })]);
+
+    expect(placed[0]?.placement).toBe("line");
+    expect(placed[0]?.finding.path).toBe("src/queue.ts");
+    expect(reviewThreads(placed)[0]?.path).toBe("src/queue.ts");
+  });
+
+  /**
+   * And nothing is normalised into existence. A repository whose diff really
+   * does hold `b/queue.ts` matches on the first try, so the stripping below it
+   * is never reached and its finding is not silently re-pointed at `queue.ts`.
+   */
+  it("prefers the spelling the diff holds over the one stripping would produce", () => {
+    const lines = parseDiffLines(`diff --git a/b/queue.ts b/b/queue.ts
+index 0ff3bbb..c6ca7ae 100644
+--- a/b/queue.ts
++++ b/b/queue.ts
+@@ -8,6 +8,7 @@
+ const eight = 8;
++const nine = 9;
+ const ten = 10;
+`);
+    const { placed } = placeFindings([finding({ path: "b/queue.ts", line: 9 })], lines, counting());
+
+    expect(placed[0]?.finding.path).toBe("b/queue.ts");
+    expect(placed[0]?.placement).toBe("line");
+  });
+
+  /** A path no spelling reaches is still unanchored, which is the arm the rest rests on. */
+  it("moves a finding whose path no spelling of it is in the diff", () => {
+    expect(unanchored([finding({ path: "./src/other.ts", line: 88 })])).toHaveLength(1);
+  });
+
+  /**
    * And it carries **no id**, which is the mechanical half of "it is not a
    * finding this pull request owns": an id exists so a later round recognises
    * something it raised, and this is never raised.

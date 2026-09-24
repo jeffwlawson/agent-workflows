@@ -177,7 +177,7 @@ jobs:
         # version: `npx pkg@version` would reuse this repository's own checkout
         # as the package, which has no `dist/`, and the step would die
         # `command not found` before any runner code ran (#8).
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.3.1 -- agent-workflows follow-ups
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.4.0 -- agent-workflows follow-ups
 
       # A failure has to say what failed where a human will see it, or the run
       # is indistinguishable from the silent no-op that is this job's ordinary

@@ -1,6 +1,6 @@
 {
   "name": "@jeffwlawson/agent-workflows",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Runners for a GitHub Actions agent loop: implement, implement-prd, review, fix, update-branch",
   "type": "module",
   "license": "MIT",

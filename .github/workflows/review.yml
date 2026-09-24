@@ -663,7 +663,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.3.1 -- agent-workflows review
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.4.0 -- agent-workflows review
 
       # GraphQL `addPullRequestReview`, not REST `POST /pulls/{n}/reviews`, for
       # the one thing REST cannot do: open a **file-level** thread in the same

@@ -349,9 +349,23 @@ jobs:
           # verdict with no signal anywhere. It is the distinction `verdictOn`
           # keeps as `undefined` against `false`, and the CI word keeps as
           # `unknown` against `red`.
+          #
+          # The warning hedges, because the arm is gated on the call and not on
+          # a status code (#123): a 5xx, a secondary rate limit and a dropped
+          # connection land here alongside the 403, and on those the caller it
+          # would send a reader to is already correct. Its own pair rather than
+          # the write's below — a read cannot produce that 422 — and its own
+          # remedy, because neither cause is one a re-run recovers from: the
+          # branch is refreshed by the time this warns, so the next run has
+          # nothing to merge and never reaches this step. That remedy is
+          # unconditional for the reason the arm exists at all: the read
+          # failed, so whether ${OLD_SHA} carries a verdict is the one thing
+          # this step cannot say. A closing line saying one stands would
+          # collapse the distinction the other way, and on the pull request
+          # nobody has reviewed yet it reads as an offer rather than the fix.
           err="${RUNNER_TEMP}/carry-verdict.err"
           if ! statuses=$(gh api "repos/{owner}/{repo}/commits/${OLD_SHA}/statuses" --paginate --slurp 2>"$err"); then
-            echo "::warning::Could not read the statuses on ${OLD_SHA}, so no \`${VERDICT_CONTEXT}\` verdict was carried on to ${NEW_SHA} and this pull request now reads as unreviewed — which is not the same as its having none. On a private repository this is a caller missing \`statuses: write\` — see jeffwlawson/agent-workflows docs/ADOPTING.md §4. See what \`gh\` said below."
+            echo "::warning::Could not read the statuses on ${OLD_SHA}, so no \`${VERDICT_CONTEXT}\` verdict was carried on to ${NEW_SHA} and this pull request now reads as unreviewed — which is not the same as its having none. GitHub's reply is printed below: on a private repository a 403 is a caller missing \`statuses: write\` (jeffwlawson/agent-workflows docs/ADOPTING.md §4); anything else — a 5xx, a secondary rate limit, a dropped connection — is transient and the caller is fine. Re-running this workflow recovers neither: the branch is refreshed already. Any verdict that stood is still the one on ${OLD_SHA} — this read could not tell whether there was one; add \`agent:review\` for a fresh one."
             if [ -s "$err" ]; then
               cat "$err"
             fi

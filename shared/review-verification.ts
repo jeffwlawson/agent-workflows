@@ -66,6 +66,16 @@ export interface CarriedFinding {
    * on one would be taking instructions from the pull request it is reviewing.
    */
   readonly maintainerReply?: MaintainerReply;
+  /**
+   * The closing reply this workflow already posted, where that reply is still
+   * the thread's **latest** word (#133). It says the finding was verified, but
+   * the resolve after it did not go through.
+   *
+   * Carried so the ruling that would repeat it resolves without replying again.
+   * A reply is the record of why a thread closed, and a thread that gets one
+   * per round is how #130 collected nine identical ones.
+   */
+  readonly closedAs?: ResolutionReason;
 }
 
 /**
@@ -108,6 +118,8 @@ export interface AgentThread {
    * `maintainerReplyOn` in `shared/pr-feedback.ts`.
    */
   readonly maintainerReply?: MaintainerReply;
+  /** The closing reply already on it, where that is its latest word. See `CarriedFinding`. */
+  readonly closedAs?: ResolutionReason;
 }
 
 /**
@@ -169,6 +181,7 @@ export const carriedFindings = (parts: {
       ...(thread.severity === undefined ? {} : { severity: thread.severity }),
       ...(thread.url === undefined ? {} : { url: thread.url }),
       ...(thread.maintainerReply === undefined ? {} : { maintainerReply: thread.maintainerReply }),
+      ...(thread.closedAs === undefined ? {} : { closedAs: thread.closedAs }),
     });
   }
 
@@ -190,18 +203,34 @@ const NOTHING_CARRIED =
   "(no finding from an earlier review of this pull request is open — either this is the first review, or every earlier finding has been verified fixed.)";
 
 /**
+ * Said beside a finding whose thread already carries this workflow's closing
+ * reply (#133). Without it, a finding the last round verified shows up again
+ * with nothing to say why, which reads like a regression.
+ */
+const CLOSE_DID_NOT_LAND =
+  " _(an earlier review already verified this and replied, but the close did not go through; rule on the code as it is now)_";
+
+/**
  * The open findings as the review agent is shown them: one line each, the id
  * first.
  *
  * The id is what the agent answers on, so it leads. What follows it is the
  * earlier review's own one-line claim — enough to know which finding is meant,
  * and not a re-statement of the evidence, which is still on the thread the
- * agent can read in the feedback it was already given.
+ * agent can read in the feedback it was already given. The exception is a
+ * thread already carrying its closing reply. That thread is no longer open
+ * feedback (`shared/pr-feedback.ts`), so its line says why it is here instead.
  */
 export const renderCarriedFindings = (carried: readonly CarriedFinding[]): string =>
   carried.length === 0
     ? NOTHING_CARRIED
-    : carried.map((finding) => `- \`${finding.id}\` — ${finding.text}`).join("\n");
+    : carried
+        .map(
+          (finding) =>
+            `- \`${finding.id}\` — ${finding.text}` +
+            (finding.closedAs === undefined ? "" : CLOSE_DID_NOT_LAND),
+        )
+        .join("\n");
 
 /** Said where no maintainer has closed anything, for the reason `NOTHING_CARRIED` is said. */
 const NOTHING_SETTLED = "(no finding on this pull request has been closed by a maintainer.)";
@@ -303,7 +332,34 @@ export interface ThreadResolution {
    */
   readonly reason: ResolutionReason;
   readonly reply: string;
+  /**
+   * True where the thread's latest comment is already this reply's kind: a
+   * closing reply this workflow posted for the same reason (#133). The workflow
+   * then retries the resolve and posts nothing. It posts on any other value,
+   * since a thread must never close without a record of why.
+   */
+  readonly alreadyReplied: boolean;
 }
+
+/**
+ * How each closing reply opens. The composers below write these and
+ * `closingReplyReason` reads them, so the two cannot drift apart on the
+ * release that rewords a reply.
+ */
+export const VERIFIED_FIXED = "**Verified fixed.**";
+export const CLOSED_AS_WONT_FIX = "**Closed as won't fix.**";
+
+/**
+ * Which closing reply `body` is, or `undefined` for anything else. The caller
+ * must check the comment's author: anyone can type these words, and only the
+ * workflow bot's copy is a record.
+ */
+export const closingReplyReason = (body: string): ResolutionReason | undefined => {
+  const text = body.trimStart();
+  if (text.startsWith(VERIFIED_FIXED)) return "ADDRESSED";
+  if (text.startsWith(CLOSED_AS_WONT_FIX)) return "WONT_FIX";
+  return undefined;
+};
 
 /** Said in the reply where the review verified the fix but wrote nothing about it. */
 const NO_NOTE = "The current change resolves this.";
@@ -317,7 +373,7 @@ const NO_NOTE = "The current change resolves this.";
  * the code rather than by the run that claimed to have fixed it.
  */
 export const resolutionReply = (entry: VerificationEntry): string =>
-  `**Verified fixed.** ${entry.note ?? NO_NOTE}\n\n_Resolved by the review that checked it, rather than by the run that fixed it._`;
+  `${VERIFIED_FIXED} ${entry.note ?? NO_NOTE}\n\n_Resolved by the review that checked it, rather than by the run that fixed it._`;
 
 /**
  * The reply posted into a thread the maintainer declined.
@@ -349,7 +405,7 @@ export const declineReply = (reply: MaintainerReply): string => {
     .join("\n");
 
   return [
-    `**Closed as won't fix.** This review read a maintainer's refusal on this thread. The latest maintainer reply on it, from @${reply.login}:`,
+    `${CLOSED_AS_WONT_FIX} This review read a maintainer's refusal on this thread. The latest maintainer reply on it, from @${reply.login}:`,
     "",
     quoted,
     "",
@@ -454,6 +510,7 @@ export const verifyCarried = (
         findingId: finding.id,
         reason: "WONT_FIX",
         reply: declineReply(finding.maintainerReply),
+        alreadyReplied: finding.closedAs === "WONT_FIX",
       });
       resolved.push(finding);
       continue;
@@ -464,6 +521,7 @@ export const verifyCarried = (
         findingId: finding.id,
         reason: "ADDRESSED",
         reply: resolutionReply(entry),
+        alreadyReplied: finding.closedAs === "ADDRESSED",
       });
     }
     // Including a legacy body-recorded one, which has no thread and so no

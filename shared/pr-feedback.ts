@@ -2,7 +2,13 @@ import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "
 import { parseNameStatus } from "./diff-lines.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
 import { lastFindingMarker, openingClaim, type Severity } from "./review-findings.js";
-import type { AgentThread, MaintainerReply, SettledFinding } from "./review-verification.js";
+import {
+  closingReplyReason,
+  type AgentThread,
+  type MaintainerReply,
+  type ResolutionReason,
+  type SettledFinding,
+} from "./review-verification.js";
 
 /**
  * The three rendered feedback surfaces, named the same as the fields carrying
@@ -60,7 +66,11 @@ export interface UnreadableSelection {
 export interface PullRequestFeedback {
   /** Bodies of submitted reviews (the reviewer's overall note). */
   readonly summaries: string;
-  /** Comments in *unresolved* review threads, anchored to file + line, replies included. */
+  /**
+   * Comments in *unresolved* review threads, anchored to file + line, replies
+   * included. Leaves out a thread whose latest word is this workflow's closing
+   * reply: its only remaining work is the resolve (#133).
+   */
   readonly inline: string;
   /**
    * Top-level conversation comments on the PR, **excluding** the ones
@@ -76,9 +86,12 @@ export interface PullRequestFeedback {
    * workflow wrote into it (#110) — the open half of the review record a later
    * review verifies against (#111).
    *
-   * A subset of `threadIds` and not a replacement for it: the fix runner
-   * answers every thread it was shown, a human's included, while only the
-   * loop's own threads carry a finding a review can rule on.
+   * Not a replacement for `threadIds`: the fix runner answers every thread it
+   * was shown, a human's included, while only the loop's own threads carry a
+   * finding a review can rule on. It is not a subset either. A thread that
+   * already holds its closing reply is here, carrying `closedAs`, so the
+   * review can retry the resolve. It is not in `threadIds`, because nobody
+   * should reply to it again (#133).
    */
   readonly agentThreads: readonly AgentThread[];
   /**
@@ -879,6 +892,23 @@ const maintainerReplyOn = (
 };
 
 /**
+ * The closing reply this workflow already posted on a thread, where that reply
+ * is still the thread's latest word (#133). It says a review verified the thread,
+ * but the resolve after the reply did not go through.
+ *
+ * **The latest** trusted comment, and only the workflow bot's. A maintainer who
+ * answers after the reply has reopened the conversation, maybe to say the fix
+ * did not land, so the thread is open feedback again. The words alone are a
+ * selector anyone can type, so a copy from anybody else is not a record.
+ */
+const closedAsOn = (comments: readonly GqlThreadComment[]): ResolutionReason | undefined => {
+  const last = comments.at(-1);
+  return last !== undefined && isWorkflowBot(last.author?.login ?? undefined)
+    ? closingReplyReason(last.body ?? "")
+    : undefined;
+};
+
+/**
  * The elements a partial answer actually left behind.
  *
  * A nulled element is a hole in the list, not an object with absent fields, so
@@ -997,9 +1027,19 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     })
     .filter((thread) => thread.comments.length > 0);
 
-  const threads = allThreads.filter((thread) => !thread.isResolved);
+  const threads = allThreads
+    .filter((thread) => !thread.isResolved)
+    .map((thread) => ({ ...thread, closedAs: closedAsOn(thread.comments) }));
 
-  const inline = threads
+  // Open on GitHub but with nothing left to do except the resolve: a review
+  // verified it and replied, and the close did not go through (#133). So it is
+  // not rendered and not offered for a reply. The fix agent was being asked to
+  // report on these threads and answered "already settled" on each one, every
+  // run. They stay in `agentThreads` below, so the next review can retry the
+  // resolve without replying again.
+  const openFeedback = threads.filter((thread) => thread.closedAs === undefined);
+
+  const inline = openFeedback
     .map((thread) => {
       const first = thread.comments[0];
       const header = `**${anchorOf(first!, isFileLevel(thread))}** — thread \`${thread.id}\``;
@@ -1029,6 +1069,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
         ...(found.severity === undefined ? {} : { severity: found.severity }),
         ...(found.url === undefined ? {} : { url: found.url }),
         ...(reply === undefined ? {} : { maintainerReply: reply }),
+        ...(thread.closedAs === undefined ? {} : { closedAs: thread.closedAs }),
       },
     ];
   });
@@ -1086,7 +1127,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     inline,
     conversation,
     all,
-    threadIds: threads.map((t) => t.id),
+    threadIds: openFeedback.map((t) => t.id),
     agentThreads,
     settledFindings,
     latestAgentReviewBody,

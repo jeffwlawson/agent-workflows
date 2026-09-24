@@ -607,6 +607,22 @@ expensive to rediscover.
   from that group was never a consequence of it being `contents: read`: the hazard is not review
   *writing*, it is review *reading during another job's write*, and `contents: read` does nothing
   about that. See the next invariant.
+
+  **Since #133 the invariant is about the review *job*, not the review workflow.** Closing a
+  verified thread needs `contents: write`: `resolveReviewThread` is refused to an installation
+  token without it, while the reply beside it is not. That was confirmed on a scratch pull request
+  on 2026-09-24. So the resolve runs in a sibling job, `resolve`, which holds `contents: write` and
+  `pull-requests: write` and nothing else. It checks nothing out, installs nothing and runs no agent.
+  Its input is the list the review runner wrote, in which every thread id is one the runner handed
+  the agent. The job that reads untrusted content and runs a model still holds `contents: read`.
+  The job holding the write has nothing to write with. `AGENT_PAT` was the alternative, and was
+  declined because it would have made resolving depend on a secret an adopter may not have set.
+
+  That job is also the one exception to the next invariant: it sits in **no** concurrency group.
+  Joining would give it the waiter slot, and it could then evict a fix a human queued while the
+  review ran. Overlap costs nothing instead. A fix run no longer sees a thread that already carries
+  its closing reply, and a review that races the resolve re-verifies that thread and closes it
+  without replying again.
 - **One concurrency group per PR, one per issue.** Every workflow that touches PR *n* — review,
   fix, update-branch — sits in `agent-pr-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: false`; `agent-implement` sits in a per-issue group. Not one group per

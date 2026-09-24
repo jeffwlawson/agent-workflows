@@ -28,14 +28,19 @@ jobs:
   review:
     uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.4.0
     # Granted here, bounded there. A called workflow can only downgrade the
-    # token it is handed, so these have to be at least what the job needs —
-    # `contents: read` is the invariant, `pull-requests: write` is what every
-    # `gh pr edit` in it spends, and `packages: read` is explained below.
+    # token it is handed, so these have to be at least what its jobs need —
+    # `pull-requests: write` is what every `gh pr edit` in it spends, and
+    # `packages: read` is explained below.
     permissions:
       # Reading the check runs the CI wait polls. Public repositories expose
       # them without this scope; a private one 403s without it.
       checks: read
-      contents: read
+      # `write` for one job only: `resolve`, which closes the threads the review
+      # verified. GitHub refuses `resolveReviewThread` to a token without it
+      # (#133). That job checks nothing out and runs no agent. The review job
+      # itself narrows this back to `read`, so a review still cannot touch the
+      # branch. Left at `read`, reviews post and verified threads stay open.
+      contents: write
       # Installing the runner package, which the called job does with `npx` from
       # GitHub Packages. Granted here because a called workflow can only
       # *downgrade* the token it is handed, so the scope has to start in the

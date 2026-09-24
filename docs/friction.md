@@ -1991,3 +1991,31 @@ carries a character GitHub refuses there, and makes the warning print GitHub's r
 422 is ours. The general lesson is the one the 2026-09-19 entry drew from the other side: a
 constraint that lives only in the remote API is untested until something real calls it, and the
 first real call was the release.
+
+## 2026-09-24 — v0.4.0 closed no thread it verified, and said on each one that it had
+
+Round 2 on #128 verified round 1's only finding fixed. The resolve step replied into the thread and
+then logged `gh: Resource not accessible by integration` for the resolve. The thread stayed open
+under a reply reading *"Resolved by the review that checked it"*. The step was `continue-on-error`
+and its failure arm was an `echo`, so the run was green and nothing on the pull request said the
+close had not happened.
+
+It then piled up. An open thread is carried into the next review, which verified it again and posted
+another `**Verified fixed.**`. The fix agent was shown every open thread, and it replied "already
+settled" on those as well. On #130's ten rounds the oldest thread had thirteen replies, nine of them
+the same verification.
+
+The step's own comment claimed that resolving a thread is not a `contents:` write. That was the
+assumption, and no test could check it. A scratch pull request settled it
+([run 36057777753](https://github.com/jeffwlawson/agent-workflows/actions/runs/36057777753)): same
+token, same kind of thread, `pull-requests: write` in both jobs. The reply succeeded under either
+grant. `resolveReviewThread` came back `FORBIDDEN` under `contents: read` and resolved under
+`contents: write`. The first attempt at the probe failed on a malformed mutation of its own, which
+is the other reason to run one rather than reason about it.
+
+The fix (#133) moves the resolve into a job with the write and nothing to write with, and makes both
+halves idempotent: a thread whose latest word is already the workflow's closing reply gets the
+resolve retried and no second reply, and is not shown to the fix agent at all. The lesson is the
+2026-09-23 entry's again, one API over: a permission the remote grants per mutation is untested
+until a real token asks, and a failure arm that only `echo`s turns that first real ask into a
+release of silence.

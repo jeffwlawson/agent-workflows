@@ -50,11 +50,15 @@ interface Workflow {
   readonly jobs: Record<string, { readonly env?: Record<string, string>; readonly steps?: readonly Step[] }>;
 }
 
+/**
+ * The `review` job by id. Since #133 the file has a second job, `resolve`,
+ * which runs no wait.
+ */
 const reviewJob = (): { readonly env?: Record<string, string>; readonly steps?: readonly Step[] } => {
-  const jobs = Object.values((parse(fs.readFileSync(REVIEW, "utf8")) as Workflow).jobs);
+  const job = (parse(fs.readFileSync(REVIEW, "utf8")) as Workflow).jobs["review"];
 
-  expect(jobs).toHaveLength(1);
-  return jobs[0] as { readonly env?: Record<string, string>; readonly steps?: readonly Step[] };
+  expect(job).toBeDefined();
+  return job as { readonly env?: Record<string, string>; readonly steps?: readonly Step[] };
 };
 
 const waitStep = (): Step => {

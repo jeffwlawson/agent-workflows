@@ -60,7 +60,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | both secrets are set — on the repository, or shared with it by its organization | §2 — and `AGENT_PAT`'s absence is three of §1's failures by itself |
 | Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
 | every caller that declares a `permissions:` block grants each scope the job it calls spends — the whole of *The permissions per workflow* table below, at the severity the two rows under this one qualify | §4 — a 401 at `npx` that reads like a bad token, a `git push` that 403s with the agent pass already spent, and a label transition that 403s before the checkout on `Resource not accessible by integration`, which names neither the scope nor the file that grants it |
-| the two scopes only a **private** repository needs — `checks: read` and `contents: read` on review — which are an error there and *a warning on a public repository*, where the same calls are served without them | §4 — a wait that spends its budget and reviews blind, and a checkout that 403s before the diff is read |
+| the one scope only a **private** repository needs — `checks: read` on review — which is an error there and *a warning on a public repository*, where the same call is served without it | §4 — a wait that spends its budget and reviews blind |
 | `agent-follow-ups`' `contents: read`, the one grant no call here is known to fail without — *a warning everywhere, not a failure* | §4 — a `permissions:` block replaces the inherited token rather than adding to it, so dropping the line sets `contents: none`, which is a configuration the runner install has never run under |
 | a caller that declares no `permissions:` block at all | §4 — it runs with the default token, whose restricted setting is `contents` and `packages` read, so the install works and every write 403s |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
@@ -735,7 +735,7 @@ The permissions per workflow, which are what each job actually spends:
 |---|---|---|---|---|---|---|
 | `agent-implement` | — | write | write | read | write | — |
 | `agent-implement-prd` | — | write | write | read | write | — |
-| `agent-review` | **read** | **read** | — | read | write | **write** |
+| `agent-review` | **read** | **write** | — | read | write | **write** |
 | `agent-fix` | — | write | — | read | write | — |
 | `agent-update-branch` | — | write | — | read | write | **write** |
 | `agent-follow-ups` | — | read | **write** | read | write | — |
@@ -759,6 +759,17 @@ does — it is about installing the runner it runs.
 > reports it as an error. Newer than the five scopes above it, so a caller installed against an
 > earlier release has a review that works and a verdict that never arrives. What the verdict says,
 > and what you do with each one, is §3b.
+
+> **`contents: write` on review is the `resolve` job's, and only that job's.** GitHub refuses
+> `resolveReviewThread`, which closes the threads a review verified, to a token without it. Replying
+> into those threads needs nothing extra. So a caller that still grants `contents: read` gets reviews
+> that work, and verified threads that stay open under a reply saying they were verified. That was
+> every verified thread on v0.4.0, which put the resolve in the review job itself. The `resolve` job
+> checks nothing out, installs nothing and runs no agent: it runs the two mutations over the list the
+> review wrote, and nothing else. The review job narrows the grant back to `contents: read`, so
+> a review still cannot touch your branch. If you upgrade without the grant, the `resolve` job warns
+> on every run, and `doctor` reports it as an error. A later review retries any close that failed
+> without replying again.
 
 > **`statuses: write` on update-branch is what keeps it**, for the same reason and with the same
 > silence when it is missing. A clean refresh copies the verdict from the commit that was reviewed
@@ -805,7 +816,8 @@ Four things about that shape are worth knowing before you paste it:
   whose default `GITHUB_TOKEN` is read-only, omitting this block gives you a run that dies at its
   first label edit — `Resource not accessible by integration`, on a step named for labels, before
   anything is checked out. The two blocks say the same thing for opposite reasons — yours grants,
-  ours bounds — which is why `contents: read` on review stays an invariant no caller can widen.
+  ours bounds — which is why `contents: read` on the review job stays an invariant no caller can
+  widen, even though your review caller grants `write` for the `resolve` job beside it.
 - **Pin the `@ref`.** Same reasoning as the runner version above, and the same trap: a floating
   `@main` is a workflow that changes under a pull request nobody touched. An exact pin is a pin
   that goes stale, which nothing in this repository can see from here — *Keeping the pins fresh*,
@@ -1117,7 +1129,7 @@ about, and the paragraph after the table is a decision only you can make.
 | **Author-association gate** on every issue/PR/comment/review-thread body | all world-writable. Anyone can *open* an issue or comment on a PR; `agent:fix` acts on that text and pushes code. Trusts `OWNER` / `MEMBER` / `COLLABORATOR` — org-adjacent or better, *not* write access; see the paragraph below |
 | **Trust your own bot by login** — `github-actions[bot]` **and** `github-actions` | REST and GraphQL spell the same account differently. List one and the review→fix handoff silently drops its own agent's comments |
 | **Scrub the GitHub token** from the agent's environment after fetching context | the agent runs unsandboxed; it has no legitimate `gh` use once context is read |
-| **`contents: read`** on review | the one agent structurally unable to mutate the branch |
+| **`contents: read`** on the review job | the one agent structurally unable to mutate the branch. The `resolve` job beside it holds `contents: write`, because closing a thread needs it, and so it runs no agent and checks nothing out |
 | **No model in the job that files** | `agent-follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the runner |
 
 **Neither the trigger nor the input gate is the write boundary, and it is the same role on both

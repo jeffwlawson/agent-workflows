@@ -26,6 +26,7 @@ import {
   unreadableNote,
 } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
+import { declineReply, resolutionReply } from "../shared/review-verification.js";
 
 const spawned = vi.mocked(execFileSync);
 const captured = vi.mocked(spawnSync);
@@ -1818,5 +1819,111 @@ describe("a finding the maintainer has settled", () => {
     expect(fetchPullRequestFeedback("12").agentThreads[0]?.maintainerReply?.body).toBe(
       "Won't fix — intended.",
     );
+  });
+});
+
+/**
+ * **A thread already holding its closing reply is not open feedback** (#133).
+ * The review verified it and replied, and then the resolve after that reply was
+ * refused. It is still open on GitHub, and nothing is left to do on it except
+ * the resolve.
+ *
+ * Two readers ask about it, and they need different answers:
+ * - The fix agent is shown every open thread and asked to report on each. Shown
+ *   this one, it answers "already settled", which is a second pile-up beside
+ *   the review's. So the thread is left out of what it renders.
+ * - The review is handed it as a carried finding again, marked with the reply
+ *   it already holds, so the workflow retries the resolve without replying.
+ */
+describe("a thread whose latest word is this workflow's closing reply", () => {
+  const AGENT = { author: { login: "github-actions" }, authorAssociation: "NONE" };
+
+  const finding = {
+    path: "src/queue.ts",
+    line: 206,
+    body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-1 -->",
+    ...AGENT,
+  };
+  const verified = {
+    body: resolutionReply({ id: "f-1", status: "landed" }),
+    ...AGENT,
+  };
+  const thread = (...after: unknown[]): unknown => ({
+    id: "PRRT_one",
+    isResolved: false,
+    comments: { nodes: [finding, ...after] },
+  });
+
+  it("is not rendered as open feedback, and not offered for a reply", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.inline).not.toContain("PRRT_one");
+    expect(feedback.inline).not.toContain("Verified fixed");
+    expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
+  });
+
+  it("is still carried to the review, marked with the reply it holds", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified)] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+      {
+        threadId: "PRRT_one",
+        findingId: "f-1",
+        text: "src/queue.ts:206 — the guard runs after the return",
+        closedAs: "ADDRESSED",
+      },
+    ]);
+  });
+
+  it("marks the won't-fix reply the same way", () => {
+    const decline = { body: declineReply({ login: "maintainer", body: "No." }), ...AGENT };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(decline)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads[0]?.closedAs).toBe("WONT_FIX");
+    expect(feedback.threadIds).toEqual([]);
+  });
+
+  /**
+   * With only such threads left, there is nothing for a fix run to act on, and
+   * the refusal says that rather than sending the agent after work that is
+   * already done.
+   */
+  it("leaves a fix run nothing to act on when it is the only open thread", () => {
+    ghAnswers(() =>
+      response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [thread(verified)] } }),
+    );
+
+    expect(fetchPullRequestFeedback("12").hasFeedback).toBe(false);
+  });
+
+  /**
+   * A maintainer answering after the reply is a thread in conversation again,
+   * perhaps saying the fix did not land. It goes back to being open feedback,
+   * and a later verification posts a new reply rather than resolving silently
+   * under the old one.
+   */
+  it("is open feedback again once a maintainer speaks after the reply", () => {
+    const pushback = { body: "This is not fixed on Windows.", ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, pushback)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.threadIds).toEqual(["PRRT_one"]);
+    expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
+  });
+
+  /** The words are a selector, not a record. Only the workflow's own copy counts. */
+  it("does not count the same words from anyone else", () => {
+    const mimic = { body: verified.body, ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(mimic)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.threadIds).toEqual(["PRRT_one"]);
+    expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
   });
 });

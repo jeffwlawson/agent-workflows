@@ -1605,6 +1605,31 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
   });
 
   /**
+   * And it does not name one cause for an arm that catches several (#123). The
+   * arm is gated on the `gh` call, not on a status code, so a 5xx, a secondary
+   * rate limit and a dropped connection land here alongside the 403 — the same
+   * spread the CI arms in `review.yml` keep as `unknown` rather than `red`. A
+   * warning naming only the grant sends a reader whose caller is already
+   * correct off to fix it, and what `gh` printed is the only thing that tells
+   * the two apart.
+   *
+   * Its own cause set, and not the write's below: a read cannot be the 422
+   * that arm hedges against, and a write cannot be an outage that leaves the
+   * verdict readable where it was posted.
+   */
+  it("does not blame the grant alone when the statuses could not be read", () => {
+    const run = copy()?.run ?? "";
+    const read = run.slice(0, run.indexOf('if [ -z "$verdict" ]'));
+
+    expect(read).toContain("a 403 is a caller missing");
+    expect(read).toMatch(/transient/i);
+    // And what a reader does about it either way, since neither cause is one a
+    // re-run of this workflow recovers from: the branch is refreshed, so the
+    // next run has nothing to merge and this step never runs again.
+    expect(read).toContain("agent:review");
+  });
+
+  /**
    * And the same on the write. This copies `.description` verbatim, so a
    * description GitHub refuses is refused here too — the 422 that lost every
    * v0.3.0 verdict (#121) would have lost every carried one as well. A warning

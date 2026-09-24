@@ -72,6 +72,15 @@ const onPath = (command: string): boolean =>
 const CAN_RUN = ["bash", "jq", "node"].every(onPath);
 
 /**
+ * For the tests that spawn the real `gh`. None of them reaches a network — gh
+ * refuses at flag-parse time or at a connection to `localhost` — so their cost
+ * is starting a cold Go binary, which under a parallel `verify` has run past
+ * vitest's 5-second default (#139). Given to the test *and* to each direct
+ * spawn, because vitest's timeout cannot interrupt a synchronous one.
+ */
+const REAL_GH_TIMEOUT = 30_000;
+
+/**
  * The values the workflow gets from the event, which the harness has to supply
  * in its place. Every `${{ … }}` in the step's `env:` must be listed: an
  * expression this map does not know about throws rather than expanding to the
@@ -259,12 +268,12 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     const refused = spawnSync(
       "gh",
       ["api", `repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs`, "--hostname", "localhost", "--paginate", "--slurp", "--jq", "."],
-      { encoding: "utf8", env: { ...process.env, GH_TOKEN: "test-token" } },
+      { encoding: "utf8", timeout: REAL_GH_TIMEOUT, env: { ...process.env, GH_TOKEN: "test-token" } },
     );
 
     expect(refused.status).not.toBe(0);
     expect(refused.stderr).toContain("the `--slurp` option is not supported with `--jq` or `--template`");
-  });
+  }, REAL_GH_TIMEOUT);
 
   /**
    * …and the same binary accepts every call the *wait* composes. The real `gh`
@@ -304,7 +313,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(stderr).not.toContain("unknown flag");
     // Unreachable host, so the step still reports itself blind — loudly.
     expect(outcome.stdout).toContain("::error::Could not read check runs");
-  });
+  }, REAL_GH_TIMEOUT);
 
   /**
    * The failure-log tail's two calls, which no run of the step above can put
@@ -329,6 +338,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
 
       const attempt = spawnSync("gh", [...argv], {
         encoding: "utf8",
+        timeout: REAL_GH_TIMEOUT,
         // `GH_REPO` is gh's own repo override, and it is what makes the bare
         // `gh run view` above resolve a repo at all: the step runs it with no
         // `-R` and from a checkout of a different repository.
@@ -340,7 +350,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
       expect(attempt.stderr).not.toContain("is not supported with");
       expect(attempt.stderr).toContain("connection refused");
     }
-  });
+  }, REAL_GH_TIMEOUT);
 
   /**
    * The count is **one number over every page**. Per page it is one number per

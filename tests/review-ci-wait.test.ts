@@ -76,9 +76,11 @@ const CAN_RUN = ["bash", "jq", "node"].every(onPath);
  * refuses at flag-parse time or at a connection to `localhost` — so their cost
  * is starting a cold Go binary, which under a parallel `verify` has run past
  * vitest's 5-second default (#139). Given to the test *and* to each direct
- * spawn, because vitest's timeout cannot interrupt a synchronous one.
+ * spawn, because vitest's timeout cannot interrupt a synchronous one. Equal to
+ * `runWaitStep`'s own spawn bound, which one of these tests waits on: a ceiling
+ * below the process it waits for would fail a run that was still in bounds.
  */
-const REAL_GH_TIMEOUT = 30_000;
+const REAL_GH_TIMEOUT = 60_000;
 
 /**
  * The values the workflow gets from the event, which the harness has to supply

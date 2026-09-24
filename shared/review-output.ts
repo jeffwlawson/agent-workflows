@@ -121,9 +121,10 @@ export interface ReviewOutput {
   readonly whatChanged?: WhatChanged;
   /**
    * Every problem the review found in this pull request, as the model produced
-   * them. Where each one is posted — a line thread, a file-level thread or an
-   * entry in the body — is decided from the diff by `placeFindings`, not here
-   * and not by the model (#110).
+   * them. Where each one is posted — a line thread or a file-level thread — is
+   * decided from the diff by `placeFindings`, not here and not by the model
+   * (#110); one it can anchor nowhere in the diff is moved to `followUps`
+   * rather than posted (#127, decision 3).
    */
   readonly findings: Finding[];
   readonly followUps: FollowUp[];
@@ -336,6 +337,22 @@ export interface VerdictInputs {
    * findings on it, which is the one failure here with no symptom.
    */
   readonly stillOpen: number;
+  /**
+   * How many of this review's own findings the workflow moved to `followUps`
+   * because their anchor is in no file this pull request changes (#127,
+   * decision 3).
+   *
+   * Subtracted rather than counted: a follow-up is by definition what this
+   * pull request is not going to fix, so one of these blocking the merge is the
+   * finding a maintainer has no thread to settle on — the state #124 closed.
+   *
+   * Required rather than defaulted to zero, for the reason `stillOpen` is. The
+   * failure a default hides is the quiet one: the record is built from the
+   * findings that were *placed* and so drops these on its own, so a caller that
+   * forgot this derives a verdict from a bigger number than the body states —
+   * the disagreement #105 closed, reopened from the other end.
+   */
+  readonly movedToFollowUps: number;
 }
 
 /**
@@ -380,23 +397,31 @@ const restatedLines = (output: ReviewOutput): readonly string[] =>
  * verdict through `VerdictInputs.stillOpen`; counting it here as well would
  * make every still-open finding worth two.
  *
- * Counted over the findings **as produced**, independently of where each one
- * was placed. Placement is the workflow's decision and it can no longer lose a
- * finding (#110), but the count must not depend on it either way: what a review
- * found and where GitHub would let it be posted are two different questions.
+ * Counted over the findings **as produced**, independently of which of the two
+ * threadable placements each one got. Placement is the workflow's decision and
+ * it can no longer lose a finding (#110), but the count must not depend on it
+ * either way: what a review found and where GitHub would let it be posted are
+ * two different questions.
+ *
+ * The one thing that does come off the count is `movedToFollowUps` — the
+ * findings whose anchor is in no changed file at all, which by #127 decision 3
+ * are follow-ups rather than blockers. That is not a placement decision wearing
+ * a different hat: it changes which of the review's **two kinds** a finding is,
+ * and a follow-up has never counted. `restatedLines` is deliberately read from
+ * the findings as produced, so moving one does not tip the list into being "the
+ * longer of the two" and count every line in it.
  */
-export const countFixBeforeMerge = (output: ReviewOutput): number =>
-  output.findings.length + restatedLines(output).length;
+export const countFixBeforeMerge = (output: ReviewOutput, movedToFollowUps: number): number =>
+  output.findings.length - movedToFollowUps + restatedLines(output).length;
 
 /**
  * One line of the review's record: what the finding is, how bad, where, and
  * whether this round is the one that found it (#109, decision 8).
  *
- * Four of its five fields are optional because the record holds three
+ * Four of its six fields are optional because the record holds three
  * populations that know different amounts about themselves. A finding this
- * review produced knows its severity, its anchor and — where GitHub has
- * nowhere to thread it — its whole evidence. A finding **carried** from an
- * earlier review knows the one line that review wrote and the severity that
+ * review produced knows its severity and its anchor. A finding **carried** from
+ * an earlier review knows the one line that review wrote and the severity that
  * review gave it, read back off the marker rather than re-rated. And a
  * `fixBeforeMerge` line the model restated without a matching finding knows
  * nothing but itself, which is why it renders badge-less and sorts last.
@@ -409,10 +434,16 @@ export interface RecordEntry {
   readonly anchor?: string;
   /**
    * The id, written into the body **only where nothing else records it** — a
-   * finding with no thread. That asymmetry is the whole of what makes the body
-   * a record rather than a rendering: a threaded finding's thread is its
-   * record, and a second copy in the body is one a maintainer cannot close by
-   * resolving the thread.
+   * carried finding with no thread. That asymmetry is the whole of what makes
+   * the body a record rather than a rendering: a threaded finding's thread is
+   * its record, and a second copy in the body is one a maintainer cannot close
+   * by resolving the thread.
+   *
+   * Since #127 nothing new lands here: every finding this review raises is
+   * anchored on the diff and so has a thread. What still does is a **body entry
+   * a v0.4.0 review wrote** on a pull request that was open when this version
+   * landed (#127, decision 5) — it is carried and verified as before, and the
+   * id is what keeps it alive until a round rules it landed.
    *
    * Never on a resolved entry, for the same reason in the other direction: an
    * id written back would carry a closed finding into the next round.
@@ -432,12 +463,6 @@ export interface RecordEntry {
   readonly url?: string;
   /** Whether this review is the one that raised it — rendered as *new*. */
   readonly isNew: boolean;
-  /**
-   * The finding in full, for an entry with no thread to keep it on. A list of
-   * anchors with no reasoning is a finding a reader cannot check (#110), and
-   * this is the only surface that one has.
-   */
-  readonly evidence?: string;
 }
 
 /**
@@ -463,10 +488,12 @@ export interface ReviewRecord {
    * The number the body states, which is **what is unresolved**: `open` plus
    * `missed`.
    *
-   * Exactly `countFixBeforeMerge(output) + stillOpen.length` — the count
-   * `deriveVerdict` was given, entry for entry, because both are taken from
-   * one set. A test asserts it over every shape of review, including the two
-   * an unlabelled finding used to break it in.
+   * Exactly `countFixBeforeMerge(output, moved) + stillOpen.length` — the
+   * count `deriveVerdict` was given, entry for entry, because both are taken
+   * from one set: this list is built from the findings that were *placed*, and
+   * the count subtracts exactly the ones that were not. A test asserts it over
+   * every shape of review, including the two an unlabelled finding used to
+   * break it in and the one #127 added.
    */
   readonly findings: number;
 }
@@ -516,13 +543,12 @@ const carriedClaim = (finding: CarriedFinding): string => {
 const placedEntry = (placed: PlacedFinding): RecordEntry => {
   const title = oneLine(placed.finding.title) || openingClaim(placed.finding.body);
 
+  // No id and no evidence: every finding this review raises now has a thread
+  // (#127, decision 1), and the thread carries both.
   return {
     title: oneLine(title),
     severity: placed.finding.severity,
     anchor: `${placed.finding.path}:${placed.finding.line}`,
-    // A thread carries both of these already; the body is the only surface a
-    // finding in an untouched file has.
-    ...(placed.placement === "body" ? { id: placed.id, evidence: placed.finding.body } : {}),
     isNew: true,
   };
 };
@@ -577,16 +603,21 @@ export const reviewRecord = (parts: {
   readonly stillOpen: readonly CarriedFinding[];
   readonly resolved: readonly CarriedFinding[];
 }): ReviewRecord => {
-  // **Every finding, whatever its body opens with.** The label is presentation
-  // and is read only for which group an entry lands in (below): a record that
-  // filtered on it recorded a different set from the one the verdict counted,
-  // and the two disagreed in the unsafe direction — an unlabelled finding in
-  // an untouched file was posted *nowhere*, since the body is its only
-  // surface, while the runner logged it as "in the body" and
+  // **Every placed finding, whatever its body opens with.** The label is
+  // presentation and is read only for which group an entry lands in (below): a
+  // record that filtered on it recorded a different set from the one the
+  // verdict counted, and the two disagreed in the unsafe direction — an
+  // unlabelled finding in an untouched file was posted *nowhere*, since the
+  // body was its only surface, while the runner logged it as "in the body" and
   // `docs/ADOPTING.md` told an adopter to trust that counter; an unlabelled
   // one on a diff line got a thread and an id, reached no group and no count
   // in the round that raised it, and then counted through `stillOpen` in every
   // round after — blocking a merge it had not blocked when it was found.
+  //
+  // *Placed* rather than produced is the one filter here, and it is the same
+  // set the count reads: a finding with no anchor in the diff is not in
+  // `parts.placed`, is subtracted from the count, and is in `followUps`
+  // instead (#127, decision 3).
   const missed = parts.placed.filter((placed) => isPreviouslyMissed(placed.finding));
   const fresh = parts.placed.filter((placed) => !isPreviouslyMissed(placed.finding));
 
@@ -607,7 +638,8 @@ export const reviewRecord = (parts: {
 
 /**
  * One entry, as the body writes it: the badge, the claim, where it is, whether
- * it is new, and — where nothing else records it — its id.
+ * it is new, and — where nothing else records it, which since #127 is only a
+ * legacy body entry being carried — its id.
  *
  * The badge is text rather than one of GitHub's severity images, which decision
  * 9 rules out: see `severityBadge`. The marker goes last so the visible line
@@ -631,12 +663,17 @@ const entryLine = (entry: RecordEntry): string =>
     .join(" ");
 
 /**
- * The evidence under an entry that has one, indented so it stays inside the
- * list item it belongs to — including a ```suggestion or any other fence the
- * finding carried.
+ * The subtitle under *Previously missed*, in Copilot code review's own words
+ * for the same group.
+ *
+ * The group name alone does not say what was missed or by whom, and the
+ * sentence that would say it in the prose is the prose this body spent #113
+ * getting out of the way of the record. Copilot puts one line directly under
+ * the summary; borrowing the wording is the point, the way the body's order is
+ * borrowed — a maintainer who has read one of those overviews already knows
+ * what the group means.
  */
-const evidenceBlock = (evidence: string): string[] =>
-  ["", ...evidence.split("\n").map((line) => (line.trim() === "" ? "" : `  ${line}`))];
+export const PREVIOUSLY_MISSED_SUBTITLE = "In code that hasn't changed since last review";
 
 /**
  * One group, or `undefined` where it is empty — so the body drops the heading
@@ -649,36 +686,25 @@ const evidenceBlock = (evidence: string): string[] =>
  * *Resolved since last review* is the record's memory rather than its to-do
  * list and starts folded. Both are `<details>` either way, which is what
  * decision 8 asks for — collapsible, not collapsed.
+ *
+ * `subtitle` is one line under the summary, and the blank line before it is
+ * load-bearing: GitHub renders no Markdown in a `<details>` until the content
+ * is separated from `</summary>`.
  */
 const renderGroup = (
   title: string,
   entries: readonly RecordEntry[],
   expanded: boolean,
+  subtitle?: string,
 ): string | undefined => {
   if (entries.length === 0) return undefined;
-
-  // Said once per group rather than once per entry: an entry quoted in full is
-  // one GitHub would not let a thread be opened for, and a reader who does not
-  // know that reads the inconsistency as a bug.
-  const note = entries.some((entry) => entry.evidence !== undefined)
-    ? ["", "A finding quoted in full has no thread: it is in a file this pull request does not change."]
-    : [];
-
-  const lines = entries.flatMap((entry) =>
-    entry.evidence === undefined
-      ? [entryLine(entry)]
-      : [entryLine(entry), ...evidenceBlock(entry.evidence), ""],
-  );
-  // A quoted entry leaves a blank line after it so the next one starts a fresh
-  // item; the last one would leave a gap above the closing tag instead.
-  while (lines[lines.length - 1] === "") lines.pop();
 
   return [
     `<details${expanded ? " open" : ""}>`,
     `<summary><b>${title}</b> — ${entries.length}</summary>`,
-    ...note,
+    ...(subtitle === undefined ? [] : ["", `_${subtitle}_`]),
     "",
-    ...lines,
+    ...entries.map(entryLine),
     "",
     "</details>",
   ].join("\n");
@@ -712,6 +738,24 @@ const findingsLine = (record: ReviewRecord): string => {
 
   return `**Findings:** ${record.findings}${breakdown === "" ? "" : ` — ${breakdown}`}`;
 };
+
+/**
+ * What the body says about the findings the workflow moved out of the record
+ * (#127, decision 3), or `undefined` where it moved none.
+ *
+ * Said in the body rather than only in the run log, because this is the one
+ * thing about the record a reader cannot otherwise see: the finding is not in
+ * *Open*, it is not in the count, and the entry that does appear — down in
+ * *Follow-ups*, folded — does not look like something a review meant to block
+ * the merge with. A record that quietly demoted a blocker would be the same
+ * silence #110 removed, one door along.
+ *
+ * Directly under the count, because it is what the count does not say.
+ */
+const movedSentence = (moved: number): string | undefined =>
+  moved === 0
+    ? undefined
+    : `_${moved} ${plural(moved, "finding was", "findings were")} moved to follow-ups: ${plural(moved, "its anchor is", "their anchors are")} in no file this pull request changes, so nothing this pull request changes causes ${plural(moved, "it", "them")}._`;
 
 /**
  * A label name the body mentions, rendered as code.
@@ -813,11 +857,12 @@ const renderWhatChanged = (whatChanged: WhatChanged | undefined): string | undef
  *
  * Top to bottom: the heading that says which comment this is, the assessment,
  * the review's own sentence naming what is unresolved, the step in italics, the
- * count, then *Open*, *Previously missed*, *Resolved since last review*,
- * *Follow-ups*, *How this was checked* and *What changed in this PR*, then a
- * rule and the run that produced it. The order is Copilot code review's own
- * overview, which is the point — a maintainer who has read one of those already
- * knows where to look.
+ * count and — on the rounds that have one — the line saying a finding was moved
+ * to the follow-ups, then *Open*, *Previously missed*, *Resolved since last
+ * review*, *Follow-ups*, *How this was checked* and *What changed in this PR*,
+ * then a rule and the run that produced it. The order is Copilot code review's
+ * own overview, which is the point — a maintainer who has read one of those
+ * already knows where to look.
  *
  * Three rules about the groups are worth stating because breaking one of them
  * is invisible. **A group with nothing in it is omitted**, so a disclosure
@@ -859,16 +904,28 @@ export const renderReviewBody = (parts: {
   /** The note a round that could not be established carries; see `shared/review-round.ts`. */
   readonly roundNote?: string | undefined;
   /**
-   * The findings with their placements, from `placeFindings`. The ones GitHub
-   * has nowhere to thread are quoted in full here, with the id the workflow
-   * gave them (#110) — the body is the only surface a finding in an untouched
-   * file has, and before this it had none at all.
+   * The findings with their placements, from `placeFindings` — every one of
+   * which has a thread (#127, decision 1), so each entry here is the one-line
+   * version of something a maintainer can reply to.
+   *
+   * The ones that reached no placement are not in this list and are not in the
+   * record: they are in `followUps`, and `movedToFollowUps` below is what the
+   * body says about them.
    *
    * Required rather than defaulted to empty, for the reason `round` is: the
    * wrong default is the one with no symptom. A caller that forgot this posts a
    * body with a finding missing from it and nothing saying so.
    */
   readonly placed: readonly PlacedFinding[];
+  /**
+   * How many of this review's findings were moved to `followUps` for having no
+   * anchor in the diff — the same number `deriveVerdict` subtracted.
+   *
+   * A count rather than the findings themselves: they are already rendered, in
+   * the *Follow-ups* group below, and a second copy here would be the body
+   * telling a reader the same finding twice under two headings.
+   */
+  readonly movedToFollowUps: number;
   /**
    * The earlier reviews' findings this one checked and found still open, from
    * `verifyCarried`. Listed under *Open* beside this round's, each with the id
@@ -942,8 +999,9 @@ export const renderReviewBody = (parts: {
     parts.output.needsYou,
     parts.roundNote === undefined ? undefined : labelsAsCode(parts.roundNote),
     findingsLine(record),
+    movedSentence(parts.movedToFollowUps),
     renderGroup("Open", record.open, true),
-    renderGroup("Previously missed", record.missed, true),
+    renderGroup("Previously missed", record.missed, true, PREVIOUSLY_MISSED_SUBTITLE),
     renderGroup("Resolved since last review", record.resolved, false),
     renderFollowUpsGroup(parts.followUps, parts.droppedFollowUps),
     renderHowChecked(parts.output.howChecked),
@@ -983,7 +1041,7 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
   // one it verified — where the two halves inside `countFixBeforeMerge` are
   // two restatements of one set. Their sum is the record's own size, which is
   // what `**Findings:** N` states.
-  if (countFixBeforeMerge(output) + inputs.stillOpen > 0) {
+  if (countFixBeforeMerge(output, inputs.movedToFollowUps) + inputs.stillOpen > 0) {
     // **A round-2 review can never produce the round-1 row** (#96, decision 5),
     // and it is enforced here rather than asked of the prompt. The fix round
     // has already run and already pushed; findings that survived it are
@@ -1156,6 +1214,58 @@ export const capFollowUps = (
   kept: followUps.slice(0, MAX_FOLLOW_UPS),
   dropped: Math.max(0, followUps.length - MAX_FOLLOW_UPS),
 });
+
+/**
+ * The sentence appended to a moved finding, so the issue filed for it says why
+ * it arrived as a follow-up rather than as a thread on the pull request.
+ *
+ * It is written to the person who opens the filed stub, which is the surface
+ * that outlives everything else here: the finding's own body opens with *Fix
+ * before merge* — the review meant it — and without this line that label is the
+ * first thing they read on an issue nobody is being asked to fix before a
+ * merge that has already happened.
+ *
+ * It names no issue and no repository. A filed stub lands in the adopter's own
+ * tracker, where `#127` is one of *their* issues; a cross-reference this loop
+ * cannot resolve is worse than none.
+ */
+const MOVED_NOTE =
+  "_Raised by the review as a problem to fix before merge, then moved: its anchor was in no file that pull request changed, so nothing in the change caused it and there was nowhere in the diff to open a thread on it._";
+
+/**
+ * A finding the diff gives no anchor to, as the follow-up it becomes (#127,
+ * decision 3).
+ *
+ * The finding is kept whole — title, location and evidence — because the thing
+ * that changed is which of the review's two kinds it is, not how good it is.
+ * What is added is the sentence above saying how it got here.
+ *
+ * The `location` is the finding's own `path:line`. It is the follow-up field
+ * that is read back verbatim on merge — half the key a filing run recognises
+ * its own work by — and a finding's anchor is exactly the "where a reader
+ * should open first" that field asks for.
+ */
+export const movedFollowUp = (finding: Finding): FollowUp => ({
+  title: finding.title,
+  location: `${finding.path}:${finding.line}`,
+  body: `${finding.body.trim()}\n\n${MOVED_NOTE}`,
+  severity: finding.severity,
+});
+
+/**
+ * The review's follow-ups: the moved findings first, then the ones the model
+ * recorded as out of scope.
+ *
+ * **First, not appended**, and the cap is why. It drops from the end, so the
+ * order decides what survives — and a moved finding is one the review believed
+ * had to be fixed before merge, which is a stronger claim than anything in a
+ * list the model wrote knowing it was out of scope. Losing the blocker to keep
+ * a note about a function the diff only calls is the wrong way round.
+ */
+export const withMovedFindings = (
+  unanchored: readonly Finding[],
+  followUps: readonly FollowUp[],
+): FollowUp[] => [...unanchored.map(movedFollowUp), ...followUps];
 
 /**
  * What a reader selects the payload on, and nothing more than that. The

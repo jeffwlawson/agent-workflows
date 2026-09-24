@@ -73,8 +73,8 @@ export const severityRank = (severity: Severity | undefined): number =>
  * Called a *finding* rather than an inline comment because where it is posted
  * is no longer part of what it is (#110). The model says what is wrong and
  * where in the source it is; `placeFindings` below decides whether that becomes
- * a line thread, a file-level thread or an entry in the review body, and the
- * model is told nothing about which.
+ * a line thread or a file-level thread — or, where the diff does not reach it
+ * at all, a follow-up — and the model is told nothing about which.
  */
 export interface Finding {
   /**
@@ -108,21 +108,24 @@ export interface Finding {
 /**
  * Where a finding is posted, decided here from the diff.
  *
- * Three values, and the reason there are three is that **none of them is
- * "nowhere"**. What this replaced was a filter: an anchor outside the diff
- * hunks was dropped before posting, because one unresolvable anchor makes
- * GitHub reject the entire review. That guard is still here — it is the `file`
- * and `body` arms — but it now reroutes the finding instead of deleting it, so
- * a review can no longer count a finding toward its verdict and post no record
- * of what it was.
+ * Two values, and **both of them are on the diff** (#127, decision 1). A
+ * fix-before-merge finding is a claim about this pull request, so there is
+ * always a changed place to attach it to — a line the diff covers, or, where
+ * the anchor has drifted past the hunks, the changed file itself. The `body`
+ * arm that used to sit under these is gone: a finding posted where GitHub can
+ * open no thread is one a maintainer cannot reply to, cannot decline and
+ * cannot resolve, and one of those could hold a pull request at *Changes
+ * recommended* for ever (#124).
+ *
+ * What replaced it is not the filter that came before either. An anchor in a
+ * file this pull request never touches does not go nowhere: it goes to
+ * `followUps`, by `placeFindings` below, and the review body says so.
  */
 export type Placement =
   /** Anchored in a hunk (or its context lines): a thread on the line. */
   | "line"
   /** In a file the pull request changes, past its hunks: a thread on the file. */
-  | "file"
-  /** In a file the pull request never touches: an entry in the review body. */
-  | "body";
+  | "file";
 
 export interface PlacedFinding {
   /**
@@ -503,8 +506,38 @@ export const parseFinding = (value: unknown): Finding => {
 };
 
 /**
+ * The findings split by whether this pull request gives them anywhere to hang.
+ *
+ * Two lists rather than one with a third placement on it, because the two
+ * halves leave by different doors: `placed` is posted as threads and counted
+ * toward the verdict, and `unanchored` is not posted at all — it becomes a
+ * follow-up, filed when the pull request merges.
+ */
+export interface PlacedFindings {
+  readonly placed: PlacedFinding[];
+  /**
+   * The findings whose `path` is in no hunk of this diff because it is in no
+   * file of it — nothing this pull request changed causes them, so by #127
+   * decision 3 they are not this pull request's to fix before merge.
+   *
+   * They carry no id: an id exists so a later round can recognise a finding it
+   * has already raised, and these are never raised. A follow-up's identity is
+   * the issue that gets filed for it.
+   */
+  readonly unanchored: Finding[];
+}
+
+/**
  * Where each finding goes, and what it is called. The placement is read off the
  * diff the review was given; the id is assigned here.
+ *
+ * **A finding with no anchor in the diff is not posted** (#127, decision 3).
+ * The model is told to anchor a problem in an untouched file at the change that
+ * causes it — that is what makes it this pull request's — so a `path` the diff
+ * does not cover is the review saying, mechanically, that nothing here causes
+ * it. This is the deterministic half of that instruction: the workflow decides
+ * it from the diff rather than asking the model to classify its own finding,
+ * and the caller records what comes back in `followUps`.
  *
  * `nextId` is a parameter so a test can name the ids it then asserts on. It is
  * the only non-deterministic thing in this file, and defaulting it keeps the
@@ -514,19 +547,33 @@ export const placeFindings = (
   findings: readonly Finding[],
   diffLines: Map<string, Set<number>>,
   nextId: () => string = newFindingId,
-): PlacedFinding[] =>
-  findings.map((finding) => ({
-    id: nextId(),
-    placement: placementOf(finding, diffLines),
-    finding,
-  }));
+): PlacedFindings => {
+  const placed: PlacedFinding[] = [];
+  const unanchored: Finding[] = [];
 
-const placementOf = (finding: Finding, diffLines: Map<string, Set<number>>): Placement => {
+  for (const finding of findings) {
+    const placement = placementOf(finding, diffLines);
+    if (placement === undefined) unanchored.push(finding);
+    else placed.push({ id: nextId(), placement, finding });
+  }
+
+  return { placed, unanchored };
+};
+
+/**
+ * The placement, or `undefined` for a finding this pull request has nowhere to
+ * put — which is the answer that sends it to `followUps` rather than a third
+ * placement, for the reason `Placement` gives.
+ */
+const placementOf = (
+  finding: Finding,
+  diffLines: Map<string, Set<number>>,
+): Placement | undefined => {
   const fileLines = diffLines.get(finding.path);
   // Not a file this pull request touches, so there is no thread of any kind to
   // hang it on — GitHub will not open one against a file that is not in the
-  // diff. The body is the only surface left.
-  if (!fileLines) return "body";
+  // diff, not even a file-level one.
+  if (!fileLines) return undefined;
 
   // Every line of a range must be in a hunk, not just the end of it: GitHub
   // rejects the whole review over any one of them.
@@ -561,27 +608,33 @@ export interface ReviewThread {
 const threadBody = (placed: PlacedFinding): string =>
   `${placed.finding.body}\n\n${findingMarker(placed.id, placed.finding.severity)}`;
 
-/** The threads the mutation carries — every placed finding except the body ones. */
+/**
+ * The threads the mutation carries — **one per placed finding**, with nothing
+ * filtered out.
+ *
+ * Every finding that reaches here has a thread by construction since #127:
+ * `placeFindings` returns only the two threadable placements, and the ones it
+ * cannot anchor never enter this list. The filter that used to stand here was
+ * the half that made a body entry possible.
+ */
 export const reviewThreads = (placed: readonly PlacedFinding[]): ReviewThread[] =>
-  placed
-    .filter((p) => p.placement !== "body")
-    .map((p) =>
-      p.placement === "file"
-        ? { path: p.finding.path, body: threadBody(p) }
-        : {
-            path: p.finding.path,
-            line: p.finding.line,
-            side: "RIGHT" as const,
-            // startLine/startSide turn the anchor into a range, which is what
-            // makes a multi-line ```suggestion replace all of it rather than
-            // just the last line. Omitted entirely for a single line — GitHub
-            // rejects startLine == line.
-            ...(p.finding.startLine === undefined
-              ? {}
-              : { startLine: p.finding.startLine, startSide: "RIGHT" as const }),
-            body: threadBody(p),
-          },
-    );
+  placed.map((p) =>
+    p.placement === "file"
+      ? { path: p.finding.path, body: threadBody(p) }
+      : {
+          path: p.finding.path,
+          line: p.finding.line,
+          side: "RIGHT" as const,
+          // startLine/startSide turn the anchor into a range, which is what
+          // makes a multi-line ```suggestion replace all of it rather than
+          // just the last line. Omitted entirely for a single line — GitHub
+          // rejects startLine == line.
+          ...(p.finding.startLine === undefined
+            ? {}
+            : { startLine: p.finding.startLine, startSide: "RIGHT" as const }),
+          body: threadBody(p),
+        },
+  );
 
 /**
  * The mutation, in the shape the GraphQL endpoint takes a request body in.

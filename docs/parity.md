@@ -335,12 +335,12 @@ come up was *inside* one PRD.
 | Triggered by `agent:review` on a PR | ✅ | ✅ | |
 | Refuses when the PR is closed/merged | ✅ | ✅ | added #102. Without it, labelling a merged PR ran a full agent pass and then failed at `gh pr ready`, which cannot convert a merged PR — under a warning that blames a missing `AGENT_PAT` |
 | Structured output (schema-validated JSON from the agent) | ✅ | ✅ | |
-| Findings placed against the diff rather than where the model said | ✅ | ➕ | GitHub rejects the **whole** review if one line anchor is off-hunk, so the anchor has to be checked either way. CVM filters; since #110 we reroute — an off-hunk anchor in a changed file becomes a **file-level** thread, and a finding in a file the PR never touched becomes an entry in the review body. No finding is dropped, which matters because the verdict counts findings the old filter could delete |
+| Findings placed against the diff rather than where the model said | ✅ | ➕ | GitHub rejects the **whole** review if one line anchor is off-hunk, so the anchor has to be checked either way. CVM filters; since #110 we reroute — an off-hunk anchor in a changed file becomes a **file-level** thread. Since #127 a finding in a file the PR never touched is neither threaded nor dropped: it is **moved to the follow-ups** and the body says so, because a fix-before-merge finding nothing in the change causes is not one (§10) |
 | Posts a review summary | ✅ | ✅ | |
 | Posts inline comments | ✅ | ✅ | as GraphQL `addPullRequestReview` threads since #110 — REST review-create cannot open a file-level thread (422) and its `comments` field is deprecated in favour of `threads` |
-| **Every finding carries an id the workflow wrote** | ❌ | ➕ | #110. A hidden marker in each thread and each body entry, so a later round recognises a finding it has seen without matching its text. The model is told to write none: one it invented would be matched against a thread it never opened |
+| **Every finding carries an id the workflow wrote** | ❌ | ➕ | #110. A hidden marker in each thread, so a later round recognises a finding it has seen without matching its text. The model is told to write none: one it invented would be matched against a thread it never opened |
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query. Resolved threads are out of the rendered feedback, but no longer simply dropped: since #112 the query reads `resolvedBy`, and the ones a human closed come back as the *settled* list (below) |
-| **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review — round 1 included — is handed the open threads this loop opened and the open entries in the latest review body, each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
+| **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review — round 1 included — is handed the open threads this loop opened (and, until they close, the body entries v0.4.0 left on PRs open at the #127 upgrade), each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
 | **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread and closes none (§4) |
@@ -803,8 +803,8 @@ expensive to rediscover.
   that equality over every shape of review rather than over an example.
 
   A predicate over the label was a **second definition of "a finding counts"**, and the two
-  disagreed in the unsafe direction twice. In a file the pull request never touches there is no
-  thread, so the record is the only surface: an unlabelled finding was recorded and counted
+  disagreed in the unsafe direction twice. In a file the pull request never touched there was no
+  thread, so the record was the only surface: an unlabelled finding was recorded and counted
   nowhere, and the review posted *Approval recommended* and a `success` status over a populated
   *Open* group. On a diff line it got a thread and an id and still reached no group and no count in
   the round that raised it — then counted through `stillOpen` in every round after, so the same
@@ -845,7 +845,9 @@ expensive to rediscover.
   Two rules make it a record rather than a rendering, and both are about which entries carry a
   finding id. An entry with **no thread** carries its id, because the newest body naming it is the
   only thing keeping it alive; an entry **with** one does not, because the thread is its record and
-  a second copy is one a maintainer cannot close. And a **resolved** entry carries none in either
+  a second copy is one a maintainer cannot close. Since #127 the first rule reaches only the body
+  entries v0.4.0 left behind — every finding a review raises now has a thread — and it is kept for
+  exactly those, until they close. And a **resolved** entry carries none in either
   case — an id written back would hand a closed finding to the next round as something still to
   rule on. A threaded entry carries a **link** instead, read off the thread's own comment; a fresh
   finding carries neither, because its thread is opened by the same `addPullRequestReview` call
@@ -864,14 +866,46 @@ expensive to rediscover.
   re-review with nothing pushed since the last verdict (`describesTheChange`). Describing the
   change again, at the top, to a reader handed that description last round is the body spending its
   opening on something already read.
+- **Every fix-before-merge finding is anchored at something the pull request changed, and there is
+  no body placement.** Since #127 (superseding #109, decision 3) `placeFindings` returns two
+  placements, both of them threads: a line the diff covers, or the changed file the anchor has
+  drifted past. A finding in a file the pull request never touches is **not posted as a finding at
+  all** — it is recorded in `followUps`, filed on merge like any other, and the body says under the
+  count how many were moved and why.
+
+  Decision 3 recorded such a finding as an entry in the review body, and three defects followed
+  because GitHub will not attach a thread to a file outside the diff — not even a file-level one.
+  The maintainer could not settle it (#124): with no thread there is no reply, so `verifyCarried`
+  could close it only by ruling it *fixed*, and one such finding could hold a pull request at
+  *Changes recommended* for ever. It lost its evidence when carried (#126), since a carried entry
+  keeps one line. And it blocked PRD #101, because an automatic fix running unattended must not be
+  built on findings a human cannot retire.
+
+  **Removing them rather than managing them** is the decision, and the reason is that the third
+  case does not exist: a problem in a file the pull request never touched is *caused* by something
+  the pull request changed, or it is out of scope. So there is always a changed place to anchor it
+  at — the change that makes the other file wrong — which is an ordinary thread the existing
+  machinery already verifies, resolves and lets a maintainer decline. The brief asks for that
+  anchor and for the untouched `path:line` in the text; the workflow decides the other arm
+  deterministically, because *is this anchor in the diff* is a question about the diff and not a
+  judgement to delegate. Copilot code review has no equivalent problem for the same reason: across
+  915 public overviews none of its findings sat in a file the pull request did not change, and its
+  body-only *Previously missed* entries never block.
+
+  Two things ride along. The count and the record stay one set — `countFixBeforeMerge` subtracts
+  exactly the findings `placeFindings` did not place, so `**Findings:** N` is still the record's own
+  size. And the **body entries v0.4.0 already wrote** are carried and verified as before until they
+  close (decision 5), because the entry is the only record that such a finding exists: a version
+  that stopped reading them would drop a fix-before-merge finding off every pull request open at the
+  upgrade, silently.
 - **The latest agent review is read from the end of the connection, never the front of the first
   page.** GitHub returns a pull request's reviews oldest-first, so `reviews(first:50)` and a `.pop()`
   is "the newest of the fifty oldest" — correct until the fifty-first review and wrong for ever
-  after (#125). The findings record is always read out of the latest review body, so past that point
-  every later round is handed a record from long ago: findings the rounds since closed come back by
-  id as still open, with nothing on the pull request saying why. `reviews(last:50)` is the same one
-  page taken from the end, and the fixture that holds it honours the pagination argument — one that
-  returned every node whatever was asked would pass on the broken query too.
+  after (#125; #127, decision 4). The findings record is always read out of the latest review body,
+  so past that point every later round is handed a record from long ago: findings the rounds since
+  closed come back by id as still open, with nothing on the pull request saying why. `reviews(last:50)`
+  is the same one page taken from the end, and the fixture that holds it honours the pagination
+  argument — one that returned every node whatever was asked would pass on the broken query too.
 - **A label name renders as code in the body and as plain text in the status, from one sentence.**
   `VERDICTS` holds the plain wording because a commit status description renders no Markdown —
   a backtick shows up in it literally — and the body decorates it on the way out. Two spellings in

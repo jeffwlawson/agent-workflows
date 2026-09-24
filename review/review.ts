@@ -28,6 +28,7 @@ import {
   renderReviewBody,
   reviewOutputSchema,
   VERDICT_CONTEXT,
+  withMovedFindings,
   type CiResult,
 } from "../shared/review-output.js";
 import {
@@ -140,11 +141,17 @@ try {
   // Where each finding goes, decided here from the diff rather than by the
   // agent (#110). The guard that kept an unresolvable line anchor out of the
   // payload is still the guard it was — one such anchor makes GitHub reject the
-  // whole review — but it now reroutes the finding to a thread on the file, or
-  // to the body when the file is not in the diff at all, instead of dropping
-  // it. A finding the verdict counted and the review never showed is the
-  // failure that change removes.
-  const placed = placeFindings(result.output.findings, context.diffLines);
+  // whole review — but it reroutes the finding to a thread on the file instead
+  // of dropping it. A finding the verdict counted and the review never showed
+  // is the failure that change removed.
+  //
+  // And a finding in a file this pull request never touched is not posted as a
+  // blocking finding at all (#127, decision 3): there is no thread for a
+  // maintainer to answer it on, so it would count against a merge nobody could
+  // release it from (#124). The brief asks the model to anchor such a problem
+  // at the change that causes it; where it did not, nothing in the diff causes
+  // it, and `unanchored` is what comes back — recorded below as a follow-up.
+  const { placed, unanchored } = placeFindings(result.output.findings, context.diffLines);
 
   // What the review said about the findings it was handed: which threads the
   // workflow closes, and which findings are still owed (#111). The reviewer
@@ -176,7 +183,14 @@ try {
   // a stub for work already done. Both halves are `renderReviewBody`'s to
   // place; what is written here is the artifact a human debugging the run
   // opens.
-  const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(result.output.followUps);
+  //
+  // The findings the diff gave no anchor to lead the list, so the cap — which
+  // drops from the end — spends its three slots on those before the
+  // out-of-scope notes: a moved finding is one the review meant to stop the
+  // merge with, which outranks a note about a function the diff only calls.
+  const { kept: followUps, dropped: droppedFollowUps } = capFollowUps(
+    withMovedFindings(unanchored, result.output.followUps),
+  );
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
@@ -187,6 +201,7 @@ try {
     ci,
     round: round.round,
     stillOpen: stillOpen.length,
+    movedToFollowUps: unanchored.length,
   });
   // And a round nothing could establish says so in the body as well as in the
   // brief. The agent was told it was a second round; what it cannot say — and
@@ -208,6 +223,7 @@ try {
     output: result.output,
     roundNote: unreadableRoundNote(round),
     placed,
+    movedToFollowUps: unanchored.length,
     stillOpen,
     resolved,
     followUps,
@@ -279,12 +295,12 @@ try {
 
   console.log("Review complete.");
   console.log(
-    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output)} to fix before merge, checks ${ci}, round ${round.round}).`,
+    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(result.output, unanchored.length)} to fix before merge, checks ${ci}, round ${round.round}).`,
   );
   const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
   const missed = result.output.findings.filter(isPreviouslyMissed).length;
   console.log(
-    `Findings: ${placed.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${placements("body")} in the body; ${missed} in code an earlier review had already read.`,
+    `Findings: ${result.output.findings.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${unanchored.length} moved to follow-ups for having no anchor in the diff; ${missed} in code an earlier review had already read.`,
   );
   // The ratings, for a human explaining why the record reads the way it does.
   // They change no outcome above (#113) — which is exactly why the log is the

@@ -19,9 +19,15 @@ export interface CarriedFinding {
   readonly id: string;
   /**
    * The thread it lives in, and the thing this file exists to be able to
-   * resolve. Absent for a finding recorded in the review body, which is where
-   * a finding in a file the pull request never touched goes — there is no diff
-   * line for GitHub to hang a thread on, so there is nothing to close.
+   * resolve.
+   *
+   * Absent for a **body entry**, which nothing writes any more: a finding in a
+   * file the pull request never touched used to be recorded in the review body
+   * for want of a diff line to hang a thread on, and since #127 it is anchored
+   * at the change that causes it or recorded as a follow-up instead. What still
+   * arrives with no thread is one of those entries on a pull request that was
+   * already open when this version landed (#127, decision 5) — carried and
+   * verified exactly as before, with nothing to close when it lands.
    */
   readonly threadId?: string;
   /** One line: where it is and what it claims, as the review that raised it wrote it. */
@@ -83,9 +89,8 @@ export interface MaintainerReply {
  *
  * Separate from `CarriedFinding` because the two answer different questions: a
  * thread is a surface GitHub has, and a carried finding is a claim about the
- * code that may be recorded on one of two surfaces. The body entries have no
- * thread at all, and collapsing them would make `threadId` a lie for half the
- * list.
+ * code, which a legacy body entry records without one. Collapsing them would
+ * make `threadId` a lie for those.
  */
 export interface AgentThread {
   readonly threadId: string;
@@ -138,7 +143,10 @@ export interface SettledFinding {
  * finding's id is deliberately left off the body (`carriedEntry`, in
  * `shared/review-output.ts`): the
  * thread is its record, and a maintainer who resolves one by hand has settled
- * it. So the two sources should be disjoint. **The thread still wins** where
+ * it. Since #127 that half reads only what an older release wrote — a v0.4.0
+ * body entry on a pull request open at the upgrade (decision 5) — and a body
+ * this version posts carries an id only for one of those it is still carrying.
+ * So the two sources should be disjoint. **The thread still wins** where
  * they are not — a body posted by another version, or an id somehow written
  * twice — because taking the body's copy would leave a landed finding with no
  * `threadId` and so nothing to resolve, which is the failure that looks like
@@ -367,7 +375,9 @@ export const declineReply = (reply: MaintainerReply): string => {
  *
  * A **landed body entry** produces no resolution and no still-open entry. There
  * is no thread to close, so it simply stops being re-listed, which is how a
- * body-recorded finding closes.
+ * body-recorded finding closes. That arm is kept for the v0.4.0 entries still
+ * in flight (#127, decision 5) — nothing writes a new one — and it is the whole
+ * of what "carried and verified as before, until they close" means.
  *
  * A **declined** one closes too, as `WONT_FIX` rather than `ADDRESSED` — the
  * code did not change, the person who owns it decided — and stops counting
@@ -456,7 +466,7 @@ export const verifyCarried = (
         reply: resolutionReply(entry),
       });
     }
-    // Including the body-recorded one, which has no thread and so no
+    // Including a legacy body-recorded one, which has no thread and so no
     // resolution: it closes by no longer being re-listed, and the record is the
     // only place that closure is ever visible.
     resolved.push(finding);

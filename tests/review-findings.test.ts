@@ -30,11 +30,12 @@ import { carriedFindings } from "../shared/review-verification.js";
 
 /**
  * Where a finding is posted is the workflow's decision, taken from the diff —
- * never the model's, which routinely invents a plausible line number. Three
- * placements, and the point of having three is that **none of them is
- * "nowhere"**: the filter this replaced dropped an off-hunk anchor outright, so
- * a review that found something could post a verdict counting it and no record
- * of what it was.
+ * never the model's, which routinely invents a plausible line number. Two
+ * placements, and both of them are a thread: an off-hunk anchor in a changed
+ * file becomes a thread on the file rather than being dropped, which is what
+ * kept a review from counting a finding it posted no record of. An anchor in a
+ * file the diff does not cover reaches neither, and since #127 leaves here as a
+ * follow-up rather than as an entry nobody can answer.
  *
  * The fixture is real `git diff` output. `src/queue.ts` is changed and its one
  * hunk covers new-side lines 8..15; `docs/notes.md` is changed too, so the
@@ -81,7 +82,11 @@ const counting = (): (() => string) => {
 };
 
 const place = (findings: readonly Finding[]): PlacedFinding[] =>
-  placeFindings(findings, DIFF_LINES, counting());
+  placeFindings(findings, DIFF_LINES, counting()).placed;
+
+/** The other half of the same call: what the diff gave no anchor to. */
+const unanchored = (findings: readonly Finding[]): Finding[] =>
+  placeFindings(findings, DIFF_LINES, counting()).unanchored;
 
 describe("placeFindings", () => {
   it("threads a finding on a line inside a hunk", () => {
@@ -120,22 +125,40 @@ describe("placeFindings", () => {
 
   /**
    * And a file the pull request never touched has no thread of any kind to hang
-   * on, so it goes to the body with its `path:line` — the third placement, and
-   * the one that used to be silence.
+   * on — not even a file-level one. Since #127 that is not a third placement
+   * but the answer that takes the finding out of the review: nothing the change
+   * did causes it, so it is a follow-up rather than a blocker, and it leaves
+   * here in the other list.
    */
-  it("puts a finding in an untouched file in the review body", () => {
-    expect(place([finding({ path: "src/other.ts", line: 88 })])[0]?.placement).toBe("body");
+  it("places nothing for a finding in a file the pull request never touched", () => {
+    const findings = [finding({ path: "src/other.ts", line: 88 })];
+
+    expect(place(findings)).toEqual([]);
+    expect(unanchored(findings)).toEqual(findings);
   });
 
-  it("keeps every finding, whichever way it was placed", () => {
-    const placed = place([
+  /**
+   * And it carries **no id**, which is the mechanical half of "it is not a
+   * finding this pull request owns": an id exists so a later round recognises
+   * something it raised, and this is never raised.
+   */
+  it("spends no id on a finding it could not anchor", () => {
+    const placed = place([finding({ path: "src/other.ts", line: 88 }), finding({ line: 11 })]);
+
+    expect(placed.map((p) => p.id)).toEqual(["f-1"]);
+  });
+
+  it("keeps every finding, whichever list it went to", () => {
+    const findings = [
       finding({ line: 11 }),
       finding({ line: 400 }),
       finding({ path: "src/other.ts", line: 88 }),
-    ]);
+    ];
+    const { placed, unanchored: moved } = placeFindings(findings, DIFF_LINES, counting());
 
-    expect(placed.map((p) => p.placement)).toEqual(["line", "file", "body"]);
-    expect(placed.map((p) => p.finding.line)).toEqual([11, 400, 88]);
+    expect(placed.map((p) => p.placement)).toEqual(["line", "file"]);
+    expect(placed.map((p) => p.finding.line)).toEqual([11, 400]);
+    expect(moved.map((f) => f.line)).toEqual([88]);
   });
 
   it("gives each finding its own id, in order", () => {
@@ -221,8 +244,15 @@ describe("reviewThreads", () => {
     expect("side" in (thread ?? {})).toBe(false);
   });
 
-  it("makes no thread for a finding placed in the body", () => {
-    expect(reviewThreads(place([finding({ path: "src/other.ts", line: 88 })]))).toEqual([]);
+  /**
+   * Nothing is filtered here any more, and nothing needs to be: every placement
+   * `placeFindings` returns is one GitHub will open a thread for, so the count
+   * of threads is the count of placed findings.
+   */
+  it("opens a thread for every placed finding", () => {
+    const placed = place([finding({ line: 11 }), finding({ line: 400 })]);
+
+    expect(reviewThreads(placed)).toHaveLength(placed.length);
   });
 
   /**
@@ -366,8 +396,8 @@ describe("an identifier the model smuggled into its output", () => {
       },
       {
         title: `the cache key omits the tenant ${LIVE}`,
-        path: "src/other.ts",
-        line: 88,
+        path: "docs/notes.md",
+        line: 2,
         severity: "low",
         body: `**Fix before merge.** \`key()\` hashes the id and not the tenant ${CLOSED}`,
       },
@@ -422,11 +452,12 @@ describe("an identifier the model smuggled into its output", () => {
    */
   it("posts only the markers the workflow wrote, across the body and every thread", () => {
     const output = parse(SMUGGLED);
-    const placed = placeFindings(output.findings, DIFF_LINES, counting());
+    const { placed } = placeFindings(output.findings, DIFF_LINES, counting());
     const body = renderReviewBody({
       verdict: VERDICTS["changes recommended"],
       output,
       placed,
+      movedToFollowUps: 0,
       stillOpen: [],
       resolved: [],
       followUps: output.followUps,
@@ -456,6 +487,7 @@ describe("an identifier the model smuggled into its output", () => {
       verdict: VERDICTS["approval recommended"],
       output: clean,
       placed: [],
+      movedToFollowUps: 0,
       stillOpen: [],
       resolved: [],
       followUps: [],
@@ -467,7 +499,12 @@ describe("an identifier the model smuggled into its output", () => {
 
     expect(carried).toEqual([]);
     expect(
-      deriveVerdict(parse({}), { ci: "green", round: 2, stillOpen: carried.length }).verdict,
+      deriveVerdict(parse({}), {
+        ci: "green",
+        round: 2,
+        stillOpen: carried.length,
+        movedToFollowUps: 0,
+      }).verdict,
     ).toBe("approval recommended");
   });
 });

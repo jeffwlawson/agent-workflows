@@ -72,15 +72,17 @@ would be handed a settled finding to rule on again. A carried entry also carries
 thread, which sits under an older review; a fresh one cannot, because its thread is opened by the
 same call that posts the body.
 
-Since #127 nothing new has no thread. **Every fix-before-merge finding is anchored at something
-the pull request changed** — a line the diff covers, or the changed file an anchor has drifted past
-— because GitHub opens a thread against nothing else, and a finding with no thread is one a
-maintainer cannot reply to, decline or resolve. A problem in a file the change never touched is
-anchored at *the change that causes it*, with the untouched `path:line` named in the thread; a
+Since #127 no finding the review raises is thread-less. **Every fix-before-merge finding is anchored
+at something the pull request changed** — a line the diff covers, or the changed file an anchor has
+drifted past — because GitHub opens a thread against nothing else, and a finding with no thread is
+one a maintainer cannot reply to, decline or resolve. A problem in a file the change never touched
+is anchored at *the change that causes it*, with the untouched `path:line` named in the thread; a
 problem nothing in the change causes was never this pull request's to fix, so the workflow records
-it in `followUps` and the body says under the count that it did. The thread-less entry survives for
-one reason only: the ones v0.4.0 already wrote are carried and verified until they close, because
-that entry is the only record such a finding exists.
+it in `followUps` and the body says under the count that it did. Two thread-less entries survive and
+neither is a finding this version raised: a `fixBeforeMerge` line the model restated with no finding
+behind it, which the record counts as an entry of its own (#105), and the body entries v0.4.0
+already wrote — carried and verified until they close, because that entry is the only record such a
+finding exists.
 
 The prose beside the record is capped by the schema rather than asked for in the brief, and
 **restates no finding**: the findings are above it with their severities, and the one 250-word

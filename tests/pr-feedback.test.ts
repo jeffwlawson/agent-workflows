@@ -1,17 +1,23 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
-// Same shape as tests/common.test.ts: only the two process-spawning exports are
+// Same shape as tests/common.test.ts: only the process-spawning exports are
 // replaced, because everything else in the graph that reaches for
-// `node:child_process` must keep working. Both `gh` and `git` arrive here —
-// `execFileSync` is the one boundary the fetch crosses — so the stand-in below
-// dispatches on the binary rather than on call order.
+// `node:child_process` must keep working. Both `gh` and `git` arrive here, so
+// the stand-in below dispatches on the binary rather than on call order.
+//
+// Two boundaries, not one: the fetch reaches `gh api graphql` through
+// `ghOutcome`, which spawns rather than execs so that stderr survives a zero
+// exit (#90), and everything else it runs — `gh pr view`, `git diff` — through
+// `execFileSync`. The `spawnSync` stand-in delegates to the `execFileSync` one
+// rather than duplicating it, so a scenario is still written once.
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   execFileSync: vi.fn(),
   execSync: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import {
   fetchPullRequestFeedback,
@@ -22,6 +28,7 @@ import {
 import { fetchPullRequestContext } from "../shared/review-context.js";
 
 const spawned = vi.mocked(execFileSync);
+const captured = vi.mocked(spawnSync);
 
 /**
  * GraphQL answers *partially*. A query whose selections are mostly fine and one
@@ -49,7 +56,13 @@ const spawned = vi.mocked(execFileSync);
  * any two of them is the defect.
  */
 
-/** An error object shaped the way `execFileSync` throws one: the output is on it. */
+/**
+ * A non-zero exit, as a scenario writes it: thrown, the way `execFileSync`
+ * throws one, with the output on it. `ghOutcome` no longer *catches* anything —
+ * it reads `spawnSync`'s report — so `answersGh` below translates this into
+ * that report rather than letting it propagate. Kept as a throw because it is
+ * how a stand-in says "this call did not succeed" in one expression, mid-branch.
+ */
 const exitsNonZero = (stdout: string, stderr: string): Error => {
   const error = new Error("Command failed: gh api graphql") as Error & {
     status: number;
@@ -147,10 +160,37 @@ const ghAnswers = (answer: () => string): void => {
   }) as never);
 };
 
+/**
+ * `gh` as `ghOutcome` sees it, in terms of the `execFileSync` stand-in every
+ * scenario here writes. A returned string is a zero exit with nothing on
+ * stderr; an error thrown the way `execFileSync` throws one is the exit it
+ * describes, with whatever output it carried.
+ *
+ * The translation, not a second stand-in: the two boundaries answer the same
+ * `gh`, and a scenario that had to set up both could set them up differently.
+ * The one shape it cannot express is a **zero exit that printed to stderr** —
+ * which `execFileSync` cannot express either, that being the defect — so the
+ * test that needs one replaces this implementation outright.
+ */
+const answersGh = ((file: string, args: readonly string[]) => {
+  try {
+    return { status: 0, stdout: spawned(file, args as string[]), stderr: "" };
+  } catch (thrown) {
+    const failure = thrown as { status?: number; stdout?: string; stderr?: string };
+    return {
+      status: failure.status ?? 1,
+      stdout: failure.stdout ?? "",
+      stderr: failure.stderr ?? "",
+    };
+  }
+}) as never;
+
 const PREVIOUS = { repo: process.env["GH_REPO"], base: process.env["BASE_REF"] };
 
 beforeEach(() => {
   spawned.mockReset();
+  captured.mockReset();
+  captured.mockImplementation(answersGh);
   process.env["GH_REPO"] = "o/r";
   process.env["BASE_REF"] = "main";
 });
@@ -841,6 +881,35 @@ describe("a total failure stays distinguishable from a partial one", () => {
 
       expect(fetchPullRequestFeedback("12").status).toBe("failed");
     }
+  });
+
+  /**
+   * And the sentence it reports is `gh`'s, on the exit code where that used to
+   * be impossible (#90). A zero exit is not a promise of JSON — an intercepting
+   * proxy answers 200 with a page, and `gh` says so on stderr while exiting
+   * zero — and the reader prefers stderr precisely because it is the half
+   * written for a human. With it discarded on this path the fallback was the
+   * first three lines of the unparseable body, which names the symptom in the
+   * one vocabulary nobody can act on.
+   *
+   * The stand-in is replaced rather than driven here: a zero exit carrying
+   * stderr is the shape `execFileSync` cannot express, which is the whole of
+   * the defect.
+   */
+  it("reports what gh said, not raw stdout, when a zero exit answered with neither", () => {
+    ghAnswers(() => "<html>502 Bad Gateway</html>");
+    captured.mockReturnValue({
+      status: 0,
+      stdout: "<html>502 Bad Gateway</html>",
+      stderr: "gh: HTTP 502 from api.github.com\n",
+    } as never);
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.status).toBe("failed");
+    expect(feedback.unreadable).toHaveLength(1);
+    expect(feedback.unreadable[0]?.reason).toContain("HTTP 502 from api.github.com");
+    expect(feedback.unreadable[0]?.reason).not.toContain("<html>");
   });
 
   /**

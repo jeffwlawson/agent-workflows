@@ -232,8 +232,8 @@ index 81d69cd..0bfc124 100644
 
 describe("parseDiffLines — deleted file", () => {
   // A modified file followed by a deleted one whose name sorts later. The
-  // deletion emits `+++ /dev/null`, which does not match the `+++ b/` prefix the
-  // parser keys on, so `currentFile` is never repointed at zzz.txt.
+  // deletion emits `+++ /dev/null`, so its path is never named on a `+++ b/`
+  // line; the `diff --git` header above it is the only place it appears.
   const withDeletion = `diff --git a/keep.txt b/keep.txt
 index 0f7bc76..de98044 100644
 --- a/keep.txt
@@ -252,19 +252,125 @@ index b77b4eb..0000000
 -y
 `;
 
-  it("never makes the deleted file a key of its own", () => {
-    expect(parseDiffLines(withDeletion).has("zzz.txt")).toBe(false);
+  /**
+   * **A key, and an empty one** (#127). The file is one this pull request
+   * changes, so a finding about it must be anchorable — an empty set is a
+   * file-level thread, which is the only anchor GitHub has for a deleted file
+   * either. Keyed off `+++ b/` alone it was no key at all, and
+   * `placeFindings` reads a missing key as "nothing this pull request changed
+   * causes it" and moves the finding to the follow-ups: "you deleted
+   * `zzz.txt`, which `keep.txt` still reads" stopped blocking the merge.
+   */
+  it("keys the deleted file with no line to anchor at", () => {
+    const parsed = parseDiffLines(withDeletion);
+
+    expect(parsed.has("zzz.txt")).toBe(true);
+    expect([...(parsed.get("zzz.txt") ?? [])]).toEqual([]);
   });
 
-  // The invariant "no line is attributed to a file that does not own it" holds.
-  // `+++ /dev/null` leaves `currentFile` on keep.txt and the deletion's hunk
-  // header (`@@ -1,2 +0,0 @@`) resets the counter to 0, but the deletion's body
-  // is only removed lines (which never advance the counter) and the diff's
-  // trailing newline is stripped before splitting — so no phantom line 0 leaks
-  // into keep.txt. Its set is exactly its own real range, 1–3.
+  // The invariant "no line is attributed to a file that does not own it" holds,
+  // and since #127 it holds by construction rather than by luck: the deletion's
+  // `diff --git` header clears `currentFile`, so its `@@ -1,2 +0,0 @@` resets a
+  // counter nothing is reading. It held before that too — the deletion's body
+  // is only removed lines, which never advance the counter, and the trailing
+  // newline is stripped before splitting — but on those two facts rather than
+  // on the parser having stopped pointing at keep.txt.
   it("attributes no phantom line to the file preceding a deletion", () => {
     const keep = linesOf(withDeletion, "keep.txt");
     expect(keep.has(0)).toBe(false); // no phantom sourced from the deletion
     expect(exactly(withDeletion, "keep.txt")).toEqual([1, 2, 3]);
+  });
+});
+
+/**
+ * **The three other ways a changed file names no new side** (#127).
+ *
+ * A deletion at least writes `+++ /dev/null`. A pure rename, a binary change
+ * and a mode change write no `+++` line at all, so keying off `+++ b/` alone
+ * left each of them out of the map entirely — and since #127 a path the map
+ * does not hold is read as "nothing this pull request changed causes it", which
+ * demotes a finding about a file the pull request plainly did change out of the
+ * verdict's count and out of the record.
+ *
+ * Each is keyed, with an empty set, which `placeFindings` reads as a file-level
+ * thread — the only anchor GitHub has for any of them either. The diff below is
+ * real `git diff` output for all three in one change.
+ */
+describe("parseDiffLines — a changed file with no new side", () => {
+  const noNewSide = `diff --git a/bin.dat b/bin.dat
+index 742c16a..b0e7c0e 100644
+Binary files a/bin.dat and b/bin.dat differ
+diff --git a/mode.sh b/mode.sh
+old mode 100644
+new mode 100755
+diff --git a/gone.txt b/new.txt
+similarity index 100%
+rename from gone.txt
+rename to new.txt
+`;
+
+  it.each(["bin.dat", "mode.sh", "new.txt"])("keys %s with no line to anchor at", (file) => {
+    const parsed = parseDiffLines(noNewSide);
+
+    expect(parsed.has(file)).toBe(true);
+    expect([...(parsed.get(file) ?? [])]).toEqual([]);
+  });
+
+  /** And a rename is keyed by where the file now is, which is where GitHub shows it. */
+  it("keys a rename by its destination and not by its source", () => {
+    expect(parseDiffLines(noNewSide).has("gone.txt")).toBe(false);
+  });
+
+  /**
+   * A rename that also changed lines writes both — `rename to` and then
+   * `+++ b/` — and the second must fill the set the first opened rather than
+   * replace it with an empty one.
+   */
+  it("fills in the lines of a rename that also changed some", () => {
+    const renameWithEdit = `diff --git a/old.txt b/new.txt
+similarity index 60%
+rename from old.txt
+rename to new.txt
+index 422c2b7..b2e9670 100644
+--- a/old.txt
++++ b/new.txt
+@@ -1,2 +1,3 @@
+ a
++b
+ c
+`;
+
+    expect(exactly(renameWithEdit, "new.txt")).toEqual([1, 2, 3]);
+  });
+
+  /**
+   * **A path with a space in it, read rather than guessed at.** Git quotes
+   * neither half of `diff --git a/<src> b/<dst>`, so `a/x y b/x y` could be
+   * `x` renamed to `y b/x y`. It is only readable because the two halves are
+   * known to be equal — which is every header but a rename's, and a rename
+   * names its destination on a line of its own.
+   */
+  it("reads a symmetric header whose path contains a space", () => {
+    const spaced = `diff --git a/src/my notes.md b/src/my notes.md
+old mode 100644
+new mode 100755
+`;
+
+    expect([...parseDiffLines(spaced).keys()]).toEqual(["src/my notes.md"]);
+  });
+
+  /**
+   * And a header it cannot read is left alone rather than keyed on a guess. A
+   * non-ASCII path arrives quoted (`core.quotepath`), which is neither half of
+   * the symmetric form — a wrong key would anchor a thread at a file that does
+   * not exist, and one unpostable thread is the whole review rejected.
+   */
+  it("keys nothing from a header it cannot read without guessing", () => {
+    const quoted = `diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"
+old mode 100644
+new mode 100755
+`;
+
+    expect([...parseDiffLines(quoted).keys()]).toEqual([]);
   });
 });

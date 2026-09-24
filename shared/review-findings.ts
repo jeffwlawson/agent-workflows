@@ -111,7 +111,7 @@ export interface Finding {
  * Two values, and **both of them are on the diff** (#127, decision 1). A
  * fix-before-merge finding is a claim about this pull request, so there is
  * always a changed place to attach it to — a line the diff covers, or, where
- * the anchor has drifted past the hunks, the changed file itself. The `body`
+ * the diff covers no such line, the changed file itself. The `body`
  * arm that used to sit under these is gone: a finding posted where GitHub can
  * open no thread is one a maintainer cannot reply to, cannot decline and
  * cannot resolve, and one of those could hold a pull request at *Changes
@@ -124,7 +124,13 @@ export interface Finding {
 export type Placement =
   /** Anchored in a hunk (or its context lines): a thread on the line. */
   | "line"
-  /** In a file the pull request changes, past its hunks: a thread on the file. */
+  /**
+   * In a file the pull request changes, with no line in it the anchor can
+   * take: a thread on the file. Past the hunks is one way to get here; the
+   * other is a file with no new side to have hunks in — a deletion, a pure
+   * rename, a binary change, a mode change — which `parseDiffLines` keys with
+   * an empty set for exactly this arm to read.
+   */
   | "file";
 
 export interface PlacedFinding {
@@ -587,18 +593,26 @@ const PATH_NOISE = /^(?:\.\/|\/|a\/|b\/)+/;
  *
  * The lookup is the whole of "nothing this pull request changed causes it"
  * (#127, decision 3), and that inference is only sound while it can fail for
- * exactly one reason. An exact-string `get` against keys sliced off `+++ b/`
- * fails for a second: `parseFinding` stores the model's path verbatim, so
- * `./src/api.ts`, `b/src/api.ts` or a trailing space against a key of
- * `src/api.ts` used to cost the finding its thread and now costs it its place
- * in the count — *approval recommended* and a `success` status over a real
- * blocker.
+ * exactly one reason — the file is not in the diff. Two others were found and
+ * closed, and both cost a real blocker its place in the count rather than only
+ * its thread: *approval recommended* and a `success` status over a finding the
+ * review meant to stop the merge with.
  *
- * So a miss is retried against the spellings a model reaches for, and **only a
- * candidate the diff actually holds is accepted**. Nothing is normalised into
- * existence: a repository with a directory genuinely called `b` keeps its
- * `b/queue.ts`, because that key matches on the first try and the stripping
- * below is never reached.
+ * **The spelling.** `parseFinding` stores the model's path verbatim, so
+ * `./src/api.ts`, `b/src/api.ts` or a trailing space missed a key of
+ * `src/api.ts`. A miss is retried against the spellings a model reaches for,
+ * and **only a candidate the diff actually holds is accepted**. Nothing is
+ * normalised into existence: a repository with a directory genuinely called
+ * `b` keeps its `b/queue.ts`, because that key matches on the first try and
+ * the stripping below is never reached.
+ *
+ * **The key that was never written.** A deletion, a pure rename, a binary
+ * change and a mode change name no new side, so keys sliced off `+++ b/` alone
+ * held none of them — and "you deleted `src/gone.ts`, which `src/index.ts`
+ * still imports" is a finding anchored at exactly what the change did. That is
+ * fixed where the keys are written rather than here (`shared/diff-lines.ts`):
+ * every file the diff touches is a key, and one with no new side is an empty
+ * one, which `placementOf` reads as a file-level thread.
  */
 const diffKeyOf = (path: string, diffLines: Map<string, Set<number>>): string | undefined => {
   if (diffLines.has(path)) return path;

@@ -195,6 +195,54 @@ index 0ff3bbb..c6ca7ae 100644
   });
 
   /**
+   * **A file the change deleted, renamed or rewrote wholesale is still a file
+   * the change touched** (#127). None of them names a new side — a deletion
+   * writes `+++ /dev/null`, and a pure rename, a binary change and a mode
+   * change write no `+++` line at all — so the diff holds no line for a thread
+   * to anchor at, and `parseDiffLines` keys each of them with an empty set for
+   * that reason (`shared/diff-lines.ts`).
+   *
+   * What that buys is the arm below: a file-level thread. Read as unanchored
+   * instead, "you deleted `src/gone.ts`, which `src/index.ts` still imports"
+   * would be subtracted from the count and filed as a follow-up — a finding
+   * anchored at precisely what the change *did*, demoted for having been
+   * anchored well.
+   */
+  it.each([
+    ["a file it deleted", "src/gone.ts"],
+    ["a file it renamed with no other change", "src/renamed.ts"],
+    ["a file it changed in binary", "assets/logo.png"],
+    ["a file whose mode alone it changed", "scripts/deploy.sh"],
+  ])("threads a finding about %s on the file", (_case, path) => {
+    const lines = parseDiffLines(`diff --git a/src/gone.ts b/src/gone.ts
+deleted file mode 100644
+index 422c2b7..0000000
+--- a/src/gone.ts
++++ /dev/null
+@@ -1,2 +0,0 @@
+-const a = 1;
+-const b = 2;
+diff --git a/src/was.ts b/src/renamed.ts
+similarity index 100%
+rename from src/was.ts
+rename to src/renamed.ts
+diff --git a/assets/logo.png b/assets/logo.png
+index 742c16a..b0e7c0e 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ
+diff --git a/scripts/deploy.sh b/scripts/deploy.sh
+old mode 100644
+new mode 100755
+`);
+    const { placed, unanchored: moved } = placeFindings([finding({ path, line: 1 })], lines, counting());
+
+    expect(moved).toEqual([]);
+    expect(placed[0]?.placement).toBe("file");
+    // A file-level thread, which is the one shape GitHub takes here: the path
+    // and no line at all.
+    expect(reviewThreads(placed)).toEqual([{ path, body: expect.stringContaining("the guard") }]);
+  });
+
+  /**
    * And it carries **no id**, which is the mechanical half of "it is not a
    * finding this pull request owns": an id exists so a later round recognises
    * something it raised, and this is never raised.

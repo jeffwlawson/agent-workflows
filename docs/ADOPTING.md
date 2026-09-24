@@ -1181,8 +1181,10 @@ remedy is the same — refresh in-flight agent PRs with `agent:update-branch`.
 
 **Silence is ambiguous.** GitHub rejects an **entire** review if one line anchor falls outside the
 diff, so a broken placement posts nothing — identical to a review that found nothing. Since #110 an
-anchor it cannot resolve is rerouted rather than dropped: to a thread on the file when the line has
-drifted past the hunks, and since #127 to the follow-ups when the file is not in the diff at all.
+anchor it cannot resolve is rerouted rather than dropped: to a thread on the file when the diff
+covers no such line in it — the anchor has drifted past the hunks, or the change deleted, renamed or
+rewrote the file and it has no lines to cover — and since #127 to the follow-ups when the file is
+not in the diff at all.
 The runner logs `Findings: N produced — a on a line, b on a file, c moved to follow-ups for having
 no anchor in the diff`; trust that counter, not an agent's argument that its own placement is
 sound.

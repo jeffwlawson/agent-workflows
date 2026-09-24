@@ -892,13 +892,25 @@ expensive to rediscover.
   915 public overviews none of its findings sat in a file the pull request did not change, and its
   body-only *Previously missed* entries never block.
 
-  That deterministic arm has to be able to fail for **one reason only**, or the inference under it
-  is unsound. The lookup is `path` against the keys sliced off `+++ b/`, and the model's `path` is
-  stored verbatim — so `./src/api.ts`, `b/src/api.ts` or a trailing space against a key of
-  `src/api.ts` is a second reason, and one that now costs a real blocker its place in the count
-  rather than only its thread. `placeFindings` retries a miss against those spellings and accepts
-  only a candidate the diff actually holds, anchoring the finding under the diff's own spelling
-  because that is what GitHub matches a thread against too.
+  That deterministic arm has to be able to fail for **one reason only** — the file is not in the
+  diff — or the inference under it is unsound. Two other reasons were found, and each costs a real
+  blocker its place in the count rather than only its thread.
+
+  The **spelling**: the model's `path` is stored verbatim, so `./src/api.ts`, `b/src/api.ts` or a
+  trailing space missed a key of `src/api.ts`. `placeFindings` retries a miss against those
+  spellings and accepts only a candidate the diff actually holds, anchoring the finding under the
+  diff's own spelling because that is what GitHub matches a thread against too.
+
+  The **key that was never written**: the keys were sliced off `+++ b/`, and four kinds of change
+  name no new side — a deletion writes `+++ /dev/null`, and a pure rename, a binary change and a
+  mode change write no `+++` line at all. So "you deleted `src/gone.ts`, which `src/index.ts` still
+  imports" — a finding anchored at exactly what the change did, which is what the brief asks for —
+  was demoted for having been anchored well. `parseDiffLines` now keys **every file the diff
+  touches**, and one with no new side is an empty set, which `placeFindings` reads as a file-level
+  thread. That is the only anchor GitHub has for any of them either. Its `diff --git` header is read
+  rather than guessed at: git quotes neither half, so `a/x y b/x y` is ambiguous until the halves
+  are known to be equal — which is every header but a rename's, and a rename names its destination
+  on a `rename to` line of its own.
 
   Three things ride along. The count and the record stay one set — `countFixBeforeMerge` subtracts
   exactly the findings `placeFindings` did not place, so `**Findings:** N` is still the record's own

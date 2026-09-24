@@ -161,7 +161,8 @@ try {
   // blocker in a file the change did touch. Those still go to the follow-ups
   // with the rest — the record stays one set — but the review says a human has
   // to look, so the verdict cannot come out green over them (`pathErrors`).
-  const pathErrorReason = pathErrorNote(pathErrors(unanchored, isFileAtHead));
+  const unplaceable = pathErrors(unanchored, isFileAtHead);
+  const pathErrorReason = pathErrorNote(unplaceable);
   const output =
     pathErrorReason === undefined
       ? result.output
@@ -212,7 +213,7 @@ try {
     followUps,
     dropped: droppedFollowUps,
     moved: movedFollowUps,
-  } = recordFollowUps(unanchored, output.followUps);
+  } = recordFollowUps(unanchored, output.followUps, unplaceable);
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the

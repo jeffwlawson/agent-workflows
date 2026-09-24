@@ -1248,6 +1248,17 @@ const MOVED_NOTE =
   "_Raised by the review as a problem to fix before merge, then moved: its anchor was in no file that pull request changed, so nothing in the change caused it and there was nowhere in the diff to open a thread on it._";
 
 /**
+ * The same sentence for a finding whose path is **no file in the repository**
+ * (`pathErrors`), where `MOVED_NOTE`'s inference does not hold: the path is a
+ * slip, and the problem behind it may be in a file the pull request did
+ * change. The review body says so in *needs you*, but the body is not what the
+ * filed stub's reader opens — this line is, so the correction has to travel
+ * with it rather than stay behind in the review.
+ */
+const PATH_ERROR_NOTE =
+  "_Raised by the review as a problem to fix before merge, then moved: its path is no file in the repository, so the diff could not place it. That is a slip in the review, not evidence the change is uninvolved; the problem may be in a file that pull request changed. Check it against the merged change before triaging it as pre-existing._";
+
+/**
  * A finding the diff gives no anchor to, as the follow-up it becomes (#127,
  * decision 3).
  *
@@ -1260,10 +1271,10 @@ const MOVED_NOTE =
  * its own work by — and a finding's anchor is exactly the "where a reader
  * should open first" that field asks for.
  */
-export const movedFollowUp = (finding: Finding): FollowUp => ({
+export const movedFollowUp = (finding: Finding, pathError = false): FollowUp => ({
   title: finding.title,
   location: `${finding.path}:${finding.line}`,
-  body: `${finding.body.trim()}\n\n${MOVED_NOTE}`,
+  body: `${finding.body.trim()}\n\n${pathError ? PATH_ERROR_NOTE : MOVED_NOTE}`,
   severity: finding.severity,
 });
 
@@ -1302,12 +1313,17 @@ export interface RecordedFollowUps {
  *
  * So the list can run past `MAX_FOLLOW_UPS`, and only ever by the number of
  * findings the diff gave no anchor to.
+ *
+ * `pathErrors` is the subset of `unanchored` whose path names no file — by
+ * identity, as `pathErrors` returns them — and those carry `PATH_ERROR_NOTE`
+ * instead of `MOVED_NOTE`.
  */
 export const recordFollowUps = (
   unanchored: readonly Finding[],
   followUps: readonly FollowUp[],
+  pathErrors: readonly Finding[] = [],
 ): RecordedFollowUps => {
-  const moved = unanchored.map(movedFollowUp);
+  const moved = unanchored.map((finding) => movedFollowUp(finding, pathErrors.includes(finding)));
   const { kept, dropped } = capFollowUps(followUps);
   return { followUps: [...moved, ...kept], moved: moved.length, dropped };
 };

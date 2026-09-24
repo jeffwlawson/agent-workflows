@@ -302,6 +302,21 @@ describe("recordFollowUps", () => {
     expect(prefix).toBe(1);
   });
 
+  /**
+   * A mistyped path is the one case the moved note's inference does not hold
+   * for, and the filed stub is where its reader meets it — so that entry says
+   * the path was a slip rather than that the change is uninvolved.
+   */
+  it("tells a path error's reader the change may still be involved", () => {
+    const typo = moved({ path: "src/othr.ts" });
+    const placedElsewhere = moved({ title: "a second one" });
+    const [first, second] = recordFollowUps([typo, placedElsewhere], [], [typo]).followUps;
+
+    expect(first?.body).toContain("its path is no file in the repository");
+    expect(first?.body).not.toContain("nothing in the change caused it");
+    expect(second?.body).toContain("nothing in the change caused it");
+  });
+
   it("keeps the finding whole, and says how it got here", () => {
     const [entry] = recordFollowUps([moved()], []).followUps;
 

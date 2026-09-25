@@ -2019,3 +2019,33 @@ resolve retried and no second reply, and is not shown to the fix agent at all. T
 2026-09-23 entry's again, one API over: a permission the remote grants per mutation is untested
 until a real token asks, and a failure arm that only `echo`s turns that first real ask into a
 release of silence.
+
+## 2026-09-25 — the fix for the silent resolve asserted a second unprobed behaviour
+
+The commit above was written around a probe and then made a claim it had not probed: that a caller
+still granting `contents: read` would keep working, post its replies and leave its threads open. The
+review round on it said that has never been observed, and it is wrong. A called job cannot hold more
+than its caller granted, and GitHub refuses the elevation rather than trimming it — the run fails
+before any job starts, with `The workflow is requesting 'contents: write', but is only allowed
+'contents: read'` and, nothing having run, no job log to read it in. An adopter who moves the pin
+without moving the grant loses reviews outright.
+
+No probe this time either: the run doing the fixing holds no token, and the correction rests on
+GitHub's documented rule plus the same failure reported against other repositories that added a
+required caller permission to a reusable workflow. Said that way in the text rather than asserted,
+because that is the whole of the 2026-09-23 and 2026-09-24 lesson and the entry above is what
+happens when it is not.
+
+It generalises past this release. Every job in this loop declares the scopes it spends, so an
+under-granting caller has always failed this way — which makes most of `docs/ADOPTING.md` §4's
+"without it, the step 403s and the run stays green" prose a description of a state that stopped
+occurring when the loop split into caller and called workflow. One row is corrected here; the rest
+is named at the head of that table and is somebody's next ticket.
+
+The other half of the round was smaller and the same shape. A thread carrying its own closing reply
+was being dropped from the rendered feedback to stop the fix agent answering "already settled" on
+it every round. Dropping it took the evidence with the noise: the finding's quote and its failure
+scenario live in that thread's first comment, and the review is handed the finding regardless and
+rules `open` on anything it cannot settle. An `open` ruling on a thread nobody rendered is a finding
+counting toward the verdict that `agent:fix` is never shown and cannot reply to. It is marked now
+instead of dropped, with one line saying the close is what is outstanding.

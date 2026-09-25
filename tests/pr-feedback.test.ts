@@ -1823,17 +1823,17 @@ describe("a finding the maintainer has settled", () => {
 });
 
 /**
- * **A thread already holding its closing reply is not open feedback** (#133).
- * The review verified it and replied, and then the resolve after that reply was
- * refused. It is still open on GitHub, and nothing is left to do on it except
- * the resolve.
+ * **A thread already holding its closing reply says so, and is otherwise open
+ * feedback** (#133). The review verified it and replied, and then the resolve
+ * after that reply was refused. It is still open on GitHub, and what is
+ * outstanding on it is the close rather than a fix.
  *
- * Two readers ask about it, and they need different answers:
- * - The fix agent is shown every open thread and asked to report on each. Shown
- *   this one, it answers "already settled", which is a second pile-up beside
- *   the review's. So the thread is left out of what it renders.
- * - The review is handed it as a carried finding again, marked with the reply
- *   it already holds, so the workflow retries the resolve without replying.
+ * Marked rather than dropped, which was the first attempt. Its first comment is
+ * the *evidence* — the quote and the failure scenario — and both agents that
+ * read the inline feedback need it. The review is handed the finding again
+ * whatever this file does, and rules `open` on anything it cannot settle; an
+ * `open` ruling on a thread nobody rendered is a finding counting toward the
+ * verdict that `agent:fix` is never shown and cannot reply to.
  */
 describe("a thread whose latest word is this workflow's closing reply", () => {
   const AGENT = { author: { login: "github-actions" }, authorAssociation: "NONE" };
@@ -1854,14 +1854,27 @@ describe("a thread whose latest word is this workflow's closing reply", () => {
     comments: { nodes: [finding, ...after] },
   });
 
-  it("is not rendered as open feedback, and not offered for a reply", () => {
+  it("is rendered whole, under a line saying the close is what is outstanding", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
 
     const feedback = fetchPullRequestFeedback("12");
 
-    expect(feedback.inline).not.toContain("PRRT_one");
-    expect(feedback.inline).not.toContain("Verified fixed");
-    expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
+    // The evidence, the reply it already carries, and what that means.
+    expect(feedback.inline).toContain("the guard runs after the return");
+    expect(feedback.inline).toContain("Verified fixed");
+    expect(feedback.inline).toMatch(/close that should have followed it did not go through/);
+    // And offered for a reply, or a fix run's answer on it would be dropped.
+    expect(feedback.threadIds).toEqual(["PRRT_one", "PRRT_kwthread"]);
+  });
+
+  /** Only that thread. The note is about one thread's state, not the page's. */
+  it("says it of no other thread", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
+
+    const [, other] = fetchPullRequestFeedback("12").inline.split("\n\n---\n\n");
+
+    expect(other).toContain("PRRT_kwthread");
+    expect(other).not.toMatch(/did not go through/);
   });
 
   it("is still carried to the review, marked with the reply it holds", () => {
@@ -1884,20 +1897,21 @@ describe("a thread whose latest word is this workflow's closing reply", () => {
     const feedback = fetchPullRequestFeedback("12");
 
     expect(feedback.agentThreads[0]?.closedAs).toBe("WONT_FIX");
-    expect(feedback.threadIds).toEqual([]);
+    expect(feedback.threadIds).toEqual(["PRRT_one"]);
   });
 
   /**
-   * With only such threads left, there is nothing for a fix run to act on, and
-   * the refusal says that rather than sending the agent after work that is
-   * already done.
+   * And it is feedback, so a fix run labelled on a pull request holding only
+   * such threads still proceeds. What it must not do is refuse: the review may
+   * have ruled the finding open again, and the thread is the only place the
+   * evidence for it is written down.
    */
-  it("leaves a fix run nothing to act on when it is the only open thread", () => {
+  it("is feedback a fix run proceeds on when it is the only open thread", () => {
     ghAnswers(() =>
       response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [thread(verified)] } }),
     );
 
-    expect(fetchPullRequestFeedback("12").hasFeedback).toBe(false);
+    expect(fetchPullRequestFeedback("12").hasFeedback).toBe(true);
   });
 
   /**

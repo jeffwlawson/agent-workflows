@@ -1605,15 +1605,19 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
 
   /**
    * A refused resolve is a warning on the run, where it used to be an `echo`
-   * that a green run hid for a release. It names the grant, the likeliest cause
-   * on a caller installed before this job existed.
+   * that a green run hid for a release. What it must **not** do is blame the
+   * caller's grant: a caller granting less than this job declares fails the run
+   * before any job starts, so a token that reached here holds the write and the
+   * cause is something else. Printing GitHub's own reply is the answer, as it
+   * is for the verdict status above.
    */
-  it("warns, naming the grant, when a resolve is refused, and never fails", () => {
+  it("warns when a resolve is refused, prints GitHub's reply, and never fails", () => {
     const run = resolveRun();
     const after = run.slice(run.lastIndexOf(RESOLVE_MUTATION));
 
     expect(after).toMatch(/\|\| echo "::warning::Could not resolve/);
-    expect(after).toContain("contents: write");
+    expect(after).toContain("GitHub's reply is printed above");
+    expect(after).toMatch(/not the caller's .*contents:.* grant/);
     expect(run).not.toMatch(/\bexit 1\b/);
   });
 });

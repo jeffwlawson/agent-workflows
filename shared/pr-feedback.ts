@@ -68,8 +68,9 @@ export interface PullRequestFeedback {
   readonly summaries: string;
   /**
    * Comments in *unresolved* review threads, anchored to file + line, replies
-   * included. Leaves out a thread whose latest word is this workflow's closing
-   * reply: its only remaining work is the resolve (#133).
+   * included. A thread whose latest word is this workflow's closing reply is
+   * rendered like any other, under a line saying what is actually outstanding
+   * on it — the close, not a fix (#133).
    */
   readonly inline: string;
   /**
@@ -86,12 +87,11 @@ export interface PullRequestFeedback {
    * workflow wrote into it (#110) — the open half of the review record a later
    * review verifies against (#111).
    *
-   * Not a replacement for `threadIds`: the fix runner answers every thread it
-   * was shown, a human's included, while only the loop's own threads carry a
-   * finding a review can rule on. It is not a subset either. A thread that
-   * already holds its closing reply is here, carrying `closedAs`, so the
-   * review can retry the resolve. It is not in `threadIds`, because nobody
-   * should reply to it again (#133).
+   * A subset of `threadIds` and not a replacement for it: the fix runner
+   * answers every thread it was shown, a human's included, while only the
+   * loop's own threads carry a finding a review can rule on. A thread that
+   * already holds its closing reply is in both, and carries `closedAs` here so
+   * the review retries the resolve rather than replying twice (#133).
    */
   readonly agentThreads: readonly AgentThread[];
   /**
@@ -909,6 +909,20 @@ const closedAsOn = (comments: readonly GqlThreadComment[]): ResolutionReason | u
 };
 
 /**
+ * Rendered under a thread `closedAsOn` recognised, and read by both agents that
+ * are shown the inline feedback (#133).
+ *
+ * It says what is outstanding, because the thread's own text no longer does: a
+ * reader seeing a finding, a reply verifying it, and an open thread has no way
+ * to tell a close that was refused from a fix that regressed. The fix agent
+ * answered "already settled" on one of these every round for want of that
+ * sentence; the review, which is handed the same finding again, rules on the
+ * code either way.
+ */
+const AWAITING_CLOSE =
+  "_(this workflow has already verified this finding and replied above. The thread is open only because the close that should have followed it did not go through — a later review retries that close, and does not reply again. Nothing here is owed a fix unless the code now says otherwise.)_";
+
+/**
  * The elements a partial answer actually left behind.
  *
  * A nulled element is a hole in the list, not an object with absent fields, so
@@ -1031,22 +1045,22 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     .filter((thread) => !thread.isResolved)
     .map((thread) => ({ ...thread, closedAs: closedAsOn(thread.comments) }));
 
-  // Open on GitHub but with nothing left to do except the resolve: a review
-  // verified it and replied, and the close did not go through (#133). So it is
-  // not rendered and not offered for a reply. The fix agent was being asked to
-  // report on these threads and answered "already settled" on each one, every
-  // run. They stay in `agentThreads` below, so the next review can retry the
-  // resolve without replying again.
-  const openFeedback = threads.filter((thread) => thread.closedAs === undefined);
-
-  const inline = openFeedback
+  // A thread already carrying this workflow's closing reply is rendered like
+  // any other, and `AWAITING_CLOSE` is what is added rather than what is taken
+  // away (#133). Dropping it was the first attempt and it removed the evidence
+  // with the noise: the quote and the failure scenario live in the thread's
+  // first comment, and both readers need them. The review is handed the
+  // finding again whatever happens here, and its safe ruling on anything it
+  // cannot settle is `open` — which would leave a finding counting toward the
+  // verdict that `agent:fix` was never shown and could not have replied to.
+  const inline = threads
     .map((thread) => {
       const first = thread.comments[0];
       const header = `**${anchorOf(first!, isFileLevel(thread))}** — thread \`${thread.id}\``;
       const body = thread.comments
         .map((c) => `@${c.author?.login ?? "unknown"}:\n${(c.body ?? "").trim()}`)
         .join("\n\n");
-      return `${header}\n\n${body}`;
+      return [header, body, ...(thread.closedAs === undefined ? [] : [AWAITING_CLOSE])].join("\n\n");
     })
     .join("\n\n---\n\n");
 
@@ -1127,7 +1141,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     inline,
     conversation,
     all,
-    threadIds: openFeedback.map((t) => t.id),
+    threadIds: threads.map((t) => t.id),
     agentThreads,
     settledFindings,
     latestAgentReviewBody,

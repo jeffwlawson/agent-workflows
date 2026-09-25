@@ -39,7 +39,10 @@ jobs:
       # verified. GitHub refuses `resolveReviewThread` to a token without it
       # (#133). That job checks nothing out and runs no agent. The review job
       # itself narrows this back to `read`, so a review still cannot touch the
-      # branch. Left at `read`, reviews post and verified threads stay open.
+      # branch. Not optional and not a degradation: a called job cannot hold
+      # more than this block grants, and GitHub refuses the elevation by
+      # failing the whole run before any job starts. Left at `read`, this
+      # workflow does not review at all.
       contents: write
       # Installing the runner package, which the called job does with `npx` from
       # GitHub Packages. Granted here because a called workflow can only

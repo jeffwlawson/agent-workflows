@@ -743,6 +743,17 @@ The permissions per workflow, which are what each job actually spends:
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
 
+**Granting less than a row asks for does not cost you that row's step.** Every job in this loop
+declares the scopes it spends, and a called job cannot hold more than its caller granted: GitHub
+refuses the elevation rather than trimming it, so the run fails before any job starts — `The
+workflow is requesting 'contents: write', but is only allowed 'contents: read'`, and, nothing
+having run, no job log to read it in. So an under-granted caller is a label that does nothing, not
+a run that half works. The per-scope notes below say what each scope *buys*; where one of them also
+describes a step 403ing or warning at run time, that describes a caller declaring **no**
+`permissions:` block on a repository whose default token is narrower — it predates the split into
+caller and called workflow, when there was no elevation to refuse. The `contents` note is the one
+re-checked against that; the others are not yet.
+
 > **`issues: write` is on one row only, and it is the one that creates issues.** No other workflow
 > in the loop holds it to *file* anything — the `implement` pair spends it on labels and on closing
 > a sub-issue the PRD already lists. It is also the only caller that passes **no secrets at all**:
@@ -760,16 +771,20 @@ does — it is about installing the runner it runs.
 > earlier release has a review that works and a verdict that never arrives. What the verdict says,
 > and what you do with each one, is §3b.
 
-> **`contents: write` on review is the `resolve` job's, and only that job's.** GitHub refuses
-> `resolveReviewThread`, which closes the threads a review verified, to a token without it. Replying
-> into those threads needs nothing extra. So a caller that still grants `contents: read` gets reviews
-> that work, and verified threads that stay open under a reply saying they were verified. That was
-> every verified thread on v0.4.0, which put the resolve in the review job itself. The `resolve` job
-> checks nothing out, installs nothing and runs no agent: it runs the two mutations over the list the
-> review wrote, and nothing else. The review job narrows the grant back to `contents: read`, so
-> a review still cannot touch your branch. If you upgrade without the grant, the `resolve` job warns
-> on every run, and `doctor` reports it as an error. A later review retries any close that failed
-> without replying again.
+> **`contents: write` on review is the `resolve` job's, and only that job's — and it is the one row
+> here that is newer than your caller.** GitHub refuses `resolveReviewThread`, which closes the
+> threads a review verified, to a token without it; replying into those threads needs nothing extra,
+> which is why v0.4.0 — which ran the resolve inside the review job — replied on every verified
+> thread and closed none of them. The `resolve` job checks nothing out, installs nothing and runs no
+> agent: it runs the two mutations over the list the review wrote, and nothing else. The review job
+> narrows the grant back to `contents: read`, so a review still cannot touch your branch.
+>
+> **Move the grant when you move the pin.** This is not a scope you lose the resolve without. A
+> called job cannot hold more than its caller granted, and GitHub refuses the elevation rather than
+> trimming it: the run fails before any job starts, with `The workflow is requesting 'contents:
+> write', but is only allowed 'contents: read'` and — because nothing ran — no job log to read it
+> in. A caller left on `contents: read` therefore does not review at all. `doctor` reports it as an
+> error, and it is the reason to run `doctor` after a pin bump rather than before the next label.
 
 > **`statuses: write` on update-branch is what keeps it**, for the same reason and with the same
 > silence when it is missing. A clean refresh copies the verdict from the commit that was reviewed

@@ -908,11 +908,21 @@ jobs:
   # Not `AGENT_PAT`: resolving would then depend on an adopter having set it,
   # and every repository without it would keep the bug silently.
   #
-  # **The cost is the caller's grant.** A caller's `permissions:` is the ceiling
-  # for every job it calls, so this job holds `contents: write` only where the
-  # caller grants it, and the reference callers now do. A caller installed
-  # before this still grants `read`. The replies still post, the threads stay
-  # open, the warning below names the grant, and `doctor` reports it.
+  # **The cost is the caller's grant, and it is not a degradation.** A caller's
+  # `permissions:` is the ceiling for every job it calls, and GitHub refuses an
+  # elevation rather than trimming it: a called job asking for more than its
+  # caller granted fails the **whole run** before any job starts — `The workflow
+  # is requesting 'contents: write', but is only allowed 'contents: read'`,
+  # reported as a `startup_failure` with no job log to read it in. So a caller
+  # left on `contents: read` does not get a review without the resolve; it gets
+  # no review. Both reference callers move in the same release as this job, and
+  # `doctor` reports a caller that did not as an error.
+  #
+  # That is GitHub's documented rule — permissions are maintained or reduced
+  # through a call chain, never elevated — rather than something probed here,
+  # unlike the scope itself above. It is also not new with this job: every job
+  # in this loop declares its permissions, so any caller granting less than one
+  # of them has always failed this way.
   resolve:
     needs: review
     # Both of the review job's guards, restated rather than inherited through
@@ -931,9 +941,10 @@ jobs:
     # and a newer arrival evicts it silently (docs/parity.md §10). If this job
     # joined the group, it would queue behind a fix a human labelled while the
     # review ran, and could evict that fix. Overlap is harmless instead. A fix
-    # run no longer sees a thread that already carries its closing reply
-    # (`shared/pr-feedback.ts`). A review that races this job carries such a
-    # thread again, re-verifies it and resolves it without a second reply.
+    # run shown a thread that already carries its closing reply is told the
+    # close is the only thing outstanding on it (`shared/pr-feedback.ts`). A
+    # review that races this job carries such a thread again, re-verifies it
+    # and resolves it without a second reply.
     permissions:
       contents: write
       pull-requests: write
@@ -1020,5 +1031,5 @@ jobs:
 
             gh api graphql -f threadId="$tid" -f query="$mutation" >/dev/null \
               && echo "  resolved ${tid} (${reason})" \
-              || echo "::warning::Could not resolve review thread ${tid} (${reason}). Its reply is posted, and the thread stays open until the next review retries it. \`Resource not accessible by integration\` above is a caller that grants \`contents: read\` where this job needs \`contents: write\` (jeffwlawson/agent-workflows docs/ADOPTING.md §4)."
+              || echo "::warning::Could not resolve review thread ${tid} (${reason}). Its reply is posted, and the thread stays open until the next review retries it, which it does without replying again. GitHub's reply is printed above. It is not the caller's \`contents:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4)."
           done

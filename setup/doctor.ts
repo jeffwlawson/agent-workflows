@@ -284,13 +284,12 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: ["review"],
     why:
       "the review's `resolve` job closes the threads the review verified, and GitHub refuses " +
-      "`resolveReviewThread` to a token without it. Without the grant the reply posts, the " +
-      "thread stays open under a reply saying it was verified, and the run stays green: that job " +
-      "warns rather than failing, because the review and its verdict are already posted (#133). " +
-      "Only that job spends the write. It checks nothing out and runs no agent, and the review " +
-      "job narrows the grant back to `read`, so a review still cannot touch the branch. Missing " +
-      "entirely, even `read` is gone, and on a private repository the review then dies at " +
-      "`actions/checkout`, before the diff is read",
+      "`resolveReviewThread` to a token without it (#133). Only that job spends the write: it " +
+      "checks nothing out and runs no agent, and the review job narrows the grant back to " +
+      "`read`, so a review still cannot touch the branch. This caller is granting less than a " +
+      "job it calls declares, which costs you the whole workflow rather than the close — GitHub " +
+      "refuses the elevation by failing the run before any job starts, and with nothing having " +
+      "run there is no job log saying so. A review labelled on this caller does nothing at all",
     absence: "always",
   },
   {

@@ -1146,11 +1146,13 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * The upgrade that leaves the review caller's grant behind (#133). A caller
-   * installed before the `resolve` job grants `contents: read`, which is every
-   * scope the review job itself uses. So the review posts, verified threads
-   * stay open under a reply saying they were verified, and the run stays green.
-   * The per-cell scenarios above remove the line entirely. This one keeps it
-   * at the value that used to be right.
+   * installed before the `resolve` job grants `contents: read`, which was every
+   * scope the review job itself used — so nothing about the caller looks wrong,
+   * and what it costs is the whole workflow: a called job cannot hold more than
+   * its caller granted, and GitHub refuses the elevation by failing the run
+   * before any job starts. There is no job log to find that in, which is what
+   * makes this `doctor`'s to say. The per-cell scenarios above remove the line
+   * entirely; this one keeps it at the value that used to be right.
    */
   it("reports a review caller that still grants contents: read", async () => {
     const root = await installed();
@@ -1162,7 +1164,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(code).toBe(1);
       expect(err).toContain("contents: write");
       expect(err).toMatch(/resolveReviewThread/);
-      expect(err).toMatch(/thread stays open/);
+      expect(err).toMatch(/before any job starts/);
     }
   });
 

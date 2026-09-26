@@ -68,9 +68,9 @@ export interface PullRequestFeedback {
   readonly summaries: string;
   /**
    * Comments in *unresolved* review threads, anchored to file + line, replies
-   * included. A thread whose latest word is this workflow's closing reply is
-   * rendered like any other, under a line saying what is actually outstanding
-   * on it — the close, not a fix (#133).
+   * included. A thread already carrying this workflow's closing reply, with no
+   * human word after it, is rendered like any other, under a line saying what
+   * is actually outstanding on it — the close, not a fix (#133).
    */
   readonly inline: string;
   /**
@@ -892,20 +892,33 @@ const maintainerReplyOn = (
 };
 
 /**
- * The closing reply this workflow already posted on a thread, where that reply
- * is still the thread's latest word (#133). It says a review verified the thread,
- * but the resolve after the reply did not go through.
+ * The closing reply this workflow already posted on a thread, where nobody has
+ * answered it since (#133). It says a review verified the thread, but the
+ * resolve after the reply did not go through.
  *
- * **The latest** trusted comment, and only the workflow bot's. A maintainer who
- * answers after the reply has reopened the conversation, maybe to say the fix
- * did not land, so the thread is open feedback again. The words alone are a
- * selector anyone can type, so a copy from anybody else is not a record.
+ * **Nobody**, not *nothing*: the search walks back from the end over the
+ * workflow's own later comments and stops at the first one that is not ours. A
+ * human who answers the reply has reopened the conversation, maybe to say the
+ * fix did not land, so the thread is open feedback again — but *we* answer it
+ * routinely, because the thread is still shown to `agent:fix`, which owes an
+ * outcome on every thread it was shown and posts that outcome as this same bot.
+ * Reading only the last comment made a fix round for an unrelated finding erase
+ * the record, and the review after it posted the second `**Verified fixed.**`
+ * this whole field exists to prevent.
+ *
+ * Only the workflow bot's own copy counts either way. The words are a selector
+ * anyone can type, so a copy from anybody else is not a record — and is a
+ * comment from somebody who is not us, which ends the walk.
  */
 const closedAsOn = (comments: readonly GqlThreadComment[]): ResolutionReason | undefined => {
-  const last = comments.at(-1);
-  return last !== undefined && isWorkflowBot(last.author?.login ?? undefined)
-    ? closingReplyReason(last.body ?? "")
-    : undefined;
+  for (let i = comments.length - 1; i >= 0; i -= 1) {
+    const comment = comments[i]!;
+    if (!isWorkflowBot(comment.author?.login ?? undefined)) return undefined;
+
+    const reason = closingReplyReason(comment.body ?? "");
+    if (reason !== undefined) return reason;
+  }
+  return undefined;
 };
 
 /**

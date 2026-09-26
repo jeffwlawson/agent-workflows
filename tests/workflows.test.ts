@@ -1576,8 +1576,8 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
 
   /**
    * **One closing reply per thread** (#133). The reply is skipped only on the
-   * literal `true` the runner writes where the thread's latest word is already
-   * that reply. Anything else posts, because a duplicate is the cheaper mistake.
+   * literal `true` the runner writes where the thread already carries that
+   * reply. Anything else posts, because a duplicate is the cheaper mistake.
    */
   it("replies only where the thread does not already carry the reply", () => {
     const run = resolveRun();
@@ -2583,6 +2583,32 @@ describe("agent-review tells its caller what it cannot know", () => {
       // like the feature simply being off.
       statuses: "write",
     });
+  });
+
+  /**
+   * **And the caller `docs/ADOPTING.md` §4 prints grants the same set**, which
+   * is the copy nothing else here can see (#133). `PIN` reads the two caller
+   * *sets*; a fenced block in a document is read by no test, and this one sat on
+   * `contents: read` through the commit that moved every other copy in the same
+   * file. An adopter pastes it, and what a short grant now costs is the whole
+   * run rather than the step — so it is held to the reference caller by value,
+   * the way the two halves above are held to each other.
+   *
+   * Scoped to the subsection, and asserted as equality rather than against a
+   * table, so the release that adds a scope cannot leave the paste-able copy
+   * one behind.
+   */
+  it("prints that same grant in the caller docs/ADOPTING.md §4 shows", () => {
+    const section = fs
+      .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
+      .split(/^(?=### )/m)
+      .find((part) => part.startsWith("### `agent-review` needs one input more"));
+    const snippet = (section ?? "").match(/```yaml\n([\s\S]*?)```/)?.[1];
+
+    expect(snippet, "docs/ADOPTING.md §4 prints no review caller").toBeDefined();
+    expect((parse(snippet as string) as Workflow).jobs["review"]?.permissions).toEqual(
+      caller().permissions,
+    );
   });
 
   it("declares the self-check input, typed and described", () => {

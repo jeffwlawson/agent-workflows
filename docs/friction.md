@@ -2049,3 +2049,24 @@ scenario live in that thread's first comment, and the review is handed the findi
 rules `open` on anything it cannot settle. An `open` ruling on a thread nobody rendered is a finding
 counting toward the verdict that `agent:fix` is never shown and cannot reply to. It is marked now
 instead of dropped, with one line saying the close is what is outstanding.
+
+## 2026-09-26 — the reply cap read one comment, and the loop's other half wrote the next one
+
+Round 3 on #133. The marker that stops a second `**Verified fixed.**` was "is the thread's *latest*
+trusted comment one of our closing replies?", and the same round put such a thread back in front of
+`agent:fix` so a reply could still land on it. Those two decisions are incompatible: a fix run owes
+an outcome on every thread it was shown, posts it as `github-actions`, and that outcome is then the
+latest comment — so the next review saw no record, replied again, and the pile-up returned one round
+later than before. A fix round for some unrelated finding was enough to trigger it.
+
+The marker now walks back from the end, over our own later comments, and stops at the first comment
+that is not ours. A *human* answering is what reopens a thread; the workflow answering itself is
+routine. The lesson is about the shape rather than the field: "the last thing said" is not a durable
+record in a place the loop itself keeps talking, and the only reason this one looked durable is that
+the round that introduced it changed who talks there in the same commit.
+
+The round also found the paste-able review caller in `docs/ADOPTING.md` §4 still granting
+`contents: read`, in the commit that moved every other copy in that same file. `PIN` reads the two
+caller *sets*, and nothing read a fenced block in a document — so that snippet is now held equal to
+`examples/callers/review.yml` by value. Two copies of a grant, one of them under test, is the same
+arrangement `init`'s label table and §3 have been in since #61.

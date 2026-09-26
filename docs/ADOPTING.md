@@ -854,10 +854,16 @@ which nothing inside the called workflow can read. Hence `self-check`, required:
 jobs:
   review:
     uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-review-reusable.yml@<commit sha>
+    # This workflow's whole row of the table above, and a subset is not a
+    # smaller feature: a caller granting less than a job it calls declares
+    # fails the run before any job starts. `contents: write` is the `resolve`
+    # job's alone — the review job narrows it back to `read`.
     permissions:
-      contents: read
+      checks: read
+      contents: write
       packages: read
       pull-requests: write
+      statuses: write
     with:
       self-check: review / review    # `<this job's id> / review`
     secrets:

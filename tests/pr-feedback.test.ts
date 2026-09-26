@@ -1835,7 +1835,7 @@ describe("a finding the maintainer has settled", () => {
  * `open` ruling on a thread nobody rendered is a finding counting toward the
  * verdict that `agent:fix` is never shown and cannot reply to.
  */
-describe("a thread whose latest word is this workflow's closing reply", () => {
+describe("a thread already carrying this workflow's closing reply", () => {
   const AGENT = { author: { login: "github-actions" }, authorAssociation: "NONE" };
 
   const finding = {
@@ -1939,5 +1939,42 @@ describe("a thread whose latest word is this workflow's closing reply", () => {
 
     expect(feedback.threadIds).toEqual(["PRRT_one"]);
     expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
+  });
+
+  /**
+   * **And `agent:fix` answering it does not erase the record.** Keeping the
+   * thread in `threadIds` is what lets a fix run reply to it at all, and a fix
+   * run owes an outcome on *every* thread it was shown — so a round labelled
+   * for some other finding posts one here, as this same bot, and that reply is
+   * then the thread's last comment. Reading only the last comment lost
+   * `closedAs` there, and the review after it posted the second
+   * `**Verified fixed.**` the field exists to prevent: the pile-up, one round
+   * later than before.
+   */
+  it("survives a fix run's own outcome reply landing after it", () => {
+    const outcome = { body: "Already settled — the close above is what is outstanding.", ...AGENT };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, outcome)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads[0]?.closedAs).toBe("ADDRESSED");
+    expect(feedback.inline).toMatch(/close that should have followed it did not go through/);
+  });
+
+  /**
+   * A human's word still ends it, wherever in the workflow's own chatter it
+   * lands. The walk back stops at the first comment that is not ours, so a
+   * maintainer answering *after* a fix run's outcome reopens the thread exactly
+   * as one answering the closing reply directly does.
+   */
+  it("is open feedback again where a maintainer answers after that", () => {
+    const outcome = { body: "Already settled — the close above is what is outstanding.", ...AGENT };
+    const pushback = { body: "It is not settled: the guard still runs last.", ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, outcome, pushback)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
+    expect(feedback.inline).not.toMatch(/did not go through/);
   });
 });

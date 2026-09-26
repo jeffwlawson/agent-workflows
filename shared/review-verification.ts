@@ -67,9 +67,11 @@ export interface CarriedFinding {
    */
   readonly maintainerReply?: MaintainerReply;
   /**
-   * The closing reply this workflow already posted, where that reply is still
-   * the thread's **latest** word (#133). It says the finding was verified, but
-   * the resolve after it did not go through.
+   * The closing reply this workflow already posted, where **no human has
+   * answered it since** (#133). It says the finding was verified, but the
+   * resolve after it did not go through. The workflow's own later comments do
+   * not clear it: `agent:fix` is still shown the thread and still owes it an
+   * outcome (`closedAsOn` in `shared/pr-feedback.ts`).
    *
    * Carried so the ruling that would repeat it resolves without replying again.
    * A reply is the record of why a thread closed, and a thread that gets one
@@ -118,7 +120,7 @@ export interface AgentThread {
    * `maintainerReplyOn` in `shared/pr-feedback.ts`.
    */
   readonly maintainerReply?: MaintainerReply;
-  /** The closing reply already on it, where that is its latest word. See `CarriedFinding`. */
+  /** The closing reply already on it, unanswered by a human. See `CarriedFinding`. */
   readonly closedAs?: ResolutionReason;
 }
 
@@ -333,10 +335,11 @@ export interface ThreadResolution {
   readonly reason: ResolutionReason;
   readonly reply: string;
   /**
-   * True where the thread's latest comment is already this reply's kind: a
-   * closing reply this workflow posted for the same reason (#133). The workflow
-   * then retries the resolve and posts nothing. It posts on any other value,
-   * since a thread must never close without a record of why.
+   * True where the thread already carries this reply's kind: a closing reply
+   * this workflow posted for the same reason, which no human has answered
+   * (#133). The workflow then retries the resolve and posts nothing. It posts
+   * on any other value, since a thread must never close without a record of
+   * why.
    */
   readonly alreadyReplied: boolean;
 }

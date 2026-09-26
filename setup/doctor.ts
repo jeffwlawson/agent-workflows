@@ -374,6 +374,34 @@ export const diagnose = (
       // not, so the guess says so — otherwise an unauthenticated run against a
       // public repository exits 1 with nothing admitting why.
       const guessed = absence === "private" && facts.visibility === undefined;
+      // A grant can be short in two ways, and they do not take the same
+      // sentence. An **absent** line is added. A line that is present at a
+      // weaker value is *changed*: told to add one it already has, an adopter
+      // ends up with two `contents:` keys in one block, which GitHub's workflow
+      // parser refuses outright — a `startup_failure` with no job log, which is
+      // the state this row exists to prevent rather than to cause.
+      //
+      // Not hypothetical, and the reason the distinction arrived with #133:
+      // `contents: write` on a review caller is the first row here whose
+      // failure is a wrong value rather than a missing line, and every caller
+      // installed before it has `contents: read` written out.
+      //
+      // A blanket `write-all` / `read-all` is a string rather than a map, so it
+      // names no scope and lands on the *absent* arm. That wording is no better
+      // there than it was before, and no worse; what such a caller needs is the
+      // block rewritten as a map, which is not this row's to say.
+      const held = caller.permissions[permission];
+      const block =
+        caller.permissionsFrom === "workflow"
+          ? "the workflow's top-level `permissions:` block"
+          : "that job's `permissions:` block";
+      // Said on both arms where it applies: a job that inherits and is told to
+      // edit "its own" block would be told to create one, replacing the
+      // top-level block and losing every grant in it.
+      const inherited =
+        caller.permissionsFrom === "workflow"
+          ? ` The \`${caller.jobId}\` job declares none of its own, and a job-level block replaces the top-level one rather than adding to it.`
+          : ``;
       add({
         severity:
           absence === "advisory" || (absence === "private" && facts.visibility === "public")
@@ -381,14 +409,16 @@ export const diagnose = (
             : "error",
         check: `${permission}: ${value}`,
         problem:
-          `${caller.file} grants the \`${caller.jobId}\` job no \`${permission}: ${value}\` — ${why}.` +
+          (held === undefined
+            ? `${caller.file} grants the \`${caller.jobId}\` job no \`${permission}: ${value}\` — ${why}.`
+            : `${caller.file} grants the \`${caller.jobId}\` job \`${permission}: ${held}\` where it needs \`${permission}: ${value}\` — ${why}.`) +
           (guessed
             ? ` This repository's visibility could not be read, so this is reported as an error on the assumption that it is private.`
             : ``),
         fix:
-          caller.permissionsFrom === "workflow"
-            ? `Add \`${permission}: ${value}\` to the workflow's top-level \`permissions:\` block. The \`${caller.jobId}\` job declares none of its own, and a job-level block replaces the top-level one rather than adding to it.`
-            : `Add \`${permission}: ${value}\` to that job's \`permissions:\` block.`,
+          held === undefined
+            ? `Add \`${permission}: ${value}\` to ${block}.${inherited}`
+            : `Change \`${permission}: ${held}\` to \`${permission}: ${value}\` in ${block} — the line is already there, and a second \`${permission}:\` key in one block is a workflow GitHub refuses to parse.${inherited}`,
       });
     }
   }

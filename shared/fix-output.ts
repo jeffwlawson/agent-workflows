@@ -139,12 +139,15 @@ export const fixOutputSchema = standardSchema<FixOutput>((raw) => {
 });
 
 /**
- * Drop outcomes naming a thread that was not shown to the agent.
+ * Drop outcomes naming a thread this run was not asked to answer.
  *
- * Models invent plausible-looking ids, and an invented one either fails the
- * mutation or — worse — resolves an unrelated thread. Only ids we actually
- * handed over are honoured. Duplicates are collapsed so a thread cannot be
- * replied to twice in one run.
+ * Two shapes, and the list is the same answer to both. Models invent
+ * plausible-looking ids, and an invented one either fails the mutation or —
+ * worse — resolves an unrelated thread. And a thread can be *rendered* without
+ * being answerable: one already carrying this workflow's closing reply is shown
+ * for its evidence and kept out of `threadIds`, or every fix round would add
+ * another comment to it (#133). Only ids the fetch offered are honoured.
+ * Duplicates are collapsed so a thread cannot be replied to twice in one run.
  */
 export const filterOutcomes = (
   outcomes: readonly ThreadOutcome[],
@@ -154,7 +157,12 @@ export const filterOutcomes = (
   const seen = new Set<string>();
   return outcomes.filter((outcome) => {
     if (!known.has(outcome.threadId)) {
-      console.warn(`Dropping outcome for unknown thread ${outcome.threadId}.`);
+      // Not "unknown": since #133 a thread the agent was shown can be one it
+      // was not asked about, and a log line calling that an invented id sends
+      // whoever reads it looking for the wrong fault.
+      console.warn(
+        `Dropping outcome for thread ${outcome.threadId}, which this run was not asked to answer.`,
+      );
       return false;
     }
     if (seen.has(outcome.threadId)) {

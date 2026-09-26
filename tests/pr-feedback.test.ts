@@ -19,6 +19,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import { filterOutcomes } from "../shared/fix-output.js";
 import {
   fetchPullRequestFeedback,
   refusalReason,
@@ -1834,6 +1835,13 @@ describe("a finding the maintainer has settled", () => {
  * whatever this file does, and rules `open` on anything it cannot settle; an
  * `open` ruling on a thread nobody rendered is a finding counting toward the
  * verdict that `agent:fix` is never shown and cannot reply to.
+ *
+ * **And rendered is all it is.** It is out of `threadIds`, which is the whole
+ * of what a fix run may reply into, because a fix run owes an outcome on every
+ * thread it is asked about and the workflow posts each one as this same bot.
+ * Marking it and leaving it answerable capped the review's replies at one and
+ * left the fixer's uncapped — another comment on it every round, which is the
+ * pile-up the issue names.
  */
 describe("a thread already carrying this workflow's closing reply", () => {
   const AGENT = { author: { login: "github-actions" }, authorAssociation: "NONE" };
@@ -1863,8 +1871,37 @@ describe("a thread already carrying this workflow's closing reply", () => {
     expect(feedback.inline).toContain("the guard runs after the return");
     expect(feedback.inline).toContain("Verified fixed");
     expect(feedback.inline).toMatch(/close that should have followed it did not go through/);
-    // And offered for a reply, or a fix run's answer on it would be dropped.
-    expect(feedback.threadIds).toEqual(["PRRT_one", "PRRT_kwthread"]);
+    // And said in the same breath: nothing is owed a reply here either.
+    expect(feedback.inline).toMatch(/not one of the threads to report an outcome on/);
+  });
+
+  /**
+   * **And no reply is owed on it** (#133). `threadIds` is the whole of what a
+   * fix run may answer — `filterOutcomes` drops an outcome naming anything else
+   * — so leaving such a thread in it is a fix round, labelled for any finding
+   * at all, adding one more comment to every thread whose resolve failed. The
+   * every-round pile-up capped on the review's side and not on the fixer's.
+   *
+   * Every other open thread is still answerable, which is what this is not
+   * allowed to cost.
+   */
+  it("is not one of the threads a fix run may reply into", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
+    // Through the filter the fix runner actually applies, so the two halves of
+    // this cannot drift: the runner passes `threadIds` and nothing else.
+    expect(
+      filterOutcomes(
+        [
+          { threadId: "PRRT_one", status: "addressed", reply: "Already settled." },
+          { threadId: "PRRT_kwthread", status: "addressed", reply: "Fixed in 5164307." },
+        ],
+        feedback.threadIds,
+      ).map((outcome) => outcome.threadId),
+    ).toEqual(["PRRT_kwthread"]);
   });
 
   /** Only that thread. The note is about one thread's state, not the page's. */
@@ -1897,7 +1934,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
     const feedback = fetchPullRequestFeedback("12");
 
     expect(feedback.agentThreads[0]?.closedAs).toBe("WONT_FIX");
-    expect(feedback.threadIds).toEqual(["PRRT_one"]);
+    expect(feedback.threadIds).toEqual([]);
   });
 
   /**
@@ -1942,14 +1979,13 @@ describe("a thread already carrying this workflow's closing reply", () => {
   });
 
   /**
-   * **And `agent:fix` answering it does not erase the record.** Keeping the
-   * thread in `threadIds` is what lets a fix run reply to it at all, and a fix
-   * run owes an outcome on *every* thread it was shown — so a round labelled
-   * for some other finding posts one here, as this same bot, and that reply is
-   * then the thread's last comment. Reading only the last comment lost
-   * `closedAs` there, and the review after it posted the second
-   * `**Verified fixed.**` the field exists to prevent: the pile-up, one round
-   * later than before.
+   * **And `agent:fix` answering it does not erase the record.** No fix run is
+   * asked to answer such a thread any more, but the ones that already did are
+   * on the pull requests this ships to, and a human may run the reply mutation
+   * by hand — a reply from this bot lands in the thread either way, and is then
+   * its last comment. Reading only the last comment lost `closedAs` there, and
+   * the review after it posted the second `**Verified fixed.**` the field
+   * exists to prevent: the pile-up, one round later than before.
    */
   it("survives a fix run's own outcome reply landing after it", () => {
     const outcome = { body: "Already settled — the close above is what is outstanding.", ...AGENT };

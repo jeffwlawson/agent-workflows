@@ -1165,7 +1165,64 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(err).toContain("contents: write");
       expect(err).toMatch(/resolveReviewThread/);
       expect(err).toMatch(/before any job starts/);
+      // Named as the wrong value it is, rather than as an absent line.
+      expect(err).toMatch(/grants the `review` job `contents: read` where it needs/);
+      // And **changed**, never added. Followed literally, "add `contents:
+      // write`" leaves two `contents:` keys in one block — a workflow GitHub
+      // refuses to parse, which is the `startup_failure` with no job log this
+      // row exists to warn about rather than to cause.
+      expect(err).toMatch(/fix: Change `contents: read` to `contents: write` in that job's/);
+      expect(err).not.toMatch(/Add `contents: write`/);
     }
+  });
+
+  /**
+   * And that is a property of the *row*, not of the one row that needed it
+   * first. Every grant a caller can get wrong it can get wrong by value as well
+   * as by omission — a scope written `none`, or left at the value an earlier
+   * release was right about — and the two want opposite instructions.
+   *
+   * Derived from the same ceilings as the absence scenarios above, so the next
+   * scope to change value arrives here as a case rather than as a gap.
+   */
+  it.each(grantCells())(
+    "tells a caller to change %s rather than add a second key",
+    async (_label: string, workflow: string, permission: string, value: string) => {
+      const root = await installed();
+      edit(root, `agent-${workflow}.yml`, (text) =>
+        text.replace(new RegExp(`^( *)${permission}: ${value}$`, "m"), `$1${permission}: none`),
+      );
+
+      const { out, err } = await check(root, healthy());
+      const said = `${out}${err}`;
+
+      expect(said).toContain(`Change \`${permission}: none\` to \`${permission}: ${value}\``);
+      expect(said).not.toContain(`Add \`${permission}: ${value}\``);
+    },
+  );
+
+  /**
+   * The two halves of the fix compose: a value that is wrong in a block the job
+   * **inherits** is changed there, and the caveat about a job-level block
+   * replacing the top-level one is still what stops an adopter creating one.
+   */
+  it("points a wrong value in an inherited block at that block", async () => {
+    const root = adoptedWith([
+      "permissions:",
+      "  checks: read",
+      "  contents: read",
+      "  packages: read",
+      "  pull-requests: write",
+      "  statuses: write",
+    ]);
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toMatch(
+      /fix: Change `contents: read` to `contents: write` in the workflow's top-level/,
+    );
+    expect(err).toMatch(/declares none of its own/);
   });
 
   /**

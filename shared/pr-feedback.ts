@@ -80,18 +80,30 @@ export interface PullRequestFeedback {
   readonly conversation: string;
   /** All of the above rendered as one block, or "" when there is none. */
   readonly all: string;
-  /** Node ids of the unresolved threads shown to the agent, for reply/resolve. */
+  /**
+   * Node ids of the unresolved threads a fix run is **asked to answer**. What
+   * `filterOutcomes` keeps an outcome for, and so the whole of what can receive
+   * a reply.
+   *
+   * Not every thread `inline` renders: one already carrying this workflow's
+   * closing reply is shown for its evidence and left out of here (#133). A fix
+   * run owes an outcome on every thread it is asked about and the workflow
+   * posts each of them as this same bot, so leaving such a thread in this list
+   * was one further comment on it per round — the pile-up the review half is
+   * already capped against, arriving through the other half.
+   */
   readonly threadIds: readonly string[];
   /**
    * The unresolved threads **this loop opened**, each with the finding id the
    * workflow wrote into it (#110) — the open half of the review record a later
    * review verifies against (#111).
    *
-   * A subset of `threadIds` and not a replacement for it: the fix runner
-   * answers every thread it was shown, a human's included, while only the
-   * loop's own threads carry a finding a review can rule on. A thread that
-   * already holds its closing reply is in both, and carries `closedAs` here so
-   * the review retries the resolve rather than replying twice (#133).
+   * Neither a subset of `threadIds` nor a replacement for it: the fix runner
+   * answers the threads it is asked about, a human's included, while only the
+   * loop's own threads carry a finding a review can rule on. A thread already
+   * holding its closing reply is in this list and not in that one — the review
+   * still rules on it, and `closedAs` is what makes that ruling retry the
+   * resolve rather than reply a second time (#133).
    */
   readonly agentThreads: readonly AgentThread[];
   /**
@@ -937,9 +949,15 @@ const closedAsOn = (comments: readonly GqlThreadComment[]): ResolutionReason | u
  * answered "already settled" on one of these every round for want of that
  * sentence; the review, which is handed the same finding again, rules on the
  * code either way.
+ *
+ * It also says that no reply is owed, which is the half a sentence cannot
+ * carry on its own: the thread is out of `threadIds` below, so an outcome
+ * reported for it is dropped rather than posted. Said here as well as enforced
+ * there because an agent told why it is being shown something writes a better
+ * commit than one whose answer is silently discarded.
  */
 const AWAITING_CLOSE =
-  "_(this workflow has already verified this finding and replied above. The thread is open only because the close that should have followed it did not go through — a later review retries that close, and does not reply again. Nothing here is owed a fix unless the code now says otherwise.)_";
+  "_(this workflow has already verified this finding and replied above. The thread is open only because the close that should have followed it did not go through — a later review retries that close, and does not reply again. Nothing here is owed a fix unless the code now says otherwise, and nothing is owed a reply: this thread is shown for its evidence, and is not one of the threads to report an outcome on.)_";
 
 /**
  * The elements a partial answer actually left behind.
@@ -1083,6 +1101,20 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     })
     .join("\n\n---\n\n");
 
+  // Every thread rendered above **except** one already carrying its closing
+  // reply (#133). This list is the whole of what a fix run may reply into
+  // (`filterOutcomes`), and such a thread is shown for its evidence rather than
+  // for an answer: the prompt asks for one outcome per thread it was given, the
+  // workflow posts each as this same bot, and the next review reads the thread
+  // back. Left in, the review half was capped at one reply and the fix half was
+  // not — every fix round, whatever it was labelled for, added another comment
+  // to every thread whose resolve had failed.
+  //
+  // Rendered and unanswerable is the pair that holds. Dropping the thread from
+  // the render was the first attempt at the same cap and it took the evidence
+  // with the noise; leaving it answerable was the second and it capped nothing.
+  const answerable = threads.filter((thread) => thread.closedAs === undefined).map((t) => t.id);
+
   // The loop's own open findings, selected by the id the workflow wrote into
   // each thread rather than by what the thread says — text is never matched
   // across rounds (#109, decision 2); see `findingOn` for what makes a thread
@@ -1160,7 +1192,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     inline,
     conversation,
     all,
-    threadIds: threads.map((t) => t.id),
+    threadIds: answerable,
     agentThreads,
     settledFindings,
     latestAgentReviewBody,

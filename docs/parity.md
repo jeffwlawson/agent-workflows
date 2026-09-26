@@ -343,7 +343,7 @@ come up was *inside* one PRD.
 | **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review — round 1 included — is handed the open threads this loop opened (and, until they close, the body entries v0.4.0 left on PRs open at the #127 upgrade), each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
 | **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
-| **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread and closes none (§4) |
+| **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
@@ -626,8 +626,9 @@ expensive to rediscover.
   That job is also the one exception to the next invariant: it sits in **no** concurrency group.
   Joining would give it the waiter slot, and it could then evict a fix a human queued while the
   review ran. Overlap costs nothing instead. A fix run shown a thread that already carries its
-  closing reply is told that the close is the only thing outstanding on it, and a review that races
-  the resolve re-verifies that thread and closes it without replying again.
+  closing reply is told the close is the only thing outstanding on it and is not asked to answer
+  it, and a review that races the resolve re-verifies that thread and closes it without replying
+  again.
 - **One concurrency group per PR, one per issue.** Every workflow that touches PR *n* — review,
   fix, update-branch — sits in `agent-pr-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: false`; `agent-implement` sits in a per-issue group. Not one group per
@@ -761,10 +762,17 @@ expensive to rediscover.
   removes `agent:blocked` on the way in. So the objection above (a stale label nobody clears)
   applies to the terminal-state refusal only.
 - **The reviewer closes a thread; the fixer never does.** Since #111 (#109, decision 1) an
-  `agent:fix` run replies in every thread it was shown — `addressed` or `declined`, with the reason
-  — and resolves none of them. A thread closes when a **review** has read the current code and
-  ruled the finding landed, with `resolutionReason: ADDRESSED` and a reply saying why, or when a
-  human closes it.
+  `agent:fix` run replies in every thread it was **asked about** — `addressed` or `declined`, with
+  the reason — and resolves none of them. A thread closes when a **review** has read the current
+  code and ruled the finding landed, with `resolutionReason: ADDRESSED` and a reply saying why, or
+  when a human closes it.
+
+  *Asked about* is every unresolved thread it was shown bar one shape, and #133 is where the two
+  came apart: a thread whose resolve failed already carries the reply that settles it, so it is
+  rendered for its evidence and kept out of the list a reply can land in (`threadIds`). Shown and
+  answerable had to stop being the same list, because the fix half owes an outcome on everything it
+  is asked about and posts each one as the same bot the next review reads — so the round after it
+  saw a thread nobody had settled and settled it again.
 
   This used to read "*only `addressed` resolves a thread*", which bounded the right hazard on the
   wrong side. Auto-resolving a *decline* would let an agent bury a disagreement; auto-resolving an

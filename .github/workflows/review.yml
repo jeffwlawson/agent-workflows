@@ -942,9 +942,10 @@ jobs:
     # joined the group, it would queue behind a fix a human labelled while the
     # review ran, and could evict that fix. Overlap is harmless instead. A fix
     # run shown a thread that already carries its closing reply is told the
-    # close is the only thing outstanding on it (`shared/pr-feedback.ts`). A
-    # review that races this job carries such a thread again, re-verifies it
-    # and resolves it without a second reply.
+    # close is the only thing outstanding on it, and is not asked to answer it
+    # at all (`shared/pr-feedback.ts`). A review that races this job carries
+    # such a thread again, re-verifies it and resolves it without a second
+    # reply.
     permissions:
       contents: write
       pull-requests: write

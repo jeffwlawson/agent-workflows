@@ -2100,3 +2100,36 @@ release made to a caller body, and *Keeping the pins fresh* recommends Dependabo
 same thing — it moves the `@ref` and nothing else, which for this release means a caller pinned to a
 version whose `resolve` job declares `contents: write` while the caller still grants `read`: no
 review at all, and no job log. Said there now, with `doctor` after a pin bump as the rule.
+
+## 2026-09-26 — the reply cap held one half of a loop that has two halves
+
+Round 5 on #133. Three rounds in a row now on the same thread-closing machinery, each finding the
+previous round's fix true of the half it was written for and silent about the other one.
+
+A thread whose resolve failed carries its closing reply and stays open. The review half stopped
+replying twice to it in round 1 (`alreadyReplied`), round 3 made that record survive the loop's own
+next comment, and round 4 made the record a marker rather than prose. What none of them touched is
+that `agent:fix` is *also* handed that thread, owes an outcome on every thread it is handed, and has
+its outcomes posted by the same bot — so the pile-up the issue asked to cap carried on arriving, one
+comment per fix round, on exactly the threads the cap was about. Round 2 had made this reachable by
+putting the thread back into `threadIds` to keep its evidence in front of both agents, which was the
+right call for the evidence and the wrong one for the reply.
+
+The fix is that *rendered* and *answerable* stop being the same list: such a thread stays in
+`inline`, and its id leaves `threadIds`, which is the whole of what `filterOutcomes` keeps an
+outcome for. The line already under the thread says so as well, because an agent told why it is
+being shown something writes a better commit than one whose answer is silently dropped.
+
+The lesson is about where a cap goes. A rule enforced on the writer is a rule per writer, and this
+loop has two of them writing into the same thread under the same identity. The durable version is
+the one the *channel* enforces — the list of ids a reply can be posted to — and it took three
+rounds to move down to it because each round's symptom appeared in the half that had just been
+fixed.
+
+The round's other finding was `doctor`'s, and the same class one layer out: `contents: write` on a
+review caller is the first required grant whose failure is a wrong **value** rather than an absent
+line, and the fix string was written for absence. "Add `contents: write` to that job's
+`permissions:` block", followed literally on a block that reads `contents: read`, produces two
+`contents:` keys and a workflow GitHub refuses to parse — the `startup_failure` with no job log the
+row exists to prevent. It now says *change* where the line is present, and a case derived from the
+grant cells holds every row to that.

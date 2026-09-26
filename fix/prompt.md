@@ -97,6 +97,11 @@ will confirm it. Use **declined** only when you disagree or are deliberately not
 Keep track as you go of which thread each change answers; a thread you never decided about gets no
 reply at all.
 
+**One exception, and it says so itself.** A thread whose comments end with a note that it is only
+waiting to be closed is shown to you for its evidence, not for an answer — it already carries the
+reply that settles it. Report no outcome on that one; anything you report for it is dropped rather
+than posted.
+
 # TOP-LEVEL COMMENTS
 
 You may also report zero or more **top-level comments** — posted on the PR conversation rather

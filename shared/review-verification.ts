@@ -1,5 +1,5 @@
 import { asRecord, asString } from "./common.js";
-import { parseFindingMarkers, type Severity } from "./review-findings.js";
+import { parseFindingMarkers, RESOLUTION_MARKER, type Severity } from "./review-findings.js";
 
 /**
  * A finding an earlier review of this pull request raised and **nothing has yet
@@ -340,28 +340,82 @@ export interface ThreadResolution {
    * (#133). The workflow then retries the resolve and posts nothing. It posts
    * on any other value, since a thread must never close without a record of
    * why.
+   *
+   * What the thread is read for is the **marker** on such a reply, never the
+   * words it opens with — see `resolutionMarker`. A prose match is one the fix
+   * agent can satisfy, and this field deciding "no reply needed" on the
+   * strength of the fixer's own words is a thread closing with no review's
+   * record on it.
    */
   readonly alreadyReplied: boolean;
 }
 
 /**
- * How each closing reply opens. The composers below write these and
- * `closingReplyReason` reads them, so the two cannot drift apart on the
- * release that rewords a reply.
+ * How each closing reply opens — what a **human** reads first, and nothing this
+ * loop decides anything on. Which reason a reply records is the marker below.
  */
 export const VERIFIED_FIXED = "**Verified fixed.**";
 export const CLOSED_AS_WONT_FIX = "**Closed as won't fix.**";
 
 /**
- * Which closing reply `body` is, or `undefined` for anything else. The caller
- * must check the comment's author: anyone can type these words, and only the
- * workflow bot's copy is a record.
+ * The marker every closing reply ends with, and the whole of what says a thread
+ * already carries one (#133).
+ *
+ * **A marker rather than the prose above it**, for the reason no other state in
+ * this loop is matched across rounds either (#109, decision 2; `findingMarker`
+ * is the same mechanism for the same reason). The words are written into the
+ * `inline` surface verbatim, and the fix agent — which is shown that surface,
+ * owes an outcome on every thread in it, and has its replies posted **by this
+ * same bot** — could open one with them. Matched on prose, that reply said "this
+ * thread already has its closing reply": the next review would skip its own,
+ * resolve the thread, and leave the fixer's claim as the only record of why it
+ * closed, which is the one thing the reply-before-resolve ordering exists to
+ * prevent. A marker cannot be reached that way, because
+ * `withoutFindingMarkers` takes it out of every string a model wrote before any
+ * of it is posted.
+ *
+ * Spelled here, beside the composers, and read by `closingReplyReason` below.
+ * `shared/review-findings.ts` holds only the name, which is what its strip
+ * needs.
+ */
+const resolutionMarker = (reason: ResolutionReason): string =>
+  `<!-- ${RESOLUTION_MARKER} ${reason} -->`;
+
+/**
+ * The same marker as read. One format, one place it is spelled — the reader
+ * beside the composer, for the reason `parseFindingMarkers` lives beside
+ * `findingMarker`: two descriptions of one format drift on the release that
+ * changes either.
+ *
+ * It accepts the two reasons and nothing else, which is narrower than the strip
+ * in `shared/review-findings.ts` matches. That direction is deliberate: a
+ * payload this version does not understand is not a record, and is still a
+ * marker a model must not be able to post.
+ */
+const CLOSING_REPLY_MARKER = new RegExp(
+  `<!--\\s*${RESOLUTION_MARKER}\\s+(ADDRESSED|WONT_FIX)\\s*-->`,
+  "g",
+);
+
+/**
+ * Which closing reply `body` is, or `undefined` for anything else — read off
+ * the marker, never off the prose.
+ *
+ * The caller must still check the comment's author: a marker is a selector, not
+ * a control (`FINDING_MARKER`), and only the workflow bot's copy is a record.
+ * The two together are what make it one: a model's copy is stripped before it
+ * is posted, and anyone else's is a comment from somebody who is not us.
+ *
+ * A reply posted by a release before the marker existed reads as `undefined`
+ * here. That is one further reply on a thread that already has one, once, and
+ * then the marker is there — the alternative is keeping a prose match that the
+ * loop's own fixer can satisfy, which is the bug this replaces.
  */
 export const closingReplyReason = (body: string): ResolutionReason | undefined => {
-  const text = body.trimStart();
-  if (text.startsWith(VERIFIED_FIXED)) return "ADDRESSED";
-  if (text.startsWith(CLOSED_AS_WONT_FIX)) return "WONT_FIX";
-  return undefined;
+  const found = [...body.matchAll(CLOSING_REPLY_MARKER)];
+  // The last, by `lastMarkerOn`'s rule: the workflow writes its own at the end
+  // of what it posts, so an earlier one is a marker the body quoted.
+  return found[found.length - 1]?.[1] as ResolutionReason | undefined;
 };
 
 /** Said in the reply where the review verified the fix but wrote nothing about it. */
@@ -376,7 +430,13 @@ const NO_NOTE = "The current change resolves this.";
  * the code rather than by the run that claimed to have fixed it.
  */
 export const resolutionReply = (entry: VerificationEntry): string =>
-  `${VERIFIED_FIXED} ${entry.note ?? NO_NOTE}\n\n_Resolved by the review that checked it, rather than by the run that fixed it._`;
+  [
+    `${VERIFIED_FIXED} ${entry.note ?? NO_NOTE}`,
+    "",
+    "_Resolved by the review that checked it, rather than by the run that fixed it._",
+    "",
+    resolutionMarker("ADDRESSED"),
+  ].join("\n");
 
 /**
  * The reply posted into a thread the maintainer declined.
@@ -413,6 +473,8 @@ export const declineReply = (reply: MaintainerReply): string => {
     quoted,
     "",
     "_Closed on a maintainer's reply, never on the review's own judgement — a review cannot decline a finding itself. If that reply was not a refusal, reopen this thread._",
+    "",
+    resolutionMarker("WONT_FIX"),
   ].join("\n");
 };
 

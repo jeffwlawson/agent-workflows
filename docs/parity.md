@@ -1059,6 +1059,19 @@ expensive to rediscover.
   (`lastFindingMarker`), it takes the **last**, because the workflow writes its own last, and it
   shares its regex with the stripper: what is removed and what is recognised are the same set by
   construction, so there is no marker that survives the strip and is still read as an id.
+
+  **Since #133 there is a second marker, and the thing that can forge it is this loop's own bot.**
+  A closing reply carries `agent-resolution`, and that marker — never the words above it — is what
+  says a thread already holds its closing reply, so a later review retries the resolve instead of
+  replying twice. The words were the first version of that reader, and the fix agent can write
+  them: it is shown the real reply verbatim in the `inline` surface, it owes an outcome on every
+  thread it was shown, and its replies are posted by the same bot the reader trusts. Matched on
+  prose, one of those outcomes says "the record exists" — and the review then closes the thread
+  under the fixer's claim having posted no record of its own, which is the one thing the
+  reply-before-resolve ordering exists to prevent. So this marker joins the strip, matched there by
+  **name** with whatever payload follows it: deliberately wider than its reader, which takes the two
+  reasons and nothing else. A strip narrower than some reader of the same family is a marker a model
+  can write.
 - **An optional channel never has veto power over the mandatory one.** A malformed top-level
   comment is dropped with a warning, not thrown on: throwing would burn both extraction retries and
   take every thread reply down with it. A malformed *thread outcome* still throws — that

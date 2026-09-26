@@ -906,7 +906,13 @@ const maintainerReplyOn = (
  * the record, and the review after it posted the second `**Verified fixed.**`
  * this whole field exists to prevent.
  *
- * Only the workflow bot's own copy counts either way. The words are a selector
+ * What is read is the **marker** on the reply and never the words above it
+ * (`closingReplyReason`). Those words are rendered into this very surface, and
+ * the fix agent whose replies land here as this same bot is shown them — so a
+ * prose match is one the loop's own fixer can satisfy, and the marker is not:
+ * it is stripped out of every string a model wrote before any of it is posted.
+ *
+ * Only the workflow bot's own copy counts either way. A marker is a selector
  * anyone can type, so a copy from anybody else is not a record — and is a
  * comment from somebody who is not us, which ends the walk.
  */

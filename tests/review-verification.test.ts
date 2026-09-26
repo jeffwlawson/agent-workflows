@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { findingMarker } from "../shared/review-findings.js";
+import { findingMarker, RESOLUTION_MARKER } from "../shared/review-findings.js";
 import {
   carriedFindings,
   closingReplyReason,
@@ -561,7 +561,16 @@ describe("a thread that already carries its closing reply", () => {
 
 /**
  * Recognising a closing reply is the other half of composing one, from the same
- * constants, so the release that rewords a reply cannot leave the reader behind.
+ * marker, so the release that rewords a reply cannot leave the reader behind.
+ *
+ * **And the marker is the whole of it, never the prose** (#133). The words a
+ * closing reply opens with are rendered into the `inline` surface the fix agent
+ * is shown, and that agent's replies are posted into the same thread by the same
+ * bot — so on a prose match the loop's own fixer could say "this thread already
+ * carries its closing reply", and the next review would resolve it under the
+ * fixer's claim having posted no record of its own. A marker cannot be reached
+ * that way: `withoutFindingMarkers` takes it out of every string a model wrote.
+ * Nothing else in this loop is matched across rounds either (#109, decision 2).
  */
 describe("closingReplyReason", () => {
   it("reads both replies this file composes", () => {
@@ -569,9 +578,47 @@ describe("closingReplyReason", () => {
     expect(closingReplyReason(declineReply({ login: "maintainer", body: "No." }))).toBe("WONT_FIX");
   });
 
+  /** Both composers write it, so neither can close a thread with no record. */
+  it("is a marker on both replies, not the words they open with", () => {
+    for (const reply of [
+      resolutionReply({ id: "f-1", status: "landed" }),
+      declineReply({ login: "maintainer", body: "No." }),
+    ]) {
+      expect(reply).toContain(RESOLUTION_MARKER);
+      expect(closingReplyReason(reply.replace(/<!--[\s\S]*?-->/g, ""))).toBeUndefined();
+    }
+  });
+
+  /**
+   * The reply the fix agent could plausibly write, being shown the real one:
+   * the same opening words, and no marker, because it cannot post one.
+   */
+  it("does not read a reply that only repeats the words as one", () => {
+    expect(closingReplyReason("**Verified fixed.** I made this change in 5164307.")).toBeUndefined();
+    expect(
+      closingReplyReason("**Closed as won't fix.** Already settled — nothing outstanding."),
+    ).toBeUndefined();
+  });
+
   it("reads nothing else as one", () => {
     expect(closingReplyReason("Looks verified fixed to me.")).toBeUndefined();
     expect(closingReplyReason("Already settled in 5164307.")).toBeUndefined();
+    expect(closingReplyReason("<!-- agent-resolution INVALID -->")).toBeUndefined();
     expect(closingReplyReason("")).toBeUndefined();
+  });
+
+  /**
+   * And the last marker wins, by the rule `lastMarkerOn` states for the finding
+   * marker: the workflow writes its own at the end of what it posts, so an
+   * earlier one is a marker the body quoted. Only reachable from a human's copy
+   * — a model's is stripped — and the reading that matters is the one a thread
+   * carrying both gets.
+   */
+  it("takes the last marker where a body carries two", () => {
+    expect(
+      closingReplyReason(
+        `quoting <!-- ${RESOLUTION_MARKER} WONT_FIX --> back\n\n${resolutionReply({ id: "f-1", status: "landed" })}`,
+      ),
+    ).toBe("ADDRESSED");
   });
 });

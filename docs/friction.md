@@ -2070,3 +2070,33 @@ The round also found the paste-able review caller in `docs/ADOPTING.md` §4 stil
 caller *sets*, and nothing read a fenced block in a document — so that snippet is now held equal to
 `examples/callers/review.yml` by value. Two copies of a grant, one of them under test, is the same
 arrangement `init`'s label table and §3 have been in since #61.
+
+## 2026-09-26 — the record of a close was prose, in the one place the loop's own fixer types
+
+Round 4 on #133, and the same shape as round 3 one layer down. The reply cap now walks back over the
+workflow's own comments correctly, but what it *recognised* on each of them was the reply's opening
+words — `**Verified fixed.**` and `**Closed as won't fix.**`. Those words are rendered verbatim into
+the `inline` surface, the fix agent is shown that surface, it owes an outcome on every thread in it,
+and its outcomes are posted **by the same bot the reader trusts**. So a fix reply opening with them
+said "this thread already carries its closing reply", the next review skipped its own reply, and the
+thread closed with the fixer's claim as the only record of why — which is exactly what the
+reply-first, resolve-second ordering exists to prevent. Round 3 fixed *which* comment was read and
+left *what* was read in it alone.
+
+The mechanism was already in the file next door and had been since #110: a hidden marker the
+workflow writes and `withoutFindingMarkers` takes out of every string a model wrote, at each schema
+boundary. A closing reply now ends with `<!-- agent-resolution ADDRESSED -->`, and the reader takes
+that and nothing else. The strip matches the family by **name** with whatever payload follows, so it
+is wider than the reader on purpose: a strip narrower than some reader of the same family is a marker
+a model can write.
+
+The lesson is CONTEXT.md's own sentence, which this commit had to be told twice: *text is never
+matched across rounds* (#109, decision 2). It was written about a finding's identity surviving a
+rewording, and it holds for the same reason in the other direction — a string the loop shows a model
+is a string that model can write back, and prose is the one format both halves of this loop speak.
+
+The round's other finding was the upgrade path. §0 says `init` does not carry across a change a later
+release made to a caller body, and *Keeping the pins fresh* recommends Dependabot without saying the
+same thing — it moves the `@ref` and nothing else, which for this release means a caller pinned to a
+version whose `resolve` job declares `contents: write` while the caller still grants `read`: no
+review at all, and no job log. Said there now, with `doctor` after a pin bump as the rule.

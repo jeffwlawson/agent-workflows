@@ -154,6 +154,18 @@ export interface PlacedFinding {
 export const FINDING_MARKER = "agent-finding";
 
 /**
+ * The other marker this loop writes into a body it posts: the one on a closing
+ * reply, saying which reason a thread was closed under (#133). Its format and
+ * its reader live with the replies that carry it
+ * (`shared/review-verification.ts`); what lives here is the **name**, because
+ * the strip below is by name and this is the file that strips.
+ *
+ * A selector rather than a control, exactly as `FINDING_MARKER` is, and read
+ * only off a comment the workflow bot wrote.
+ */
+export const RESOLUTION_MARKER = "agent-resolution";
+
+/**
  * The marker as written. One format, one place it is spelled.
  *
  * The severity rides along with the id because it has nowhere else to survive a
@@ -351,7 +363,20 @@ const LIST_ITEM = /^[-*]\s+(\[[ xX]\]\s+)?/;
 const EVERY_MARKER = new RegExp(MARKER.source, "g");
 
 /**
- * A string with every finding marker taken out of it.
+ * Every **resolution** marker in a body, matched by name with whatever payload
+ * follows it (#133).
+ *
+ * Deliberately wider than the reader in `shared/review-verification.ts`, which
+ * accepts the two reasons and nothing else. The strip has to be a superset of
+ * every reader of every marker in this family, or a payload one release does
+ * not recognise is a payload the next one might — matching by name is what
+ * makes that true without this file knowing the format. The direction is the
+ * safe one in both halves: strip more than is read, read less than is written.
+ */
+const EVERY_RESOLUTION_MARKER = new RegExp(`<!--\\s*${RESOLUTION_MARKER}\\b[^>]*-->`, "g");
+
+/**
+ * A string with every marker this loop writes taken out of it.
  *
  * The prompt tells the model to write no identifier of any kind, and this is
  * the mechanical half of that instruction (`docs/parity.md` §10: a channel the
@@ -360,9 +385,19 @@ const EVERY_MARKER = new RegExp(MARKER.source, "g");
  * the model is shown the exact syntax and this round's real ids, and a string
  * that copied one would post a thread — or a body entry — carrying two, with a
  * later round unable to tell which finding it is about.
+ *
+ * The resolution marker is here for a sharper version of the same thing (#133).
+ * A fix run's reply is posted into a review thread **by this same bot**, so a
+ * reply that copied the marker off the closing reply it is answering would tell
+ * the next review that thread already carries a closing reply — and the review
+ * would then resolve it under the fixer's words, having posted no record of its
+ * own. The marker is the record, so a model must not be able to write one.
  */
 const withoutMarkers = (text: string): string =>
-  text.replace(EVERY_MARKER, "").replace(/[^\S\n]+$/gm, "");
+  text
+    .replace(EVERY_MARKER, "")
+    .replace(EVERY_RESOLUTION_MARKER, "")
+    .replace(/[^\S\n]+$/gm, "");
 
 /**
  * The same strip over **every string a model wrote**, wherever it sits in the

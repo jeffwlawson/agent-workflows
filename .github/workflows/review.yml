@@ -973,6 +973,13 @@ jobs:
       # it, because a duplicate reply is the cheaper mistake than a thread that
       # closes with no reply at all.
       #
+      # What says a thread already carries the reply is a hidden marker on it
+      # and never the words it opens with. Those words are shown to the fix
+      # agent, whose own replies land in the same thread as this same bot, and a
+      # reply matched on prose is one the fixer can make — a thread closing
+      # under the fixer's claim with no review's record on it at all
+      # (`shared/review-verification.ts`).
+      #
       # Two reasons, and which one a thread closes on is decided by
       # `verifyCarried` and read out of the list, never derived here: a finding
       # the review verified fixed closes as `ADDRESSED`, and one a maintainer

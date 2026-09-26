@@ -1013,8 +1013,21 @@ them, so the choice is a second group or a stray pull request each — not "cove
 Keeping them out of `agent-loop` is deliberate; "the loop moved" and "the actions moved" are
 different reviews.
 
-Two things it does **not** do.
+Three things it does **not** do.
 
+- **It moves the `@ref`, and a release is sometimes more than a `@ref`.** Dependabot rewrites the
+  `uses:` line and touches nothing else in the file — which is `init`'s limit too, for the same
+  reason and said the same way in §0: a caller is yours, so neither of them carries across a change
+  a later release made to a caller *body*. A scope added to your `permissions:` block is the case
+  where that costs you something, because a caller granting less than a job it calls declares fails
+  the **whole run** before any job starts, with no job log (§4). **This release is one**: the review
+  caller now grants `contents: write`, which only the `resolve` job spends. Merge its `agent-loop`
+  pull request on its own and every `agent:review` after it does nothing at all.
+
+  So the rule is **`doctor` after a pin bump, not before the next label** (§0). It reads the callers
+  in your tree against the pin they now carry and names the row that is short, with the fix — which
+  is the only thing on either side of this that can see a caller two releases old. The release notes
+  say when a bump needs one; `doctor` says so whether or not you read them.
 - **It is better, not free.** One pull request per repository per release still has to be merged by
   someone. The failure mode changes from a stale pin — invisible — to a stale *open pull request*,
   which at least appears in a list you already read. If a repository has three of them open, it is

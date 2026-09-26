@@ -918,8 +918,19 @@ describe("doctor names the failures that otherwise look like something else", ()
       // A reusable half is one something can `uses:`, which is the same thing
       // that makes it a workflow somebody's caller hands a token to.
       if (document?.on?.workflow_call === undefined) continue;
-      const [job] = Object.values(document.jobs ?? {});
-      found.set(entry.replace(/\.yml$/, ""), job?.permissions ?? {});
+      // The widest grant across its jobs, scope by scope, because the caller's
+      // grant is the ceiling for all of them. `review.yml` has two jobs, and
+      // its `resolve` job holds the `contents: write` the review job narrows
+      // back to `read` (#133).
+      const RANK: Readonly<Record<string, number>> = { none: 0, read: 1, write: 2 };
+      const widest: Record<string, string> = {};
+      for (const job of Object.values(document.jobs ?? {})) {
+        for (const [scope, level] of Object.entries(job.permissions ?? {})) {
+          const held = widest[scope];
+          if (held === undefined || (RANK[level] ?? 0) > (RANK[held] ?? 0)) widest[scope] = level;
+        }
+      }
+      found.set(entry.replace(/\.yml$/, ""), widest);
     }
     return found;
   };
@@ -939,7 +950,6 @@ describe("doctor names the failures that otherwise look like something else", ()
   const NOT_AN_ERROR: Readonly<Record<string, "private" | "advisory">> = {
     // Served without the scope on a public repository; a 403 on a private one.
     "review/checks: read": "private",
-    "review/contents: read": "private",
     // Nothing in that job reads the repository, so nothing is known to fail.
     "follow-ups/contents: read": "advisory",
   };
@@ -1122,7 +1132,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     const root = adoptedWith([
       "permissions:",
       "  checks: read",
-      "  contents: read",
+      "  contents: write",
       "  packages: read",
       "  pull-requests: write",
       "  statuses: write",
@@ -1132,6 +1142,30 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(err).toBe("");
     expect(code).toBe(0);
+  });
+
+  /**
+   * The upgrade that leaves the review caller's grant behind (#133). A caller
+   * installed before the `resolve` job grants `contents: read`, which was every
+   * scope the review job itself used — so nothing about the caller looks wrong,
+   * and what it costs is the whole workflow: a called job cannot hold more than
+   * its caller granted, and GitHub refuses the elevation by failing the run
+   * before any job starts. There is no job log to find that in, which is what
+   * makes this `doctor`'s to say. The per-cell scenarios above remove the line
+   * entirely; this one keeps it at the value that used to be right.
+   */
+  it("reports a review caller that still grants contents: read", async () => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) => text.replace(/^( *)contents: write$/m, "$1contents: read"));
+
+    for (const visibility of ["private", "public"] as const) {
+      const { code, err } = await check(root, { ...healthy(), visibility });
+
+      expect(code).toBe(1);
+      expect(err).toContain("contents: write");
+      expect(err).toMatch(/resolveReviewThread/);
+      expect(err).toMatch(/before any job starts/);
+    }
   });
 
   /**

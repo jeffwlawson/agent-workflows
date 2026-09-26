@@ -348,7 +348,7 @@ come up was *inside* one PRD.
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
-| `contents: read` (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits |
+| `contents: read` on the review **job** (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits. The workflow's other job, `resolve`, holds `contents: write` since #133 — closing a verified thread needs it — and checks nothing out and runs no agent (§10) |
 | **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the findings, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
 
 ---
@@ -433,7 +433,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | Author-association gate on PR comments / reviews / threads | ❌ | ➕ | all world-writable; `agent:fix` pushes code |
 | Explicit trust for our own bot identity | ❌ | ➕ | `github-actions[bot]` **and** `github-actions` — REST and GraphQL spell it differently |
 | GitHub token scrubbed from the agent's environment | ❌ | ➕ | `noSandbox` merges `process.env`; agent has no legitimate `gh` use |
-| `contents: read` on the review workflow | ❌ | ➕ | |
+| `contents: read` on the review **job** | ❌ | ➕ | the job, not the workflow, since #133: the `resolve` job beside it holds `contents: write`, because GitHub refuses `resolveReviewThread` without it. That job runs no agent, checks nothing out and spends the grant on two fixed mutations — §10 |
 | Agent never handles the trigger label / PR creation | ✅ | ✅ | workflow owns all state transitions |
 | Model token present in an unsandboxed agent | ⚠️ | ⚠️ | unavoidable under `noSandbox`; see the residual entry in `friction.md` |
 | Network egress restriction | ❌ | ❌ | not available on GitHub-hosted runners |
@@ -607,6 +607,27 @@ expensive to rediscover.
   from that group was never a consequence of it being `contents: read`: the hazard is not review
   *writing*, it is review *reading during another job's write*, and `contents: read` does nothing
   about that. See the next invariant.
+
+  **Since #133 the invariant is about the review *job*, not the review workflow.** Closing a
+  verified thread needs `contents: write`: `resolveReviewThread` is refused to an installation
+  token without it, while the reply beside it is not. That was confirmed on a scratch pull request
+  on 2026-09-24. So the resolve runs in a sibling job, `resolve`, which holds `contents: write` and
+  `pull-requests: write` and nothing else. It checks nothing out, installs nothing and runs no agent.
+  Its input is the list the review runner wrote, in which every thread id is one the runner handed
+  the agent. The job that reads untrusted content and runs a model still holds `contents: read`.
+  The job holding the write has nothing to write with. `AGENT_PAT` was the alternative, and was
+  declined because it would have made resolving depend on a secret an adopter may not have set.
+
+  The caller's grant has to move with the pin, and there is no degraded mode to fall back on: a
+  called job cannot hold more than its caller granted, and GitHub refuses the elevation by failing
+  the whole run before any job starts. `doctor` reports a review caller still on `contents: read`
+  as an error for that reason.
+
+  That job is also the one exception to the next invariant: it sits in **no** concurrency group.
+  Joining would give it the waiter slot, and it could then evict a fix a human queued while the
+  review ran. Overlap costs nothing instead. A fix run shown a thread that already carries its
+  closing reply is told that the close is the only thing outstanding on it, and a review that races
+  the resolve re-verifies that thread and closes it without replying again.
 - **One concurrency group per PR, one per issue.** Every workflow that touches PR *n* — review,
   fix, update-branch — sits in `agent-pr-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: false`; `agent-implement` sits in a per-issue group. Not one group per

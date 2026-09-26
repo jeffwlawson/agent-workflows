@@ -26,6 +26,7 @@ import {
   unreadableNote,
 } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
+import { declineReply, resolutionReply } from "../shared/review-verification.js";
 
 const spawned = vi.mocked(execFileSync);
 const captured = vi.mocked(spawnSync);
@@ -1818,5 +1819,162 @@ describe("a finding the maintainer has settled", () => {
     expect(fetchPullRequestFeedback("12").agentThreads[0]?.maintainerReply?.body).toBe(
       "Won't fix — intended.",
     );
+  });
+});
+
+/**
+ * **A thread already holding its closing reply says so, and is otherwise open
+ * feedback** (#133). The review verified it and replied, and then the resolve
+ * after that reply was refused. It is still open on GitHub, and what is
+ * outstanding on it is the close rather than a fix.
+ *
+ * Marked rather than dropped, which was the first attempt. Its first comment is
+ * the *evidence* — the quote and the failure scenario — and both agents that
+ * read the inline feedback need it. The review is handed the finding again
+ * whatever this file does, and rules `open` on anything it cannot settle; an
+ * `open` ruling on a thread nobody rendered is a finding counting toward the
+ * verdict that `agent:fix` is never shown and cannot reply to.
+ */
+describe("a thread already carrying this workflow's closing reply", () => {
+  const AGENT = { author: { login: "github-actions" }, authorAssociation: "NONE" };
+
+  const finding = {
+    path: "src/queue.ts",
+    line: 206,
+    body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-1 -->",
+    ...AGENT,
+  };
+  const verified = {
+    body: resolutionReply({ id: "f-1", status: "landed" }),
+    ...AGENT,
+  };
+  const thread = (...after: unknown[]): unknown => ({
+    id: "PRRT_one",
+    isResolved: false,
+    comments: { nodes: [finding, ...after] },
+  });
+
+  it("is rendered whole, under a line saying the close is what is outstanding", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    // The evidence, the reply it already carries, and what that means.
+    expect(feedback.inline).toContain("the guard runs after the return");
+    expect(feedback.inline).toContain("Verified fixed");
+    expect(feedback.inline).toMatch(/close that should have followed it did not go through/);
+    // And offered for a reply, or a fix run's answer on it would be dropped.
+    expect(feedback.threadIds).toEqual(["PRRT_one", "PRRT_kwthread"]);
+  });
+
+  /** Only that thread. The note is about one thread's state, not the page's. */
+  it("says it of no other thread", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
+
+    const [, other] = fetchPullRequestFeedback("12").inline.split("\n\n---\n\n");
+
+    expect(other).toContain("PRRT_kwthread");
+    expect(other).not.toMatch(/did not go through/);
+  });
+
+  it("is still carried to the review, marked with the reply it holds", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified)] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+      {
+        threadId: "PRRT_one",
+        findingId: "f-1",
+        text: "src/queue.ts:206 — the guard runs after the return",
+        closedAs: "ADDRESSED",
+      },
+    ]);
+  });
+
+  it("marks the won't-fix reply the same way", () => {
+    const decline = { body: declineReply({ login: "maintainer", body: "No." }), ...AGENT };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(decline)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads[0]?.closedAs).toBe("WONT_FIX");
+    expect(feedback.threadIds).toEqual(["PRRT_one"]);
+  });
+
+  /**
+   * And it is feedback, so a fix run labelled on a pull request holding only
+   * such threads still proceeds. What it must not do is refuse: the review may
+   * have ruled the finding open again, and the thread is the only place the
+   * evidence for it is written down.
+   */
+  it("is feedback a fix run proceeds on when it is the only open thread", () => {
+    ghAnswers(() =>
+      response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [thread(verified)] } }),
+    );
+
+    expect(fetchPullRequestFeedback("12").hasFeedback).toBe(true);
+  });
+
+  /**
+   * A maintainer answering after the reply is a thread in conversation again,
+   * perhaps saying the fix did not land. It goes back to being open feedback,
+   * and a later verification posts a new reply rather than resolving silently
+   * under the old one.
+   */
+  it("is open feedback again once a maintainer speaks after the reply", () => {
+    const pushback = { body: "This is not fixed on Windows.", ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, pushback)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.threadIds).toEqual(["PRRT_one"]);
+    expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
+  });
+
+  /** The words are a selector, not a record. Only the workflow's own copy counts. */
+  it("does not count the same words from anyone else", () => {
+    const mimic = { body: verified.body, ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(mimic)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.threadIds).toEqual(["PRRT_one"]);
+    expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
+  });
+
+  /**
+   * **And `agent:fix` answering it does not erase the record.** Keeping the
+   * thread in `threadIds` is what lets a fix run reply to it at all, and a fix
+   * run owes an outcome on *every* thread it was shown — so a round labelled
+   * for some other finding posts one here, as this same bot, and that reply is
+   * then the thread's last comment. Reading only the last comment lost
+   * `closedAs` there, and the review after it posted the second
+   * `**Verified fixed.**` the field exists to prevent: the pile-up, one round
+   * later than before.
+   */
+  it("survives a fix run's own outcome reply landing after it", () => {
+    const outcome = { body: "Already settled — the close above is what is outstanding.", ...AGENT };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, outcome)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads[0]?.closedAs).toBe("ADDRESSED");
+    expect(feedback.inline).toMatch(/close that should have followed it did not go through/);
+  });
+
+  /**
+   * A human's word still ends it, wherever in the workflow's own chatter it
+   * lands. The walk back stops at the first comment that is not ours, so a
+   * maintainer answering *after* a fix run's outcome reopens the thread exactly
+   * as one answering the closing reply directly does.
+   */
+  it("is open feedback again where a maintainer answers after that", () => {
+    const outcome = { body: "Already settled — the close above is what is outstanding.", ...AGENT };
+    const pushback = { body: "It is not settled: the guard still runs last.", ...MAINTAINER };
+    ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, outcome, pushback)] } }));
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
+    expect(feedback.inline).not.toMatch(/did not go through/);
   });
 });

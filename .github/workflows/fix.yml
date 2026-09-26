@@ -263,8 +263,8 @@ jobs:
       # resolved thread is dropped from the feedback the next review
       # is handed, so the one pass whose job is "did it land?" could not see
       # what it was checking. A thread now closes when a **review** has read the
-      # code and verified it — `review.yml`'s `Resolve the threads this review
-      # verified` — or when a human closes it.
+      # code and verified it — `review.yml`'s `resolve` job — or when a human
+      # closes it.
       #
       # A GraphQL mutation keyed on the thread node id, so no REST comment-id
       # lookup is needed. Runs even when the agent made no commits: "I looked

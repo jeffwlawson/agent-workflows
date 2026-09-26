@@ -228,6 +228,10 @@ interface Job {
   readonly permissions?: Record<string, string>;
   readonly concurrency?: { readonly group?: string; readonly "cancel-in-progress"?: boolean };
   readonly steps?: readonly Step[];
+  readonly needs?: string | readonly string[];
+  readonly env?: Record<string, string>;
+  readonly outputs?: Record<string, string>;
+  readonly "timeout-minutes"?: number;
   /** Set on a caller job — the reusable workflow it hands the work to (#97). */
   readonly uses?: string;
   readonly with?: Record<string, string>;
@@ -260,16 +264,52 @@ interface Workflow {
 const workflowOf = (file: string): Workflow => parse(fs.readFileSync(file, "utf8")) as Workflow;
 
 /**
- * The single job each agent workflow declares. Parsed rather than pattern
+ * The jobs a workflow declares **beside** the one that does its work, keyed by
+ * file. This is a declared list rather than a derivation, the same shape as
+ * `TRIGGER_TYPES`. A second job in a reusable workflow is a second set of
+ * permissions under the caller's grant, and it should arrive with an entry here
+ * that says so, not slip past a check that picks "the" job.
+ *
+ * Empty for every caller. A caller is a trigger and one `uses:`.
+ */
+const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
+  /**
+   * The thread resolve (#133). `resolveReviewThread` wants `contents: write`,
+   * which the review job must not hold (docs/parity.md §10), so it runs in a
+   * job of its own with no checkout and no agent.
+   */
+  [path.join(WORKFLOW_DIR, "review.yml")]: ["resolve"],
+};
+
+/**
+ * The job each agent workflow does its work in. Parsed rather than pattern
  * matched: the checks below are about step *order* and which step carries which
  * `if:`, and a regex over the raw text cannot see either.
+ *
+ * Exactly one job remains once the declared extras are set aside, and every
+ * declared extra has to exist, so an entry cannot outlive its job.
  */
 const jobOf = (file: string): Job => {
-  const jobs = Object.values(workflowOf(file).jobs);
+  const jobs = workflowOf(file).jobs;
+  const extra = EXTRA_JOBS[file] ?? [];
 
-  expect(jobs).toHaveLength(1);
-  return jobs[0] as Job;
+  for (const id of extra) expect(jobs[id], `${file} declares no job \`${id}\``).toBeDefined();
+  const primary = Object.keys(jobs).filter((id) => !extra.includes(id));
+
+  expect(primary).toHaveLength(1);
+  return jobs[primary[0] as string] as Job;
 };
+
+/** A job by id, for the extras `jobOf` sets aside. */
+const jobNamed = (file: string, id: string): Job => {
+  const job = workflowOf(file).jobs[id];
+
+  expect(job, `${file} declares no job \`${id}\``).toBeDefined();
+  return job as Job;
+};
+
+/** Every job a file declares: its main one and the declared extras. */
+const jobsOf = (file: string): readonly Job[] => Object.values(workflowOf(file).jobs);
 
 const stepsOf = (file: string): readonly Step[] => jobOf(file).steps ?? [];
 
@@ -703,16 +743,25 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // this repo's own — and they deliberately share job ids, so both produce
     // the same five names. The property is about the names the loop emits, not
     // how many files happen to emit them.
+    //
+    // Every called job, not just the first: `review / resolve` is a check run
+    // on the pull request too (#133).
     const checkRuns = [
       ...new Set(
-        callerWorkflows.map(
-          (file) => `${Object.keys(workflowOf(file).jobs)[0]} / ${Object.keys(workflowOf(targetOf(file)).jobs)[0]}`,
+        callerWorkflows.flatMap((file) =>
+          Object.keys(workflowOf(targetOf(file)).jobs).map(
+            (called) => `${Object.keys(workflowOf(file).jobs)[0]} / ${called}`,
+          ),
         ),
       ),
     ];
 
-    expect(checkRuns).toHaveLength(6);
+    expect(checkRuns).toHaveLength(7);
+    expect(checkRuns).toContain("review / resolve");
     for (const name of checkRuns) expect(name).toMatch(excluded);
+    // And under a caller job an adopter renamed, where only the second half is
+    // ours to know.
+    expect("agent-review / resolve").toMatch(excluded);
     // Bare job ids too — an adopter is free to inline a job rather than call
     // one, and the pattern predates the split.
     //
@@ -1365,8 +1414,12 @@ describe("agent-fix asks for the re-review its own push needs", () => {
 describe("the reviewer closes a thread, and the fix run never does", () => {
   const FIX = path.join(WORKFLOW_DIR, "fix.yml");
   const RESOLVE_MUTATION = "resolveReviewThread";
-  const resolveStep = (): Step | undefined =>
-    stepsOf(REVIEW).find((s) => s.name === "Resolve the threads this review verified");
+  const REPLY_MUTATION = "addPullRequestReviewThreadReply";
+  const resolveJob = (): Job => jobNamed(REVIEW, "resolve");
+  const resolveRun = (): string =>
+    (resolveJob().steps ?? []).find((s) => s.name === "Resolve the threads this review verified")
+      ?.run ?? "";
+  const handoff = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "resolutions");
 
   /**
    * Over the file's whole text rather than its steps: the mutation is a string
@@ -1385,18 +1438,110 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
   it("still replies in every thread the fix run was shown", () => {
     const reply = stepsOf(FIX).find((s) => s.name === "Reply to review threads");
 
-    expect(reply?.run ?? "").toContain("addPullRequestReviewThreadReply");
+    expect(reply?.run ?? "").toContain(REPLY_MUTATION);
     expect(reply?.env?.["OUTCOMES"]).toBe("${{ runner.temp }}/thread_outcomes.json");
   });
 
   /**
-   * The reviewer's half, from the file the runner wrote. The step composes
-   * nothing: which threads close, and what the reply says, are decided by a
-   * unit-tested derivation (`verifyCarried`) and read out of JSON here.
+   * **Not in the review job** (#133). `resolveReviewThread` is refused there:
+   * an installation token needs `contents: write` for it, and the review job
+   * holds `contents: read` on purpose. The step that tried it replied into
+   * every thread and resolved none, for a release.
    */
-  it("resolves what the review verified, from the file the runner wrote", () => {
-    expect(resolveStep()?.env?.["RESOLUTIONS"]).toBe("${{ runner.temp }}/thread_resolutions.json");
-    expect(resolveStep()?.run ?? "").toContain(RESOLVE_MUTATION);
+  it("resolves nothing in the review job, which cannot", () => {
+    for (const step of stepsOf(REVIEW)) expect(step.run ?? "").not.toContain(RESOLVE_MUTATION);
+  });
+
+  /**
+   * The review job's half is a handoff: the list the runner wrote, on one line,
+   * after the verdict and only on a review that posted.
+   */
+  it("hands the runner's list over after the verdict, only on a posted review", () => {
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(handoff()?.env?.["RESOLUTIONS"]).toBe("${{ runner.temp }}/thread_resolutions.json");
+    expect(handoff()?.run ?? "").toContain("jq -c .");
+    expect(handoff()?.run ?? "").toContain("$GITHUB_OUTPUT");
+    expect(handoff()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+    expect(names.indexOf(handoff()?.name ?? "")).toBeGreaterThan(
+      names.indexOf("Post the verdict as a commit status"),
+    );
+    expect(jobOf(REVIEW).outputs?.["resolutions"]).toBe(
+      "${{ steps.resolutions.outputs.resolutions }}",
+    );
+  });
+
+  /**
+   * The resolve job holds `contents: write`, so what it *cannot* do is the
+   * point. It has no checkout, no toolchain and no runner, so the scope reaches
+   * nothing but two fixed mutations over data. One of those three added later
+   * would bring the pull request's own code into a job holding the write.
+   */
+  it("resolves in a job with nothing to write with", () => {
+    const steps = resolveJob().steps ?? [];
+
+    expect(steps).toHaveLength(1);
+    for (const step of steps) {
+      expect(step.uses).toBeUndefined();
+      // The runner's invocation and any git write, not the words: the warning
+      // text names this repository, and that is not a checkout.
+      expect(step.run ?? "").not.toMatch(/\bnpm\b|\bnpx\b|\bgit (clone|fetch|checkout|push)\b/);
+    }
+  });
+
+  it("holds exactly the two scopes a resolve needs, and nothing else", () => {
+    expect(resolveJob().permissions).toEqual({ contents: "write", "pull-requests": "write" });
+  });
+
+  /**
+   * And it is the only job in the file holding the write. The review job,
+   * which reads untrusted content and runs the agent, stays read-only
+   * (docs/parity.md §10).
+   */
+  it("is the only job in review.yml that can write contents", () => {
+    const writers = Object.entries(workflowOf(REVIEW).jobs)
+      .filter(([, job]) => job.permissions?.["contents"] === "write")
+      .map(([id]) => id);
+
+    expect(writers).toEqual(["resolve"]);
+  });
+
+  /**
+   * After the review, on its guards restated rather than inherited, and only
+   * when there is something to close.
+   */
+  it("runs after a review that handed something over, behind both guards", () => {
+    const condition = resolveJob().if ?? "";
+
+    expect(resolveJob().needs).toBe("review");
+    expect(condition).toContain("github.event.label.name == 'agent:review'");
+    expect(condition).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(condition).toContain("needs.review.outputs.resolutions != ''");
+    expect(condition).toContain("needs.review.outputs.resolutions != '[]'");
+    // A status function would run it after a review that failed or was skipped.
+    expect(condition).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)/);
+  });
+
+  /**
+   * **Outside the per-PR group**, and deliberately. The group holds one
+   * waiting run and a newer arrival evicts it silently (docs/parity.md §10), so
+   * joining would put this job in a position to evict a fix a human queued.
+   * Overlap is harmless: a fix no longer sees a verified thread, and a racing
+   * review posts no second reply.
+   */
+  it("joins no concurrency group", () => {
+    expect(resolveJob().concurrency).toBeUndefined();
+  });
+
+  /**
+   * The list arrives through `env:`. A reply quotes a maintainer's words, and
+   * an expression spliced into the script would make those words a script.
+   */
+  it("reads the list through the environment, never interpolated", () => {
+    expect(resolveJob().env?.["RESOLUTIONS"]).toBe("${{ needs.review.outputs.resolutions }}");
+    expect(resolveRun()).not.toContain("${{");
   });
 
   /**
@@ -1406,11 +1551,11 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
    * and not merely offered.
    */
   it("closes it as addressed, and says so where a human can read it", () => {
-    const run = resolveStep()?.run ?? "";
+    const run = resolveRun();
 
     expect(run).toContain("resolutionReason:ADDRESSED");
-    expect(run).toContain("addPullRequestReviewThreadReply");
-    expect(run.indexOf("addPullRequestReviewThreadReply")).toBeLessThan(run.indexOf(RESOLVE_MUTATION));
+    expect(run).toContain(REPLY_MUTATION);
+    expect(run.indexOf(REPLY_MUTATION)).toBeLessThan(run.indexOf(RESOLVE_MUTATION));
   });
 
   /**
@@ -1418,77 +1563,62 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
    * alone does not buy: the assertion above passed for a release in which the
    * reply's failure arm was an `echo` and the thread closed anyway.
    *
-   * `resolutionReason` is readable nowhere afterwards, so the reply is the
-   * whole record of why a finding closed — and on the `WONT_FIX` arm it is the
-   * maintainer's quoted words, which is what lets a misreading be seen and
-   * reopened in one glance (`declineReply`). A thread that closes without it is
-   * settled with nothing saying by whom or on what. Leaving it open is the
-   * direction every other unreadable thing in this loop fails in.
-   *
    * Asserted over the text *between* the two mutations, so what is pinned is
    * "the reply's failure skips this iteration" rather than a wording.
    */
   it("leaves a thread open when the reply that is its only record failed", () => {
-    const run = resolveStep()?.run ?? "";
-    const between = run.slice(
-      run.indexOf("addPullRequestReviewThreadReply"),
-      run.indexOf(RESOLVE_MUTATION),
-    );
+    const run = resolveRun();
+    const between = run.slice(run.indexOf(REPLY_MUTATION), run.indexOf(RESOLVE_MUTATION));
 
     expect(between).toContain("continue");
-    expect(between).toMatch(/reply failed/i);
+    expect(between).toMatch(/::warning::Could not reply/);
+  });
+
+  /**
+   * **One closing reply per thread** (#133). The reply is skipped only on the
+   * literal `true` the runner writes where the thread already carries that
+   * reply. Anything else posts, because a duplicate is the cheaper mistake.
+   */
+  it("replies only where the thread does not already carry the reply", () => {
+    const run = resolveRun();
+    const guard = run.indexOf('if [ "$already" = "true" ]');
+
+    expect(run).toContain(".alreadyReplied");
+    expect(guard).toBeGreaterThanOrEqual(0);
+    expect(guard).toBeLessThan(run.indexOf(REPLY_MUTATION));
+    expect(run.slice(guard, run.indexOf(REPLY_MUTATION))).toContain("else");
   });
 
   /**
    * And as **won't fix** where a maintainer declined it (#109, decision 10;
    * #112) — a distinction this step cannot derive and must not try to. Which
-   * reason a thread closes on is `verifyCarried`'s, read out of the file as the
+   * reason a thread closes on is `verifyCarried`'s, read out of the list as the
    * reply is, and the enum is spelled out on both arms because it is an enum
    * literal in the document rather than a variable GitHub would coerce.
-   *
-   * The branch is on a fixed list rather than on whatever the file says, for
-   * the reason every other reader of a generated file here is: a value this
-   * step does not recognise closes the thread as addressed, which is the
-   * reading that loses a nuance rather than the one that interpolates an
-   * unknown string into a GraphQL document.
    */
   it("closes it as won't fix where a maintainer declined it", () => {
-    const run = resolveStep()?.run ?? "";
+    const run = resolveRun();
 
     expect(run).toContain("resolutionReason:WONT_FIX");
     expect(run).toContain(".reason");
   });
 
   /**
-   * After the verdict, and never able to take it down. A thread that will not
-   * close is a thread a human closes; a review posted without its verdict is
-   * the state the whole feature exists to prevent.
+   * A refused resolve is a warning on the run, where it used to be an `echo`
+   * that a green run hid for a release. What it must **not** do is blame the
+   * caller's grant: a caller granting less than this job declares fails the run
+   * before any job starts, so a token that reached here holds the write and the
+   * cause is something else. Printing GitHub's own reply is the answer, as it
+   * is for the verdict status above.
    */
-  it("runs after the verdict is posted, and cannot fail the run", () => {
-    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+  it("warns when a resolve is refused, prints GitHub's reply, and never fails", () => {
+    const run = resolveRun();
+    const after = run.slice(run.lastIndexOf(RESOLVE_MUTATION));
 
-    expect(names).toContain("Post the verdict as a commit status");
-    expect(names.indexOf("Resolve the threads this review verified")).toBeGreaterThan(
-      names.indexOf("Post the verdict as a commit status"),
-    );
-    expect(resolveStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
-    expect(resolveStep()?.["continue-on-error"]).toBe(true);
-  });
-
-  /**
-   * And it spends a scope the job already had. Resolving a thread is a
-   * pull-request write, not a `contents:` one — review stays the agent that
-   * structurally cannot touch the branch (docs/parity.md §10), and an adopter
-   * current on the pin needs no new grant for this.
-   */
-  it("needs nothing the review job was not already granted", () => {
-    expect(jobOf(REVIEW).permissions).toEqual({
-      checks: "read",
-      contents: "read",
-      packages: "read",
-      "pull-requests": "write",
-      statuses: "write",
-    });
+    expect(after).toMatch(/\|\| echo "::warning::Could not resolve/);
+    expect(after).toContain("GitHub's reply is printed above");
+    expect(after).toMatch(/not the caller's .*contents:.* grant/);
+    expect(run).not.toMatch(/\bexit 1\b/);
   });
 });
 
@@ -2267,11 +2397,25 @@ describe("every workflow in the loop is called rather than copied", () => {
    * Asserted as equality between the halves rather than against a table, so the
    * property held is the one that matters: neither half can drift from the
    * other, whatever the job ends up needing.
+   *
+   * Equal to the **widest** of the called jobs, scope by scope, since the
+   * caller's grant is the ceiling for all of them. That is one job everywhere
+   * except `review.yml`, where `resolve` holds `contents: write` and the review
+   * job narrows it back to `read` (#133). A grant wider than every job is a
+   * scope nothing spends; a narrower one is a job that 403s.
    */
-  it.each(callerWorkflows)("%s: grants exactly what the called job bounds", (file) => {
+  it.each(callerWorkflows)("%s: grants exactly what the called jobs bound", (file) => {
     const granted = jobOf(file).permissions;
+    const RANK: Readonly<Record<string, number>> = { none: 0, read: 1, write: 2 };
+    const widest: Record<string, string> = {};
+    for (const job of jobsOf(targetOf(file))) {
+      for (const [scope, level] of Object.entries(job.permissions ?? {})) {
+        const held = widest[scope];
+        if (held === undefined || (RANK[level] ?? 0) > (RANK[held] ?? 0)) widest[scope] = level;
+      }
+    }
 
-    expect(granted).toEqual(jobOf(targetOf(file)).permissions);
+    expect(granted).toEqual(widest);
     expect(Object.keys(granted ?? {})).not.toHaveLength(0);
   });
 
@@ -2413,20 +2557,22 @@ describe("agent-review tells its caller what it cannot know", () => {
   const call = () => workflowOf(REVIEW).on?.workflow_call;
 
   /**
-   * `contents: read` is the invariant that bounds what a wrong review can do
-   * (docs/parity.md §10). The generic check above holds the two halves equal to
-   * each other; this is the one pair where the *value* is the point.
+   * `contents: read` on the review job is the invariant that bounds what a
+   * wrong review can do (docs/parity.md §10). The generic check above holds the
+   * caller equal to the widest called job; this is the one pair where the
+   * *value* is the point. The caller grants `contents: write`, which only the
+   * `resolve` job spends (#133). The review job narrows it back to `read`.
    */
   it.each([
-    ["the caller grants", REVIEW_CALLER],
-    ["the called job bounds", REVIEW],
-  ])("%s exactly the permissions the job uses", (_half: string, file: string) => {
+    ["the caller grants", REVIEW_CALLER, "write"],
+    ["the called job bounds", REVIEW, "read"],
+  ])("%s exactly the permissions the job uses", (_half: string, file: string, contents: string) => {
     expect(jobOf(file).permissions).toEqual({
       // The CI wait polls the check-runs API. A public repository serves it
       // without this scope, so every repo in the pilot passed without it and
       // the first private adopter got a 403 that spent the whole wait budget.
       checks: "read",
-      contents: "read",
+      contents,
       // Installing the runner package, not reading the PR — the one scope here
       // that is about the toolchain rather than about the review.
       packages: "read",
@@ -2437,6 +2583,32 @@ describe("agent-review tells its caller what it cannot know", () => {
       // like the feature simply being off.
       statuses: "write",
     });
+  });
+
+  /**
+   * **And the caller `docs/ADOPTING.md` §4 prints grants the same set**, which
+   * is the copy nothing else here can see (#133). `PIN` reads the two caller
+   * *sets*; a fenced block in a document is read by no test, and this one sat on
+   * `contents: read` through the commit that moved every other copy in the same
+   * file. An adopter pastes it, and what a short grant now costs is the whole
+   * run rather than the step — so it is held to the reference caller by value,
+   * the way the two halves above are held to each other.
+   *
+   * Scoped to the subsection, and asserted as equality rather than against a
+   * table, so the release that adds a scope cannot leave the paste-able copy
+   * one behind.
+   */
+  it("prints that same grant in the caller docs/ADOPTING.md §4 shows", () => {
+    const section = fs
+      .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
+      .split(/^(?=### )/m)
+      .find((part) => part.startsWith("### `agent-review` needs one input more"));
+    const snippet = (section ?? "").match(/```yaml\n([\s\S]*?)```/)?.[1];
+
+    expect(snippet, "docs/ADOPTING.md §4 prints no review caller").toBeDefined();
+    expect((parse(snippet as string) as Workflow).jobs["review"]?.permissions).toEqual(
+      caller().permissions,
+    );
   });
 
   it("declares the self-check input, typed and described", () => {
@@ -2496,7 +2668,9 @@ describe("agent-review tells its caller what it cannot know", () => {
    */
   it("passes the name the two job ids actually produce", () => {
     const [callerJob] = Object.keys(workflowOf(REVIEW_CALLER).jobs);
-    const [calledJob] = Object.keys(workflowOf(REVIEW).jobs);
+    const [calledJob] = Object.keys(workflowOf(REVIEW).jobs).filter(
+      (id) => !(EXTRA_JOBS[REVIEW] ?? []).includes(id),
+    );
 
     expect(caller().with?.["self-check"]).toBe(`${callerJob} / ${calledJob}`);
   });
@@ -2514,9 +2688,14 @@ describe("agent-review tells its caller what it cannot know", () => {
    * somebody else's repository, where no test of theirs could see it.
    */
   it.each(RUNNER_COMMANDS)("%s.yml declares a job of its own name", (command: string) => {
-    const jobs = workflowOf(path.join(WORKFLOW_DIR, `${command}.yml`)).jobs;
+    const file = path.join(WORKFLOW_DIR, `${command}.yml`);
+    const jobs = workflowOf(file).jobs;
 
-    expect(Object.keys(jobs)).toEqual([command]);
+    // Its declared extras aside: `review / resolve` is a second check run, not
+    // a second answer to which one is the review (#133).
+    expect(Object.keys(jobs).filter((id) => !(EXTRA_JOBS[file] ?? []).includes(id))).toEqual([
+      command,
+    ]);
     // And no `name:` on it, which is the other half of the same property:
     // GitHub writes a job's display name into the check run and falls back to
     // the id only where there is none. One added here would rename the second

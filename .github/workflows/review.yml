@@ -90,16 +90,22 @@ jobs:
     concurrency:
       group: agent-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
+    # What the `resolve` job below reads. See *Hand the verified threads to the
+    # resolve job*.
+    outputs:
+      resolutions: ${{ steps.resolutions.outputs.resolutions }}
     # `contents: read` is the invariant that bounds what a wrong review can do
     # (docs/parity.md §10). No `issues: write`: review files nothing, and the
     # `gh pr edit --add-label` steps below need only `pull-requests: write` —
     # that scope covers labels on a PR, which is why agent-fix and
     # agent-update-branch already label unguarded without it.
     #
-    # The caller declares the same two, and that is not the duplication it
+    # The caller declares the same scopes, and that is not the duplication it
     # looks like — the two blocks do opposite jobs. A called workflow can only
     # *downgrade* the token it is handed, so this block is the bound and cannot
-    # be widened from the caller's side. The caller's block is the grant: on a
+    # be widened from the caller's side. That is why the caller can grant
+    # `contents: write` for the `resolve` job below (#133) while this job
+    # still holds `read`. The caller's block is the grant: on a
     # repo whose default `GITHUB_TOKEN` is read-only, `pull-requests: write`
     # declared only here grants nothing, and every `gh pr edit` below 403s. The
     # first one not written `|| true` is the `--add-label "agent:in-progress"`
@@ -315,7 +321,12 @@ jobs:
           # workflow only fires on a closed one (#50). Joining costs one word in
           # one string; carving it out would cost a comment justifying a timing
           # argument that could stop being true.
-          AGENT_CHECKS: '(^|/ )(review|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
+          #
+          # `resolve` is this workflow's second job (#133). It runs after this
+          # one, so a review never waits on its own. But an adopter who renamed
+          # the caller job gets `agent-review / resolve`, which nothing else
+          # here matches, and it is not evidence about the diff either way.
+          AGENT_CHECKS: '(^|/ )(review|resolve|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller
@@ -732,89 +743,34 @@ jobs:
             || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above: a 403 is a caller missing \`statuses: write\` (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
 
       # The threads this review checked and found fixed (#111, and #109 decision
-      # 1). The **reviewer** closes a finding and the fixer never does: a fix run
-      # replies and resolves nothing, so nothing is marked done by the run that
-      # claims to have done it.
+      # 1), handed to the `resolve` job below, which closes them. The
+      # **reviewer** closes a finding and the fixer never does: a fix run replies
+      # and resolves nothing, so nothing is marked done by the run that claims to
+      # have done it.
       #
-      # `resolutionReason` is recorded by GitHub and exposed nowhere afterwards
-      # — no field on `PullRequestReviewThread` reads it back — so the reply is
-      # the record. It is posted first for that reason, and the resolve is
-      # **gated on it**: a thread that closes with no reply loses the only
-      # statement of why, and on the `WONT_FIX` arm what is lost is the
-      # maintainer's quoted words, which is the whole of what makes a
-      # misreading visible. Ordering alone does not prevent that — only the
-      # `continue` does. A reply that would not post therefore leaves its
-      # thread open, which is the direction this loop fails in everywhere else.
+      # Handed over rather than acted on here, because this job cannot close a
+      # thread. `resolveReviewThread` is refused on an installation token without
+      # `contents: write` (#133), and this job holds `contents: read` on purpose
+      # (docs/parity.md §10). The reply was always accepted and the resolve never
+      # was, so every verified thread in every repo on v0.4.0 stayed open under a
+      # reply claiming it had closed.
       #
-      # Two reasons, and which one a thread closes on is decided by
-      # `verifyCarried` and read out of the file, never derived here: a finding
-      # the review verified fixed closes as `ADDRESSED`, and one a maintainer
-      # declined closes as `WONT_FIX` with their words quoted back (#109,
-      # decision 10). The enum is spelled out on both arms because it is a
-      # literal in the document rather than a variable GitHub would coerce —
-      # and the branch is on a fixed list, so a value this step does not
-      # recognise closes as addressed instead of putting an unknown string into
-      # a mutation.
+      # A job output rather than an artifact. The list is a few KB against a
+      # 1 MB ceiling, and an artifact would add two more action pins to track.
+      # `jq -c` puts it on one line, which is what a `name=value` output takes.
+      # A run that wrote no file hands over nothing, and `resolve` does not run.
       #
-      # Both mutations spend `pull-requests: write`, which this job already holds
-      # for its label edits, and nothing else. Resolving a thread is not a
-      # `contents:` write, which is the scope this job deliberately does not
-      # have (docs/parity.md §10) — a review still cannot touch the branch.
-      #
-      # Whole-step `continue-on-error`, like `agent-fix`'s reply step: a thread
-      # that would not close is a thread a human closes, and a posted review and
-      # its verdict are worth more than the tidying after them. The per-mutation
-      # `||` is what keeps one bad id from taking the rest of the list with it.
-      #
-      # After the verdict, on purpose. This step talks to the same API the two
-      # before it do, and the verdict is the line a maintainer acts on — so
-      # anything that can go slowly or wrong here happens once the pull request
-      # already carries the answer.
-      - name: Resolve the threads this review verified
+      # After the verdict and gated on `success()`, as the step it replaces was:
+      # a review that failed to post closes nothing.
+      - name: Hand the verified threads to the resolve job
+        id: resolutions
         if: steps.state.outputs.proceed == 'true' && success()
-        continue-on-error: true
         env:
           RESOLUTIONS: ${{ runner.temp }}/thread_resolutions.json
         run: |
-          set -uo pipefail
           [ -f "$RESOLUTIONS" ] || { echo "No resolutions file; nothing to resolve."; exit 0; }
-          count=$(jq 'length' "$RESOLUTIONS")
-          echo "Resolving ${count} verified thread(s)."
-
-          for i in $(seq 0 $((count - 1))); do
-            tid=$(jq -r ".[$i].threadId" "$RESOLUTIONS")
-            body=$(jq -r ".[$i].reply" "$RESOLUTIONS")
-            reason=$(jq -r ".[$i].reason" "$RESOLUTIONS")
-
-            gh api graphql -f threadId="$tid" -f body="$body" -f query='
-              mutation($threadId:ID!,$body:String!) {
-                addPullRequestReviewThreadReply(
-                  input:{pullRequestReviewThreadId:$threadId, body:$body}
-                ) { clientMutationId }
-              }' >/dev/null \
-              && echo "  replied to ${tid}" \
-              || { echo "  WARNING: reply failed for ${tid}; leaving the thread open, since a thread that closes with no reply loses the only record of why."; continue; }
-
-            if [ "$reason" = "WONT_FIX" ]; then
-              mutation='
-                mutation($threadId:ID!) {
-                  resolveReviewThread(
-                    input:{threadId:$threadId, resolutionReason:WONT_FIX}
-                  ) { clientMutationId }
-                }'
-            else
-              mutation='
-                mutation($threadId:ID!) {
-                  resolveReviewThread(
-                    input:{threadId:$threadId, resolutionReason:ADDRESSED}
-                  ) { clientMutationId }
-                }'
-            fi
-
-            gh api graphql -f threadId="$tid" -f query="$mutation" >/dev/null \
-              && echo "  resolved ${tid} (${reason})" \
-              || echo "  WARNING: resolve failed for ${tid}"
-          done
+          echo "resolutions=$(jq -c . "$RESOLUTIONS")" >> "$GITHUB_OUTPUT"
+          echo "Handing $(jq length "$RESOLUTIONS") verified thread(s) to the resolve job."
 
       # The marker for the filing half (#47): this PR's review recorded
       # out-of-scope findings, and a human still has a say before they become
@@ -927,3 +883,153 @@ jobs:
       - name: Always remove in-progress
         if: always() && steps.state.outputs.proceed == 'true'
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
+
+  # Closes the threads the review verified (#133). It is the only job in this
+  # workflow holding `contents: write`, and it is shaped so that it cannot
+  # spend it on anything but that.
+  #
+  # **Why the scope.** `resolveReviewThread` is refused on an installation
+  # token without `contents: write`. `addPullRequestReviewThreadReply` beside
+  # it is not refused, which is why the step this replaced replied into every
+  # thread and then logged `Resource not accessible by integration` for every
+  # resolve. Confirmed 2026-09-24 on a scratch pull request (run 36057777753):
+  # same token, same thread, and `pull-requests: write` in both jobs. The job
+  # with `contents: read` was refused FORBIDDEN, and the job with
+  # `contents: write` resolved.
+  #
+  # **Why not the review job.** That job reads untrusted pull-request content
+  # and runs an agent over it, and `contents: read` is what stops it touching
+  # the branch (docs/parity.md §10). This job has no checkout, no toolchain and
+  # no agent. It runs two fixed GraphQL mutations whose only variables are a
+  # thread id and a reply, read out of what the review runner wrote. The runner
+  # dropped every id it had not handed over (`verifyCarried`). So the write
+  # scope reaches a job that has nothing to write with.
+  #
+  # Not `AGENT_PAT`: resolving would then depend on an adopter having set it,
+  # and every repository without it would keep the bug silently.
+  #
+  # **The cost is the caller's grant, and it is not a degradation.** A caller's
+  # `permissions:` is the ceiling for every job it calls, and GitHub refuses an
+  # elevation rather than trimming it: a called job asking for more than its
+  # caller granted fails the **whole run** before any job starts — `The workflow
+  # is requesting 'contents: write', but is only allowed 'contents: read'`,
+  # reported as a `startup_failure` with no job log to read it in. So a caller
+  # left on `contents: read` does not get a review without the resolve; it gets
+  # no review. Both reference callers move in the same release as this job, and
+  # `doctor` reports a caller that did not as an error.
+  #
+  # That is GitHub's documented rule — permissions are maintained or reduced
+  # through a call chain, never elevated — rather than something probed here,
+  # unlike the scope itself above. It is also not new with this job: every job
+  # in this loop declares its permissions, so any caller granting less than one
+  # of them has always failed this way.
+  resolve:
+    needs: review
+    # Both of the review job's guards, restated rather than inherited through
+    # `needs`. Today `needs` implies them, because a skipped review skips this
+    # job too. But that holds only while this `if:` carries no status function,
+    # and a later `always()` added for another reason would drop both guards.
+    # Then the list the review wrote decides whether anything runs.
+    if: >-
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.review.outputs.resolutions != '' &&
+      needs.review.outputs.resolutions != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # **No concurrency group**, on purpose. `agent-pr-*` holds one waiting run,
+    # and a newer arrival evicts it silently (docs/parity.md §10). If this job
+    # joined the group, it would queue behind a fix a human labelled while the
+    # review ran, and could evict that fix. Overlap is harmless instead. A fix
+    # run shown a thread that already carries its closing reply is told the
+    # close is the only thing outstanding on it (`shared/pr-feedback.ts`). A
+    # review that races this job carries such a thread again, re-verifies it
+    # and resolves it without a second reply.
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Through `env:`, never interpolated into the script. A reply quotes a
+      # maintainer's words (`declineReply`), and quoted text spliced into shell
+      # source would run as a script.
+      RESOLUTIONS: ${{ needs.review.outputs.resolutions }}
+    steps:
+      # **The reply is posted first and the resolve is gated on it.**
+      # `resolutionReason` is recorded by GitHub and exposed nowhere afterwards,
+      # because no field on `PullRequestReviewThread` reads it back. So the
+      # reply is the only record of why a thread closed. A thread that closes
+      # with no reply loses that statement. On the `WONT_FIX` arm the lost part
+      # is the maintainer's quoted words, which are what make a misreading
+      # visible. Ordering alone does not prevent that; only the `continue`
+      # does. A reply that would not post leaves its thread open, which is the
+      # direction this loop fails in everywhere else.
+      #
+      # **Unless the thread already carries that reply** (`alreadyReplied`,
+      # #133). A resolve that did not go through leaves the thread open, and the
+      # next review verifies it again. Without this guard every round adds
+      # another `**Verified fixed.**`, which is how #130 collected nine on one
+      # thread. Only the literal `true` skips the reply. Any other value posts
+      # it, because a duplicate reply is the cheaper mistake than a thread that
+      # closes with no reply at all.
+      #
+      # Two reasons, and which one a thread closes on is decided by
+      # `verifyCarried` and read out of the list, never derived here: a finding
+      # the review verified fixed closes as `ADDRESSED`, and one a maintainer
+      # declined closes as `WONT_FIX` with their words quoted back (#109,
+      # decision 10). The enum is spelled out on both arms because it is a
+      # literal in the document rather than a variable GitHub would coerce, and
+      # the branch is on a fixed list, so a value this step does not recognise
+      # closes as addressed instead of putting an unknown string into a
+      # mutation.
+      #
+      # Never fails the job. A thread that would not close is a thread a human
+      # closes, and the review and its verdict are already posted. So each
+      # failure is a `::warning::` rather than the `echo` that hid this for a
+      # release, and the per-mutation `||` keeps one bad id from taking the
+      # rest of the list with it.
+      - name: Resolve the threads this review verified
+        run: |
+          set -uo pipefail
+          count=$(jq 'length' <<<"$RESOLUTIONS")
+          echo "Resolving ${count} verified thread(s)."
+
+          for i in $(seq 0 $((count - 1))); do
+            tid=$(jq -r ".[$i].threadId" <<<"$RESOLUTIONS")
+            body=$(jq -r ".[$i].reply" <<<"$RESOLUTIONS")
+            reason=$(jq -r ".[$i].reason" <<<"$RESOLUTIONS")
+            already=$(jq -r ".[$i].alreadyReplied" <<<"$RESOLUTIONS")
+
+            if [ "$already" = "true" ]; then
+              echo "  ${tid} already carries this reply; retrying only the resolve."
+            else
+              gh api graphql -f threadId="$tid" -f body="$body" -f query='
+                mutation($threadId:ID!,$body:String!) {
+                  addPullRequestReviewThreadReply(
+                    input:{pullRequestReviewThreadId:$threadId, body:$body}
+                  ) { clientMutationId }
+                }' >/dev/null \
+                && echo "  replied to ${tid}" \
+                || { echo "::warning::Could not reply to review thread ${tid}, so it is left open: a thread that closes with no reply loses the only record of why."; continue; }
+            fi
+
+            if [ "$reason" = "WONT_FIX" ]; then
+              mutation='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(
+                    input:{threadId:$threadId, resolutionReason:WONT_FIX}
+                  ) { clientMutationId }
+                }'
+            else
+              mutation='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(
+                    input:{threadId:$threadId, resolutionReason:ADDRESSED}
+                  ) { clientMutationId }
+                }'
+            fi
+
+            gh api graphql -f threadId="$tid" -f query="$mutation" >/dev/null \
+              && echo "  resolved ${tid} (${reason})" \
+              || echo "::warning::Could not resolve review thread ${tid} (${reason}). Its reply is posted, and the thread stays open until the next review retries it, which it does without replying again. GitHub's reply is printed above. It is not the caller's \`contents:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4)."
+          done

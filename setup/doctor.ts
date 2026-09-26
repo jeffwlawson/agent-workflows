@@ -280,13 +280,17 @@ export const REQUIRED_PERMISSIONS: readonly {
   },
   {
     permission: "contents",
-    value: "read",
+    value: "write",
     workflows: ["review"],
     why:
-      "`actions/checkout` reads the repository, which a public one serves without the scope and a " +
-      "private one 403s. There is nothing to review then — the job dies at the checkout, before " +
-      "the diff it was labelled for is ever read",
-    absence: "private",
+      "the review's `resolve` job closes the threads the review verified, and GitHub refuses " +
+      "`resolveReviewThread` to a token without it (#133). Only that job spends the write: it " +
+      "checks nothing out and runs no agent, and the review job narrows the grant back to " +
+      "`read`, so a review still cannot touch the branch. This caller is granting less than a " +
+      "job it calls declares, which costs you the whole workflow rather than the close — GitHub " +
+      "refuses the elevation by failing the run before any job starts, and with nothing having " +
+      "run there is no job log saying so. A review labelled on this caller does nothing at all",
+    absence: "always",
   },
   {
     permission: "contents",

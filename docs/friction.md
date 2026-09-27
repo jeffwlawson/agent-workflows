@@ -2187,3 +2187,33 @@ edited, added or removed — with the exception stated where the boundary is, a 
 outside it to build an input in. The general shape is worth watching for: an instruction that asks
 for work a boundary elsewhere in the same prompt forbids is not a weaker instruction, it is one that
 silently selects whichever half the reader weighs more.
+
+## 2026-09-27 — two branches bounded their spawns at the same figure and neither could see the other
+
+#139 bounded the real-`gh` spawns at 60 seconds. #144 then made that figure the suite's `testTimeout`
+and exported it, and wrote the convention down: a synchronous spawn is bounded at
+`SUBPROCESS_TIMEOUT`, "imported rather than repeated". #145 was open at the same time, bounding the
+release-hook spawns in `tests/sync-version.test.ts`, and wrote its own `const SPAWN_TIMEOUT =
+60_000` — the same number, arrived at from the same measurement, and equal by coincidence rather
+than by construction. Neither branch's tests could see the other's literal, and neither review
+round could either until #145 merged first and made the reconciliation the second one's problem.
+
+What the second branch inherited was not just the duplicate. #145 also gives a multi-spawn test a
+ceiling of `spawns * SPAWN_TIMEOUT` — up to 540 seconds — while #144's comment beside the constant
+said a ceiling "must not sit *above*" a spawn bound. Both rules are right about the case their
+author had in front of them: a ceiling under the sum of a test's children's bounds fails while every
+child is still inside its own, and a ceiling over one spawn's bound makes a report of the ceiling
+ambiguous. They only look contradictory because one was written from a file with one spawn per test
+and the other from a file with seven.
+
+The settled form is that the suite-wide ceiling is **one spawn's worth**, a test making one needs no
+`it()` timeout at all, and a test making several raises its ceiling to a *multiple of the same
+figure* — which hides no hang, because the spawn's own bound still fires first and the spawn is what
+reports it.
+
+The lesson is about what a convention in prose can hold. "Imported rather than repeated" was true of
+every file the sentence's author had read, and a branch written in parallel violated it without ever
+disagreeing with it. `tests/vitest-config.test.ts` now fails if any file under `tests/` writes the
+number out, with the spellings derived from the constant rather than pinned — so the next parallel
+branch is stopped by the gate instead of by a reviewer noticing two literals a week apart. A rule
+that only a reader can apply is a rule that holds for as long as one reader sees both copies.

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { syncVersion } from "../scripts/sync-version.js";
+import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
  * `npm version` bumps two files — the manifest and the lockfile — and there are
@@ -60,8 +61,8 @@ const write = (root: string, rel: string, text: string): void =>
   fs.writeFileSync(path.join(root, ...rel.split("/")), text);
 
 /**
- * The bound on every child this file spawns, and the unit the vitest ceilings
- * are built from.
+ * The vitest ceiling for a test that spawns `spawns` bounded children, in units
+ * of the bound each one carries.
  *
  * Four things here run a real program: the compiler against
  * `tsconfig.build.json`, `git` in a scratch tree, and the release hook itself,
@@ -70,21 +71,24 @@ const write = (root: string, rel: string, text: string): void =>
  * `tsc` spawns are the tightest case in the suite against vitest's 5-second
  * default, while guarding the `.js`-specifier convention `CLAUDE.md` states.
  *
- * Sized against a *hang*, not against slowness: the compiler is the dearest of
- * the four at about a second, so this is a wide multiple of the real cost, and
- * the same value #139 gave the review-ci-wait spawns for the same reason.
+ * The bound itself is `vitest.config.ts`'s, imported rather than written here:
+ * this file wrote its own copy of the same figure until #144, which was equal by
+ * coincidence — #144 and #145 were in flight at the same time and neither branch
+ * could see the other's literal. `tests/vitest-config.test.ts` now checks that
+ * no test file writes it, so the coincidence cannot recur.
  *
- * Given to each test as well as to each spawn, because the two bound different
- * failures — the spawn bound is the only thing that can stop a hang, and the
- * test bound is what keeps a run that is merely slow under a parallel `verify`
- * from failing at five seconds. A test's ceiling has to clear the *sum* of its
- * spawns' bounds or it fails while every child is still inside its own, which
- * is what `ceiling` counts.
+ * Sized against a *hang*, not against slowness: the compiler is the dearest of
+ * the four at about a second, so the bound is a wide multiple of the real cost.
+ *
+ * A ceiling is still given per test, because the two bound different failures —
+ * the spawn bound is the only thing that can stop a hang, and the test bound is
+ * what keeps a run that is merely slow under a parallel `verify` from failing at
+ * five seconds. The suite-wide setting is one spawn's worth, so a test making
+ * one needs no ceiling of its own; a test making several has to clear the *sum*
+ * of their bounds or it fails while every child is still inside its own, and
+ * says so as a multiple of the same figure rather than a number of its own.
  */
-const SPAWN_TIMEOUT = 60_000;
-
-/** The vitest ceiling for a test that spawns `spawns` bounded children. */
-const ceiling = (spawns: number): number => spawns * SPAWN_TIMEOUT;
+const ceiling = (spawns: number): number => spawns * SUBPROCESS_TIMEOUT;
 
 /**
  * Every child this file spawns, bounded and loud about the bound.
@@ -98,15 +102,15 @@ const ceiling = (spawns: number): number => spawns * SPAWN_TIMEOUT;
  * cut short is the bound firing whichever of the two says so.
  *
  * `timeout` is an override for one caller only — the test that forces the
- * bound to fire. Every real spawn takes `SPAWN_TIMEOUT`, so the bound stays one
- * constant rather than a number per site.
+ * bound to fire. Every real spawn takes `SUBPROCESS_TIMEOUT`, so the bound stays
+ * one constant rather than a number per site.
  */
 const bounded = (
   command: string,
   args: readonly string[],
   options: { readonly cwd?: string; readonly timeout?: number } = {},
 ): SpawnSyncReturns<string> => {
-  const timeout = options.timeout ?? SPAWN_TIMEOUT;
+  const timeout = options.timeout ?? SUBPROCESS_TIMEOUT;
   const result = spawnSync(command, [...args], {
     encoding: "utf8",
     timeout,
@@ -507,7 +511,7 @@ describe("the release hook stays out of what ships", () => {
     expect(program).toContain(path.join("shared", "pins.ts"));
 
     expect(program).not.toContain(path.join("scripts", "sync-version.ts"));
-  }, ceiling(1));
+  });
 });
 
 /**
@@ -533,7 +537,7 @@ describe("what ships typechecks under the configuration that emits it", () => {
     const { status, output } = buildTsc("--noEmit");
 
     expect(status, output).toBe(0);
-  }, ceiling(1));
+  });
 });
 
 /**
@@ -600,7 +604,7 @@ describe("the release is one command", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("9.9.9");
-  }, ceiling(1));
+  });
 
   /**
    * What `released` below spawns: six `git` calls to build the scratch
@@ -689,8 +693,8 @@ describe("the release is one command", () => {
 describe("every child this suite spawns is bounded", () => {
   /**
    * A child that would outlive any bound, against one it cannot: fifty
-   * milliseconds, so the forced failure costs about that and the default
-   * five-second ceiling covers it without a `ceiling` of its own.
+   * milliseconds, so the forced failure costs about that and the suite-wide
+   * ceiling covers it without a `ceiling` of its own.
    */
   const outlived = (): Error => {
     try {

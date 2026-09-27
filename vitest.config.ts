@@ -2,9 +2,10 @@ import { defineConfig } from "vitest/config";
 
 /**
  * How long one test may take, and how long any one synchronous spawn inside it
- * may run. Two roles, one figure — the spawning tests import this rather than
- * repeat it (`tests/review-ci-wait.test.ts`), so the ceiling and the bound
- * cannot drift apart.
+ * may run. Two roles, one figure — every test that spawns imports this rather
+ * than repeating it (`tests/review-ci-wait.test.ts`,
+ * `tests/sync-version.test.ts`), so the ceiling and the bound cannot drift
+ * apart.
  *
  * As `testTimeout` it is a **flake guard, not a hang guard.** Several tests here
  * spawn `bash`, `jq`, `node`, a replay `gh` or the real `gh` through
@@ -16,11 +17,19 @@ import { defineConfig } from "vitest/config";
  * put the real-`gh` tests past vitest's 5-second default (#139) and left the
  * replay-based ones at 14–29x headroom against it (#144).
  *
- * Which is also why it must not sit *above* a spawn bound: a spawn that overran
- * would be killed by its own bound first and reported as a spawn failure —
- * SIGTERM, no output — rather than as the test taking too long. Held equal to
- * the bounds here, so a report of *this* limit means a test accumulated several
- * spawns, never that one of them hung.
+ * Held *equal* to a spawn's bound rather than over it, so that one bounded spawn
+ * is exactly covered and a report of this limit means a test accumulated several
+ * spawns, never that one of them hung. A test that does accumulate several
+ * raises its own ceiling to a multiple of this same figure, because a ceiling
+ * under the sum of its children's bounds fails while every one of them is still
+ * inside its own (`tests/sync-version.test.ts`'s `ceiling`). The raise hides
+ * nothing: the spawn's bound still fires at this figure, and it is the spawn that
+ * reports it.
+ *
+ * What a raised ceiling must not be is a literal of its own. #144 and #145 were
+ * in flight together and each wrote this number separately; two copies drift,
+ * and a ceiling that drifts *under* the bound fails a test whose child was still
+ * within it — the flake the figure exists to prevent.
  */
 export const SUBPROCESS_TIMEOUT = 60_000;
 

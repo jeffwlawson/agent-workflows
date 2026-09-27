@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -59,9 +59,76 @@ const read = (root: string, rel: string): string =>
 const write = (root: string, rel: string, text: string): void =>
   fs.writeFileSync(path.join(root, ...rel.split("/")), text);
 
+/**
+ * The bound on every child this file spawns, and the unit the vitest ceilings
+ * are built from.
+ *
+ * Four things here run a real program: the compiler against
+ * `tsconfig.build.json`, `git` in a scratch tree, and the release hook itself,
+ * twice. vitest cannot interrupt a synchronous spawn, so an unbounded one is a
+ * run that never ends rather than one that fails late (#145) — and the two
+ * `tsc` spawns are the tightest case in the suite against vitest's 5-second
+ * default, while guarding the `.js`-specifier convention `CLAUDE.md` states.
+ *
+ * Sized against a *hang*, not against slowness: the compiler is the dearest of
+ * the four at about a second, so this is a wide multiple of the real cost, and
+ * the same value #139 gave the review-ci-wait spawns for the same reason.
+ *
+ * Given to each test as well as to each spawn, because the two bound different
+ * failures — the spawn bound is the only thing that can stop a hang, and the
+ * test bound is what keeps a run that is merely slow under a parallel `verify`
+ * from failing at five seconds. A test's ceiling has to clear the *sum* of its
+ * spawns' bounds or it fails while every child is still inside its own, which
+ * is what `ceiling` counts.
+ */
+const SPAWN_TIMEOUT = 60_000;
+
+/** The vitest ceiling for a test that spawns `spawns` bounded children. */
+const ceiling = (spawns: number): number => spawns * SPAWN_TIMEOUT;
+
+/**
+ * Every child this file spawns, bounded and loud about the bound.
+ *
+ * `spawnSync` reports a timeout as `status: null`, with `ETIMEDOUT` in
+ * `result.error` and the signal it was killed with in `result.signal` — so a
+ * caller that reads `status` alone turns a hang into `expected null to be 0`
+ * or into an empty stderr, which names neither the command nor the cause and
+ * is indistinguishable from a command that is not installed. Both are checked:
+ * nothing here is killed by a signal for any other reason, and a run that was
+ * cut short is the bound firing whichever of the two says so.
+ *
+ * `timeout` is an override for one caller only — the test that forces the
+ * bound to fire. Every real spawn takes `SPAWN_TIMEOUT`, so the bound stays one
+ * constant rather than a number per site.
+ */
+const bounded = (
+  command: string,
+  args: readonly string[],
+  options: { readonly cwd?: string; readonly timeout?: number } = {},
+): SpawnSyncReturns<string> => {
+  const timeout = options.timeout ?? SPAWN_TIMEOUT;
+  const result = spawnSync(command, [...args], {
+    encoding: "utf8",
+    timeout,
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+  });
+
+  const label = `${command} ${args.join(" ")}`;
+  if (result.error !== undefined || result.signal !== null) {
+    const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+    throw new Error(
+      code === "ETIMEDOUT" || result.signal !== null
+        ? `${label} timed out after ${timeout}ms`
+        : `${label} could not be run: ${result.error?.message ?? ""}`,
+    );
+  }
+
+  return result;
+};
+
 /** `git` in a scratch tree, loud on failure: a silent one would read as a pass. */
 const git = (root: string, args: readonly string[]): string => {
-  const result = spawnSync("git", [...args], { cwd: root, encoding: "utf8" });
+  const result = bounded("git", args, { cwd: root });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} in ${root}: ${result.stderr}`);
   return result.stdout;
 };
@@ -405,9 +472,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
  */
 const buildTsc = (flag: string): { readonly status: number | null; readonly output: string } => {
   const tsc = path.join("node_modules", "typescript", "bin", "tsc");
-  const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.build.json", flag], {
-    encoding: "utf8",
-  });
+  const result = bounded(process.execPath, [tsc, "-p", "tsconfig.build.json", flag]);
 
   return { status: result.status, output: result.stderr || result.stdout };
 };
@@ -442,7 +507,7 @@ describe("the release hook stays out of what ships", () => {
     expect(program).toContain(path.join("shared", "pins.ts"));
 
     expect(program).not.toContain(path.join("scripts", "sync-version.ts"));
-  });
+  }, ceiling(1));
 });
 
 /**
@@ -468,7 +533,7 @@ describe("what ships typechecks under the configuration that emits it", () => {
     const { status, output } = buildTsc("--noEmit");
 
     expect(status, output).toBe(0);
-  });
+  }, ceiling(1));
 });
 
 /**
@@ -531,13 +596,19 @@ describe("the release is one command", () => {
    * nowhere else until a release.
    */
   it("refuses an argument rather than taking a version from one", () => {
-    const result = spawnSync(process.execPath, ["scripts/sync-version.ts", "9.9.9"], {
-      encoding: "utf8",
-    });
+    const result = bounded(process.execPath, ["scripts/sync-version.ts", "9.9.9"]);
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("9.9.9");
-  });
+  }, ceiling(1));
+
+  /**
+   * What `released` below spawns: six `git` calls to build the scratch
+   * repository, and the hook itself. Its callers add their own reads on top and
+   * ceiling the sum, since a test bounded below what it spawns fails while
+   * every child is still inside its own bound.
+   */
+  const RELEASED_SPAWNS = 7;
 
   /**
    * And the rest of the hook, run the way `npm version` runs it: over a scratch
@@ -572,9 +643,8 @@ describe("the release is one command", () => {
     write(root, "package.json", read(root, "package.json").replace(/"version": "[^"]+"/, `"version": "${TARGET}"`));
     write(root, "STRAY-NOTES.md", "left lying around\n");
 
-    const result = spawnSync(process.execPath, [path.join(root, "scripts", "sync-version.ts")], {
+    const result = bounded(process.execPath, [path.join(root, "scripts", "sync-version.ts")], {
       cwd: root,
-      encoding: "utf8",
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain(`Synced ${EVERY_SITE.length} version pin(s) to ${TARGET}.`);
@@ -594,7 +664,7 @@ describe("the release is one command", () => {
     const staged = git(root, ["diff", "--cached", "--name-only"]).split("\n").filter(Boolean).sort();
 
     expect(staged).toEqual([...EVERY_SITE]);
-  });
+  }, ceiling(RELEASED_SPAWNS + 1));
 
   /**
    * `npm version` makes the commit and the tag, and `publish.yml` fires on the
@@ -605,5 +675,50 @@ describe("the release is one command", () => {
 
     expect(git(root, ["rev-list", "--count", "HEAD"]).trim()).toBe("1");
     expect(git(root, ["tag", "--list"]).trim()).toBe("");
+  }, ceiling(RELEASED_SPAWNS + 2));
+});
+
+/**
+ * The bound itself, which is the one thing in this file with no domain in it.
+ *
+ * Both halves are asserted because both have failed silently elsewhere: an
+ * unbounded spawn hangs the run rather than failing it (#145), and a bounded
+ * one whose caller reads only `status` reports the hang as `expected null to
+ * be 0` — a message naming neither the command nor the cause.
+ */
+describe("every child this suite spawns is bounded", () => {
+  /**
+   * A child that would outlive any bound, against one it cannot: fifty
+   * milliseconds, so the forced failure costs about that and the default
+   * five-second ceiling covers it without a `ceiling` of its own.
+   */
+  const outlived = (): Error => {
+    try {
+      bounded(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeout: 50 });
+    } catch (error) {
+      return error as Error;
+    }
+    throw new Error("the bound did not fire on a child that never exits");
+  };
+
+  it("says which command timed out, rather than leaving a null status behind", () => {
+    const { message } = outlived();
+
+    expect(message).toContain(process.execPath);
+    expect(message).toContain("setInterval");
+    expect(message).toContain("timed out after 50ms");
+  });
+
+  /**
+   * And nothing here spawns around the helper. A second raw `spawnSync` is the
+   * state this file was already in — four of them, none bounded — and it is
+   * invisible in review precisely because it looks like the call beside it.
+   */
+  it("spawns through the bounded helper and nowhere else", () => {
+    const source = fs.readFileSync(import.meta.filename, "utf8");
+
+    const raw = source.match(new RegExp(String.raw`spawnSync\(|execFileSync\(`, "g")) ?? [];
+
+    expect(raw).toHaveLength(1);
   });
 });

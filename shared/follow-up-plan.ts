@@ -1,5 +1,5 @@
 import { isWorkflowBot } from "./common.js";
-import { severityBadge } from "./review-findings.js";
+import { severityTextBadge } from "./review-findings.js";
 import {
   capFollowUps,
   embeddableJson,
@@ -410,6 +410,11 @@ const relationLine = (stub: FilingStub, path: string): string =>
  * read at a glance, and this issue outlives the pull request whose review
  * rated it.
  *
+ * It is the **text** badge, and the one surface that is (#135). Every review
+ * surface renders the image chip; this body is handed to an implement agent
+ * verbatim as its task and outlives the pull request the chip's URL is pinned
+ * beside, so a word is what it carries.
+ *
  * Provenance links the review the block was *read* from, which is the latest
  * one, and says so in words. Walking back through nine reviews to find the
  * first occurrence would have to match on prose, so a finding the agent
@@ -434,7 +439,7 @@ const stubBody = (
     "",
     `**Location:** \`${oneLine(followUp.location)}\``,
     "",
-    `**Severity:** ${severityBadge(followUp.severity)}`,
+    `**Severity:** ${severityTextBadge(followUp.severity)}`,
     "",
     "---",
     "",

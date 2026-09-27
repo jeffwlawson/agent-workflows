@@ -10,7 +10,9 @@ import {
   type PlacedFinding,
   PREVIOUSLY_MISSED_LABEL,
   SEVERITIES,
+  severityAssetPath,
   severityBadge,
+  severityWord,
 } from "../shared/review-findings.js";
 import {
   FOLLOW_UPS_LABEL,
@@ -4239,10 +4241,22 @@ describe("the adoption doc says what to do with each verdict", () => {
       expect(section()).toContain(`**${group}**`);
     }
 
-    // The badge as the body writes it — a code span, never one of GitHub's
-    // severity images (decision 9) — so a reader is told the spelling they see.
-    for (const severity of SEVERITIES) expect(section()).toContain(severityBadge(severity));
+    // The badge as a reader *sees* it, which since #135 is a chip with the word
+    // drawn in it: the doc names the word, never the `<img>` tag that carries
+    // it, and the alt text is what makes those the same thing.
+    for (const severity of SEVERITIES) {
+      expect(section()).toContain(severityWord(severity));
+      expect(section()).not.toContain(severityBadge(severity));
+    }
     expect(section()).toContain("*new*");
+
+    // And the cost of the chip being an image, which is the one thing about the
+    // body an adopter is taking on rather than reading: their review comments
+    // load it from this repository, and a rename leaves the alt text behind
+    // (#135).
+    expect(section()).toMatch(/alt text/i);
+    expect(section()).toContain("jeffwlawson/agent-workflows");
+    expect(section()).toContain(severityAssetPath("high").replace("high", "<rating>"));
   });
 
   /**

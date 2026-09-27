@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { findingMarker, RESOLUTION_MARKER } from "../shared/review-findings.js";
+import {
+  findingMarker,
+  RESOLUTION_MARKER,
+  severityBadge,
+} from "../shared/review-findings.js";
 import {
   carriedFindings,
   closingReplyReason,
@@ -138,6 +142,26 @@ describe("renderCarriedFindings", () => {
    */
   it("says so in words when there is nothing to verify", () => {
     expect(renderCarriedFindings([])).toContain("no finding from an earlier review");
+  });
+
+  /**
+   * A body entry's line is read straight out of the last review that wrote it,
+   * severity chip and all — and this is prompt text, so the chip comes out as
+   * the word it draws (#135). The list the review answers on is the last place
+   * an `<img>` tag helps anyone.
+   */
+  it("renders a chip the body carried as the word it draws", () => {
+    const rendered = renderCarriedFindings([
+      {
+        id: "f-2",
+        severity: "high",
+        text: `${severityBadge("high")} the cache key omits the tenant — \`src/other.ts:88\``,
+      },
+    ]);
+
+    expect(rendered).toBe(
+      "- `f-2` — High the cache key omits the tenant — `src/other.ts:88`",
+    );
   });
 });
 

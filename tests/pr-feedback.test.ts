@@ -27,6 +27,7 @@ import {
   unreadableNote,
 } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
+import { severityBadge } from "../shared/review-findings.js";
 import { declineReply, resolutionReply } from "../shared/review-verification.js";
 
 const spawned = vi.mocked(execFileSync);
@@ -1480,6 +1481,85 @@ describe("the findings an earlier review left open", () => {
     }) as never);
 
     expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("the current record");
+  });
+});
+
+/**
+ * **An agent reads no images** (#135). A review body and a thread of this loop's
+ * own open with a severity chip, and both reach the fix agent and the next
+ * round's reviewer as prompt text — where an `<img>` tag spends a line on a URL
+ * and says the rating nowhere a model is looking. The alt text is the word, so
+ * the reduction is lossless and the tag never reaches a prompt.
+ */
+describe("a severity chip in the feedback a prompt is built from", () => {
+  const AGENT = { author: { login: "github-actions[bot]" }, authorAssociation: "NONE" };
+  const CHIP = severityBadge("high");
+
+  const withChips = (): unknown => ({
+    reviews: {
+      nodes: [
+        {
+          body: `**Findings:** 1 — 1 ${CHIP}\n\n- ${CHIP} the guard runs after the return`,
+          state: "COMMENTED",
+          ...AGENT,
+        },
+      ],
+    },
+    reviewThreads: {
+      nodes: [
+        {
+          id: "PRRT_chip",
+          isResolved: false,
+          subjectType: "LINE",
+          comments: {
+            nodes: [
+              {
+                path: "src/queue.ts",
+                line: 206,
+                body: `${CHIP}\n\nthe guard runs after the return\n\n<!-- agent-finding f-1 high -->`,
+                ...AGENT,
+              },
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  it("reaches both agents as the word the chip draws, never as the tag", () => {
+    ghAnswers(() => response(withChips()));
+    const feedback = fetchPullRequestFeedback("12");
+
+    for (const surface of ["summaries", "inline", "all"] as const) {
+      expect(feedback[surface]).not.toContain("<img");
+      expect(feedback[surface]).not.toContain("raw.githubusercontent.com");
+      expect(feedback[surface]).toContain("High");
+    }
+    // Twice in the body — the count line and the entry — so the reduction is
+    // every chip in the text rather than the first.
+    expect(feedback.summaries.match(/High/g) ?? []).toHaveLength(2);
+  });
+
+  /**
+   * And the one line a carried finding is shown by is the claim, not the chip
+   * that now opens the thread: a reader that stopped at the labels would take
+   * the `<img>` tag for the finding's own words.
+   */
+  it("reads the claim off a thread that opens with a chip", () => {
+    ghAnswers(() => response(withChips()));
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toBe(
+      "src/queue.ts:206 — the guard runs after the return",
+    );
+  });
+
+  /** And the surface a refusal renders is the same text, through `surfaceText`. */
+  it("reduces the chip in the text the fix runner asks for by name", () => {
+    ghAnswers(() => response(withChips()));
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(surfaceText(feedback, "summaries")).not.toContain("<img");
+    expect(surfaceText(feedback, "inline")).not.toContain("<img");
   });
 });
 

@@ -469,12 +469,27 @@ scrolling back through an older review to find it. A finding this review is the 
 no link, because its thread is opened by the same call that posts the body and renders directly
 beneath it.
 
-Every entry carries a **severity** — `High`, `Medium` or `Low` — and each group is sorted worst
-first. It is for reading and for ordering, and for nothing else: the verdict is not derived from it,
-whether a finding blocks the merge or becomes a follow-up issue does not read it, and three `Low`
-findings get the same assessment as three `High` ones. That is deliberate — a dial the agent turns
-that changes the outcome is one you have to check on every review to find out which way it was
-turned. `Low` means a real but small defect; preferences are still posted nowhere, at any rating.
+Every entry carries a **severity** — High, Medium or Low, shown as a small coloured chip — and each
+group is sorted worst first. The thread the entry points at opens with the same chip, so the two
+surfaces cannot tell you two different things about one finding. It is for reading and for ordering,
+and for nothing else: the verdict is not derived from it, whether a finding blocks the merge or
+becomes a follow-up issue does not read it, and three Low findings get the same assessment as three
+High ones. That is deliberate — a dial the agent turns that changes the outcome is one you have to
+check on every review to find out which way it was turned. Low means a real but small defect;
+preferences are still posted nowhere, at any rating.
+
+**The chip is an image, and it is served from `jeffwlawson/agent-workflows`.** GitHub's comment
+Markdown cannot colour text, so a coloured badge has to be a picture: each review body and each
+thread carries an `<img>` naming `assets/severity-<rating>.svg` at the **tag of the release that
+posted it**, which is what makes it immutable — a body written today cannot acquire a different chip
+later. What you are taking on is a dependency on this repository staying public under that name: if
+it is made private, renamed or deleted, the chips in every past review in your repository fall back
+to their alt text, which is the word — `Medium`. Nothing else about the review is affected, and
+nothing your loop does is blocked by it, because the alt text is the copy every reader that renders
+no images already gets: a notification email that blocks pictures, and every agent in the loop,
+which is handed the word rather than the tag. One surface carries no image at all — an issue the
+follow-ups workflow files after the merge, whose `**Severity:**` line stays a plain `` `Medium` ``,
+because that body is an agent's task description and outlives the pull request it came from.
 
 **Nearly every entry is the one-line version of a thread**, and the thread is where you answer it.
 That holds for a finding about a file the pull request never touches too: such a problem is caused

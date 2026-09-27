@@ -65,7 +65,11 @@ review wrote naming what is unresolved, the step, a count, then *Open*, *Previou
 *Resolved since last review* and *Follow-ups*, then *How this was checked* and *What changed in
 this PR*, then a rule and the run. A group with nothing in it is omitted and that rule is the only
 divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
-and decides nothing else; a test permutes it across a review and holds the verdict identical. What
+and decides nothing else; a test permutes it across a review and holds the verdict identical. It is
+rendered as a **chip this repository hosts**, pinned to the release that posted it, and the thread
+the entry points at opens with the same one (#135) — one badge, so the two surfaces cannot label one
+finding two ways. The picture is never the only copy: its alt text is the word, and every reader
+that turns a body or a thread into prompt text reduces the tag to it. What
 makes it a record rather than a list is which entries carry a finding id: one with no thread does,
 because the newest body naming it is the only thing keeping it alive; one with a thread does not,
 because the thread is its record; and one this round closed carries none at all, or the next round
@@ -218,6 +222,12 @@ The ones worth knowing because nothing fails when they break:
 - **`bin` must not start with `./`.** `npm publish` silently drops such an entry and exits 0. The
   tarball is fine; only the registry manifest loses it, and the symptom is `npx <pkg> <cmd>` finding
   no command. `0.1.0` shipped exactly that.
+- **Renaming or moving `assets/severity-*.svg` breaks images that are already posted.** Every
+  review body and every thread this loop has ever written names one of those files at the tag it was
+  posted under, so the file has to keep its name in every release that is still being read — which
+  is every release. The break shows up on somebody else's year-old pull request and in no build
+  here; `severityAssetPath` holds the one copy of the path, and the test that reads it only proves
+  the *current* release is intact.
 - **A label set when an issue is *created* fires no `labeled` event.** Label in a separate call,
   always; recovery is remove-then-re-add.
 - **A label added with `GITHUB_TOKEN` is a silent no-op**, which is why `AGENT_PAT` exists.

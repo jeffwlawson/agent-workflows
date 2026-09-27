@@ -675,6 +675,19 @@ describe("planFollowUps: the stub it plans", () => {
   });
 
   /**
+   * And as a **word, never a chip** (#135). Every review surface renders the
+   * severity as an image; this body is handed to an implement agent verbatim as
+   * its task and outlives the pull request the chip's URL is pinned beside, so a
+   * picture here is a rating one reader in three does not get.
+   */
+  it.each(["high", "medium", "low"] as const)("carries %s as text, never an image", (severity) => {
+    const body = filed({ severity }).body;
+
+    expect(body).not.toContain("<img");
+    expect(body).not.toContain("raw.githubusercontent.com");
+  });
+
+  /**
    * Walking back through nine reviews to find the first occurrence would have
    * to match on prose, so a finding the agent reworded between rounds would
    * look new. Linking the latest and saying what that link means is the honest

@@ -9,6 +9,7 @@ import {
   severityRank,
   SEVERITIES,
   withoutFindingMarkers,
+  withoutSeverityBadge,
   type Finding,
   type PlacedFinding,
   type Severity,
@@ -527,14 +528,20 @@ const NEW_SUFFIX = /\s*\*new\*\s*$/i;
  * the opening of a claim that legitimately starts by quoting `` `Low` ``, which
  * on a codebase with severities in it is a claim somebody will eventually make.
  *
+ * And in **every form a release wrote one in**, not the form this release
+ * writes: the image chip of #135, and the code span v0.4.0 and v0.5.0 bodies
+ * carry, which are exactly the bodies decision 5's carried entries come out of.
+ * `withoutSeverityBadge` holds the list, beside the renderer.
+ *
  * A no-op on a threaded finding, whose line comes off the thread rather than
  * out of a body and so carried neither decoration.
  */
 const carriedClaim = (finding: CarriedFinding): string => {
   const claim = oneLine(finding.text).replace(NEW_SUFFIX, "");
-  const badge = finding.severity === undefined ? undefined : severityBadge(finding.severity);
 
-  return (badge !== undefined && claim.startsWith(badge) ? claim.slice(badge.length) : claim).trim();
+  return (
+    finding.severity === undefined ? claim : withoutSeverityBadge(claim, finding.severity)
+  ).trim();
 };
 
 /**
@@ -646,10 +653,10 @@ export const reviewRecord = (parts: {
  * it is new, and — where nothing else records it, which since #127 is only a
  * legacy body entry being carried — its id.
  *
- * The badge is text rather than one of GitHub's severity images, which decision
- * 9 rules out: see `severityBadge`. The marker goes last so the visible line
- * ends where the claim does, and `carriedClaim` is the half that reads this
- * back.
+ * The badge is the image chip of #135 — self-hosted and tag-pinned, which is
+ * what decision 9 ruled out a *hotlink* of: see `severityBadge`. The marker goes
+ * last so the visible line ends where the claim does, and `carriedClaim` is the
+ * half that reads this back.
  */
 const entryLine = (entry: RecordEntry): string =>
   [
@@ -728,7 +735,7 @@ const plural = (count: number, one: string, many: string): string => (count === 
  *
  * The breakdown lists only the ratings that occur, worst first, and is dropped
  * entirely where nothing carries one — a restatement line has no finding behind
- * it to rate, and `— 0 \`High\`, 0 \`Medium\`` is noise standing in for a fact.
+ * it to rate, and `— 0 High, 0 Medium` is noise standing in for a fact.
  */
 const findingsLine = (record: ReviewRecord): string => {
   const entries = [...record.open, ...record.missed];

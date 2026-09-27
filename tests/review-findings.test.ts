@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import { describe, expect, it, vi } from "vitest";
 import { parseDiffLines } from "../shared/diff-lines.js";
+import { PACKAGE_NAME, VERSION } from "../shared/manifest.js";
 import {
   FINDING_MARKER,
   findingMarker,
@@ -16,8 +18,14 @@ import {
   PREVIOUSLY_MISSED_LABEL,
   reviewMutation,
   reviewThreads,
+  severityAssetPath,
   severityBadge,
   severityRank,
+  severityTextBadge,
+  severityWord,
+  SEVERITIES,
+  withoutSeverityBadge,
+  withSeverityBadgesAsText,
   type Finding,
   type PlacedFinding,
 } from "../shared/review-findings.js";
@@ -446,20 +454,117 @@ describe("reviewThreads", () => {
   });
 
   /**
-   * The marker goes at the **end**. The claim a finding opens with is what the
-   * checklist reads and what a reader's eye lands on, and a hidden comment
-   * ahead of it displaces both.
+   * The marker goes at the **end**. The badge and the claim are what a reader's
+   * eye lands on and what the checklist reads, and a hidden comment ahead of
+   * them displaces both.
    */
-  it("ends every thread with the finding's id and leaves the claim in front", () => {
+  it("ends every thread with the finding's id and leaves the badge in front", () => {
     const threads = reviewThreads(place([finding({ line: 11 }), finding({ line: 400 })]));
 
     for (const thread of threads) {
-      expect(thread.body.startsWith("**Fix before merge.**")).toBe(true);
+      expect(thread.body.startsWith(severityBadge("medium"))).toBe(true);
       expect(thread.body.trimEnd().endsWith("-->")).toBe(true);
       expect(thread.body.match(new RegExp(FINDING_MARKER, "g"))).toHaveLength(1);
     }
     expect(threads[0]?.body).toContain(findingMarker("f-1", "medium"));
     expect(threads[1]?.body).toContain(findingMarker("f-2", "medium"));
+  });
+});
+
+/**
+ * **One badge, two surfaces** (#135). The record entry and the thread it points
+ * at used to label one finding two ways — the body said `Medium`, the thread
+ * said *Fix before merge*, which every finding is — so the tests below hold the
+ * thread to the same `severityBadge` the body renders, and hold the label that
+ * said nothing out of it.
+ */
+describe("the thread a finding opens", () => {
+  const bodyOf = (over: Partial<Finding> = {}): string =>
+    reviewThreads(place([finding({ line: 11, ...over })]))[0]?.body ?? "";
+
+  it.each(SEVERITIES)("opens with the badge the record entry shows, for %s", (severity) => {
+    const body = bodyOf({ severity });
+
+    expect(body.startsWith(`${severityBadge(severity)}\n\n`)).toBe(true);
+    expect(body).toContain("the guard runs after the return");
+  });
+
+  /**
+   * The label every finding carries by definition, gone: on a thread it told a
+   * reader nothing, and it displaced the one thing that does say something.
+   */
+  it("no longer carries the label every finding carries", () => {
+    expect(bodyOf()).not.toMatch(/fix before merge/i);
+  });
+
+  /**
+   * *Previously missed* stays, because it is the label that decides something —
+   * the group the record files the finding under — and a reader of the thread
+   * should see the same fact.
+   */
+  it("keeps previously missed beside the badge, where it applies", () => {
+    const body = bodyOf({
+      // Both labels, in the order the label reader recognises: the badge
+      // replaces one of them and the group keeps the other.
+      body: "**Previously missed — fix before merge.** the guard runs after the return",
+    });
+
+    expect(body.startsWith(`${severityBadge("medium")} · ${PREVIOUSLY_MISSED_LABEL}\n\n`)).toBe(
+      true,
+    );
+    expect(body).toContain("the guard runs after the return");
+    expect(body).not.toMatch(/fix before merge/i);
+  });
+
+  /**
+   * And a finding with no rating at all opens with something rather than with
+   * an empty chip. Unreachable from a parsed output — `parseFinding` defaults
+   * the severity — which is exactly why it is asserted here.
+   */
+  it("opens with no empty badge where there is no severity", () => {
+    const rated = { severity: undefined } as unknown as Partial<Finding>;
+    const plain = bodyOf(rated);
+    const missed = bodyOf({
+      ...rated,
+      body: "**Previously missed.** the guard runs after the return",
+    });
+
+    expect(plain).not.toContain("<img");
+    expect(plain.startsWith("the guard runs after the return")).toBe(true);
+    expect(missed.startsWith(`${PREVIOUSLY_MISSED_LABEL}\n\n`)).toBe(true);
+  });
+
+  /**
+   * The emphasis the label opened is closed after the claim where a model wrote
+   * the two in one span, so taking the label leaves a `**` with nothing to pair
+   * with — two literal asterisks on a thread that posts this verbatim.
+   */
+  it("leaves no half of an emphasis span the label opened", () => {
+    expect(bodyOf({ body: "**Fix before merge. The guard runs after the return.**" })).toContain(
+      "The guard runs after the return.\n",
+    );
+    expect(bodyOf({ body: "**Fix before merge. The guard runs late.**" })).not.toContain("**");
+  });
+
+  /** A body the model opened with no label of ours is posted as it was written. */
+  it("leaves a body carrying no label of ours alone", () => {
+    expect(bodyOf({ body: "> the guard runs after the return" })).toContain(
+      "> the guard runs after the return",
+    );
+  });
+
+  /**
+   * And the claim is still readable back off the thread, which is what a later
+   * round's record entry is built from: a reader that stopped at the labels
+   * would take the `<img>` tag for the finding's claim.
+   */
+  it("still reads back as its claim rather than as the badge", () => {
+    expect(openingClaim(bodyOf({ severity: "high" }))).toBe("the guard runs after the return");
+    expect(
+      openingClaim(
+        bodyOf({ body: "**Fix before merge — previously missed.** the cache key omits the tenant" }),
+      ),
+    ).toBe("the cache key omits the tenant");
   });
 });
 
@@ -496,11 +601,122 @@ describe("severity", () => {
     expect(parsed.severity).toBe("medium");
   });
 
-  /** Text, never one of GitHub's severity images — decision 9 rules the hotlink out. */
-  it("renders a badge as text rather than an image", () => {
-    expect(severityBadge("high")).toBe("`High`");
-    expect(severityBadge("low")).toBe("`Low`");
-    expect(severityBadge("medium")).not.toContain("http");
+  /**
+   * The badge a review surface renders: a chip **this repository hosts**, at a
+   * URL built out of the manifest (#135). Decision 9 ruled out hotlinking
+   * GitHub's own; a tag-pinned asset of our own is immutable, so a body written
+   * today does not acquire a broken image on the day an upstream URL moves.
+   *
+   * The URL is built here rather than compared to a constant, because building
+   * it from anything but the manifest is what the check is against: a version
+   * written into source would be a nineteenth pin site and the one nothing
+   * rewrites.
+   */
+  it.each(SEVERITIES)("renders %s as an image chip pinned to this release", (severity) => {
+    const owner = PACKAGE_NAME.replace(/^@/, "");
+
+    expect(severityBadge(severity)).toBe(
+      `<img src="https://raw.githubusercontent.com/${owner}/v${VERSION}/assets/severity-${severity}.svg" height="18" alt="${severityWord(severity)}" align="top">`,
+    );
+  });
+
+  /**
+   * And the three files are there, at the path the URL names — read through
+   * `severityAssetPath` so the test cannot agree with a URL that moved. A
+   * missing one is a broken image in every review of the release that ships it,
+   * and nothing else would notice.
+   */
+  it.each(SEVERITIES)("ships a well-formed chip for %s at the path the URL names", (severity) => {
+    const svg = fs.readFileSync(severityAssetPath(severity), "utf8").trim();
+
+    expect(svg.startsWith("<svg ")).toBe(true);
+    expect(svg.endsWith("</svg>")).toBe(true);
+    expect(svg).toContain('xmlns="http://www.w3.org/2000/svg"');
+    // The word, twice: the accessible name a reader of the file gets, and the
+    // text drawn in the pill.
+    expect(svg).toContain(`aria-label="${severityWord(severity)}"`);
+    expect(svg).toContain(`>${severityWord(severity)}</text>`);
+
+    // Well-formed, checked as nesting rather than by eye: every element opened
+    // is closed, and in the order it was opened.
+    const open: string[] = [];
+    for (const [, closing, name, selfClosing] of svg.matchAll(
+      /<(\/?)([a-zA-Z][\w:-]*)\b[^>]*?(\/?)>/g,
+    )) {
+      if (closing === "/") expect(open.pop()).toBe(name);
+      else if (selfClosing !== "/") open.push(name ?? "");
+    }
+    expect(open).toEqual([]);
+  });
+
+  /**
+   * The **alt text is the word**, which is what keeps the image from being the
+   * only copy: an email that blocks images, and anything that turns a body or a
+   * thread into prompt text for an agent, gets `Medium`.
+   */
+  it.each(SEVERITIES)("reduces a badge to its alt text for a reader of text, %s", (severity) => {
+    expect(withSeverityBadgesAsText(`- ${severityBadge(severity)} the claim`)).toBe(
+      `- ${severityWord(severity)} the claim`,
+    );
+  });
+
+  /** And a badge from another release reduces too: the tag in the URL differs. */
+  it("reduces a badge written by another release", () => {
+    const older =
+      '<img src="https://raw.githubusercontent.com/o/r/v0.4.0/assets/severity-high.svg" height="18" alt="High" align="top">';
+
+    expect(withSeverityBadgesAsText(`${older} and ${older}`)).toBe("High and High");
+  });
+
+  /** One surface renders no image, and it is not a review surface — see #135. */
+  it("keeps a text badge for the surface that must render no image", () => {
+    expect(severityTextBadge("high")).toBe("`High`");
+    expect(severityTextBadge("low")).toBe("`Low`");
+  });
+
+  /**
+   * And a runner that cannot say which version it is renders the text badge
+   * rather than an `<img>` naming a tag like `vunknown`. Never a broken image:
+   * a plain word is a worse chip and a far better failure.
+   */
+  it("falls back to the text badge where the manifest could not be read", async () => {
+    vi.resetModules();
+    vi.doMock("../shared/manifest.js", () => ({ VERSION: "unknown", PACKAGE_NAME: "unknown" }));
+    try {
+      const unread = await import("../shared/review-findings.js");
+
+      expect(unread.severityBadge("medium")).toBe("`Medium`");
+      expect(unread.severityBadge("medium")).not.toContain("<img");
+    } finally {
+      vi.doUnmock("../shared/manifest.js");
+      vi.resetModules();
+    }
+  });
+
+  /**
+   * The strip `carriedClaim` reads a body entry back with, in every form a
+   * release has written a badge in — the image, the bold code span of the
+   * decision the image superseded, and the plain span v0.4.0 and v0.5.0 bodies
+   * carry. A form this does not know is an entry that collects a second badge
+   * every round it stays open.
+   */
+  it.each([
+    ["the image chip", severityBadge("medium")],
+    ["the bold code span", "**`Medium`**"],
+    ["the plain code span", "`Medium`"],
+    ["a chip from another release", '<img src="https://x/assets/severity-medium.svg" alt="Medium">'],
+  ])("strips %s off a carried claim", (_form, badge) => {
+    expect(withoutSeverityBadge(`${badge} the cache key omits the tenant`, "medium")).toBe(
+      "the cache key omits the tenant",
+    );
+  });
+
+  /** This entry's own badge and no other: a claim may legitimately quote one. */
+  it("leaves a badge this entry's severity would not have written", () => {
+    expect(withoutSeverityBadge("`Low` is not a place for preferences", "high")).toBe(
+      "`Low` is not a place for preferences",
+    );
+    expect(withoutSeverityBadge(`${severityBadge("low")} chips`, "high")).toContain("<img");
   });
 
   it("ranks worst first, and an unrated entry last of all", () => {

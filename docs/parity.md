@@ -839,9 +839,12 @@ expensive to rediscover.
   the round that raised it — then counted through `stillOpen` in every round after, so the same
   finding was non-blocking when found and blocking for ever after with no code change between.
 
-  The label is still asked for in both halves of the brief, because it is the first thing a human
-  reads on the thread. What it may never be again is a thing the machinery reads: the one
-  survivor is *previously missed*, which selects a **group** and not a count.
+  The label is still asked for in both halves of the brief, and since #135 it is no longer what a
+  human reads on the thread: `threadBody` strips it and opens with the severity badge instead —
+  *fix before merge* being what every finding in the list is, it told a reader nothing while
+  displacing the one thing that does. What the label may never be again is a thing the machinery
+  reads: the one survivor is *previously missed*, which selects a **group** and not a count, is
+  read off the body the model wrote, and is kept beside the badge on the thread for that reason.
 - **Severity is display and ordering, and nothing reads it that decides anything.** Since #113
   (#109, decision 9) every finding and every follow-up carries `high` / `medium` / `low`. The
   review body sorts each group worst first and badges each entry; `deriveVerdict` never sees it,
@@ -859,6 +862,16 @@ expensive to rediscover.
   has nowhere else to survive a round: a carried finding reaches a later review as an id and one
   line of text, and a record that badged what this round found and nothing it carried would be
   sorting half a list.
+
+  Since #135 the badge is a **tinted pill image this repository hosts**, at a URL built from the
+  manifest and pinned to the release that posted it — #109 decision 9 ruled out *hotlinking*
+  GitHub's own chips, which is a dead image the day their URL moves, and a tag-pinned asset of our
+  own is immutable. The same badge opens the thread, so the two surfaces cannot label one finding
+  two ways. Two things keep the picture from being the only copy: its alt text is the word, and
+  every reader that turns a body or a thread into prompt text reduces the tag to that word
+  (`withSeverityBadgesAsText`). One surface renders no image at all — the `**Severity:**` line of
+  an issue the follow-ups workflow files, which is an agent's task description and outlives the
+  pull request the URL is pinned beside.
 - **The review body is a record, and its newest copy is the current statement.** Since #113 (#109,
   decision 8) it is Copilot's overview in order — `## Agent review`, the assessment, one sentence
   naming what is unresolved, the step in italics, `**Findings:** N` with its severities, then

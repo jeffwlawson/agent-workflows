@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { asRecord, asString } from "./common.js";
 import { unquotePath } from "./diff-lines.js";
+import { PACKAGE_NAME, VERSION } from "./manifest.js";
 
 /**
  * How bad a finding is, for **display and ordering and nothing else** (#109,
@@ -47,17 +48,148 @@ export const parseSeverity = (value: unknown): Severity => {
   return isSeverity(normalised) ? normalised : DEFAULT_SEVERITY;
 };
 
+/** The one word a severity is written as, shared by both badges below. */
+export const severityWord = (severity: Severity): string =>
+  `${severity.charAt(0).toUpperCase()}${severity.slice(1)}`;
+
 /**
- * The badge as written: **text, never an image**.
+ * The badge for a surface that must render **no image**: a code span,
+ * `` `Medium` ``.
  *
- * GitHub serves severity chips as assets on its own domain, and hotlinking one
- * puts a third-party request — and a dead image on the day the URL moves — into
- * a body that has to stay readable for as long as the pull request exists
- * (#109, decision 9). A code span renders as a chip in every GitHub surface
- * and in a plain-text reader alike.
+ * One surface needs it, and it is not a review surface — the `**Severity:**`
+ * line of an issue the follow-ups workflow files after the merge (#135). That
+ * body is handed to an implement agent verbatim as its task and outlives the
+ * pull request whose review rated it — and a pinned URL outlives nothing by
+ * accident, so the one surface that is read after the release it names is the
+ * one that carries the word instead. It is also the fallback below, for a runner
+ * that cannot say which version it is.
+ *
+ * It sits beside `severityBadge` rather than in the filing module so the two
+ * renderings share one word per severity. Two spellings of *Medium* is the
+ * drift this is one module to avoid.
+ */
+export const severityTextBadge = (severity: Severity): string => `\`${severityWord(severity)}\``;
+
+/**
+ * Where the chips live, relative to the repository root — and **the one copy of
+ * that path**, read by the URL below and by the test that holds the three files
+ * to it.
+ *
+ * Renaming or moving one of these files is an invariant with no runtime symptom
+ * in this repository: every review body and every thread of every past release
+ * names the file at the tag it was posted under, so the break shows up in
+ * somebody else's pull request from a year ago and nowhere in the build.
+ */
+export const severityAssetPath = (severity: Severity): string =>
+  `assets/severity-${severity}.svg`;
+
+/** `@owner/repo` as npm spells it → `owner/repo`, as a raw asset URL does. */
+const REPO_SLUG = PACKAGE_NAME.replace(/^@/, "");
+
+/**
+ * Whether this runner can say who and what version it is — which is what the
+ * image URL is built out of, so a runner that cannot is one that would name a
+ * tag like `vunknown` and render a broken image. It renders the text badge
+ * instead: a plain word is a worse chip and a far better failure.
+ */
+const IDENTIFIED = VERSION !== "unknown" && PACKAGE_NAME !== "unknown";
+
+/**
+ * Tag-pinned, and that is the whole of why an image is allowed here at all: the
+ * URL names a tag rather than a branch, so what a body written today points at
+ * is immutable. Built from the manifest rather than written down, so it is not a
+ * nineteenth site `scripts/sync-version.ts` has to rewrite — and a runner that
+ * posts a review is always a released version, so its tag always exists.
+ */
+const severityAssetUrl = (severity: Severity): string =>
+  `https://raw.githubusercontent.com/${REPO_SLUG}/v${VERSION}/${severityAssetPath(severity)}`;
+
+/**
+ * The badge every **review** surface renders: a tinted pill image, self-hosted
+ * and tag-pinned (#135).
+ *
+ * #109 decision 9 ruled an image out, and what it ruled out was a *hotlink*:
+ * GitHub serves its own severity chips off its own domain, so a body that has to
+ * stay readable for as long as the pull request exists would carry a dead image
+ * the day that URL moved. Chips drawn for this repository and served from a tag
+ * of it remove that, and are drawn rather than copied because redistributing
+ * GitHub's assets from a public repository other people adopt is a licensing
+ * risk.
+ *
+ * What it costs is recorded in `docs/ADOPTING.md`: an adopter's review bodies
+ * load an image from this repository, so making it private, renaming it or
+ * deleting it leaves every past review showing the alt text.
+ *
+ * **The alt text is the word**, which is what keeps the picture from being the
+ * only copy: a notification email that blocks images, and every reader that
+ * turns a body or a thread into prompt text for an agent
+ * (`withSeverityBadgesAsText`), gets `Medium`.
  */
 export const severityBadge = (severity: Severity): string =>
-  `\`${severity.charAt(0).toUpperCase()}${severity.slice(1)}\``;
+  IDENTIFIED
+    ? `<img src="${severityAssetUrl(severity)}" height="18" alt="${severityWord(severity)}" align="top">`
+    : severityTextBadge(severity);
+
+/**
+ * The image badge wherever it appears in a string, matched on **the asset path
+ * and not the whole tag**: the tag carries the release it was written under, so
+ * an exact string only ever recognises the badges of the version doing the
+ * reading.
+ */
+const SEVERITY_IMAGE = /<img\b[^>]*assets\/severity-(high|medium|low)\.svg[^>]*>/gi;
+
+/** Just the head of one, for the readers that strip an opening badge. */
+const OPENING_SEVERITY_IMAGE = /^<img\b[^>]*assets\/severity-(?:high|medium|low)\.svg[^>]*>/i;
+
+const altOf = (tag: string): string | undefined => /\balt="([^"]*)"/i.exec(tag)?.[1];
+
+/**
+ * Every badge image in a string reduced to its alt text — what a reader that
+ * renders **no images** should be handed (#135).
+ *
+ * Every agent in this loop is one: a review body and an inline thread reach the
+ * fix agent and the next round's reviewer as prompt text, and an `<img>` tag
+ * passed through spends a line of it on a URL and says the severity nowhere a
+ * model is reading. The alt is the word, so this is lossless.
+ *
+ * Applied where text is rendered *for an agent* rather than where it is read
+ * off GitHub, because the same text has a second reader that needs the tag
+ * intact: `carriedClaim` strips this file's own badge off a carried entry, and
+ * a badge already reduced to a bare `Medium` is one it could only strip by
+ * eating a claim that opens with the word.
+ */
+export const withSeverityBadgesAsText = (text: string): string =>
+  text.replace(SEVERITY_IMAGE, (tag: string, severity: string) =>
+    altOf(tag) ?? severityWord(severity as Severity),
+  );
+
+/**
+ * A badge this loop wrote for **this** severity, taken off the head of a line —
+ * in every form a release of it has written one: the image, the bold code span
+ * of the decision the image superseded, and the plain code span v0.4.0 and
+ * v0.5.0 bodies carry.
+ *
+ * Three forms because a body entry is read back out of the last review that
+ * wrote it, which may be any earlier release (#127, decision 5): a form this
+ * does not recognise is an entry that collects a second badge every round it
+ * stays open.
+ *
+ * **This severity's badge and not any badge.** The caller knows what the entry
+ * is rated, and a looser rule would eat the opening of a claim that
+ * legitimately quotes another rating — `` `Low` is not a place for
+ * preferences`` is a claim somebody reviewing this codebase will eventually
+ * make.
+ */
+export const withoutSeverityBadge = (text: string, severity: Severity): string => {
+  const word = severityWord(severity);
+  const forms = [
+    `<img\\b[^>]*assets\\/severity-${severity}\\.svg[^>]*>`,
+    `<img\\b[^>]*\\balt="${word}"[^>]*>`,
+    `\\*\\*\`${word}\`\\*\\*`,
+    `\`${word}\``,
+  ];
+  return text.replace(new RegExp(`^(?:${forms.join("|")})\\s*`, "i"), "");
+};
 
 /**
  * Worst first, and **stable** within a severity: the order the review produced
@@ -243,15 +375,20 @@ export const PREVIOUSLY_MISSED_LABEL = "Previously missed";
  * *Open*, and a label left standing at the front of the one-line claim the
  * record shows. Both are display faults rather than lost findings, and both
  * are still worth not having.
+ *
+ * `·` is in it for a shape this file writes rather than one a model does:
+ * `threadBody` opens a previously-missed thread `<badge> · Previously missed`,
+ * and the reader that takes the badge off hands the rest of that line to this
+ * (#135).
  */
 const labelled = (label: string): RegExp =>
-  new RegExp(`^[\\s*_#>]*${label}(?![A-Za-z0-9])`, "i");
+  new RegExp(`^[\\s*_#>·]*${label}(?![A-Za-z0-9])`, "i");
 
 const MISSED = labelled(PREVIOUSLY_MISSED_LABEL);
 const LABELS = [labelled(FIX_BEFORE_MERGE_LABEL), MISSED] as const;
 
 /** The punctuation and emphasis a label leaves behind it. */
-const LEADING = /^[\s*_#>.:;,—–-]+/;
+const LEADING = /^[\s*_#>.:;,·—–-]+/;
 
 /**
  * Whether an earlier review had already read the code this finding is about.
@@ -265,29 +402,20 @@ const LEADING = /^[\s*_#>.:;,—–-]+/;
 export const isPreviouslyMissed = (finding: Finding): boolean => MISSED.test(finding.body);
 
 /**
- * The claim a finding's body opens with: the labels stripped, up to the first
- * line break.
- *
- * Up to the line break rather than the whole body, which is what keeps a
- * ```suggestion block out of the one-line surfaces this feeds. The body is
- * where the evidence and the fix live; a list wants the claim and a way to
- * reach the rest.
+ * A line's opening labels taken off, and **nothing else** — the half
+ * `threadBody` uses, where what follows the label is a whole body rather than a
+ * claim, so a leading `>` or `-` that no label put there is the model's own
+ * formatting and stays.
  *
  * Stripped in a loop rather than once, because a finding may carry both labels
  * and in either order — `**Fix before merge — previously missed.**` is the
  * shape the prompt asks for and `**Previously missed.**` is the shape a model
  * reaches for, and a single pass over the first would leave the second in the
- * one-line surfaces this feeds.
- *
- * And the **next** line where stripping the label leaves nothing, which is
- * what a model writing the label as a heading produces: `### Fix before
- * merge`, then a blank line, then the claim. The label reader admits that
- * shape, so this has to as well — a finding that counted toward the verdict
- * and entered the record as a blank line is the same silence with an extra
- * step in it.
+ * surfaces this feeds.
  */
-const strippedOfLabels = (line: string): string => {
-  let claim = line.replace(LEADING, "");
+const withoutLabels = (line: string): string => {
+  let claim = line;
+  let removed = false;
   for (let stripped = true; stripped; ) {
     stripped = false;
     for (const label of LABELS) {
@@ -295,12 +423,80 @@ const strippedOfLabels = (line: string): string => {
       if (next !== claim) {
         claim = next.replace(LEADING, "");
         stripped = true;
+        removed = true;
       }
     }
   }
-  return claim.trim();
+
+  // The emphasis a label opened is closed *after* the claim where the model
+  // wrote both in one span — `**Fix before merge. The guard runs late.**` — so
+  // taking the label away leaves a `**` with nothing to pair with. Harmless
+  // where this feeds a one-line surface that strips emphasis anyway, and two
+  // literal asterisks on a thread, which posts what this returns verbatim.
+  const dangling = removed && claim.endsWith("**") && (claim.split("**").length - 1) % 2 === 1;
+  return dangling ? claim.slice(0, -2).trimEnd() : claim;
 };
 
+/**
+ * And for a one-line surface, this file's own opening badge with them, plus
+ * whatever decoration is left at the front.
+ *
+ * The badge is why this exists as a second reader (#135): `threadBody` opens a
+ * thread with the severity chip, so a reader that stopped at the labels would
+ * return an `<img>` tag as the finding's claim — and the record entry that tag
+ * lands in is the one line a human scans the round by.
+ */
+const strippedOfLabels = (line: string): string =>
+  withoutLabels(line.replace(OPENING_SEVERITY_IMAGE, "").replace(LEADING, "")).trim();
+
+/**
+ * A body with its opening label taken off and **everything else left alone** —
+ * what a thread is posted with, now that the badge says what the label used to
+ * (#135).
+ *
+ * The label is dropped rather than kept because on a thread it says nothing:
+ * every entry in `findings` is fix-before-merge by definition
+ * (`FIX_BEFORE_MERGE_LABEL`), so the one thing a reader could learn from the
+ * opening was the severity, and the severity was in the marker where only this
+ * loop could see it.
+ *
+ * The **line** goes with the label where stripping it leaves nothing, which is
+ * what a model writing the label as a heading produces: `### Fix before merge`,
+ * then a blank line, then the claim. `openingClaim` admits that shape, so this
+ * has to as well — a thread opening on a blank line and a rule is a body that
+ * looks truncated.
+ *
+ * Untouched where there was no label at all, rather than cleaned up: this
+ * returns a whole body, and a strip that ran unconditionally would take the `>`
+ * off a body the model chose to open with a quote.
+ */
+const withoutOpeningLabel = (body: string): string => {
+  const lines = body.split("\n");
+  const first = lines[0] ?? "";
+  const stripped = withoutLabels(first);
+  if (stripped === first) return body;
+
+  const rest = lines.slice(1);
+  if (stripped.trim() !== "") return [stripped, ...rest].join("\n");
+
+  while (rest.length > 0 && (rest[0] ?? "").trim() === "") rest.shift();
+  return rest.join("\n");
+};
+
+/**
+ * The claim a finding's body opens with: the badge and the labels stripped, up
+ * to the first line break.
+ *
+ * Up to the line break rather than the whole body, which is what keeps a
+ * ```suggestion block out of the one-line surfaces this feeds. The body is
+ * where the evidence and the fix live; a list wants the claim and a way to
+ * reach the rest.
+ *
+ * And the **next** line where stripping leaves nothing — a label written as a
+ * heading, or a thread of this loop's own, whose first line is the badge and
+ * nothing else. A finding that counted toward the verdict and entered the
+ * record as a blank line is the same silence with an extra step in it.
+ */
 export const openingClaim = (body: string): string => {
   const lines = body.split("\n");
   const claim = strippedOfLabels(lines[0] ?? "");
@@ -745,14 +941,44 @@ export interface ReviewThread {
 }
 
 /**
- * The thread text: the finding as the model wrote it, then its id.
+ * The thread text: the **badge**, the finding as the model wrote it minus the
+ * label the badge replaces, then its id (#135).
  *
- * The marker goes at the **end**. A finding's body opens with its label and its
- * claim — which is what a reader's eye lands on and what the body's checklist
- * reads back — and a hidden comment ahead of it displaces both for no gain.
+ * The badge is the same one the record entry for this finding shows, written
+ * from the same `severityBadge`, so the two surfaces cannot disagree about how
+ * bad it is. Before this they did, and in the most confusing possible way: the
+ * body listed the finding as `Medium` while its own thread opened **Fix before
+ * merge.** — a label every finding carries by definition, over a severity a
+ * reader could only get at by viewing the source of the hidden marker.
+ *
+ * *Previously missed* survives the strip because it is the one label that says
+ * something: it decides the group the record files the finding under
+ * (`isPreviouslyMissed`), and that is read off the body the model wrote, which
+ * is why the strip happens here and the prompt still asks for both labels.
+ *
+ * A finding with **no severity** opens with the label alone, or with nothing at
+ * all — never an empty badge. The type says there is always one and
+ * `parseFinding` defaults it, so this arm is unreachable from a parsed output;
+ * it is here because an empty `<img>` beside a finding is worse than an opening
+ * this loop did not write, and because the marker below already has the same
+ * arm for the same reason.
+ *
+ * The marker goes at the **end**. What a reader's eye lands on is the badge and
+ * the claim, and a hidden comment ahead of them displaces both for no gain.
  */
-const threadBody = (placed: PlacedFinding): string =>
-  `${placed.finding.body}\n\n${findingMarker(placed.id, placed.finding.severity)}`;
+const threadBody = (placed: PlacedFinding): string => {
+  const { finding } = placed;
+  const opening = [
+    finding.severity === undefined ? undefined : severityBadge(finding.severity),
+    isPreviouslyMissed(finding) ? PREVIOUSLY_MISSED_LABEL : undefined,
+  ]
+    .filter((part) => part !== undefined)
+    .join(" · ");
+
+  return [opening, withoutOpeningLabel(finding.body), findingMarker(placed.id, finding.severity)]
+    .filter((part) => part !== "")
+    .join("\n\n");
+};
 
 /**
  * The threads the mutation carries — **one per placed finding**, with nothing

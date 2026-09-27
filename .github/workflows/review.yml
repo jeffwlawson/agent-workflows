@@ -134,11 +134,15 @@ jobs:
       pull-requests: write
       # The verdict, posted as a commit status on the reviewed head (#96). A
       # status is not a pull-request write — it is its own scope — so nothing
-      # already here covers it, and the caller has to grant it too. Without it
-      # the review posts and no verdict appears, which is the one failure in
-      # this job that looks like the feature simply being switched off; the
-      # steps warn rather than failing for that reason, and `setup/doctor.ts`
-      # names the grant where an adopter is looking for it.
+      # already here covers it, and the caller has to grant it too. Omitting it
+      # there does not buy a review with no verdict on it: a caller granting
+      # less than this block declares fails the whole run before any job starts
+      # (probed, #146), which is what `setup/doctor.ts` reports as an error,
+      # before a label rather than after one. The step that posts the status
+      # warns rather than failing all the same — a posted review is worth more
+      # than the line summarising it — so where the token is short for some
+      # other reason this is the one failure in this job that looks like the
+      # feature simply being switched off.
       statuses: write
 
     env:

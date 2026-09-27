@@ -328,6 +328,57 @@ const agentWorkflows = (): readonly string[] => [...callerWorkflows, ...runnerWo
 const runnerWorkflows = RUNNER_COMMANDS.map((c) => path.join(WORKFLOW_DIR, `${c}.yml`));
 
 /**
+ * What a workflow's `permissions:` blocks say about themselves, unwrapped: one
+ * string per block with no `scope`, and with one the comment attached to that
+ * scope **inside** each block that grants it.
+ *
+ * Unwrapped before anything matches over it, because a claim in a YAML comment
+ * wraps at whatever point the line ran out — a regex over the raw text only
+ * catches a phrase that happens not to straddle a `#`. All the blocks rather
+ * than the first, since a reusable has one per job.
+ *
+ * The per-scope form is the one worth having. A block read whole is a surface
+ * where one correct paragraph satisfies a match that every scope under it
+ * fails, which is how #146's sweep left `statuses: write` describing a failure
+ * the docblock three lines above it had just retired.
+ */
+const permissionComments = (file: string, scope?: string): readonly string[] => {
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const indentOf = (line: string): number => line.length - line.trimStart().length;
+  const unwrap = (from: number, to: number): string =>
+    lines
+      .slice(from, to)
+      .filter((l) => l.trimStart().startsWith("#"))
+      .map((l) => l.trimStart().replace(/^#\s?/, ""))
+      .join(" ");
+  /** Where the contiguous run of comment lines ending at `at` begins. */
+  const commentsAbove = (at: number, floor: number): number => {
+    let from = at;
+    while (from > floor && (lines[from - 1] ?? "").trimStart().startsWith("#")) from -= 1;
+    return from;
+  };
+
+  return lines.flatMap((line, at) => {
+    if (line.trim() !== "permissions:") return [];
+    const indent = indentOf(line);
+    // The block ends where the indentation returns to the key's own or the
+    // mapping runs out, whichever comes first.
+    let to = at + 1;
+    while (to < lines.length) {
+      const next = lines[to] ?? "";
+      if (next.trim() === "" || indentOf(next) <= indent) break;
+      to += 1;
+    }
+
+    if (scope === undefined) return [unwrap(commentsAbove(at, 0), to)];
+
+    const granted = lines.slice(at + 1, to).findIndex((l) => l.trim() === scope);
+
+    return granted === -1 ? [] : [unwrap(commentsAbove(at + 1 + granted, at + 1), at + 1 + granted)];
+  });
+};
+
+/**
  * Every caller under test, from **both** places they live.
  *
  * `examples/callers/` is the reference set an adopter copies. This repository
@@ -2489,24 +2540,37 @@ describe("every workflow in the loop is called rather than copied", () => {
    * asserted rather than just made.
    */
   it("review.yml's permissions comment describes that failure, not a silent one", () => {
-    const lines = fs.readFileSync(REVIEW, "utf8").split("\n");
-    const at = lines.findIndex((l) => l.trim() === "permissions:");
+    const [comment] = permissionComments(REVIEW);
 
-    expect(at).toBeGreaterThan(0);
-
-    let from = at;
-    while (from > 0 && (lines[from - 1] ?? "").trimStart().startsWith("#")) from -= 1;
-    // Unwrapped before matching: a claim in a YAML comment wraps at whatever
-    // point the line ran out, so a regex over the raw block only catches a
-    // phrase that happens not to straddle a `#`.
-    const comment = lines
-      .slice(from, at)
-      .map((l) => l.trimStart().replace(/^#\s?/, ""))
-      .join(" ");
-
+    expect(comment).toBeDefined();
     expect(comment).toContain("grants nothing");
     expect(comment).not.toMatch(/silently transitions no label/i);
     expect(comment).toMatch(/before the checkout/i);
+  });
+
+  /**
+   * And what a caller short of a scope in that block pays, which #146 corrected
+   * from the step to the run — asserted on the **per-scope** comments and not
+   * just the paragraph above them, because that is the distinction the
+   * correction's own sweep fell down: the docblock was rewritten and
+   * `statuses: write`'s two lines below it, saying "the caller has to grant it
+   * too. Without it the review posts and no verdict appears", were not. The
+   * grep that carried the sweep looked for `403` and "a caller missing", and a
+   * sentence naming no status code contains neither.
+   *
+   * Written per scope rather than over the block joined, since a block read
+   * whole passes on the docblock's copy while any number of scopes below it
+   * still cost the step. Anchored to `statuses:` because that is both the scope
+   * that survived and the one whose caller had already been corrected — a
+   * reusable contradicting its own caller, which is the shape a sweep leaves.
+   */
+  it.each(
+    agentWorkflows().flatMap((file) =>
+      permissionComments(file, "statuses: write").map((comment) => [file, comment] as const),
+    ),
+  )("%s: says a caller short of statuses: write costs the run", (_file: string, comment: string) => {
+    expect(comment).toMatch(/before any job starts/);
+    expect(comment).not.toMatch(/the review posts and no verdict appears/i);
   });
 
   /**

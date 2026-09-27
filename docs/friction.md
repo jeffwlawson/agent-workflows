@@ -2295,3 +2295,34 @@ sentence sending an adopter whose caller is already correct off to fix it, which
 pattern left. The rule that would have caught it: a correction to *what a failure is* is a change
 to every message that names that failure, and the messages live where the failure happens rather
 than where it is described.
+
+## 2026-09-27 — the test that pinned the paragraph stopped one line above the claim
+
+The entry above closed on "a correction to *what a failure is* is a change to every message that
+names that failure", and the round that applied it still left one. `review.yml`'s `permissions:`
+block carries a docblock spelling the grant/bound split out at length and a comment per scope
+underneath; the sweep rewrote the docblock and `statuses: write`'s two lines below it kept the old
+model — "the caller has to grant it too. Without it the review posts and no verdict appears" —
+while that scope's comment in **both** caller sets was corrected. A reusable contradicting its own
+caller on one scope, which is what a file-at-a-time sweep leaves behind.
+
+Two things hid it, and neither is the author's attention. The greps were for `403` and "a caller
+missing"; the surviving sentence names no status code, so it is invisible to a search for the claim
+and legible only to a reading. And `tests/workflows.test.ts` *did* pin that block — it was written
+for the 2026-09-21 correction to the same paragraph — but it read from the first comment line above
+`permissions:` down to the key and stopped there. The scopes are below the key. A guard whose
+surface is one paragraph of a comment passes on that paragraph being right, however many copies of
+the retired claim sit three lines under it.
+
+So the guard is per scope now, over both halves, and it fails by name on the file that disagrees.
+The general form is worth more than the fix: **a prose guard is only as wide as the text it
+reads**, and a surface chosen to cover the sentence that was wrong last time covers exactly that
+sentence. The block was the unit a reader would have said it guarded; the paragraph was the unit it
+guarded.
+
+A blunter rule was tried first and rejected, which is the other half of this. Banning the retired
+construction outright — no `permissions:` comment may say "without it" — failed on four comments
+that are correct: `resolveReviewThread` is refused "to a token without it", agent-fix labels
+"unguarded without it", a public repo's check runs read "without this scope". The claim is wrong
+only where it is about a *caller's* grant, and no phrase in it says which. A guard that cannot tell
+the two apart is one the next author deletes.

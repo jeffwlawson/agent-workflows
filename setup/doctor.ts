@@ -326,12 +326,19 @@ const missingPermission = (
  * Recorded from a real refusal (#146), which is also why this does not quote the
  * message: the annotation names the **called** job, which this table does not
  * know, and a quote with the wrong job id in it is worse than a paraphrase.
+ *
+ * It is appended to two findings with different subjects, so it names the short
+ * scope by description rather than as "this scope". A grant finding has just
+ * named one; the no-`permissions:`-block finding has just named the two the
+ * restricted default *does* grant, and "this scope" there points an adopter at
+ * `contents` or `packages` when the annotation will name whichever one the job
+ * declares and they do not hold.
  */
 const REFUSED =
   `A called job cannot hold more than its caller granted, and GitHub refuses the elevation rather ` +
   `than trimming it: this fails the whole run before any job starts, as an *Invalid workflow file* ` +
-  `annotation on the run page naming this scope — which \`gh run view\` reports only as a workflow ` +
-  `file issue, and which no job log records at all.`;
+  `annotation on the run page naming the scope that is short — which \`gh run view\` reports only ` +
+  `as a workflow file issue, and which no job log records at all.`;
 
 /**
  * Rule on the installed callers and the facts. Pure: everything it needs has

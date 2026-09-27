@@ -61,7 +61,9 @@ jobs:
       # own scope, so `pull-requests: write` does not cover it. The step that
       # posts it warns rather than failing, on the grounds that a posted review
       # beats the line summarising it — but that is not what omitting this buys
-      # you, which is the run (docs/ADOPTING.md §4).
+      # you: a caller granting less than a job it calls declares is refused
+      # before any job starts, so what it costs is the run (docs/ADOPTING.md
+      # §4).
       statuses: write
     with:
       # `<caller job id> / <called job id>`. The other three inputs

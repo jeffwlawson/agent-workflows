@@ -82,10 +82,17 @@ const waitStep = (): Step => {
   return step as Step;
 };
 
+/**
+ * Bounded like every other spawn here, and the one place it matters most: this
+ * runs at module scope for `CAN_RUN` and again in each `it.skipIf`, so a hang is
+ * outside any test body and no `testTimeout` could reach it. A killed spawn
+ * reports `null` rather than `0`, so an overrun skips the suite — the same
+ * answer as the tool being absent — instead of stalling the run.
+ */
 const onPath = (command: string): boolean =>
   process.platform === "win32"
-    ? spawnSync("where", [command]).status === 0
-    : spawnSync("sh", ["-c", `command -v ${command}`]).status === 0;
+    ? spawnSync("where", [command], { timeout: SUBPROCESS_TIMEOUT }).status === 0
+    : spawnSync("sh", ["-c", `command -v ${command}`], { timeout: SUBPROCESS_TIMEOUT }).status === 0;
 
 const CAN_RUN = ["bash", "jq", "node"].every(onPath);
 
@@ -302,7 +309,10 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   it.skipIf(!onPath("gh"))("every gh call the wait composes is one gh accepts", () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-gh-"));
     const log = path.join(temp, "gh-stderr.log");
-    const real = execFileSync("bash", ["-c", "command -v gh"], { encoding: "utf8" }).trim();
+    const real = execFileSync("bash", ["-c", "command -v gh"], {
+      encoding: "utf8",
+      timeout: SUBPROCESS_TIMEOUT,
+    }).trim();
 
     fs.writeFileSync(path.join(temp, "gh"), `#!/usr/bin/env bash\nexec "${real}" "$@" 2>>"${log}"\n`);
     const outcome = runWaitStep({ gh: temp, waitSeconds: "0", extraEnv: { GH_HOST: "localhost" } });

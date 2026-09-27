@@ -1,0 +1,59 @@
+# THROWAWAY — #116 stacked-PR probe. Never merged; deleted with its branches.
+name: throwaway-stack-probe
+
+on:
+  pull_request:
+    types: [opened, labeled, synchronize, edited]
+  pull_request_target:
+    types: [opened, labeled, synchronize, edited]
+
+permissions:
+  pull-requests: write
+  contents: write
+  statuses: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump what the event carries
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          STACK: ${{ toJSON(github.event.pull_request.stack) }}
+          GH_REF: ${{ github.ref }}
+          GH_SHA: ${{ github.sha }}
+          WF_REF: ${{ github.workflow_ref }}
+        run: |
+          echo "PROBE event=$EVENT action=$ACTION label=$LABEL pr=$NUMBER"
+          echo "PROBE base.ref=$BASE_REF base.sha=$BASE_SHA"
+          echo "PROBE head.ref=$HEAD_REF head.sha=$HEAD_SHA"
+          echo "PROBE github.ref=$GH_REF github.sha=$GH_SHA workflow_ref=$WF_REF"
+          echo "PROBE stack=$STACK"
+      - name: Stack API with GITHUB_TOKEN
+        # Only the pull_request half acts, so each label press makes one set of calls.
+        if: github.event_name == 'pull_request' && startsWith(github.event.label.name, 'probe:')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABEL: ${{ github.event.label.name }}
+          R: ${{ github.repository }}
+        run: |
+          V='X-GitHub-Api-Version: 2026-03-10'
+          pr() { gh pr list -R "$R" --head "throwaway/stack-layer-$1" --json number --jq '.[0].number'; }
+          P1=$(pr 1); P2=$(pr 2); P3=$(pr 3)
+          echo "PROBE layers: $P1 $P2 $P3"
+          call() { echo "PROBE >>> $*"; gh api -i -H "$V" "$@" 2>&1 || true; echo; }
+          stackno() { gh api -H "$V" "repos/$R/stacks?pull_request=$P1" --jq '.[0].number' 2>/dev/null; }
+          case "$LABEL" in
+            probe:stack)   call -X POST "repos/$R/stacks" --input - <<<"{\"pull_requests\":[$P1,$P2]}" ;;
+            probe:add)     call -X POST "repos/$R/stacks/$(stackno)/add" --input - <<<"{\"pull_requests\":[$P3]}" ;;
+            probe:unstack) call -X POST "repos/$R/stacks/$(stackno)/unstack" ;;
+            probe:merge)   call -X PUT "repos/$R/pulls/$P1/merge-async" -f merge_method=merge ;;
+            probe:read)    call "repos/$R/stacks?pull_request=$P1" ;;
+          esac

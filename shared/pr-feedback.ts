@@ -2,7 +2,13 @@ import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "
 import { parseNameStatus } from "./diff-lines.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
 import { lastFindingMarker, openingClaim, type Severity } from "./review-findings.js";
-import type { AgentThread, MaintainerReply, SettledFinding } from "./review-verification.js";
+import {
+  closingReplyReason,
+  type AgentThread,
+  type MaintainerReply,
+  type ResolutionReason,
+  type SettledFinding,
+} from "./review-verification.js";
 
 /**
  * The three rendered feedback surfaces, named the same as the fields carrying
@@ -60,7 +66,12 @@ export interface UnreadableSelection {
 export interface PullRequestFeedback {
   /** Bodies of submitted reviews (the reviewer's overall note). */
   readonly summaries: string;
-  /** Comments in *unresolved* review threads, anchored to file + line, replies included. */
+  /**
+   * Comments in *unresolved* review threads, anchored to file + line, replies
+   * included. A thread already carrying this workflow's closing reply, with no
+   * human word after it, is rendered like any other, under a line saying what
+   * is actually outstanding on it — the close, not a fix (#133).
+   */
   readonly inline: string;
   /**
    * Top-level conversation comments on the PR, **excluding** the ones
@@ -69,16 +80,30 @@ export interface PullRequestFeedback {
   readonly conversation: string;
   /** All of the above rendered as one block, or "" when there is none. */
   readonly all: string;
-  /** Node ids of the unresolved threads shown to the agent, for reply/resolve. */
+  /**
+   * Node ids of the unresolved threads a fix run is **asked to answer**. What
+   * `filterOutcomes` keeps an outcome for, and so the whole of what can receive
+   * a reply.
+   *
+   * Not every thread `inline` renders: one already carrying this workflow's
+   * closing reply is shown for its evidence and left out of here (#133). A fix
+   * run owes an outcome on every thread it is asked about and the workflow
+   * posts each of them as this same bot, so leaving such a thread in this list
+   * was one further comment on it per round — the pile-up the review half is
+   * already capped against, arriving through the other half.
+   */
   readonly threadIds: readonly string[];
   /**
    * The unresolved threads **this loop opened**, each with the finding id the
    * workflow wrote into it (#110) — the open half of the review record a later
    * review verifies against (#111).
    *
-   * A subset of `threadIds` and not a replacement for it: the fix runner
-   * answers every thread it was shown, a human's included, while only the
-   * loop's own threads carry a finding a review can rule on.
+   * Neither a subset of `threadIds` nor a replacement for it: the fix runner
+   * answers the threads it is asked about, a human's included, while only the
+   * loop's own threads carry a finding a review can rule on. A thread already
+   * holding its closing reply is in this list and not in that one — the review
+   * still rules on it, and `closedAs` is what makes that ruling retry the
+   * resolve rather than reply a second time (#133).
    */
   readonly agentThreads: readonly AgentThread[];
   /**
@@ -879,6 +904,62 @@ const maintainerReplyOn = (
 };
 
 /**
+ * The closing reply this workflow already posted on a thread, where nobody has
+ * answered it since (#133). It says a review verified the thread, but the
+ * resolve after the reply did not go through.
+ *
+ * **Nobody**, not *nothing*: the search walks back from the end over the
+ * workflow's own later comments and stops at the first one that is not ours. A
+ * human who answers the reply has reopened the conversation, maybe to say the
+ * fix did not land, so the thread is open feedback again — but *we* answer it
+ * routinely, because the thread is still shown to `agent:fix`, which owes an
+ * outcome on every thread it was shown and posts that outcome as this same bot.
+ * Reading only the last comment made a fix round for an unrelated finding erase
+ * the record, and the review after it posted the second `**Verified fixed.**`
+ * this whole field exists to prevent.
+ *
+ * What is read is the **marker** on the reply and never the words above it
+ * (`closingReplyReason`). Those words are rendered into this very surface, and
+ * the fix agent whose replies land here as this same bot is shown them — so a
+ * prose match is one the loop's own fixer can satisfy, and the marker is not:
+ * it is stripped out of every string a model wrote before any of it is posted.
+ *
+ * Only the workflow bot's own copy counts either way. A marker is a selector
+ * anyone can type, so a copy from anybody else is not a record — and is a
+ * comment from somebody who is not us, which ends the walk.
+ */
+const closedAsOn = (comments: readonly GqlThreadComment[]): ResolutionReason | undefined => {
+  for (let i = comments.length - 1; i >= 0; i -= 1) {
+    const comment = comments[i]!;
+    if (!isWorkflowBot(comment.author?.login ?? undefined)) return undefined;
+
+    const reason = closingReplyReason(comment.body ?? "");
+    if (reason !== undefined) return reason;
+  }
+  return undefined;
+};
+
+/**
+ * Rendered under a thread `closedAsOn` recognised, and read by both agents that
+ * are shown the inline feedback (#133).
+ *
+ * It says what is outstanding, because the thread's own text no longer does: a
+ * reader seeing a finding, a reply verifying it, and an open thread has no way
+ * to tell a close that was refused from a fix that regressed. The fix agent
+ * answered "already settled" on one of these every round for want of that
+ * sentence; the review, which is handed the same finding again, rules on the
+ * code either way.
+ *
+ * It also says that no reply is owed, which is the half a sentence cannot
+ * carry on its own: the thread is out of `threadIds` below, so an outcome
+ * reported for it is dropped rather than posted. Said here as well as enforced
+ * there because an agent told why it is being shown something writes a better
+ * commit than one whose answer is silently discarded.
+ */
+const AWAITING_CLOSE =
+  "_(this workflow has already verified this finding and replied above. The thread is open only because the close that should have followed it did not go through — a later review retries that close, and does not reply again. Nothing here is owed a fix unless the code now says otherwise, and nothing is owed a reply: this thread is shown for its evidence, and is not one of the threads to report an outcome on.)_";
+
+/**
  * The elements a partial answer actually left behind.
  *
  * A nulled element is a hole in the list, not an object with absent fields, so
@@ -997,8 +1078,18 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     })
     .filter((thread) => thread.comments.length > 0);
 
-  const threads = allThreads.filter((thread) => !thread.isResolved);
+  const threads = allThreads
+    .filter((thread) => !thread.isResolved)
+    .map((thread) => ({ ...thread, closedAs: closedAsOn(thread.comments) }));
 
+  // A thread already carrying this workflow's closing reply is rendered like
+  // any other, and `AWAITING_CLOSE` is what is added rather than what is taken
+  // away (#133). Dropping it was the first attempt and it removed the evidence
+  // with the noise: the quote and the failure scenario live in the thread's
+  // first comment, and both readers need them. The review is handed the
+  // finding again whatever happens here, and its safe ruling on anything it
+  // cannot settle is `open` — which would leave a finding counting toward the
+  // verdict that `agent:fix` was never shown and could not have replied to.
   const inline = threads
     .map((thread) => {
       const first = thread.comments[0];
@@ -1006,9 +1097,23 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
       const body = thread.comments
         .map((c) => `@${c.author?.login ?? "unknown"}:\n${(c.body ?? "").trim()}`)
         .join("\n\n");
-      return `${header}\n\n${body}`;
+      return [header, body, ...(thread.closedAs === undefined ? [] : [AWAITING_CLOSE])].join("\n\n");
     })
     .join("\n\n---\n\n");
+
+  // Every thread rendered above **except** one already carrying its closing
+  // reply (#133). This list is the whole of what a fix run may reply into
+  // (`filterOutcomes`), and such a thread is shown for its evidence rather than
+  // for an answer: the prompt asks for one outcome per thread it was given, the
+  // workflow posts each as this same bot, and the next review reads the thread
+  // back. Left in, the review half was capped at one reply and the fix half was
+  // not — every fix round, whatever it was labelled for, added another comment
+  // to every thread whose resolve had failed.
+  //
+  // Rendered and unanswerable is the pair that holds. Dropping the thread from
+  // the render was the first attempt at the same cap and it took the evidence
+  // with the noise; leaving it answerable was the second and it capped nothing.
+  const answerable = threads.filter((thread) => thread.closedAs === undefined).map((t) => t.id);
 
   // The loop's own open findings, selected by the id the workflow wrote into
   // each thread rather than by what the thread says — text is never matched
@@ -1029,6 +1134,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
         ...(found.severity === undefined ? {} : { severity: found.severity }),
         ...(found.url === undefined ? {} : { url: found.url }),
         ...(reply === undefined ? {} : { maintainerReply: reply }),
+        ...(thread.closedAs === undefined ? {} : { closedAs: thread.closedAs }),
       },
     ];
   });
@@ -1086,7 +1192,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     inline,
     conversation,
     all,
-    threadIds: threads.map((t) => t.id),
+    threadIds: answerable,
     agentThreads,
     settledFindings,
     latestAgentReviewBody,

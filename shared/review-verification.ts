@@ -1,5 +1,5 @@
 import { asRecord, asString } from "./common.js";
-import { parseFindingMarkers, type Severity } from "./review-findings.js";
+import { parseFindingMarkers, RESOLUTION_MARKER, type Severity } from "./review-findings.js";
 
 /**
  * A finding an earlier review of this pull request raised and **nothing has yet
@@ -66,6 +66,18 @@ export interface CarriedFinding {
    * on one would be taking instructions from the pull request it is reviewing.
    */
   readonly maintainerReply?: MaintainerReply;
+  /**
+   * The closing reply this workflow already posted, where **no human has
+   * answered it since** (#133). It says the finding was verified, but the
+   * resolve after it did not go through. The workflow's own later comments do
+   * not clear it: `agent:fix` is still shown the thread and still owes it an
+   * outcome (`closedAsOn` in `shared/pr-feedback.ts`).
+   *
+   * Carried so the ruling that would repeat it resolves without replying again.
+   * A reply is the record of why a thread closed, and a thread that gets one
+   * per round is how #130 collected nine identical ones.
+   */
+  readonly closedAs?: ResolutionReason;
 }
 
 /**
@@ -108,6 +120,8 @@ export interface AgentThread {
    * `maintainerReplyOn` in `shared/pr-feedback.ts`.
    */
   readonly maintainerReply?: MaintainerReply;
+  /** The closing reply already on it, unanswered by a human. See `CarriedFinding`. */
+  readonly closedAs?: ResolutionReason;
 }
 
 /**
@@ -169,6 +183,7 @@ export const carriedFindings = (parts: {
       ...(thread.severity === undefined ? {} : { severity: thread.severity }),
       ...(thread.url === undefined ? {} : { url: thread.url }),
       ...(thread.maintainerReply === undefined ? {} : { maintainerReply: thread.maintainerReply }),
+      ...(thread.closedAs === undefined ? {} : { closedAs: thread.closedAs }),
     });
   }
 
@@ -190,18 +205,34 @@ const NOTHING_CARRIED =
   "(no finding from an earlier review of this pull request is open — either this is the first review, or every earlier finding has been verified fixed.)";
 
 /**
+ * Said beside a finding whose thread already carries this workflow's closing
+ * reply (#133). Without it, a finding the last round verified shows up again
+ * with nothing to say why, which reads like a regression.
+ */
+const CLOSE_DID_NOT_LAND =
+  " _(an earlier review already verified this and replied, but the close did not go through; rule on the code as it is now)_";
+
+/**
  * The open findings as the review agent is shown them: one line each, the id
  * first.
  *
  * The id is what the agent answers on, so it leads. What follows it is the
  * earlier review's own one-line claim — enough to know which finding is meant,
  * and not a re-statement of the evidence, which is still on the thread the
- * agent can read in the feedback it was already given.
+ * agent can read in the feedback it was already given. The exception is a
+ * thread already carrying its closing reply. That thread is no longer open
+ * feedback (`shared/pr-feedback.ts`), so its line says why it is here instead.
  */
 export const renderCarriedFindings = (carried: readonly CarriedFinding[]): string =>
   carried.length === 0
     ? NOTHING_CARRIED
-    : carried.map((finding) => `- \`${finding.id}\` — ${finding.text}`).join("\n");
+    : carried
+        .map(
+          (finding) =>
+            `- \`${finding.id}\` — ${finding.text}` +
+            (finding.closedAs === undefined ? "" : CLOSE_DID_NOT_LAND),
+        )
+        .join("\n");
 
 /** Said where no maintainer has closed anything, for the reason `NOTHING_CARRIED` is said. */
 const NOTHING_SETTLED = "(no finding on this pull request has been closed by a maintainer.)";
@@ -303,7 +334,89 @@ export interface ThreadResolution {
    */
   readonly reason: ResolutionReason;
   readonly reply: string;
+  /**
+   * True where the thread already carries this reply's kind: a closing reply
+   * this workflow posted for the same reason, which no human has answered
+   * (#133). The workflow then retries the resolve and posts nothing. It posts
+   * on any other value, since a thread must never close without a record of
+   * why.
+   *
+   * What the thread is read for is the **marker** on such a reply, never the
+   * words it opens with — see `resolutionMarker`. A prose match is one the fix
+   * agent can satisfy, and this field deciding "no reply needed" on the
+   * strength of the fixer's own words is a thread closing with no review's
+   * record on it.
+   */
+  readonly alreadyReplied: boolean;
 }
+
+/**
+ * How each closing reply opens — what a **human** reads first, and nothing this
+ * loop decides anything on. Which reason a reply records is the marker below.
+ */
+export const VERIFIED_FIXED = "**Verified fixed.**";
+export const CLOSED_AS_WONT_FIX = "**Closed as won't fix.**";
+
+/**
+ * The marker every closing reply ends with, and the whole of what says a thread
+ * already carries one (#133).
+ *
+ * **A marker rather than the prose above it**, for the reason no other state in
+ * this loop is matched across rounds either (#109, decision 2; `findingMarker`
+ * is the same mechanism for the same reason). The words are written into the
+ * `inline` surface verbatim, and the fix agent — which is shown that surface,
+ * owes an outcome on every thread in it, and has its replies posted **by this
+ * same bot** — could open one with them. Matched on prose, that reply said "this
+ * thread already has its closing reply": the next review would skip its own,
+ * resolve the thread, and leave the fixer's claim as the only record of why it
+ * closed, which is the one thing the reply-before-resolve ordering exists to
+ * prevent. A marker cannot be reached that way, because
+ * `withoutFindingMarkers` takes it out of every string a model wrote before any
+ * of it is posted.
+ *
+ * Spelled here, beside the composers, and read by `closingReplyReason` below.
+ * `shared/review-findings.ts` holds only the name, which is what its strip
+ * needs.
+ */
+const resolutionMarker = (reason: ResolutionReason): string =>
+  `<!-- ${RESOLUTION_MARKER} ${reason} -->`;
+
+/**
+ * The same marker as read. One format, one place it is spelled — the reader
+ * beside the composer, for the reason `parseFindingMarkers` lives beside
+ * `findingMarker`: two descriptions of one format drift on the release that
+ * changes either.
+ *
+ * It accepts the two reasons and nothing else, which is narrower than the strip
+ * in `shared/review-findings.ts` matches. That direction is deliberate: a
+ * payload this version does not understand is not a record, and is still a
+ * marker a model must not be able to post.
+ */
+const CLOSING_REPLY_MARKER = new RegExp(
+  `<!--\\s*${RESOLUTION_MARKER}\\s+(ADDRESSED|WONT_FIX)\\s*-->`,
+  "g",
+);
+
+/**
+ * Which closing reply `body` is, or `undefined` for anything else — read off
+ * the marker, never off the prose.
+ *
+ * The caller must still check the comment's author: a marker is a selector, not
+ * a control (`FINDING_MARKER`), and only the workflow bot's copy is a record.
+ * The two together are what make it one: a model's copy is stripped before it
+ * is posted, and anyone else's is a comment from somebody who is not us.
+ *
+ * A reply posted by a release before the marker existed reads as `undefined`
+ * here. That is one further reply on a thread that already has one, once, and
+ * then the marker is there — the alternative is keeping a prose match that the
+ * loop's own fixer can satisfy, which is the bug this replaces.
+ */
+export const closingReplyReason = (body: string): ResolutionReason | undefined => {
+  const found = [...body.matchAll(CLOSING_REPLY_MARKER)];
+  // The last, by `lastMarkerOn`'s rule: the workflow writes its own at the end
+  // of what it posts, so an earlier one is a marker the body quoted.
+  return found[found.length - 1]?.[1] as ResolutionReason | undefined;
+};
 
 /** Said in the reply where the review verified the fix but wrote nothing about it. */
 const NO_NOTE = "The current change resolves this.";
@@ -317,7 +430,13 @@ const NO_NOTE = "The current change resolves this.";
  * the code rather than by the run that claimed to have fixed it.
  */
 export const resolutionReply = (entry: VerificationEntry): string =>
-  `**Verified fixed.** ${entry.note ?? NO_NOTE}\n\n_Resolved by the review that checked it, rather than by the run that fixed it._`;
+  [
+    `${VERIFIED_FIXED} ${entry.note ?? NO_NOTE}`,
+    "",
+    "_Resolved by the review that checked it, rather than by the run that fixed it._",
+    "",
+    resolutionMarker("ADDRESSED"),
+  ].join("\n");
 
 /**
  * The reply posted into a thread the maintainer declined.
@@ -349,11 +468,13 @@ export const declineReply = (reply: MaintainerReply): string => {
     .join("\n");
 
   return [
-    `**Closed as won't fix.** This review read a maintainer's refusal on this thread. The latest maintainer reply on it, from @${reply.login}:`,
+    `${CLOSED_AS_WONT_FIX} This review read a maintainer's refusal on this thread. The latest maintainer reply on it, from @${reply.login}:`,
     "",
     quoted,
     "",
     "_Closed on a maintainer's reply, never on the review's own judgement — a review cannot decline a finding itself. If that reply was not a refusal, reopen this thread._",
+    "",
+    resolutionMarker("WONT_FIX"),
   ].join("\n");
 };
 
@@ -454,6 +575,7 @@ export const verifyCarried = (
         findingId: finding.id,
         reason: "WONT_FIX",
         reply: declineReply(finding.maintainerReply),
+        alreadyReplied: finding.closedAs === "WONT_FIX",
       });
       resolved.push(finding);
       continue;
@@ -464,6 +586,7 @@ export const verifyCarried = (
         findingId: finding.id,
         reason: "ADDRESSED",
         reply: resolutionReply(entry),
+        alreadyReplied: finding.closedAs === "ADDRESSED",
       });
     }
     // Including a legacy body-recorded one, which has no thread and so no

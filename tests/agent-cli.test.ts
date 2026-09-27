@@ -918,8 +918,19 @@ describe("doctor names the failures that otherwise look like something else", ()
       // A reusable half is one something can `uses:`, which is the same thing
       // that makes it a workflow somebody's caller hands a token to.
       if (document?.on?.workflow_call === undefined) continue;
-      const [job] = Object.values(document.jobs ?? {});
-      found.set(entry.replace(/\.yml$/, ""), job?.permissions ?? {});
+      // The widest grant across its jobs, scope by scope, because the caller's
+      // grant is the ceiling for all of them. `review.yml` has two jobs, and
+      // its `resolve` job holds the `contents: write` the review job narrows
+      // back to `read` (#133).
+      const RANK: Readonly<Record<string, number>> = { none: 0, read: 1, write: 2 };
+      const widest: Record<string, string> = {};
+      for (const job of Object.values(document.jobs ?? {})) {
+        for (const [scope, level] of Object.entries(job.permissions ?? {})) {
+          const held = widest[scope];
+          if (held === undefined || (RANK[level] ?? 0) > (RANK[held] ?? 0)) widest[scope] = level;
+        }
+      }
+      found.set(entry.replace(/\.yml$/, ""), widest);
     }
     return found;
   };
@@ -939,7 +950,6 @@ describe("doctor names the failures that otherwise look like something else", ()
   const NOT_AN_ERROR: Readonly<Record<string, "private" | "advisory">> = {
     // Served without the scope on a public repository; a 403 on a private one.
     "review/checks: read": "private",
-    "review/contents: read": "private",
     // Nothing in that job reads the repository, so nothing is known to fail.
     "follow-ups/contents: read": "advisory",
   };
@@ -1122,7 +1132,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     const root = adoptedWith([
       "permissions:",
       "  checks: read",
-      "  contents: read",
+      "  contents: write",
       "  packages: read",
       "  pull-requests: write",
       "  statuses: write",
@@ -1132,6 +1142,87 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(err).toBe("");
     expect(code).toBe(0);
+  });
+
+  /**
+   * The upgrade that leaves the review caller's grant behind (#133). A caller
+   * installed before the `resolve` job grants `contents: read`, which was every
+   * scope the review job itself used — so nothing about the caller looks wrong,
+   * and what it costs is the whole workflow: a called job cannot hold more than
+   * its caller granted, and GitHub refuses the elevation by failing the run
+   * before any job starts. There is no job log to find that in, which is what
+   * makes this `doctor`'s to say. The per-cell scenarios above remove the line
+   * entirely; this one keeps it at the value that used to be right.
+   */
+  it("reports a review caller that still grants contents: read", async () => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) => text.replace(/^( *)contents: write$/m, "$1contents: read"));
+
+    for (const visibility of ["private", "public"] as const) {
+      const { code, err } = await check(root, { ...healthy(), visibility });
+
+      expect(code).toBe(1);
+      expect(err).toContain("contents: write");
+      expect(err).toMatch(/resolveReviewThread/);
+      expect(err).toMatch(/before any job starts/);
+      // Named as the wrong value it is, rather than as an absent line.
+      expect(err).toMatch(/grants the `review` job `contents: read` where it needs/);
+      // And **changed**, never added. Followed literally, "add `contents:
+      // write`" leaves two `contents:` keys in one block — a workflow GitHub
+      // refuses to parse, which is the `startup_failure` with no job log this
+      // row exists to warn about rather than to cause.
+      expect(err).toMatch(/fix: Change `contents: read` to `contents: write` in that job's/);
+      expect(err).not.toMatch(/Add `contents: write`/);
+    }
+  });
+
+  /**
+   * And that is a property of the *row*, not of the one row that needed it
+   * first. Every grant a caller can get wrong it can get wrong by value as well
+   * as by omission — a scope written `none`, or left at the value an earlier
+   * release was right about — and the two want opposite instructions.
+   *
+   * Derived from the same ceilings as the absence scenarios above, so the next
+   * scope to change value arrives here as a case rather than as a gap.
+   */
+  it.each(grantCells())(
+    "tells a caller to change %s rather than add a second key",
+    async (_label: string, workflow: string, permission: string, value: string) => {
+      const root = await installed();
+      edit(root, `agent-${workflow}.yml`, (text) =>
+        text.replace(new RegExp(`^( *)${permission}: ${value}$`, "m"), `$1${permission}: none`),
+      );
+
+      const { out, err } = await check(root, healthy());
+      const said = `${out}${err}`;
+
+      expect(said).toContain(`Change \`${permission}: none\` to \`${permission}: ${value}\``);
+      expect(said).not.toContain(`Add \`${permission}: ${value}\``);
+    },
+  );
+
+  /**
+   * The two halves of the fix compose: a value that is wrong in a block the job
+   * **inherits** is changed there, and the caveat about a job-level block
+   * replacing the top-level one is still what stops an adopter creating one.
+   */
+  it("points a wrong value in an inherited block at that block", async () => {
+    const root = adoptedWith([
+      "permissions:",
+      "  checks: read",
+      "  contents: read",
+      "  packages: read",
+      "  pull-requests: write",
+      "  statuses: write",
+    ]);
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toMatch(
+      /fix: Change `contents: read` to `contents: write` in the workflow's top-level/,
+    );
+    expect(err).toMatch(/declares none of its own/);
   });
 
   /**

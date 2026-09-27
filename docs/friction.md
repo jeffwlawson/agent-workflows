@@ -1991,3 +1991,145 @@ carries a character GitHub refuses there, and makes the warning print GitHub's r
 422 is ours. The general lesson is the one the 2026-09-19 entry drew from the other side: a
 constraint that lives only in the remote API is untested until something real calls it, and the
 first real call was the release.
+
+## 2026-09-24 — v0.4.0 closed no thread it verified, and said on each one that it had
+
+Round 2 on #128 verified round 1's only finding fixed. The resolve step replied into the thread and
+then logged `gh: Resource not accessible by integration` for the resolve. The thread stayed open
+under a reply reading *"Resolved by the review that checked it"*. The step was `continue-on-error`
+and its failure arm was an `echo`, so the run was green and nothing on the pull request said the
+close had not happened.
+
+It then piled up. An open thread is carried into the next review, which verified it again and posted
+another `**Verified fixed.**`. The fix agent was shown every open thread, and it replied "already
+settled" on those as well. On #130's ten rounds the oldest thread had thirteen replies, nine of them
+the same verification.
+
+The step's own comment claimed that resolving a thread is not a `contents:` write. That was the
+assumption, and no test could check it. A scratch pull request settled it
+([run 36057777753](https://github.com/jeffwlawson/agent-workflows/actions/runs/36057777753)): same
+token, same kind of thread, `pull-requests: write` in both jobs. The reply succeeded under either
+grant. `resolveReviewThread` came back `FORBIDDEN` under `contents: read` and resolved under
+`contents: write`. The first attempt at the probe failed on a malformed mutation of its own, which
+is the other reason to run one rather than reason about it.
+
+The fix (#133) moves the resolve into a job with the write and nothing to write with, and makes both
+halves idempotent: a thread whose latest word is already the workflow's closing reply gets the
+resolve retried and no second reply, and is not shown to the fix agent at all. The lesson is the
+2026-09-23 entry's again, one API over: a permission the remote grants per mutation is untested
+until a real token asks, and a failure arm that only `echo`s turns that first real ask into a
+release of silence.
+
+## 2026-09-25 — the fix for the silent resolve asserted a second unprobed behaviour
+
+The commit above was written around a probe and then made a claim it had not probed: that a caller
+still granting `contents: read` would keep working, post its replies and leave its threads open. The
+review round on it said that has never been observed, and it is wrong. A called job cannot hold more
+than its caller granted, and GitHub refuses the elevation rather than trimming it — the run fails
+before any job starts, with `The workflow is requesting 'contents: write', but is only allowed
+'contents: read'` and, nothing having run, no job log to read it in. An adopter who moves the pin
+without moving the grant loses reviews outright.
+
+No probe this time either: the run doing the fixing holds no token, and the correction rests on
+GitHub's documented rule plus the same failure reported against other repositories that added a
+required caller permission to a reusable workflow. Said that way in the text rather than asserted,
+because that is the whole of the 2026-09-23 and 2026-09-24 lesson and the entry above is what
+happens when it is not.
+
+It generalises past this release. Every job in this loop declares the scopes it spends, so an
+under-granting caller has always failed this way — which makes most of `docs/ADOPTING.md` §4's
+"without it, the step 403s and the run stays green" prose a description of a state that stopped
+occurring when the loop split into caller and called workflow. One row is corrected here; the rest
+is named at the head of that table and is somebody's next ticket.
+
+The other half of the round was smaller and the same shape. A thread carrying its own closing reply
+was being dropped from the rendered feedback to stop the fix agent answering "already settled" on
+it every round. Dropping it took the evidence with the noise: the finding's quote and its failure
+scenario live in that thread's first comment, and the review is handed the finding regardless and
+rules `open` on anything it cannot settle. An `open` ruling on a thread nobody rendered is a finding
+counting toward the verdict that `agent:fix` is never shown and cannot reply to. It is marked now
+instead of dropped, with one line saying the close is what is outstanding.
+
+## 2026-09-26 — the reply cap read one comment, and the loop's other half wrote the next one
+
+Round 3 on #133. The marker that stops a second `**Verified fixed.**` was "is the thread's *latest*
+trusted comment one of our closing replies?", and the same round put such a thread back in front of
+`agent:fix` so a reply could still land on it. Those two decisions are incompatible: a fix run owes
+an outcome on every thread it was shown, posts it as `github-actions`, and that outcome is then the
+latest comment — so the next review saw no record, replied again, and the pile-up returned one round
+later than before. A fix round for some unrelated finding was enough to trigger it.
+
+The marker now walks back from the end, over our own later comments, and stops at the first comment
+that is not ours. A *human* answering is what reopens a thread; the workflow answering itself is
+routine. The lesson is about the shape rather than the field: "the last thing said" is not a durable
+record in a place the loop itself keeps talking, and the only reason this one looked durable is that
+the round that introduced it changed who talks there in the same commit.
+
+The round also found the paste-able review caller in `docs/ADOPTING.md` §4 still granting
+`contents: read`, in the commit that moved every other copy in that same file. `PIN` reads the two
+caller *sets*, and nothing read a fenced block in a document — so that snippet is now held equal to
+`examples/callers/review.yml` by value. Two copies of a grant, one of them under test, is the same
+arrangement `init`'s label table and §3 have been in since #61.
+
+## 2026-09-26 — the record of a close was prose, in the one place the loop's own fixer types
+
+Round 4 on #133, and the same shape as round 3 one layer down. The reply cap now walks back over the
+workflow's own comments correctly, but what it *recognised* on each of them was the reply's opening
+words — `**Verified fixed.**` and `**Closed as won't fix.**`. Those words are rendered verbatim into
+the `inline` surface, the fix agent is shown that surface, it owes an outcome on every thread in it,
+and its outcomes are posted **by the same bot the reader trusts**. So a fix reply opening with them
+said "this thread already carries its closing reply", the next review skipped its own reply, and the
+thread closed with the fixer's claim as the only record of why — which is exactly what the
+reply-first, resolve-second ordering exists to prevent. Round 3 fixed *which* comment was read and
+left *what* was read in it alone.
+
+The mechanism was already in the file next door and had been since #110: a hidden marker the
+workflow writes and `withoutFindingMarkers` takes out of every string a model wrote, at each schema
+boundary. A closing reply now ends with `<!-- agent-resolution ADDRESSED -->`, and the reader takes
+that and nothing else. The strip matches the family by **name** with whatever payload follows, so it
+is wider than the reader on purpose: a strip narrower than some reader of the same family is a marker
+a model can write.
+
+The lesson is CONTEXT.md's own sentence, which this commit had to be told twice: *text is never
+matched across rounds* (#109, decision 2). It was written about a finding's identity surviving a
+rewording, and it holds for the same reason in the other direction — a string the loop shows a model
+is a string that model can write back, and prose is the one format both halves of this loop speak.
+
+The round's other finding was the upgrade path. §0 says `init` does not carry across a change a later
+release made to a caller body, and *Keeping the pins fresh* recommends Dependabot without saying the
+same thing — it moves the `@ref` and nothing else, which for this release means a caller pinned to a
+version whose `resolve` job declares `contents: write` while the caller still grants `read`: no
+review at all, and no job log. Said there now, with `doctor` after a pin bump as the rule.
+
+## 2026-09-26 — the reply cap held one half of a loop that has two halves
+
+Round 5 on #133. Three rounds in a row now on the same thread-closing machinery, each finding the
+previous round's fix true of the half it was written for and silent about the other one.
+
+A thread whose resolve failed carries its closing reply and stays open. The review half stopped
+replying twice to it in round 1 (`alreadyReplied`), round 3 made that record survive the loop's own
+next comment, and round 4 made the record a marker rather than prose. What none of them touched is
+that `agent:fix` is *also* handed that thread, owes an outcome on every thread it is handed, and has
+its outcomes posted by the same bot — so the pile-up the issue asked to cap carried on arriving, one
+comment per fix round, on exactly the threads the cap was about. Round 2 had made this reachable by
+putting the thread back into `threadIds` to keep its evidence in front of both agents, which was the
+right call for the evidence and the wrong one for the reply.
+
+The fix is that *rendered* and *answerable* stop being the same list: such a thread stays in
+`inline`, and its id leaves `threadIds`, which is the whole of what `filterOutcomes` keeps an
+outcome for. The line already under the thread says so as well, because an agent told why it is
+being shown something writes a better commit than one whose answer is silently dropped.
+
+The lesson is about where a cap goes. A rule enforced on the writer is a rule per writer, and this
+loop has two of them writing into the same thread under the same identity. The durable version is
+the one the *channel* enforces — the list of ids a reply can be posted to — and it took three
+rounds to move down to it because each round's symptom appeared in the half that had just been
+fixed.
+
+The round's other finding was `doctor`'s, and the same class one layer out: `contents: write` on a
+review caller is the first required grant whose failure is a wrong **value** rather than an absent
+line, and the fix string was written for absence. "Add `contents: write` to that job's
+`permissions:` block", followed literally on a block that reads `contents: read`, produces two
+`contents:` keys and a workflow GitHub refuses to parse — the `startup_failure` with no job log the
+row exists to prevent. It now says *change* where the line is present, and a case derived from the
+grant cells holds every row to that.

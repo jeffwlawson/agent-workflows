@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { findingMarker } from "../shared/review-findings.js";
+import { findingMarker, RESOLUTION_MARKER } from "../shared/review-findings.js";
 import {
   carriedFindings,
+  closingReplyReason,
   declineReply,
   parseVerification,
   renderCarriedFindings,
   renderSettledFindings,
+  resolutionReply,
   verifyCarried,
   type AgentThread,
   type CarriedFinding,
@@ -203,6 +205,7 @@ describe("verifyCarried", () => {
         findingId: "f-1",
         reason: "ADDRESSED",
         reply: expect.stringContaining("The guard now runs before `apply()`."),
+        alreadyReplied: false,
       },
     ]);
     expect(stillOpen.map((f) => f.id)).toEqual(["f-2", "f-3"]);
@@ -371,6 +374,7 @@ describe("a maintainer's decision settles a finding", () => {
           findingId: "f-1",
           reason: "WONT_FIX",
           reply: expect.stringContaining("> Won't fix — the duplicate write is intended here."),
+          alreadyReplied: false,
         },
       ]);
       expect(resolutions[0]?.reply).toContain("@maintainer");
@@ -451,5 +455,170 @@ describe("a maintainer's decision settles a finding", () => {
       expect(stillOpen.map((f) => f.id)).toEqual(["f-3"]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("f-3"));
     });
+  });
+});
+
+/**
+ * **One closing reply per thread, whatever the resolve does** (#133). The reply
+ * goes in first and the resolve second, and a resolve that is refused, whether
+ * by a missing grant, a 5xx or a rate limit, leaves the thread open with the
+ * reply already on it. The next review is handed that thread again and verifies
+ * it again. Without a memory of what the thread already says, every round adds
+ * another `**Verified fixed.**`, which is how #130 ended up with nine on one
+ * thread.
+ *
+ * So the thread's own last word is carried, as `closedAs`, and a ruling that
+ * would repeat it retries only the resolve.
+ */
+describe("a thread that already carries its closing reply", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const REPLY = { login: "maintainer", body: "Won't fix — the duplicate write is intended here." };
+
+  it("is resolved again without a second reply", () => {
+    const { resolutions, resolved, stillOpen } = verifyCarried(
+      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", closedAs: "ADDRESSED" }],
+      [landed("f-1")],
+    );
+
+    expect(resolutions).toEqual([
+      {
+        threadId: "PRRT_one",
+        findingId: "f-1",
+        reason: "ADDRESSED",
+        reply: expect.stringContaining("Verified fixed."),
+        alreadyReplied: true,
+      },
+    ]);
+    expect(resolved.map((f) => f.id)).toEqual(["f-1"]);
+    expect(stillOpen).toEqual([]);
+  });
+
+  it("is resolved again without a second reply on the won't-fix arm too", () => {
+    const [resolution] = verifyCarried(
+      [
+        {
+          id: "f-1",
+          threadId: "PRRT_one",
+          text: "the guard runs after the return",
+          maintainerReply: REPLY,
+          closedAs: "WONT_FIX",
+        },
+      ],
+      [{ id: "f-1", status: "declined" }],
+    ).resolutions;
+
+    expect(resolution?.reason).toBe("WONT_FIX");
+    expect(resolution?.alreadyReplied).toBe(true);
+  });
+
+  /**
+   * A reply is the only record of *why* a thread closed, because GitHub shows
+   * `resolutionReason` to nobody. So a ruling that changes the reason posts the
+   * new record rather than closing under the old one.
+   */
+  it("replies again when the ruling's reason differs from the one on record", () => {
+    const [resolution] = verifyCarried(
+      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", closedAs: "WONT_FIX" }],
+      [landed("f-1")],
+    ).resolutions;
+
+    expect(resolution?.reason).toBe("ADDRESSED");
+    expect(resolution?.alreadyReplied).toBe(false);
+  });
+
+  it("replies on a thread that carries no closing reply", () => {
+    const [resolution] = verifyCarried(
+      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return" }],
+      [landed("f-1")],
+    ).resolutions;
+
+    expect(resolution?.alreadyReplied).toBe(false);
+  });
+
+  it("is carried with the reply it already holds", () => {
+    expect(
+      carriedFindings({ threads: [thread({ closedAs: "ADDRESSED" })], latestReviewBody: "" })[0]?.closedAs,
+    ).toBe("ADDRESSED");
+  });
+
+  /**
+   * Said to the review agent, so a finding it may have verified last round and
+   * sees again reads as a close that did not go through, not as a regression.
+   */
+  it("tells the review agent why the finding is back", () => {
+    const rendered = renderCarriedFindings([
+      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", closedAs: "ADDRESSED" },
+      { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour" },
+    ]);
+
+    expect(rendered.split("\n")[0]).toMatch(/already verified.*did not go through/i);
+    expect(rendered.split("\n")[1]).not.toMatch(/already verified/i);
+  });
+});
+
+/**
+ * Recognising a closing reply is the other half of composing one, from the same
+ * marker, so the release that rewords a reply cannot leave the reader behind.
+ *
+ * **And the marker is the whole of it, never the prose** (#133). The words a
+ * closing reply opens with are rendered into the `inline` surface the fix agent
+ * is shown, and that agent's replies are posted into the same thread by the same
+ * bot — so on a prose match the loop's own fixer could say "this thread already
+ * carries its closing reply", and the next review would resolve it under the
+ * fixer's claim having posted no record of its own. A marker cannot be reached
+ * that way: `withoutFindingMarkers` takes it out of every string a model wrote.
+ * Nothing else in this loop is matched across rounds either (#109, decision 2).
+ */
+describe("closingReplyReason", () => {
+  it("reads both replies this file composes", () => {
+    expect(closingReplyReason(resolutionReply({ id: "f-1", status: "landed" }))).toBe("ADDRESSED");
+    expect(closingReplyReason(declineReply({ login: "maintainer", body: "No." }))).toBe("WONT_FIX");
+  });
+
+  /** Both composers write it, so neither can close a thread with no record. */
+  it("is a marker on both replies, not the words they open with", () => {
+    for (const reply of [
+      resolutionReply({ id: "f-1", status: "landed" }),
+      declineReply({ login: "maintainer", body: "No." }),
+    ]) {
+      expect(reply).toContain(RESOLUTION_MARKER);
+      expect(closingReplyReason(reply.replace(/<!--[\s\S]*?-->/g, ""))).toBeUndefined();
+    }
+  });
+
+  /**
+   * The reply the fix agent could plausibly write, being shown the real one:
+   * the same opening words, and no marker, because it cannot post one.
+   */
+  it("does not read a reply that only repeats the words as one", () => {
+    expect(closingReplyReason("**Verified fixed.** I made this change in 5164307.")).toBeUndefined();
+    expect(
+      closingReplyReason("**Closed as won't fix.** Already settled — nothing outstanding."),
+    ).toBeUndefined();
+  });
+
+  it("reads nothing else as one", () => {
+    expect(closingReplyReason("Looks verified fixed to me.")).toBeUndefined();
+    expect(closingReplyReason("Already settled in 5164307.")).toBeUndefined();
+    expect(closingReplyReason("<!-- agent-resolution INVALID -->")).toBeUndefined();
+    expect(closingReplyReason("")).toBeUndefined();
+  });
+
+  /**
+   * And the last marker wins, by the rule `lastMarkerOn` states for the finding
+   * marker: the workflow writes its own at the end of what it posts, so an
+   * earlier one is a marker the body quoted. Only reachable from a human's copy
+   * — a model's is stripped — and the reading that matters is the one a thread
+   * carrying both gets.
+   */
+  it("takes the last marker where a body carries two", () => {
+    expect(
+      closingReplyReason(
+        `quoting <!-- ${RESOLUTION_MARKER} WONT_FIX --> back\n\n${resolutionReply({ id: "f-1", status: "landed" })}`,
+      ),
+    ).toBe("ADDRESSED");
   });
 });

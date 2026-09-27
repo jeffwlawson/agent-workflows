@@ -343,12 +343,12 @@ come up was *inside* one PRD.
 | **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review — round 1 included — is handed the open threads this loop opened (and, until they close, the body entries v0.4.0 left on PRs open at the #127 upgrade), each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
 | **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
-| **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread and closes none (§4) |
+| **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
-| `contents: read` (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits |
+| `contents: read` on the review **job** (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits. The workflow's other job, `resolve`, holds `contents: write` since #133 — closing a verified thread needs it — and checks nothing out and runs no agent (§10) |
 | **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the findings, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
 
 ---
@@ -433,7 +433,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | Author-association gate on PR comments / reviews / threads | ❌ | ➕ | all world-writable; `agent:fix` pushes code |
 | Explicit trust for our own bot identity | ❌ | ➕ | `github-actions[bot]` **and** `github-actions` — REST and GraphQL spell it differently |
 | GitHub token scrubbed from the agent's environment | ❌ | ➕ | `noSandbox` merges `process.env`; agent has no legitimate `gh` use |
-| `contents: read` on the review workflow | ❌ | ➕ | |
+| `contents: read` on the review **job** | ❌ | ➕ | the job, not the workflow, since #133: the `resolve` job beside it holds `contents: write`, because GitHub refuses `resolveReviewThread` without it. That job runs no agent, checks nothing out and spends the grant on two fixed mutations — §10 |
 | Agent never handles the trigger label / PR creation | ✅ | ✅ | workflow owns all state transitions |
 | Model token present in an unsandboxed agent | ⚠️ | ⚠️ | unavoidable under `noSandbox`; see the residual entry in `friction.md` |
 | Network egress restriction | ❌ | ❌ | not available on GitHub-hosted runners |
@@ -607,6 +607,28 @@ expensive to rediscover.
   from that group was never a consequence of it being `contents: read`: the hazard is not review
   *writing*, it is review *reading during another job's write*, and `contents: read` does nothing
   about that. See the next invariant.
+
+  **Since #133 the invariant is about the review *job*, not the review workflow.** Closing a
+  verified thread needs `contents: write`: `resolveReviewThread` is refused to an installation
+  token without it, while the reply beside it is not. That was confirmed on a scratch pull request
+  on 2026-09-24. So the resolve runs in a sibling job, `resolve`, which holds `contents: write` and
+  `pull-requests: write` and nothing else. It checks nothing out, installs nothing and runs no agent.
+  Its input is the list the review runner wrote, in which every thread id is one the runner handed
+  the agent. The job that reads untrusted content and runs a model still holds `contents: read`.
+  The job holding the write has nothing to write with. `AGENT_PAT` was the alternative, and was
+  declined because it would have made resolving depend on a secret an adopter may not have set.
+
+  The caller's grant has to move with the pin, and there is no degraded mode to fall back on: a
+  called job cannot hold more than its caller granted, and GitHub refuses the elevation by failing
+  the whole run before any job starts. `doctor` reports a review caller still on `contents: read`
+  as an error for that reason.
+
+  That job is also the one exception to the next invariant: it sits in **no** concurrency group.
+  Joining would give it the waiter slot, and it could then evict a fix a human queued while the
+  review ran. Overlap costs nothing instead. A fix run shown a thread that already carries its
+  closing reply is told the close is the only thing outstanding on it and is not asked to answer
+  it, and a review that races the resolve re-verifies that thread and closes it without replying
+  again.
 - **One concurrency group per PR, one per issue.** Every workflow that touches PR *n* — review,
   fix, update-branch — sits in `agent-pr-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: false`; `agent-implement` sits in a per-issue group. Not one group per
@@ -740,10 +762,17 @@ expensive to rediscover.
   removes `agent:blocked` on the way in. So the objection above (a stale label nobody clears)
   applies to the terminal-state refusal only.
 - **The reviewer closes a thread; the fixer never does.** Since #111 (#109, decision 1) an
-  `agent:fix` run replies in every thread it was shown — `addressed` or `declined`, with the reason
-  — and resolves none of them. A thread closes when a **review** has read the current code and
-  ruled the finding landed, with `resolutionReason: ADDRESSED` and a reply saying why, or when a
-  human closes it.
+  `agent:fix` run replies in every thread it was **asked about** — `addressed` or `declined`, with
+  the reason — and resolves none of them. A thread closes when a **review** has read the current
+  code and ruled the finding landed, with `resolutionReason: ADDRESSED` and a reply saying why, or
+  when a human closes it.
+
+  *Asked about* is every unresolved thread it was shown bar one shape, and #133 is where the two
+  came apart: a thread whose resolve failed already carries the reply that settles it, so it is
+  rendered for its evidence and kept out of the list a reply can land in (`threadIds`). Shown and
+  answerable had to stop being the same list, because the fix half owes an outcome on everything it
+  is asked about and posts each one as the same bot the next review reads — so the round after it
+  saw a thread nobody had settled and settled it again.
 
   This used to read "*only `addressed` resolves a thread*", which bounded the right hazard on the
   wrong side. Auto-resolving a *decline* would let an agent bury a disagreement; auto-resolving an
@@ -1038,6 +1067,19 @@ expensive to rediscover.
   (`lastFindingMarker`), it takes the **last**, because the workflow writes its own last, and it
   shares its regex with the stripper: what is removed and what is recognised are the same set by
   construction, so there is no marker that survives the strip and is still read as an id.
+
+  **Since #133 there is a second marker, and the thing that can forge it is this loop's own bot.**
+  A closing reply carries `agent-resolution`, and that marker — never the words above it — is what
+  says a thread already holds its closing reply, so a later review retries the resolve instead of
+  replying twice. The words were the first version of that reader, and the fix agent can write
+  them: it is shown the real reply verbatim in the `inline` surface, it owes an outcome on every
+  thread it was shown, and its replies are posted by the same bot the reader trusts. Matched on
+  prose, one of those outcomes says "the record exists" — and the review then closes the thread
+  under the fixer's claim having posted no record of its own, which is the one thing the
+  reply-before-resolve ordering exists to prevent. So this marker joins the strip, matched there by
+  **name** with whatever payload follows it: deliberately wider than its reader, which takes the two
+  reasons and nothing else. A strip narrower than some reader of the same family is a marker a model
+  can write.
 - **An optional channel never has veto power over the mandatory one.** A malformed top-level
   comment is dropped with a warning, not thrown on: throwing would burn both extraction retries and
   take every thread reply down with it. A malformed *thread outcome* still throws — that

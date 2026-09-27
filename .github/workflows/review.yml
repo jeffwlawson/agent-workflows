@@ -911,18 +911,26 @@ jobs:
   # **The cost is the caller's grant, and it is not a degradation.** A caller's
   # `permissions:` is the ceiling for every job it calls, and GitHub refuses an
   # elevation rather than trimming it: a called job asking for more than its
-  # caller granted fails the **whole run** before any job starts — `The workflow
-  # is requesting 'contents: write', but is only allowed 'contents: read'`,
-  # reported as a `startup_failure` with no job log to read it in. So a caller
-  # left on `contents: read` does not get a review without the resolve; it gets
-  # no review. Both reference callers move in the same release as this job, and
-  # `doctor` reports a caller that did not as an error.
+  # caller granted fails the **whole run** before any job starts, as a
+  # `startup_failure` with no job log in it. So a caller left on `contents: read`
+  # does not get a review without the resolve; it gets no review. Both reference
+  # callers move in the same release as this job, and `doctor` reports a caller
+  # that did not as an error.
   #
-  # That is GitHub's documented rule — permissions are maintained or reduced
-  # through a call chain, never elevated — rather than something probed here,
-  # unlike the scope itself above. It is also not new with this job: every job
-  # in this loop declares its permissions, so any caller granting less than one
-  # of them has always failed this way.
+  # Probed on a real token (#146), unlike the first two releases of this comment,
+  # which paraphrased the message and got it wrong. What GitHub calls it is an
+  # *invalid workflow file*, annotated on the run page as:
+  #
+  #   Invalid workflow file: .github/workflows/agent-review.yml#L5 — Error
+  #   calling workflow '<owner>/<repo>/.github/workflows/review.yml@<sha>'. The
+  #   nested job 'resolve' is requesting 'contents: write', but is only allowed
+  #   'contents: read'.
+  #
+  # `gh run view` reports it only as "a workflow file issue" and names neither
+  # the scope nor the file, so the annotation is the one place it is legible.
+  # Not new with this job either: every job in this loop declares its
+  # permissions, so any caller granting less than one of them has always failed
+  # this way.
   resolve:
     needs: review
     # Both of the review job's guards, restated rather than inherited through

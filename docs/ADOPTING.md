@@ -59,10 +59,10 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 |---|---|
 | both secrets are set — on the repository, or shared with it by its organization | §2 — and `AGENT_PAT`'s absence is three of §1's failures by itself |
 | Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
-| every caller that declares a `permissions:` block grants each scope the job it calls spends — the whole of *The permissions per workflow* table below, at the severity the two rows under this one qualify | §4 — a 401 at `npx` that reads like a bad token, a `git push` that 403s with the agent pass already spent, and a label transition that 403s before the checkout on `Resource not accessible by integration`, which names neither the scope nor the file that grants it |
-| the one scope only a **private** repository needs — `checks: read` on review — which is an error there and *a warning on a public repository*, where the same call is served without it | §4 — a wait that spends its budget and reviews blind |
-| `agent-follow-ups`' `contents: read`, the one grant no call here is known to fail without — *a warning everywhere, not a failure* | §4 — a `permissions:` block replaces the inherited token rather than adding to it, so dropping the line sets `contents: none`, which is a configuration the runner install has never run under |
-| a caller that declares no `permissions:` block at all | §4 — it runs with the default token, whose restricted setting is `contents` and `packages` read, so the install works and every write 403s |
+| every caller that declares a `permissions:` block grants each scope the job it calls spends — the whole of *The permissions per workflow* table below, every scope an error | §4 — the label does nothing at all: a caller granting less than a job it calls declares is refused the elevation, and the run is a `startup_failure` with no job log, reported by `gh run view` only as a "workflow file issue" |
+| `checks: read` on review, the one scope only a **private** repository *spends* — and an error whatever your visibility | §4 — a public repository is served the poll without the scope, so this one looks optional; the review job declares it, so a caller that omits it is refused at startup on a public repository too |
+| `agent-follow-ups`' `contents: read`, the one grant no call in the job spends — and an error all the same | §4 — a `permissions:` block replaces the inherited token rather than adding to it, so dropping the line sets `contents: none`, which is below what the job declares and is refused like any other shortfall |
+| a caller that declares no `permissions:` block at all | §4 — it runs with the default token, and the restricted setting is `contents` and `packages` read, which is less than every job here declares: refused at startup too. The permissive setting grants every scope write and under-grants nothing |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
 | every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for 15 of its 20 minutes |
@@ -183,8 +183,9 @@ too few.
 Two secrets, and there is deliberately no third. The runner package is installed from **GitHub
 Packages**, which needs a token — but that token is the built-in `GITHUB_TOKEN`, so what a
 consuming repo owes is a **permission**, `packages: read` in each caller (§4), not another secret
-to mint and rotate. Miss it and the run dies at `npx` with a 401; see §4 for why that reads like
-the wrong thing.
+to mint and rotate. Leave it out of a caller and the run never starts (§4); the 401 at `npx` that
+reads like a bad token is the *other* failure on the same seam, and §4's cross-repo caveat is where
+that one is.
 
 > **Verified cross-repo, not assumed.** GitHub Packages has no anonymous install even for a public
 > package, so it was an open question whether a *consuming* repository's own `GITHUB_TOKEN` would
@@ -743,16 +744,32 @@ The permissions per workflow, which are what each job actually spends:
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
 
-**Granting less than a row asks for does not cost you that row's step.** Every job in this loop
-declares the scopes it spends, and a called job cannot hold more than its caller granted: GitHub
-refuses the elevation rather than trimming it, so the run fails before any job starts — `The
-workflow is requesting 'contents: write', but is only allowed 'contents: read'`, and, nothing
-having run, no job log to read it in. So an under-granted caller is a label that does nothing, not
-a run that half works. The per-scope notes below say what each scope *buys*; where one of them also
-describes a step 403ing or warning at run time, that describes a caller declaring **no**
-`permissions:` block on a repository whose default token is narrower — it predates the split into
-caller and called workflow, when there was no elevation to refuse. The `contents` note is the one
-re-checked against that; the others are not yet.
+**Granting less than a row asks for does not cost you that row's step. It costs you the run.** Every
+job in this loop declares the scopes it spends, and a called job cannot hold more than its caller
+granted: GitHub refuses the elevation rather than trimming it, and refuses it as an **invalid
+workflow file** — so the run is a `startup_failure`, no job starts, and there is no job log to read
+it in. An under-granted caller is a label that does nothing, not a run that half works.
+
+**Where you read it.** `gh run view` says only *This run likely failed because of a workflow file
+issue*, naming neither the scope nor the file. The run's page in the browser carries the annotation
+that names both:
+
+> **Invalid workflow file:** .github/workflows/agent-review.yml#L*n* — Error calling workflow
+> 'jeffwlawson/agent-workflows/.github/workflows/review.yml@\<sha>'. The nested job 'resolve' is
+> requesting 'contents: write', but is only allowed 'contents: read'.
+
+Two things in it are worth knowing before you go looking. The line it points at is your caller's
+`uses:`, not the `permissions:` line that is short. And the job it names is the **called** one —
+`resolve` here, the job that holds the grant — not the job in your file. That is the whole diagnosis,
+and it is one `doctor` gives you before a label rather than after one.
+
+Probed on a real token (2026-09-27), because this had been asserted twice and observed never: four
+scopes, a missing line and an explicit `none`, and a caller with no `permissions:` block at all
+against a restricted default token. Every one was refused at startup and **no case reached a step**.
+So the per-scope notes below say what each scope *buys*; none of them describes a 403 or a warning
+as what a missing grant gets you, because a job that does not start cannot 403. The one
+configuration that under-grants nothing is the **permissive** default token, which grants every
+scope write.
 
 > **`issues: write` is on one row only, and it is the one that creates issues.** No other workflow
 > in the loop holds it to *file* anything — the `implement` pair spends it on labels and on closing
@@ -764,12 +781,13 @@ re-checked against that; the others are not yet.
 
 > **`statuses: write` on review is what posts the verdict**, and it is a scope of its own rather
 > than part of `pull-requests: write` — a commit status is attached to a commit, not to a pull
-> request. Without it the review posts, the run stays green and no verdict appears anywhere: the
-> step warns rather than failing, on the grounds that a posted review is worth more than the line
-> summarising it. So nothing on the pull request says the grant is missing, which is why `doctor`
-> reports it as an error. Newer than the five scopes above it, so a caller installed against an
-> earlier release has a review that works and a verdict that never arrives. What the verdict says,
-> and what you do with each one, is §3b.
+> request. Omit it from your caller and you get no review at all, for the reason at the head of this
+> table. The step that posts the status is written to *warn* rather than to fail, on the grounds
+> that a posted review is worth more than the line summarising it — so where the token is short for
+> some other reason, the loop reads as one whose verdicts are switched off and nothing on the pull
+> request says otherwise. Newer than the five scopes above it, so a caller installed against an
+> earlier release is one to move rather than to leave. What the verdict says, and what you do with
+> each one, is §3b.
 
 > **`contents: write` on review is the `resolve` job's, and only that job's — and it is the one row
 > here that is newer than your caller.** GitHub refuses `resolveReviewThread`, which closes the
@@ -779,30 +797,33 @@ re-checked against that; the others are not yet.
 > agent: it runs the two mutations over the list the review wrote, and nothing else. The review job
 > narrows the grant back to `contents: read`, so a review still cannot touch your branch.
 >
-> **Move the grant when you move the pin.** This is not a scope you lose the resolve without. A
-> called job cannot hold more than its caller granted, and GitHub refuses the elevation rather than
-> trimming it: the run fails before any job starts, with `The workflow is requesting 'contents:
-> write', but is only allowed 'contents: read'` and — because nothing ran — no job log to read it
-> in. A caller left on `contents: read` therefore does not review at all. `doctor` reports it as an
-> error, and it is the reason to run `doctor` after a pin bump rather than before the next label.
+> **Move the grant when you move the pin.** This is not a scope you lose the resolve without: a
+> caller left on `contents: read` does not review at all, and the annotation quoted at the head of
+> this table is that exact caller. `doctor` reports it as an error, and it is the reason to run
+> `doctor` after a pin bump rather than before the next label.
 
-> **`statuses: write` on update-branch is what keeps it**, for the same reason and with the same
-> silence when it is missing. A clean refresh copies the verdict from the commit that was reviewed
-> on to the merge commit it creates, because the new commit carries none until something posts one.
-> Without the scope the copy 403s and the step warns — it cannot fail, since the merge is pushed by
-> then — so the pull request reads as unreviewed and every refresh quietly costs a review round.
-> A refresh that had to *resolve* conflicts copies nothing and adds `agent:review` instead, which
-> is a label rather than a status and needs no scope of its own.
+> **`statuses: write` on update-branch is what keeps it.** A clean refresh copies the verdict from
+> the commit that was reviewed on to the merge commit it creates, because the new commit carries
+> none until something posts one. That copy is what stops every refresh of a reviewed pull request
+> quietly costing a review round, and the step warns rather than failing because the merge is pushed
+> by the time it runs. Omitting the grant does not buy you the warning, though — it buys you the
+> refusal at the head of this table. A refresh that had to *resolve* conflicts copies nothing and
+> adds `agent:review` instead, which is a label rather than a status and needs no scope of its own.
 
-> **`checks: read` on review is the row that only a private repository needs — and it is not
-> optional there.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a
+> **`checks: read` on review is the row only a private repository *spends* — and it is not optional
+> on a public one.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a
 > **public** repository serves without the scope. Every repo in this pilot was public, so the grant
 > was missing from v0.1.0 through v0.1.4 and nothing ever failed. The first private adopter got
 > `403 Resource not accessible by integration` on every poll, and — because the count was defaulted
 > over the error — the job spent its full 900-second budget before reviewing with no CI evidence at
-> all, the exact outcome #48 exists to prevent. Fixed on both halves — the pin in
-> [`examples/callers/`](../examples/callers/) carries the release that has it; since a called
-> workflow can only *downgrade*, adding it to your caller alone changes nothing on an older pin.
+> all, the exact outcome #48 exists to prevent.
+>
+> All of that is about the **poll**, and it was the whole story while your caller and the job were
+> one file. They are two now, and the review job declares `checks: read`: a caller that omits it is
+> refused the elevation and never reaches a poll to be served without one. Probed on a real token,
+> on a public repository. So `doctor` reports it as an error whatever your repository's visibility,
+> and the pin in [`examples/callers/`](../examples/callers/) carries the grant — adding it to your
+> caller alone still changes nothing on a pin older than the release that fixed the other half.
 
 > **The same wait needs `jq` on the runner**, which is new in this release — before it the only
 > filtering was gh's own embedded `--jq`. Nothing you configure here can take it away: this
@@ -813,26 +834,26 @@ re-checked against that; the others are not yet.
 > is the line printed underneath it: the step echoes whatever `gh` or `jq` wrote to stderr, so a
 > runner without `jq` says `jq: command not found` outright.
 
-> **`AGENT_PAT` defers two of these; it does not replace them, and `doctor` reports both as
-> failures whether or not you have one.** The checkout that pushes runs under
+> **`AGENT_PAT` decides which token makes a call; it grants nothing, and `doctor` reports every
+> missing grant whether or not you have one.** The checkout that pushes runs under
 > `${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}`, as do `gh pr create` and every `agent:review`
 > label the loop adds itself — on the `implement` pair, on a `fix` run that pushed, and on an
-> `update-branch` run that resolved conflicts. So with the PAT set, a caller missing
-> `contents: write` or `pull-requests: write` keeps working — until the token expires (§2), and
-> then loses a full agent pass to a 403 at the push. Nothing defers the calls the workflow token
-> serves: every label transition 403s the first time it runs, and on a **private** repository so
-> does `implement`'s preflight `gh pr list`, before any branch exists. The grants are what your
-> job has to hold; the PAT only decides when you find out.
+> `update-branch` run that resolved conflicts. That is a choice *inside* a job that is already
+> running: a caller missing `contents: write` or `pull-requests: write` is refused before any job
+> starts, PAT or no PAT. What the PAT is actually for is §1's second, third and fourth failures —
+> a push that triggers no workflow, a `gh pr ready` that is refused, a label add that is a silent
+> no-op — and what it costs you when it expires is §2.
 
 Four things about that shape are worth knowing before you paste it:
 
 - **`permissions` has to be on your job too.** The called workflow can only *downgrade* the token it
   is handed, so it cannot grant itself the `pull-requests: write` its label edits spend. On a repo
-  whose default `GITHUB_TOKEN` is read-only, omitting this block gives you a run that dies at its
-  first label edit — `Resource not accessible by integration`, on a step named for labels, before
-  anything is checked out. The two blocks say the same thing for opposite reasons — yours grants,
-  ours bounds — which is why `contents: read` on the review job stays an invariant no caller can
-  widen, even though your review caller grants `write` for the `resolve` job beside it.
+  whose default `GITHUB_TOKEN` is the restricted one, omitting this block gives you no run at all:
+  that token is `contents` and `packages` read, which is less than every job here declares, and the
+  default token is the ceiling like any other — probed, and it is the case this file used to give as
+  the exception. The two blocks say the same thing for opposite reasons — yours grants, ours
+  bounds — which is why `contents: read` on the review job stays an invariant no caller can widen,
+  even though your review caller grants `write` for the `resolve` job beside it.
 - **Pin the `@ref`.** Same reasoning as the runner version above, and the same trap: a floating
   `@main` is a workflow that changes under a pull request nobody touched. An exact pin is a pin
   that goes stale, which nothing in this repository can see from here — *Keeping the pins fresh*,

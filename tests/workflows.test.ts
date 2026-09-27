@@ -2386,13 +2386,12 @@ describe("every workflow in the loop is called rather than copied", () => {
    * A called workflow can only *downgrade* the token it is handed. So the
    * callee's block is the bound: it cannot be widened from the caller, which is
    * what keeps `contents: read` on review an invariant (docs/parity.md §10). And
-   * the caller's block is the grant: on a repo whose default `GITHUB_TOKEN` is
-   * read-only, a permission declared only in the callee grants nothing, and
-   * every `gh` call needing it 403s. What that costs is per workflow and is
-   * accounted for in one place, `setup/doctor.ts`'s `REQUIRED_PERMISSIONS`:
-   * the three PR workflows die at the label transition above their checkout,
-   * before an agent pass is spent, while `implement` reaches the step that
-   * opens the pull request and `follow-ups` 403s having already filed.
+   * the caller's block is the grant: a permission declared only in the callee
+   * grants nothing, and GitHub refuses the elevation rather than trimming the
+   * job to fit — the run is a `startup_failure` before any job starts, whichever
+   * scope is short (#146). What each scope *buys* is accounted for in one place,
+   * `setup/doctor.ts`'s `REQUIRED_PERMISSIONS`, which is also where an adopter is
+   * told what the shortfall costs.
    *
    * Asserted as equality between the halves rather than against a table, so the
    * property held is the one that matters: neither half can drift from the
@@ -2402,7 +2401,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * caller's grant is the ceiling for all of them. That is one job everywhere
    * except `review.yml`, where `resolve` holds `contents: write` and the review
    * job narrows it back to `read` (#133). A grant wider than every job is a
-   * scope nothing spends; a narrower one is a job that 403s.
+   * scope nothing spends; a narrower one is a run GitHub refuses outright.
    */
   it.each(callerWorkflows)("%s: grants exactly what the called jobs bound", (file) => {
     const granted = jobOf(file).permissions;
@@ -2428,10 +2427,12 @@ describe("every workflow in the loop is called rather than copied", () => {
    * deliberately not written `|| true`, so Actions' default `bash -e` fails the
    * run there. Loud, and before the diff is fetched.
    *
-   * That is the behaviour `setup/doctor.ts` describes to an adopter ("fails it
-   * on the 403, before the checkout"), so it is a property of these three
-   * workflows rather than an oversight in them: a `|| true` added to that line
-   * would buy back exactly the silent, paid-for run the prose once claimed.
+   * A property of these three workflows rather than an oversight in them: a
+   * `|| true` added to that line would buy back exactly the silent, paid-for run
+   * the prose once claimed. What it is *not* is what a caller's missing
+   * `pull-requests: write` gets you — that run never starts (#146) — so this is
+   * about a token that is short for some other reason, which is why the
+   * assertion is about step order rather than about a grant.
    */
   it.each(PR_WORKFLOWS)("%s: a 403 on the label transition fails before the checkout", (file) => {
     const steps = stepsOf(file);
@@ -4419,8 +4420,11 @@ describe("the README's action pins are the ones this repository runs", () => {
  * That choice adds one thing to every workflow and one thing to every caller,
  * and neither fails in a way that names itself. GitHub Packages has **no
  * anonymous install** — even for a public package — so the install needs a
- * scoped `.npmrc` and a token, and a missing `packages: read` surfaces as a 401
- * at `npx` time, which reads like a bad token rather than a missing grant.
+ * scoped `.npmrc` and a token, and a package the token may not read surfaces as
+ * a 401 at `npx` time, which reads like a bad token rather than like the
+ * package's access settings (docs/ADOPTING.md §4's cross-repo caveat). A
+ * caller's missing `packages: read` is the other half of the same seam and never
+ * gets that far: the run is refused before any job starts.
  *
  * Every check here is about that seam. The runner *version* is checked above;
  * this is about whether the pin can be resolved at all.

@@ -32,8 +32,10 @@ jobs:
     # `pull-requests: write` is what every `gh pr edit` in it spends, and
     # `packages: read` is explained below.
     permissions:
-      # Reading the check runs the CI wait polls. Public repositories expose
-      # them without this scope; a private one 403s without it.
+      # Reading the check runs the CI wait polls. A public repository serves that
+      # poll without this scope, which is why it reads as optional and why it was
+      # missing until v0.1.5 — but the called job declares it, so omitting it
+      # here is refused before any job starts, on a public repository too.
       checks: read
       # `write` for one job only: `resolve`, which closes the threads the review
       # verified. GitHub refuses `resolveReviewThread` to a token without it
@@ -41,22 +43,25 @@ jobs:
       # itself narrows this back to `read`, so a review still cannot touch the
       # branch. Not optional and not a degradation: a called job cannot hold
       # more than this block grants, and GitHub refuses the elevation by
-      # failing the whole run before any job starts. Left at `read`, this
-      # workflow does not review at all.
+      # failing the whole run before any job starts — an *Invalid workflow file*
+      # annotation, and no job log (probed, #146). Left at `read`, this workflow
+      # does not review at all.
       contents: write
       # Installing the runner package, which the called job does with `npx` from
       # GitHub Packages. Granted here because a called workflow can only
       # *downgrade* the token it is handed, so the scope has to start in the
       # caller — and unconditional because GitHub Packages has no anonymous
-      # install even for a public package. Omit it and the run dies at `npx`
-      # with a 401 that reads like a bad token rather than a missing grant.
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
       packages: read
       pull-requests: write
       # Posting the review's verdict as an `agent-review` commit status on the
       # reviewed commit — the one line saying what to do next. A status is its
-      # own scope, so `pull-requests: write` does not cover it; without this the
-      # review posts and no verdict appears, which looks like the feature being
-      # switched off rather than like a missing grant.
+      # own scope, so `pull-requests: write` does not cover it. The step that
+      # posts it warns rather than failing, on the grounds that a posted review
+      # beats the line summarising it — but that is not what omitting this buys
+      # you, which is the run (docs/ADOPTING.md §4).
       statuses: write
     with:
       # `<caller job id> / <called job id>`. The other three inputs

@@ -2230,3 +2230,56 @@ that happened to be open.
 So the correction to "a rule only a reader can apply holds while one reader sees both copies" is
 that a rule a *check* applies holds only as wide as the check looks. The scan is recursive now, and
 a planted `tests/<dir>/x.test.ts` fails it by name.
+
+## 2026-09-27 — the correction that was reasoned about got probed, and it was wider than the row it fixed
+
+The 2026-09-25 entry above corrected one claim from GitHub's documented rule and no run: that a
+caller still granting `contents: read` would review and leave its threads open, when in fact the
+elevation is refused and the run never starts. It then named the generalisation and left it — "most
+of `docs/ADOPTING.md` §4's 'without it, the step 403s and the run stays green' prose a description of
+a state that stopped occurring", one row corrected, "the rest is named at the head of that table and
+is somebody's next ticket". #146 is that ticket, and the first thing it did was the probe the
+previous two corrections each declined for want of a token.
+
+Four cases in a throwaway public repository, each caller granting one scope less than the job it
+called declared, each with a fully granted control: `checks: read` omitted on a **public**
+repository, `contents: read` omitted so the level became `none`, a caller with **no**
+`permissions:` block against a *restricted* default token, and `statuses: write` omitted. All four
+were refused at startup. Every control succeeded. **No case reached a step**, which is the one
+sentence the whole ticket turns on: a job that does not start cannot 403, so every "the step warns",
+"the poll spends its budget", "the push 403s with the agent pass already spent" account was
+describing a run nobody can have.
+
+Two of the four mattered more than the correction they were run to confirm.
+
+The **no-`permissions:`-block** case was the escape hatch the 2026-09-25 correction invented to keep
+the old prose true of something: a caller with no block runs with the default token, and the 403
+narratives were moved there rather than deleted. The default token is a ceiling like any other, so
+that caller is refused too. Nothing left in the loop produces the run-time 403 the notes described —
+the only configuration that under-grants nothing is the *permissive* default, which grants every
+scope write and so is never short.
+
+And `doctor` had built two severity classes on the same model. `checks: read` was a warning on a
+public repository "where the same call is served without it", and `follow-ups`' `contents: read` a
+warning everywhere because "nothing is known to fail without it". Both are arguments about which
+call a token is refused, and both were retired: the severity is not a property of the scope at all,
+it is a property of the call chain, so the per-row `absence` column is gone and the reason is written
+once in `diagnose`. That is the shape worth remembering — an axis in a table that turned out to be
+the same answer in every row, because every row's reasoning was about a layer the code had moved on
+from.
+
+The quoted message was wrong too, in three files, in a way only a run could show: not `The workflow
+is requesting 'contents: write', but is only allowed 'contents: read'` but `Error calling workflow
+'…'. The nested job 'resolve' is requesting 'contents: write', but is only allowed 'contents: read'`
+— and GitHub files it as an **Invalid workflow file** annotation on the run page, which `gh run view`
+reports only as "a workflow file issue". "No job log to read it in" was true and incomplete: the
+refusal names both the scope and the file, in the one place nobody looks until they wonder why a
+label did nothing. `doctor` paraphrases rather than quotes it, because the job the annotation names
+is the *called* one and the table has never known those job ids.
+
+The lesson is the 2026-09-23 and 2026-09-24 entries' for the third time, with the sharpening those
+two do not carry: a correction made from documentation is still an unprobed claim, and it will be
+narrower than the truth in whichever direction the author was not looking. Both earlier entries drew
+"probe the remote API". This one adds that a probe answers the question you ask *and* the ones next
+to it — three of the four cases here were run to confirm a correction already believed, and two of
+them removed a documented escape hatch and two severity classes nobody had put on the ticket.

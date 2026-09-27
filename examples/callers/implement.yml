@@ -28,8 +28,9 @@ jobs:
       # GitHub Packages. Granted here because a called workflow can only
       # *downgrade* the token it is handed, so the scope has to start in the
       # caller — and unconditional because GitHub Packages has no anonymous
-      # install even for a public package. Omit it and the run dies at `npx`
-      # with a 401 that reads like a bad token rather than a missing grant.
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
       packages: read
       pull-requests: write
     # No `with:`. The three inputs (`default-branch`, `node-version-file`,

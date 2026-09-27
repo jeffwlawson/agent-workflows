@@ -892,7 +892,7 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // …and the count is one number, so that arm means what it says. `gh api
     // --paginate --jq` applies the filter per page, so a commit with more
     // than one page of check runs (>30) prints `0\n0` — which the arm above
-    // would classify as an API failure and diagnose as a missing grant, on a
+    // would classify as an API failure and report as a blind review, on a
     // repo whose permissions are fine. Slurped, the filter runs once over
     // every page.
     //
@@ -1259,12 +1259,13 @@ describe("agent-review posts its verdict as a commit status", () => {
   });
 
   /**
-   * Neither posting may fail the run. The likeliest cause is an adopter whose
-   * caller predates the `statuses: write` grant, and a posted review is worth
-   * more than its verdict — `setup/doctor.ts` is what names that grant, where
-   * the adopter is looking for it. A warning keeps the failure visible; `||
-   * true` would leave a loop that posts no verdicts and looks healthy, which is
-   * the shape the marker step above is written against too.
+   * Neither posting may fail the run: a posted review is worth more than its
+   * verdict. The cause is not the adopter's caller — one short of
+   * `statuses: write` is refused before any job starts (#146), so a step that
+   * ran holds the write and what lands here is GitHub refusing the status
+   * itself. A warning keeps the failure visible; `|| true` would leave a loop
+   * that posts no verdicts and looks healthy, which is the shape the marker
+   * step above is written against too.
    */
   it.each([
     ["the verdict", "Post the verdict as a commit status"],
@@ -2549,29 +2550,84 @@ describe("every workflow in the loop is called rather than copied", () => {
   });
 
   /**
-   * And what a caller short of a scope in that block pays, which #146 corrected
-   * from the step to the run — asserted on the **per-scope** comments and not
-   * just the paragraph above them, because that is the distinction the
-   * correction's own sweep fell down: the docblock was rewritten and
-   * `statuses: write`'s two lines below it, saying "the caller has to grant it
-   * too. Without it the review posts and no verdict appears", were not. The
-   * grep that carried the sweep looked for `403` and "a caller missing", and a
-   * sentence naming no status code contains neither.
+   * The two scopes whose own comment makes a claim about what a caller short of
+   * it pays, and so the two #146's correction had to reach: `statuses: write`,
+   * whose comment survived the sweep saying the review posts and no verdict
+   * appears, and `checks: read`, which a public repository's poll is served
+   * without and which reads as optional for that reason.
+   *
+   * These two rather than every scope, because the property is "says the right
+   * thing" and not "avoids a phrase". A blanket ban on the retired construction
+   * was tried and rejected: `resolveReviewThread` really is refused to a token
+   * *without it*, and no wording distinguishes that from a claim about a
+   * caller's grant (docs/friction.md, 2026-09-27). A scope whose comment starts
+   * making the claim is a scope to add here.
+   */
+  const CLAIMS_THE_COST: readonly (readonly [string, string])[] = [
+    ["statuses", "write"],
+    ["checks", "read"],
+  ];
+
+  const costComments = CLAIMS_THE_COST.flatMap(([permission, value]) =>
+    agentWorkflows().flatMap((file) =>
+      permissionComments(file, `${permission}: ${value}`).map(
+        (comment) => [file, `${permission}: ${value}`, comment] as const,
+      ),
+    ),
+  );
+
+  /**
+   * And what a caller short of one of them pays, which #146 corrected from the
+   * step to the run — asserted on the **per-scope** comments and not just the
+   * paragraph above them, because that is the distinction the correction's own
+   * sweep fell down: the docblock was rewritten and `statuses: write`'s two
+   * lines below it, saying "the caller has to grant it too. Without it the
+   * review posts and no verdict appears", were not. The grep that carried the
+   * sweep looked for `403` and "a caller missing", and a sentence naming no
+   * status code contains neither.
    *
    * Written per scope rather than over the block joined, since a block read
    * whole passes on the docblock's copy while any number of scopes below it
-   * still cost the step. Anchored to `statuses:` because that is both the scope
-   * that survived and the one whose caller had already been corrected — a
-   * reusable contradicting its own caller, which is the shape a sweep leaves.
+   * still cost the step — a reusable contradicting its own caller on one scope,
+   * which is the shape a file-at-a-time sweep leaves.
    */
-  it.each(
-    agentWorkflows().flatMap((file) =>
-      permissionComments(file, "statuses: write").map((comment) => [file, comment] as const),
-    ),
-  )("%s: says a caller short of statuses: write costs the run", (_file: string, comment: string) => {
-    expect(comment).toMatch(/before any job starts/);
-    expect(comment).not.toMatch(/the review posts and no verdict appears/i);
-  });
+  it.each(costComments)(
+    "%s: says a caller short of %s costs the run",
+    (_file: string, _scope: string, comment: string) => {
+      expect(comment).toMatch(/before any job starts/);
+      expect(comment).not.toMatch(/the review posts and no verdict appears/i);
+    },
+  );
+
+  /**
+   * …and that it read anything at all, which the guard above cannot say about
+   * itself. `it.each` over an **empty** array registers no test and passes the
+   * file, so a scope `permissionComments` stops matching — a quoted value, a
+   * trailing inline comment on the scope's own line, a reindented block — takes
+   * every case above with it and leaves `verify` green on precisely the sweep
+   * they exist to catch.
+   *
+   * One entry per **block** that grants the scope rather than per file, because
+   * a reusable has a block per job: `review.yml`'s `resolve` granting
+   * `statuses: write` later would be a second comment to read rather than a
+   * second copy of the first, and equality of the two lists says so either way.
+   * Derived from the parsed YAML rather than listed, so a seventh half granting
+   * one of these arrives as a case above rather than as a gap.
+   */
+  it.each(CLAIMS_THE_COST)(
+    "reads a %s: %s comment on every block that grants the scope",
+    (permission: string, value: string) => {
+      const granting = agentWorkflows().flatMap((file) =>
+        jobsOf(file)
+          .filter((job) => job.permissions?.[permission] === value)
+          .map(() => file),
+      );
+
+      expect(
+        costComments.filter(([, scope]) => scope === `${permission}: ${value}`).map(([file]) => file),
+      ).toEqual(granting);
+    },
+  );
 
   /**
    * Named, not inherited. `secrets: inherit` hands the called workflow every
@@ -2669,9 +2725,10 @@ describe("agent-review tells its caller what it cannot know", () => {
       packages: "read",
       "pull-requests": "write",
       // The verdict (#96). A commit status is not a pull-request write, so
-      // nothing this job already held covers it — without the grant the review
-      // posts and no verdict appears, which is the one failure here that looks
-      // like the feature simply being off.
+      // nothing this job already held covers it. A caller short of it gets no
+      // run rather than a review with no verdict on it (#146); what looks like
+      // the feature simply being off is a token short for some other reason,
+      // since the step that posts the status warns rather than failing.
       statuses: "write",
     });
   });

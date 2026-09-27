@@ -403,11 +403,12 @@ rather than a gap. A status belongs to a commit, so a push leaves the new head w
 instead of carrying a stale *approval recommended* over code nobody read. The status history on
 the pull request is also the whole record of what earlier rounds said; nothing else keeps one.
 
-If no verdict arrives on *any* pull request, a caller missing `statuses: write` is the likeliest
-cause — the review still posts, so there is nothing on the pull request to say so. That is §4, and
-`doctor` reports it. It is not the only cause: GitHub can refuse the status itself, which is ours
-rather than yours. The run's warning prints what GitHub replied and says which of the two it was, so
-read that before you touch the caller.
+If a review posted and no verdict arrived with it, it is **not** your caller's `statuses: write`: a
+caller granting less than the review job declares is refused before any job starts (§4), so a run
+that got as far as posting a review holds the write. What is left is GitHub refusing the status
+itself, which is ours rather than yours. The run's warning prints what GitHub replied and says as
+much, so read that before you touch the caller. If no run happened at all — no review either — that
+is §4's refusal, and `doctor` names the scope.
 
 **The loop keeps it current, and stops short of your hand.** A `fix` run that pushed asks for its
 own re-review, so a round closes itself out rather than leaving *add `agent:fix`* standing over a
@@ -830,9 +831,9 @@ scope write.
 > workflow hard-codes `runs-on: ubuntu-latest`, an image that ships `jq`, and exposes no `runs-on`
 > input. So this is recorded for whoever changes that line, not as a step for you to take. Without
 > `jq` the wait reports itself blind in exactly the words above — and that message names
-> `checks: read`, because a missing grant is overwhelmingly the likelier cause. What separates them
-> is the line printed underneath it: the step echoes whatever `gh` or `jq` wrote to stderr, so a
-> runner without `jq` says `jq: command not found` outright.
+> `checks: read` only to rule it out, since a caller short of it never reaches a poll at all. What
+> separates the causes that remain is the line printed underneath it: the step echoes whatever `gh`
+> or `jq` wrote to stderr, so a runner without `jq` says `jq: command not found` outright.
 
 > **`AGENT_PAT` decides which token makes a call; it grants nothing, and `doctor` reports every
 > missing grant whether or not you have one.** The checkout that pushes runs under

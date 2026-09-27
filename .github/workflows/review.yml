@@ -124,7 +124,10 @@ jobs:
       # repository they are readable without this scope, which is why every
       # repo in the pilot worked without it; on a private one the same call
       # 403s `Resource not accessible by integration`. Latent since v0.1.0 and
-      # found by the first private adopter to run this loop.
+      # found by the first private adopter to run this loop. That history is
+      # about the **poll**, and it is not what a caller short of the scope gets:
+      # this job declares it, so such a caller is refused before any job starts,
+      # on a public repository too (probed, #146).
       checks: read
       contents: read
       # Installing the runner package. GitHub Packages has no anonymous install,
@@ -404,11 +407,13 @@ jobs:
           #
           # Both halves send stderr to `$err` rather than `/dev/null`, because
           # the arm below no longer has one cause. It fires for a non-zero gh,
-          # for a jq filter error, and for no `jq` on the runner at all — while
-          # its `::error::` names the missing grant, which is the likeliest of
-          # the three and was the only one when it was written. Discarding the
-          # stderr is how the invocation gh refuses stayed invisible for a
-          # release; the arm prints whatever landed here underneath it.
+          # for a jq filter error, and for no `jq` on the runner at all — and
+          # the grant its `::error::` names is the one thing it cannot be: a
+          # caller short of `checks: read` is refused before any job starts
+          # (#146), so a poll that ran holds the read. Discarding the stderr is
+          # how the invocation gh refuses stayed invisible for a release; the
+          # arm prints whatever landed here underneath it, which is the only
+          # thing that tells the three apart.
           pending_count() {
             : > "$err"
             body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err") || return 0
@@ -726,11 +731,13 @@ jobs:
       # nothing can test it — and the line is the whole feature: it is what
       # makes the outcome actionable without reading the review.
       #
-      # Never fails the run, on the same grounds as the marker step above: the
-      # likeliest cause is an adopter whose caller predates `statuses: write`,
-      # and a posted review is worth more than its verdict. A warning says so
-      # where `|| true` would leave a loop posting no verdicts and looking
-      # healthy.
+      # Never fails the run, on the same grounds as the marker step above: a
+      # posted review is worth more than its verdict. Not because the adopter's
+      # caller is the likely cause — a caller short of `statuses: write` is
+      # refused before any job starts (#146), so a step that ran holds the
+      # write, and what lands here is GitHub refusing the status itself. A
+      # warning says so where `|| true` would leave a loop posting no verdicts
+      # and looking healthy.
       - name: Post the verdict as a commit status
         if: steps.state.outputs.proceed == 'true' && success()
         env:

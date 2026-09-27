@@ -2326,3 +2326,37 @@ that are correct: `resolveReviewThread` is refused "to a token without it", agen
 "unguarded without it", a public repo's check runs read "without this scope". The claim is wrong
 only where it is about a *caller's* grant, and no phrase in it says which. A guard that cannot tell
 the two apart is one the next author deletes.
+
+## 2026-09-27 — the guard written to be wider than a paragraph could still have read nothing
+
+The entry above widened a prose guard from one paragraph to every scope comment in both halves, and
+the widening was a `permissionComments(file, "statuses: write")` fed straight into `it.each`. The
+match is exact — `l.trim() === scope` — so a quoted `statuses: 'write'`, a trailing inline comment or
+a reindented block drops that file from the list. `it.each` over an **empty** array registers *zero*
+tests and passes the file. So the guard whose whole point was that it fails by name had a state in
+which it asserts nothing at all and `verify` stays green, and the mutation confirming it took one
+character.
+
+A derived case list is two claims and only one of them was being made: *these comments say the right
+thing*, and *these are the comments there are*. The second is the one that decays, because it depends
+on a matcher rather than on the text, and nothing about a green run distinguishes "every case passed"
+from "there were no cases". So the coverage claim is its own test now, and it is an equality against
+the parsed YAML — one entry per `permissions:` block that grants the scope — rather than a
+non-emptiness check, which would have passed on five of six.
+
+The rule is narrower than "assert your fixtures exist" and worth keeping in that form: **a
+parameterised test carries no evidence that it was parameterised.** Where the parameters are derived,
+the derivation needs an assertion of its own, beside the one it feeds.
+
+Both guards are over a declared pair of scopes now — `statuses: write` and `checks: read`, the two
+whose comment makes a claim about what a short caller pays — rather than over the one scope that was
+wrong. Not over all six, for the reason the entry above records: the property is "says the right
+thing", and a blanket ban on the retired construction fails on the comments where it is true.
+
+And the sweep needed a third round for a reason the greps record. Round one looked for `403` and
+`401`; round two for "without it"; this one turned up `statuses: write` described as "the likeliest
+cause" in `docs/ADOPTING.md` §3b, in `review.yml`'s verdict step and in the test that pins it, and
+`checks: read` named as "overwhelmingly the likelier cause" two paragraphs under a note that had
+already been corrected. Each round's grep was for the phrasing the *previous* round had found. A
+retired claim has as many spellings as it has authors, and the way to enumerate them is the surface
+it is allowed to appear on — which is the guard above — not the words it used last time.

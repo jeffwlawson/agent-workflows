@@ -69,6 +69,16 @@ export interface RepoFacts {
    */
   readonly defaultWorkflowPermissions: "read" | "write" | undefined;
   readonly labels: readonly string[] | undefined;
+  /**
+   * Read, and ruled on by nothing since #146: the elevation refusal fires
+   * wherever the repository sits, so the one severity that turned on this — a
+   * public repository being served the check-runs API without `checks: read` —
+   * has no basis. Kept because that is the class this preflight got wrong twice:
+   * missing entirely from v0.1.0 through v0.1.4, then softened to a warning for
+   * a run-time reason that no longer applies. The grant scenarios in
+   * `tests/agent-cli.test.ts` set both spellings and insist the verdict is
+   * identical, which is an assertion only while the fact can still be set.
+   */
   readonly visibility: "public" | "private" | undefined;
   /** This package's tags, newest first — what a pin is measured against. */
   readonly releases: readonly string[] | undefined;
@@ -111,8 +121,8 @@ const compareVersions = (a: string, b: string): number => {
 };
 
 /**
- * Which permission each reusable half needs from its caller, and why its
- * absence is not an error message a human can act on.
+ * Which permission each reusable half needs from its caller, and what that
+ * scope buys — which is the part no YAML states.
  *
  * Every row is a cell of a table written twice already, and this is the third
  * copy: the reusable half's own `permissions:` is the **ceiling** — the
@@ -124,46 +134,44 @@ const compareVersions = (a: string, b: string): number => {
  * is `tests/agent-cli.test.ts`, which derives this table from those ceilings and
  * fails by name when any of the three disagree.
  *
- * So the columns worth reading here are `why` and `absence`, which are the part
- * no YAML states — and a row is therefore one `why` rather than one scope.
- * `pull-requests: write` is two rows because `follow-ups` spends it on a pull
- * request that is already closed, where none of the transition-step account the
- * other five get is true; a single row covering both would be an explanation
- * that is wrong wherever it is not the one the reader needs.
+ * So the column worth reading here is `why`, and a row is therefore one `why`
+ * rather than one scope. `pull-requests: write` is two rows because
+ * `follow-ups` spends it on a pull request that is already closed, where none of
+ * the transition-step account the other five get is true; a single row covering
+ * both would be an explanation that is wrong wherever it is not the one the
+ * reader needs.
+ *
+ * **There is no severity column, and its absence is a finding rather than a
+ * simplification.** Until #146 every row carried one: how its absence presented
+ * — a 403 on the call the scope is spent on, softened to a warning where a
+ * public repository was served that call anyway, or where no call was known to
+ * need the scope at all. Every one of those accounts described the pre-#98
+ * shape, where the grant and the job were one file and a short grant cost the
+ * call. Split, the caller's block is the ceiling for every job it calls and
+ * GitHub refuses an elevation by refusing the **workflow file**: the run is a
+ * `startup_failure` before any job starts, and the step the scope is spent on is
+ * never reached. Probed on a real token across four scopes, both a missing line
+ * and an explicit `none`, and a caller with no block at all against a restricted
+ * default — every one refused at startup, none of them reaching a step.
+ *
+ * So every missing grant is an **error**, for a reason that belongs to the call
+ * chain rather than to the scope: no row can argue itself down to a warning, and
+ * the sentence saying why is written once, in `diagnose`, rather than eleven
+ * times here.
  *
  * For four releases this list held two of the nine rows, and the seven it
- * skipped failed the same way the two it caught did: a 403 reading
- * `Resource not accessible by integration`, which names neither the scope that
- * is missing nor the file that has to grant it, on a step whose own name is
- * about labels or about a push (#45).
+ * skipped failed the same way the two it caught did: a caller that looked
+ * complete, and a failure naming neither the scope nor the file — a 403 reading
+ * `Resource not accessible by integration` then, on a step whose own name was
+ * about labels or about a push (#45); a run with no job log in it now. The
+ * refusal does name both, in an annotation on a run page nobody is watching
+ * until they wonder why a label did nothing.
  */
 export const REQUIRED_PERMISSIONS: readonly {
   readonly permission: string;
   readonly value: string;
   readonly workflows: readonly string[] | "all";
   readonly why: string;
-  /**
-   * How the absence presents, which is the whole of the severity:
-   *
-   * - `"always"` — the job 403s wherever it runs. An error, and deliberately
-   *   not softened where `AGENT_PAT` is set: the push, and two of `implement`'s
-   *   calls, prefer that token, so a PAT defers those 403s rather than removing
-   *   them. A preflight that passed on one would be green on a loop that breaks
-   *   the day the token expires (`docs/ADOPTING.md` §2), after a full agent
-   *   pass. The PR-creation check below is `hasPat ? "warning" : "error"`
-   *   because a PAT makes that repository *setting* moot; nothing makes a
-   *   grant the caller has to hold moot.
-   * - `"private"` — a public repository serves the call without the scope and a
-   *   private one 403s, so it is an error on a private repository and a warning
-   *   on a public one. An unreadable visibility resolves to the error and says
-   *   that it assumed: a needless grant costs nothing, and this is the class
-   *   that shipped undetected from v0.1.0 through v0.1.4.
-   * - `"advisory"` — nothing is known to fail without it. A warning everywhere:
-   *   the reference caller grants it deliberately and dropping it is a
-   *   configuration nothing here has ever run, which is worth saying and is not
-   *   worth failing a working loop over.
-   */
-  readonly absence: "always" | "private" | "advisory";
 }[] = [
   {
     permission: "packages",
@@ -171,23 +179,20 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: "all",
     why:
       "the runner is installed from GitHub Packages, which has no anonymous install even for a " +
-      "public package. Without the grant the run dies at `npx` with a 401 that reads like a bad token",
-    absence: "always",
+      "public package, so every job in the loop spends this one before it does anything else. It " +
+      "is the only row that is not about what its workflow does",
   },
   {
     permission: "pull-requests",
     value: "write",
     workflows: ["review", "fix", "update-branch", "implement", "implement-prd"],
     why:
-      "on `review`, `fix` and `update-branch` the label transition is `gh pr edit`, and the " +
-      "`--add-label` ending that step is not written `|| true` — so Actions' default `bash -e` " +
-      "fails it on the 403, before the checkout. The two implement halves transition an *issue* " +
-      "and spend this scope later: at `implement`'s preflight `gh pr list` on a private " +
-      "repository, otherwise at the step that opens the pull request, after the agent pass. " +
-      "`Resource not accessible by integration` names neither the scope nor the half that grants " +
-      "it. Required whether or not `AGENT_PAT` is set: where a call prefers the PAT it defers " +
-      "this rather than removing it (`docs/ADOPTING.md` §4)",
-    absence: "always",
+      "on `review`, `fix` and `update-branch` it is the label transition, `gh pr edit`, that " +
+      "hands the pull request to the next workflow in the loop. The two implement halves " +
+      "transition an *issue* and spend this scope on the pull request they open and mark ready, " +
+      "and on `implement`'s preflight `gh pr list`. Required whether or not `AGENT_PAT` is set: " +
+      "the PAT decides which token some of those calls use, not whether the job is allowed to " +
+      "make them (`docs/ADOPTING.md` §4)",
   },
   {
     permission: "pull-requests",
@@ -195,40 +200,31 @@ export const REQUIRED_PERMISSIONS: readonly {
     workflows: ["follow-ups"],
     why:
       "this job transitions no label and checks nothing out, so the account in the row above is " +
-      "not what happens here. It reads the marker and the reviews off the pull request before " +
-      "it files anything, so a private repository files nothing at all; served those reads, it " +
-      "files and then 403s on the two unguarded calls that end the run — the report saying what " +
-      "was filed, and the removal of the `agent:follow-ups` marker that carries the state, which " +
-      "therefore stays and makes the retry a label removed and added by hand. Nothing says so " +
-      "either: the failure comment this workflow posts is a `gh pr comment` too",
-    absence: "always",
+      "not what happens here. It reads the marker and the reviews off a pull request that is " +
+      "already merged and closed, and spends the write on the two calls that end the run: the " +
+      "report saying what was filed, and the removal of the `agent:follow-ups` marker that " +
+      "carries the state, which therefore stays and makes a retry a label removed and added by " +
+      "hand. The failure comment this workflow would post to say so is a `gh pr comment` too",
   },
   {
     permission: "contents",
     value: "write",
     workflows: ["implement", "implement-prd", "fix", "update-branch"],
     why:
-      "the branch this job produces is committed and pushed, and `git push` is not written " +
-      "`|| true`. So this one is loud rather than silent — and late: the 403 lands at the push, " +
-      "after the whole agent pass, and the work the agent did is discarded with it. Required " +
-      "whether or not `AGENT_PAT` is set: the checkout pushes under the PAT where there is one, " +
-      "which masks the absence until that token expires rather than removing it " +
-      "(`docs/ADOPTING.md` §4)",
-    absence: "always",
+      "the branch this job produces is committed and pushed, and the whole agent pass is spent " +
+      "before the push. Required whether or not `AGENT_PAT` is set: the checkout pushes under " +
+      "the PAT where there is one, so the PAT decides which token pushes rather than whether " +
+      "the job may (`docs/ADOPTING.md` §4)",
   },
   {
     permission: "issues",
     value: "write",
     workflows: ["implement", "implement-prd"],
     why:
-      "the issue's labels are transitioned from this job and its outcome commented on it. The " +
-      "removals are written `|| true`; the `gh issue edit --add-label \"agent:in-progress\"` " +
-      "that follows them is not, and Actions' default `bash -e` fails that step on the 403 — " +
-      "before the checkout, and before the branch exists. Nothing downstream runs either: not the " +
-      "`agent:blocked` and reason this job leaves when it stops, and not the sub-issue the PRD " +
-      "chain closes to advance. The message names no scope: `Resource not accessible by " +
-      "integration`",
-    absence: "always",
+      "the issue's labels are transitioned from this job — `agent:in-progress` above the " +
+      "checkout, and the `agent:blocked` and reason it leaves when it stops — its outcome is " +
+      "commented on the issue, and the PRD chain closes the sub-issue it finished in order to " +
+      "advance",
   },
   {
     permission: "issues",
@@ -239,19 +235,19 @@ export const REQUIRED_PERMISSIONS: readonly {
       "findings as issues, with the workflow token rather than the PAT. Creation is the whole of " +
       "what it spends the grant on since #82 — a related issue is linked from the stub being " +
       "filed rather than commented on, so nothing here writes to an issue it did not open. " +
-      "Without it the first `gh issue create` 403s and nothing is filed; what says so is a " +
-      "failure comment on a pull request that is already merged and closed, which nobody is " +
-      "waiting on a run for",
-    absence: "always",
+      "Nothing here is waited on either: the whole run happens after a merge, and what would " +
+      "report a problem with it is a comment on a pull request that is already closed",
   },
   {
     permission: "checks",
     value: "read",
     workflows: ["review"],
     why:
-      "the CI wait polls the check-runs API, which a public repository serves without the scope " +
-      "and a private one 403s. The poll then spends its whole budget and reviews with no CI evidence",
-    absence: "private",
+      "the CI wait polls the check-runs API, which a **public** repository serves without the " +
+      "scope. That is why the grant was missing from v0.1.0 through v0.1.4 and why it still reads " +
+      "as optional there; the review job declares it, so the caller's half is not optional on a " +
+      "public repository either and your repository's visibility decides nothing about this " +
+      "finding (#146)",
   },
   {
     permission: "statuses",
@@ -260,11 +256,10 @@ export const REQUIRED_PERMISSIONS: readonly {
     why:
       "the review's verdict — what to do about it next — is posted as an `agent-review` commit " +
       "status on the reviewed commit, and a status is its own scope rather than part of " +
-      "`pull-requests: write`. Without it the review posts, the run stays green, and no verdict " +
-      "appears: the step warns rather than failing, because a posted review is worth more than " +
-      "its verdict. So nothing on the pull request says the grant is missing, and the loop looks " +
-      "like one whose verdicts are switched off",
-    absence: "always",
+      "`pull-requests: write`. The step that posts it warns rather than failing, on the grounds " +
+      "that a posted review is worth more than the line summarising it — so where the token is " +
+      "short for some other reason the loop looks like one whose verdicts are switched off, and " +
+      "nothing on the pull request says otherwise",
   },
   {
     permission: "statuses",
@@ -273,10 +268,9 @@ export const REQUIRED_PERMISSIONS: readonly {
     why:
       "a clean refresh copies the review's verdict from the old head on to the merge commit it " +
       "creates, because a commit status belongs to a commit and the new one carries none until " +
-      "something posts it. Without the scope that copy 403s and the step warns — it cannot fail, " +
-      "since the merge is pushed by then — so the pull request reads as unreviewed and every " +
-      "refresh of it quietly costs a review round",
-    absence: "always",
+      "something posts it. That copy is what stops every refresh of a reviewed pull request " +
+      "quietly costing a review round, and the step makes it a warning rather than a failure " +
+      "because the merge is pushed by the time it runs",
   },
   {
     permission: "contents",
@@ -286,22 +280,20 @@ export const REQUIRED_PERMISSIONS: readonly {
       "the review's `resolve` job closes the threads the review verified, and GitHub refuses " +
       "`resolveReviewThread` to a token without it (#133). Only that job spends the write: it " +
       "checks nothing out and runs no agent, and the review job narrows the grant back to " +
-      "`read`, so a review still cannot touch the branch. This caller is granting less than a " +
-      "job it calls declares, which costs you the whole workflow rather than the close — GitHub " +
-      "refuses the elevation by failing the run before any job starts, and with nothing having " +
-      "run there is no job log saying so. A review labelled on this caller does nothing at all",
-    absence: "always",
+      "`read`, so a review still cannot touch the branch. Newer than every other grant on this " +
+      "caller, so a caller installed before that release holds `contents: read` and looks " +
+      "complete",
   },
   {
     permission: "contents",
     value: "read",
     workflows: ["follow-ups"],
     why:
-      "nothing in this job reads the repository and nothing is checked out, so no call here is " +
-      "known to 403 without it. The reference caller grants it all the same: a `permissions:` " +
-      "block replaces the token rather than adding to it, so leaving the line out sets " +
-      "`contents: none`, which is a configuration the runner install has never been run under",
-    absence: "advisory",
+      "nothing in this job reads the repository and nothing is checked out, so this grant buys " +
+      "no call — it is the level the job declares, and that is the whole of why it is needed. A " +
+      "`permissions:` block replaces the token rather than adding to it, so leaving the line out " +
+      "sets `contents: none`, which is less than `read` and is refused like any other shortfall " +
+      "(#146, probed)",
   },
 ];
 
@@ -323,6 +315,23 @@ const missingPermission = (
   const held = caller.permissions[permission];
   return held !== value && held !== "write";
 };
+
+/**
+ * What a shortfall costs, in the words of the thing that does it — and the
+ * reason every grant above is an error rather than a judgement per scope.
+ *
+ * Where an adopter finds it matters as much as what it says. `gh run view`
+ * prints only *This run likely failed because of a workflow file issue*, naming
+ * neither the scope nor the file; the annotation on the run page names both.
+ * Recorded from a real refusal (#146), which is also why this does not quote the
+ * message: the annotation names the **called** job, which this table does not
+ * know, and a quote with the wrong job id in it is worse than a paraphrase.
+ */
+const REFUSED =
+  `A called job cannot hold more than its caller granted, and GitHub refuses the elevation rather ` +
+  `than trimming it: this fails the whole run before any job starts, as an *Invalid workflow file* ` +
+  `annotation on the run page naming this scope — which \`gh run view\` reports only as a workflow ` +
+  `file issue, and which no job log records at all.`;
 
 /**
  * Rule on the installed callers and the facts. Pure: everything it needs has
@@ -351,7 +360,7 @@ export const diagnose = (
 
   const hasPat = facts.secrets?.includes("AGENT_PAT");
 
-  for (const { permission, value, workflows, why, absence } of REQUIRED_PERMISSIONS) {
+  for (const { permission, value, workflows, why } of REQUIRED_PERMISSIONS) {
     for (const caller of callers) {
       if (workflows !== "all" && !workflows.includes(caller.workflow)) continue;
       // A job with no `permissions:` block anywhere holds whatever the
@@ -364,16 +373,6 @@ export const diagnose = (
       if (caller.permissionsFrom === "none") continue;
       if (!missingPermission(caller, permission, value)) continue;
 
-      // A called workflow can only *downgrade* the token it is handed, so a
-      // grant missing from the caller cannot be made up for on the other side.
-      //
-      // Visibility is the one unreadable fact that changes a severity instead
-      // of adding a finding of its own, and unknown resolves to the private
-      // branch: a needless grant costs nothing and a missing one reviews blind.
-      // Erring that way is the call; presenting a guess as a determination is
-      // not, so the guess says so — otherwise an unauthenticated run against a
-      // public repository exits 1 with nothing admitting why.
-      const guessed = absence === "private" && facts.visibility === undefined;
       // A grant can be short in two ways, and they do not take the same
       // sentence. An **absent** line is added. A line that is present at a
       // weaker value is *changed*: told to add one it already has, an adopter
@@ -403,18 +402,22 @@ export const diagnose = (
           ? ` The \`${caller.jobId}\` job declares none of its own, and a job-level block replaces the top-level one rather than adding to it.`
           : ``;
       add({
-        severity:
-          absence === "advisory" || (absence === "private" && facts.visibility === "public")
-            ? "warning"
-            : "error",
+        // Every one of them, wherever the repository sits and whatever else is
+        // configured. A called workflow can only *downgrade* the token it is
+        // handed, and GitHub does not trim the job to fit what it was handed:
+        // it refuses the elevation by refusing the workflow file, so the run is
+        // a `startup_failure` and the step the scope is spent on never happens
+        // (#146). There is no scope for which that is a warning.
+        severity: "error",
         check: `${permission}: ${value}`,
         problem:
           (held === undefined
             ? `${caller.file} grants the \`${caller.jobId}\` job no \`${permission}: ${value}\` — ${why}.`
             : `${caller.file} grants the \`${caller.jobId}\` job \`${permission}: ${held}\` where it needs \`${permission}: ${value}\` — ${why}.`) +
-          (guessed
-            ? ` This repository's visibility could not be read, so this is reported as an error on the assumption that it is private.`
-            : ``),
+          // Said on every one of them rather than carried per row: it is one
+          // statement about the call chain, and eleven copies of it in the
+          // table above would be eleven places for it to go stale.
+          ` ${REFUSED}`,
         fix:
           held === undefined
             ? `Add \`${permission}: ${value}\` to ${block}.${inherited}`
@@ -428,12 +431,16 @@ export const diagnose = (
   //
   // Which of the two defaults is set decides everything here, and it is why the
   // scope rows above skip these callers rather than reporting each grant
-  // missing. The permissive default is every scope at write, so there is
-  // genuinely nothing to say. The restricted one is `contents` and `packages`
-  // read, so the install works and every *write* the job makes does not — one
-  // finding about the block, not a list of scopes, because the fix is the whole
-  // block either way: a job-level one replaces the inherited token rather than
-  // adding to it, so naming a single scope is how an adopter loses the rest.
+  // missing. The permissive default is every scope at write, so it under-grants
+  // nothing and there is genuinely nothing to say. The restricted one is
+  // `contents` and `packages` read, which is less than every job in this loop
+  // declares — and #146's third case settled what that costs: the default token
+  // is the ceiling like any other, so the run is refused at startup rather than
+  // running on what the default holds.
+  //
+  // One finding about the block, not a list of scopes, because the fix is the
+  // whole block either way: a job-level one replaces the inherited token rather
+  // than adding to it, so naming a single scope is how an adopter loses the rest.
   for (const caller of callers) {
     if (caller.permissionsFrom !== "none") continue;
     if (facts.defaultWorkflowPermissions === "write") continue;
@@ -450,9 +457,7 @@ export const diagnose = (
         `${caller.file} declares no \`permissions:\` block — neither on the \`${caller.jobId}\` ` +
         `job nor above \`jobs:\` — so the job runs with this repository's default ` +
         `\`GITHUB_TOKEN\`. The restricted default is \`contents\` and \`packages\` read and ` +
-        `nothing else, so the runner installs and then every write the job makes 403s: its push, ` +
-        `its comments, its label transitions, and on a private repository the check runs the CI ` +
-        `wait polls.` +
+        `nothing else, which is less than the job this caller calls declares. ${REFUSED}` +
         (unknown
           ? ` This repository's default workflow permissions could not be read, so this is ` +
             `reported as something to check rather than as a fault — if the setting is the ` +
@@ -741,18 +746,17 @@ export const availableSecrets = (
 };
 
 /**
- * `gh`'s answer for a repository's visibility, as the two cases the diagnosis
- * distinguishes. An **internal** repository is private as far as every check
- * here is concerned: the check-runs API 403s without the scope exactly as it
- * does on a private one.
+ * `gh`'s answer for a repository's visibility, as the two cases anything here
+ * would distinguish. An **internal** repository is private as far as this loop
+ * is concerned: the check-runs API 403s without the scope exactly as it does on
+ * a private one.
  *
  * Folded to one case rather than matched in two, because which case `gh` emits
  * is version-dependent — `repo view --json visibility` has answered both
  * `PUBLIC` and `public` across releases. Accepting one spelling of `INTERNAL`
- * and both of the others is an asymmetry with a consequence: the fall-through is
- * `undefined`, so an internal repository whose `gh` lowercased the field would
- * get a correct severity with an untrue sentence attached, saying the visibility
- * could not be read when it was read fine.
+ * and both of the others would be an asymmetry with a consequence, since the
+ * fall-through is `undefined`: an internal repository whose `gh` lowercased the
+ * field would read as one whose visibility could not be read at all.
  */
 export const asVisibility = (raw: string | undefined): "public" | "private" | undefined => {
   const held = raw?.trim().toUpperCase();
@@ -778,9 +782,10 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
   // what makes an empty organization-secrets answer readable below.
   //
   // A second call rather than a second field of the one above, so that a `gh`
-  // old enough not to know this field costs only the question it answers: asked
-  // together, an unknown field fails the whole query and the visibility — which
-  // decides a severity — would go unread with it. Through `list` for
+  // old enough not to know either field costs only the question it answers:
+  // asked together, one unknown field fails the whole query and takes the other
+  // answer with it, and this one decides whether the secrets are readable at
+  // all. Through `list` for
   // `parseList`'s reason, since the answer is legally `false` and a `false` read
   // as a `gh` that said nothing is the distinction the secrets turn on.
   const [inOrganization] =

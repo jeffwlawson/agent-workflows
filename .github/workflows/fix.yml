@@ -81,8 +81,10 @@ jobs:
       cancel-in-progress: false
     # Granted by the caller, bounded here. A called workflow can only *downgrade*
     # the token it is handed, so this block cannot be widened from the caller's
-    # side — and the caller's identical block is the grant, without which every
-    # `gh` call below 403s on a repo whose default `GITHUB_TOKEN` is read-only.
+    # side — and the caller's identical block is the grant, without which there
+    # is no run to make a `gh` call in: GitHub refuses the elevation rather than
+    # trimming this job to fit, so a caller granting less than this block
+    # declares fails before any job starts (probed, #146).
     permissions:
       contents: write
       # Installing the runner package. GitHub Packages has no anonymous install,

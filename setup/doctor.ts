@@ -445,10 +445,10 @@ export const diagnose = (
     if (caller.permissionsFrom !== "none") continue;
     if (facts.defaultWorkflowPermissions === "write") continue;
 
-    // Unreadable is a warning rather than an error, unlike the visibility guess
-    // above: there the worst case was a needless grant, and here erring the
-    // other way would fail a repository whose default is permissive and whose
-    // loop works, on a fact nobody could read.
+    // Unreadable is a warning rather than an error, and it is the one fact
+    // here that still changes a severity: erring the other way would exit 1 on
+    // a repository whose default is the permissive one and whose loop works,
+    // on a fact nobody could read.
     const unknown = facts.defaultWorkflowPermissions === undefined;
     add({
       severity: unknown ? "warning" : "error",

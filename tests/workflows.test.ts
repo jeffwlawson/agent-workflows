@@ -818,7 +818,10 @@ describe("every PR workflow shares one concurrency group per PR", () => {
    * `{"message":…}0`, which `-eq` rejects as non-numeric on every iteration,
    * so the loop spun out all 900 s and *then* reviewed blind. The trigger for
    * both: check runs on a **private** repository need `checks: read`, and no
-   * public repo in the pilot ever needed the grant to read them.
+   * public repo in the pilot ever needed the grant to read them. That trigger
+   * is gone — the job declares the scope and a caller short of it never starts
+   * (#146) — and the two failure shapes are not, since a transient API failure
+   * produces each of them just the same.
    *
    * What is asserted is the property, not the shell: a non-numeric count is
    * matched explicitly, it breaks rather than sleeps, and it says so in the
@@ -856,8 +859,13 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     expect(run).toContain("::error::Could not read check runs");
     expect(run).toMatch(/Could not read this commit's check runs[^\n]*>> "\$out"/);
 
-    // The grant that fixes it is named where someone hitting this will look.
+    // And the grant is named as the thing it is *not*, where someone hitting
+    // this will look for it: a caller short of `checks: read` is refused before
+    // any job starts, so a step that ran holds the read and a reader sent to
+    // their own caller is sent to a file that is already correct (#146).
     expect(run).toContain("checks: read");
+    expect(run).toContain("before any job starts");
+    expect(run).not.toMatch(/this is a missing `checks: read` grant/);
   });
 
   /**
@@ -1093,12 +1101,19 @@ describe("agent-review posts its verdict as a commit status", () => {
   });
 
   /**
-   * A refused post is ours as often as it is the adopter's. The warning used to
-   * name only the missing grant, so v0.3.0's rejected verdicts (a 422 on the
-   * description itself) read as every adopter's misconfiguration (#121).
+   * A refused post is ours rather than the adopter's. The warning used to name
+   * only the missing grant, so v0.3.0's rejected verdicts (a 422 on the
+   * description itself) read as every adopter's misconfiguration (#121) — and
+   * the grant it named is not a cause at all: a caller short of
+   * `statuses: write` is refused before any job starts, so a token that reached
+   * this step holds it (#146).
    */
-  it("does not blame the grant alone when the post is refused", () => {
-    expect(postStep()?.run ?? "").toContain("a 422 is the status itself being refused");
+  it("does not blame the grant when the post is refused", () => {
+    const run = postStep()?.run ?? "";
+
+    expect(run).toContain("a 422 is the status itself being refused");
+    expect(run).not.toMatch(/a 403 is a caller missing/);
+    expect(run).toContain("before any job starts");
   });
 
   /**
@@ -1709,13 +1724,17 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
 
   /**
    * And a read that *failed* is not a commit with no verdict on it (#105).
-   * Collapsed into one answer only the second is ever reported: a caller
-   * predating the `statuses: write` grant gets `statuses: none`, so on a
-   * private repository this `GET` 403s — and the warning naming the grant is
-   * on the *write* below, which is never reached. The step would log "nothing
-   * to carry over" and exit 0, and every refresh would drop the verdict with
-   * no signal anywhere. It is the distinction `verdictOn` keeps as `undefined`
-   * against `false`, and the CI word keeps as `unknown` against `red`.
+   * Collapsed into one answer only the second is ever reported: a 5xx, a
+   * secondary rate limit or a dropped connection would log "nothing to carry
+   * over" and exit 0, with the warning below on the *write* and never reached,
+   * and every refresh that hit one would drop the verdict with no signal
+   * anywhere. It is the distinction `verdictOn` keeps as `undefined` against
+   * `false`, and the CI word keeps as `unknown` against `red`.
+   *
+   * #105 wrote the arm for a caller predating the `statuses: write` grant,
+   * 403ing here on a private repository. That caller is refused before any job
+   * starts (#146), so the arm outlived its first cause — which is why the
+   * assertion below is about the shape of the arm rather than about a 403.
    */
   it("says so when the statuses could not be read, rather than reading that as none", () => {
     const run = copy()?.run ?? "";
@@ -1735,23 +1754,25 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
   });
 
   /**
-   * And it does not name one cause for an arm that catches several (#123). The
-   * arm is gated on the `gh` call, not on a status code, so a 5xx, a secondary
-   * rate limit and a dropped connection land here alongside the 403 — the same
-   * spread the CI arms in `review.yml` keep as `unknown` rather than `red`. A
-   * warning naming only the grant sends a reader whose caller is already
-   * correct off to fix it, and what `gh` printed is the only thing that tells
-   * the two apart.
+   * And it blames the caller's grant for none of them (#123, #146). The arm is
+   * gated on the `gh` call, not on a status code, so a 5xx, a secondary rate
+   * limit and a dropped connection land here — the same spread the CI arms in
+   * `review.yml` keep as `unknown` rather than `red`. The grant is not among
+   * them at all: a caller granting less than this job declares is refused
+   * before any job starts, so a token that reached this step holds the write.
+   * A warning naming the grant would send a reader whose caller is already
+   * correct off to fix it, which is the failure this assertion exists to stop.
    *
    * Its own cause set, and not the write's below: a read cannot be the 422
    * that arm hedges against, and a write cannot be an outage that leaves the
    * verdict readable where it was posted.
    */
-  it("does not blame the grant alone when the statuses could not be read", () => {
+  it("does not blame the grant when the statuses could not be read", () => {
     const run = copy()?.run ?? "";
     const read = run.slice(0, run.indexOf('if [ -z "$verdict" ]'));
 
-    expect(read).toContain("a 403 is a caller missing");
+    expect(read).not.toMatch(/a 403 is a caller missing/);
+    expect(read).toContain("before any job starts");
     expect(read).toMatch(/transient/i);
     // And what a reader does about it either way, since neither cause is one a
     // re-run of this workflow recovers from: the branch is refreshed, so the
@@ -1782,11 +1803,16 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
    * And the same on the write. This copies `.description` verbatim, so a
    * description GitHub refuses is refused here too — the 422 that lost every
    * v0.3.0 verdict (#121) would have lost every carried one as well. A warning
-   * naming only the grant sends the reader to their own caller for a fault
-   * that is ours; the twin assertion is on `review.yml`'s post step.
+   * naming the grant sends the reader to their own caller for a fault that is
+   * ours, and for a cause that cannot occur besides (#146); the twin assertion
+   * is on `review.yml`'s post step.
    */
-  it("does not blame the grant alone when the copy is refused", () => {
-    expect(copy()?.run ?? "").toContain("a 422 is the status itself being refused");
+  it("does not blame the grant when the copy is refused", () => {
+    const run = copy()?.run ?? "";
+
+    expect(run).toContain("a 422 is the status itself being refused");
+    expect(run).not.toMatch(/a 403 is a caller missing/);
+    expect(run).toContain("before any job starts");
   });
 
   it("asks for a review of the resolution it wrote", () => {

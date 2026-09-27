@@ -1323,10 +1323,11 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
-   * And here the unreadable fact errs the *other* way from the visibility guess
-   * above, deliberately: there the cost of being wrong was a grant nobody
-   * needed, and here it would be exit 1 on a repository whose default is the
-   * permissive one and whose loop works.
+   * And an unreadable one is reported rather than ruled on. Since #146 no
+   * grant's severity turns on a fact `gh` may fail to answer, so this is the
+   * only place an unknown still decides anything — and it errs towards the
+   * warning deliberately: failing would be exit 1 on a repository whose default
+   * is the permissive one and whose loop works.
    */
   it("reports an inherited token it could not read as something to check", async () => {
     const { code, out } = await check(adoptedWith([]), {

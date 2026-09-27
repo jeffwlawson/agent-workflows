@@ -2283,3 +2283,15 @@ narrower than the truth in whichever direction the author was not looking. Both 
 "probe the remote API". This one adds that a probe answers the question you ask *and* the ones next
 to it — three of the four cases here were run to confirm a correction already believed, and two of
 them removed a documented escape hatch and two severity classes nobody had put on the ticket.
+
+And the sweep that carried the correction was itself narrower than the truth, in the direction its
+author was not looking. It moved the docs, the table and every comment describing a *grant*, and
+left four live strings a run prints — `update-branch`'s two verdict warnings, `review`'s twin, and
+the CI wait's blind-review `::error::` — each still naming a missing caller grant as the cause of
+the 403 it hedges about. They read as run-time diagnostics rather than as prose about permissions,
+so a grep for the claim found them and a reading of the diff did not. Every one of them is a
+sentence sending an adopter whose caller is already correct off to fix it, which is the failure
+`review.yml`'s resolve warning had already been rewritten to avoid — one copy corrected, the
+pattern left. The rule that would have caught it: a correction to *what a failure is* is a change
+to every message that names that failure, and the messages live where the failure happens rather
+than where it is described.

@@ -164,7 +164,10 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
    format — a fixture is realistic only if that program produced it. Run it on the cases that
    matter and compare what it emits against what the code expects: a sample written by hand agrees
    with whatever its author believed the format to be, which is the belief the code already
-   encodes, so the two agree and only the program disagrees. Say in `howChecked` what you ran.
+   encodes, so the two agree and only the program disagrees. Where the cases that matter are
+   inputs the checkout does not contain, build them in a scratch directory of your own outside it
+   — that is what **BOUNDARIES** permits, and the checkout is left as you found it. Say in
+   `howChecked` what you ran.
 5. **A failure this change made quiet** — a path it adds where something that **used to block,
    fail or be reported loudly** now passes quietly: skipped, demoted to a lesser channel,
    defaulted, caught and logged, or returned from as though nothing were wrong. Checking the one
@@ -334,7 +337,15 @@ suggestion is one click from being committed.
 
 # BOUNDARIES
 
-Do not modify files. Do not push. Do not edit labels. Do not create GitHub comments or reviews
-yourself — your findings are returned as structured output and posted by the workflow.
+Do not modify the checkout — no file in it edited, none added, none removed. The fix is
+`agent:fix`'s to make, and a file you leave behind is one nobody asked for.
+
+Running a program to see what it emits is part of reviewing, and *What to check* item 4 asks for
+it. Where a check needs an input that does not exist, build it in a **scratch directory outside the
+checkout** — `mktemp -d` — and run the program there. That is the whole of the exception: somewhere
+to put an input, not permission to touch the branch.
+
+Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself — your findings
+are returned as structured output and posted by the workflow.
 
 When your review is complete, output `<promise>COMPLETE</promise>`.

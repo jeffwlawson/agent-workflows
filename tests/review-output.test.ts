@@ -2426,6 +2426,13 @@ describe("the review brief asks for the class rather than the member", () => {
   const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
   const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
 
+  /**
+   * Item 4 exactly — from its own number to the next one, rather than a
+   * character window that would run into item 5 and let a clause deleted from
+   * item 4 be satisfied by its neighbour.
+   */
+  const item4 = (): string => plain(PROMPT).match(/4\. Tests.*?(?= 5\. )/s)?.[0] ?? "";
+
   it("names the shape it wants checked: a failure that used to be loud", () => {
     expect(plain(PROMPT)).toMatch(/used to block, fail or/i);
   });
@@ -2456,9 +2463,35 @@ describe("the review brief asks for the class rather than the member", () => {
   });
 
   it("asks for what was run in the field that already carries it", () => {
-    const item = plain(PROMPT).match(/reads the output of another program.{0,600}/i)?.[0] ?? "";
+    expect(item4()).toContain("howChecked");
+  });
 
-    expect(item).toContain("howChecked");
+  /**
+   * And it says where the input may be written, because *BOUNDARIES* is
+   * described on line 8 as the full list of what a reviewer must not do — so an
+   * item asking for a run whose inputs the checkout does not contain either
+   * names a place for them or is unreachable, and a reviewer keeping the
+   * boundary falls back to reading the parser. That is the failure the item
+   * exists to remove.
+   */
+  it("says where an input the checkout does not contain may be built", () => {
+    expect(item4()).toMatch(/scratch directory/i);
+    expect(item4()).toMatch(/outside it|outside the checkout/i);
+    expect(item4()).toMatch(/BOUNDARIES/);
+  });
+
+  /**
+   * The boundary's own half of that. Scoped to the checkout rather than to
+   * files, and stating the exception in the section line 8 points at — a
+   * permission that lives only in item 4 is one the section calling itself the
+   * full list contradicts.
+   */
+  it("scopes the boundary to the checkout and admits the run there", () => {
+    const boundaries = plain(PROMPT).match(/# BOUNDARIES.*/is)?.[0] ?? "";
+
+    expect(boundaries).toMatch(/do not modify the checkout/i);
+    expect(boundaries).toMatch(/scratch directory outside the checkout/i);
+    expect(boundaries).toMatch(/not permission to touch the branch/i);
   });
 });
 

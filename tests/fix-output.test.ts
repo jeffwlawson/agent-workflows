@@ -321,4 +321,16 @@ describe("the fix brief on a finding that is one of a class", () => {
     expect(plain(PROMPT)).toMatch(/reads the output of another program/i);
     expect(plain(PROMPT)).toMatch(/output that program produced|produced by that program/i);
   });
+
+  /**
+   * And builds them away from the tree it is about to commit. The fixer has no
+   * boundary against writing files — committing is its job — so the hazard here
+   * is the opposite of the review's: an input generated in place is one a `git
+   * add` can carry into the commit beside the fixture.
+   */
+  it("builds those inputs outside the tree it commits", () => {
+    const rule = plain(PROMPT).match(/reads the output of another program.{0,700}/i)?.[0] ?? "";
+
+    expect(rule).toMatch(/scratch directory outside the working tree/i);
+  });
 });

@@ -2175,3 +2175,15 @@ they are an algorithm that finds one member per round with no bound on the round
 missed* label is what that looks like from inside, and it reads as diligence. Neither half can be
 fixed alone: a review that enumerates the class hands a fixer that fixes instances a longer list, and
 a fixer told to generalise from one instance is guessing at what the review already knew.
+
+Review of that change found the third instruction unreachable as first written. *What to check* item
+4 asked for a fixture the program produced — run it on the cases that matter — and the cases that
+matter are inputs no checkout contains, while `BOUNDARIES` said *Do not modify files* and the prompt
+calls that section the full list of what a reviewer must not do. So the instruction asked for a run
+whose input could not exist: a reviewer keeping the boundary falls back to reading the parser, which
+is the #130 failure the item exists to remove, and one ignoring it crosses the only control there is,
+since nothing restricts the tools. The boundary is now scoped to the **checkout** — nothing in it
+edited, added or removed — with the exception stated where the boundary is, a scratch directory
+outside it to build an input in. The general shape is worth watching for: an instruction that asks
+for work a boundary elsewhere in the same prompt forbids is not a weaker instruction, it is one that
+silently selects whichever half the reader weighs more.

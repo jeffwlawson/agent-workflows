@@ -60,7 +60,9 @@ not the defect, and repairing only the instance leaves the rest to be found one 
 - **Where the code reads the output of another program** — a command line tool, a service's
   response, a file format — the tests you add use **output that program produced**: run it on the
   inputs the class covers, and use what it emits. A sample written by hand, or worked out by reading
-  the code that parses it, agrees with the belief that produced the defect.
+  the code that parses it, agrees with the belief that produced the defect. Build those inputs in a
+  scratch directory outside the working tree, so the only thing the run leaves behind is the fixture
+  you commit.
 
 **Suggested changes.** A comment may contain a ` ```suggestion ` block — the reviewer's exact
 proposed replacement for the lines the comment is anchored to. Treat it as a strong signal of

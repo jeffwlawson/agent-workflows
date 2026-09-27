@@ -2403,6 +2403,99 @@ describe("the review's finding vocabulary", () => {
 });
 
 /**
+ * **One round finds the class** (#137).
+ *
+ * On #130 the review found one member of one class per round, and each fix
+ * round repaired the member it was shown: a list of changed files missed a
+ * spelling, then a status, then a quoting, then the two together. Every one of
+ * them was reachable in round 1, and what made them dangerous was the same
+ * change that made a missing file demote a finding instead of blocking on it —
+ * a failure that used to be loud, made quiet.
+ *
+ * So the brief asks for two things a reviewer does not do by default:
+ * enumerate what can reach the quiet branch rather than confirm the one input
+ * the change was written for, and get its fixtures from the program whose
+ * output the code reads rather than from the code that reads it. Mechanical
+ * checks, for the reason the de-domaining ones are: the instruction is easy to
+ * write once and easy to lose to the next pass that tightens the list.
+ *
+ * Only `prompt.md` is held to these. `extraction.md` says where each field
+ * goes, and neither instruction is about a field.
+ */
+describe("the review brief asks for the class rather than the member", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+
+  /**
+   * Item 4 exactly — from its own number to the next one, rather than a
+   * character window that would run into item 5 and let a clause deleted from
+   * item 4 be satisfied by its neighbour.
+   */
+  const item4 = (): string => plain(PROMPT).match(/4\. Tests.*?(?= 5\. )/s)?.[0] ?? "";
+
+  it("names the shape it wants checked: a failure that used to be loud", () => {
+    expect(plain(PROMPT)).toMatch(/used to block, fail or/i);
+  });
+
+  it("asks for every input that can reach the quiet path, not only the intended one", () => {
+    expect(plain(PROMPT)).toMatch(/every input that can reach/i);
+  });
+
+  it("asks for the gaps in one round, grouped as one class", () => {
+    expect(plain(PROMPT)).toMatch(/in one round/i);
+    expect(plain(PROMPT)).toMatch(/as one class/i);
+  });
+
+  it("asks whether it could fail loudly instead, and prefers that", () => {
+    expect(plain(PROMPT)).toMatch(/could fail loudly instead/i);
+    expect(plain(PROMPT)).toMatch(/fail closed/i);
+  });
+
+  /**
+   * The *realistic fixtures* item, made concrete. A sample written by hand
+   * agrees with whatever the person writing it believed the format to be,
+   * which is the belief the parser already encodes — so the two agree and the
+   * program's own output is the only thing that disagrees.
+   */
+  it("takes a fixture for such code from the program whose output it reads", () => {
+    expect(plain(PROMPT)).toMatch(/reads the output of another program/i);
+    expect(plain(PROMPT)).toMatch(/run it|running it/i);
+  });
+
+  it("asks for what was run in the field that already carries it", () => {
+    expect(item4()).toContain("howChecked");
+  });
+
+  /**
+   * And it says where the input may be written, because *BOUNDARIES* is
+   * described on line 8 as the full list of what a reviewer must not do — so an
+   * item asking for a run whose inputs the checkout does not contain either
+   * names a place for them or is unreachable, and a reviewer keeping the
+   * boundary falls back to reading the parser. That is the failure the item
+   * exists to remove.
+   */
+  it("says where an input the checkout does not contain may be built", () => {
+    expect(item4()).toMatch(/scratch directory/i);
+    expect(item4()).toMatch(/outside it|outside the checkout/i);
+    expect(item4()).toMatch(/BOUNDARIES/);
+  });
+
+  /**
+   * The boundary's own half of that. Scoped to the checkout rather than to
+   * files, and stating the exception in the section line 8 points at — a
+   * permission that lives only in item 4 is one the section calling itself the
+   * full list contradicts.
+   */
+  it("scopes the boundary to the checkout and admits the run there", () => {
+    const boundaries = plain(PROMPT).match(/# BOUNDARIES.*/is)?.[0] ?? "";
+
+    expect(boundaries).toMatch(/do not modify the checkout/i);
+    expect(boundaries).toMatch(/scratch directory outside the checkout/i);
+    expect(boundaries).toMatch(/not permission to touch the branch/i);
+  });
+});
+
+/**
  * **The body entries v0.4.0 already wrote are carried until they close** (#127,
  * decision 5).
  *

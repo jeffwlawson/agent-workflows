@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   filterOutcomes,
@@ -258,5 +259,78 @@ describe("a resolution marker the fix agent smuggled into a reply", () => {
     });
 
     expect(out.threadOutcomes[0]?.reply).toBe("done");
+  });
+});
+
+/**
+ * **The fix fixes the class** (#137).
+ *
+ * The other half of the round-per-member loop #130 spent five rounds in. A
+ * review that reports one member and a fixer that repairs exactly the member it
+ * was shown converge one member per round, and each round costs a review to find
+ * the next one. Four rounds in, the class was removed by a human reading a
+ * machine-readable form of the input instead of parsing the human-readable one —
+ * the design no round had proposed, because each round had a special case in
+ * front of it that worked.
+ *
+ * So the brief asks the fixer for three things: the class rather than the
+ * instance, the earlier rounds read for a cause that repeats, and a design it
+ * cannot justify inside this pull request said out loud instead of worked
+ * around. Mechanical checks, because all three are a sentence somebody tightening
+ * this brief would read as redundant with *address it*.
+ */
+describe("the fix brief on a finding that is one of a class", () => {
+  const PROMPT = fs.readFileSync("fix/prompt.md", "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+
+  it("names the class and covers its members in the same commit, with tests", () => {
+    expect(plain(PROMPT)).toMatch(/name the class/i);
+    expect(plain(PROMPT)).toMatch(/in the same commit/i);
+  });
+
+  /**
+   * And the class is bounded by the pull request, or the instruction fights
+   * *Constraints*: the same mistake in code this change does not touch is a
+   * separate change, and saying so is what that section already asks for.
+   */
+  it("limits the class to the inputs of the code this pull request changes", () => {
+    const rule = plain(PROMPT).match(/name the class.{0,700}/i)?.[0] ?? "";
+
+    expect(rule).toMatch(/the code this pull request changes/i);
+    expect(rule).toMatch(/top-level comment|follow-up/i);
+  });
+
+  it("asks the fixer to read the earlier rounds for a cause that repeats", () => {
+    expect(plain(PROMPT)).toMatch(/earlier rounds/i);
+    expect(plain(PROMPT)).toMatch(/shared cause/i);
+    expect(plain(PROMPT)).toMatch(/say so in the commit message|commit message says/i);
+  });
+
+  it("sends a different design to a top-level comment rather than another special case", () => {
+    expect(plain(PROMPT)).toMatch(/machine-readable/i);
+    expect(plain(PROMPT)).toMatch(/rather than adding another special case/i);
+  });
+
+  /**
+   * And the tests it writes for such code come from the program, not from the
+   * parser — the same instruction the review half carries, because a fix
+   * verified against a hand-written sample is verified against the belief that
+   * produced the finding.
+   */
+  it("takes test input from the program whose output the code reads", () => {
+    expect(plain(PROMPT)).toMatch(/reads the output of another program/i);
+    expect(plain(PROMPT)).toMatch(/output that program produced|produced by that program/i);
+  });
+
+  /**
+   * And builds them away from the tree it is about to commit. The fixer has no
+   * boundary against writing files — committing is its job — so the hazard here
+   * is the opposite of the review's: an input generated in place is one a `git
+   * add` can carry into the commit beside the fixture.
+   */
+  it("builds those inputs outside the tree it commits", () => {
+    const rule = plain(PROMPT).match(/reads the output of another program.{0,700}/i)?.[0] ?? "";
+
+    expect(rule).toMatch(/scratch directory outside the working tree/i);
   });
 });

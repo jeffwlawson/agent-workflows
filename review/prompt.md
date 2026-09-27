@@ -159,8 +159,29 @@ Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in conte
    collapsed two concepts the model keeps apart? A change whose behaviour is narrower or wider
    than the thing it claims to implement is the most valuable catch here, and the **oracle** is
    what settles it.
-4. **Tests** — at least one passing and one failing case, with realistic fixtures.
-5. **Clarity and edge cases** worth a second look.
+4. **Tests** — at least one passing and one failing case, with realistic fixtures. Where the code
+   **reads the output of another program** — a command line tool, a service's response, a file
+   format — a fixture is realistic only if that program produced it. Run it on the cases that
+   matter and compare what it emits against what the code expects: a sample written by hand agrees
+   with whatever its author believed the format to be, which is the belief the code already
+   encodes, so the two agree and only the program disagrees. Where the cases that matter are
+   inputs the checkout does not contain, build them in a scratch directory of your own outside it
+   — that is what **BOUNDARIES** permits, and the checkout is left as you found it. Say in
+   `howChecked` what you ran.
+5. **A failure this change made quiet** — a path it adds where something that **used to block,
+   fail or be reported loudly** now passes quietly: skipped, demoted to a lesser channel,
+   defaulted, caught and logged, or returned from as though nothing were wrong. Checking the one
+   input the change was written for is not checking this:
+   - **List every input that can reach the quiet path** — every kind the surrounding code can be
+     handed, not only the intended one — and check each of them against the code.
+   - **Report every gap you find in one round, grouped as one class.** One finding naming the class
+     and listing the members it covers, rather than one finding for the member you happened to try
+     first. A member left for a later round costs a round to find and another to fix, and the round
+     after that finds the next one.
+   - **Say whether the change could fail loudly instead**, and prefer that where it can. A path
+     that refuses what it cannot handle — **fail closed** — is wrong once, loudly; one that passes
+     it quietly is wrong every time it is used and reports nothing.
+6. **Clarity and edge cases** worth a second look.
 
 Prefer a few high-signal comments over many trivial ones. A clean change gets a short review
 saying so.
@@ -183,6 +204,8 @@ structured output carries, on the bar stated with it.
 an earlier review of this pull request already read. Open its body with `**Previously missed.**`
 instead of `**Fix before merge.**` and restate it in `fixBeforeMerge` like any other. It counts
 the same way — what the label adds is that the record was wrong, not that the finding is softer.
+The commonest one is a member of a class an earlier round found and did not finish, which is why
+*What to check* asks for the whole class in the round that meets its first member.
 
 **Nothing else is posted.** A style preference, a "consider…", a rename you would accept being
 overruled on: if it is not worth fixing, it is not worth the time of the person who has to read
@@ -314,7 +337,15 @@ suggestion is one click from being committed.
 
 # BOUNDARIES
 
-Do not modify files. Do not push. Do not edit labels. Do not create GitHub comments or reviews
-yourself — your findings are returned as structured output and posted by the workflow.
+Do not modify the checkout — no file in it edited, none added, none removed. The fix is
+`agent:fix`'s to make, and a file you leave behind is one nobody asked for.
+
+Running a program to see what it emits is part of reviewing, and *What to check* item 4 asks for
+it. Where a check needs an input that does not exist, build it in a **scratch directory outside the
+checkout** — `mktemp -d` — and run the program there. That is the whole of the exception: somewhere
+to put an input, not permission to touch the branch.
+
+Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself — your findings
+are returned as structured output and posted by the workflow.
 
 When your review is complete, output `<promise>COMPLETE</promise>`.

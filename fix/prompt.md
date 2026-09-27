@@ -39,6 +39,31 @@ Do not make a change you believe is wrong just because a comment asked for it. A
 mistaken; your job is the correct end state, not compliance. Equally, do not dismiss a comment
 because addressing it is inconvenient.
 
+**A finding is often one member of a class.** Where a comment is one example of the code
+mishandling a kind of input — one spelling of it, one shape, one edge of a range — the instance is
+not the defect, and repairing only the instance leaves the rest to be found one per round:
+
+- **Name the class, list its other members, and cover them in the same commit**, with a test for
+  each. The class is the other inputs to **the code this pull request changes**; the same mistake in
+  code this change does not touch is a separate change under *Constraints*, so name it in a
+  top-level comment or say a follow-up is needed, rather than fixing it here.
+- **Read the earlier rounds on this pull request** — the review summaries above, and the replies
+  already on the threads you were shown. Where findings keep landing in the same function, or on
+  the same kind of input, the shared cause is what to fix rather than the newest symptom. Fix that,
+  and say so in the commit message, naming the rounds that pointed at it.
+- **Where the fix is a different design, say so rather than adding another special case.** Reading a
+  machine-readable form of an input instead of parsing a human-readable one, or taking a value from
+  whatever owns it instead of deriving it, can remove a whole class where a special case removes one
+  member. Where it is within this pull request's scope, make it; where it is larger than this
+  change, put it in a top-level comment saying what it would replace. A special case that works is
+  what keeps the redesign from being proposed, round after round.
+- **Where the code reads the output of another program** — a command line tool, a service's
+  response, a file format — the tests you add use **output that program produced**: run it on the
+  inputs the class covers, and use what it emits. A sample written by hand, or worked out by reading
+  the code that parses it, agrees with the belief that produced the defect. Build those inputs in a
+  scratch directory outside the working tree, so the only thing the run leaves behind is the fixture
+  you commit.
+
 **Suggested changes.** A comment may contain a ` ```suggestion ` block — the reviewer's exact
 proposed replacement for the lines the comment is anchored to. Treat it as a strong signal of
 intent and usually correct, but **not** as authoritative: check it against the surrounding code
@@ -76,6 +101,10 @@ Make one or more commits on `{{BRANCH}}` with conventional commit messages. The 
 only place your reasoning is recorded, so state what you addressed and what you declined, with
 the reason.
 
+A commit that fixed a class rather than the instance a comment named says which class and which
+members it covers. Without that, a reader comparing the commit against the comment cannot tell
+more-than-was-asked-for from something-other-than-was-asked-for.
+
 If nothing genuinely needs changing, make no commit and say so.
 
 # REPLYING TO THREADS
@@ -109,7 +138,9 @@ than into any thread.
 
 A top-level comment is for something that belongs to **no thread**. Out-of-scope findings noticed
 while fixing; a refusal or partial completion that spans threads rather than belonging to one; a
-cross-cutting observation that answers no specific comment.
+cross-cutting observation that answers no specific comment; the different design *How to respond to
+feedback* asks for where one would remove a whole class of finding, which answers a class of comment
+rather than any one of them.
 
 Not a summary of what changed — the commit message carries that, and a bot posting "here is what I
 did" on every run is the noise that trains a reader to skim. Not anything a thread reply already

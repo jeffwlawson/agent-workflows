@@ -1,5 +1,10 @@
 import { asRecord, asString } from "./common.js";
-import { parseFindingMarkers, RESOLUTION_MARKER, type Severity } from "./review-findings.js";
+import {
+  parseFindingMarkers,
+  RESOLUTION_MARKER,
+  withSeverityBadgesAsText,
+  type Severity,
+} from "./review-findings.js";
 
 /**
  * A finding an earlier review of this pull request raised and **nothing has yet
@@ -222,6 +227,10 @@ const CLOSE_DID_NOT_LAND =
  * agent can read in the feedback it was already given. The exception is a
  * thread already carrying its closing reply. That thread is no longer open
  * feedback (`shared/pr-feedback.ts`), so its line says why it is here instead.
+ *
+ * A badge image reaching here comes out as its alt text
+ * (`withSeverityBadgesAsText`). A body entry's line is read straight out of the
+ * last review that wrote it, chip and all, and this is prompt text (#135).
  */
 export const renderCarriedFindings = (carried: readonly CarriedFinding[]): string =>
   carried.length === 0
@@ -229,7 +238,7 @@ export const renderCarriedFindings = (carried: readonly CarriedFinding[]): strin
     : carried
         .map(
           (finding) =>
-            `- \`${finding.id}\` — ${finding.text}` +
+            `- \`${finding.id}\` — ${withSeverityBadgesAsText(finding.text)}` +
             (finding.closedAs === undefined ? "" : CLOSE_DID_NOT_LAND),
         )
         .join("\n");
@@ -258,7 +267,10 @@ export const renderSettledFindings = (settled: readonly SettledFinding[]): strin
   settled.length === 0
     ? NOTHING_SETTLED
     : [
-        ...settled.map((finding) => `- ${finding.text} — closed by @${finding.resolvedBy}`),
+        ...settled.map(
+          (finding) =>
+            `- ${withSeverityBadgesAsText(finding.text)} — closed by @${finding.resolvedBy}`,
+        ),
         "",
         "Each of these is **settled by the maintainer**. Do not raise it again, in these words or in any others.",
       ].join("\n");

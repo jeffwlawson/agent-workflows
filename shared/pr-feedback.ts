@@ -1,7 +1,12 @@
 import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { parseNameStatus } from "./diff-lines.js";
 import { isAgentTopLevelComment } from "./fix-output.js";
-import { lastFindingMarker, openingClaim, type Severity } from "./review-findings.js";
+import {
+  lastFindingMarker,
+  openingClaim,
+  withSeverityBadgesAsText,
+  type Severity,
+} from "./review-findings.js";
 import {
   closingReplyReason,
   type AgentThread,
@@ -976,7 +981,13 @@ const AWAITING_CLOSE =
 const present = <T>(nodes: readonly (T | null | undefined)[] | null | undefined): T[] =>
   (nodes ?? []).filter((node): node is T => node !== null && node !== undefined);
 
-/** Trusted, non-empty, and rendered — the filter every surface shares. */
+/**
+ * Trusted, non-empty, and rendered — the filter every surface shares.
+ *
+ * The severity chips a review body carries come out as their alt text
+ * (`withSeverityBadgesAsText`): this is prompt text, and a reader that renders
+ * no images is handed `Medium` rather than the `<img>` tag that says it (#135).
+ */
 const render = <T extends GqlAuthored>(
   nodes: readonly (T | null | undefined)[] | null | undefined,
   format: (node: T, login: string) => string,
@@ -984,7 +995,7 @@ const render = <T extends GqlAuthored>(
   present(nodes)
     .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined))
     .filter((n) => (n.body ?? "").trim().length > 0)
-    .map((n) => format(n, n.author?.login ?? "unknown"))
+    .map((n) => withSeverityBadgesAsText(format(n, n.author?.login ?? "unknown")))
     .join("\n\n---\n\n");
 
 /**
@@ -1094,8 +1105,14 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     .map((thread) => {
       const first = thread.comments[0];
       const header = `**${anchorOf(first!, isFileLevel(thread))}** — thread \`${thread.id}\``;
+      // The chip a thread opens with, as its alt text — the same reduction the
+      // review bodies get, for the same reason: this is what the fix agent and
+      // the next round's reviewer read (#135).
       const body = thread.comments
-        .map((c) => `@${c.author?.login ?? "unknown"}:\n${(c.body ?? "").trim()}`)
+        .map(
+          (c) =>
+            `@${c.author?.login ?? "unknown"}:\n${withSeverityBadgesAsText((c.body ?? "").trim())}`,
+        )
         .join("\n\n");
       return [header, body, ...(thread.closedAs === undefined ? [] : [AWAITING_CLOSE])].join("\n\n");
     })

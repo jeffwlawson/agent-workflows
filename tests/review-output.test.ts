@@ -6,6 +6,7 @@ import {
   findingMarker,
   placeFindings,
   reviewThreads,
+  severityBadge,
   type Finding,
   type PlacedFinding,
   type Severity,
@@ -1274,7 +1275,7 @@ describe("the posted review body", () => {
     const body = render({ placed: placedFinding({ severity: "high" }) });
 
     expect(body).toContain(
-      "- `High` the guard runs after the return — `src/queue.ts:206` *new*",
+      `- ${severityBadge("high")} the guard runs after the return — \`src/queue.ts:206\` *new*`,
     );
   });
 
@@ -1412,7 +1413,9 @@ describe("the posted review body", () => {
       ],
     });
 
-    expect(body).toContain("- `Medium` the cache key omits the tenant — `src/queue.ts:88` *new*");
+    expect(body).toContain(
+      `- ${severityBadge("medium")} the cache key omits the tenant — \`src/queue.ts:88\` *new*`,
+    );
     expect(body).not.toContain("  **Fix before merge.**");
     expect(body).not.toContain(findingMarker("f-b", "medium"));
     expect(body).not.toContain("is in a file this pull request does not change");
@@ -1433,8 +1436,12 @@ describe("the posted review body", () => {
     const carried = carriedFindings({ threads: [], latestReviewBody: first });
     const second = render({ stillOpen: carried });
 
-    expect(second).toContain("- `High` the cache key omits the tenant — `src/other.ts:88` <!--");
-    expect(second).not.toContain("`High` `High`");
+    expect(second).toContain(
+      `- ${severityBadge("high")} the cache key omits the tenant — \`src/other.ts:88\` <!--`,
+    );
+    // Not `<img …> \`High\``: the v0.4.0 code span is one of the forms the
+    // strip knows, so the entry carries this release's badge and only that.
+    expect(second).not.toContain("`High`");
     expect(second).not.toContain("*new*");
 
     // And it holds every round after: what round three reads is what round four
@@ -1455,7 +1462,43 @@ describe("the posted review body", () => {
       stillOpen: [{ id: "f-9", severity: "high", text: "`Low` is not a place for preferences" }],
     });
 
-    expect(body).toContain("- `High` `Low` is not a place for preferences");
+    expect(body).toContain(`- ${severityBadge("high")} \`Low\` is not a place for preferences`);
+  });
+
+  /**
+   * And it strips **every form a release wrote a badge in**, not the one this
+   * release writes: a body entry is read back out of whichever release last
+   * wrote it (#127, decision 5), so a form the strip does not know is an entry
+   * that collects a second badge every round it stays open (#135).
+   */
+  it.each([
+    ["this release's image chip", `${severityBadge("high")} the cache key omits the tenant`],
+    ["the bold code span", "**`High`** the cache key omits the tenant"],
+    ["v0.4.0's plain code span", "`High` the cache key omits the tenant"],
+  ])("re-badges a carried entry written with %s, once", (_form, text) => {
+    const body = render({ stillOpen: [{ id: "f-9", severity: "high", text }] });
+    const entry = body.split("\n").find((line) => line.startsWith("- ")) ?? "";
+
+    expect(entry).toContain(`- ${severityBadge("high")} the cache key omits the tenant`);
+    expect(entry).not.toContain("`High`");
+    expect(entry.match(/<img/g) ?? []).toHaveLength(1);
+  });
+
+  /**
+   * The count line badges the ratings it breaks the number down by, and it is a
+   * review surface, so it takes the image chip with the rest of the body (#135).
+   */
+  it("badges the count line's breakdown with the same chip", () => {
+    const body = render({
+      placed: [
+        ...placedFinding({ severity: "high" }),
+        ...placedFinding({ severity: "low", line: 207 }),
+      ],
+    });
+
+    expect(body).toContain(
+      `**Findings:** 2 — 1 ${severityBadge("high")}, 1 ${severityBadge("low")}`,
+    );
   });
 
   /**
@@ -1506,7 +1549,9 @@ describe("the posted review body", () => {
 
     expect(body).toContain("<details>\n<summary><b>Follow-ups</b> — 1 ·");
     expect(body).toMatch(/remove <code>agent:follow-ups<\/code> to skip/);
-    expect(body).toContain("- `Medium` **Leak in parse()** — `src/other.ts:88`");
+    expect(body).toContain(
+      `- ${severityBadge("medium")} **Leak in parse()** — \`src/other.ts:88\``,
+    );
     // Uncounted: the number is what blocks this pull request, and a follow-up
     // is by definition what does not.
     expect(body).toContain("**Findings:** 1");

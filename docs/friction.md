@@ -2133,3 +2133,45 @@ line, and the fix string was written for absence. "Add `contents: write` to that
 `contents:` keys and a workflow GitHub refuses to parse — the `startup_failure` with no job log the
 row exists to prevent. It now says *change* where the line is present, and a case derived from the
 grant cells holds every row to that.
+
+## 2026-09-27 — five rounds on one class of bug, and every member was reachable in round 1
+
+#130 took five review rounds and four fix rounds, and every finding in them was the same defect: the
+list of changed files, parsed out of the patch text, missed a kind of path. Round 1 found a path
+spelled differently. Round 3 found deletions and renames, labelled *previously missed*. Round 4 found
+quoted names. A human then found spaced ones. Round 5 found quoted-and-spaced. Each fix round
+repaired exactly the members it had been shown, added a test for each, and left the others — and each
+review round then found the next one, so the cost was two rounds per member of a class that could
+have been enumerated in one sitting. `git diff` on a scratch repository full of unusual file names
+produces all of them in a second, and nobody ran it: the fixtures were written from the parser, so
+they agreed with it.
+
+The class was removed by hand at the end (`1bd463e`, merged as `f5fa2f6`) by reading the file list
+from `git diff --name-status -z` — a NUL-separated format with no decorations to undo — instead of
+from the patch. No round of review or fix proposed that. Each one had a working special case in front
+of it, and a special case that works is the strongest argument against the redesign that would make
+it unnecessary.
+
+What made a wrong file list dangerous rather than untidy was #130 itself, which is the part worth
+keeping. Before it, a finding in a file the parser could not name was a body entry; after it, such a
+finding is **demoted to a follow-up** — filed after the merge, counting nothing toward the verdict.
+So the change that turned a loud failure into a quiet one is the same change that introduced the
+class, and reviewing it as *does the new demotion work* rather than *what can reach the new
+demotion* is what let round 1 pass a list with four holes in it.
+
+Three instructions, in `review/prompt.md` and `fix/prompt.md` (#137). The review now has, in *What to
+check*, a named item for a change that makes something which used to block, fail or be loud pass
+quietly: list every input that can reach the quiet path, check each against the code, report the gaps
+**in one round as one class**, and say whether it could fail closed instead. The fix now treats a
+finding as one member of a class — name the class, cover its members in the same commit, read the
+earlier rounds for a cause that repeats, and propose a different design in a top-level comment rather
+than adding another special case. And both halves say that code reading another program's output is
+tested against output that program produced, never against a hand-written sample or one worked out
+from the parser.
+
+The lesson is about where a loop converges rather than about paths. A reviewer that reports the member
+it found and a fixer that repairs the member it was shown are each behaving correctly, and together
+they are an algorithm that finds one member per round with no bound on the rounds — the *previously
+missed* label is what that looks like from inside, and it reads as diligence. Neither half can be
+fixed alone: a review that enumerates the class hands a fixer that fixes instances a longer list, and
+a fixer told to generalise from one instance is guessing at what the review already knew.

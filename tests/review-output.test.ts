@@ -2403,6 +2403,66 @@ describe("the review's finding vocabulary", () => {
 });
 
 /**
+ * **One round finds the class** (#137).
+ *
+ * On #130 the review found one member of one class per round, and each fix
+ * round repaired the member it was shown: a list of changed files missed a
+ * spelling, then a status, then a quoting, then the two together. Every one of
+ * them was reachable in round 1, and what made them dangerous was the same
+ * change that made a missing file demote a finding instead of blocking on it —
+ * a failure that used to be loud, made quiet.
+ *
+ * So the brief asks for two things a reviewer does not do by default:
+ * enumerate what can reach the quiet branch rather than confirm the one input
+ * the change was written for, and get its fixtures from the program whose
+ * output the code reads rather than from the code that reads it. Mechanical
+ * checks, for the reason the de-domaining ones are: the instruction is easy to
+ * write once and easy to lose to the next pass that tightens the list.
+ *
+ * Only `prompt.md` is held to these. `extraction.md` says where each field
+ * goes, and neither instruction is about a field.
+ */
+describe("the review brief asks for the class rather than the member", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+
+  it("names the shape it wants checked: a failure that used to be loud", () => {
+    expect(plain(PROMPT)).toMatch(/used to block, fail or/i);
+  });
+
+  it("asks for every input that can reach the quiet path, not only the intended one", () => {
+    expect(plain(PROMPT)).toMatch(/every input that can reach/i);
+  });
+
+  it("asks for the gaps in one round, grouped as one class", () => {
+    expect(plain(PROMPT)).toMatch(/in one round/i);
+    expect(plain(PROMPT)).toMatch(/as one class/i);
+  });
+
+  it("asks whether it could fail loudly instead, and prefers that", () => {
+    expect(plain(PROMPT)).toMatch(/could fail loudly instead/i);
+    expect(plain(PROMPT)).toMatch(/fail closed/i);
+  });
+
+  /**
+   * The *realistic fixtures* item, made concrete. A sample written by hand
+   * agrees with whatever the person writing it believed the format to be,
+   * which is the belief the parser already encodes — so the two agree and the
+   * program's own output is the only thing that disagrees.
+   */
+  it("takes a fixture for such code from the program whose output it reads", () => {
+    expect(plain(PROMPT)).toMatch(/reads the output of another program/i);
+    expect(plain(PROMPT)).toMatch(/run it|running it/i);
+  });
+
+  it("asks for what was run in the field that already carries it", () => {
+    const item = plain(PROMPT).match(/reads the output of another program.{0,600}/i)?.[0] ?? "";
+
+    expect(item).toContain("howChecked");
+  });
+});
+
+/**
  * **The body entries v0.4.0 already wrote are carried until they close** (#127,
  * decision 5).
  *

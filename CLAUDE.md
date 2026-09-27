@@ -211,6 +211,19 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
 - Prefer `execFileSync` argv over shell strings for anything holding a variable. A git ref may
   legally contain `` ` ``, `$()`, `;`, `|` and `&`.
 - Test files live in `tests/`, mirroring the source.
+- **A test that spawns synchronously bounds the spawn itself**, at `SUBPROCESS_TIMEOUT` from
+  `vitest.config.ts` — the same figure that file gives the suite as `testTimeout`. vitest's timeout
+  cannot interrupt a synchronous spawn, so the setting is a flake guard for cold starts and the
+  spawn's own `timeout` is what ends a hang.
+- **The figure is imported, never repeated**, and that is checked rather than asked for:
+  `tests/vitest-config.test.ts` fails if any file under `tests/` writes the number out. #144 and
+  #145 each wrote their own copy in the same week, equal by coincidence, neither branch able to see
+  the other's — prose said "imported" and nothing read it. The suite-wide ceiling is **one spawn's
+  worth**, so a test making one needs no `it()` timeout of its own; a test making several raises
+  its ceiling to a multiple of the same figure (`tests/sync-version.test.ts`'s `ceiling`), because
+  a ceiling under the sum of its children's bounds fails while every one of them is still inside
+  its own. That raise hides no hang — the spawn's bound still fires first, and the spawn is what
+  reports it.
 - `docs/friction.md` is a dated narrative log. Append; never rewrite an entry to match today.
 
 ## Line endings

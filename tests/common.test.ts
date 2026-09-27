@@ -24,6 +24,7 @@ import {
   required,
   safeGh,
 } from "../shared/common.js";
+import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 const spawned = vi.mocked(execFileSync);
 const shelled = vi.mocked(execSync);
@@ -563,9 +564,16 @@ describe("fetchPullRequestHeading — the jq program survives the crossing", () 
    * Skipped where jq is absent: this repo is authored on Windows and gated on
    * Linux CI, where jq is preinstalled, so the gate that matters runs it.
    */
+  /**
+   * Both spawns below are bounded, and this one is where it matters most: the
+   * IIFE runs in the `describe` body at collection, so a hang is outside every
+   * test body and no `testTimeout` can reach it. An overrun throws, which reads
+   * here as jq being absent — the same answer, and the suite goes on instead of
+   * stalling.
+   */
   const hasJq = ((): boolean => {
     try {
-      spawnForReal("jq", ["--version"], { stdio: "ignore" });
+      spawnForReal("jq", ["--version"], { stdio: "ignore", timeout: SUBPROCESS_TIMEOUT });
       return true;
     } catch {
       return false;
@@ -573,7 +581,11 @@ describe("fetchPullRequestHeading — the jq program survives the crossing", () 
   })();
 
   const render = (program: string, pr: unknown): string =>
-    spawnForReal("jq", ["-r", program], { input: JSON.stringify(pr), encoding: "utf8" });
+    spawnForReal("jq", ["-r", program], {
+      input: JSON.stringify(pr),
+      encoding: "utf8",
+      timeout: SUBPROCESS_TIMEOUT,
+    });
 
   it.skipIf(!hasJq)("renders the title and body it is given", () => {
     spawned.mockReturnValue("");

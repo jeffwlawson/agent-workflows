@@ -7,14 +7,14 @@ on:
   pull_request_target:
     types: [opened, labeled, synchronize, edited]
 
-permissions:
-  pull-requests: write
-  contents: write
-  statuses: read
+permissions: {}
 
 jobs:
   probe:
     runs-on: ubuntu-latest
+    # Narrowest grant under test: no contents, only pull-requests.
+    permissions:
+      pull-requests: write
     steps:
       - name: Dump what the event carries
         env:
@@ -54,6 +54,20 @@ jobs:
             probe:stack)   call -X POST "repos/$R/stacks" --input - <<<"{\"pull_requests\":[$P1,$P2]}" ;;
             probe:add)     call -X POST "repos/$R/stacks/$(stackno)/add" --input - <<<"{\"pull_requests\":[$P3]}" ;;
             probe:unstack) call -X POST "repos/$R/stacks/$(stackno)/unstack" ;;
-            probe:merge)   call -X PUT "repos/$R/pulls/$P1/merge-async" -f merge_method=merge ;;
             probe:read)    call "repos/$R/stacks?pull_request=$P1" ;;
           esac
+
+  merge:
+    if: github.event_name == 'pull_request' && github.event.label.name == 'probe:merge'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      R: ${{ github.repository }}
+    steps:
+      - run: |
+          P1=$(gh pr list -R "$R" --head throwaway/stack-layer-1 --json number --jq '.[0].number')
+          echo "PROBE >>> PUT merge-async $P1"
+          gh api -i -H 'X-GitHub-Api-Version: 2026-03-10' -X PUT "repos/$R/pulls/$P1/merge-async" -f merge_method=merge 2>&1 || true

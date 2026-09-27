@@ -43,8 +43,13 @@ describe("the suite's per-test timeout", () => {
     // The offenders rather than an assertion per file: a `.not.toContain` over a
     // file's text prints the whole file as its diff, and the finding is a list of
     // names.
+    // Recursive, and `include` is `tests/**/*.test.ts`: a flat read would leave a
+    // test in a subdirectory free to write the literal with nothing red, in the
+    // one check that makes "imported, never repeated" enforced rather than
+    // stated. The encoding is not optional — `{ recursive: true }` alone types
+    // as `string[] | Buffer[]` and fails `--strict` at `.endsWith`.
     const written = fs
-      .readdirSync("tests")
+      .readdirSync("tests", { recursive: true, encoding: "utf8" })
       .filter((name) => name.endsWith(".ts"))
       .filter((name) => {
         const text = fs.readFileSync(path.join("tests", name), "utf8");

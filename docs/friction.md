@@ -2217,3 +2217,16 @@ disagreeing with it. `tests/vitest-config.test.ts` now fails if any file under `
 number out, with the spellings derived from the constant rather than pinned — so the next parallel
 branch is stopped by the gate instead of by a reviewer noticing two literals a week apart. A rule
 that only a reader can apply is a rule that holds for as long as one reader sees both copies.
+
+Review then found the same shape twice more inside the fix itself. The convention went in absolute —
+"a test that spawns synchronously bounds the spawn" — from an enumeration of the one file the author
+was editing, and `tests/common.test.ts` reaches the real `execFileSync` past its own module mock to
+run `jq`, twice, unbounded; one of those is in a `describe` body at collection, the exact
+out-of-reach case the bullet was written for. And the check meant to make the *other* half enforced
+read `tests/` with a non-recursive `readdirSync`, so a test in a subdirectory could write the
+literal with nothing red. Two rules stated repo-wide, each verified against the part of the repo
+that happened to be open.
+
+So the correction to "a rule only a reader can apply holds while one reader sees both copies" is
+that a rule a *check* applies holds only as wide as the check looks. The scan is recursive now, and
+a planted `tests/<dir>/x.test.ts` fails it by name.

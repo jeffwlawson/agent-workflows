@@ -11,11 +11,15 @@ import { parse } from "yaml";
  * here. The tests that spawn the real `gh` are what first needed it: none of
  * them reaches a network (gh refuses at flag-parse time or at a connection to
  * `localhost`), so their cost is starting a cold Go binary, which under a
- * parallel `verify` ran past vitest's 5-second default (#139). They no longer
- * pass it to `it()` as well — the suite-wide setting is that same figure, so a
- * per-test argument would be a second copy saying nothing — but they do still
- * pass it to each spawn, because vitest's timeout cannot interrupt a
- * synchronous one.
+ * parallel `verify` ran past vitest's 5-second default (#139). Every spawn
+ * still takes it, because vitest's timeout cannot interrupt a synchronous one.
+ *
+ * A single-spawn test passes it to `it()` no longer: the suite-wide ceiling is
+ * that same figure, so the argument would be a second copy saying nothing. The
+ * two tests below that spawn *twice* do carry a ceiling, written as a multiple
+ * of this figure rather than as a number — a ceiling under the sum of its
+ * children's bounds fails while every one of them is still inside its own, and
+ * reports the limit instead of the command.
  */
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
@@ -332,7 +336,11 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(stderr).not.toContain("unknown flag");
     // Unreachable host, so the step still reports itself blind — loudly.
     expect(outcome.stdout).toContain("::error::Could not read check runs");
-  });
+    // Two bounded spawns in the body — `command -v gh` above and `runWaitStep`'s
+    // own — so the ceiling is two of theirs. At one it could fire while both
+    // children were still inside their bounds, and report a limit rather than a
+    // command.
+  }, 2 * SUBPROCESS_TIMEOUT);
 
   /**
    * The failure-log tail's two calls, which no run of the step above can put
@@ -369,7 +377,9 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
       expect(attempt.stderr).not.toContain("is not supported with");
       expect(attempt.stderr).toContain("connection refused");
     }
-  });
+    // One bounded spawn per `tail` entry, and there are two — same arithmetic as
+    // the test above.
+  }, 2 * SUBPROCESS_TIMEOUT);
 
   /**
    * The count is **one number over every page**. Per page it is one number per

@@ -6,6 +6,20 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 /**
+ * The bound every synchronous spawn below carries, and — since #144 — the whole
+ * suite's `testTimeout` as well, which is why it is imported rather than written
+ * here. The tests that spawn the real `gh` are what first needed it: none of
+ * them reaches a network (gh refuses at flag-parse time or at a connection to
+ * `localhost`), so their cost is starting a cold Go binary, which under a
+ * parallel `verify` ran past vitest's 5-second default (#139). They no longer
+ * pass it to `it()` as well — the suite-wide setting is that same figure, so a
+ * per-test argument would be a second copy saying nothing — but they do still
+ * pass it to each spawn, because vitest's timeout cannot interrupt a
+ * synchronous one.
+ */
+import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+
+/**
  * Runs `agent-review`'s CI-collection step — the real `run:` block, read out of
  * `.github/workflows/review.yml` — against a recorded `gh`.
  *
@@ -74,17 +88,6 @@ const onPath = (command: string): boolean =>
     : spawnSync("sh", ["-c", `command -v ${command}`]).status === 0;
 
 const CAN_RUN = ["bash", "jq", "node"].every(onPath);
-
-/**
- * For the tests that spawn the real `gh`. None of them reaches a network — gh
- * refuses at flag-parse time or at a connection to `localhost` — so their cost
- * is starting a cold Go binary, which under a parallel `verify` has run past
- * vitest's 5-second default (#139). Given to the test *and* to each direct
- * spawn, because vitest's timeout cannot interrupt a synchronous one. Equal to
- * `runWaitStep`'s own spawn bound, which one of these tests waits on: a ceiling
- * below the process it waits for would fail a run that was still in bounds.
- */
-const REAL_GH_TIMEOUT = 60_000;
 
 /**
  * The values the workflow gets from the event, which the harness has to supply
@@ -220,7 +223,7 @@ const runWaitStep = (options: {
     // spin" — so an arm that regressed out of its `break` would hang CI for
     // fifteen minutes per case instead of failing it. Well above every
     // scenario's real cost: the rest pass `waitSeconds: "0"`.
-    timeout: 60_000,
+    timeout: SUBPROCESS_TIMEOUT,
     env: {
       ...process.env,
       ...resolved(waitStep().env ?? {}),
@@ -274,12 +277,12 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     const refused = spawnSync(
       "gh",
       ["api", `repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs`, "--hostname", "localhost", "--paginate", "--slurp", "--jq", "."],
-      { encoding: "utf8", timeout: REAL_GH_TIMEOUT, env: { ...process.env, GH_TOKEN: "test-token" } },
+      { encoding: "utf8", timeout: SUBPROCESS_TIMEOUT, env: { ...process.env, GH_TOKEN: "test-token" } },
     );
 
     expect(refused.status).not.toBe(0);
     expect(refused.stderr).toContain("the `--slurp` option is not supported with `--jq` or `--template`");
-  }, REAL_GH_TIMEOUT);
+  });
 
   /**
    * …and the same binary accepts every call the *wait* composes. The real `gh`
@@ -319,7 +322,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(stderr).not.toContain("unknown flag");
     // Unreachable host, so the step still reports itself blind — loudly.
     expect(outcome.stdout).toContain("::error::Could not read check runs");
-  }, REAL_GH_TIMEOUT);
+  });
 
   /**
    * The failure-log tail's two calls, which no run of the step above can put
@@ -344,7 +347,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
 
       const attempt = spawnSync("gh", [...argv], {
         encoding: "utf8",
-        timeout: REAL_GH_TIMEOUT,
+        timeout: SUBPROCESS_TIMEOUT,
         // `GH_REPO` is gh's own repo override, and it is what makes the bare
         // `gh run view` above resolve a repo at all: the step runs it with no
         // `-R` and from a checkout of a different repository.
@@ -356,7 +359,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
       expect(attempt.stderr).not.toContain("is not supported with");
       expect(attempt.stderr).toContain("connection refused");
     }
-  }, REAL_GH_TIMEOUT);
+  });
 
   /**
    * The count is **one number over every page**. Per page it is one number per

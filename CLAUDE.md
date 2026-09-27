@@ -211,6 +211,11 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
 - Prefer `execFileSync` argv over shell strings for anything holding a variable. A git ref may
   legally contain `` ` ``, `$()`, `;`, `|` and `&`.
 - Test files live in `tests/`, mirroring the source.
+- **A test that spawns synchronously bounds the spawn itself**, at `SUBPROCESS_TIMEOUT` from
+  `vitest.config.ts` — the same figure that file gives the suite as `testTimeout`, imported rather
+  than repeated. vitest's timeout cannot interrupt a synchronous spawn, so the setting is a flake
+  guard for cold starts and the spawn's own `timeout` is what ends a hang; a bound written as its
+  own literal can drift above the ceiling, and then an overrun reads as a spawn failure instead.
 - `docs/friction.md` is a dated narrative log. Append; never rewrite an entry to match today.
 
 ## Line endings

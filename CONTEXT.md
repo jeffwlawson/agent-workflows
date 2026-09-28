@@ -21,6 +21,11 @@ the middle. One workflow per label transition, near enough:
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
 sub-issue per run onto one branch, and re-adds its own label to advance.
 
+That branch is the **PRD branch** (the code's "accumulating branch"), and the one pull request
+from it into the base branch is the **PRD PR** — the only PR of a chain a human merges. A **slice
+PR** is one sub-issue's pull request whose base is the PRD branch; it is planned, not built. None
+of the three is a *layer*.
+
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
 first row. A run that pushed asks for the review of what it pushed, so the round it was given
@@ -171,7 +176,8 @@ a fix reaches them without them touching anything.
 takes its whole input from the environment; passing an argument is refused rather than ignored.
 
 **Part, not layer.** These were *the three layers* until stacked pull requests arrived: GitHub calls
-one pull request in a stack a **layer**, and that is the only meaning the word has here now. Older
+one pull request in a stack a **layer**, and that is the only meaning the word has here now. The
+PRD chain uses no stacks, so it has slice PRs rather than layers. Older
 entries in `docs/friction.md` keep the old usage, because that log is never rewritten.
 
 ### And the install path, which is none of the three

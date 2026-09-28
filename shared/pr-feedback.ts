@@ -107,11 +107,15 @@ export interface PullRequestFeedback {
    * with the id an outcome on it names and the author and permalink the record
    * of that outcome is written from (#104).
    *
-   * The comments `conversation` renders and no others, which is the property
-   * that matters: the ones this workflow posted itself are split off before
-   * either is built, so an outcome on one is dropped rather than posted (see
-   * `filterConversationOutcomes`) — the agent replying to its own note is the
-   * failure this list exists to make impossible.
+   * Not every comment `conversation` renders, for the reason `threadIds` is not
+   * every thread `inline` renders: a note **this loop posted itself** is shown
+   * for its evidence and left out of here (#159). The marked kinds never reach
+   * the render at all; the unmarked ones — a refusal, a failure comment, a
+   * "no re-review will start" warning — are evidence a fix run may need, and
+   * are nobody's instruction. An outcome on one is dropped rather than posted
+   * (see `filterConversationOutcomes`), which is what stops the agent
+   * publishing *Addressed — @github-actions's comment* about the loop's own
+   * status note.
    */
   readonly conversationComments: readonly ConversationComment[];
   /**
@@ -996,6 +1000,28 @@ const AWAITING_CLOSE =
   "_(this workflow has already verified this finding and replied above. The thread is open only because the close that should have followed it did not go through — a later review retries that close, and does not reply again. Nothing here is owed a fix unless the code now says otherwise, and nothing is owed a reply: this thread is shown for its evidence, and is not one of the threads to report an outcome on.)_";
 
 /**
+ * Rendered under a conversation comment **this loop wrote** and did not mark
+ * (#159), and the conversation half of `AWAITING_CLOSE`.
+ *
+ * `isWorkflowBot` trusts `github-actions` on purpose, so every refusal note,
+ * failure comment and "no re-review will start" warning any workflow here posts
+ * lands on this surface and reaches the agent. That is wanted — it is evidence
+ * about what has already happened on the pull request, which is why the marker
+ * split does not take them out of the render. What none of them is, is somebody
+ * asking for something, so none is owed an outcome: the fix run publishing
+ * *Addressed — @github-actions's comment* about the loop's own status note is
+ * the self-answer the markers bound, arriving from the nine unmarked posts the
+ * markers were never put on.
+ *
+ * Said as well as enforced, for the reason `AWAITING_CLOSE` is: the comment
+ * carries no id here, so an outcome on it cannot be reported at all, and an
+ * agent told why it is being shown something writes a better commit than one
+ * whose answer is silently discarded.
+ */
+const LOOP_NOTE =
+  "_(posted by this loop's own workflows rather than by a person: a status note, shown for its evidence. It asks for nothing, so no outcome is owed on it — which is why it carries no comment id.)_";
+
+/**
  * The elements a partial answer actually left behind.
  *
  * A nulled element is a hole in the list, not an object with absent fields, so
@@ -1021,6 +1047,11 @@ const present = <T>(nodes: readonly (T | null | undefined)[] | null | undefined)
  * from it, and a surface whose text and whose answerable set were filtered
  * separately is one where they can disagree — an outcome owed on a comment the
  * agent was never shown, or none owed on one it was.
+ *
+ * The answerable half narrows from here by exactly one subtraction, named where
+ * it is made (`owedAnOutcome`) rather than by filtering twice: this loop's own
+ * unmarked notes are rendered and carry no id (#159). One derived from the
+ * other is the property; identical is not.
  */
 const renderable = <T extends GqlAuthored>(
   nodes: readonly (T | null | undefined)[] | null | undefined,
@@ -1109,33 +1140,47 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     ),
   );
 
+  // Which of them an outcome is owed on — the conversation half of
+  // `answerable`, and the one place the two halves differ.
+  //
+  // **Not this loop's own unmarked notes** (#159). The markers above name the
+  // two kinds a fix run writes *to be read*; they are not on the refusal note,
+  // the failure comment or the `AGENT_PAT` warning that this and every other
+  // workflow here posts as the same trusted bot, and marking those would drop
+  // evidence out of the render to fix an answer nobody was waiting for. The
+  // author is the bound that covers all of them at once, including an adopter's
+  // own jobs posting under the same login, and it costs nothing a fix run
+  // needed: a status note asks for nothing.
+  //
+  // A comment whose `id` did not come back is unanswerable for the other
+  // reason, and still rendered. `IssueComment.id` is non-null and a refusal
+  // nulls the whole element, so that is unreachable rather than a case with a
+  // reading to get right — and of the two readings available, dropping feedback
+  // a run might be steered by is the worse one.
+  const owedAnOutcome = (n: GqlComment): n is GqlComment & { id: string } =>
+    typeof n.id === "string" && !isWorkflowBot(n.author?.login ?? undefined);
+
   // The id is rendered for the same reason a thread's is: the agent has to name
   // a comment to report an outcome on it, so identity must survive into the
-  // prompt (#104).
-  //
-  // A comment whose `id` did not come back is still rendered, without the
-  // marker, and is not one of the ids below. `IssueComment.id` is non-null and a
-  // refusal nulls the whole element, so this is unreachable rather than a case
-  // with a reading to get right — and of the two readings available, dropping
-  // feedback a run might be steered by is the worse one.
+  // prompt (#104). A comment no outcome is owed on carries none — there is
+  // nothing for it to name — and the loop's own notes say why rather than
+  // leaving the omission to be read as an oversight.
   const conversation = render(conversationNodes, (n, login) =>
-    [
-      typeof n.id === "string" ? `**@${login}** — comment \`${n.id}\`` : `**@${login}:**`,
-      (n.body ?? "").trim(),
-    ].join("\n"),
+    owedAnOutcome(n)
+      ? `**@${login}** — comment \`${n.id}\`\n${(n.body ?? "").trim()}`
+      : [
+          `**@${login}:**\n${(n.body ?? "").trim()}`,
+          ...(isWorkflowBot(login) ? [LOOP_NOTE] : []),
+        ].join("\n\n"),
   );
 
-  const conversationComments = conversationNodes.flatMap((n): ConversationComment[] =>
-    typeof n.id !== "string"
-      ? []
-      : [
-          {
-            commentId: n.id,
-            author: n.author?.login ?? "unknown",
-            ...(typeof n.url === "string" ? { url: n.url } : {}),
-          },
-        ],
-  );
+  const conversationComments = conversationNodes
+    .filter(owedAnOutcome)
+    .map((n): ConversationComment => ({
+      commentId: n.id,
+      author: n.author?.login ?? "unknown",
+      ...(typeof n.url === "string" ? { url: n.url } : {}),
+    }));
 
   const summaries = render(
     pr?.reviews?.nodes,

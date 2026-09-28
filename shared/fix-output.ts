@@ -254,12 +254,13 @@ export const filterOutcomes = (
  * comment answered twice is answered twice.
  *
  * It carries one more, and it is the reason this filter exists rather than the
- * prompt being trusted. **The comments this workflow posted itself are not in
- * `knownCommentIds`** — an out-of-scope note and an earlier round's record alike:
- * `fetchPullRequestFeedback` splits both off by their markers before rendering
- * the conversation surface, so neither is ever offered as a comment to answer. An
- * outcome naming one is therefore dropped here, which is what stops the first run
- * after #104 acknowledging its own posts.
+ * prompt being trusted. **No comment this loop posted is in `knownCommentIds`**,
+ * by either of two routes: the two marked kinds — an out-of-scope note and an
+ * earlier round's record — are split off by their markers before the
+ * conversation surface is rendered at all, and the unmarked ones every workflow
+ * here writes are rendered as evidence and offered no id (#159). An outcome
+ * naming one is therefore dropped here, which is what stops a run acknowledging
+ * its own posts.
  */
 export const filterConversationOutcomes = (
   outcomes: readonly ConversationOutcome[],

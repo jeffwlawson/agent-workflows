@@ -9,6 +9,7 @@ import { callersIn } from "../setup/callers.js";
 import {
   ADVISORY_LABELS,
   advisoryLabelSpecsFor,
+  AUTO_FIXED_LABEL,
   init,
   labelCommand,
   labelSpecsFor,
@@ -1675,11 +1676,22 @@ describe("doctor names the failures that otherwise look like something else", ()
     return root;
   };
 
+  /**
+   * And the other half of throwing that switch: the marker label, which
+   * `healthy()` has no business carrying — it is the six every installation
+   * needs, and this is the one a repository creates only if it turns the input
+   * on (#159).
+   */
+  const withMarkerLabel = (facts: RepoFacts): RepoFacts => ({
+    ...facts,
+    labels: [...(facts.labels ?? []), AUTO_FIXED_LABEL.name],
+  });
+
   it("warns when the automatic fix is on and no PAT can make it fire", async () => {
-    const { code, out, err } = await check(await withAutoFix(), {
-      ...healthy(),
-      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
-    });
+    const { code, out, err } = await check(
+      await withAutoFix(),
+      withMarkerLabel({ ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] }),
+    );
 
     expect(out).toContain("auto-fix");
     expect(out).toMatch(/fires no event/);
@@ -1689,11 +1701,61 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(code).toBe(1);
   });
 
-  it("says nothing about the automatic fix when the PAT is set", async () => {
-    const { code, out, err } = await check(await withAutoFix(), healthy());
+  it("says nothing about the automatic fix when the PAT and the label are there", async () => {
+    const { code, out, err } = await check(await withAutoFix(), withMarkerLabel(healthy()));
 
     expect(err).toBe("");
     expect(out).not.toContain("auto-fix");
+    expect(code).toBe(0);
+  });
+
+  /**
+   * **The marker label, which is an error rather than a warning** (#159). The
+   * `auto-fix` job adds it first and under `bash -e`, so a repository that
+   * switched the input on without creating it does not lose the automation —
+   * it loses the job, after the review has already posted a verdict saying a
+   * fix round started.
+   *
+   * It is in `ADVISORY_LABELS` and so outside `labelSpecsFor`'s demanded set,
+   * which is right for every repository that left the input alone and is
+   * exactly why this check has to read the input instead.
+   */
+  it("errors when the automatic fix is on and its marker label does not exist", async () => {
+    const { code, out, err } = await check(await withAutoFix(), healthy());
+
+    expect(err).toContain(AUTO_FIXED_LABEL.name);
+    expect(err).toMatch(/auto-fix without its marker label/);
+    // With the one command that creates it, and the same one `init`'s
+    // `SETUP.md` offers rather than a second spelling of it.
+    expect(err).toContain(labelCommand(AUTO_FIXED_LABEL));
+    expect(code).toBe(1);
+  });
+
+  /**
+   * …and says nothing about it on a repository that left the input alone. That
+   * is every repository `init` has just finished with, so a demand here would
+   * be a preflight failing a correctly-installed loop over a label nothing in
+   * it will ever add.
+   */
+  it("demands the marker label only where the input is on", async () => {
+    const { code, out, err } = await check(await installed(), healthy());
+
+    expect(out).not.toContain(AUTO_FIXED_LABEL.name);
+    expect(err).toBe("");
+    expect(code).toBe(0);
+  });
+
+  /**
+   * Unreadable stays unreadable on this half too: `doctor` runs where nobody
+   * could list the labels, and "the list did not come back" is not "the label
+   * is missing". The unreadable-labels warning is the honest answer and is
+   * already there.
+   */
+  it("does not claim the marker label is missing when the labels could not be read", async () => {
+    const { code, out, err } = await check(await withAutoFix(), { ...healthy(), labels: undefined });
+
+    expect(err).toBe("");
+    expect(out).toMatch(/could not list this repository's labels/i);
     expect(code).toBe(0);
   });
 
@@ -1718,7 +1780,10 @@ describe("doctor names the failures that otherwise look like something else", ()
    * warning below is the honest answer, and it is already there.
    */
   it("does not claim the automatic fix is broken when the secrets could not be read", async () => {
-    const { code, out } = await check(await withAutoFix(), { ...healthy(), secrets: undefined });
+    const { code, out } = await check(
+      await withAutoFix(),
+      withMarkerLabel({ ...healthy(), secrets: undefined }),
+    );
 
     expect(out).not.toContain("auto-fix");
     expect(out).toMatch(/could not read the actions secrets/i);

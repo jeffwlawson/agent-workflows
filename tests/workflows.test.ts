@@ -1549,11 +1549,12 @@ describe("agent-review starts one fix round, where it was asked to", () => {
 
   /**
    * **Draft means the loop is still working** (decision 4). A pull request
-   * whose fix round is about to start is not the human's turn, and the
-   * re-review at the end of that round is what marks it ready. Predicted from
-   * the same verdict key the job selects on rather than from a second reading
-   * of the three facts behind it, so the draft state and the job cannot
-   * disagree.
+   * whose fix round is about to start is not the human's turn, and the end of
+   * that round is what marks it ready — the re-review where the fix pushed,
+   * and the fix run's own no-push arm where it did not (#159, asserted with
+   * that arm). Predicted from the same verdict key the job selects on rather
+   * than from a second reading of the three facts behind it, so the draft state
+   * and the job cannot disagree.
    */
   it("leaves the pull request in draft exactly when the fix round is starting", () => {
     const ready = stepsOf(REVIEW).find((s) => (s.name ?? "") === "Mark PR ready for review");
@@ -1626,12 +1627,11 @@ describe("agent-review starts one fix round, where it was asked to", () => {
  * on a branch where the fix has already landed.
  *
  * This is the `agent:fix` → `agent:review` leg that `docs/parity.md` §10
- * already calls safe, and the property it rests on is unchanged — review adds
- * no trigger label of its own, so there is no cycle to close. What is new is
- * the bound underneath it: a round-2 review cannot answer with the round-1
- * *Changes recommended* line, the one that promises an automatic re-review
- * (`deriveVerdict`), so this leg cannot be walked a second time off one human
- * label.
+ * already calls safe, and the bound it rests on is that a round-2 review cannot
+ * answer with the round-1 *Changes recommended* line, the one that promises an
+ * automatic re-review (`deriveVerdict`) — so this leg cannot be walked a second
+ * time off one human label. (Not "review adds no trigger label of its own",
+ * which stopped being true at #102.)
  *
  * Nothing here has a runtime symptom when it breaks, which is why it is
  * asserted against the workflow text. A request that never fires leaves a
@@ -1662,6 +1662,52 @@ describe("agent-fix asks for the re-review its own push needs", () => {
       "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed == 'true'",
     );
     expect(request()?.run ?? "").toContain('--add-label "agent:review"');
+  });
+
+  /**
+   * **And the other arm hands the pull request back** (#159). Draft means the
+   * loop is still working (`docs/parity.md` §10), and since #102 review leaves
+   * a pull request whose automatic fix is about to start in draft, on the
+   * reading that the re-review at the end of the round marks it ready. A round
+   * that declines every finding pushes nothing and asks for nothing, so no
+   * re-review comes: without this arm that pull request is a draft with no
+   * state label, under a verdict saying a fix round started and a re-review
+   * follows.
+   *
+   * The two arms partition the success path on the same output, which is what
+   * makes "the loop marks it ready when it hands it back" a rule rather than
+   * two steps that happen not to overlap.
+   */
+  const ready = (): Step | undefined => stepNamed("Mark PR ready for review");
+
+  it("marks the pull request ready exactly where it asks for no review", () => {
+    expect((ready()?.if ?? "").replace(/\s+/g, " ").trim()).toBe(
+      "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed != 'true'",
+    );
+    expect(ready()?.run ?? "").toContain('gh pr ready "$PR_NUMBER"');
+  });
+
+  /**
+   * MUST use `AGENT_PAT`, for the reason review's own step does: `GITHUB_TOKEN`
+   * cannot convert a draft at all, whatever it is granted. A warning rather
+   * than a failure, also for review's reason — by this point every thread has
+   * its reply, and a pull request stuck in draft is not worth failing the run
+   * that answered them.
+   */
+  it("marks it ready with the PAT, and warns rather than failing without one", () => {
+    expect(ready()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(ready()?.run ?? "").toContain("::warning::");
+    expect(ready()?.run ?? "").not.toContain("|| true");
+  });
+
+  /**
+   * And a run that **failed** leaves it a draft, which is the half of the
+   * invariant that predates all of this: a draft agreeing with `agent:blocked`
+   * is the second signal that the pipeline did not complete. `success()` is
+   * what carries that, in both arms.
+   */
+  it("leaves a failed run's pull request in draft", () => {
+    expect(ready()?.if ?? "").toContain("success()");
   });
 
   /**

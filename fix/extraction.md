@@ -23,9 +23,9 @@ way: `addressed` when nothing is outstanding, `declined` when you disagree or ar
 acting. A **declined** one carries the reason, written to the person who left it — that is the only
 record such a decline leaves anywhere. Under 100 words, like a thread reply.
 
-Omit a comment you did not consider, and report an empty array where you were shown none. An
-unrecognised id is dropped, and the ids you were not shown include this workflow's own earlier
-comments: those are not in the list and get no outcome.
+Omit a comment you did not consider, one shown without an id, and report an empty array where you
+were shown none. An unrecognised id is dropped, and nothing this loop posted itself carries one —
+its own earlier comments and its status notes alike get no outcome.
 
 These are posted together as one comment on the pull request conversation. They are **not**
 `topLevelComments` — do not report the same thing in both.

@@ -383,6 +383,10 @@ review has already posted a verdict saying a fix round started, and a red job is
 says it did not. The order is the marker first and `agent:fix` second, so a failure between the two
 costs the pull request its automatic fix rather than starting one nothing recorded.
 
+Which is why `doctor` treats this one as an **error** where it treats the three above as warnings —
+but only once it can see `auto-fix: true` in your review caller. Leave the input alone and it asks
+for nothing.
+
 ---
 
 ## 3b. Reading the verdict
@@ -442,7 +446,9 @@ instead.
 caller and a review whose verdict is the *first-round* *Changes recommended* adds the label itself —
 **once per pull request**, recorded by `agent:auto-fixed` (§3) and never repeated. That is the row
 above whose line says a fix round has already started; the pull request also stays a draft, because
-the loop is still working and it is not your turn yet. It cannot cycle: the review a fix round asks
+the loop is still working and it is not your turn yet. It is marked ready at the end of that round
+either way — by the re-review where the fix pushed, and by the fix run itself where it declined
+everything and so asked for no re-review. It cannot cycle: the review a fix round asks
 for is a second round, and a second round can never produce that first-round line. Your own commits
 make the next review a first round again, which may recommend changes — and by then the automatic
 fix is spent, so that verdict asks you for the label.

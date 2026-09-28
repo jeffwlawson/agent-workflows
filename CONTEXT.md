@@ -32,7 +32,9 @@ from the round-1 *Changes recommended* — the line that promises an automatic r
 round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a full round 1,
 because round 2 needs a non-merge loop commit since the verdict and a resolution leaves only a
 merge. A fix run that pushed nothing asks for nothing — and leaves every thread it answered open,
-so a round it declined its way through ends on a human rather than on another pass.
+so a round it declined its way through ends on a human rather than on another pass. It is also the
+run that marks such a pull request **ready**, because there is no re-review coming to do it (#159):
+a run that pushed hands the pull request to a review, and a run that did not hands it back.
 
 Review adds a trigger label in exactly one case, and only where an adopter asked for it (#102):
 with `auto-fix: true`, a job of its own adds `agent:fix` when the verdict is the round-1 *Changes
@@ -43,7 +45,8 @@ it from a second time on the same pull request. The job holds `pull-requests: wr
 else, checks nothing out and runs no model, which is what keeps `AGENT_PAT` away from the job that
 reads the pull request. Off by default, so an adopter's upgrade changes nothing. A pull request
 whose automatic fix is about to start also stays a **draft**: draft means the loop is still
-working, and the re-review at the end of the fix round is what marks it ready.
+working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
+pushed, and the fix run itself where it pushed nothing and so asked for none.
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
@@ -89,7 +92,10 @@ outcomes are one comment on the same conversation, declines first, written by th
 runner's validated output. What bounds it is the split that was already there: this workflow's own
 comments are on that same surface and `github-actions` is trusted on purpose, so the marker is all
 that distinguishes last round's note from a maintainer's instruction. Only a comment the fetch
-rendered can carry an outcome, which is what keeps a run from answering itself. The record carries a
+offered an **id** for can carry an outcome, which is what keeps a run from answering itself: the
+marked kinds are never rendered, and the loop's own unmarked notes — a refusal, a failure comment,
+a warning about a label that fired nothing — are rendered for their evidence and offered no id,
+because a status note asks for nothing (#159). The record carries a
 marker of its own rather than the top-level one — `follow-ups` harvests that into issues, and a
 record raises no work.
 

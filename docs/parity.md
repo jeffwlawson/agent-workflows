@@ -344,7 +344,7 @@ come up was *inside* one PRD.
 | **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
-| **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the re-review at the end of that round marks it ready. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
+| **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | **Starts one fix round by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101). Opt-in per repository (`auto-fix`, default off) and once per pull request, recorded by `agent:auto-fixed`. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; the only `AGENT_PAT` use in the workflow. Bounded twice — the key it selects on can only come out of a round-1 derivation, and the marker stops a second one on the same PR (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
@@ -371,7 +371,8 @@ come up was *inside* one PRD.
 | **Resolves the threads it addressed** | ❌ | ❌ | it did until #111 and now resolves **nothing**: the author of a fix marked its own work done, and a resolved thread is dropped from what the next review is shown, so the pass that checks it could not see it. The reviewer closes threads now (§3), and `addressed` / `declined` is a claim recorded in the reply |
 | **Posts new inline comments** | ✅ | ❌ | **decision, not omission** — see below |
 | **Posts top-level comments** | ✅ | ✅ | ours states in the prompt what the channel is *for*; CVM has the field and no guidance anywhere |
-| **Reports an outcome on a conversation comment** | ❌ | ✅ | #104. Both read that surface and act on it; ours says what it did with each comment — addressed or declined, with the reason — in one comment on the same conversation, because there is no thread to reply into. A declined one is otherwise invisible, and since #103 a maintainer's steering arrives as exactly such a comment |
+| **Marks the PR ready where the round ends on it** | ❌ | ➕ | #159. A run that pushed asks for the re-review that marks it; a run that pushed nothing asks for nothing, so this arm is what hands the pull request back. Needed once review stopped marking one whose automatic fix was about to start (#102) — otherwise that pull request stays a draft with nothing left to change it. **Requires `AGENT_PAT`**, and warns without one, exactly as review's does (§10) |
+| **Reports an outcome on a conversation comment** | ❌ | ✅ | #104. Both read that surface and act on it; ours says what it did with each comment — addressed or declined, with the reason — in one comment on the same conversation, because there is no thread to reply into. A declined one is otherwise invisible, and since #103 a maintainer's steering arrives as exactly such a comment. On a **person's** comment: the loop's own notes on the same surface are shown for their evidence and owed nothing (§10) |
 
 **On the name.** CVM calls this `agent-implement-pr` and triggers it with `agent:implement`,
 disambiguated only by event type. Ours is `agent-fix.yml`, triggered by `agent:fix`. Two reasons:
@@ -1095,15 +1096,28 @@ expensive to rediscover.
   It also keeps `hasFeedback` honest — a PR with every thread resolved and no human input still
   refuses, rather than finding "feedback" the agent wrote itself.
 
-  **Two markers since #104**, because the fix run now posts a second kind of comment there: the
-  record of what it did with the conversation comments, under
-  `<!-- agent-fix:conversation-outcomes -->`. Marked for the reason above — unmarked it returns next
-  round as a comment to act on, and now also as one an outcome is owed on, the agent answering its
-  own post. Marked *separately* because the two are different things to their readers: #79 harvests
-  the top-level marker into issues and a record raises no work, and `filterTopLevelComments`
-  dedupes that channel on its marker while a record is correct to repeat, each round's being about
-  that round. The list of ids an outcome may name is drawn from the comments that survive both
-  filters, so the split is what bounds the answer as well as the input.
+  **Two markers since #104**, and since #159 an author bound under them. The marked kinds are the
+  two a fix run writes *to be read* — a top-level comment and, added by #104, the record of what
+  it did with the conversation comments, under `<!-- agent-fix:conversation-outcomes -->`. Marked
+  for the reason above — unmarked it returns next round as a comment to act on, and now also as
+  one an outcome is owed on, the agent answering its own post. Marked *separately* because the two
+  are different things to their readers: #79 harvests the top-level marker into issues and a
+  record raises no work, and `filterTopLevelComments` dedupes that channel on its marker while a
+  record is correct to repeat, each round's being about that round. The list of ids an outcome may
+  name is drawn from the comments that survive both filters, so the split is what bounds the
+  answer as well as the input.
+
+  **The unmarked ones are the bound #159 added**, and they are not a third marker. Every workflow
+  here posts a refusal note, a failure comment or a "this label fired nothing" warning as the same
+  trusted bot, and none of them carries a marker. They are wanted in the render — a fix run
+  reading what has already happened on the pull request is reading evidence — and none of them is
+  anybody *asking* for anything, so no outcome is owed: unmarked, they were reaching
+  `conversationComments` and the next fix run was publishing *Addressed — @github-actions's
+  comment* about the loop's own status note. The bound is `isWorkflowBot` on the answerable half
+  only, which is rendered-and-unanswerable, the pair `threadIds` already holds for a thread
+  awaiting its close. Marking the nine would have been the other route and is worse twice over: it
+  takes the evidence out of the render, and it covers only the workflows in this repository, while
+  an adopter's own job posting under the same login arrives unmarked either way.
 
   **Narrowed by #111, knowingly.** A fix run's thread replies used to leave the `inline` surface by
   being *resolved*; now nothing resolves them until a review does, so a second `agent:fix` run on
@@ -1155,8 +1169,9 @@ expensive to rediscover.
   does too, for the same reason and not by analogy to the channel it shares a surface with: an
   unreported conversation comment is the invisibility that issue exists to remove, so a parser that
   dropped a decline with a warning would rebuild it one layer down.
-- **Draft means the pipeline has not finished, not that the agent is still typing.** Review marks
-  the PR ready, and only on `success()`. So a PR left in draft after a run is a PR whose automated
+- **Draft means the pipeline has not finished, not that the agent is still typing.** The loop marks
+  the PR ready when it hands it back to a human — review on `success()`, and since #159 a fix run
+  that ended the round on itself. So a PR left in draft after a run is a PR whose automated
   pipeline did not complete — a second signal that agrees with `agent:blocked` instead of
   presenting an unreviewed PR as finished. Moving the mark-ready step earlier (into implement)
   forfeits that, and fires "your turn" during a window when the review has not posted and there is
@@ -1170,6 +1185,17 @@ expensive to rediscover.
   before, and so does the round-1 *Changes recommended* wherever `auto-fix` is off. The condition
   the step reads is the automatic fix's own verdict key, not a second reading of the three facts
   behind it, so the draft state and the job cannot disagree about whether a fix round is coming.
+
+  **And #159 is the end of the round that sentence assumed.** "The re-review marks it ready" holds
+  only for a fix run that **pushed**: one that declines every finding pushes nothing and asks for
+  nothing (§4), so no re-review comes and the pull request stayed a draft with no state label,
+  under a verdict saying a fix round had started and a re-review would follow. Before #102 review
+  had already marked that same pull request ready. So the fix half now marks it ready on its
+  no-push arm, which is the arm that *is* the human's turn — the mirror of the push arm asking for
+  the review, and the second half of "the loop marks it ready when it hands it back". Unconditional
+  on that arm rather than conditional on how the round started: a fix run cannot see whether a
+  human or a review added its label, and where review has already marked it ready the call is a
+  no-op.
 
   **This invariant depends on `AGENT_PAT`.** `GITHUB_TOKEN` cannot convert a draft PR at all —
   `Resource not accessible by integration (markPullRequestReadyForReview)` — so without the PAT

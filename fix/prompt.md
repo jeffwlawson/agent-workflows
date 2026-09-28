@@ -170,8 +170,11 @@ comment, and say why, plainly, to the person who asked. A maintainer's direction
 following is the case that matters most; see *A maintainer's comment is your direction for this run*
 above.
 
-Report nothing for a comment you were not shown. If *CONVERSATION* holds none, report none: this
-run's record is then empty and nothing is posted.
+Report nothing for a comment you were not shown, and nothing for one shown **without** an id —
+that is how a comment nobody is waiting on an answer from is marked. The loop's own status notes
+are the case: they are there so you know what has already happened on this pull request, and
+answering one is answering yourself. If *CONVERSATION* holds no comment with an id, report none:
+this run's record is then empty and nothing is posted.
 
 # TOP-LEVEL COMMENTS
 

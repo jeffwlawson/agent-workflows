@@ -330,6 +330,57 @@ const agentWorkflows = (): readonly string[] => [...callerWorkflows, ...runnerWo
 const runnerWorkflows = RUNNER_COMMANDS.map((c) => path.join(WORKFLOW_DIR, `${c}.yml`));
 
 /**
+ * What a workflow's `permissions:` blocks say about themselves, unwrapped: one
+ * string per block with no `scope`, and with one the comment attached to that
+ * scope **inside** each block that grants it.
+ *
+ * Unwrapped before anything matches over it, because a claim in a YAML comment
+ * wraps at whatever point the line ran out — a regex over the raw text only
+ * catches a phrase that happens not to straddle a `#`. All the blocks rather
+ * than the first, since a reusable has one per job.
+ *
+ * The per-scope form is the one worth having. A block read whole is a surface
+ * where one correct paragraph satisfies a match that every scope under it
+ * fails, which is how #146's sweep left `statuses: write` describing a failure
+ * the docblock three lines above it had just retired.
+ */
+const permissionComments = (file: string, scope?: string): readonly string[] => {
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const indentOf = (line: string): number => line.length - line.trimStart().length;
+  const unwrap = (from: number, to: number): string =>
+    lines
+      .slice(from, to)
+      .filter((l) => l.trimStart().startsWith("#"))
+      .map((l) => l.trimStart().replace(/^#\s?/, ""))
+      .join(" ");
+  /** Where the contiguous run of comment lines ending at `at` begins. */
+  const commentsAbove = (at: number, floor: number): number => {
+    let from = at;
+    while (from > floor && (lines[from - 1] ?? "").trimStart().startsWith("#")) from -= 1;
+    return from;
+  };
+
+  return lines.flatMap((line, at) => {
+    if (line.trim() !== "permissions:") return [];
+    const indent = indentOf(line);
+    // The block ends where the indentation returns to the key's own or the
+    // mapping runs out, whichever comes first.
+    let to = at + 1;
+    while (to < lines.length) {
+      const next = lines[to] ?? "";
+      if (next.trim() === "" || indentOf(next) <= indent) break;
+      to += 1;
+    }
+
+    if (scope === undefined) return [unwrap(commentsAbove(at, 0), to)];
+
+    const granted = lines.slice(at + 1, to).findIndex((l) => l.trim() === scope);
+
+    return granted === -1 ? [] : [unwrap(commentsAbove(at + 1 + granted, at + 1), at + 1 + granted)];
+  });
+};
+
+/**
  * Every caller under test, from **both** places they live.
  *
  * `examples/callers/` is the reference set an adopter copies. This repository
@@ -820,7 +871,10 @@ describe("every PR workflow shares one concurrency group per PR", () => {
    * `{"message":…}0`, which `-eq` rejects as non-numeric on every iteration,
    * so the loop spun out all 900 s and *then* reviewed blind. The trigger for
    * both: check runs on a **private** repository need `checks: read`, and no
-   * public repo in the pilot ever needed the grant to read them.
+   * public repo in the pilot ever needed the grant to read them. That trigger
+   * is gone — the job declares the scope and a caller short of it never starts
+   * (#146) — and the two failure shapes are not, since a transient API failure
+   * produces each of them just the same.
    *
    * What is asserted is the property, not the shell: a non-numeric count is
    * matched explicitly, it breaks rather than sleeps, and it says so in the
@@ -840,7 +894,7 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // …and the count is one number, so that arm means what it says. `gh api
     // --paginate --jq` applies the filter per page, so a commit with more
     // than one page of check runs (>30) prints `0\n0` — which the arm above
-    // would classify as an API failure and diagnose as a missing grant, on a
+    // would classify as an API failure and report as a blind review, on a
     // repo whose permissions are fine. Slurped, the filter runs once over
     // every page.
     //
@@ -858,8 +912,13 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     expect(run).toContain("::error::Could not read check runs");
     expect(run).toMatch(/Could not read this commit's check runs[^\n]*>> "\$out"/);
 
-    // The grant that fixes it is named where someone hitting this will look.
+    // And the grant is named as the thing it is *not*, where someone hitting
+    // this will look for it: a caller short of `checks: read` is refused before
+    // any job starts, so a step that ran holds the read and a reader sent to
+    // their own caller is sent to a file that is already correct (#146).
     expect(run).toContain("checks: read");
+    expect(run).toContain("before any job starts");
+    expect(run).not.toMatch(/this is a missing `checks: read` grant/);
   });
 
   /**
@@ -1095,12 +1154,19 @@ describe("agent-review posts its verdict as a commit status", () => {
   });
 
   /**
-   * A refused post is ours as often as it is the adopter's. The warning used to
-   * name only the missing grant, so v0.3.0's rejected verdicts (a 422 on the
-   * description itself) read as every adopter's misconfiguration (#121).
+   * A refused post is ours rather than the adopter's. The warning used to name
+   * only the missing grant, so v0.3.0's rejected verdicts (a 422 on the
+   * description itself) read as every adopter's misconfiguration (#121) — and
+   * the grant it named is not a cause at all: a caller short of
+   * `statuses: write` is refused before any job starts, so a token that reached
+   * this step holds it (#146).
    */
-  it("does not blame the grant alone when the post is refused", () => {
-    expect(postStep()?.run ?? "").toContain("a 422 is the status itself being refused");
+  it("does not blame the grant when the post is refused", () => {
+    const run = postStep()?.run ?? "";
+
+    expect(run).toContain("a 422 is the status itself being refused");
+    expect(run).not.toMatch(/a 403 is a caller missing/);
+    expect(run).toContain("before any job starts");
   });
 
   /**
@@ -1195,12 +1261,13 @@ describe("agent-review posts its verdict as a commit status", () => {
   });
 
   /**
-   * Neither posting may fail the run. The likeliest cause is an adopter whose
-   * caller predates the `statuses: write` grant, and a posted review is worth
-   * more than its verdict — `setup/doctor.ts` is what names that grant, where
-   * the adopter is looking for it. A warning keeps the failure visible; `||
-   * true` would leave a loop that posts no verdicts and looks healthy, which is
-   * the shape the marker step above is written against too.
+   * Neither posting may fail the run: a posted review is worth more than its
+   * verdict. The cause is not the adopter's caller — one short of
+   * `statuses: write` is refused before any job starts (#146), so a step that
+   * ran holds the write and what lands here is GitHub refusing the status
+   * itself. A warning keeps the failure visible; `|| true` would leave a loop
+   * that posts no verdicts and looks healthy, which is the shape the marker
+   * step above is written against too.
    */
   it.each([
     ["the verdict", "Post the verdict as a commit status"],
@@ -1711,13 +1778,17 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
 
   /**
    * And a read that *failed* is not a commit with no verdict on it (#105).
-   * Collapsed into one answer only the second is ever reported: a caller
-   * predating the `statuses: write` grant gets `statuses: none`, so on a
-   * private repository this `GET` 403s — and the warning naming the grant is
-   * on the *write* below, which is never reached. The step would log "nothing
-   * to carry over" and exit 0, and every refresh would drop the verdict with
-   * no signal anywhere. It is the distinction `verdictOn` keeps as `undefined`
-   * against `false`, and the CI word keeps as `unknown` against `red`.
+   * Collapsed into one answer only the second is ever reported: a 5xx, a
+   * secondary rate limit or a dropped connection would log "nothing to carry
+   * over" and exit 0, with the warning below on the *write* and never reached,
+   * and every refresh that hit one would drop the verdict with no signal
+   * anywhere. It is the distinction `verdictOn` keeps as `undefined` against
+   * `false`, and the CI word keeps as `unknown` against `red`.
+   *
+   * #105 wrote the arm for a caller predating the `statuses: write` grant,
+   * 403ing here on a private repository. That caller is refused before any job
+   * starts (#146), so the arm outlived its first cause — which is why the
+   * assertion below is about the shape of the arm rather than about a 403.
    */
   it("says so when the statuses could not be read, rather than reading that as none", () => {
     const run = copy()?.run ?? "";
@@ -1737,23 +1808,25 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
   });
 
   /**
-   * And it does not name one cause for an arm that catches several (#123). The
-   * arm is gated on the `gh` call, not on a status code, so a 5xx, a secondary
-   * rate limit and a dropped connection land here alongside the 403 — the same
-   * spread the CI arms in `review.yml` keep as `unknown` rather than `red`. A
-   * warning naming only the grant sends a reader whose caller is already
-   * correct off to fix it, and what `gh` printed is the only thing that tells
-   * the two apart.
+   * And it blames the caller's grant for none of them (#123, #146). The arm is
+   * gated on the `gh` call, not on a status code, so a 5xx, a secondary rate
+   * limit and a dropped connection land here — the same spread the CI arms in
+   * `review.yml` keep as `unknown` rather than `red`. The grant is not among
+   * them at all: a caller granting less than this job declares is refused
+   * before any job starts, so a token that reached this step holds the write.
+   * A warning naming the grant would send a reader whose caller is already
+   * correct off to fix it, which is the failure this assertion exists to stop.
    *
    * Its own cause set, and not the write's below: a read cannot be the 422
    * that arm hedges against, and a write cannot be an outage that leaves the
    * verdict readable where it was posted.
    */
-  it("does not blame the grant alone when the statuses could not be read", () => {
+  it("does not blame the grant when the statuses could not be read", () => {
     const run = copy()?.run ?? "";
     const read = run.slice(0, run.indexOf('if [ -z "$verdict" ]'));
 
-    expect(read).toContain("a 403 is a caller missing");
+    expect(read).not.toMatch(/a 403 is a caller missing/);
+    expect(read).toContain("before any job starts");
     expect(read).toMatch(/transient/i);
     // And what a reader does about it either way, since neither cause is one a
     // re-run of this workflow recovers from: the branch is refreshed, so the
@@ -1784,11 +1857,16 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
    * And the same on the write. This copies `.description` verbatim, so a
    * description GitHub refuses is refused here too — the 422 that lost every
    * v0.3.0 verdict (#121) would have lost every carried one as well. A warning
-   * naming only the grant sends the reader to their own caller for a fault
-   * that is ours; the twin assertion is on `review.yml`'s post step.
+   * naming the grant sends the reader to their own caller for a fault that is
+   * ours, and for a cause that cannot occur besides (#146); the twin assertion
+   * is on `review.yml`'s post step.
    */
-  it("does not blame the grant alone when the copy is refused", () => {
-    expect(copy()?.run ?? "").toContain("a 422 is the status itself being refused");
+  it("does not blame the grant when the copy is refused", () => {
+    const run = copy()?.run ?? "";
+
+    expect(run).toContain("a 422 is the status itself being refused");
+    expect(run).not.toMatch(/a 403 is a caller missing/);
+    expect(run).toContain("before any job starts");
   });
 
   it("asks for a review of the resolution it wrote", () => {
@@ -2388,13 +2466,12 @@ describe("every workflow in the loop is called rather than copied", () => {
    * A called workflow can only *downgrade* the token it is handed. So the
    * callee's block is the bound: it cannot be widened from the caller, which is
    * what keeps `contents: read` on review an invariant (docs/parity.md §10). And
-   * the caller's block is the grant: on a repo whose default `GITHUB_TOKEN` is
-   * read-only, a permission declared only in the callee grants nothing, and
-   * every `gh` call needing it 403s. What that costs is per workflow and is
-   * accounted for in one place, `setup/doctor.ts`'s `REQUIRED_PERMISSIONS`:
-   * the three PR workflows die at the label transition above their checkout,
-   * before an agent pass is spent, while `implement` reaches the step that
-   * opens the pull request and `follow-ups` 403s having already filed.
+   * the caller's block is the grant: a permission declared only in the callee
+   * grants nothing, and GitHub refuses the elevation rather than trimming the
+   * job to fit — the run is a `startup_failure` before any job starts, whichever
+   * scope is short (#146). What each scope *buys* is accounted for in one place,
+   * `setup/doctor.ts`'s `REQUIRED_PERMISSIONS`, which is also where an adopter is
+   * told what the shortfall costs.
    *
    * Asserted as equality between the halves rather than against a table, so the
    * property held is the one that matters: neither half can drift from the
@@ -2404,7 +2481,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * caller's grant is the ceiling for all of them. That is one job everywhere
    * except `review.yml`, where `resolve` holds `contents: write` and the review
    * job narrows it back to `read` (#133). A grant wider than every job is a
-   * scope nothing spends; a narrower one is a job that 403s.
+   * scope nothing spends; a narrower one is a run GitHub refuses outright.
    */
   it.each(callerWorkflows)("%s: grants exactly what the called jobs bound", (file) => {
     const granted = jobOf(file).permissions;
@@ -2430,10 +2507,12 @@ describe("every workflow in the loop is called rather than copied", () => {
    * deliberately not written `|| true`, so Actions' default `bash -e` fails the
    * run there. Loud, and before the diff is fetched.
    *
-   * That is the behaviour `setup/doctor.ts` describes to an adopter ("fails it
-   * on the 403, before the checkout"), so it is a property of these three
-   * workflows rather than an oversight in them: a `|| true` added to that line
-   * would buy back exactly the silent, paid-for run the prose once claimed.
+   * A property of these three workflows rather than an oversight in them: a
+   * `|| true` added to that line would buy back exactly the silent, paid-for run
+   * the prose once claimed. What it is *not* is what a caller's missing
+   * `pull-requests: write` gets you — that run never starts (#146) — so this is
+   * about a token that is short for some other reason, which is why the
+   * assertion is about step order rather than about a grant.
    */
   it.each(PR_WORKFLOWS)("%s: a 403 on the label transition fails before the checkout", (file) => {
     const steps = stepsOf(file);
@@ -2464,25 +2543,93 @@ describe("every workflow in the loop is called rather than copied", () => {
    * asserted rather than just made.
    */
   it("review.yml's permissions comment describes that failure, not a silent one", () => {
-    const lines = fs.readFileSync(REVIEW, "utf8").split("\n");
-    const at = lines.findIndex((l) => l.trim() === "permissions:");
+    const [comment] = permissionComments(REVIEW);
 
-    expect(at).toBeGreaterThan(0);
-
-    let from = at;
-    while (from > 0 && (lines[from - 1] ?? "").trimStart().startsWith("#")) from -= 1;
-    // Unwrapped before matching: a claim in a YAML comment wraps at whatever
-    // point the line ran out, so a regex over the raw block only catches a
-    // phrase that happens not to straddle a `#`.
-    const comment = lines
-      .slice(from, at)
-      .map((l) => l.trimStart().replace(/^#\s?/, ""))
-      .join(" ");
-
+    expect(comment).toBeDefined();
     expect(comment).toContain("grants nothing");
     expect(comment).not.toMatch(/silently transitions no label/i);
     expect(comment).toMatch(/before the checkout/i);
   });
+
+  /**
+   * The two scopes whose own comment makes a claim about what a caller short of
+   * it pays, and so the two #146's correction had to reach: `statuses: write`,
+   * whose comment survived the sweep saying the review posts and no verdict
+   * appears, and `checks: read`, which a public repository's poll is served
+   * without and which reads as optional for that reason.
+   *
+   * These two rather than every scope, because the property is "says the right
+   * thing" and not "avoids a phrase". A blanket ban on the retired construction
+   * was tried and rejected: `resolveReviewThread` really is refused to a token
+   * *without it*, and no wording distinguishes that from a claim about a
+   * caller's grant (docs/friction.md, 2026-09-27). A scope whose comment starts
+   * making the claim is a scope to add here.
+   */
+  const CLAIMS_THE_COST: readonly (readonly [string, string])[] = [
+    ["statuses", "write"],
+    ["checks", "read"],
+  ];
+
+  const costComments = CLAIMS_THE_COST.flatMap(([permission, value]) =>
+    agentWorkflows().flatMap((file) =>
+      permissionComments(file, `${permission}: ${value}`).map(
+        (comment) => [file, `${permission}: ${value}`, comment] as const,
+      ),
+    ),
+  );
+
+  /**
+   * And what a caller short of one of them pays, which #146 corrected from the
+   * step to the run — asserted on the **per-scope** comments and not just the
+   * paragraph above them, because that is the distinction the correction's own
+   * sweep fell down: the docblock was rewritten and `statuses: write`'s two
+   * lines below it, saying "the caller has to grant it too. Without it the
+   * review posts and no verdict appears", were not. The grep that carried the
+   * sweep looked for `403` and "a caller missing", and a sentence naming no
+   * status code contains neither.
+   *
+   * Written per scope rather than over the block joined, since a block read
+   * whole passes on the docblock's copy while any number of scopes below it
+   * still cost the step — a reusable contradicting its own caller on one scope,
+   * which is the shape a file-at-a-time sweep leaves.
+   */
+  it.each(costComments)(
+    "%s: says a caller short of %s costs the run",
+    (_file: string, _scope: string, comment: string) => {
+      expect(comment).toMatch(/before any job starts/);
+      expect(comment).not.toMatch(/the review posts and no verdict appears/i);
+    },
+  );
+
+  /**
+   * …and that it read anything at all, which the guard above cannot say about
+   * itself. `it.each` over an **empty** array registers no test and passes the
+   * file, so a scope `permissionComments` stops matching — a quoted value, a
+   * trailing inline comment on the scope's own line, a reindented block — takes
+   * every case above with it and leaves `verify` green on precisely the sweep
+   * they exist to catch.
+   *
+   * One entry per **block** that grants the scope rather than per file, because
+   * a reusable has a block per job: `review.yml`'s `resolve` granting
+   * `statuses: write` later would be a second comment to read rather than a
+   * second copy of the first, and equality of the two lists says so either way.
+   * Derived from the parsed YAML rather than listed, so a seventh half granting
+   * one of these arrives as a case above rather than as a gap.
+   */
+  it.each(CLAIMS_THE_COST)(
+    "reads a %s: %s comment on every block that grants the scope",
+    (permission: string, value: string) => {
+      const granting = agentWorkflows().flatMap((file) =>
+        jobsOf(file)
+          .filter((job) => job.permissions?.[permission] === value)
+          .map(() => file),
+      );
+
+      expect(
+        costComments.filter(([, scope]) => scope === `${permission}: ${value}`).map(([file]) => file),
+      ).toEqual(granting);
+    },
+  );
 
   /**
    * Named, not inherited. `secrets: inherit` hands the called workflow every
@@ -2580,9 +2727,10 @@ describe("agent-review tells its caller what it cannot know", () => {
       packages: "read",
       "pull-requests": "write",
       // The verdict (#96). A commit status is not a pull-request write, so
-      // nothing this job already held covers it — without the grant the review
-      // posts and no verdict appears, which is the one failure here that looks
-      // like the feature simply being off.
+      // nothing this job already held covers it. A caller short of it gets no
+      // run rather than a review with no verdict on it (#146); what looks like
+      // the feature simply being off is a token short for some other reason,
+      // since the step that posts the status warns rather than failing.
       statuses: "write",
     });
   });
@@ -4433,8 +4581,11 @@ describe("the README's action pins are the ones this repository runs", () => {
  * That choice adds one thing to every workflow and one thing to every caller,
  * and neither fails in a way that names itself. GitHub Packages has **no
  * anonymous install** — even for a public package — so the install needs a
- * scoped `.npmrc` and a token, and a missing `packages: read` surfaces as a 401
- * at `npx` time, which reads like a bad token rather than a missing grant.
+ * scoped `.npmrc` and a token, and a package the token may not read surfaces as
+ * a 401 at `npx` time, which reads like a bad token rather than like the
+ * package's access settings (docs/ADOPTING.md §4's cross-repo caveat). A
+ * caller's missing `packages: read` is the other half of the same seam and never
+ * gets that far: the run is refused before any job starts.
  *
  * Every check here is about that seam. The runner *version* is checked above;
  * this is about whether the pin can be resolved at all.

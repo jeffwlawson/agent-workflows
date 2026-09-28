@@ -41,14 +41,15 @@ the half an adopter owns.
 
 `doctor` exits non-zero on every failure `docs/ADOPTING.md` §1 describes as announcing itself as
 something else — a missing secret, a caller that does not pass `AGENT_PAT` on to the workflow it
-calls, a caller whose `permissions:` block leaves out a grant the workflow it calls spends *on the
-repository it is run against*, a pin that is a branch rather than a tag, a `self-check` that does
-not name the check run its job produces, a label that does not exist — and names the fix for each.
-It also reports, without failing: how many releases behind each pin is, the one grant no call is
-known to 403 without — `agent-follow-ups`' `contents: read`, a warning everywhere — and every
-check this repository's own shape has made moot, a public repo's `checks: read` and, where
-`AGENT_PAT` is set, the pull-request setting among them. All of that is a thing to know rather
-than a thing that is broken.
+calls, a caller whose `permissions:` block leaves out any grant the workflow it calls declares, a
+pin that is a branch rather than a tag, a `self-check` that does not name the check run its job
+produces, a label that does not exist — and names the fix for each. Every missing grant is an error,
+none of them softened by what the repository is or what else is set: a caller cannot hand a job it
+calls more than it holds, and GitHub refuses the elevation by refusing the workflow file, so a
+shortfall costs the whole run before any job starts. It also reports, without failing: how many
+releases behind each pin is, a fact it could not read, and, where `AGENT_PAT` is set, the
+pull-request setting the PAT makes moot. All of that is a thing to know rather than a thing that is
+broken.
 
 They are subcommands of the same binary on purpose: the version that writes a pin has to be the
 version that pin names.

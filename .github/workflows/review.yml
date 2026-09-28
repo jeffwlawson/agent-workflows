@@ -105,21 +105,29 @@ jobs:
     # *downgrade* the token it is handed, so this block is the bound and cannot
     # be widened from the caller's side. That is why the caller can grant
     # `contents: write` for the `resolve` job below (#133) while this job
-    # still holds `read`. The caller's block is the grant: on a
-    # repo whose default `GITHUB_TOKEN` is read-only, `pull-requests: write`
-    # declared only here grants nothing, and every `gh pr edit` below 403s. The
-    # first one not written `|| true` is the `--add-label "agent:in-progress"`
-    # ending `Transition labels`, and Actions' default `bash -e` fails the run
-    # there — before the checkout, so before the diff is fetched and before an
-    # agent pass is spent. That loud, early failure is the intended one and is
-    # what `setup/doctor.ts` tells an adopter to expect, which is why that one
-    # line carries no tolerance while the removals beside it do.
+    # still holds `read`. The caller's block is the grant, and a scope declared
+    # only here grants nothing — but what that costs is the run rather than the
+    # step: GitHub refuses the elevation instead of trimming the job to fit, so
+    # a caller short of any scope in this block fails the **whole run** before
+    # any job starts, with no job log in it (probed, #146). Not a review that
+    # half works; no review at all, which is what `setup/doctor.ts` tells an
+    # adopter before a label rather than after one.
+    #
+    # Where a token is short for some other reason, the first `gh pr edit` to
+    # feel it is the `--add-label "agent:in-progress"` ending `Transition
+    # labels`, which is deliberately not written `|| true`: Actions' default
+    # `bash -e` fails the run there — before the checkout, so before the diff is
+    # fetched and before an agent pass is spent. That is why that one line
+    # carries no tolerance while the removals beside it do.
     permissions:
       # Reading the check runs the CI wait below polls. On a **public**
       # repository they are readable without this scope, which is why every
       # repo in the pilot worked without it; on a private one the same call
       # 403s `Resource not accessible by integration`. Latent since v0.1.0 and
-      # found by the first private adopter to run this loop.
+      # found by the first private adopter to run this loop. That history is
+      # about the **poll**, and it is not what a caller short of the scope gets:
+      # this job declares it, so such a caller is refused before any job starts,
+      # on a public repository too (probed, #146).
       checks: read
       contents: read
       # Installing the runner package. GitHub Packages has no anonymous install,
@@ -129,11 +137,15 @@ jobs:
       pull-requests: write
       # The verdict, posted as a commit status on the reviewed head (#96). A
       # status is not a pull-request write — it is its own scope — so nothing
-      # already here covers it, and the caller has to grant it too. Without it
-      # the review posts and no verdict appears, which is the one failure in
-      # this job that looks like the feature simply being switched off; the
-      # steps warn rather than failing for that reason, and `setup/doctor.ts`
-      # names the grant where an adopter is looking for it.
+      # already here covers it, and the caller has to grant it too. Omitting it
+      # there does not buy a review with no verdict on it: a caller granting
+      # less than this block declares fails the whole run before any job starts
+      # (probed, #146), which is what `setup/doctor.ts` reports as an error,
+      # before a label rather than after one. The step that posts the status
+      # warns rather than failing all the same — a posted review is worth more
+      # than the line summarising it — so where the token is short for some
+      # other reason this is the one failure in this job that looks like the
+      # feature simply being switched off.
       statuses: write
 
     env:
@@ -395,11 +407,13 @@ jobs:
           #
           # Both halves send stderr to `$err` rather than `/dev/null`, because
           # the arm below no longer has one cause. It fires for a non-zero gh,
-          # for a jq filter error, and for no `jq` on the runner at all — while
-          # its `::error::` names the missing grant, which is the likeliest of
-          # the three and was the only one when it was written. Discarding the
-          # stderr is how the invocation gh refuses stayed invisible for a
-          # release; the arm prints whatever landed here underneath it.
+          # for a jq filter error, and for no `jq` on the runner at all — and
+          # the grant its `::error::` names is the one thing it cannot be: a
+          # caller short of `checks: read` is refused before any job starts
+          # (#146), so a poll that ran holds the read. Discarding the stderr is
+          # how the invocation gh refuses stayed invisible for a release; the
+          # arm prints whatever landed here underneath it, which is the only
+          # thing that tells the three apart.
           pending_count() {
             : > "$err"
             body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err") || return 0
@@ -420,7 +434,7 @@ jobs:
             # that both the log and the agent's evidence say it is blind.
             case "$pending" in
               "" | *[!0-9]*)
-                echo "::error::Could not read check runs for ${HEAD_SHA}. On a private repository this is a missing \`checks: read\` grant in the caller and the called workflow — see jeffwlawson/agent-workflows docs/ADOPTING.md §4. Reviewing without CI evidence."
+                echo "::error::Could not read check runs for ${HEAD_SHA}. It is not the caller's \`checks: read\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the read (jeffwlawson/agent-workflows docs/ADOPTING.md §4). Reviewing without CI evidence."
                 # `if`, not `[ -s … ] && …`: under `bash -e` a test that fails
                 # as the last command of this arm ends the step, which is the
                 # defect this whole block was rewritten to stop doing.
@@ -466,7 +480,7 @@ jobs:
             | jq -r ".[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | \"- \(.name): \(.conclusion // .status)\"" \
             2>>"$err" >> "$out"; then
             echo "- (could not read check runs)" >> "$out"
-            echo "::warning::Could not list check runs for ${HEAD_SHA}, so the review's check list is empty. If the count above succeeded this is not the \`checks: read\` grant — see what \`gh\`/\`jq\` said below."
+            echo "::warning::Could not list check runs for ${HEAD_SHA}, so the review's check list is empty. It is not the \`checks: read\` grant, which a run that started holds — see what \`gh\`/\`jq\` said below."
             if [ -s "$err" ]; then
               cat "$err"
             fi
@@ -717,11 +731,13 @@ jobs:
       # nothing can test it — and the line is the whole feature: it is what
       # makes the outcome actionable without reading the review.
       #
-      # Never fails the run, on the same grounds as the marker step above: the
-      # likeliest cause is an adopter whose caller predates `statuses: write`,
-      # and a posted review is worth more than its verdict. A warning says so
-      # where `|| true` would leave a loop posting no verdicts and looking
-      # healthy.
+      # Never fails the run, on the same grounds as the marker step above: a
+      # posted review is worth more than its verdict. Not because the adopter's
+      # caller is the likely cause — a caller short of `statuses: write` is
+      # refused before any job starts (#146), so a step that ran holds the
+      # write, and what lands here is GitHub refusing the status itself. A
+      # warning says so where `|| true` would leave a loop posting no verdicts
+      # and looking healthy.
       - name: Post the verdict as a commit status
         if: steps.state.outputs.proceed == 'true' && success()
         env:
@@ -740,7 +756,7 @@ jobs:
             args+=(-f "target_url=${REVIEW_URL}")
           fi
           gh api "${args[@]}" \
-            || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above: a 403 is a caller missing \`statuses: write\` (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
+            || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
 
       # The threads this review checked and found fixed (#111, and #109 decision
       # 1), handed to the `resolve` job below, which closes them. The
@@ -911,18 +927,34 @@ jobs:
   # **The cost is the caller's grant, and it is not a degradation.** A caller's
   # `permissions:` is the ceiling for every job it calls, and GitHub refuses an
   # elevation rather than trimming it: a called job asking for more than its
-  # caller granted fails the **whole run** before any job starts — `The workflow
-  # is requesting 'contents: write', but is only allowed 'contents: read'`,
-  # reported as a `startup_failure` with no job log to read it in. So a caller
-  # left on `contents: read` does not get a review without the resolve; it gets
-  # no review. Both reference callers move in the same release as this job, and
-  # `doctor` reports a caller that did not as an error.
+  # caller granted fails the **whole run** before any job starts, as a
+  # `startup_failure` with no job log in it. So a caller left on `contents: read`
+  # does not get a review without the resolve; it gets no review. Both reference
+  # callers move in the same release as this job, and `doctor` reports a caller
+  # that did not as an error.
   #
-  # That is GitHub's documented rule — permissions are maintained or reduced
-  # through a call chain, never elevated — rather than something probed here,
-  # unlike the scope itself above. It is also not new with this job: every job
-  # in this loop declares its permissions, so any caller granting less than one
-  # of them has always failed this way.
+  # Probed on a real token (#146), unlike the first two releases of this comment,
+  # which paraphrased the message and got it wrong. What GitHub calls it is an
+  # *invalid workflow file*, annotated on the run page as:
+  #
+  #   Invalid workflow file: .github/workflows/agent-review.yml#L<the caller's
+  #   `uses:` line> — Error calling workflow
+  #   '<owner>/<repo>/.github/workflows/review.yml@<sha>'. The nested job
+  #   'resolve' is requesting 'contents: write', but is only allowed
+  #   'contents: read'.
+  #
+  # `gh run view` reports it only as "a workflow file issue" and names neither
+  # the scope nor the file, so the annotation is the one place it is legible.
+  # The line it points at is the caller's `uses:`, not the `permissions:` line
+  # that is short, and the job it names is the **called** one — so an adopter
+  # reading it is sent to a file whose short line it does not name. A literal
+  # number here would be this repo's caller today and wrong by the next comment
+  # added above it; docs/ADOPTING.md §4 writes the same annotation and says the
+  # same two things about reading it.
+  #
+  # Not new with this job either: every job in this loop declares its
+  # permissions, so any caller granting less than one of them has always failed
+  # this way.
   resolve:
     needs: review
     # Both of the review job's guards, restated rather than inherited through

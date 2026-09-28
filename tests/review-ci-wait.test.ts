@@ -570,9 +570,10 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(outcome.evidence).toContain("- (could not read check runs)");
     // It stops rather than spinning: one attempt, no sleep, no second count.
     expect(outcome.stdout).not.toContain("Waiting for");
-    // The `::error::` names the grant, which is one of three causes it now
-    // has. What tells them apart is gh's own stderr, which reaches the log
-    // only because the step stopped sending it to `/dev/null`.
+    // The `::error::` names the grant as the one thing this cannot be — a
+    // caller short of it is refused before any job starts (#146) — and what
+    // tells the causes that remain apart is gh's own stderr, which reaches the
+    // log only because the step stopped sending it to `/dev/null`.
     expect(outcome.stdout).toContain(said);
     // And the verdict's half says it does not know, rather than defaulting to
     // the one value that would let the review call a pull request ready.

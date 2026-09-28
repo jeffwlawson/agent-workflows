@@ -2230,3 +2230,133 @@ that happened to be open.
 So the correction to "a rule only a reader can apply holds while one reader sees both copies" is
 that a rule a *check* applies holds only as wide as the check looks. The scan is recursive now, and
 a planted `tests/<dir>/x.test.ts` fails it by name.
+
+## 2026-09-27 — the correction that was reasoned about got probed, and it was wider than the row it fixed
+
+The 2026-09-25 entry above corrected one claim from GitHub's documented rule and no run: that a
+caller still granting `contents: read` would review and leave its threads open, when in fact the
+elevation is refused and the run never starts. It then named the generalisation and left it — "most
+of `docs/ADOPTING.md` §4's 'without it, the step 403s and the run stays green' prose a description of
+a state that stopped occurring", one row corrected, "the rest is named at the head of that table and
+is somebody's next ticket". #146 is that ticket, and the first thing it did was the probe the
+previous two corrections each declined for want of a token.
+
+Four cases in a throwaway public repository, each caller granting one scope less than the job it
+called declared, each with a fully granted control: `checks: read` omitted on a **public**
+repository, `contents: read` omitted so the level became `none`, a caller with **no**
+`permissions:` block against a *restricted* default token, and `statuses: write` omitted. All four
+were refused at startup. Every control succeeded. **No case reached a step**, which is the one
+sentence the whole ticket turns on: a job that does not start cannot 403, so every "the step warns",
+"the poll spends its budget", "the push 403s with the agent pass already spent" account was
+describing a run nobody can have.
+
+Two of the four mattered more than the correction they were run to confirm.
+
+The **no-`permissions:`-block** case was the escape hatch the 2026-09-25 correction invented to keep
+the old prose true of something: a caller with no block runs with the default token, and the 403
+narratives were moved there rather than deleted. The default token is a ceiling like any other, so
+that caller is refused too. Nothing left in the loop produces the run-time 403 the notes described —
+the only configuration that under-grants nothing is the *permissive* default, which grants every
+scope write and so is never short.
+
+And `doctor` had built two severity classes on the same model. `checks: read` was a warning on a
+public repository "where the same call is served without it", and `follow-ups`' `contents: read` a
+warning everywhere because "nothing is known to fail without it". Both are arguments about which
+call a token is refused, and both were retired: the severity is not a property of the scope at all,
+it is a property of the call chain, so the per-row `absence` column is gone and the reason is written
+once in `diagnose`. That is the shape worth remembering — an axis in a table that turned out to be
+the same answer in every row, because every row's reasoning was about a layer the code had moved on
+from.
+
+The quoted message was wrong too, in three files, in a way only a run could show: not `The workflow
+is requesting 'contents: write', but is only allowed 'contents: read'` but `Error calling workflow
+'…'. The nested job 'resolve' is requesting 'contents: write', but is only allowed 'contents: read'`
+— and GitHub files it as an **Invalid workflow file** annotation on the run page, which `gh run view`
+reports only as "a workflow file issue". "No job log to read it in" was true and incomplete: the
+refusal names both the scope and the file, in the one place nobody looks until they wonder why a
+label did nothing. `doctor` paraphrases rather than quotes it, because the job the annotation names
+is the *called* one and the table has never known those job ids.
+
+The lesson is the 2026-09-23 and 2026-09-24 entries' for the third time, with the sharpening those
+two do not carry: a correction made from documentation is still an unprobed claim, and it will be
+narrower than the truth in whichever direction the author was not looking. Both earlier entries drew
+"probe the remote API". This one adds that a probe answers the question you ask *and* the ones next
+to it — three of the four cases here were run to confirm a correction already believed, and two of
+them removed a documented escape hatch and two severity classes nobody had put on the ticket.
+
+And the sweep that carried the correction was itself narrower than the truth, in the direction its
+author was not looking. It moved the docs, the table and every comment describing a *grant*, and
+left four live strings a run prints — `update-branch`'s two verdict warnings, `review`'s twin, and
+the CI wait's blind-review `::error::` — each still naming a missing caller grant as the cause of
+the 403 it hedges about. They read as run-time diagnostics rather than as prose about permissions,
+so a grep for the claim found them and a reading of the diff did not. Every one of them is a
+sentence sending an adopter whose caller is already correct off to fix it, which is the failure
+`review.yml`'s resolve warning had already been rewritten to avoid — one copy corrected, the
+pattern left. The rule that would have caught it: a correction to *what a failure is* is a change
+to every message that names that failure, and the messages live where the failure happens rather
+than where it is described.
+
+## 2026-09-27 — the test that pinned the paragraph stopped one line above the claim
+
+The entry above closed on "a correction to *what a failure is* is a change to every message that
+names that failure", and the round that applied it still left one. `review.yml`'s `permissions:`
+block carries a docblock spelling the grant/bound split out at length and a comment per scope
+underneath; the sweep rewrote the docblock and `statuses: write`'s two lines below it kept the old
+model — "the caller has to grant it too. Without it the review posts and no verdict appears" —
+while that scope's comment in **both** caller sets was corrected. A reusable contradicting its own
+caller on one scope, which is what a file-at-a-time sweep leaves behind.
+
+Two things hid it, and neither is the author's attention. The greps were for `403` and "a caller
+missing"; the surviving sentence names no status code, so it is invisible to a search for the claim
+and legible only to a reading. And `tests/workflows.test.ts` *did* pin that block — it was written
+for the 2026-09-21 correction to the same paragraph — but it read from the first comment line above
+`permissions:` down to the key and stopped there. The scopes are below the key. A guard whose
+surface is one paragraph of a comment passes on that paragraph being right, however many copies of
+the retired claim sit three lines under it.
+
+So the guard is per scope now, over both halves, and it fails by name on the file that disagrees.
+The general form is worth more than the fix: **a prose guard is only as wide as the text it
+reads**, and a surface chosen to cover the sentence that was wrong last time covers exactly that
+sentence. The block was the unit a reader would have said it guarded; the paragraph was the unit it
+guarded.
+
+A blunter rule was tried first and rejected, which is the other half of this. Banning the retired
+construction outright — no `permissions:` comment may say "without it" — failed on four comments
+that are correct: `resolveReviewThread` is refused "to a token without it", agent-fix labels
+"unguarded without it", a public repo's check runs read "without this scope". The claim is wrong
+only where it is about a *caller's* grant, and no phrase in it says which. A guard that cannot tell
+the two apart is one the next author deletes.
+
+## 2026-09-27 — the guard written to be wider than a paragraph could still have read nothing
+
+The entry above widened a prose guard from one paragraph to every scope comment in both halves, and
+the widening was a `permissionComments(file, "statuses: write")` fed straight into `it.each`. The
+match is exact — `l.trim() === scope` — so a quoted `statuses: 'write'`, a trailing inline comment or
+a reindented block drops that file from the list. `it.each` over an **empty** array registers *zero*
+tests and passes the file. So the guard whose whole point was that it fails by name had a state in
+which it asserts nothing at all and `verify` stays green, and the mutation confirming it took one
+character.
+
+A derived case list is two claims and only one of them was being made: *these comments say the right
+thing*, and *these are the comments there are*. The second is the one that decays, because it depends
+on a matcher rather than on the text, and nothing about a green run distinguishes "every case passed"
+from "there were no cases". So the coverage claim is its own test now, and it is an equality against
+the parsed YAML — one entry per `permissions:` block that grants the scope — rather than a
+non-emptiness check, which would have passed on five of six.
+
+The rule is narrower than "assert your fixtures exist" and worth keeping in that form: **a
+parameterised test carries no evidence that it was parameterised.** Where the parameters are derived,
+the derivation needs an assertion of its own, beside the one it feeds.
+
+Both guards are over a declared pair of scopes now — `statuses: write` and `checks: read`, the two
+whose comment makes a claim about what a short caller pays — rather than over the one scope that was
+wrong. Not over all six, for the reason the entry above records: the property is "says the right
+thing", and a blanket ban on the retired construction fails on the comments where it is true.
+
+And the sweep needed a third round for a reason the greps record. Round one looked for `403` and
+`401`; round two for "without it"; this one turned up `statuses: write` described as "the likeliest
+cause" in `docs/ADOPTING.md` §3b, in `review.yml`'s verdict step and in the test that pins it, and
+`checks: read` named as "overwhelmingly the likelier cause" two paragraphs under a note that had
+already been corrected. Each round's grep was for the phrasing the *previous* round had found. A
+retired claim has as many spellings as it has authors, and the way to enumerate them is the surface
+it is allowed to appear on — which is the guard above — not the words it used last time.

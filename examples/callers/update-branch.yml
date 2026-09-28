@@ -26,15 +26,17 @@ jobs:
       # GitHub Packages. Granted here because a called workflow can only
       # *downgrade* the token it is handed, so the scope has to start in the
       # caller — and unconditional because GitHub Packages has no anonymous
-      # install even for a public package. Omit it and the run dies at `npx`
-      # with a 401 that reads like a bad token rather than a missing grant.
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
       packages: read
       pull-requests: write
       # Carrying the review's verdict on to the merge commit a clean refresh
-      # creates. A commit status is its own scope rather than part of
-      # `pull-requests: write`; without this the merge lands and the pull
-      # request reads as unreviewed, which the step warns about rather than
-      # failing on — the branch has already moved by then.
+      # creates, so a refresh does not quietly cost a review round. A commit
+      # status is its own scope rather than part of `pull-requests: write`. The
+      # step warns rather than failing if the copy does not land, the branch
+      # having moved by then — but omitting the grant costs the whole run
+      # instead, before any job starts (docs/ADOPTING.md §4).
       statuses: write
     # No `with:`. The three inputs (`default-branch`, `node-version-file`,
     # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.

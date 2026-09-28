@@ -484,12 +484,13 @@ describe("a maintainer's decision settles a finding", () => {
 
 /**
  * **One closing reply per thread, whatever the resolve does** (#133). The reply
- * goes in first and the resolve second, and a resolve that is refused, whether
- * by a missing grant, a 5xx or a rate limit, leaves the thread open with the
- * reply already on it. The next review is handed that thread again and verifies
- * it again. Without a memory of what the thread already says, every round adds
- * another `**Verified fixed.**`, which is how #130 ended up with nine on one
- * thread.
+ * goes in first and the resolve second, and a resolve that is refused — by a
+ * 5xx, a rate limit or the thread id itself, and not by the caller's
+ * `contents: write`, since a caller short of that never starts (#146) — leaves
+ * the thread open with the reply already on it. The next review is handed that
+ * thread again and verifies it again. Without a memory of what the thread
+ * already says, every round adds another `**Verified fixed.**`, which is how
+ * #130 ended up with nine on one thread.
  *
  * So the thread's own last word is carried, as `closedAs`, and a ruling that
  * would repeat it retries only the resolve.

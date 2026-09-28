@@ -868,22 +868,30 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
-   * The sixth silent failure, and the one that only exists on a private repo:
-   * the check-runs API serves a public repository without the scope, so v0.1.0
-   * through v0.1.4 shipped without it and nothing failed until the first private
-   * adopter reviewed with no CI evidence at all.
+   * The sixth silent failure, and the one that used to be a private
+   * repository's alone: the check-runs API serves a public repository without
+   * the scope, so v0.1.0 through v0.1.4 shipped without it and nothing failed
+   * until the first private adopter reviewed with no CI evidence at all.
+   *
+   * That is the story of the **poll**, and it stopped being the story of the
+   * **grant** when the loop split into caller and called workflow. The review
+   * job declares `checks: read`, so a caller that omits it is refused the
+   * elevation before any job starts and never reaches a poll to be served
+   * without it — probed on a real token against a public repository (#146,
+   * case 1). Hence an error on both, and the public repository is the case
+   * worth naming in the title, because it is the one that used to pass.
    */
-  it("fails a private repo's review caller without checks: read, and warns a public one", async () => {
+  it("fails a review caller without checks: read on a public repository too", async () => {
     const root = await installed();
     edit(root, "agent-review.yml", (text) => text.replace(/^ *checks: read$/m, ""));
 
-    const isPrivate = await check(root, healthy());
-    expect(isPrivate.code).toBe(1);
-    expect(isPrivate.err).toContain("checks: read");
+    for (const visibility of ["private", "public"] as const) {
+      const { code, err } = await check(root, { ...healthy(), visibility });
 
-    const isPublic = await check(root, { ...healthy(), visibility: "public" });
-    expect(isPublic.code).toBe(0);
-    expect(isPublic.out).toContain("checks: read");
+      expect(code, `${visibility}: exit code`).toBe(1);
+      expect(err).toContain("checks: read");
+      expect(err).toMatch(/before any job starts/);
+    }
   });
 
   /**
@@ -936,45 +944,30 @@ describe("doctor names the failures that otherwise look like something else", ()
   };
 
   /**
-   * What each cell's *absence* is expected to do, which is the half of the
-   * table no comparison above can reach: `absence` decides whether `doctor`
-   * exits 1, and a wrong one is a preflight that reports the misconfiguration
-   * #45 is about and then exits 0 next to it.
+   * Every one of those grants as a scenario: the workflow, the scope and the
+   * value. There is no fourth column saying how the absence presents, and its
+   * removal is #146's finding rather than a tidy-up.
    *
-   * Written by hand here, and deliberately not read back out of
-   * `REQUIRED_PERMISSIONS` — an expectation derived from the table under test
-   * is one that moves when the table is wrong. The default is `"always"`, so a
-   * scope added to a workflow arrives expecting an error and has to be argued
-   * down to a line here rather than silently landing as a warning.
+   * This list used to carry two exceptions to "a missing grant is an error",
+   * and each was an argument about a run-time 403: `checks: read`, which a
+   * public repository's check-runs API serves without the scope, and
+   * `contents: read`, which no call in the follow-ups job spends. Both were
+   * arguments about a run that no longer starts. The caller's block is the
+   * ceiling for every job it calls, and GitHub refuses an elevation by refusing
+   * the *workflow file* — probed on a real token across four scopes, both
+   * shapes of shortfall and a caller with no block at all, every one of them a
+   * `startup_failure` that reached no step.
+   *
+   * So the expectation is uniform and needs no table: every cell errors, on
+   * either visibility. A scope added to a workflow arrives here as a scenario
+   * expecting that, and a row cannot be argued down to a warning without
+   * changing `diagnose` itself — which is where the reason now lives.
    */
-  const NOT_AN_ERROR: Readonly<Record<string, "private" | "advisory">> = {
-    // Served without the scope on a public repository; a 403 on a private one.
-    "review/checks: read": "private",
-    // Nothing in that job reads the repository, so nothing is known to fail.
-    "follow-ups/contents: read": "advisory",
-  };
-
-  /**
-   * Every one of those grants as a scenario: the workflow, the scope, the
-   * value, and how its absence is expected to present.
-   */
-  const grantCells = (): readonly (readonly [
-    string,
-    string,
-    string,
-    string,
-    "always" | "private" | "advisory",
-  ])[] =>
+  const grantCells = (): readonly (readonly [string, string, string, string])[] =>
     [...ceilings()].flatMap(([workflow, grants]) =>
       Object.entries(grants).map(
         ([permission, value]) =>
-          [
-            `${workflow}'s ${permission}: ${value}`,
-            workflow,
-            permission,
-            value,
-            NOT_AN_ERROR[`${workflow}/${permission}: ${value}`] ?? "always",
-          ] as const,
+          [`${workflow}'s ${permission}: ${value}`, workflow, permission, value] as const,
       ),
     );
 
@@ -1005,14 +998,6 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(Object.fromEntries(demanded)).toEqual(Object.fromEntries(bound));
     expect(Object.fromEntries(granted)).toEqual(Object.fromEntries(bound));
-
-    // And the severities below are expectations about cells that exist: a key
-    // naming a scope a workflow has since dropped is an argument nothing reads,
-    // which is how the next scope to need one gets the default instead.
-    const cells = grantCells().map(
-      ([, workflow, permission, value]) => `${workflow}/${permission}: ${value}`,
-    );
-    for (const key of Object.keys(NOT_AN_ERROR)) expect(cells).toContain(key);
   });
 
   /**
@@ -1023,44 +1008,42 @@ describe("doctor names the failures that otherwise look like something else", ()
    * the grant nor the file, on a step whose own name is about labels or about a
    * push.
    *
-   * Asserted on **both** visibilities and by exit code, because the severity is
-   * the check: a row that reports a broken caller and exits 0 is a preflight
-   * that says the install is fine. The expectation comes from `NOT_AN_ERROR`
-   * rather than from the table being tested, so flipping a row to `"advisory"`
-   * fails here by name.
+   * Asserted by exit code as well as by text, because the severity is the
+   * check: a row that reports a broken caller and exits 0 is a preflight that
+   * says the install is fine.
+   *
+   * And asserted on **both** visibilities, which is the assertion rather than a
+   * parameter — the retired `"private"` class made one of these grants' severity
+   * turn on that fact, and nothing in `diagnose` reads it any more.
    *
    * Derived from the same ceilings rather than listed, so a seventh workflow or
    * a scope added to one arrives here as a scenario rather than as a gap.
    */
   it.each(grantCells())(
-    "names %s when the caller's own block leaves it out, and rules on it",
-    async (
-      _label: string,
-      workflow: string,
-      permission: string,
-      value: string,
-      absence: "always" | "private" | "advisory",
-    ) => {
+    "names %s when the caller's own block leaves it out, and fails on it",
+    async (_label: string, workflow: string, permission: string, value: string) => {
       const root = await installed();
       edit(root, `agent-${workflow}.yml`, (text) =>
         text.replace(new RegExp(`^ *${permission}: ${value}$`, "m"), ""),
       );
 
       for (const visibility of ["private", "public"] as const) {
-        const fails = absence === "always" || (absence === "private" && visibility === "private");
         const { code, out, err } = await check(root, { ...healthy(), visibility });
 
         // Errors are printed to stderr and exit 1; warnings to stdout and exit
         // 0. Which stream carries the line is therefore the same statement as
         // the code, and both are asserted so a check that moved stream without
         // moving severity cannot pass.
-        const said = (fails ? err : out)
-          .split("\n")
-          .find((line) => line.includes(`${permission}: ${value}:`));
+        const said = err.split("\n").find((line) => line.includes(`${permission}: ${value}:`));
 
-        expect(said, `${visibility}: nothing on ${fails ? "stderr" : "stdout"}`).toBeDefined();
+        expect(said, `${visibility}: nothing on stderr`).toBeDefined();
         expect(said).toContain(`agent-${workflow}.yml`);
-        expect(code, `${visibility}: exit code`).toBe(fails ? 1 : 0);
+        // And what it says the shortfall costs, which is the correction #146
+        // made: the run, before any job starts, rather than the step the scope
+        // is spent on.
+        expect(said).toMatch(/before any job starts/);
+        expect(out, `${visibility}: warned instead`).not.toContain(`${permission}: ${value}:`);
+        expect(code, `${visibility}: exit code`).toBe(1);
       }
     },
   );
@@ -1081,6 +1064,26 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("keeps each reason short enough to read on one line", () => {
     for (const { permission, value, why } of REQUIRED_PERMISSIONS) {
       expect(why.length, `${permission}: ${value} — ${why.slice(0, 60)}…`).toBeLessThan(700);
+    }
+  });
+
+  /**
+   * …and none of them explains the absence as a status code, because a missing
+   * caller grant produces no run to return one in. That was the whole of #146:
+   * every `why` here was written against the pre-#98 shape, where the grant and
+   * the job were one file and a short grant cost the call it was spent on — a
+   * 403 on a label edit, a 401 at `npx`. The caller's block is the ceiling now,
+   * so a row explaining a 403 is a row explaining a step the adopter never
+   * reaches, and an adopter who goes looking for that message finds a run with
+   * no log in it.
+   *
+   * The message as well as the code, because that is what those rows actually
+   * printed and it names no scope either.
+   */
+  it("explains no missing grant as a 401 or a 403 on a step", () => {
+    for (const { permission, value, why } of REQUIRED_PERMISSIONS) {
+      expect(why, `${permission}: ${value}`).not.toMatch(/40[13]/);
+      expect(why, `${permission}: ${value}`).not.toContain("Resource not accessible");
     }
   });
 
@@ -1259,15 +1262,13 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
-   * `checks: read` is the one row whose severity depends on a fact `gh` may not
-   * be able to read, and unknown resolves to the private branch on purpose — a
-   * needless grant costs nothing and a missing one reviews blind. What must not
-   * happen is the guess arriving as a determination: unlike the secrets, the
-   * setting and the labels, an unreadable visibility raises no finding of its
-   * own, so an unauthenticated run against a public repo would otherwise exit 1
-   * with nothing at all saying the severity was assumed.
+   * No grant's severity depends on a fact `gh` may not be able to read any
+   * more, so an unreadable visibility raises nothing and assumes nothing —
+   * where it used to fail `checks: read` on the assumption that the repository
+   * was private, and say so. It is failed outright now, which is the same
+   * verdict without the caveat (#146).
    */
-  it("says the private-only grant was failed on an assumption when visibility is unknown", async () => {
+  it("needs no visibility to rule on a missing grant", async () => {
     const root = await installed();
     edit(root, "agent-review.yml", (text) => text.replace(/^ *checks: read$/m, ""));
 
@@ -1275,7 +1276,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(1);
     expect(err).toContain("checks: read");
-    expect(err).toMatch(/could not be read[\s\S]*private/);
+    expect(err).not.toMatch(/on the assumption/);
   });
 
   /**
@@ -1297,8 +1298,11 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * What is wrong with that caller is the block, not a scope. Under the
-   * restricted default it installs the runner and then 403s on every write it
-   * makes, so it is one finding whose fix is the whole reference block.
+   * restricted default it holds `contents` and `packages` read and nothing
+   * else, which is less than every job in this loop declares, so the run is
+   * refused before any job starts — the one configuration #146 expected the
+   * elevation check to let through, and the probe's third case found it refused
+   * like the rest. One finding, and its fix is the whole reference block.
    */
   it("names the absent permissions block, and points at the whole reference block", async () => {
     const { code, err } = await check(adoptedWith([]), healthy());
@@ -1319,10 +1323,11 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
-   * And here the unreadable fact errs the *other* way from the visibility guess
-   * above, deliberately: there the cost of being wrong was a grant nobody
-   * needed, and here it would be exit 1 on a repository whose default is the
-   * permissive one and whose loop works.
+   * And an unreadable one is reported rather than ruled on. Since #146 no
+   * grant's severity turns on a fact `gh` may fail to answer, so this is the
+   * only place an unknown still decides anything — and it errs towards the
+   * warning deliberately: failing would be exit 1 on a repository whose default
+   * is the permissive one and whose loop works.
    */
   it("reports an inherited token it could not read as something to check", async () => {
     const { code, out } = await check(adoptedWith([]), {
@@ -1337,10 +1342,13 @@ describe("doctor names the failures that otherwise look like something else", ()
   /**
    * `gh repo view --json visibility` has answered both `PUBLIC` and `public`
    * across releases, so the reader folds the case once rather than listing
-   * spellings. An internal repository whose `gh` lowercased the field would
-   * otherwise fall through to `undefined` and be failed with a sentence saying
-   * its visibility could not be read — severity right, sentence untrue. Internal
-   * counts as private because the check-runs API 403s on it just the same.
+   * spellings — and an internal repository is folded in with the private ones,
+   * because the check-runs API 403s on it just the same.
+   *
+   * No diagnosis turns on the answer since #146. What this holds is the shape
+   * of a fact rather than a severity: the scenarios above set both spellings
+   * and insist the verdict is identical under each, which is an assertion only
+   * while the fact can still be set to either.
    */
   it("reads a visibility in whichever case gh answered it", () => {
     expect(["PUBLIC", "public", "Public"].map((raw) => asVisibility(raw))).toEqual([

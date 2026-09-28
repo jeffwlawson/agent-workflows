@@ -1672,7 +1672,11 @@ describe("agent-fix asks for the re-review its own push needs", () => {
   it("asks only once this run has said everything it has to say", () => {
     const names = stepsOf(FIX).map((s) => s.name ?? "");
 
-    for (const earlier of ["Reply to review threads", "Post top-level comments"]) {
+    for (const earlier of [
+      "Reply to review threads",
+      "Post conversation comment outcomes",
+      "Post top-level comments",
+    ]) {
       // `toContain` first: a renamed step makes `indexOf` return -1, which every
       // "is after" assertion passes vacuously.
       expect(names).toContain(earlier);
@@ -1802,6 +1806,28 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
 
     expect(reply?.run ?? "").toContain(REPLY_MUTATION);
     expect(reply?.env?.["OUTCOMES"]).toBe("${{ runner.temp }}/thread_outcomes.json");
+  });
+
+  /**
+   * **And the conversation gets the same report** (#104). The other surface has
+   * no threads to reply into, so the outcomes are one comment on the pull
+   * request, composed by the runner and posted here.
+   *
+   * The empty case is the one to get right, and it is why this reads `-s` rather
+   * than `-f`: the runner writes the file on every run, so an empty file means
+   * "no conversation comments" and an absent one means the runner never got
+   * here. Posting an empty body would put a bot comment on every fix run, which
+   * is the noise the top-level cap exists against.
+   */
+  it("records what it did with the conversation comments too", () => {
+    const record = stepsOf(FIX).find((s) => s.name === "Post conversation comment outcomes");
+
+    expect(record?.env?.["RECORD"]).toBe("${{ runner.temp }}/conversation_outcomes.md");
+    expect(record?.run ?? "").toContain('[ ! -s "$RECORD" ]');
+    expect(record?.run ?? "").toContain("gh pr comment");
+    // A failure to post is reported and does not fail the run, as the sibling
+    // reporting steps are: the fix is already pushed by this point.
+    expect(record?.["continue-on-error"]).toBe(true);
   });
 
   /**

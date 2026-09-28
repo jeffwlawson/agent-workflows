@@ -1,6 +1,10 @@
 import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { parseNameStatus } from "./diff-lines.js";
-import { isAgentTopLevelComment } from "./fix-output.js";
+import {
+  isAgentConversationOutcome,
+  isAgentTopLevelComment,
+  type ConversationComment,
+} from "./fix-output.js";
 import {
   lastFindingMarker,
   openingClaim,
@@ -98,6 +102,18 @@ export interface PullRequestFeedback {
    * already capped against, arriving through the other half.
    */
   readonly threadIds: readonly string[];
+  /**
+   * The top-level conversation comments a fix run is **asked to answer**, each
+   * with the id an outcome on it names and the author and permalink the record
+   * of that outcome is written from (#104).
+   *
+   * The comments `conversation` renders and no others, which is the property
+   * that matters: the ones this workflow posted itself are split off before
+   * either is built, so an outcome on one is dropped rather than posted (see
+   * `filterConversationOutcomes`) — the agent replying to its own note is the
+   * failure this list exists to make impossible.
+   */
+  readonly conversationComments: readonly ConversationComment[];
   /**
    * The unresolved threads **this loop opened**, each with the finding id the
    * workflow wrote into it (#110) — the open half of the review record a later
@@ -197,7 +213,7 @@ const QUERY = `
 query($owner:String!,$repo:String!,$number:Int!) {
   repository(owner:$owner,name:$repo) {
     pullRequest(number:$number) {
-      comments(first:100) { nodes { body author { login } authorAssociation } }
+      comments(first:100) { nodes { id url body author { login } authorAssociation } }
       reviews(last:50) { nodes { body state author { login } authorAssociation } }
       reviewThreads(first:100) {
         nodes {
@@ -222,6 +238,21 @@ interface GqlAuthored {
   author?: { login?: string } | null;
   authorAssociation?: string;
 }
+/**
+ * A top-level conversation comment. `id` is what an outcome on it is keyed to
+ * and `url` is what the record links, both read from GitHub rather than composed
+ * here for the reason `GqlThreadComment.url` is.
+ *
+ * Both are `| null` though the schema marks `IssueComment.id` non-null, which is
+ * the same width every field here carries: this reads a payload it did not type,
+ * and a reader that trusts a non-null marking throws where it meant to report
+ * (#76).
+ */
+interface GqlComment extends GqlAuthored {
+  id?: string | null;
+  url?: string | null;
+}
+
 interface GqlThreadComment extends GqlAuthored {
   /**
    * The comment's own permalink, which is what a record entry links to. Read
@@ -306,7 +337,7 @@ interface GqlThread {
  * non-null marking throws where it meant to report (#76).
  */
 interface GqlPullRequest {
-  comments?: { nodes?: (GqlAuthored | null)[] | null } | null;
+  comments?: { nodes?: (GqlComment | null)[] | null } | null;
   reviews?: { nodes?: ((GqlAuthored & { state?: string }) | null)[] | null } | null;
   reviewThreads?: { nodes?: (GqlThread | null)[] | null } | null;
 }
@@ -982,7 +1013,24 @@ const present = <T>(nodes: readonly (T | null | undefined)[] | null | undefined)
   (nodes ?? []).filter((node): node is T => node !== null && node !== undefined);
 
 /**
- * Trusted, non-empty, and rendered — the filter every surface shares.
+ * Trusted and non-empty — the filter every surface shares, as the nodes rather
+ * than as text.
+ *
+ * One definition, read twice, which is what #104 needs of it: the conversation
+ * surface is rendered from this list *and* the ids an outcome may name are taken
+ * from it, and a surface whose text and whose answerable set were filtered
+ * separately is one where they can disagree — an outcome owed on a comment the
+ * agent was never shown, or none owed on one it was.
+ */
+const renderable = <T extends GqlAuthored>(
+  nodes: readonly (T | null | undefined)[] | null | undefined,
+): T[] =>
+  present(nodes)
+    .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined))
+    .filter((n) => (n.body ?? "").trim().length > 0);
+
+/**
+ * Those nodes as one block of text.
  *
  * The severity chips a review body carries come out as their alt text
  * (`withSeverityBadgesAsText`): this is prompt text, and a reader that renders
@@ -992,9 +1040,7 @@ const render = <T extends GqlAuthored>(
   nodes: readonly (T | null | undefined)[] | null | undefined,
   format: (node: T, login: string) => string,
 ): string =>
-  present(nodes)
-    .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined))
-    .filter((n) => (n.body ?? "").trim().length > 0)
+  renderable(nodes)
     .map((n) => withSeverityBadgesAsText(format(n, n.author?.login ?? "unknown")))
     .join("\n\n---\n\n");
 
@@ -1053,9 +1099,42 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     .filter((n) => isAgentTopLevelComment(n.body))
     .map((n) => n.body ?? "");
 
-  const conversation = render(
-    commentNodes.filter((n) => !isAgentTopLevelComment(n.body)),
-    (n, login) => `**@${login}:**\n${(n.body ?? "").trim()}`,
+  // Both markers, not just the top-level one: since #104 this workflow also
+  // posts a record of what it did with these comments, and an unmarked record
+  // would come back next round as a comment to act on — and to report an outcome
+  // on, the agent answering its own post. One predicate for "we wrote this".
+  const conversationNodes = renderable(
+    commentNodes.filter(
+      (n) => !isAgentTopLevelComment(n.body) && !isAgentConversationOutcome(n.body),
+    ),
+  );
+
+  // The id is rendered for the same reason a thread's is: the agent has to name
+  // a comment to report an outcome on it, so identity must survive into the
+  // prompt (#104).
+  //
+  // A comment whose `id` did not come back is still rendered, without the
+  // marker, and is not one of the ids below. `IssueComment.id` is non-null and a
+  // refusal nulls the whole element, so this is unreachable rather than a case
+  // with a reading to get right — and of the two readings available, dropping
+  // feedback a run might be steered by is the worse one.
+  const conversation = render(conversationNodes, (n, login) =>
+    [
+      typeof n.id === "string" ? `**@${login}** — comment \`${n.id}\`` : `**@${login}:**`,
+      (n.body ?? "").trim(),
+    ].join("\n"),
+  );
+
+  const conversationComments = conversationNodes.flatMap((n): ConversationComment[] =>
+    typeof n.id !== "string"
+      ? []
+      : [
+          {
+            commentId: n.id,
+            author: n.author?.login ?? "unknown",
+            ...(typeof n.url === "string" ? { url: n.url } : {}),
+          },
+        ],
   );
 
   const summaries = render(
@@ -1210,6 +1289,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     conversation,
     all,
     threadIds: answerable,
+    conversationComments,
     agentThreads,
     settledFindings,
     latestAgentReviewBody,

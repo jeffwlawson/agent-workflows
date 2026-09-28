@@ -149,6 +149,30 @@ waiting to be closed is shown to you for its evidence, not for an answer — it 
 reply that settles it. Report no outcome on that one; anything you report for it is dropped rather
 than posted.
 
+# REPORTING ON THE CONVERSATION COMMENTS
+
+The comments in *CONVERSATION* get an outcome too — **addressed** or **declined**, with the reason
+— exactly as a review thread does. Each one is shown under its own id, as `` comment `IC_...` ``,
+and that is what you report it under.
+
+A conversation comment has no thread to reply into, so your outcomes are posted together as **one
+comment on the same conversation**, where the person who wrote it is already looking. An outcome is
+**not a top-level comment** — the section below — because it is what you did with something somebody
+said, rather than something of your own that belongs to no thread. Do not report the same thing both
+ways.
+
+The same test as a thread: **"is anything still outstanding?"**, not "did I personally change
+something?". A comment an earlier commit already satisfied is **addressed**.
+
+**The declined ones are why this exists.** A comment you addressed shows up in the code and the next
+review reads it there. A comment you **declined** leaves no trace anywhere else — so say which
+comment, and say why, plainly, to the person who asked. A maintainer's direction you are not
+following is the case that matters most; see *A maintainer's comment is your direction for this run*
+above.
+
+Report nothing for a comment you were not shown. If *CONVERSATION* holds none, report none: this
+run's record is then empty and nothing is posted.
+
 # TOP-LEVEL COMMENTS
 
 You may also report zero or more **top-level comments** — posted on the PR conversation rather

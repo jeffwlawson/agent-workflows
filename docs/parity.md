@@ -371,6 +371,7 @@ come up was *inside* one PRD.
 | **Resolves the threads it addressed** | ❌ | ❌ | it did until #111 and now resolves **nothing**: the author of a fix marked its own work done, and a resolved thread is dropped from what the next review is shown, so the pass that checks it could not see it. The reviewer closes threads now (§3), and `addressed` / `declined` is a claim recorded in the reply |
 | **Posts new inline comments** | ✅ | ❌ | **decision, not omission** — see below |
 | **Posts top-level comments** | ✅ | ✅ | ours states in the prompt what the channel is *for*; CVM has the field and no guidance anywhere |
+| **Reports an outcome on a conversation comment** | ❌ | ✅ | #104. Both read that surface and act on it; ours says what it did with each comment — addressed or declined, with the reason — in one comment on the same conversation, because there is no thread to reply into. A declined one is otherwise invisible, and since #103 a maintainer's steering arrives as exactly such a comment |
 
 **On the name.** CVM calls this `agent-implement-pr` and triggers it with `agent:implement`,
 disambiguated only by event type. Ours is `agent-fix.yml`, triggered by `agent:fix`. Two reasons:
@@ -1094,6 +1095,16 @@ expensive to rediscover.
   It also keeps `hasFeedback` honest — a PR with every thread resolved and no human input still
   refuses, rather than finding "feedback" the agent wrote itself.
 
+  **Two markers since #104**, because the fix run now posts a second kind of comment there: the
+  record of what it did with the conversation comments, under
+  `<!-- agent-fix:conversation-outcomes -->`. Marked for the reason above — unmarked it returns next
+  round as a comment to act on, and now also as one an outcome is owed on, the agent answering its
+  own post. Marked *separately* because the two are different things to their readers: #79 harvests
+  the top-level marker into issues and a record raises no work, and `filterTopLevelComments`
+  dedupes that channel on its marker while a record is correct to repeat, each round's being about
+  that round. The list of ids an outcome may name is drawn from the comments that survive both
+  filters, so the split is what bounds the answer as well as the input.
+
   **Narrowed by #111, knowingly.** A fix run's thread replies used to leave the `inline` surface by
   being *resolved*; now nothing resolves them until a review does, so a second `agent:fix` run on
   the same round reads its own replies back. Accepted rather than filtered, on two grounds. The
@@ -1140,7 +1151,10 @@ expensive to rediscover.
 - **An optional channel never has veto power over the mandatory one.** A malformed top-level
   comment is dropped with a warning, not thrown on: throwing would burn both extraction retries and
   take every thread reply down with it. A malformed *thread outcome* still throws — that
-  is the payload the run exists to produce.
+  is the payload the run exists to produce, and since #104 a malformed **conversation outcome**
+  does too, for the same reason and not by analogy to the channel it shares a surface with: an
+  unreported conversation comment is the invisibility that issue exists to remove, so a parser that
+  dropped a decline with a warning would rebuild it one layer down.
 - **Draft means the pipeline has not finished, not that the agent is still typing.** Review marks
   the PR ready, and only on `success()`. So a PR left in draft after a run is a PR whose automated
   pipeline did not complete — a second signal that agrees with `agent:blocked` instead of

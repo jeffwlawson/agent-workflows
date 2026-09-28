@@ -13,7 +13,7 @@ the middle. One workflow per label transition, near enough:
 |---|---|---|
 | `agent:implement` on an **issue** | `implement` or `implement-prd` | branch, implement, open a draft PR, request review |
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
-| `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, ask for a re-review if it pushed |
+| `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
 | `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
 
@@ -78,6 +78,20 @@ inside this change's scope, because the bound on expanding a pull request is a b
 *finding* may pull into it. The fixer may still decline a direction it believes is wrong, on the
 terms it may decline any comment, and says why. What it may not do is weigh a maintainer's ask as
 one more finding.
+
+**And an outcome is owed on a comment that has no thread** (#104; decision 6, superseding #3). A
+`fix` run reported one outcome per review thread and nothing for a top-level **conversation**
+comment — it read them, acted on them, and never said so, which made a *declined* one invisible:
+nothing on the pull request, nothing to push back on. With steering arriving as exactly such a
+comment, the two halves report the same way now — addressed or declined, with the reason — and the
+difference is only where it lands. A conversation comment has nothing to reply *into*, so the
+outcomes are one comment on the same conversation, declines first, written by the workflow from the
+runner's validated output. What bounds it is the split that was already there: this workflow's own
+comments are on that same surface and `github-actions` is trusted on purpose, so the marker is all
+that distinguishes last round's note from a maintainer's instruction. Only a comment the fetch
+rendered can carry an outcome, which is what keeps a run from answering itself. The record carries a
+marker of its own rather than the top-level one — `follow-ups` harvests that into issues, and a
+record raises no work.
 
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the

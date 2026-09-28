@@ -17,6 +17,19 @@ and closes what it finds fixed, so what you are writing is the claim it checks.
 Every reply is **under 100 words**, written to the person who left the comment: what you did, then
 why, then the commit if there is one. The examples below are the shape, not a length target.
 
+Then report `conversationOutcomes` — one per **conversation comment** you were shown, keyed by the
+`commentId` exactly as given (the `` comment `IC_...` `` marker). The same two values, read the same
+way: `addressed` when nothing is outstanding, `declined` when you disagree or are deliberately not
+acting. A **declined** one carries the reason, written to the person who left it — that is the only
+record such a decline leaves anywhere. Under 100 words, like a thread reply.
+
+Omit a comment you did not consider, and report an empty array where you were shown none. An
+unrecognised id is dropped, and the ids you were not shown include this workflow's own earlier
+comments: those are not in the list and get no outcome.
+
+These are posted together as one comment on the pull request conversation. They are **not**
+`topLevelComments` — do not report the same thing in both.
+
 Then report `topLevelComments` — comments posted on the PR conversation rather than into a thread.
 One is warranted only for something that belongs to **no** thread: an out-of-scope finding noticed
 while fixing, a refusal or partial completion spanning several threads, a cross-cutting observation
@@ -36,6 +49,10 @@ Each body is **under 120 words**: name the thing, say where it is, say why it ma
     { "threadId": "PRRT_kwDO...", "status": "addressed", "reply": "Fixed in abc1234 — removed the stale claim." },
     { "threadId": "PRRT_kwDO...", "status": "declined", "reply": "Left as is: `label` is message presentation rather than domain knowledge, so it carries no drift risk." }
   ],
+  "conversationOutcomes": [
+    { "commentId": "IC_kwDO...", "status": "addressed", "reply": "Done in abc1234 — dropped the second copy you pointed at." },
+    { "commentId": "IC_kwDO...", "status": "declined", "reply": "Not doing this one: the value it would read is the one the caller already passes, so deriving it again is the drift you asked me to remove." }
+  ],
   "topLevelComments": [
     { "body": "Out of scope, noticed while fixing: `shared/pr-feedback.ts:206` interpolates `GH_REPO` into a shell string. Safe today only because of what that variable happens to be. Worth a follow-up issue." }
   ]
@@ -43,5 +60,5 @@ Each body is **under 120 words**: name the thing, say where it is, say why it ma
 </output>
 ```
 
-Use an empty array for either field when there is nothing to report — no threads acted on, nothing
-outside them.
+Use an empty array for any of the three fields when there is nothing to report — no threads acted
+on, no conversation comments shown, nothing outside them.

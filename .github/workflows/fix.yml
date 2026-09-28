@@ -297,6 +297,38 @@ jobs:
               || echo "  WARNING: reply failed for ${tid}"
           done
 
+      # What the run did with the **conversation** comments — the surface that
+      # has no threads (#104). It read them and acted on them and reported
+      # nothing, so a comment it *declined* left no trace at all: no reply, no
+      # record, nothing to push back on. Since #103 a maintainer's steering
+      # arrives as exactly such a comment, which is what makes the silent decline
+      # the failure that matters rather than an untidiness.
+      #
+      # One comment per run, whatever the number of outcomes, composed by the
+      # runner from validated output and carrying its own marker so the next run
+      # does not read this record back as feedback to act on — a different marker
+      # from the top-level one, because #79 harvests that into issues and a
+      # record raises no work.
+      #
+      # `-s` rather than `-f`: the runner writes the file on every run and leaves
+      # it empty when there is nothing to record, so an empty file is "no
+      # conversation comments" and an absent one is a runner that never got here.
+      - name: Post conversation comment outcomes
+        if: steps.state.outputs.proceed == 'true' && success()
+        continue-on-error: true
+        env:
+          RECORD: ${{ runner.temp }}/conversation_outcomes.md
+        run: |
+          set -uo pipefail
+          [ -f "$RECORD" ] || { echo "No conversation outcomes file; nothing to post."; exit 0; }
+          if [ ! -s "$RECORD" ]; then
+            echo "No conversation comment outcomes — nothing to record."
+            exit 0
+          fi
+          gh pr comment "$PR_NUMBER" --body-file "$RECORD" >/dev/null \
+            && echo "  posted the conversation comment outcomes" \
+            || echo "  WARNING: failed to post the conversation comment outcomes"
+
       # Findings that belong to no thread: something out of scope noticed while
       # fixing, a refusal spanning threads, a cross-cutting observation. Posted
       # by the workflow from validated structured output — never by the agent,

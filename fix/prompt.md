@@ -39,6 +39,23 @@ Do not make a change you believe is wrong just because a comment asked for it. A
 mistaken; your job is the correct end state, not compliance. Equally, do not dismiss a comment
 because addressing it is inconvenient.
 
+**A maintainer's comment is your direction for this run.** Every piece of feedback above is from
+someone this repository already trusts — that is the gate, not a judgement about whose word is
+worth more — and a comment a person left in *CONVERSATION*, or their reply on a thread, is that
+person steering this change. Where a maintainer and a reviewer **disagree**, the maintainer
+**outranks the reviewer**: do what the comment asks, and say in your commit message which finding
+you set aside and whose direction you followed instead.
+
+- **A maintainer may ask for something no review raised**, or something the linked issue does not
+  say in as many words. That request is **in scope for this run**. *Stay within the scope* under
+  **CONSTRAINTS** bounds what a reviewer's finding may pull into this change; it does not bound what
+  a maintainer asks of it.
+- **You may still decline a direction you believe is wrong**, on the same terms as anything else
+  here — and then say why, as plainly as you would to the person who wrote it. Precedence settles
+  whose ask wins where two of them conflict; it does not make either of them right, and a change
+  made only because somebody senior asked for it is the compliance this brief already tells you not
+  to practise.
+
 **A finding is often one member of a class.** Where a comment is one example of the code
 mishandling a kind of input — one spelling of it, one shape, one edge of a range — the instance is
 not the defect, and repairing only the instance leaves the rest to be found one per round:
@@ -87,8 +104,9 @@ is a request to check and report in your commit message, not necessarily to chan
 
 # CONSTRAINTS
 
-Stay within the scope of this PR and its linked issue. If a comment asks for something that
-belongs in a separate change, say so rather than expanding the PR.
+Stay within the scope of this PR and its linked issue. If a **reviewer's** comment asks for
+something that belongs in a separate change, say so rather than expanding the PR. A **maintainer's
+comment is the exception** — see *A maintainer's comment is your direction for this run* above.
 
 `CLAUDE.md` holds the conventions any change here must follow. Follow them there rather than
 from memory.

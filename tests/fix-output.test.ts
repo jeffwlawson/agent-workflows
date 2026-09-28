@@ -334,3 +334,64 @@ describe("the fix brief on a finding that is one of a class", () => {
     expect(rule).toMatch(/scratch directory outside the working tree/i);
   });
 });
+
+/**
+ * **A maintainer's comment is the direction** (PRD #101, decision 5).
+ *
+ * The review half has carried "treat maintainer steering as authoritative"
+ * since #109 and the half that writes the code was told nothing of the kind, so
+ * a "needs you" pull request steered by a comment got a fixer weighing that
+ * comment against a finding as if the two came from the same place. Nothing
+ * about who is trusted changes here — only feedback the author gate already
+ * passed reaches this prompt at all — so weighting is the whole of it.
+ *
+ * Mechanical, for the reason the class checks above are: both halves read as
+ * redundant with a paragraph beside them to anyone tightening this brief. The
+ * precedence looks covered by *address it / decline it*, and the scope
+ * exception looks covered by *Stay within the scope* — which in fact says the
+ * opposite, and is the one place a lost sentence turns into a refusal to do
+ * what a maintainer asked.
+ */
+describe("the fix brief on a maintainer's direction", () => {
+  const PROMPT = fs.readFileSync("fix/prompt.md", "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const direction = (): string =>
+    plain(PROMPT).match(/a maintainer's comment is your direction.{0,1400}/i)?.[0] ?? "";
+
+  it("makes a maintainer's comment the direction for this run", () => {
+    expect(plain(PROMPT)).toMatch(/a maintainer's comment is your direction for this run/i);
+  });
+
+  it("gives it precedence over a reviewer's finding where the two disagree", () => {
+    expect(direction()).toMatch(/outranks the reviewer/i);
+    expect(direction()).toMatch(/disagree/i);
+  });
+
+  it("puts a request beyond the review's findings or the issue's letter in scope", () => {
+    expect(direction()).toMatch(/no review raised/i);
+    expect(direction()).toMatch(/in scope for this run/i);
+  });
+
+  /**
+   * And the constraint it excepts says so where the constraint is stated. Two
+   * paragraphs that contradict each other are resolved by whichever the agent
+   * read last, which is not a rule.
+   */
+  it("excepts it from the scope constraint, in the constraint's own words", () => {
+    const constraint = plain(PROMPT).match(/stay within the scope of this PR.{0,500}/i)?.[0] ?? "";
+
+    expect(constraint).toMatch(/reviewer's comment/i);
+    expect(constraint).toMatch(/maintainer's comment is the exception/i);
+  });
+
+  /**
+   * Precedence is about whose ask wins where two of them conflict, not about
+   * the fixer's own judgement — which *Do not make a change you believe is
+   * wrong* holds for every other piece of feedback and would otherwise read as
+   * silent on this one.
+   */
+  it("still lets the fixer decline a direction it believes is wrong, with the reason", () => {
+    expect(direction()).toMatch(/may still decline/i);
+    expect(direction()).toMatch(/say why/i);
+  });
+});

@@ -70,6 +70,15 @@ decision. What makes the decline usable is the author gate rather than the readi
 `isTrustedAuthor` passed reaches the agent at all, and only one it passed can close a thread, so a
 decline typed by anyone at all is a finding that stays open.
 
+**And in the fix half it is a direction rather than a ruling** (PRD #101, decision 5). The gate is
+the same one — only a comment `isTrustedAuthor` passed reaches either agent — so what the fix brief
+adds is weight, not trust: a maintainer's comment is what that run follows, above a reviewer's
+finding where the two disagree, and a maintainer asking for something no review raised is asking
+inside this change's scope, because the bound on expanding a pull request is a bound on what a
+*finding* may pull into it. The fixer may still decline a direction it believes is wrong, on the
+terms it may decline any comment, and says why. What it may not do is weigh a maintainer's ask as
+one more finding.
+
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the
 review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,

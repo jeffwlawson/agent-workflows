@@ -1,0 +1,25 @@
+# THROWAWAY — #116 stacked-PR probe: does linking a stack fire a workflow?
+name: throwaway-stack-stacked
+
+on:
+  pull_request:
+    types: [stacked]
+  pull_request_target:
+    types: [stacked]
+
+permissions: {}
+
+jobs:
+  stacked:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          STACK: ${{ toJSON(github.event.pull_request.stack) }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          echo "PROBE event=$EVENT action=$ACTION pr=$NUMBER base.ref=$BASE_REF sender=$SENDER"
+          echo "PROBE stack=$STACK"

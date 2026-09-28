@@ -8,7 +8,7 @@ decisions. There is no `CONTEXT-MAP.md` and no per-package context — this is a
 
 ## Before exploring, read these
 
-- **`CONTEXT.md`** at the repo root. It is the domain model: the three layers, what belongs in each,
+- **`CONTEXT.md`** at the repo root. It is the domain model: the three parts, what belongs in each,
   and the vocabulary below.
 - **`docs/adr/`** — read ADRs that touch the area you're about to work in.
 
@@ -58,8 +58,8 @@ When your output names a domain concept (in an issue title, a refactor proposal,
 test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary
 explicitly avoids.
 
-In particular, `CONTEXT.md`'s *three layers* distinction — **caller**, **reusable workflow**,
-**runner** — decides where a change belongs, and the layer names are the vocabulary. "The workflow"
+In particular, `CONTEXT.md`'s *three parts* distinction — **caller**, **reusable workflow**,
+**runner** — decides where a change belongs, and the part names are the vocabulary. "The workflow"
 is ambiguous between two of them; say which.
 
 If the concept you need isn't in the glossary yet, that's a signal — either you're inventing

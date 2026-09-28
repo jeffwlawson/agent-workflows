@@ -145,9 +145,9 @@ than the normal path — and it is the one workflow an adopter can decline by no
 the findings and cannot file them, and the workflow holding `issues: write` decides what to file
 with a pure function (`docs/parity.md` §10).
 
-## The three layers, and what belongs in each
+## The three parts, and what belongs in each
 
-This is the distinction to get right, because a change put in the wrong layer either cannot be
+This is the distinction to get right, because a change put in the wrong part either cannot be
 tested or cannot be fixed for an adopter without them editing a file.
 
 ```
@@ -170,10 +170,14 @@ a fix reaches them without them touching anything.
 **The runner** is TypeScript plus a prompt, invoked as one subcommand of one published binary. It
 takes its whole input from the environment; passing an argument is refused rather than ignored.
 
+**Part, not layer.** These were *the three layers* until stacked pull requests arrived: GitHub calls
+one pull request in a stack a **layer**, and that is the only meaning the word has here now. Older
+entries in `docs/friction.md` keep the old usage, because that log is never rewritten.
+
 ### And the install path, which is none of the three
 
 `init` and `doctor` (`setup/`) are two more subcommands of the same binary, run by a human rather
-than by a workflow. They are not a fourth layer so much as the thing that *puts* the first one in
+than by a workflow. They are not a fourth part so much as the thing that *puts* the first one in
 place and then checks it: `init` copies the reference callers in with the pin substituted, and
 `doctor` looks for the failures `docs/ADOPTING.md` §1 is about — every one of which is a condition
 with no runtime symptom, which is why looking has to be deliberate.

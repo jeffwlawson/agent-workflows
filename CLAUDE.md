@@ -14,7 +14,7 @@ that `verify` cannot cover — see *Releasing*.
 
 ## Domain
 
-See [CONTEXT.md](./CONTEXT.md). Read it before changing a workflow — especially the *three layers*
+See [CONTEXT.md](./CONTEXT.md). Read it before changing a workflow — especially the *three parts*
 section, which decides where a change belongs.
 
 ## This repo runs its own loop, on the last release
@@ -52,7 +52,7 @@ repo loses the instruction the prompts depend on.
 
 ## Changing a workflow
 
-1. Decide the layer first (CONTEXT.md). A guard belongs in the **reusable** half — an adopter
+1. Decide the part first (CONTEXT.md). A guard belongs in the **reusable** half — an adopter
    references that and gets fixes for free; anything in the caller has to be copied by hand.
 2. Edit `.github/workflows/<name>.yml`. Never add a step to a caller.
 3. If a caller must change too, update **both** sets: `examples/callers/` is what adopters copy,

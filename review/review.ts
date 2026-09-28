@@ -89,6 +89,23 @@ const readCiResult = (): CiResult => {
   }
 };
 
+/**
+ * Whether the workflow will start a fix round itself if this review recommends
+ * changes (#102) — the adopter's `auto-fix` input, minus the pull requests
+ * whose one automatic fix is already spent.
+ *
+ * Both halves come from the workflow because neither is readable here: the
+ * input is the caller's, and the label is read off the same `labeled` payload
+ * the job that adds `agent:fix` guards on, so the two cannot disagree about a
+ * label added between them. The **round** is not read here — `deriveVerdict`
+ * already has it, and it is the arm that keeps this out of a second round.
+ *
+ * Absent is off, on both: `auto-fix` defaults off, and a run that could not say
+ * whether the marker is there must not claim a fix round has started.
+ */
+const willAutoFix = (): boolean =>
+  process.env["AUTO_FIX"] === "true" && process.env["AUTO_FIXED"] !== "true";
+
 try {
   const context = fetchPullRequestContext(PR_NUMBER);
 
@@ -225,6 +242,7 @@ try {
     round: round.round,
     stillOpen: stillOpen.length,
     movedToFollowUps: unanchored.length,
+    autoFix: willAutoFix(),
   });
   // And a round nothing could establish says so in the body as well as in the
   // brief. The agent was told it was a second round; what it cannot say — and
@@ -293,14 +311,21 @@ try {
   // context that is *not* read from here is the one the failure arm posts,
   // which by definition runs on a review that wrote no file.
   //
-  // `verdict` is the row's key rather than its heading, because the round-1 and
-  // round-2 rows share a heading and a reader of this file has to tell them
-  // apart — PRD #101's automatic fix may fire on the round-1 case and no other.
+  // `verdict` is the row's key rather than its heading, because the three
+  // *changes recommended* rows share a heading and a reader of this file has to
+  // tell them apart — the automatic fix (#102) fires on exactly one of them,
+  // and the workflow selects on the key this writes.
+  //
+  // `round` is beside it for the job that reads it back: the automatic fix is
+  // barred from a second round by the key alone, and a guard a human can read
+  // in the workflow file is worth the one extra field. Nothing derives
+  // anything from it.
   writeJson("verdict.json", {
     context: VERDICT_CONTEXT,
     verdict: verdict.verdict,
     state: verdict.state,
     description: verdict.description,
+    round: round.round,
   });
 
   // How the workflow knows to mark the pull request: a step cannot read this

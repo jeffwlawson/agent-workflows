@@ -52,12 +52,15 @@ on:
         required: true
       AGENT_PAT:
         description: >-
-          User PAT, used to check the branch out, push it, and add the
-          `agent:review` that asks for the re-review — neither a push nor a
-          label made with `GITHUB_TOKEN` triggers another workflow
-          (docs/ADOPTING.md §1). Optional, and both halves degrade rather than
-          fail: the push still lands and the PR simply gets no checks, and the
-          label still goes on but starts no review until a human re-adds it.
+          User PAT, used to check the branch out, push it, add the
+          `agent:review` that asks for the re-review, and mark a pull request
+          ready where this run ends the round — neither a push nor a label made
+          with `GITHUB_TOKEN` triggers another workflow, and `GITHUB_TOKEN`
+          cannot convert a draft at all (docs/ADOPTING.md §1). Optional, and
+          every one of those degrades rather than fails: the push still lands
+          and the PR simply gets no checks, the label still goes on but starts
+          no review until a human re-adds it, and the pull request stays a draft
+          under a warning saying so.
         required: false
 
 jobs:
@@ -297,6 +300,38 @@ jobs:
               || echo "  WARNING: reply failed for ${tid}"
           done
 
+      # What the run did with the **conversation** comments — the surface that
+      # has no threads (#104). It read them and acted on them and reported
+      # nothing, so a comment it *declined* left no trace at all: no reply, no
+      # record, nothing to push back on. Since #103 a maintainer's steering
+      # arrives as exactly such a comment, which is what makes the silent decline
+      # the failure that matters rather than an untidiness.
+      #
+      # One comment per run, whatever the number of outcomes, composed by the
+      # runner from validated output and carrying its own marker so the next run
+      # does not read this record back as feedback to act on — a different marker
+      # from the top-level one, because #79 harvests that into issues and a
+      # record raises no work.
+      #
+      # `-s` rather than `-f`: the runner writes the file on every run and leaves
+      # it empty when there is nothing to record, so an empty file is "no
+      # conversation comments" and an absent one is a runner that never got here.
+      - name: Post conversation comment outcomes
+        if: steps.state.outputs.proceed == 'true' && success()
+        continue-on-error: true
+        env:
+          RECORD: ${{ runner.temp }}/conversation_outcomes.md
+        run: |
+          set -uo pipefail
+          [ -f "$RECORD" ] || { echo "No conversation outcomes file; nothing to post."; exit 0; }
+          if [ ! -s "$RECORD" ]; then
+            echo "No conversation comment outcomes — nothing to record."
+            exit 0
+          fi
+          gh pr comment "$PR_NUMBER" --body-file "$RECORD" >/dev/null \
+            && echo "  posted the conversation comment outcomes" \
+            || echo "  WARNING: failed to post the conversation comment outcomes"
+
       # Findings that belong to no thread: something out of scope noticed while
       # fixing, a refusal spanning threads, a cross-cutting observation. Posted
       # by the workflow from validated structured output — never by the agent,
@@ -346,11 +381,16 @@ jobs:
       # about.
       #
       # This is the `agent:fix` → `agent:review` leg, which docs/parity.md §10
-      # already calls safe, and the invariant it rests on is unchanged: review
-      # adds no trigger label of its own, so this cannot cycle. What is new is
-      # the second bound under it — a round-2 review cannot answer with the
-      # round-1 "Changes recommended" line, the one that promises an automatic
-      # re-review, so the leg cannot be walked twice off one human label.
+      # already calls safe, and what it rests on is the bound under it: a
+      # round-2 review cannot answer with the round-1 "Changes recommended"
+      # line, the one that promises an automatic re-review. The review this
+      # asks for is a round 2 by construction, so the leg cannot be walked
+      # twice off one human label.
+      #
+      # That bound, rather than "review adds no trigger label", which stopped
+      # being the whole story at #102: with `auto-fix` on, review does add
+      # `agent:fix` — on the round-1 line alone, which is exactly the line a
+      # round 2 cannot produce, and once per pull request besides.
       #
       # MUST use AGENT_PAT, like every other label this loop adds: a label
       # added with GITHUB_TOKEN triggers nothing, so the PR would carry
@@ -386,6 +426,39 @@ jobs:
             gh pr comment "$PR_NUMBER" --body 'The fix is pushed, but no re-review will start on its own: `AGENT_PAT` is not set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review the fix.' \
               || echo "::warning::…and that could not be said on the pull request either."
           fi
+
+      # And the other arm: a run that pushed nothing has nobody to hand this
+      # pull request to, so it hands it back to the human (#159).
+      #
+      # Draft means "the loop is still working" (docs/parity.md §10), and until
+      # #102 review marked every pull request it finished ready, so this arm had
+      # nothing to do. Review now skips that where the automatic fix is about to
+      # start, on the reading that the re-review at the end of the round marks
+      # it — and a round that declines every finding pushes nothing, asks for
+      # nothing, and so reaches no re-review. That pull request sat in draft
+      # under a verdict saying one was coming, which is the state the draft
+      # signal exists to rule out.
+      #
+      # The pair above is the whole rule: a run that pushed hands over to a
+      # review, and a run that did not is the end of the round. Conditional on
+      # the push rather than on how the round started, because a fix run cannot
+      # see whether a human or a review added its label — and on a pull request
+      # review already marked ready this is a no-op.
+      #
+      # MUST use AGENT_PAT, for review's reason: `GITHUB_TOKEN` cannot convert a
+      # draft at all, whatever it is granted. A warning rather than a failure,
+      # also for review's reason — a pull request stuck in draft is not worth
+      # failing a run over, and by this point every thread already has its
+      # reply.
+      - name: Mark PR ready for review
+        if: >-
+          steps.state.outputs.proceed == 'true' && success() &&
+          steps.push.outputs.pushed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr ready "$PR_NUMBER" \
+            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected — GITHUB_TOKEN cannot do it. Mark it ready by hand."
 
       # The remedy depends on whether the branch moved, the way
       # `update-branch.yml`'s does — and it has to, because this step's own

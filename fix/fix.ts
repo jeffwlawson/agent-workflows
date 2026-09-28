@@ -9,8 +9,15 @@ import {
   scrubGitHubTokens,
   sh,
   writeJson,
+  writeText,
 } from "../shared/common.js";
-import { filterOutcomes, filterTopLevelComments, fixOutputSchema } from "../shared/fix-output.js";
+import {
+  filterConversationOutcomes,
+  filterOutcomes,
+  filterTopLevelComments,
+  fixOutputSchema,
+  renderConversationOutcomes,
+} from "../shared/fix-output.js";
 import {
   describeUnreadable,
   fetchPullRequestFeedback,
@@ -71,6 +78,19 @@ try {
   const outcomes = filterOutcomes(result.output.threadOutcomes, feedback.threadIds);
   writeJson("thread_outcomes.json", outcomes);
 
+  // The same report for the surface with no threads to reply into (#104). One
+  // comment per run rather than one per outcome, rendered here and posted by the
+  // workflow — and written unconditionally, empty when there is nothing to
+  // record, which is what the workflow's `-s` test reads.
+  const conversationOutcomes = filterConversationOutcomes(
+    result.output.conversationOutcomes,
+    feedback.conversationComments.map((comment) => comment.commentId),
+  );
+  writeText(
+    "conversation_outcomes.md",
+    renderConversationOutcomes(conversationOutcomes, feedback.conversationComments),
+  );
+
   // Findings that belong to no thread, capped and deduped against what earlier
   // runs already posted. Written unconditionally — an empty file is the normal
   // case, and the workflow posts nothing for it.
@@ -92,6 +112,17 @@ try {
     `Thread outcomes: ${outcomes.filter((o) => o.status === "addressed").length} addressed, ` +
       `${outcomes.filter((o) => o.status === "declined").length} declined ` +
       `(${result.output.threadOutcomes.length} produced, ${outcomes.length} kept).`,
+  );
+  // Said whichever way it went, because "nothing was reported" and "there was
+  // nothing to report" are the two this slice exists to tell apart — a decline
+  // that never reached the pull request is only visible here.
+  const declined = conversationOutcomes.filter((o) => o.status === "declined").length;
+  console.log(
+    feedback.conversationComments.length === 0
+      ? "Conversation comments: none shown, so no outcome to record."
+      : `Conversation outcomes: ${conversationOutcomes.length - declined} addressed, ` +
+        `${declined} declined (${result.output.conversationOutcomes.length} produced, ` +
+        `${conversationOutcomes.length} kept, ${feedback.conversationComments.length} shown).`,
   );
   const produced = result.output.topLevelComments.length;
   console.log(

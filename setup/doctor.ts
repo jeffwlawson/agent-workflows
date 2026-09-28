@@ -8,7 +8,7 @@ import {
   selfCheckMatches,
   type InstalledCaller,
 } from "./callers.js";
-import { labelCommand, labelSpecsFor } from "./init.js";
+import { AUTO_FIXED_LABEL, labelCommand, labelSpecsFor } from "./init.js";
 import type { CliIo } from "../cli.js";
 
 /**
@@ -559,6 +559,65 @@ export const diagnose = (
         `Add \`AGENT_PAT: \${{ secrets.AGENT_PAT }}\` to that job's \`secrets:\` block — or ` +
         `\`secrets: inherit\`, which hands the called workflow every secret this repository holds.`,
     });
+  }
+
+  // The automatic fix, switched on and unable to fire — the two things it needs
+  // that nothing else here asks for (#102, #159). `auto-fix: true` makes the
+  // review add `agent:fix` itself once per pull request, and the verdict it
+  // posts says so, which is the one place in this loop a posted sentence can be
+  // wrong rather than merely absent.
+  //
+  // **Without the PAT**, a label added with `GITHUB_TOKEN` fires no `labeled`
+  // event: the label lands, the run stays green, and nothing starts. A warning,
+  // because the loop itself is unharmed and a human adding the label by hand
+  // loses nothing but the automation. The run does say so with a `::warning::`
+  // of its own — after the fact, on a pull request, once per occurrence; this
+  // is the same sentence before any of that.
+  //
+  // **Without the marker label**, the job dies on `gh pr edit --add-label`.
+  // That is an **error**, and the difference from the warning above is what the
+  // two failures do: a missing PAT degrades the automation, and a missing label
+  // fails the job outright — `bash -e`, no tolerance on either add,
+  // deliberately (`docs/ADOPTING.md` §3) — so nothing is added at all and every
+  // round-1 *Changes recommended* here ends red. It is asked for on the
+  // **input** rather than through `labelSpecsFor` below, whose set is keyed on
+  // which callers are installed and so cannot see a switch thrown inside one.
+  //
+  // Both read a fact only where it was **read**. Unreadable stays unreadable:
+  // each has its own warning below, and a repository where nobody could ask is
+  // not one to tell the answer to. Which is also why the first reads
+  // `facts.secrets` directly rather than `hasPat` — that is `undefined` in
+  // exactly the case this must not rule on, and `!hasPat` would collapse it
+  // into the failing one.
+  for (const caller of callers) {
+    if (!caller.autoFix) continue;
+    if (facts.secrets !== undefined && !facts.secrets.includes("AGENT_PAT")) {
+      add({
+        severity: "warning",
+        check: "auto-fix without a PAT",
+        problem:
+          `${caller.file} sets \`auto-fix: true\` on the \`${caller.jobId}\` job, so a review whose ` +
+          `verdict is the first-round *Changes recommended* adds \`agent:fix\` itself — but ` +
+          `\`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` fires no event. The ` +
+          `label lands, no fix round starts, and the verdict on the pull request says one has.`,
+        fix:
+          `Set \`AGENT_PAT\` (above), or drop \`auto-fix: true\` from that job's \`with:\` block and ` +
+          `add \`agent:fix\` by hand.`,
+      });
+    }
+    if (facts.labels !== undefined && !facts.labels.includes(AUTO_FIXED_LABEL.name)) {
+      add({
+        severity: "error",
+        check: "auto-fix without its marker label",
+        problem:
+          `${caller.file} sets \`auto-fix: true\` on the \`${caller.jobId}\` job, and ` +
+          `\`${AUTO_FIXED_LABEL.name}\` does not exist. That label is how a pull request's one ` +
+          `automatic fix is recorded as spent, and the job adds it first and without tolerating a ` +
+          `failure — so every review whose verdict is the first-round *Changes recommended* ends ` +
+          `in a red job, having already posted a verdict saying a fix round started.`,
+        fix: labelCommand(AUTO_FIXED_LABEL),
+      });
+    }
   }
 
   if (facts.secrets === undefined) {

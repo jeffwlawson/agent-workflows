@@ -66,10 +66,17 @@ jobs:
       # §4).
       statuses: write
     with:
-      # `<caller job id> / <called job id>`. The other three inputs
-      # (`default-branch`, `node-version-file`, `setup`) default to this repo's
-      # values — `main`, `.nvmrc`, `npm ci` — so there is nothing to say here.
+      # `<caller job id> / <called job id>`, and the only input with no useful
+      # default. The toolchain three (`default-branch`, `node-version-file`,
+      # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci` —
+      # so there is nothing to say about them here.
       self-check: review / review
+      # One automatic fix per pull request (#102): where the verdict is the
+      # round-1 *Changes recommended*, the review workflow adds `agent:fix`
+      # itself and a re-review follows. On here because this repository is the
+      # one that has been reading these verdicts since #96; off by default
+      # everywhere else, which is what makes an upgrade change nothing.
+      auto-fix: true
     # Named rather than `secrets: inherit`, which would hand the called
     # workflow every secret this repository holds. Both are declared in it;
     # AGENT_PAT is optional and an absent one arrives as the empty string,

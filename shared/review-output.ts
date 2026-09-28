@@ -189,16 +189,22 @@ export type CiResult = "green" | "red" | "unknown";
  * Copilot code review headings, verbatim, so anyone who has read one of those
  * already knows what ours mean.
  *
- * Four keys and three headings, because *changes recommended* has a round-1
- * case and a round-2 one — the same heading, a different next step — and they
- * have to be told apart by something a machine reads. The key is that
- * something, and a consumer matches it **exactly**: the automatic fix PRD #101
- * describes fires on the round-1 case alone, and the round-1 key is a prefix of
- * the round-2 one.
+ * Five keys and three headings, because *changes recommended* has three cases —
+ * the same heading, a different next step — and they have to be told apart by
+ * something a machine reads. The key is that something, and a consumer matches
+ * it **exactly**: every one of the three starts with the round-1 key, so a
+ * prefix match would fire the automatic fix on all of them.
+ *
+ * The three: a round-1 review on a pull request nothing is about to fix, a
+ * round-2 one, and a round-1 one where the workflow is adding `agent:fix`
+ * itself (#102). The last is the key the automatic-fix job selects on, so the
+ * line a maintainer reads and the job that makes it true are one decision
+ * rather than two that can disagree.
  */
 export type Verdict =
   | "approval recommended"
   | "changes recommended"
+  | "changes recommended, fix round started"
   | "changes recommended after a fix round"
   | "needs a closer look";
 
@@ -280,6 +286,21 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
     description:
       "Changes recommended. The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically.",
   },
+  // Same assessment, and the step is already happening: the workflow adds
+  // `agent:fix` itself on this one (#102, PRD #101 decision 1). The round-1
+  // line above would ask a maintainer to do the thing being done, which reads
+  // as the loop not having noticed — so the promise of an automatic re-review
+  // stays and the instruction goes.
+  "changes recommended, fix round started": {
+    verdict: "changes recommended, fix round started",
+    heading: "🟡 Changes recommended",
+    label: "Changes recommended",
+    state: "failure",
+    nextStep:
+      "The fixes are clear. A fix round has already started; a re-review follows automatically.",
+    description:
+      "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically.",
+  },
   // Same assessment, a different step: the fix round that was supposed to
   // settle these has already run. So the line stops promising an automatic
   // re-review and asks for the decision first.
@@ -359,6 +380,22 @@ export interface VerdictInputs {
    * the disagreement #105 closed, reopened from the other end.
    */
   readonly movedToFollowUps: number;
+  /**
+   * Whether the workflow will add `agent:fix` itself if this review recommends
+   * changes — the `auto-fix` input is on and this pull request's one automatic
+   * fix has not been spent (#102, PRD #101 decision 1).
+   *
+   * Two facts only the workflow holds, and neither is about the review: an
+   * adopter's opt-in, and a label on the pull request. The **round** is not one
+   * of them — it is already an input here, and the arm below reads it — so the
+   * three conditions the automatic fix fires on are ruled on in one place.
+   *
+   * Required rather than defaulted to `false`, for the reason `round` is. A
+   * caller that forgot it derives the round-1 row, whose key the automatic-fix
+   * job does not select on: the fix never starts, the line tells a maintainer
+   * to add the label, and the feature is off with nothing anywhere saying so.
+   */
+  readonly autoFix: boolean;
 }
 
 /**
@@ -1084,8 +1121,20 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
     // new and obvious, which reads as a human being asked to look at a PR they
     // did not have to. That is the direction this is meant to fail in: the
     // alternative is a cycle with no gate in it.
-    return inputs.round === 2
-      ? VERDICTS["changes recommended after a fix round"]
+    if (inputs.round === 2) return VERDICTS["changes recommended after a fix round"];
+    // And the round-1 case splits in two on a fact about the *workflow* rather
+    // than about the review (#102): where it is about to add `agent:fix`
+    // itself, the line stops asking a maintainer for the label and says the
+    // round has started. Its key is the automatic fix's own selector, which is
+    // what makes the sentence and the job one decision — a line promising a
+    // fix round nothing starts is the failure this arm exists to prevent, and
+    // it has no symptom beyond the sentence being false.
+    //
+    // Below the round-2 arm, so `autoFix` cannot reach a second round: the fix
+    // is spent by then, and the bound that stops the loop cycling is the
+    // round-2 row holding this key out of reach.
+    return inputs.autoFix
+      ? VERDICTS["changes recommended, fix round started"]
       : VERDICTS["changes recommended"];
   }
   if (inputs.ci !== "green") return VERDICTS["needs a closer look"];

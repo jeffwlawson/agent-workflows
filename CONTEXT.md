@@ -13,7 +13,7 @@ the middle. One workflow per label transition, near enough:
 |---|---|---|
 | `agent:implement` on an **issue** | `implement` or `implement-prd` | branch, implement, open a draft PR, request review |
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
-| `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, ask for a re-review if it pushed |
+| `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
 | `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
 
@@ -26,13 +26,27 @@ PR** — the `implement` pair adds it too, on the PR it has just opened, which i
 first row. A run that pushed asks for the review of what it pushed, so the round it was given
 closes without a human labelling again. Since #111 that leg is also what **ends** the round: a fix
 run resolves nothing, so the review it asks for is the pass that reads the fix and closes the
-findings that landed. That is one hop and cannot cycle: review adds no trigger label of its own.
-The review a **fix** asks for is a **second round**, which is barred from the round-1 *Changes
-recommended* — the line that promises an automatic re-review — and so cannot ask for another fix
+findings that landed. That is one hop and cannot cycle: the one trigger label review adds is
+bounded twice over (below). The review a **fix** asks for is a **second round**, which is barred
+from the round-1 *Changes recommended* — the line that promises an automatic re-review — and so cannot ask for another fix
 round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a full round 1,
 because round 2 needs a non-merge loop commit since the verdict and a resolution leaves only a
 merge. A fix run that pushed nothing asks for nothing — and leaves every thread it answered open,
-so a round it declined its way through ends on a human rather than on another pass.
+so a round it declined its way through ends on a human rather than on another pass. It is also the
+run that marks such a pull request **ready**, because there is no re-review coming to do it (#159):
+a run that pushed hands the pull request to a review, and a run that did not hands it back.
+
+Review adds a trigger label in exactly one case, and only where an adopter asked for it (#102):
+with `auto-fix: true`, a job of its own adds `agent:fix` when the verdict is the round-1 *Changes
+recommended* — **once per pull request**, recorded by `agent:auto-fixed`. It is the return leg
+`docs/parity.md` §10 used to forbid outright, and what makes it an arrow rather than a cycle is
+that the round rule bars the verdict key it selects on from a second round, while the marker bars
+it from a second time on the same pull request. The job holds `pull-requests: write` and nothing
+else, checks nothing out and runs no model, which is what keeps `AGENT_PAT` away from the job that
+reads the pull request. Off by default, so an adopter's upgrade changes nothing. A pull request
+whose automatic fix is about to start also stays a **draft**: draft means the loop is still
+working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
+pushed, and the fix run itself where it pushed nothing and so asked for none.
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
@@ -58,6 +72,32 @@ is the safe direction because an open finding costs a round and a wrongly closed
 decision. What makes the decline usable is the author gate rather than the reading: only a reply
 `isTrustedAuthor` passed reaches the agent at all, and only one it passed can close a thread, so a
 decline typed by anyone at all is a finding that stays open.
+
+**And in the fix half it is a direction rather than a ruling** (PRD #101, decision 5). The gate is
+the same one — only a comment `isTrustedAuthor` passed reaches either agent — so what the fix brief
+adds is weight, not trust: a maintainer's comment is what that run follows, above a reviewer's
+finding where the two disagree, and a maintainer asking for something no review raised is asking
+inside this change's scope, because the bound on expanding a pull request is a bound on what a
+*finding* may pull into it. The fixer may still decline a direction it believes is wrong, on the
+terms it may decline any comment, and says why. What it may not do is weigh a maintainer's ask as
+one more finding.
+
+**And an outcome is owed on a comment that has no thread** (#104; decision 6, superseding #3). A
+`fix` run reported one outcome per review thread and nothing for a top-level **conversation**
+comment — it read them, acted on them, and never said so, which made a *declined* one invisible:
+nothing on the pull request, nothing to push back on. With steering arriving as exactly such a
+comment, the two halves report the same way now — addressed or declined, with the reason — and the
+difference is only where it lands. A conversation comment has nothing to reply *into*, so the
+outcomes are one comment on the same conversation, declines first, written by the workflow from the
+runner's validated output. What bounds it is the split that was already there: this workflow's own
+comments are on that same surface and `github-actions` is trusted on purpose, so the marker is all
+that distinguishes last round's note from a maintainer's instruction. Only a comment the fetch
+offered an **id** for can carry an outcome, which is what keeps a run from answering itself: the
+marked kinds are never rendered, and the loop's own unmarked notes — a refusal, a failure comment,
+a warning about a label that fired nothing — are rendered for their evidence and offered no id,
+because a status note asks for nothing (#159). The record carries a
+marker of its own rather than the top-level one — `follow-ups` harvests that into issues, and a
+record raises no work.
 
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the

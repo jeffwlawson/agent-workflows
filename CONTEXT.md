@@ -24,7 +24,9 @@ sub-issue per run onto one branch, and re-adds its own label to advance.
 That branch is the **PRD branch** (the code's "accumulating branch"), and the one pull request
 from it into the base branch is the **PRD PR** — the only PR of a chain a human merges. A **slice
 PR** is one sub-issue's pull request whose base is the PRD branch; it is planned, not built. None
-of the three is a *layer*.
+of the three is a *layer*. A slice PR's head is its **slice branch**, `agent/slice-<parent>-<sub>-…`
+— never under `agent/prd-`, so the PRD branch lookup cannot match it. The run that merges the last
+slice PR and hands the PRD PR over is the **finishing run**; it runs no model (#163).
 
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own

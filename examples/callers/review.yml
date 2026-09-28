@@ -66,10 +66,16 @@ jobs:
       # §4).
       statuses: write
     with:
-      # `<caller job id> / <called job id>`. The other three inputs
-      # (`default-branch`, `node-version-file`, `setup`) default to this repo's
-      # values — `main`, `.nvmrc`, `npm ci` — so there is nothing to say here.
+      # `<caller job id> / <called job id>`, and the only input with no useful
+      # default. The toolchain three (`default-branch`, `node-version-file`,
+      # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci` —
+      # so there is nothing to say about them here.
       self-check: review / review
+      # Uncomment to let the review start the fix round itself, once per pull
+      # request, when the verdict is the round-1 *Changes recommended* — it
+      # adds `agent:fix` and a re-review follows (docs/ADOPTING.md §3b).
+      # Needs `AGENT_PAT`; `doctor` warns if it is on without one.
+      # auto-fix: true
     # Named rather than `secrets: inherit`, which would hand the called
     # workflow every secret this repository holds. Both are declared in it;
     # AGENT_PAT is optional and an absent one arrives as the empty string,

@@ -561,6 +561,41 @@ export const diagnose = (
     });
   }
 
+  // The automatic fix, switched on and unable to fire (#102). `auto-fix: true`
+  // makes the review add `agent:fix` itself once per pull request — and a label
+  // added with `GITHUB_TOKEN` fires no `labeled` event, so without the PAT the
+  // label lands, the run stays green, and nothing starts. The review's verdict
+  // says a fix round has, which is the one place in this loop a posted sentence
+  // is wrong rather than merely absent.
+  //
+  // A warning rather than an error: the loop itself is unharmed and a human
+  // adding the label by hand loses nothing but the automation. The run does say
+  // so with a `::warning::` of its own — after the fact, on a pull request, once
+  // per occurrence; this is the same sentence before any of that.
+  //
+  // Only where the secrets were **read** and `AGENT_PAT` was not among them.
+  // Unreadable stays unreadable: that is its own warning below, and a repository
+  // where nobody could ask is not one to tell the answer to. Which is also why
+  // this reads `facts.secrets` directly rather than `hasPat` — that is
+  // `undefined` in exactly the case this must not rule on, and `!hasPat` would
+  // collapse it into the failing one.
+  for (const caller of callers) {
+    if (!caller.autoFix) continue;
+    if (facts.secrets === undefined || facts.secrets.includes("AGENT_PAT")) continue;
+    add({
+      severity: "warning",
+      check: "auto-fix without a PAT",
+      problem:
+        `${caller.file} sets \`auto-fix: true\` on the \`${caller.jobId}\` job, so a review whose ` +
+        `verdict is the first-round *Changes recommended* adds \`agent:fix\` itself — but ` +
+        `\`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` fires no event. The ` +
+        `label lands, no fix round starts, and the verdict on the pull request says one has.`,
+      fix:
+        `Set \`AGENT_PAT\` (above), or drop \`auto-fix: true\` from that job's \`with:\` block and ` +
+        `add \`agent:fix\` by hand.`,
+    });
+  }
+
   if (facts.secrets === undefined) {
     add({
       severity: "warning",

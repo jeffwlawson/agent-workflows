@@ -129,24 +129,37 @@ export const labelSpecsFor = (workflows: readonly string[]): readonly LabelSpec[
 ];
 
 /**
- * The labels a workflow **warns** about rather than failing on, keyed by the
- * workflow that wants them — `docs/ADOPTING.md` §3's second block.
+ * The labels `doctor` **does not demand**, keyed by the workflow that wants
+ * them — every block `docs/ADOPTING.md` §3 prints after its first.
  *
  * Separate from the two tables above because the two halves that read them want
  * opposite things. `SETUP.md` should name every label the callers it just
  * installed will reach for, or an adopter gets a live feature whose only signal
  * is a `::warning::` inside a green run — the filing half marks nothing, files
  * its stubs unlabelled, and the next merge cannot see them. `doctor` should
- * *not* fail over them: nothing here stops a loop, and a preflight that errors
- * on a correctly-installed repository is one people learn to skip. So these
- * reach `renderSetup` and never `labelSpecsFor`.
+ * *not* fail over them: none stops a loop a repository is actually running, and
+ * a preflight that errors on a correctly-installed one is a preflight people
+ * learn to skip. So these reach `renderSetup` and never `labelSpecsFor`.
  *
  * Conditional on the caller, which is why it is a map rather than a list: the
  * filing caller is the one file in the loop an adopter can decline (§4), and
- * three labels prescribed to a repository that declined it are three labels
- * nothing in it will ever read.
+ * labels prescribed to a repository that declined it are labels nothing in it
+ * will ever read.
  */
 export const ADVISORY_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
+  /**
+   * The one-shot marker (#102), and the only entry here that a repository
+   * needs **conditionally on an input** rather than on having taken the caller
+   * at all: `auto-fix` defaults off, and the reference caller ships it
+   * commented out. So it is named rather than demanded, like the three below —
+   * but for the opposite reason. Those are labels a live feature reaches for
+   * and warns about; this is one a feature an adopter may switch on later
+   * reaches for and **fails** on, which is worth knowing before the switch
+   * rather than after it.
+   */
+  review: [
+    { name: "agent:auto-fixed", color: "C5DEF5", description: "This PR's one automatic fix round has been started" },
+  ],
   "follow-ups": [
     { name: "agent:follow-ups", color: "0052CC", description: "This PR's review recorded out-of-scope findings" },
     { name: "pr-follow-up", color: "D4C5F9", description: "Filed from a merged PR's review by the follow-ups workflow" },
@@ -247,16 +260,21 @@ const renderSetup = (workflows: readonly string[], callers: readonly string[]): 
   // Absent entirely rather than present and empty, placeholder line included:
   // a heading over nothing reads as a step somebody forgot to finish, and a
   // repository that declined the filing caller has no step here to finish.
+  //
+  // Uncounted, and that is deliberate rather than clumsy prose: the list is
+  // per caller, so a repository that took some of them gets some of these, and
+  // a number written here would be right for the installation this file was
+  // authored against and wrong for the next one.
   const advisoryBlock =
     advisory.length === 0
       ? ""
       : [
           "",
-          "**Three more, for the `follow-ups` caller listed at the top of this file.** None of them is a",
-          "transition and nothing fails without them, which is why the check at the bottom does not",
-          "demand them — but a review then marks nothing, and a filed issue arrives unlabelled:",
-          "invisible to the triage queue it was filed for, and invisible to the duplicate check the",
-          "next merge runs.",
+          "**More labels, for the callers listed at the top of this file.** None of them is a",
+          "transition and the check at the bottom demands none of them — but a review then marks",
+          "nothing, a filed issue arrives unlabelled (invisible to the triage queue it was filed for,",
+          "and to the duplicate check the next merge runs), and a review caller switched to",
+          "`auto-fix: true` fails on the label that records the fix as spent.",
           "",
           "```bash",
           ...advisory,

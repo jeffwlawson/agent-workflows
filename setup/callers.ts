@@ -55,6 +55,16 @@ export interface InstalledCaller {
   /** `self-check`, on the one caller that takes it. */
   readonly selfCheck: string | undefined;
   /**
+   * Whether this caller turns the automatic fix on (#102) — `auto-fix: true`
+   * on the review caller, and `false` everywhere else including every caller
+   * that says nothing, since the input defaults off.
+   *
+   * A field rather than the whole `with:` map, because `diagnose` rules on a
+   * fixed list: an input it was not taught about is one nothing here can say
+   * anything useful about, and a map invites a reader to go looking.
+   */
+  readonly autoFix: boolean;
+  /**
    * What this job hands the workflow it calls: the names in its `secrets:`
    * block, the literal `"inherit"`, or `undefined` where it declares no block.
    *
@@ -229,7 +239,8 @@ export const callersIn = (
     const match = typeof job.uses === "string" ? uses.exec(job.uses.trim()) : null;
     if (match === null) return [];
 
-    const selfCheck = asStringMap(job.with)["self-check"];
+    const inputs = asStringMap(job.with);
+    const selfCheck = inputs["self-check"];
     return [
       {
         file,
@@ -242,6 +253,11 @@ export const callersIn = (
         ref: match[2] ?? "",
         ...grantsFor(job, top, topDeclared),
         selfCheck,
+        // `asStringMap` has already put YAML's own boolean through `String`,
+        // which is what makes `auto-fix: true` and `auto-fix: "true"` the same
+        // answer here — GitHub coerces a `workflow_call` boolean input the
+        // same way. Anything else is off, which is the input's own default.
+        autoFix: inputs["auto-fix"] === "true",
         secrets: secretsOf(job.secrets),
       },
     ];

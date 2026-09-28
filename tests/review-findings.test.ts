@@ -905,7 +905,7 @@ describe("an identifier the model smuggled into its output", () => {
 
     expect(carried).toEqual([]);
     expect(
-      deriveVerdict(parse({}), {
+      deriveVerdict(parse({}), { autoFix: false,
         ci: "green",
         round: 2,
         stillOpen: carried.length,

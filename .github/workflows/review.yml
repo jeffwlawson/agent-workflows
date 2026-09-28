@@ -21,6 +21,17 @@ name: Agent Review (reusable)
 on:
   workflow_call:
     inputs:
+      auto-fix:
+        description: >-
+          Start the fix round yourself when the verdict is the round-1 *Changes
+          recommended* — once per pull request, recorded by the
+          `agent:auto-fixed` label (PRD #101, decision 3). Off by default, so an
+          adopter's upgrade changes nothing: turning it on is a statement that
+          the verdicts have been in use long enough to be acted on unread. It
+          needs `AGENT_PAT`, because a label added with `GITHUB_TOKEN` fires no
+          event; `doctor` warns where it is on and the secret is not set.
+        type: boolean
+        default: false
       default-branch:
         description: >-
           Branch to diff against when the pull-request event carries no base
@@ -94,6 +105,12 @@ jobs:
     # resolve job*.
     outputs:
       resolutions: ${{ steps.resolutions.outputs.resolutions }}
+      # …and what `auto-fix` reads: the verdict's machine-readable key and the
+      # round it was derived under, both out of the file the runner wrote. A
+      # job cannot read another job's `RUNNER_TEMP`, so the only way across is
+      # an output. See *Hand the verdict to what reads it*.
+      verdict: ${{ steps.verdict.outputs.verdict }}
+      round: ${{ steps.verdict.outputs.round }}
     # `contents: read` is the invariant that bounds what a wrong review can do
     # (docs/parity.md §10). No `issues: write`: review files nothing, and the
     # `gh pr edit --add-label` steps below need only `pull-requests: write` —
@@ -334,11 +351,15 @@ jobs:
           # one string; carving it out would cost a comment justifying a timing
           # argument that could stop being true.
           #
-          # `resolve` is this workflow's second job (#133). It runs after this
-          # one, so a review never waits on its own. But an adopter who renamed
-          # the caller job gets `agent-review / resolve`, which nothing else
-          # here matches, and it is not evidence about the diff either way.
-          AGENT_CHECKS: '(^|/ )(review|resolve|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
+          # `resolve` is this workflow's second job (#133) and `auto-fix` its
+          # third (#102). Both run after this one, so a review never waits on
+          # its own. But an adopter who renamed the caller job gets
+          # `agent-review / resolve` and `agent-review / auto-fix`, which
+          # nothing else here matches, and neither is evidence about the diff
+          # either way. `auto-fix` needs naming in its own right: the
+          # alternation is anchored on `/ `, so `fix` does not match a name
+          # beginning `auto-`.
+          AGENT_CHECKS: '(^|/ )(review|resolve|auto-fix|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller
@@ -676,6 +697,18 @@ jobs:
           # the agent reads; the second is what the verdict is derived from, and
           # keeping them apart is what stops the derivation reading prose.
           CI_RESULT_FILE: ${{ runner.temp }}/ci_result.txt
+          # The two facts the automatic fix turns on that the runner cannot
+          # read for itself (#102): the adopter's opt-in, and whether this pull
+          # request's one automatic fix is already spent. The derivation adds
+          # the third — the round — and picks the verdict row whose key the
+          # `auto-fix` job below selects on, so the line a maintainer reads and
+          # the job that makes it true come from one decision.
+          #
+          # Both read off the same `labeled` payload that job guards on, rather
+          # than from a live `gh` call, so the two cannot answer differently
+          # about a label added while the review ran.
+          AUTO_FIX: ${{ inputs.auto-fix }}
+          AUTO_FIXED: ${{ contains(github.event.pull_request.labels.*.name, 'agent:auto-fixed') }}
         # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
         # whole point. `npx pkg@version` reuses a package already present in the
         # working directory when it satisfies the spec — and in the repository
@@ -757,6 +790,32 @@ jobs:
           fi
           gh api "${args[@]}" \
             || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
+
+      # The verdict again, this time as something a later step and a later job
+      # can read (#102). `verdict.json` is a file in this job's `RUNNER_TEMP`;
+      # the `auto-fix` job below has its own runner and its own temp, so the
+      # only way across is an output.
+      #
+      # The **key**, not the heading: three rows share a heading and the
+      # automatic fix fires on exactly one of them, so a selector on anything
+      # but the key would fire on all three. And the round beside it, which
+      # nothing derives anything from — it is the second half of a guard a
+      # human reads in this file, where "never twice round the loop" is
+      # otherwise only inferable from which keys a second round can produce.
+      #
+      # A step of its own rather than a line added to the status post above,
+      # for the reason `Hand the verified threads to the resolve job` is one: a
+      # step that posts and a step that hands over fail for different reasons,
+      # and the status post is the one that is deliberately allowed to fail.
+      # A run that wrote no file hands over nothing, and `auto-fix` does not
+      # run — which is the same direction every arm here fails in.
+      - name: Hand the verdict to what reads it
+        id: verdict
+        if: steps.state.outputs.proceed == 'true' && success()
+        run: |
+          file="${RUNNER_TEMP}/verdict.json"
+          [ -f "$file" ] || { echo "No verdict file; nothing to hand over."; exit 0; }
+          jq -r '"verdict=\(.verdict)", "round=\(.round)"' "$file" >> "$GITHUB_OUTPUT"
 
       # The threads this review checked and found fixed (#111, and #109 decision
       # 1), handed to the `resolve` job below, which closes them. The
@@ -850,8 +909,24 @@ jobs:
       # noticing the feature was broken. A warning keeps the run green — a PR
       # stuck in draft is not worth failing a review over — while making the
       # failure visible, which `|| true` did not.
+      #
+      # **Not when the automatic fix is about to run** (#102, PRD #101 decision
+      # 4). Draft means "the loop is still working", and it is the human's turn
+      # on *approval recommended*, on *needs a closer look*, and on changes
+      # recommended only where nobody is going to act on them but them. The
+      # `auto-fix` job below is about to add `agent:fix`, so the next thing to
+      # happen on this pull request is another agent run: marking it ready here
+      # would fire "your turn" during exactly the window the draft state exists
+      # to describe, and the fix round's own review would have to mark it ready
+      # all over again.
+      #
+      # One condition rather than the job's three, and deliberately the same
+      # one: that key is derived only where all three hold, so a step reading
+      # it cannot decide differently from the job it is predicting.
       - name: Mark PR ready for review
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: >-
+          steps.state.outputs.proceed == 'true' && success() &&
+          steps.verdict.outputs.verdict != 'changes recommended, fix round started'
         env:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
@@ -1073,3 +1148,88 @@ jobs:
               && echo "  resolved ${tid} (${reason})" \
               || echo "::warning::Could not resolve review thread ${tid} (${reason}). Its reply is posted, and the thread stays open until the next review retries it, which it does without replying again. GitHub's reply is printed above. It is not the caller's \`contents:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4)."
           done
+
+  # The one automatic fix (#102, PRD #101 decisions 1 and 2). Where the verdict
+  # is the round-1 *Changes recommended*, this adds `agent:fix` itself, once per
+  # pull request — so a pull request whose fixes the review says are clear
+  # reaches a maintainer already fixed and re-reviewed rather than waiting on a
+  # label nobody was asked to think about.
+  #
+  # **Why a separate job.** It is the only place in this workflow that spends
+  # `AGENT_PAT`, and it must not be the job that reads untrusted pull-request
+  # content and runs a model over it. So: no checkout, no toolchain, no agent,
+  # and `pull-requests: write` alone — narrower than the review job beside it,
+  # which holds four scopes. Its whole input is two literals and a key the
+  # review job derived.
+  #
+  # **Why it cannot loop.** The review a fix round asks for is a round 2, and a
+  # round-2 review can never produce the key below: findings that survive a fix
+  # get *changes recommended after a fix round*, whose line asks the maintainer
+  # to read the review (`deriveVerdict`, docs/parity.md §10). The
+  # `agent:auto-fixed` marker is the second bound and it is the one that
+  # matters later: a human's own commits make the next review a fresh round 1,
+  # which may say *Changes recommended* again — and by then the automatic fix
+  # is spent, so the line asks them for the label.
+  #
+  # **Why the guards are restated.** Same reason `resolve` restates them: today
+  # `needs:` implies the two standing ones, but only while this `if:` carries
+  # no status function, and a later `always()` added for some other reason
+  # would drop both. `inputs.auto-fix` and the marker are restated for a
+  # different reason — the key already encodes all three, since the runner
+  # derives it from exactly them, and a guard a human has to reconstruct from a
+  # string literal is one they will read as unconditional.
+  auto-fix:
+    needs: review
+    if: >-
+      inputs.auto-fix &&
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.review.outputs.verdict == 'changes recommended, fix round started' &&
+      needs.review.outputs.round == '1' &&
+      !contains(github.event.pull_request.labels.*.name, 'agent:auto-fixed')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # **No concurrency group**, for the reason `resolve` is in none: the
+    # `agent-pr-*` waiter slot has depth 1 and holds the newest arrival, so
+    # joining would let this job evict a fix a human queued while the review
+    # ran — and a label add is not a thing another job can tear.
+    #
+    # It does queue behind nothing and start immediately, which is the point:
+    # the `agent:fix` it adds fires a run that *does* join the group, so the
+    # serialisation this loop depends on still happens where the work is.
+    permissions:
+      # Labels on a pull request, which is the whole of what this job does.
+      # Not `issues: write`: that scope covers labels on an issue, and the one
+      # thing this must never be able to do is file work (docs/parity.md §10).
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      # MUST use AGENT_PAT. A label added with `GITHUB_TOKEN` fires no
+      # `labeled` event, so `agent:fix` added with it sits on the pull request
+      # triggering nothing — the silent no-op `docs/ADOPTING.md` §1 is about,
+      # and the reason this job exists in the shape it does.
+      #
+      # The marker goes on **first**, and that order is the one-shot bound. A
+      # failure between the two leaves the fix unspent and unstarted, which
+      # costs this pull request its automatic fix and nothing else; the other
+      # order would leave a fix round running with the marker missing, and the
+      # next round-1 verdict would start another.
+      #
+      # `bash -e`, no `|| true` on either add, for the reason the `Transition
+      # labels` step above carries none: a label this cannot add is a loop
+      # that has stopped transitioning, and the review has already told a
+      # maintainer a fix round started. A red job beside that sentence is the
+      # only thing that says it did not.
+      - name: Start the one automatic fix round
+        env:
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" --add-label "agent:auto-fixed"
+          gh pr edit "$PR_NUMBER" --add-label "agent:fix"
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::AGENT_PAT is not set, so agent:fix was added with GITHUB_TOKEN and will NOT start a fix round. The review's verdict on PR #${PR_NUMBER} says one has; remove and re-add agent:fix by hand to make that true."
+          fi

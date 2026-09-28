@@ -344,7 +344,8 @@ come up was *inside* one PRD.
 | **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
-| **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
+| **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the re-review at the end of that round marks it ready. **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
+| **Starts one fix round by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101). Opt-in per repository (`auto-fix`, default off) and once per pull request, recorded by `agent:auto-fixed`. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; the only `AGENT_PAT` use in the workflow. Bounded twice — the key it selects on can only come out of a round-1 derivation, and the marker stops a second one on the same PR (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
@@ -549,15 +550,18 @@ write access sits below everything that does not, regardless of how useful it lo
 Rules that must hold as features are added, each recording a decision that is cheap now and
 expensive to rediscover.
 
-- **Never auto-cascade review → fix.** `agent:fix` → `agent:review` is safe *only* because review
-  adds no trigger label, so every round still needs a human `agent:fix`. Automating the return leg
-  closes a true cycle with no gate.
+- **Auto-cascade review → fix at most once per pull request, and only where an adopter asked
+  for it.** This bullet read **never** until #102, and the amendment is below rather than in place
+  of it, because the reasoning is what makes the new rule safe: `agent:fix` → `agent:review` was
+  safe *only* because review added no trigger label, so every round still needed a human
+  `agent:fix`. Automating the return leg with nothing bounding it closes a true cycle with no gate.
 
   **Since #98 that safe leg is walked by the loop rather than by a human.** A `fix` run that
   pushed adds `agent:review` itself, so a round closes itself out instead of leaving a fixed
   branch whose verdict still reads "add agent:fix" — the state nothing re-checked, which is the
-  problem #96 exists to remove. Nothing above changes: review still adds no trigger label, so the
-  arrow stops at review, and `agent:fix` is still a human's to add.
+  problem #96 exists to remove. Nothing above changed at the time: review added no trigger label, so
+  the arrow stopped at review, and `agent:fix` was a human's to add. #102 below is where that half
+  moved, and it moved under two bounds rather than by relaxing this one.
 
   **And since #111 the leg is load-bearing rather than tidying.** A fix run resolves nothing, so
   the review it asks for is the pass that *ends* the round's findings: it reads the code the fix
@@ -591,14 +595,54 @@ expensive to rediscover.
   **Since #99 `update-branch` walks the same leg**, on the half of its work an agent wrote: a
   conflict resolution adds `agent:review` and a clean merge does not, because a clean merge carries
   the last verdict forward instead (#96, decision 6). The first bound is what holds it — one hop to
-  a review that adds no trigger label, and review still adds none — and the second one does not
+  a review whose own return leg is bounded separately (#102, below) — and the second one does not
   apply, because the review a resolution asks for is a **round 1**: round 2 needs a non-merge loop
   commit since the verdict, and a resolution leaves only a merge commit. That is the reading rather
   than a gap in it (#105). The findings of the verdict a conflict interrupted have never been
   attempted, so counting the merge as a fix round would answer them with "a fix round didn't
   settle these" — spending a human on a base branch moving, and on findings no fix round ever saw,
-  which is the one thing on this leg nobody chose. What is worth saying twice is which arrow this
-  is *not*: no workflow in the loop adds `agent:fix`.
+  which is the one thing on this leg nobody chose.
+
+  **And since #102 the return leg is walked too — once per pull request, and only where an adopter
+  asked for it** (PRD #101, decisions 1–3). `auto-fix` is an input on the review workflow, default
+  **off**; with it on, a `review.yml` job of its own adds `agent:fix` when the verdict is the
+  round-1 *Changes recommended* — the line that already promises an automatic re-review, which
+  until now promised it after a label the loop was not allowed to add.
+
+  **This is the invariant amended, not an exception carved out of it.** The rule it replaces said
+  *never*, and the reason was that automating the return closes a true cycle with no gate. There
+  are now two gates and each closes it alone, which is what makes this a bounded arrow rather than
+  a cycle:
+
+  - **The round rule.** The review a fix round asks for is a round 2, and a round-2 review can
+    never produce the round-1 row (above). The automatic fix selects on a verdict **key** that only
+    a round-1 derivation can emit, so the second time round there is nothing for it to match.
+  - **The `agent:auto-fixed` marker.** One automatic fix per pull request, recorded on the pull
+    request itself. A human's own commits make a later review a fresh round 1, which may recommend
+    changes again — and the fix is spent by then, so that verdict asks the maintainer for the
+    label. Without this, a pull request a human kept pushing to could be fixed automatically over
+    and over, each round legitimately a round 1.
+
+  The second gate is the one that carries the decision. The first alone bounds a *chain* and not a
+  *pull request*, and "the loop will fix this for you, as many times as you push" is a different
+  product from the one PRD #101 asked for.
+
+  What holds the two halves together is that the sentence and the job are one decision. The verdict
+  key is derived where the round is known (`deriveVerdict`), from the input and the marker the
+  workflow passes in, and the job's `if:` matches that key — so a line saying *a fix round has
+  already started* cannot be posted over a pull request where none did, which is the only way this
+  feature can be wrong without anything failing.
+
+  The job itself is where decision 2 lands: `needs:` the review job, no checkout, no toolchain, no
+  agent, `pull-requests: write` alone, and the only use of `AGENT_PAT` in this workflow — so the
+  PAT is nowhere near the job that reads untrusted pull-request content and runs a model over it.
+  Without the PAT it adds the label anyway and warns, as `implement-prd.yml` does, and `doctor`
+  says the same thing before the first run rather than after it.
+
+  What is still worth saying twice is which arrow this is *not*: no workflow in the loop adds
+  `agent:fix` on its own initiative, and the one that adds it at all does so under an input an
+  adopter has to switch on, once per pull request, on the one verdict that says no reading is
+  needed.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
   is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this.
 
@@ -1103,6 +1147,15 @@ expensive to rediscover.
   presenting an unreviewed PR as finished. Moving the mark-ready step earlier (into implement)
   forfeits that, and fires "your turn" during a window when the review has not posted and there is
   nothing yet to decide.
+
+  **Since #102 that reads "until it is the human's turn", which is not the same as "until the
+  review posts"** (PRD #101, decision 4). A review that is about to start the automatic fix leaves
+  the PR in draft: the pipeline has not finished, another agent run is next, and the re-review at
+  the end of it marks the PR ready itself. The three verdicts that *are* the human's turn — both
+  the ones asking them to read, and the one saying nothing is left to fix — mark it ready as
+  before, and so does the round-1 *Changes recommended* wherever `auto-fix` is off. The condition
+  the step reads is the automatic fix's own verdict key, not a second reading of the three facts
+  behind it, so the draft state and the job cannot disagree about whether a fix round is coming.
 
   **This invariant depends on `AGENT_PAT`.** `GITHUB_TOKEN` cannot convert a draft PR at all —
   `Resource not accessible by integration (markPullRequestReadyForReview)` — so without the PAT

@@ -26,13 +26,24 @@ PR** — the `implement` pair adds it too, on the PR it has just opened, which i
 first row. A run that pushed asks for the review of what it pushed, so the round it was given
 closes without a human labelling again. Since #111 that leg is also what **ends** the round: a fix
 run resolves nothing, so the review it asks for is the pass that reads the fix and closes the
-findings that landed. That is one hop and cannot cycle: review adds no trigger label of its own.
-The review a **fix** asks for is a **second round**, which is barred from the round-1 *Changes
-recommended* — the line that promises an automatic re-review — and so cannot ask for another fix
+findings that landed. That is one hop and cannot cycle: the one trigger label review adds is
+bounded twice over (below). The review a **fix** asks for is a **second round**, which is barred
+from the round-1 *Changes recommended* — the line that promises an automatic re-review — and so cannot ask for another fix
 round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a full round 1,
 because round 2 needs a non-merge loop commit since the verdict and a resolution leaves only a
 merge. A fix run that pushed nothing asks for nothing — and leaves every thread it answered open,
 so a round it declined its way through ends on a human rather than on another pass.
+
+Review adds a trigger label in exactly one case, and only where an adopter asked for it (#102):
+with `auto-fix: true`, a job of its own adds `agent:fix` when the verdict is the round-1 *Changes
+recommended* — **once per pull request**, recorded by `agent:auto-fixed`. It is the return leg
+`docs/parity.md` §10 used to forbid outright, and what makes it an arrow rather than a cycle is
+that the round rule bars the verdict key it selects on from a second round, while the marker bars
+it from a second time on the same pull request. The job holds `pull-requests: write` and nothing
+else, checks nothing out and runs no model, which is what keeps `AGENT_PAT` away from the job that
+reads the pull request. Off by default, so an adopter's upgrade changes nothing. A pull request
+whose automatic fix is about to start also stays a **draft**: draft means the loop is still
+working, and the re-review at the end of the fix round is what marks it ready.
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a

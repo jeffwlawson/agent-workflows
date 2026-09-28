@@ -7,6 +7,7 @@ import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
 import { callersIn } from "../setup/callers.js";
 import {
+  ADVISORY_LABELS,
   advisoryLabelSpecsFor,
   init,
   labelCommand,
@@ -677,9 +678,15 @@ describe("init installs the reference callers into an adopting repo", () => {
 
   /**
    * And says nothing about them to a repository that declined that caller (§4).
-   * Three labels prescribed to a repository where nothing will ever read them
-   * is a setup list with a step that cannot be completed for a reason — which
-   * is how a checklist stops being worked through.
+   * Labels prescribed to a repository where nothing will ever read them are a
+   * setup list with a step that cannot be completed for a reason — which is how
+   * a checklist stops being worked through.
+   *
+   * Keyed on the **filing caller's own** advisory labels rather than on every
+   * conditional label §3 documents, since #102 put a second caller in that map:
+   * `agent:auto-fixed` belongs to the review caller, which is still installed
+   * here, so naming it is the rule being obeyed rather than broken. What is
+   * asserted is the per-caller part — the reason the map is a map.
    */
   it("says nothing about them once the caller that wants them is gone", async () => {
     const root = adopted();
@@ -689,8 +696,15 @@ describe("init installs the reference callers into an adopting repo", () => {
     await init({ dir: root });
 
     const setup = read(root, "SETUP.md");
-    for (const label of documentedLabels().slice(1).flat()) {
+    const filing = ADVISORY_LABELS["follow-ups"] ?? [];
+
+    expect(filing.length).toBeGreaterThan(0);
+    for (const label of filing) {
       expect(setup).not.toContain(label.name);
+    }
+    // …and the review caller's, which is still there, still is.
+    for (const label of ADVISORY_LABELS["review"] ?? []) {
+      expect(setup).toContain(labelCommand(label));
     }
     // The mandated six are untouched by any of that.
     for (const label of [...TRIGGER_LABELS, ...STATE_LABELS]) {
@@ -1637,6 +1651,78 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(out).toContain("secrets wiring");
     expect(err).not.toContain("secrets wiring");
+  });
+
+  /**
+   * The automatic fix, switched on and unable to fire (#102). `auto-fix: true`
+   * makes a review add `agent:fix` itself — and a label added with
+   * `GITHUB_TOKEN` fires no event, so without the PAT the label lands, the run
+   * stays green and nothing starts. What makes this worth its own row rather
+   * than leaving it to the `AGENT_PAT` row above: that row says the loop stops
+   * transitioning, and this one says a **posted verdict is wrong**. The review
+   * will have told a maintainer a fix round started.
+   *
+   * A warning, not an error: the loop still works and a human adding the label
+   * by hand loses only the automation.
+   *
+   * The gesture is the one an adopter makes — uncommenting the line `init` gave
+   * them — so the check is exercised against the reference caller rather than
+   * against a caller written to suit it.
+   */
+  const withAutoFix = async (): Promise<string> => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) => text.replace("# auto-fix: true", "auto-fix: true"));
+    return root;
+  };
+
+  it("warns when the automatic fix is on and no PAT can make it fire", async () => {
+    const { code, out, err } = await check(await withAutoFix(), {
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    });
+
+    expect(out).toContain("auto-fix");
+    expect(out).toMatch(/fires no event/);
+    // The row above is the error for the same missing secret; this one must not
+    // add a second exit code to it.
+    expect(err).not.toContain("auto-fix without a PAT");
+    expect(code).toBe(1);
+  });
+
+  it("says nothing about the automatic fix when the PAT is set", async () => {
+    const { code, out, err } = await check(await withAutoFix(), healthy());
+
+    expect(err).toBe("");
+    expect(out).not.toContain("auto-fix");
+    expect(code).toBe(0);
+  });
+
+  /**
+   * And nothing on a repository that left the input alone, which is every
+   * repository `init` has just finished with: the reference caller ships it
+   * commented out.
+   */
+  it("says nothing about the automatic fix on a caller that did not turn it on", async () => {
+    const { out } = await check(await installed(), {
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    });
+
+    expect(out).not.toContain("auto-fix");
+  });
+
+  /**
+   * **Unreadable stays unreadable.** Secrets are readable only to an admin, and
+   * "nobody could ask" is not "the PAT is missing" — a warning here would tell
+   * every non-admin their automatic fix is broken. The unreadable-secrets
+   * warning below is the honest answer, and it is already there.
+   */
+  it("does not claim the automatic fix is broken when the secrets could not be read", async () => {
+    const { code, out } = await check(await withAutoFix(), { ...healthy(), secrets: undefined });
+
+    expect(out).not.toContain("auto-fix");
+    expect(out).toMatch(/could not read the actions secrets/i);
+    expect(code).toBe(0);
   });
 
   /**

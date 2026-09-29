@@ -40,10 +40,11 @@ describe("diffCommandAgainstBase", () => {
   /**
    * It used to fall back to `main`, which was the same silent wrong-branch
    * failure one level down: on a `master` repo every review diffed against a ref
-   * that did not exist, or worse, one that did and was stale. Every workflow now
-   * supplies a non-empty `BASE_REF` (#98) — the PR workflows from the event with
-   * the `default-branch` input behind it, the `implement` workflows from the
-   * input alone — so an empty value is a misconfiguration rather than a case to
+   * that did not exist, or worse, one that did and was stale. Every workflow that
+   * runs git against a base — all but `follow-ups.yml` — now supplies a
+   * non-empty `BASE_REF` (#98) — the PR workflows from the event with the
+   * `default-branch` input behind it, the `implement` workflows from the input
+   * alone. So an empty value is a misconfiguration rather than a case to
    * absorb, and the runner's `fail()` puts the message on the PR.
    */
   it("refuses an absent or empty base ref rather than guessing one", () => {

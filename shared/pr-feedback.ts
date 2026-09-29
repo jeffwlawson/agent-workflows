@@ -737,9 +737,10 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * to `main` until #98, which is the same silent wrong-branch failure one level
  * down: on a `master` repo every review diffed against a ref that did not
  * exist, and on one that had a stale `main` it diffed against that instead.
- * Every workflow in the loop now sets a non-empty `BASE_REF`, so an empty value
- * is a misconfiguration to say out loud — and `fail()` puts the message on the
- * PR. The three pull-request workflows — `review.yml` and `fix.yml`, whose
+ * Every workflow in the loop that runs git against a base — all but
+ * `follow-ups.yml` — now sets a non-empty `BASE_REF`, so an empty value is a
+ * misconfiguration to say out loud, and `fail()` puts the message on the PR.
+ * The three pull-request workflows — `review.yml` and `fix.yml`, whose
  * runners reach this function, and `update-branch.yml` — set it from the event
  * with the `default-branch` input behind it. The two `implement` workflows
  * trigger on `issues`, which carries no base, so they set it from the input

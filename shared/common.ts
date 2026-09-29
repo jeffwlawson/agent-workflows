@@ -61,7 +61,7 @@ export const sh = (cmd: string): string =>
  * local run must not silently drift onto different versions. Bumping it is a
  * decision, so it gets a commit or a variable change.
  */
-const DEFAULT_MODEL = "claude-opus-5";
+const DEFAULT_MODEL = "claude-opus-5-5";
 
 /**
  * Per-workflow defaults, listed only where they differ from `DEFAULT_MODEL`.
@@ -79,7 +79,7 @@ const DEFAULT_MODEL = "claude-opus-5";
  * by setting AGENT_MODEL_UPDATE_BRANCH rather than editing code.
  */
 const WORKFLOW_MODELS: Record<string, string> = {
-  "update-branch": "claude-sonnet-5",
+  "update-branch": "claude-sonnet-5-5",
 };
 
 /** Workflow name → the env var that overrides it. `update-branch` → `AGENT_MODEL_UPDATE_BRANCH`. */

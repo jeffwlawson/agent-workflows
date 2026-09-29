@@ -178,12 +178,12 @@ describe("agentModel — precedence", () => {
   });
 
   it("falls back to the global default when nothing is set", () => {
-    expect(agentModel("implement")).toBe("claude-opus-5");
-    expect(agentModel("review")).toBe("claude-opus-5");
+    expect(agentModel("implement")).toBe("claude-opus-5-5");
+    expect(agentModel("review")).toBe("claude-opus-5-5");
   });
 
   it("uses the baked per-workflow default for update-branch", () => {
-    expect(agentModel("update-branch")).toBe("claude-sonnet-5");
+    expect(agentModel("update-branch")).toBe("claude-sonnet-5-5");
   });
 
   // The failure this guards: GitHub interpolates an UNSET repository variable
@@ -193,10 +193,10 @@ describe("agentModel — precedence", () => {
   it("treats an empty string as unset, on both the global and the per-workflow var", () => {
     process.env["AGENT_MODEL"] = "";
     process.env["AGENT_MODEL_REVIEW"] = "";
-    expect(agentModel("review")).toBe("claude-opus-5");
+    expect(agentModel("review")).toBe("claude-opus-5-5");
 
     process.env["AGENT_MODEL_UPDATE_BRANCH"] = "";
-    expect(agentModel("update-branch")).toBe("claude-sonnet-5");
+    expect(agentModel("update-branch")).toBe("claude-sonnet-5-5");
   });
 
   it("lets the global override beat a baked per-workflow default", () => {
@@ -218,13 +218,13 @@ describe("agentModel — precedence", () => {
   it("maps a hyphenated workflow name onto an underscored var", () => {
     process.env["AGENT_MODEL_UPDATE_BRANCH"] = "claude-opus-5";
     expect(agentModel("update-branch")).toBe("claude-opus-5");
-    expect(agentModel("implement")).toBe("claude-opus-5");
+    expect(agentModel("implement")).toBe("claude-opus-5-5");
   });
 
   it("resolves the fix workflow, whose name has no hyphen", () => {
     process.env["AGENT_MODEL_FIX"] = "claude-sonnet-5";
     expect(agentModel("fix")).toBe("claude-sonnet-5");
-    expect(agentModel("implement")).toBe("claude-opus-5");
+    expect(agentModel("implement")).toBe("claude-opus-5-5");
   });
 });
 

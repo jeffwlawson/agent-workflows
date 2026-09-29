@@ -1738,13 +1738,6 @@ describe("the posted review body", () => {
   });
 
   /**
-   * The follow-ups are a **group** now, shaped like the others and placed with
-   * them, rather than a block appended below the run link where it looked
-   * unlike everything above it. Collapsed, because it is not what blocks this
-   * pull request — and **not counted** on the `**Findings:**` line for the same
-   * reason.
-   */
-  /**
    * Nothing this body writes carries an em dash (#136), in any verdict and any
    * group. A v0.4.0 body entry is carried in on purpose: its anchor arrived
    * behind one, and it has to leave behind this release's separator. The old
@@ -1776,6 +1769,13 @@ describe("the posted review body", () => {
     }
   });
 
+  /**
+   * The follow-ups are a **group** now, shaped like the others and placed with
+   * them, rather than a block appended below the run link where it looked
+   * unlike everything above it. Collapsed, because it is not what blocks this
+   * pull request — and **not counted** on the `**Findings:**` line for the same
+   * reason.
+   */
   it("renders the follow-ups as a collapsed group after Resolved, uncounted", () => {
     const body = render({
       placed: placedFinding(),

@@ -585,19 +585,6 @@ describe("a thread that already carries its closing reply", () => {
 });
 
 /**
- * Recognising a closing reply is the other half of composing one, from the same
- * marker, so the release that rewords a reply cannot leave the reader behind.
- *
- * **And the marker is the whole of it, never the prose** (#133). The words a
- * closing reply opens with are rendered into the `inline` surface the fix agent
- * is shown, and that agent's replies are posted into the same thread by the same
- * bot — so on a prose match the loop's own fixer could say "this thread already
- * carries its closing reply", and the next review would resolve it under the
- * fixer's claim having posted no record of its own. A marker cannot be reached
- * that way: `withoutFindingMarkers` takes it out of every string a model wrote.
- * Nothing else in this loop is matched across rounds either (#109, decision 2).
- */
-/**
  * The replies a review posts on a thread it closes carry no em dash (#136).
  * The maintainer's own words are quoted as they were written, so the reply
  * quoted here is dash-free and the frame is what is under test.
@@ -612,6 +599,19 @@ describe("the closing replies, as posted", () => {
   });
 });
 
+/**
+ * Recognising a closing reply is the other half of composing one, from the same
+ * marker, so the release that rewords a reply cannot leave the reader behind.
+ *
+ * **And the marker is the whole of it, never the prose** (#133). The words a
+ * closing reply opens with are rendered into the `inline` surface the fix agent
+ * is shown, and that agent's replies are posted into the same thread by the same
+ * bot — so on a prose match the loop's own fixer could say "this thread already
+ * carries its closing reply", and the next review would resolve it under the
+ * fixer's claim having posted no record of its own. A marker cannot be reached
+ * that way: `withoutFindingMarkers` takes it out of every string a model wrote.
+ * Nothing else in this loop is matched across rounds either (#109, decision 2).
+ */
 describe("closingReplyReason", () => {
   it("reads both replies this file composes", () => {
     expect(closingReplyReason(resolutionReply({ id: "f-1", status: "landed" }))).toBe("ADDRESSED");

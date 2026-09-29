@@ -26,7 +26,12 @@ from it into the base branch is the **PRD PR** — the only PR of a chain a huma
 PR** is one sub-issue's pull request whose base is the PRD branch; it is planned, not built. None
 of the three is a *layer*. A slice PR's head is its **slice branch**, `agent/slice-<parent>-<sub>-…`
 — never under `agent/prd-`, so the PRD branch lookup cannot match it. The run that merges the last
-slice PR and hands the PRD PR over is the **finishing run**; it runs no model (#163).
+slice PR and hands the PRD PR over is the **finishing run**; it runs no model (#163). The PRD PR's
+own review is the **integration review**: every slice was already reviewed on its slice PR, so it
+looks only for what spans slices, never takes up a slice's leftover findings, and is skipped for a
+one-slice PRD, whose PRD PR diff is the slice PR's. Those leftovers are linked from the **slices
+table** in the PRD PR body — one row per slice, written by the run that merges it and never
+refreshed (#164).
 
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own

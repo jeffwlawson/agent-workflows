@@ -2478,6 +2478,49 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
   });
 
   /**
+   * Except on a draft PRD PR, where a review is the integration review and
+   * would start over a partial chain (#178). The resolution is still code no
+   * review has seen, so it is named on the PRD PR instead — by the commit the
+   * push reported, under a marker the integration review can find — and the
+   * request is skipped only there: a handed-over PRD PR is not a draft, and an
+   * ordinary pull request is not under `agent/prd-`.
+   */
+  it("holds the review on a draft PRD PR and names the resolved merge commit instead", () => {
+    const hold = stepNamed("Name the resolution on a draft PRD PR");
+    const run = hold?.run ?? "";
+
+    expect(hold?.id).toBe("prd");
+    expect(hold?.if).toBe("steps.merge.outputs.status == 'conflicts' && success()");
+    expect(hold?.env?.["RESOLVED_SHA"]).toBe("${{ steps.push.outputs.head }}");
+    expect(run).toContain('[[ "$BRANCH" != agent/prd-* ]]');
+    expect(run).toContain("isDraft");
+    expect(run).toContain("<!-- agent-resolved-merge ${RESOLVED_SHA} -->");
+    expect(run).toContain("gh pr comment");
+    expect(run).toContain("held=true");
+    expect(run).not.toContain("agent:review\"");
+    expect(run).not.toContain("--add-label");
+
+    // Between the push that names the commit and the request it stands in for.
+    const names = stepsOf(UPDATE).map((s) => s.name ?? "");
+    expect(names.indexOf(hold?.name ?? "")).toBeGreaterThan(names.indexOf("Comment on the PR"));
+    expect(names.indexOf(hold?.name ?? "")).toBeLessThan(names.indexOf(request()?.name ?? ""));
+  });
+
+  /**
+   * A comment that did not land leaves a resolution nothing will review, so it
+   * fails the run the way a failed `agent:review` add does, with the commit in
+   * the reason — the one place left that still names it.
+   */
+  it("fails naming the commit when the resolution could not be recorded", () => {
+    const run = stepNamed("Name the resolution on a draft PRD PR")?.run ?? "";
+
+    expect(run).toContain("set -euo pipefail");
+    expect(run).toContain("failure_reason.txt");
+    expect(run.slice(run.indexOf("failure_reason.txt") - 400)).toContain("${RESOLVED_SHA}");
+    expect(run).toContain("exit 1");
+  });
+
+  /**
    * The two are opposite arms of the same merge, and the gates are what keep
    * them that way. A copy on the conflicts path is a verdict about code an
    * agent wrote unread; a request on the clean path is a review round nothing
@@ -2486,7 +2529,9 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
    */
   it("never does both: the copy is the clean path, the request the conflicts one", () => {
     expect(copy()?.if).toBe("steps.merge.outputs.status == 'clean' && success()");
-    expect(request()?.if).toBe("steps.merge.outputs.status == 'conflicts' && success()");
+    expect(request()?.if).toBe(
+      "steps.merge.outputs.status == 'conflicts' && steps.prd.outputs.held != 'true' && success()",
+    );
   });
 
   /**

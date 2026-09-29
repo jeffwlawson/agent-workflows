@@ -244,7 +244,7 @@ describe("verifyCarried", () => {
     const [resolution] = verifyCarried(CARRIED, [landed("f-1")]).resolutions;
 
     expect(resolution?.reply).toContain("Verified fixed.");
-    expect(resolution?.reply).toContain("Resolved by the review that checked it");
+    expect(resolution?.reply).toContain("_Resolved by the review agent._");
   });
 
   /**

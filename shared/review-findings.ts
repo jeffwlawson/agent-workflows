@@ -320,9 +320,23 @@ export const RESOLUTION_MARKER = "agent-resolution";
  * `parseFindingMarkers`. It is omitted where there is none to write — a marker
  * from a release before this one, re-emitted — and a reader defaults those, so
  * an old body stays readable rather than becoming a parse failure.
+ *
+ * The **title** rides along for the same reason (#134). A later round reads a
+ * threaded finding back off its thread, where the only prose is the body, and
+ * the record entry it renders wants the title the review that raised it wrote
+ * — not the thread's opening paragraph. It is base64, because a title is the
+ * model's prose and an HTML comment ends at the first `-->`: the alphabet holds
+ * no `-` and no `>`, so nothing in a title can close the comment early or leave
+ * half of it rendered. A marker written before this carries none, and a reader
+ * falls back to the claim.
  */
-export const findingMarker = (id: string, severity?: Severity): string =>
-  `<!-- ${FINDING_MARKER} ${id}${severity === undefined ? "" : ` ${severity}`} -->`;
+export const findingMarker = (id: string, severity?: Severity, title?: string): string =>
+  [
+    `<!-- ${FINDING_MARKER} ${id}`,
+    severity === undefined ? "" : ` ${severity}`,
+    title === undefined || title === "" ? "" : ` title:${Buffer.from(title, "utf8").toString("base64")}`,
+    " -->",
+  ].join("");
 
 /**
  * A fresh id, unrelated to the finding's text or its place in the list.
@@ -515,6 +529,19 @@ export const openingClaim = (body: string): string => {
 };
 
 /**
+ * A finding's title as a record entry shows it: the model's, on one line, or
+ * the claim its body opens with where it left the title empty — this is
+ * display, and a blank line in a list is worse than a reworded one.
+ *
+ * One function because two surfaces write it: the record entry of the round
+ * that raised the finding, and the thread's marker, which is where every later
+ * round reads it back from (#134). Two derivations would let the same finding
+ * carry two titles depending on which round listed it.
+ */
+export const findingTitle = (finding: Finding): string =>
+  finding.title.replace(/\s+/g, " ").trim() || openingClaim(finding.body);
+
+/**
  * Every finding id written into a body, with the line each one labels.
  *
  * The **reader** of `findingMarker`, and here rather than beside its callers
@@ -542,17 +569,34 @@ export interface MarkedEntry {
    * defaults rather than refusing — see `findingMarker`.
    */
   readonly severity?: Severity;
+  /**
+   * The finding's title as the review that raised it wrote it, where the marker
+   * carries one — a thread's marker since #134. Absent on an older marker and
+   * on a body entry's, which is itself the title.
+   */
+  readonly title?: string;
   /** The line the marker labels, stripped of its list marker and emphasis. */
   readonly text: string;
 }
 
 /**
- * The id, then optionally the severity. The severity is matched against the
- * three words rather than as another `\S+`, so a marker this version does not
- * understand loses the trailing token rather than the id — identity is the half
- * that must survive a format it has not met.
+ * The id, then optionally the severity, then optionally the title, then any
+ * tokens this version does not know. The severity is matched against the three
+ * words rather than as another `\S+`, and the unknown tail is matched and
+ * dropped, so a marker a later release writes loses what this one cannot read
+ * rather than the id — identity is the half that must survive a format it has
+ * not met. The title is matched on the base64 alphabet `findingMarker` writes
+ * it in.
+ *
+ * That holds from this release on, not before it: a release older than #134
+ * has no tail and matches nothing on a marker carrying a title, so a runner
+ * pinned back past it reads no finding off a thread this release wrote. A tail
+ * token is any run of non-space that is not the comment's own close, so the
+ * match still ends at the first `-->`.
  */
-const MARKER = new RegExp(`<!--\\s*${FINDING_MARKER}\\s+(\\S+?)(?:\\s+(high|medium|low))?\\s*-->`);
+const MARKER = new RegExp(
+  `<!--\\s*${FINDING_MARKER}\\s+(\\S+?)(?:\\s+(high|medium|low))?(?:\\s+title:([A-Za-z0-9+/]+=*))?(?:\\s+(?:(?!-->)\\S)+)*\\s*-->`,
+);
 
 /** A checklist's own furniture, which is the list's rather than the entry's. */
 const LIST_ITEM = /^[-*]\s+(\[[ xX]\]\s+)?/;
@@ -659,6 +703,14 @@ const lastMarkerOn = (line: string): RegExpMatchArray | undefined => {
   return matches[matches.length - 1];
 };
 
+/**
+ * A title read back off a marker, as one line. Decoded rather than trusted to
+ * be one: anyone can write a marker, and a newline in what becomes a list
+ * entry's link text breaks the list it sits in.
+ */
+const oneLineTitle = (encoded: string): string =>
+  Buffer.from(encoded, "base64").toString("utf8").replace(/\s+/g, " ").trim();
+
 export const parseFindingMarkers = (body: string): MarkedEntry[] => {
   const lines = body.split("\n");
 
@@ -667,6 +719,7 @@ export const parseFindingMarkers = (body: string): MarkedEntry[] => {
     const id = match?.[1];
     if (match === undefined || id === undefined) return [];
     const severity = match[2];
+    const title = match[3] === undefined ? "" : oneLineTitle(match[3]);
 
     // Every marker off the line, not just the one that won: the text is what a
     // human reads beside the id, and a quoted marker left in it would be
@@ -681,6 +734,7 @@ export const parseFindingMarkers = (body: string): MarkedEntry[] => {
       {
         id,
         ...(severity === undefined ? {} : { severity: parseSeverity(severity) }),
+        ...(title === "" ? {} : { title }),
         text: text.replace(LIST_ITEM, "").replace(/^\*\*|\*\*$/g, "").trim(),
       },
     ];
@@ -984,7 +1038,11 @@ const threadBody = (placed: PlacedFinding): string => {
     .filter((part) => part !== undefined)
     .join(" · ");
 
-  return [opening, withoutOpeningLabel(finding.body), findingMarker(placed.id, finding.severity)]
+  return [
+    opening,
+    withoutOpeningLabel(finding.body),
+    findingMarker(placed.id, finding.severity, findingTitle(finding)),
+  ]
     .filter((part) => part !== "")
     .join("\n\n");
 };

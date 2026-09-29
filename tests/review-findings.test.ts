@@ -24,6 +24,7 @@ import {
   severityTextBadge,
   severityWord,
   SEVERITIES,
+  withoutFindingMarkers,
   withoutSeverityBadge,
   withSeverityBadgesAsText,
   type Finding,
@@ -394,7 +395,7 @@ describe("the id is the workflow's to write", () => {
     expect("id" in (output.findings[0] ?? {})).toBe(false);
 
     const [thread] = reviewThreads(place(output.findings));
-    expect(thread?.body).toContain(findingMarker("f-1", "medium"));
+    expect(thread?.body).toContain(findingMarker("f-1", "medium", "t"));
     expect(thread?.body).not.toContain("f-modelwrote");
   });
 
@@ -466,8 +467,8 @@ describe("reviewThreads", () => {
       expect(thread.body.trimEnd().endsWith("-->")).toBe(true);
       expect(thread.body.match(new RegExp(FINDING_MARKER, "g"))).toHaveLength(1);
     }
-    expect(threads[0]?.body).toContain(findingMarker("f-1", "medium"));
-    expect(threads[1]?.body).toContain(findingMarker("f-2", "medium"));
+    expect(threads[0]?.body).toContain(findingMarker("f-1", "medium", "the guard runs after the return"));
+    expect(threads[1]?.body).toContain(findingMarker("f-2", "medium", "the guard runs after the return"));
   });
 });
 
@@ -754,7 +755,72 @@ describe("the finding marker", () => {
   it("puts the finding's severity on the thread it opens", () => {
     const threads = reviewThreads(place([finding({ line: 11, severity: "high" })]));
 
-    expect(threads[0]?.body).toContain(findingMarker("f-1", "high"));
+    expect(lastFindingMarker(threads[0]?.body ?? "")?.severity).toBe("high");
+  });
+
+  /**
+   * And the title (#134): a later round reads a threaded finding back off its
+   * thread, and the record lists it under the words the raising review wrote
+   * rather than the thread's opening paragraph.
+   */
+  it("puts the finding's title on the thread it opens, and reads it back", () => {
+    const threads = reviewThreads(
+      place([finding({ line: 11, title: "Warning asserts a verdict it could not see" })]),
+    );
+
+    expect(lastFindingMarker(threads[0]?.body ?? "")?.title).toBe(
+      "Warning asserts a verdict it could not see",
+    );
+  });
+
+  /**
+   * The title is the model's prose inside an HTML comment, which ends at the
+   * first `-->`. Written raw, a title holding one would close the marker early
+   * and render the rest of it into the thread.
+   */
+  it("round-trips a title that could break an HTML comment", () => {
+    const title = "a --> b -- c > d <!-- e — f";
+    const marker = findingMarker("f-1", "low", title);
+
+    expect(marker.match(/-->/g)).toHaveLength(1);
+    expect(parseFindingMarkers(`- a claim ${marker}`)).toEqual([
+      { id: "f-1", severity: "low", title, text: "a claim" },
+    ]);
+  });
+
+  it("reads a title with no severity beside it", () => {
+    expect(parseFindingMarkers(`- a claim ${findingMarker("f-1", undefined, "the title")}`)).toEqual([
+      { id: "f-1", title: "the title", text: "a claim" },
+    ]);
+  });
+
+  /** A marker holding a title is still a marker, so a model's copy is stripped whole. */
+  it("strips a marker carrying a title out of what a model wrote", () => {
+    expect(withoutFindingMarkers(`claim ${findingMarker("f-1", "high", "t")}`)).toBe("claim");
+  });
+
+  /**
+   * A later release's marker keeps its id here: a token this version does not
+   * know is dropped rather than failing the match, wherever it sits after the
+   * id — the claim the pattern's comment makes, which before this it did not
+   * keep (#134 review).
+   */
+  it.each([
+    ["an unknown word where the severity goes", "<!-- agent-finding f-1 critical -->", { id: "f-1" }],
+    ["an unknown word after the severity", "<!-- agent-finding f-1 high scope:x -->", { id: "f-1", severity: "high" }],
+    [
+      "an unknown word after the title",
+      `<!-- agent-finding f-1 low title:${Buffer.from("t").toString("base64")} more:y -->`,
+      { id: "f-1", severity: "low", title: "t" },
+    ],
+    ["several unknown words", "<!-- agent-finding f-1 a b c-->", { id: "f-1" }],
+  ])("keeps the id through %s", (_, marker, expected) => {
+    expect(parseFindingMarkers(`- a claim ${marker}`)).toEqual([{ ...expected, text: "a claim" }]);
+    expect(withoutFindingMarkers(`claim ${marker}`)).toBe("claim");
+  });
+
+  it("ends a marker with an unknown tail at its own close", () => {
+    expect(withoutFindingMarkers("a <!-- agent-finding f-1 x --> b <!-- c -->")).toBe("a  b <!-- c -->");
   });
 });
 

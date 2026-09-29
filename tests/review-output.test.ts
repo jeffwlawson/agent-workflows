@@ -1291,6 +1291,43 @@ describe("the posted review body", () => {
     expect(body).toContain("<summary><b>Resolved since last review</b> — 1</summary>");
   });
 
+  /**
+   * A threaded finding carried into this round is listed by the title the
+   * review that raised it wrote, linked to its thread, with its anchor beside
+   * the link as every other entry's is (#134) — not by the thread's text,
+   * which is the anchor, an `(outdated …)` clause and the whole opening
+   * paragraph, all of it inside the link.
+   */
+  describe("a threaded finding carried from an earlier review", () => {
+    const threaded = {
+      id: "f-1",
+      threadId: "PRRT_one",
+      text: "src/a.ts:4 (outdated — the code here has changed since) — The warning asserts a verdict stands. It cannot see the commit. Several sentences follow.",
+      title: "Warning asserts a verdict stands on a commit the read could not see",
+      anchor: "src/a.ts:4",
+      severity: "low" as const,
+      url: "https://github.com/o/r/pull/1#discussion_r1",
+    };
+    const line =
+      "[Warning asserts a verdict stands on a commit the read could not see](https://github.com/o/r/pull/1#discussion_r1) — `src/a.ts:4`";
+
+    it("is listed by its title under Resolved since last review", () => {
+      const body = render({ resolved: [threaded] });
+
+      expect(body).toContain(`${severityBadge("low")} ${line}\n`);
+      expect(body).not.toContain("outdated");
+      expect(body).not.toContain("Several sentences");
+    });
+
+    it("is listed by its title under Open while it is still open", () => {
+      const body = render({ stillOpen: [threaded] });
+
+      expect(body).toContain(`${severityBadge("low")} ${line}\n`);
+      expect(body).not.toContain("outdated");
+    });
+
+  });
+
   it("names the case when the agent said a fix round cannot settle it", () => {
     const body = render({ output: output({ needsYou: "the issue asked for the opposite" }) });
 
@@ -2414,7 +2451,9 @@ index 0ff3bbb..c6ca7ae 100644
     const posted = [...reviewThreads(placed).map((t) => t.body), render()].join("\n");
 
     expect(new Set(placed.map((p) => p.id)).size).toBe(2);
-    for (const p of placed) expect(posted).toContain(findingMarker(p.id, p.finding.severity));
+    for (const p of placed) {
+      expect(posted).toContain(findingMarker(p.id, p.finding.severity, p.finding.title));
+    }
   });
 });
 

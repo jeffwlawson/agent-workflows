@@ -878,13 +878,24 @@ const isFileLevel = (thread: { readonly subjectType?: string | null | undefined 
  * invites it to decline.
  */
 const anchorOf = (c: GqlThreadComment, fileLevel = false): string => {
-  if (fileLevel) return `${c.path ?? "unknown"} (the whole file)`;
+  if (fileLevel) return `${locationOf(c, fileLevel)} (the whole file)`;
 
   const outdated = c.line === null || c.line === undefined;
+  return `${locationOf(c)}${outdated ? " (outdated — the code here has changed since)" : ""}`;
+};
+
+/**
+ * The same anchor with no clause: `path:line`, or the path alone for a
+ * file-level thread. What a record entry writes as its `— \`path:line\``, where
+ * a sentence in a code span would be a sentence in a code span (#134).
+ */
+const locationOf = (c: GqlThreadComment, fileLevel = false): string => {
+  if (fileLevel) return c.path ?? "unknown";
+
   const end = c.line ?? c.originalLine;
   const start = c.startLine ?? c.originalStartLine;
   const range = start !== null && start !== undefined && start !== end ? `${start}-${end}` : `${end ?? "?"}`;
-  return `${c.path ?? "unknown"}:${range}${outdated ? " (outdated — the code here has changed since)" : ""}`;
+  return `${c.path ?? "unknown"}:${range}`;
 };
 
 /**
@@ -912,6 +923,8 @@ const findingOn = (
   readonly findingId: string;
   readonly severity?: Severity;
   readonly text: string;
+  readonly title: string;
+  readonly anchor: string;
   readonly url?: string;
 } | undefined => {
   const marked = thread.comments.find(
@@ -921,6 +934,7 @@ const findingOn = (
   if (marked === undefined || findingId === undefined) return undefined;
 
   const severity = findingSeverityIn(marked.body ?? "");
+  const claim = openingClaim(marked.body ?? "");
   // The comment's own permalink, which is the link a record entry carries back
   // to the thread a later round has to reach (#109, decision 8). Optional
   // because it is a link: a response that did not carry one renders an entry
@@ -936,7 +950,13 @@ const findingOn = (
     findingId,
     ...(severity === undefined ? {} : { severity }),
     ...(url === undefined ? {} : { url }),
-    text: `${anchorOf(marked, isFileLevel(thread))} — ${openingClaim(marked.body ?? "")}`,
+    text: `${anchorOf(marked, isFileLevel(thread))} — ${claim}`,
+    // What a record entry lists it as (#134): the title the raising review
+    // wrote, off the marker, and the claim alone for a thread a release before
+    // that wrote — never `text`, whose anchor and clause belong beside a title
+    // rather than inside the link that is one.
+    title: lastFindingMarker(marked.body ?? "")?.title ?? claim,
+    anchor: locationOf(marked, isFileLevel(thread)),
   };
 };
 
@@ -1310,6 +1330,8 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
         threadId: thread.id,
         findingId: found.findingId,
         text: found.text,
+        title: found.title,
+        anchor: found.anchor,
         ...(found.severity === undefined ? {} : { severity: found.severity }),
         ...(found.url === undefined ? {} : { url: found.url }),
         ...(reply === undefined ? {} : { maintainerReply: reply }),

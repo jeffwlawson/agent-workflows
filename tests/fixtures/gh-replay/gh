@@ -53,6 +53,7 @@
  *   GH_REPLAY_FAILURE_AT  1-based check-runs call to start failing at; default 1
  *   GH_REPLAY_COUNTER     path this process counts check-runs calls in
  *   GH_REPLAY_RUNS        path to a JSON array of workflow runs; default none
+ *   GH_REPLAY_RUNS_FAILURE  `403` or `unreachable`: how the runs listing fails
  *   GH_REPLAY_ISSUE       path to the `issue` node the graphql query returns
  *   GH_REPLAY_BLOCKED_BY  path to a JSON array of blocking issues; default none
  *   GH_REPLAY_PULLS       path to a JSON array of pull requests, each carrying
@@ -360,6 +361,41 @@ if (/\/commits\/[^/]+\/status$/.test(endpoint)) {
 // id for its name. Both come from GH_REPLAY_RUNS, which is empty for every
 // scenario that is not about the tail.
 if (/\/actions\/runs\?/.test(endpoint)) {
+  const failure = process.env["GH_REPLAY_RUNS_FAILURE"];
+
+  // Without `--slurp`, an HTTP error's body still reaches **stdout**, and
+  // unfiltered: `--jq` is not applied to it. Recorded 2026-09-29 against gh
+  // 2.101.0, with `2>/dev/null` to keep the streams apart:
+  //
+  //   $ GH_TOKEN=bad gh api 'repos/cli/cli/actions/runs?head_sha=0000000&per_page=50' \
+  //       --jq '.workflow_runs[] | .id' 2>/dev/null
+  //   { "message": "Bad credentials", "documentation_url": …, "status": "401" }
+  //   gh: Bad credentials (HTTP 401)                         ← stderr, exit 1
+  //
+  // A 403 takes the same path with its own message. An unreachable host writes
+  // nothing to stdout — the `Get …: connection refused` line only, exit 1.
+  if (failure !== undefined) {
+    if (failure === "403") {
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            message: "Resource not accessible by integration",
+            documentation_url: "https://docs.github.com/rest/actions/workflow-runs#list-workflow-runs-for-a-repository",
+            status: "403",
+          },
+          null,
+          2,
+        )}`,
+      );
+    }
+    die(
+      failure === "403"
+        ? "gh: Resource not accessible by integration (HTTP 403)"
+        : `Get "https://localhost/api/v3/${endpoint}": dial tcp [::1]:443: connect: connection refused`,
+      1,
+    );
+  }
+
   const workflowRuns = runs();
 
   emit({ total_count: workflowRuns.length, workflow_runs: workflowRuns });

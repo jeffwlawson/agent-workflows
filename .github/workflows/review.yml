@@ -678,8 +678,29 @@ jobs:
           # called workflow contributes no run of its own, so this run is the
           # caller's — named `Agent Review`, matched by the prefix like every
           # other agent run.
-          for rid in $(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=50" \
-                        --jq '.workflow_runs[] | select(.conclusion == "failure") | .id' 2>/dev/null); do
+          #
+          # The listing is gated on gh's exit status, like the count above
+          # (#80). It needs `actions: read`, which this job deliberately does
+          # not declare — run logs can carry an accidentally echoed secret, and
+          # a log tail is not worth that — so on a private repository it is
+          # refused. Fed straight to `for`, that refusal was invisible: a
+          # connection failure iterated nothing, and an HTTP error, whose body
+          # gh prints to stdout unfiltered, iterated its JSON *words* as run
+          # ids. Either way the agent could not tell "no run failed" from "the
+          # runs could not be listed". Now the second says so in the evidence,
+          # and a listing that answered with no failed run still adds nothing.
+          # No remedy is named: the grant is a trust decision, not a fix.
+          : > "${err}.runs"
+          if ! failed_runs=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=50" \
+                               --jq '.workflow_runs[] | select(.conclusion == "failure") | .id' 2>"${err}.runs"); then
+            failed_runs=""
+            echo "::warning::Could not list this commit's workflow runs, so the review has no failure-log output. What \`gh\` said is below."
+            if [ -s "${err}.runs" ]; then
+              cat "${err}.runs"
+            fi
+            echo "_Could not list this commit's workflow runs, so failure-log output is missing here rather than absent — the token likely lacks \`actions: read\`, or the runs are unavailable._" >> "$out"
+          fi
+          for rid in $failed_runs; do
             rname=$(gh api "repos/${GH_REPO}/actions/runs/${rid}" --jq .name 2>/dev/null || echo "run ${rid}")
             case "$rname" in "Agent "*) continue ;; esac
             # `|| echo` on the same grounds as the count above, and it is the

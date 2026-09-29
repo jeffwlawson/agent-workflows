@@ -232,13 +232,19 @@ wins**:
 |---|---|
 | `AGENT_MODEL_<WORKFLOW>` variable | that workflow only — `AGENT_MODEL_REVIEW`, `AGENT_MODEL_UPDATE_BRANCH`, `AGENT_MODEL_IMPLEMENT`, `AGENT_MODEL_IMPLEMENT_PRD`, `AGENT_MODEL_FIX` |
 | `AGENT_MODEL` variable | every workflow, **including** ones with their own default — "run everything on X" is the point of setting it |
-| per-workflow default in code | `update-branch` → `claude-sonnet-5` |
-| global default in code | everything else → `claude-opus-5` |
+| per-workflow default in code | `update-branch` → `claude-sonnet-5-5` |
+| global default in code | everything else → `claude-opus-5-5` |
 
 `update-branch` is the one mechanical job: the workflow merges in bash and only wakes the agent when
 git reports a conflict, so the task is reconciling two known texts rather than designing anything.
 Everything else — writing code from a spec, reviewing it, acting on review feedback — gets the
 strongest model, because those are the steps where a plausible-but-wrong answer costs the most.
+
+> **`claude-opus-5-5` needs Claude Code 2.1.280 or newer.** An older CLI refuses it outright ("does
+> not support this model; version 2.1.280 or newer is required"). The workflows install Claude Code
+> unpinned, so CI meets that — it was 2.1.284 when these defaults were set (2026-09-28). The minimum
+> matters if you run a runner locally or on a pinned CLI: upgrade it, or override the model with
+> the variables above.
 
 Set them as **repository variables** (Settings → Secrets and variables → Actions → Variables). No
 commit, no PR, and reverting means clearing the variable.

@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 // Same shape as tests/common.test.ts: only the process-spawning exports are
 // replaced, because everything else in the graph that reaches for
@@ -19,6 +19,8 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   CONVERSATION_OUTCOME_MARKER,
   filterConversationOutcomes,
@@ -2275,5 +2277,73 @@ describe("a conversation comment the fix run owes an outcome on", () => {
         feedback.conversationComments.map((c) => c.commentId),
       ),
     ).toEqual([declined]);
+  });
+});
+
+/**
+ * `git()` reads through `execFileSync`'s default 1 MiB buffer, and a three-dot
+ * diff past that — a regenerated lockfile, a vendored directory — threw a bare
+ * `spawnSync git ENOBUFS` that named neither the pull request nor the limit
+ * (#138). The overflow is now a refusal through `fail()`; everything else git
+ * can throw still propagates as it did.
+ */
+describe("a diff too large to read", () => {
+  class Exited extends Error {}
+
+  let scratch = "";
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+  const previousOutputDir = process.env["OUTPUT_DIR"];
+
+  const gitThrows = (error: Error): void => {
+    spawned.mockImplementation(((file: string, args: readonly string[]) => {
+      if (file === "git") {
+        if (args.includes("--name-status")) return "";
+        throw error;
+      }
+      if (file === "gh" && args[0] === "api") return response(pullRequest());
+      throw new Error(`unexpected call: ${file} ${args.join(" ")}`);
+    }) as never);
+  };
+
+  beforeEach(() => {
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pr-feedback-diff-"));
+    process.env["OUTPUT_DIR"] = scratch;
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+    if (previousOutputDir === undefined) delete process.env["OUTPUT_DIR"];
+    else process.env["OUTPUT_DIR"] = previousOutputDir;
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("refuses through the reason file, naming the pull request and the limit", () => {
+    gitThrows(Object.assign(new Error("spawnSync git ENOBUFS"), { code: "ENOBUFS" }));
+
+    expect(() => fetchPullRequestFeedback("12")).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    const reason = fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8");
+    expect(reason).toContain("#12");
+    expect(reason).toContain("1 MiB");
+    expect(reason).not.toContain("ENOBUFS");
+  });
+
+  it("lets any other git failure through unchanged", () => {
+    const unrelated = Object.assign(new Error("fatal: bad revision 'main...HEAD'"), { status: 128 });
+    gitThrows(unrelated);
+
+    expect(() => fetchPullRequestFeedback("12")).toThrow(unrelated);
+    expect(exit).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(scratch, "failure_reason.txt"))).toBe(false);
   });
 });

@@ -1137,6 +1137,10 @@ export const renderReviewBody = (parts: {
         ? entries.map((entry) => ({ ...entry, title: shortened(entry.title, SHED_TITLE_LENGTH) }))
         : [...entries];
     const followUps = parts.followUps.slice(0, parts.followUps.length - shed.cutFollowUps);
+    // The payload accounts for every entry it does not carry, so `dropped` is
+    // the sum and `cut` names the part of it the size took. The visible group
+    // gets the cap's count alone: the shed sentence already says what the size
+    // took, and "dropped by the cap" is the wrong cause for any of that.
     const dropped = parts.droppedFollowUps + shed.cutFollowUps;
 
     return [
@@ -1152,7 +1156,7 @@ export const renderReviewBody = (parts: {
       renderGroup("Open", cut(record.open), true),
       renderGroup("Previously missed", cut(record.missed), true, PREVIOUSLY_MISSED_SUBTITLE),
       renderGroup("Resolved since last review", cut(record.resolved), false),
-      renderFollowUpsGroup(followUps, dropped, !shed.followUpTitles),
+      renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles),
       renderHowChecked(parts.output.howChecked),
       parts.showWhatChanged ? renderWhatChanged(parts.output.whatChanged) : undefined,
       // The only rule in the body, and it is here rather than between the groups
@@ -1164,7 +1168,7 @@ export const renderReviewBody = (parts: {
       // Last, and invisible. The filing half reads the latest one off the body
       // (#47), so it goes out on every review including the one that recorded
       // nothing — which is how a round retracts an earlier round's list.
-      followUpsPayload(followUps, dropped, parts.movedToFollowUps),
+      followUpsPayload(followUps, dropped, parts.movedToFollowUps, shed.cutFollowUps),
     ]
       .filter((part) => part !== undefined && part !== "")
       .join("\n\n");
@@ -1602,7 +1606,7 @@ export const hasFollowUpsBlock = (body: string): boolean =>
  */
 export const parseFollowUpsBlock = (
   body: string,
-): { followUps: FollowUp[]; dropped: number; moved: number } | undefined => {
+): { followUps: FollowUp[]; dropped: number; moved: number; cut: number } | undefined => {
   const matches = [...body.matchAll(BLOCK)];
   const raw = matches[matches.length - 1]?.[1];
   if (raw === undefined) return undefined;
@@ -1630,11 +1634,17 @@ export const parseFollowUpsBlock = (
   // an exempt prefix longer than the list would exempt the whole of one this
   // block did not come from.
   const moved = record["moved"];
+  // The part of `dropped` cut to fit the body rather than by the cap (#140).
+  // Absent wherever nothing was cut, which is every payload before it existed.
+  // Clamped to `dropped` because it is a part of it.
+  const count = typeof dropped === "number" && dropped > 0 ? Math.floor(dropped) : 0;
+  const cut = record["cut"];
   return {
     followUps,
-    dropped: typeof dropped === "number" && dropped > 0 ? Math.floor(dropped) : 0,
+    dropped: count,
     moved:
       typeof moved === "number" && moved > 0 ? Math.min(Math.floor(moved), followUps.length) : 0,
+    cut: typeof cut === "number" && cut > 0 ? Math.min(Math.floor(cut), count) : 0,
   };
 };
 
@@ -1662,16 +1672,25 @@ export const parseFollowUpsBlock = (
  * deliberately kept. The field is additive and the version stays `1`: a reader
  * that has never heard of it reads `0` and caps exactly as it does today, where
  * a bump would make it refuse the block and file nothing at all.
+ *
+ * `cut` is how much of `dropped` the body's size took rather than the cap
+ * (#140), so the merge comment names the right cause for each. Additive on the
+ * same terms as `moved`, and written only where it is not zero, so a body that
+ * fits carries the payload it always did. `dropped` stays the sum: a reader
+ * that has never heard of `cut` still accounts for every entry, if under the
+ * cap's name.
  */
 export const followUpsPayload = (
   kept: readonly FollowUp[],
   dropped: number,
   moved: number,
+  cut = 0,
 ): string =>
   `<!-- ${FOLLOW_UPS_MARKER} ${embeddableJson({
     version: FOLLOW_UPS_VERSION,
     dropped,
     moved,
+    ...(cut > 0 ? { cut } : {}),
     followUps: kept,
   })} -->`;
 
@@ -1720,12 +1739,18 @@ export const renderFollowUpsGroup = (
   // moved finding is exempt (`recordFollowUps`), so a sentence claiming only
   // three entries are listed would be false above four and would name the wrong
   // population for the loss either way.
+  //
+  // Without titles nothing is listed, and what is kept may be fewer than the
+  // cap once the body's size has cut some too (#140) — so that case says only
+  // what the cap did, and leaves what the size did to the shed sentence.
   const truncation =
     dropped === 0
       ? []
       : [
           "",
-          `Only the ${MAX_FOLLOW_UPS} most serious out-of-scope findings are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`,
+          titles
+            ? `Only the ${MAX_FOLLOW_UPS} most serious out-of-scope findings are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`
+            : `The cap keeps the ${MAX_FOLLOW_UPS} most serious out-of-scope findings; ${dropped} more were dropped by it. Raise them here if they matter.`,
         ];
 
   return [

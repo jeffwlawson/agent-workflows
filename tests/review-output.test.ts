@@ -453,7 +453,7 @@ describe("renderFollowUpsBlock", () => {
     );
     expect(block).not.toContain("<details>");
     expect(hasFollowUpsBlock(block)).toBe(true);
-    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0 });
+    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
   });
 });
 
@@ -476,6 +476,7 @@ describe("parseFollowUpsBlock", () => {
       followUps: list,
       dropped: 2,
       moved: 0,
+      cut: 0,
     });
   });
 
@@ -527,7 +528,7 @@ describe("parseFollowUpsBlock", () => {
   it("reads a block with no exempt prefix as exempting nothing", () => {
     const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[]} -->`;
 
-    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0 });
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
   });
 
   /**
@@ -1702,12 +1703,13 @@ describe("the posted review body", () => {
       followUps: list,
       dropped: 2,
       moved: 0,
+      cut: 0,
     });
 
     const empty = render();
     expect(empty).not.toContain("<summary><b>Follow-ups</b>");
     expect(hasFollowUpsBlock(empty)).toBe(true);
-    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0 });
+    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
   });
 
   /**
@@ -2858,13 +2860,26 @@ describe("the review body against GitHub's size limit", () => {
     expect(kept).toBeLessThan(3);
     // Every entry is accounted for: what is in it, and what it says it dropped.
     expect(block?.dropped).toBe(2 + (3 - kept));
+    // And the size's part of that is named apart from the cap's (#140).
+    expect(block?.cut).toBe(3 - kept);
     // The filing end's own cap leaves the kept list whole.
     expect(capFollowUps(block?.followUps.slice(block.moved) ?? []).kept).toHaveLength(kept);
 
     expect(body).toContain("the follow-up titles were left out");
     expect(body).toContain(`cut from the end of the list filed on merge`);
     expect(body).toContain(`<summary><b>Follow-ups</b> — ${50 + kept} ·`);
+    // The visible group blames the cap for the cap's two alone, and claims no
+    // listing it no longer shows; the shed sentence carries the size's count.
+    expect(body).toContain("The cap keeps the 3 most serious out-of-scope findings; 2 more were dropped by it.");
+    expect(body).not.toContain("findings are listed");
+    expect(body).toContain(`${3 - kept} out-of-scope follow-up`);
     expect(lines).toHaveLength(1);
+  });
+
+  it("reads a cut past the dropped count as no more than it", () => {
+    const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":1,"cut":4,"followUps":[]} -->`;
+
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 1, moved: 0, cut: 1 });
   });
 
   it("refuses a body that cannot be made to fit, naming its size and the limit", () => {

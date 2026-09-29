@@ -580,14 +580,22 @@ export interface MarkedEntry {
 }
 
 /**
- * The id, then optionally the severity, then optionally the title. The severity
- * is matched against the three words rather than as another `\S+`, so a marker
- * this version does not understand loses the trailing token rather than the id
- * — identity is the half that must survive a format it has not met. The title
- * is matched on the base64 alphabet `findingMarker` writes it in.
+ * The id, then optionally the severity, then optionally the title, then any
+ * tokens this version does not know. The severity is matched against the three
+ * words rather than as another `\S+`, and the unknown tail is matched and
+ * dropped, so a marker a later release writes loses what this one cannot read
+ * rather than the id — identity is the half that must survive a format it has
+ * not met. The title is matched on the base64 alphabet `findingMarker` writes
+ * it in.
+ *
+ * That holds from this release on, not before it: a release older than #134
+ * has no tail and matches nothing on a marker carrying a title, so a runner
+ * pinned back past it reads no finding off a thread this release wrote. A tail
+ * token is any run of non-space that is not the comment's own close, so the
+ * match still ends at the first `-->`.
  */
 const MARKER = new RegExp(
-  `<!--\\s*${FINDING_MARKER}\\s+(\\S+?)(?:\\s+(high|medium|low))?(?:\\s+title:([A-Za-z0-9+/]+=*))?\\s*-->`,
+  `<!--\\s*${FINDING_MARKER}\\s+(\\S+?)(?:\\s+(high|medium|low))?(?:\\s+title:([A-Za-z0-9+/]+=*))?(?:\\s+(?:(?!-->)\\S)+)*\\s*-->`,
 );
 
 /** A checklist's own furniture, which is the list's rather than the entry's. */

@@ -798,6 +798,30 @@ describe("the finding marker", () => {
   it("strips a marker carrying a title out of what a model wrote", () => {
     expect(withoutFindingMarkers(`claim ${findingMarker("f-1", "high", "t")}`)).toBe("claim");
   });
+
+  /**
+   * A later release's marker keeps its id here: a token this version does not
+   * know is dropped rather than failing the match, wherever it sits after the
+   * id — the claim the pattern's comment makes, which before this it did not
+   * keep (#134 review).
+   */
+  it.each([
+    ["an unknown word where the severity goes", "<!-- agent-finding f-1 critical -->", { id: "f-1" }],
+    ["an unknown word after the severity", "<!-- agent-finding f-1 high scope:x -->", { id: "f-1", severity: "high" }],
+    [
+      "an unknown word after the title",
+      `<!-- agent-finding f-1 low title:${Buffer.from("t").toString("base64")} more:y -->`,
+      { id: "f-1", severity: "low", title: "t" },
+    ],
+    ["several unknown words", "<!-- agent-finding f-1 a b c-->", { id: "f-1" }],
+  ])("keeps the id through %s", (_, marker, expected) => {
+    expect(parseFindingMarkers(`- a claim ${marker}`)).toEqual([{ ...expected, text: "a claim" }]);
+    expect(withoutFindingMarkers(`claim ${marker}`)).toBe("claim");
+  });
+
+  it("ends a marker with an unknown tail at its own close", () => {
+    expect(withoutFindingMarkers("a <!-- agent-finding f-1 x --> b <!-- c -->")).toBe("a  b <!-- c -->");
+  });
 });
 
 /**

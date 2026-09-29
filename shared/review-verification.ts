@@ -38,6 +38,18 @@ export interface CarriedFinding {
   /** One line: where it is and what it claims, as the review that raised it wrote it. */
   readonly text: string;
   /**
+   * What the record lists a **threaded** finding as (#134): the title the
+   * review that raised it wrote, read back off the thread's marker — or, on a
+   * thread an older release wrote, the claim alone. Never `text`, which is the
+   * anchor, any `(outdated …)` clause and the claim, and reads as a paragraph
+   * inside a link.
+   *
+   * Absent on a body entry, whose `text` is already the title its line showed.
+   */
+  readonly title?: string;
+  /** `path:line` for a threaded finding, rendered beside the title as every entry's is. */
+  readonly anchor?: string;
+  /**
    * The rating the review that raised it gave it, read back off the marker the
    * workflow wrote (#109, decision 9). Absent where the finding was posted by a
    * release that wrote no severity, which the record renders as a badge-less
@@ -114,6 +126,10 @@ export interface AgentThread {
   readonly findingId: string;
   /** Where the thread is anchored and what its first comment claims. */
   readonly text: string;
+  /** What a record entry lists it as. See `CarriedFinding.title`. */
+  readonly title?: string;
+  /** `path:line`, with no clause. See `CarriedFinding.anchor`. */
+  readonly anchor?: string;
   /** The rating on the marker the review that raised it wrote, where it carries one. */
   readonly severity?: Severity;
   /** The thread's own permalink, where the response carried one. */
@@ -185,6 +201,8 @@ export const carriedFindings = (parts: {
       id: thread.findingId,
       threadId: thread.threadId,
       text: thread.text,
+      ...(thread.title === undefined ? {} : { title: thread.title }),
+      ...(thread.anchor === undefined ? {} : { anchor: thread.anchor }),
       ...(thread.severity === undefined ? {} : { severity: thread.severity }),
       ...(thread.url === undefined ? {} : { url: thread.url }),
       ...(thread.maintainerReply === undefined ? {} : { maintainerReply: thread.maintainerReply }),
@@ -440,12 +458,15 @@ const NO_NOTE = "The current change resolves this.";
  * records `resolutionReason` and exposes it nowhere afterwards (#109), so the
  * reply is the only record that this thread was closed by a review that read
  * the code rather than by the run that claimed to have fixed it.
+ *
+ * The footnote names only the closer. The contrast with the fix run is why the
+ * line exists, and that belongs here rather than in every thread it closes.
  */
 export const resolutionReply = (entry: VerificationEntry): string =>
   [
     `${VERIFIED_FIXED} ${entry.note ?? NO_NOTE}`,
     "",
-    "_Resolved by the review that checked it, rather than by the run that fixed it._",
+    "_Resolved by the review agent._",
     "",
     resolutionMarker("ADDRESSED"),
   ].join("\n");

@@ -34,8 +34,9 @@ import {
   unreadableNote,
 } from "../shared/pr-feedback.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
-import { severityBadge } from "../shared/review-findings.js";
-import { declineReply, resolutionReply } from "../shared/review-verification.js";
+import { findingMarker, severityBadge } from "../shared/review-findings.js";
+import { reviewRecord } from "../shared/review-output.js";
+import { carriedFindings, declineReply, resolutionReply } from "../shared/review-verification.js";
 
 const spawned = vi.mocked(execFileSync);
 const captured = vi.mocked(spawnSync);
@@ -1364,6 +1365,8 @@ describe("the findings an earlier review left open", () => {
         threadId: "PRRT_one",
         findingId: "f-1",
         text: "src/queue.ts:206 — the guard runs after the return",
+        title: "the guard runs after the return",
+        anchor: "src/queue.ts:206",
       },
     ]);
   });
@@ -1689,6 +1692,83 @@ describe("a thread anchored to a file rather than a line", () => {
   });
 
   /**
+   * What the record lists a threaded finding as (#134): the title off its
+   * marker, and the anchor with no clause — never the thread's text, whose
+   * anchor and `(outdated …)` clause read as a paragraph inside a link.
+   */
+  it("reads the title the raising review wrote off the marker, and a plain anchor", () => {
+    const moved = {
+      id: "PRRT_moved",
+      isResolved: false,
+      subjectType: "LINE",
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: null,
+            originalLine: 206,
+            body: `**Fix before merge.** the guard runs after the return, which is several sentences long.\n\n${findingMarker("f-2", "low", "the guard runs late")}`,
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [moved] } }));
+
+    const [thread] = fetchPullRequestFeedback("12").agentThreads;
+    expect(thread?.title).toBe("the guard runs late");
+    expect(thread?.anchor).toBe("src/queue.ts:206");
+  });
+
+  /** A thread an older release wrote has no title on its marker: the claim alone, then. */
+  it("falls back to the claim alone where the marker carries no title", () => {
+    const moved = {
+      id: "PRRT_moved",
+      isResolved: false,
+      subjectType: "LINE",
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: null,
+            originalLine: 206,
+            body: "**Fix before merge.** the guard runs after the return\n\n<!-- agent-finding f-2 low -->",
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [moved] } }));
+
+    const threads = fetchPullRequestFeedback("12").agentThreads;
+    expect(threads[0]?.title).toBe("the guard runs after the return");
+    expect(threads[0]?.anchor).toBe("src/queue.ts:206");
+
+    // And through to the record, where the anchor and the clause stay out of
+    // the entry's title.
+    const record = reviewRecord({
+      output: { findings: [], followUps: [], fixBeforeMerge: [], verified: [] },
+      placed: [],
+      stillOpen: [],
+      resolved: carriedFindings({ threads, latestReviewBody: "" }),
+    });
+    expect(record.resolved).toEqual([
+      {
+        title: "the guard runs after the return",
+        severity: "low",
+        anchor: "src/queue.ts:206",
+        isNew: false,
+      },
+    ]);
+  });
+
+  it("anchors a file-level thread at its path alone", () => {
+    ghAnswers(() => response({ reviewThreads: { nodes: [fileThread()] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads[0]?.anchor).toBe("src/queue.ts");
+  });
+
+  /**
    * A thread from before the field was selected answers nothing, and is read
    * as a line thread — which is what every thread was until #110, and the
    * reading that changes nothing for one.
@@ -1900,6 +1980,8 @@ describe("a finding the maintainer has settled", () => {
         threadId: "PRRT_one",
         findingId: "f-1",
         text: "src/queue.ts:206 — the guard runs after the return",
+        title: "the guard runs after the return",
+        anchor: "src/queue.ts:206",
         maintainerReply: {
           login: "maintainer",
           body: "Won't fix — the duplicate write is intended here.",
@@ -2049,6 +2131,8 @@ describe("a thread already carrying this workflow's closing reply", () => {
         threadId: "PRRT_one",
         findingId: "f-1",
         text: "src/queue.ts:206 — the guard runs after the return",
+        title: "the guard runs after the return",
+        anchor: "src/queue.ts:206",
         closedAs: "ADDRESSED",
       },
     ]);

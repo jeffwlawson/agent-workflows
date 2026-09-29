@@ -1,8 +1,8 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
 import {
   findingMarker,
+  findingTitle,
   isPreviouslyMissed,
-  openingClaim,
   parseFinding,
   parseSeverity,
   severityBadge,
@@ -584,18 +584,15 @@ const carriedClaim = (finding: CarriedFinding): string => {
 /**
  * A finding this review produced, as an entry.
  *
- * The title rather than the claim, which is what `title` is for — and the claim
- * the body opens with where the model left the title empty, for the reason
- * `parseFinding` defaults it: this is display, and a blank line in a list is
- * worse than a reworded one.
+ * The title rather than the claim, which is what `title` is for — by
+ * `findingTitle`, the same derivation the thread's marker carries forward, so a
+ * later round lists this finding under the words this one did.
  */
 const placedEntry = (placed: PlacedFinding): RecordEntry => {
-  const title = oneLine(placed.finding.title) || openingClaim(placed.finding.body);
-
   // No id and no evidence: every finding this review raises now has a thread
   // (#127, decision 1), and the thread carries both.
   return {
-    title: oneLine(title),
+    title: oneLine(findingTitle(placed.finding)),
     severity: placed.finding.severity,
     anchor: `${placed.finding.path}:${placed.finding.line}`,
     isNew: true,
@@ -607,7 +604,10 @@ const placedEntry = (placed: PlacedFinding): RecordEntry => {
  * resolved one — see `RecordEntry.id`.
  */
 const carriedEntry = (finding: CarriedFinding, keepId: boolean): RecordEntry => ({
-  title: carriedClaim(finding),
+  // A threaded finding's own title where the thread carried one (#134); the
+  // body entry's line, stripped of what this file wrote around it, otherwise.
+  title: finding.title === undefined ? carriedClaim(finding) : oneLine(finding.title),
+  ...(finding.anchor === undefined ? {} : { anchor: finding.anchor }),
   ...(finding.severity === undefined ? {} : { severity: finding.severity }),
   ...(keepId && finding.threadId === undefined ? { id: finding.id } : {}),
   ...(finding.url === undefined ? {} : { url: finding.url }),

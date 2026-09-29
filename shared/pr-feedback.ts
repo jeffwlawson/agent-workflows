@@ -169,7 +169,10 @@ export interface PullRequestFeedback {
    */
   readonly changedFiles: readonly string[];
   /**
-   * False when nothing trusted was **rendered**. Deliberately not the whole
+   * False when nothing trusted was rendered **that a fix run could act on** —
+   * a review summary, a thread in `threadIds` or a comment in
+   * `conversationComments` (#160). A thread awaiting its close and this loop's
+   * own status notes are rendered and do not count. Deliberately not the whole
    * question any more: it cannot tell "every surface answered and had nothing"
    * from "a surface was refused", and those two want opposite actions. Read it
    * alongside `status` and `unreadable` — or through `refusalReason`, which
@@ -704,15 +707,17 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
 
   if (!feedback.hasFeedback && feedback.unreadable.length > 0) {
     return (
-      `Nothing trusted was rendered, and part of the feedback query was refused: ${describeUnreadable(feedback.unreadable)}. ` +
+      `Nothing trusted to act on was rendered, and part of the feedback query was refused: ${describeUnreadable(feedback.unreadable)}. ` +
       '"Nothing to act on" and "a selection was refused" are not the same answer, so this refuses as the second.'
     );
   }
 
   if (!feedback.hasFeedback) {
     return (
-      "No unresolved feedback from a repo collaborator (or our review agent) to act on. " +
-      "Resolved threads and comments from non-collaborators are deliberately ignored."
+      "Nothing from a repo collaborator (or our review agent) that a fix run owes an answer on. " +
+      "Deliberately not counted: resolved threads, comments from non-collaborators, a thread " +
+      "already carrying this workflow's closing reply (it waits on the review to close it), and " +
+      "this loop's own status notes — the last two are shown to a fix run as evidence, not as asks."
     );
   }
 
@@ -1374,10 +1379,13 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     priorTopLevelComments,
     diff: readDiff(prNumber),
     changedFiles: parseNameStatus(git(changedFilesCommandAgainstBase(process.env["BASE_REF"]))),
-    // Deliberately computed from `all`, which no longer contains our own
-    // top-level comments: a PR with every thread resolved and no human input
-    // must still refuse, rather than find "feedback" the agent wrote itself.
-    hasFeedback: all.length > 0,
+    // Deliberately **not** computed from `all` (#160). What is rendered and
+    // what is owed an answer came apart in #133 and #159: a thread awaiting its
+    // close and this loop's own unmarked status notes are shown for their
+    // evidence and ask for nothing, so a PR holding only those must still
+    // refuse rather than spend a run with nothing to act on. A review summary
+    // counts as it always has.
+    hasFeedback: summaries !== "" || answerable.length > 0 || conversationComments.length > 0,
     status,
     unreadable,
   };

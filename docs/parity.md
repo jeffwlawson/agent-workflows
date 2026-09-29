@@ -1166,7 +1166,11 @@ expensive to rediscover.
   `pr-feedback.ts` drops marked comments from the `conversation` surface. Narrowing that surface
   costs nothing: the review → fix handoff runs through `reviews`/`reviewThreads`, not `comments`.
   It also keeps `hasFeedback` honest — a PR with every thread resolved and no human input still
-  refuses, rather than finding "feedback" the agent wrote itself.
+  refuses, rather than finding "feedback" the agent wrote itself. That took a second step (#160):
+  `hasFeedback` reads the **answerable** set — a review summary, a thread in `threadIds`, a comment
+  in `conversationComments` — rather than the rendered one, because the loop's own unmarked status
+  notes and a thread awaiting its close are rendered as evidence and owed nothing. Read off the
+  render, a PR whose only conversation was an `agent:fix run failed` note did not refuse.
 
   **Two markers since #104**, and since #159 an author bound under them. The marked kinds are the
   two a fix run writes *to be read* — a top-level comment and, added by #104, the record of what it

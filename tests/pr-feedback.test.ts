@@ -2065,17 +2065,23 @@ describe("a thread already carrying this workflow's closing reply", () => {
   });
 
   /**
-   * And it is feedback, so a fix run labelled on a pull request holding only
-   * such threads still proceeds. What it must not do is refuse: the review may
-   * have ruled the finding open again, and the thread is the only place the
-   * evidence for it is written down.
+   * **And it is not, on its own, something to act on** (#160). Rendered and
+   * unanswerable: a fix run may not reply into it, and what is outstanding on
+   * it is a close only the review performs. A pull request holding nothing
+   * else used to proceed and spend a run on it. A review that rules the
+   * finding open again says so in a summary, and a summary still counts.
    */
-  it("is feedback a fix run proceeds on when it is the only open thread", () => {
+  it("is not feedback a fix run proceeds on when it is the only open thread", () => {
     ghAnswers(() =>
       response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [thread(verified)] } }),
     );
 
-    expect(fetchPullRequestFeedback("12").hasFeedback).toBe(true);
+    const feedback = fetchPullRequestFeedback("12");
+
+    // Still shown — the refusal is about what is owed, not what is visible.
+    expect(feedback.inline).toContain("the guard runs after the return");
+    expect(feedback.hasFeedback).toBe(false);
+    expect(refusalReason(feedback)).toContain("No unresolved feedback from a repo collaborator");
   });
 
   /**
@@ -2256,6 +2262,38 @@ describe("a conversation comment the fix run owes an outcome on", () => {
     expect(feedback.conversation).not.toContain("IC_ourStatusNote");
     // …and said rather than left to be inferred, the way `AWAITING_CLOSE` is.
     expect(feedback.conversation).toMatch(/no outcome is owed on it/i);
+  });
+
+  /**
+   * **And it is not feedback to act on** (#160). A pull request whose only
+   * conversation is a note that a previous run failed has nothing a fix run
+   * owes an answer on, so it refuses rather than spend a run on the loop's own
+   * status.
+   */
+  it("refuses a pull request whose only conversation is the loop's own status note", () => {
+    ghAnswers(() =>
+      response({
+        reviews: { nodes: [] },
+        reviewThreads: { nodes: [] },
+        comments: {
+          nodes: [
+            {
+              author: { login: "github-actions" },
+              authorAssociation: "NONE",
+              id: "IC_ourStatusNote",
+              url: "u",
+              body: "`agent:fix` run failed.\n\n**Reason:** the push was rejected.",
+            },
+          ],
+        },
+      }),
+    );
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.conversation).toContain("the push was rejected");
+    expect(feedback.hasFeedback).toBe(false);
+    expect(refusalReason(feedback)).toContain("No unresolved feedback from a repo collaborator");
   });
 
   /** Whoever else posts under that login. The bound is the author, not the text. */

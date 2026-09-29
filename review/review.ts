@@ -397,6 +397,10 @@ try {
     // it to hold.
     showWhatChanged: describesTheChange(round),
     runUrl: workflowRunUrl(),
+    // What was shed, where the body had to be cut to fit GitHub's limit (#140).
+    // A body that cannot be made to fit throws, and the catch below writes the
+    // reason rather than letting the post meet the limit as a 422.
+    log: (line) => console.log(line),
   });
 
   // A GraphQL request body, posted by the workflow with `gh api graphql

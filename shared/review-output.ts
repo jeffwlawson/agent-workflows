@@ -907,6 +907,78 @@ const renderWhatChanged = (whatChanged: WhatChanged | undefined): string | undef
 };
 
 /**
+ * GitHub's ceiling on a review body. Over it, `addPullRequestReview` answers
+ * with a 422 and posts nothing — the inline threads included, since they go out
+ * in the same call (#140).
+ */
+export const REVIEW_BODY_LIMIT = 65_536;
+
+/**
+ * What `renderReviewBody` holds a body to: the ceiling less a margin for what is
+ * added after it measures — the GraphQL request escaping nothing GitHub counts,
+ * but a margin costing a kilobyte of a sixty-four kilobyte record is cheaper
+ * than finding out which of the two was wrong.
+ */
+export const REVIEW_BODY_BUDGET = REVIEW_BODY_LIMIT - 1_024;
+
+/**
+ * A body's size as it is held to `REVIEW_BODY_BUDGET`: **UTF-8 bytes**.
+ *
+ * GitHub's message says *characters* and documents nothing more, and the
+ * reports of it disagree about multibyte text. So this counts the unit that is
+ * never smaller than any of the candidates — bytes are at least code points and
+ * at least UTF-16 units — which makes the wrong guess an entry shortened that
+ * would have fitted rather than a review lost to a 422.
+ */
+export const reviewBodySize = (body: string): number => Buffer.byteLength(body, "utf8");
+
+/**
+ * How long a record entry's title may run once the body has to shed. Long
+ * enough to say what the finding is; the rest is on its thread, or — for a
+ * carried body entry with none — was on the review that raised it.
+ */
+const SHED_TITLE_LENGTH = 160;
+
+/** By code point, so a cut never lands inside a surrogate pair. */
+const shortened = (text: string, max: number): string => {
+  const points = Array.from(text);
+  return points.length <= max ? text : `${points.slice(0, max - 1).join("").trimEnd()}…`;
+};
+
+/**
+ * What `renderReviewBody` gave up to fit, in the order it gives it up. Each
+ * later step keeps every earlier one.
+ */
+interface Shed {
+  /** The record's entries were cut to `SHED_TITLE_LENGTH`. */
+  readonly titles: boolean;
+  /** The *Follow-ups* group lists no titles, only how many there are. */
+  readonly followUpTitles: boolean;
+  /** How many entries were cut off the payload's tail, out-of-scope half only. */
+  readonly cutFollowUps: number;
+}
+
+const NOTHING_SHED: Shed = { titles: false, followUpTitles: false, cutFollowUps: 0 };
+
+/**
+ * The visible sentence saying what was cut, or `undefined` where nothing was —
+ * so a body that fits is the body it always was.
+ */
+const shedSentence = (shed: Shed): string | undefined => {
+  const clauses = [
+    shed.titles ? "the evidence quoted in the entries below was shortened" : undefined,
+    shed.followUpTitles ? "the follow-up titles were left out" : undefined,
+    shed.cutFollowUps === 0
+      ? undefined
+      : `${shed.cutFollowUps} out-of-scope ${plural(shed.cutFollowUps, "follow-up was", "follow-ups were")} cut from the end of the list filed on merge`,
+  ].filter((clause) => clause !== undefined);
+
+  return clauses.length === 0
+    ? undefined
+    : `_To fit GitHub's ${REVIEW_BODY_LIMIT.toLocaleString("en-US")}-character limit on a review body, ${clauses.join("; ")}._`;
+};
+
+/**
  * The body as it is posted: the findings record decision 8 describes, in one
  * fixed order, and the one place that order is written down.
  *
@@ -1037,6 +1109,12 @@ export const renderReviewBody = (parts: {
    * Actions renders a body without one rather than failing.
    */
   readonly runUrl?: string | undefined;
+  /**
+   * Where to say what was shed when the body had to be made to fit. Optional,
+   * because the body says it too; this is the run log's copy, for the human who
+   * opens the run rather than the review.
+   */
+  readonly log?: ((line: string) => void) | undefined;
 }): string => {
   const record = reviewRecord(parts);
 
@@ -1053,35 +1131,88 @@ export const renderReviewBody = (parts: {
   const written = parts.output.assessment?.trim();
   const assessment = written === undefined || written === "" ? unresolvedSentence(record) : written;
 
-  const body = [
-    BODY_HEADING,
-    `### ${parts.verdict.heading}`,
-    assessment,
-    `_${labelsAsCode(parts.verdict.nextStep)}_`,
-    parts.output.needsYou,
-    parts.roundNote === undefined ? undefined : labelsAsCode(parts.roundNote),
-    findingsLine(record),
-    movedSentence(parts.movedToFollowUps),
-    renderGroup("Open", record.open, true),
-    renderGroup("Previously missed", record.missed, true, PREVIOUSLY_MISSED_SUBTITLE),
-    renderGroup("Resolved since last review", record.resolved, false),
-    renderFollowUpsGroup(parts.followUps, parts.droppedFollowUps),
-    renderHowChecked(parts.output.howChecked),
-    parts.showWhatChanged ? renderWhatChanged(parts.output.whatChanged) : undefined,
-    // The only rule in the body, and it is here rather than between the groups
-    // because this is the only place the subject changes: everything above is
-    // the review, and this is the run that posted it.
-    parts.runUrl === undefined
-      ? undefined
-      : `---\n\n_Posted by [this workflow run](${parts.runUrl})._`,
-    // Last, and invisible. The filing half reads the latest one off the body
-    // (#47), so it goes out on every review including the one that recorded
-    // nothing — which is how a round retracts an earlier round's list.
-    followUpsPayload(parts.followUps, parts.droppedFollowUps, parts.movedToFollowUps),
-  ]
-    .filter((part) => part !== undefined && part !== "")
-    .join("\n\n");
+  const compose = (shed: Shed): string => {
+    const cut = (entries: readonly RecordEntry[]): RecordEntry[] =>
+      shed.titles
+        ? entries.map((entry) => ({ ...entry, title: shortened(entry.title, SHED_TITLE_LENGTH) }))
+        : [...entries];
+    const followUps = parts.followUps.slice(0, parts.followUps.length - shed.cutFollowUps);
+    const dropped = parts.droppedFollowUps + shed.cutFollowUps;
 
+    return [
+      BODY_HEADING,
+      `### ${parts.verdict.heading}`,
+      assessment,
+      `_${labelsAsCode(parts.verdict.nextStep)}_`,
+      parts.output.needsYou,
+      parts.roundNote === undefined ? undefined : labelsAsCode(parts.roundNote),
+      findingsLine(record),
+      movedSentence(parts.movedToFollowUps),
+      shedSentence(shed),
+      renderGroup("Open", cut(record.open), true),
+      renderGroup("Previously missed", cut(record.missed), true, PREVIOUSLY_MISSED_SUBTITLE),
+      renderGroup("Resolved since last review", cut(record.resolved), false),
+      renderFollowUpsGroup(followUps, dropped, !shed.followUpTitles),
+      renderHowChecked(parts.output.howChecked),
+      parts.showWhatChanged ? renderWhatChanged(parts.output.whatChanged) : undefined,
+      // The only rule in the body, and it is here rather than between the groups
+      // because this is the only place the subject changes: everything above is
+      // the review, and this is the run that posted it.
+      parts.runUrl === undefined
+        ? undefined
+        : `---\n\n_Posted by [this workflow run](${parts.runUrl})._`,
+      // Last, and invisible. The filing half reads the latest one off the body
+      // (#47), so it goes out on every review including the one that recorded
+      // nothing — which is how a round retracts an earlier round's list.
+      followUpsPayload(followUps, dropped, parts.movedToFollowUps),
+    ]
+      .filter((part) => part !== undefined && part !== "")
+      .join("\n\n");
+  };
+
+  // Measured, and shed in a fixed order until it fits (#140) — least costly to
+  // lose first. The entries' quoted text goes first: a threaded finding's
+  // thread holds all of it. The follow-up titles next: the payload still files
+  // every one. And the payload last, from its **tail** and never from the
+  // moved prefix, because an entry cut from it is a follow-up retracted — the
+  // out-of-scope half is the one the cap already announces a loss on, and the
+  // moved half is the last door a finding has (`recordFollowUps`).
+  //
+  // A body that fits is returned before any of this, so it is byte for byte
+  // the body it was before the measurement existed.
+  let shed = NOTHING_SHED;
+  let body = compose(shed);
+  if (reviewBodySize(body) <= REVIEW_BODY_BUDGET) return body;
+
+  const unexempt = parts.followUps.length - parts.movedToFollowUps;
+  const steps: Shed[] = [
+    { titles: true, followUpTitles: false, cutFollowUps: 0 },
+    { titles: true, followUpTitles: true, cutFollowUps: 0 },
+    ...Array.from({ length: Math.max(0, unexempt) }, (_, i) => ({
+      titles: true,
+      followUpTitles: true,
+      cutFollowUps: i + 1,
+    })),
+  ];
+  for (const step of steps) {
+    shed = step;
+    body = compose(shed);
+    if (reviewBodySize(body) <= REVIEW_BODY_BUDGET) break;
+  }
+
+  // Refused by name rather than met as a 422. What is left — the assessment,
+  // the moved findings' whole text — is nothing this can cut without deleting
+  // something the verdict or the filing run was told is there.
+  const size = reviewBodySize(body);
+  if (size > REVIEW_BODY_BUDGET) {
+    throw new Error(
+      `The review body is ${size} bytes after shedding everything it can, over the ${REVIEW_BODY_BUDGET} this holds it to beneath GitHub's ${REVIEW_BODY_LIMIT}-character limit — posting it would be refused with a 422 that loses the review's threads as well, so nothing was posted.`,
+    );
+  }
+
+  parts.log?.(
+    `Review body: ${shedSentence(shed)?.replace(/^_|_$/g, "")} It is now ${size} bytes.`,
+  );
   return body;
 };
 
@@ -1518,9 +1649,11 @@ export const parseFollowUpsBlock = (
  * round 1's list standing as the newest, and the merge files a stub for work
  * already done.
  *
- * A review body has a hard 65,536-character ceiling whose overflow is a 422
- * that takes the review's threads down with it, so the bodies live here and the
- * visible group carries titles alone.
+ * A review body has a hard ceiling (`REVIEW_BODY_LIMIT`) whose overflow is a
+ * 422 that takes the review's threads down with it, so the bodies live here and
+ * the visible group carries titles alone — and `renderReviewBody` measures the
+ * whole and cuts this list's tail, never its moved prefix, where nothing else
+ * it can shed is enough.
  *
  * `moved` is the length of the exempt prefix (`recordFollowUps`), carried so the
  * cap the filing end re-applies bites on the same half this one capped. Without
@@ -1563,15 +1696,21 @@ export const followUpsPayload = (
 export const renderFollowUpsGroup = (
   kept: readonly FollowUp[],
   dropped: number,
+  titles = true,
 ): string | undefined => {
   if (kept.length === 0) return undefined;
 
   // Badged but **not reordered** — see `FollowUp.severity`. The order is the
   // reviewer's, the cap drops from the end of it, and the index into it is half
   // the key a filing run recognises its own work by.
-  const items = kept.map(
-    (f) => `- ${severityBadge(f.severity)} **${oneLine(f.title)}** — \`${oneLine(f.location)}\``,
-  );
+  //
+  // Without titles only where the body had to shed them to fit (#140), and the
+  // sentence above the record says so; the payload still carries every one.
+  const items = titles
+    ? kept.map(
+        (f) => `- ${severityBadge(f.severity)} **${oneLine(f.title)}** — \`${oneLine(f.location)}\``,
+      )
+    : ["_Titles left out to fit the review body; every one counted here is still filed on merge._"];
 
   // Said here as well as after the merge, because this is the half that is
   // actionable: it reaches the author while the pull request is still open and

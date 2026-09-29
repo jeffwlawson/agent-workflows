@@ -616,7 +616,7 @@ describe("severity", () => {
     const owner = PACKAGE_NAME.replace(/^@/, "");
 
     expect(severityBadge(severity)).toBe(
-      `<img src="https://raw.githubusercontent.com/${owner}/v${VERSION}/assets/severity-${severity}.svg" height="18" alt="${severityWord(severity)}" align="top">`,
+      `<picture><img src="https://raw.githubusercontent.com/${owner}/v${VERSION}/assets/severity-${severity}.svg" height="18" alt="${severityWord(severity)}" align="top"></picture>`,
     );
   });
 
@@ -666,6 +666,7 @@ describe("severity", () => {
       '<img src="https://raw.githubusercontent.com/o/r/v0.4.0/assets/severity-high.svg" height="18" alt="High" align="top">';
 
     expect(withSeverityBadgesAsText(`${older} and ${older}`)).toBe("High and High");
+    expect(withSeverityBadgesAsText(`<picture>${older}</picture> x`)).toBe("High x");
   });
 
   /** One surface renders no image, and it is not a review surface — see #135. */
@@ -704,7 +705,7 @@ describe("severity", () => {
     ["the image chip", severityBadge("medium")],
     ["the bold code span", "**`Medium`**"],
     ["the plain code span", "`Medium`"],
-    ["a chip from another release", '<img src="https://x/assets/severity-medium.svg" alt="Medium">'],
+    ["a bare chip from another release", '<img src="https://x/assets/severity-medium.svg" alt="Medium">'],
   ])("strips %s off a carried claim", (_form, badge) => {
     expect(withoutSeverityBadge(`${badge} the cache key omits the tenant`, "medium")).toBe(
       "the cache key omits the tenant",

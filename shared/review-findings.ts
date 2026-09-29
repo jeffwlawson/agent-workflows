@@ -120,6 +120,13 @@ const severityAssetUrl = (severity: Severity): string =>
  * load an image from this repository, so making it private, renaming it or
  * deleting it leaves every past review showing the alt text.
  *
+ * **Wrapped in `<picture>`**, because GitHub links a bare `<img>` to its own
+ * image URL, so the chip would read as a clickable link; inside `<picture>` it
+ * renders as the inline chip it is, as GitHub's own severity chips do. There is
+ * no dark `<source>`: the chips are a translucent tint over a mid-tone colour,
+ * legible on either theme, so a second set of files would only be a second thing
+ * to keep in step.
+ *
  * **The alt text is the word**, which is what keeps the picture from being the
  * only copy: a notification email that blocks images, and every reader that
  * turns a body or a thread into prompt text for an agent
@@ -127,7 +134,7 @@ const severityAssetUrl = (severity: Severity): string =>
  */
 export const severityBadge = (severity: Severity): string =>
   IDENTIFIED
-    ? `<img src="${severityAssetUrl(severity)}" height="18" alt="${severityWord(severity)}" align="top">`
+    ? `<picture><img src="${severityAssetUrl(severity)}" height="18" alt="${severityWord(severity)}" align="top"></picture>`
     : severityTextBadge(severity);
 
 /**
@@ -136,10 +143,12 @@ export const severityBadge = (severity: Severity): string =>
  * an exact string only ever recognises the badges of the version doing the
  * reading.
  */
-const SEVERITY_IMAGE = /<img\b[^>]*assets\/severity-(high|medium|low)\.svg[^>]*>/gi;
+const SEVERITY_IMAGE =
+  /(?:<picture>\s*)?<img\b[^>]*assets\/severity-(high|medium|low)\.svg[^>]*>(?:\s*<\/picture>)?/gi;
 
 /** Just the head of one, for the readers that strip an opening badge. */
-const OPENING_SEVERITY_IMAGE = /^<img\b[^>]*assets\/severity-(?:high|medium|low)\.svg[^>]*>/i;
+const OPENING_SEVERITY_IMAGE =
+  /^(?:<picture>\s*)?<img\b[^>]*assets\/severity-(?:high|medium|low)\.svg[^>]*>(?:\s*<\/picture>)?/i;
 
 const altOf = (tag: string): string | undefined => /\balt="([^"]*)"/i.exec(tag)?.[1];
 
@@ -183,8 +192,8 @@ export const withSeverityBadgesAsText = (text: string): string =>
 export const withoutSeverityBadge = (text: string, severity: Severity): string => {
   const word = severityWord(severity);
   const forms = [
-    `<img\\b[^>]*assets\\/severity-${severity}\\.svg[^>]*>`,
-    `<img\\b[^>]*\\balt="${word}"[^>]*>`,
+    `(?:<picture>\\s*)?<img\\b[^>]*assets\\/severity-${severity}\\.svg[^>]*>(?:\\s*<\\/picture>)?`,
+    `(?:<picture>\\s*)?<img\\b[^>]*\\balt="${word}"[^>]*>(?:\\s*<\\/picture>)?`,
     `\\*\\*\`${word}\`\\*\\*`,
     `\`${word}\``,
   ];

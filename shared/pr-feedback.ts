@@ -1,4 +1,4 @@
-import { ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
+import { fail, ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { parseNameStatus } from "./diff-lines.js";
 import {
   isAgentConversationOutcome,
@@ -792,6 +792,28 @@ const threeDotRange = (baseRef: string | undefined): string => {
 };
 
 /**
+ * The three-dot patch, or a refusal that says why there is none (#138).
+ *
+ * `git()` reads through `execFileSync`'s default buffer, 1 MiB, and a pull
+ * request past that — a regenerated lockfile, a vendored directory, a large
+ * fixture — made Node throw `spawnSync git ENOBUFS`, which names neither the
+ * pull request nor the limit. That overflow, and only that, becomes a refusal
+ * through `fail()`: any other git failure is thrown on unchanged, and the diff
+ * is never truncated, because a review of part of a change reads as a review
+ * of all of it.
+ */
+const readDiff = (prNumber: string): string => {
+  try {
+    return git(diffCommandAgainstBase(process.env["BASE_REF"]));
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== "ENOBUFS") throw error;
+    return fail(
+      `The diff of pull request #${prNumber} against its base is larger than the 1 MiB this run can read, so the run stopped rather than work from part of it. Split the change, or keep generated and vendored files out of it.`,
+    );
+  }
+};
+
+/**
  * The finding marker a comment carries, or `undefined` for one that carries
  * none — a human's comment, a reply, or a review posted before ids existed.
  *
@@ -1345,7 +1367,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     settledFindings,
     latestAgentReviewBody,
     priorTopLevelComments,
-    diff: git(diffCommandAgainstBase(process.env["BASE_REF"])),
+    diff: readDiff(prNumber),
     changedFiles: parseNameStatus(git(changedFilesCommandAgainstBase(process.env["BASE_REF"]))),
     // Deliberately computed from `all`, which no longer contains our own
     // top-level comments: a PR with every thread resolved and no human input

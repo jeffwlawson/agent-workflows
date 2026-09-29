@@ -18,6 +18,7 @@ import {
   deriveVerdict,
   FOLLOW_UPS_LABEL,
   renderReviewBody,
+  type Verdict,
   VERDICT_CONTEXT,
   VERDICTS,
 } from "../shared/review-output.js";
@@ -285,8 +286,13 @@ const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
    * a trigger label and the only place it spends `AGENT_PAT`. Both are kept
    * out of the job that reads untrusted pull-request content and runs a model,
    * which is why it is a job rather than a step.
+   *
+   * …and the PRD chain's advance (#176), in `review` and in `fix` alike: it
+   * spends `AGENT_PAT` on the parent issue when a slice PR's round ends, and is
+   * kept out of the job that runs a model for the same reason.
    */
-  [path.join(WORKFLOW_DIR, "review.yml")]: ["resolve", "auto-fix"],
+  [path.join(WORKFLOW_DIR, "review.yml")]: ["resolve", "auto-fix", "advance"],
+  [path.join(WORKFLOW_DIR, "fix.yml")]: ["advance"],
 };
 
 /**
@@ -815,11 +821,14 @@ describe("every PR workflow shares one concurrency group per PR", () => {
       ),
     ];
 
-    expect(checkRuns).toHaveLength(8);
+    expect(checkRuns).toHaveLength(10);
     expect(checkRuns).toContain("review / resolve");
     // …and the third (#102), on the same footing: it runs after this wait, and
     // it is not evidence about the diff whenever it does.
     expect(checkRuns).toContain("review / auto-fix");
+    // …and the fourth (#176), in both workflows whose round can end a slice's.
+    expect(checkRuns).toContain("review / advance");
+    expect(checkRuns).toContain("fix / advance");
     for (const name of checkRuns) expect(name).toMatch(excluded);
     // And under a caller job an adopter renamed, where only the second half is
     // ours to know.
@@ -1582,13 +1591,25 @@ describe("agent-review starts one fix round, where it was asked to", () => {
       ),
     )].filter((label) => triggers.has(label));
 
-    expect(added).toEqual(["agent:fix"]);
-    // …and in this job. `stepsOf` reads the review job alone, so its silence is
-    // the assertion: the add is somewhere `jobOf` does not reach.
+    // The second is the PRD chain's advance (#176), and it is not a label on
+    // the pull request under review: it goes on the slice PR's **parent
+    // issue**, through `gh issue edit`, and only from the `advance` job.
+    expect(added).toEqual(["agent:fix", "agent:implement"]);
+    // …and in these jobs. `stepsOf` reads the review job alone, so its silence
+    // is the assertion: each add is somewhere `jobOf` does not reach.
     for (const step of stepsOf(REVIEW)) {
       expect(step.run ?? "").not.toContain('--add-label "agent:fix"');
+      expect(step.run ?? "").not.toContain('--add-label "agent:implement"');
     }
     expect(startStep()).toBeDefined();
+    for (const step of job().steps ?? []) {
+      expect(step.run ?? "").not.toContain('--add-label "agent:implement"');
+    }
+    expect(
+      (jobNamed(REVIEW, "advance").steps ?? []).some((s) =>
+        (s.run ?? "").includes('gh issue edit "$parent" --add-label "agent:implement"'),
+      ),
+    ).toBe(true);
   });
 
   /**
@@ -1854,6 +1875,180 @@ describe("agent-fix asks for the re-review its own push needs", () => {
  * feature being off; a copy that fired on the conflicts path would put "ready to
  * merge" on code an agent wrote and nobody read.
  */
+/**
+ * The PRD chain advances by itself when a slice PR's review round ends (#176,
+ * PRD #171). A job of its own in `review`, and the same job in `fix` for the
+ * round a fix run ends itself, re-adds `agent:implement` to the parent — so the
+ * next `implement-prd` run merges the slice PR and builds the next slice.
+ *
+ * Nothing here has a runtime symptom when it breaks. An advance that never
+ * fires is a chain that stops after its first slice looking finished; one that
+ * fires on a fix round starting builds the next slice under a slice whose fix
+ * is still in flight; one that fires on an ordinary pull request labels an
+ * issue that has no chain at all.
+ */
+describe("a slice PR's round ends by advancing the PRD chain", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const HOLDERS = [
+    ["review", REVIEW],
+    ["fix", FIX],
+  ] as const;
+  const advance = (file: string): Job => jobNamed(file, "advance");
+  const condition = (file: string): string => (advance(file).if ?? "").replace(/\s+/g, " ");
+
+  /**
+   * The verdict keys the chain moves on from: 🟢, 🟡 with no automatic fix
+   * starting, and 🟡 after a fix round. Exactly those, matched as keys — the
+   * three *changes recommended* rows share a heading, so only the key tells
+   * the fix round starting from the two that end a round.
+   */
+  const ADVANCING: readonly Verdict[] = [
+    "approval recommended",
+    "changes recommended",
+    "changes recommended after a fix round",
+  ];
+
+  it("selects on the advancing verdict keys, and on no other", () => {
+    const selected = [...condition(REVIEW).matchAll(/needs\.review\.outputs\.verdict == '([^']+)'/g)].map(
+      ([, key]) => key ?? "",
+    );
+
+    expect(selected).toEqual([...ADVANCING]);
+    for (const key of selected) expect(Object.keys(VERDICTS)).toContain(key);
+    // Every key is either one this selects or one it must not: a sixth row
+    // added to the table arrives here as a decision rather than as a gap.
+    const parked = Object.keys(VERDICTS).filter((key) => !selected.includes(key as Verdict));
+    expect(parked.sort()).toEqual(["changes recommended, fix round started", "needs a closer look"]);
+    expect(condition(REVIEW)).not.toContain("!=");
+    expect(advance(REVIEW).needs).toBe("review");
+  });
+
+  /**
+   * In `fix`, the round ends where the run pushed nothing and so asked for no
+   * re-review. A run that pushed hands the round to that re-review, whose
+   * verdict decides. `== 'false'`, never `!= 'true'`: the push writes the
+   * output on both arms, and unset is a run that never reached it.
+   */
+  it("advances from fix only where the run pushed nothing", () => {
+    expect(condition(FIX)).toContain("needs.fix.outputs.pushed == 'false'");
+    expect(condition(FIX)).not.toContain("pushed != ");
+    expect(advance(FIX).needs).toBe("fix");
+    expect(jobOf(FIX).outputs?.["pushed"]).toBe("${{ steps.push.outputs.pushed }}");
+  });
+
+  /**
+   * **A failed run parks the chain.** Neither `if:` carries a status
+   * function, so a failed review or fix skips the job through `needs:` — the
+   * guard that an `always()` added for another reason would quietly drop.
+   */
+  it.each(HOLDERS)("%s: does not fire on a failed run", (_name: string, file: string) => {
+    expect(condition(file)).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)|success\(\)/);
+  });
+
+  /**
+   * **Only on a slice PR.** Recognised by its head — `agent/slice-…`, the name
+   * `implement-prd` gives it and the one the parent is read from. An ordinary
+   * pull request has no chain, and a PRD PR's head is `agent/prd-…`.
+   */
+  it.each(HOLDERS)("%s: fires on slice PRs only", (_name: string, file: string) => {
+    expect(condition(file)).toContain("startsWith(github.event.pull_request.head.ref, 'agent/slice-')");
+    expect(condition(file)).not.toContain("agent/prd-");
+    expect(advance(file).env?.["HEAD_REF"]).toBe("${{ github.event.pull_request.head.ref }}");
+    expect(step(file)?.run ?? "").toContain("^agent/slice-([0-9]+)-[0-9]+-");
+  });
+
+  it.each(HOLDERS)("%s: restates the trigger label and fork guards", (name: string, file: string) => {
+    expect(condition(file)).toContain(`github.event.label.name == 'agent:${name}'`);
+    expect(condition(file)).toContain("github.event.pull_request.head.repo.full_name == github.repository");
+  });
+
+  const step = (file: string): Step | undefined =>
+    (advance(file).steps ?? []).find((s) => s.name === "Advance the PRD chain");
+
+  /**
+   * **No checkout and no model**, in `auto-fix`'s shape: this job spends
+   * `AGENT_PAT` and must not be the one that reads untrusted pull-request
+   * content and runs a model over it.
+   */
+  it.each(HOLDERS)("%s: checks nothing out, installs nothing and runs no model", (_name: string, file: string) => {
+    const steps = advance(file).steps ?? [];
+
+    expect(steps).toHaveLength(1);
+    for (const s of steps) {
+      expect(s.uses, "the advance uses no action").toBeUndefined();
+      expect(s.run ?? "").not.toContain("npm exec");
+      expect(s.run ?? "").not.toContain("claude");
+      expect(s.run ?? "").not.toContain("git ");
+    }
+  });
+
+  /**
+   * …and holds one scope, for the no-PAT arm's comment on the slice PR. The
+   * label on the parent is added with the PAT or not at all, so the workflow
+   * token never writes an issue — and `issues: write` would be a scope no
+   * caller of either workflow grants, which GitHub answers by refusing the
+   * whole run.
+   */
+  it.each(HOLDERS)("%s: holds only what it needs", (_name: string, file: string) => {
+    expect(advance(file).permissions).toEqual({ "pull-requests": "write" });
+    expect(advance(file).concurrency).toBeUndefined();
+  });
+
+  /**
+   * MUST use `AGENT_PAT`: `agent:implement` added with `GITHUB_TOKEN` starts
+   * nothing. So without the PAT nothing is added, and the slice PR — where the
+   * maintainer is already looking — is told which re-label advances the chain
+   * by hand. The add itself is under `bash -e`: a chain that did not advance
+   * is a stall with no other symptom.
+   */
+  it.each(HOLDERS)("%s: labels the parent with the PAT, and comments when there is none", (_name: string, file: string) => {
+    const s = step(file);
+    const run = s?.run ?? "";
+
+    expect(s?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(s?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(run).toContain("set -euo pipefail");
+
+    const noPat = run.indexOf('if [ "$HAS_PAT" != "true" ]; then');
+    const add = run.indexOf('gh issue edit "$parent" --add-label "agent:implement"');
+    expect(noPat).toBeGreaterThanOrEqual(0);
+    expect(add).toBeGreaterThan(noPat);
+    const arm = run.slice(noPat, run.indexOf("\nfi", noPat));
+    expect(arm).toContain("::warning::");
+    expect(arm).toContain('gh pr comment "$PR_NUMBER"');
+    expect(arm).toContain("Re-add \\`agent:implement\\` to #${parent} by hand");
+    // Nothing is labelled on that arm: it exits before the add.
+    expect(arm).toContain("exit 0");
+    expect(arm).not.toContain("--add-label");
+    // …and the add is not tolerated away.
+    expect(run.slice(add).split("\n")[0]).not.toContain("||");
+  });
+
+  /**
+   * The same job in both files: the review's copy carries the reasoning, and
+   * the fix's is the round a fix run ends. Held equal, so the two cannot come
+   * to advance differently.
+   */
+  it("is the same step in review and in fix", () => {
+    expect(advance(FIX).steps).toEqual(advance(REVIEW).steps);
+    expect(advance(FIX).env).toEqual(advance(REVIEW).env);
+  });
+
+  /** No caller changes: both callers already grant the one scope it holds. */
+  it.each([
+    REVIEW_CALLER,
+    path.join(CALLER_DIR, "fix.yml"),
+    path.join(WORKFLOW_DIR, "agent-review.yml"),
+    path.join(WORKFLOW_DIR, "agent-fix.yml"),
+  ])(
+    "%s grants what the advance holds, with no change",
+    (caller: string) => {
+      expect(jobOf(caller).permissions?.["pull-requests"]).toBe("write");
+      expect(jobOf(caller).permissions?.["issues"]).toBeUndefined();
+    },
+  );
+});
+
 /**
  * **The reviewer closes a thread and the fixer never does** (#109, decision 1;
  * #111). Two halves in two workflows, asserted together because either one

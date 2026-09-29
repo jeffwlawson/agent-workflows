@@ -75,10 +75,12 @@ on:
         required: true
       AGENT_PAT:
         description: >-
-          User PAT, used only to mark the PR ready for review — `GITHUB_TOKEN`
+          User PAT, used to mark the PR ready for review — `GITHUB_TOKEN`
           cannot do that whatever permissions it is granted (docs/ADOPTING.md
-          §1). Optional: without it the step warns, the run stays green, and a
-          human marks the PR ready by hand.
+          §1) — and to add the labels this workflow adds for another to fire
+          on: `agent:fix` under `auto-fix`, and `agent:implement` on a slice
+          PR's parent when its round ends. Optional: without it each of those
+          warns, the run stays green, and a human does it by hand.
         required: false
 
 jobs:
@@ -359,7 +361,11 @@ jobs:
           # either way. `auto-fix` needs naming in its own right: the
           # alternation is anchored on `/ `, so `fix` does not match a name
           # beginning `auto-`.
-          AGENT_CHECKS: '(^|/ )(review|resolve|auto-fix|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
+          #
+          # `advance` is the fourth (#176), in `fix` as well as here, and runs
+          # after a round ends on a slice PR. A later round on the same head —
+          # a human's re-label — would otherwise read `review / advance` as CI.
+          AGENT_CHECKS: '(^|/ )(review|resolve|auto-fix|advance|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller
@@ -1187,8 +1193,9 @@ jobs:
   # reaches a maintainer already fixed and re-reviewed rather than waiting on a
   # label nobody was asked to think about.
   #
-  # **Why a separate job.** It is the only place in this workflow that spends
-  # `AGENT_PAT`, and it must not be the job that reads untrusted pull-request
+  # **Why a separate job.** It spends `AGENT_PAT` on a label something fires
+  # on — as `advance` below does, for the same reason in the same shape — and
+  # it must not be the job that reads untrusted pull-request
   # content and runs a model over it. So: no checkout, no toolchain, no agent,
   # and `pull-requests: write` alone — narrower than the review job beside it,
   # which holds four scopes. Its whole input is two literals and a key the
@@ -1265,3 +1272,96 @@ jobs:
           if [ "$HAS_PAT" != "true" ]; then
             echo "::warning::AGENT_PAT is not set, so agent:fix was added with GITHUB_TOKEN and will NOT start a fix round. The review's verdict on PR #${PR_NUMBER} says one has; remove and re-add agent:fix by hand to make that true."
           fi
+
+  # The PRD chain's advance (#176, PRD #171). A slice PR is one sub-issue of a
+  # PRD, opened by `implement-prd` against the PRD branch, and the chain waits
+  # for that slice's review round to end before it builds the next one. When
+  # the round ends on a verdict the chain moves on from, this re-adds
+  # `agent:implement` to the parent; the `implement-prd` run that starts merges
+  # the slice PR into the PRD branch and builds the next slice — or, after the
+  # last slice, is the finishing run that hands the PRD PR over.
+  #
+  # **Which verdicts advance.** The three a slice round ends on without a
+  # human: *approval recommended*; *changes recommended* where no automatic fix
+  # is starting (auto-fix off, or already spent on this pull request); and
+  # *changes recommended after a fix round*, the round-2 answer. Not the key
+  # the `auto-fix` job selects on — a fix and its re-review are still in
+  # flight, and the round ends at their end, here or in `fix.yml`'s copy of
+  # this job — and not *needs a closer look*, which is a reviewer asking for a
+  # human: the chain parks on that slice PR until one re-adds `agent:implement`
+  # to the parent, which is itself the acceptance. A failed review skips this
+  # job through `needs:`, so the chain parks there too.
+  #
+  # Keys, matched exactly, for the reason `auto-fix` matches one: three rows
+  # share a heading, and it is the key that tells them apart.
+  #
+  # **Why a separate job**, and in `auto-fix`'s shape: it spends `AGENT_PAT`,
+  # and it must not be the job that reads untrusted pull-request content and
+  # runs a model over it. No checkout, no toolchain, no agent. Its whole input
+  # is the head ref, the pull request's number and a key the review job derived.
+  #
+  # **Only on a slice PR**, recognised by its head: `agent/slice-<parent>-…`,
+  # the name `implement-prd` gives it, which is also where the parent comes
+  # from. An ordinary pull request has no chain to advance, and a PRD PR's head
+  # is `agent/prd-…`, which this does not match — its own review ends the chain
+  # rather than advancing it.
+  #
+  # **Why it cannot cycle.** It adds a label to the parent **issue**, never to
+  # a pull request, and the `implement-prd` run it starts either merges this
+  # slice PR — closing it, so no later round on it can fire this again — or
+  # refuses into `agent:blocked`. What it starts is bounded by the number of
+  # sub-issues, and a finished PRD refuses the label.
+  #
+  # The guards are restated for the reason `resolve` restates them.
+  advance:
+    needs: review
+    if: >-
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
+      (needs.review.outputs.verdict == 'approval recommended' ||
+       needs.review.outputs.verdict == 'changes recommended' ||
+       needs.review.outputs.verdict == 'changes recommended after a fix round')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # **No concurrency group**, for the reason `auto-fix` is in none. The
+    # `implement-prd` run its label starts serialises on the parent instead.
+    permissions:
+      # The comment the no-PAT arm leaves on the slice PR, and nothing else.
+      # The label on the parent is added with `AGENT_PAT` or not at all — a
+      # label added with `GITHUB_TOKEN` fires no event — so the workflow token
+      # is never asked to write an issue, and `issues: write` stays out of this
+      # job (docs/parity.md §10) and out of every caller's grant.
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      # MUST use AGENT_PAT, for `auto-fix`'s reason: `agent:implement` added with
+      # `GITHUB_TOKEN` sits on the parent and starts nothing. So without the PAT
+      # nothing is added at all, and the one place a maintainer is already
+      # looking — this slice PR — says which re-label advances the chain by hand.
+      #
+      # `bash -e` and no `|| true` on the add, for `auto-fix`'s reason: a chain
+      # that did not advance under a round that ended is a stall with no other
+      # symptom, and a red job is the only thing that says so.
+      - name: Advance the PRD chain
+        env:
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$HEAD_REF" =~ ^agent/slice-([0-9]+)-[0-9]+- ]]; then
+            echo "::error::Slice PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/slice-<parent>-<sub-issue>-…\`, so its PRD cannot be told. Re-add \`agent:implement\` to the PRD by hand to advance its chain."
+            exit 1
+          fi
+          parent="${BASH_REMATCH[1]}"
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::AGENT_PAT is not set, so the PRD chain was not advanced: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
+            gh pr comment "$PR_NUMBER" --body "This slice's review round has ended, but the PRD chain will not advance on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to merge this slice PR into the PRD branch and move the chain on." \
+              || echo "::warning::…and that could not be said on the pull request either."
+            exit 0
+          fi
+          gh issue edit "$parent" --add-label "agent:implement"
+          echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."

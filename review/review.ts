@@ -172,8 +172,8 @@ const sliceOrOrdinary = (): string =>
  * Results of the PR's other checks, gathered by the workflow after waiting for
  * them to finish. This is the only evidence in the prompt that comes from
  * *outside* the repo's own assumptions — the diff, the issue and the tests all
- * encode what the team already believes, whereas the corpus job compares the
- * rules against manifests Microsoft actually accepted. Absent (or timed out) it
+ * encode what the team already believes, whereas a check that compares the
+ * code against real-world inputs does not. Absent (or timed out) it
  * degrades to a note; it never blocks the review.
  */
 const readCiStatus = (): string => {

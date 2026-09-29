@@ -6323,11 +6323,17 @@ describe(".sandcastle names no repo of its own", () => {
    * the whole role-vs-`ManifestType` distinction, the directory rules are
    * registered in, and the constructor a rule is defined with.
    *
+   * `microsoft` is the fifth, and the reason the match is case-insensitive
+   * (#151): `review/review.ts` described CI evidence as "manifests Microsoft
+   * actually accepted" — the same domain in words none of the four spelled. The
+   * vendor is specific enough to ban outright; `corpus` and `manifest` are not,
+   * since this package has an npm manifest of its own.
+   *
    * `.ts` files are in scope too, not only prompts — `shared/common.ts` carried
    * the repo name as a Standard Schema `vendor`, which is exactly the kind of
    * site a prompt-focused pass reads straight past.
    */
-  const DOMAIN = /winget|ManifestType|src\/rules|defineRule/;
+  const DOMAIN = /winget|ManifestType|src\/rules|defineRule|microsoft/i;
 
   it.each(sandcastleFiles)("%s: names nothing specific to this project", (file: string) => {
     const offenders = fs

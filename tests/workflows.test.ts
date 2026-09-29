@@ -1056,6 +1056,88 @@ describe("agent-review refuses a head that moved while it was queued", () => {
 });
 
 /**
+ * The fix's own version of that refusal (#188), against the **branch ref**
+ * rather than the pull request's `headRefOid`: the case that raised it had the
+ * pull request reporting the old SHA after the branch moved, so asking the pull
+ * request would agree with the stale event. A fix run started behind the branch
+ * fast-forwards, finds nothing to do, and replies to every thread again.
+ */
+describe("agent-fix refuses an event head behind the live branch", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const guard = (): Step | undefined => stepsOf(FIX)[0];
+  const run = (): string => guard()?.run ?? "";
+
+  it("compares the event SHA with the branch ref, in the guard", () => {
+    expect(guard()?.id).toBe("state");
+    expect(run()).toContain('ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"');
+    expect(run()).toContain('[ "$live" != "$BRANCH_HEAD_SHA" ]');
+    expect(run()).not.toContain("headRefOid");
+    // Still the SHA the push's lease pins, so the two agree on what "current" is.
+    expect(jobOf(FIX).env?.["BRANCH_HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(stepsOf(FIX).find((s) => s.name === "Push branch")?.run ?? "").toContain(
+      '--force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA"',
+    );
+  });
+
+  /**
+   * `ls-remote` matches its pattern against the tail of each ref, so a branch
+   * `x/refs/heads/<name>` would also answer. The exact ref is picked out.
+   */
+  it("reads the exact ref out of the answer", () => {
+    expect(run()).toContain(`awk -v ref="refs/heads/\${BRANCH}" '$2 == ref { print $1 }'`);
+  });
+
+  it("says why, as a warning and as one comment naming both SHAs and the way out", () => {
+    const arm = run().slice(run().indexOf('[ "$live" != "$BRANCH_HEAD_SHA" ]'));
+    const stale = arm.slice(0, arm.indexOf("exit 0"));
+
+    expect(stale).toContain("::warning::");
+    expect(stale.match(/refuse "/g)).toHaveLength(1);
+    expect(stale).toContain("\\`${BRANCH_HEAD_SHA}\\`");
+    expect(stale).toContain("\\`${live}\\`");
+    expect(stale).toContain("close and reopen the PR");
+    expect(stale).toContain("re-add \\`agent:fix\\`");
+  });
+
+  /**
+   * The label the run consumed is gone and `agent:blocked` is on, so re-adding
+   * `agent:fix` is the retry and `Transition labels` clears the block.
+   */
+  it("leaves labels a human can retry from", () => {
+    const refuse = bashFunctionBody(run(), "refuse");
+
+    expect(refuse).toContain('--remove-label "agent:fix"');
+    expect(refuse).toContain('--add-label "agent:blocked"');
+    expect(refuse).toContain('echo "proceed=false" >> "$GITHUB_OUTPUT"');
+    expect(stepsOf(FIX).find((s) => s.name === "Transition labels")?.run ?? "").toContain(
+      '--remove-label "agent:blocked"',
+    );
+  });
+
+  /**
+   * The opposite of review's choice, and on purpose: this run pushes and
+   * replies, and replying twice is the harm. "Could not tell" must not read as
+   * "not stale", so a failed `ls-remote` and an empty answer both refuse.
+   */
+  it("refuses when the live head cannot be read, and says so beside the check", () => {
+    expect(run()).toContain("if ! remote=$(git");
+    expect(run()).toContain('if [ -z "$live" ]; then');
+    expect(run()).not.toContain('[ -n "$live" ] &&');
+    for (const arm of ["if ! remote=$(git", 'if [ -z "$live" ]; then']) {
+      const body = run().slice(run().indexOf(arm));
+      expect(body.slice(0, body.indexOf("exit 0"))).toMatch(/refuse ".*" blocked/);
+    }
+    expect(fs.readFileSync(FIX, "utf8")).toContain("**An unreadable head refuses, deliberately**");
+  });
+
+  /** And the proceed line is reached only past every refusal. */
+  it("proceeds only after the head is confirmed", () => {
+    expect(run().lastIndexOf('echo "proceed=true"')).toBeGreaterThan(run().indexOf('[ "$live" != "$BRANCH_HEAD_SHA" ]'));
+    expect(run().match(/proceed=true/g)).toHaveLength(1);
+  });
+});
+
+/**
  * A slice PR is the ordinary `review` round on one slice of a PRD (#175). Two
  * things change for it and nothing else does: the reviewer is told which slice
  * of which PRD it reads, and a slice PR no CI ran on is not green. The second

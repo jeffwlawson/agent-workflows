@@ -1290,7 +1290,7 @@ jobs:
   # this job — and not *needs a closer look*, which is a reviewer asking for a
   # human: the chain parks on that slice PR until one re-adds `agent:implement`
   # to the parent, which is itself the acceptance. A failed review skips this
-  # job through `needs:`, so the chain parks there too.
+  # job — `needs.review.result` below — so the chain parks there too.
   #
   # Keys, matched exactly, for the reason `auto-fix` matches one: three rows
   # share a heading, and it is the key that tells them apart.
@@ -1312,10 +1312,28 @@ jobs:
   # refuses into `agent:blocked`. What it starts is bounded by the number of
   # sub-issues, and a finished PRD refuses the label.
   #
+  # **After `resolve`, not beside it.** The `implement-prd` run this starts
+  # reads the slice PR's unresolved threads for its row of the slices table,
+  # and rows are never refreshed. Run in parallel, that read can land before
+  # `resolve` has closed the threads this round verified fixed — likeliest on
+  # *changes recommended after a fix round*, the verdict that follows a fix —
+  # and the PRD PR would link fixed findings as open for good. So this waits
+  # for `resolve`, runs when `resolve` was skipped (a round with nothing to
+  # close), and parks when `resolve` failed: the threads it would have closed
+  # are still open, and a row written now would say so. That takes a status
+  # function, which is what the restated guards below exist for.
+  #
+  # `!cancelled()` rather than `always()`: a cancelled run advances nothing.
+  # The review's own result is checked by name, since a status function drops
+  # the implicit "every need succeeded".
+  #
   # The guards are restated for the reason `resolve` restates them.
   advance:
-    needs: review
+    needs: [review, resolve]
     if: >-
+      !cancelled() &&
+      needs.review.result == 'success' &&
+      (needs.resolve.result == 'success' || needs.resolve.result == 'skipped') &&
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&

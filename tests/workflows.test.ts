@@ -1997,7 +1997,7 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
     const parked = Object.keys(VERDICTS).filter((key) => !selected.includes(key as Verdict));
     expect(parked.sort()).toEqual(["changes recommended, fix round started", "needs a closer look"]);
     expect(condition(REVIEW)).not.toContain("!=");
-    expect(advance(REVIEW).needs).toBe("review");
+    expect(advance(REVIEW).needs).toEqual(["review", "resolve"]);
   });
 
   /**
@@ -2014,12 +2014,38 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
   });
 
   /**
-   * **A failed run parks the chain.** Neither `if:` carries a status
-   * function, so a failed review or fix skips the job through `needs:` — the
-   * guard that an `always()` added for another reason would quietly drop.
+   * **A failed run parks the chain.** `fix`'s `if:` carries no status
+   * function, so a failed fix skips the job through `needs:` — the guard that
+   * an `always()` added for another reason would quietly drop.
    */
-  it.each(HOLDERS)("%s: does not fire on a failed run", (_name: string, file: string) => {
-    expect(condition(file)).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)|success\(\)/);
+  it("fix: does not fire on a failed run", () => {
+    expect(condition(FIX)).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)|success\(\)/);
+  });
+
+  /**
+   * `review`'s copy waits for `resolve`, because the `implement-prd` run it
+   * starts reads the slice PR's unresolved threads into a row that is never
+   * refreshed — read beside `resolve`, it could link findings this round
+   * verified fixed as open. Waiting on a job that is skipped whenever there is
+   * nothing to close takes a status function, so what `needs:` alone gave —
+   * park on a failed review — is spelled out by result instead: it fires on a
+   * review that succeeded and a `resolve` that succeeded or had nothing to do,
+   * and on nothing else. `!cancelled()`, never `always()`.
+   */
+  it("review: waits for resolve, and does not fire on a failed review or resolve", () => {
+    const text = condition(REVIEW);
+
+    expect(text).not.toMatch(/always\(\)|failure\(\)|[^!]cancelled\(\)|success\(\)/);
+    expect(text.startsWith("!cancelled() && ")).toBe(true);
+    expect(text).toContain("needs.review.result == 'success' && ");
+    expect(text).toContain(
+      "(needs.resolve.result == 'success' || needs.resolve.result == 'skipped') && ",
+    );
+    expect([...text.matchAll(/needs\.(\w+)\.result == '(\w+)'/g)].map(([, job, result]) => `${job}:${result}`)).toEqual([
+      "review:success",
+      "resolve:success",
+      "resolve:skipped",
+    ]);
   });
 
   /**

@@ -1080,6 +1080,83 @@ describe("agent-review knows when it is reading a slice PR", () => {
 });
 
 /**
+ * A PRD PR's review is the chain's **integration review** (#179). The finishing
+ * run asks for it only when the chain holds more than one slice, and it looks
+ * only at what spans slices — except the two things no slice round saw, which
+ * it is handed by name and reviews in full. What is held here is that it is
+ * recognised by the PRD branch's prefix and no other, that it is handed the
+ * slice PRs, the pre-upgrade slices and the agent-resolved merges, and that
+ * the brief limits its scope. The brief's wording is the prompt rule's to
+ * police (no domain); these pin the instructions a reader would miss.
+ */
+describe("agent-review gives a PRD PR an integration review", () => {
+  const RUNNER = "review/review.ts";
+  const CONTEXT = "shared/prd-context.ts";
+  const runner = (): string => fs.readFileSync(RUNNER, "utf8");
+
+  it("recognises a PRD PR by the prefix implement-prd names its branch with, and nothing else", () => {
+    const prefix = /^agent\/prd-(\d+)-/;
+
+    expect(fs.readFileSync(PRD, "utf8")).toContain('name="agent/prd-${ISSUE_NUMBER}-${slug}"');
+    expect(runner()).toContain("/^agent\\/prd-(\\d+)-/");
+    // Ordinary pull requests and slice PRs get no integration-review context.
+    expect(prefix.test("agent/slice-171-179-integration-review")).toBe(false);
+    expect(prefix.test("agent/issue-179-integration-review")).toBe(false);
+    expect(prefix.test("agent/prd-171-prd-slice-prs")).toBe(true);
+    expect(runner()).toMatch(
+      /prdParent === undefined \? undefined : fetchPrdContext\(prdParent, BRANCH, BASE_REF, PR_NUMBER\)/,
+    );
+    expect(runner()).toMatch(/prd !== undefined \? integrationReview\(prd\) : sliceOrOrdinary\(\)/);
+  });
+
+  it("reads the chain while the token is still in hand", () => {
+    const text = runner();
+    expect(text.indexOf("fetchPrdContext(prdParent")).toBeGreaterThan(-1);
+    expect(text.indexOf("fetchPrdContext(prdParent")).toBeLessThan(text.indexOf("scrubGitHubTokens();"));
+  });
+
+  it("is handed the slice PRs, the pre-upgrade slices and the agent-resolved merges", () => {
+    const context = fs.readFileSync(CONTEXT, "utf8");
+    const brief = runner();
+
+    // Slice PRs by base, never by name; pre-upgrade slices by the same test the
+    // finishing run counts them with.
+    expect(context).toMatch(/"--base",\s*prdBranch/);
+    expect(context).toMatch(/state === "CLOSED"/);
+    expect(context).toContain("subIssues(first: 100)");
+    // The marker update-branch writes on a draft PRD PR's conflicted refresh.
+    const updateBranch = fs.readFileSync(path.join(WORKFLOW_DIR, "update-branch.yml"), "utf8");
+    expect(updateBranch).toContain("<!-- agent-resolved-merge ${RESOLVED_SHA} -->");
+    expect(context).toContain("/<!-- agent-resolved-merge ([0-9a-f]{7,40}) -->/g");
+    expect(context).toMatch(/isTrustedAuthor\(/);
+
+    expect(brief).toContain("Slice PRs it holds, in merge order");
+    expect(brief).toContain("**Slices built before slice PRs**, which had **no review of their own**");
+    expect(brief).toContain("**Merge commits whose conflicts an agent resolved**");
+    // An unreadable fact is said to be unreadable, never rendered as "none".
+    expect(brief).toContain("**could not be read**. Do not assume there are none");
+  });
+
+  it("limits scope to cross-slice problems and forbids re-raising slice leftovers", () => {
+    const brief = runner();
+
+    expect(brief).toContain("**integration review**");
+    expect(brief).toContain("in full");
+    expect(brief).toContain("**Everything else, look at only for what spans slices**");
+    expect(brief).toContain("**contracts between slices**");
+    expect(brief).toContain("**duplication**");
+    expect(brief).toContain("**dead scaffolding**");
+    expect(brief).toContain("**never re-raise a slice's leftover findings** — not as a finding, not as a follow-up");
+    expect(brief).toContain("it means **the slices fit together** — not a roll-up");
+  });
+
+  it("needs no new input, so no caller changes", () => {
+    const inputs = [...runner().matchAll(/required\("([A-Z_]+)"\)/g)].map((m) => m[1]);
+    expect(inputs).toEqual(["PR_NUMBER", "BRANCH", "BASE_REF"]);
+  });
+});
+
+/**
  * The review's third output channel (#47). The findings themselves live in the
  * review body, where a human reads them before merging; the label is what a
  * later workflow selects on, and what removing opts a PR out of.

@@ -403,8 +403,11 @@ jobs:
           if [ -n "$target_url" ]; then
             args+=(-f "target_url=${target_url}")
           fi
+          # The read's remedy and for the read's reason (#132): this write is
+          # behind the same gate, so a re-run never reaches it either. Not the
+          # read's cause list — what lands here is a refusal, not an outage.
           gh api "${args[@]}" \
-            || echo "::warning::Could not carry the \`${VERDICT_CONTEXT}\` verdict from ${OLD_SHA} on to ${NEW_SHA}. The merge is pushed; what is missing is the line saying what to do about it, so this pull request now reads as unreviewed. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
+            || echo "::warning::Could not carry the \`${VERDICT_CONTEXT}\` verdict from ${OLD_SHA} on to ${NEW_SHA}. The merge is pushed; what is missing is the line saying what to do about it, so this pull request now reads as unreviewed. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix. Re-running this workflow recovers none of it: the branch is refreshed already, so the next run has nothing to merge and never reaches this write. The verdict still stands on ${OLD_SHA}; add \`agent:review\` for a fresh one on ${NEW_SHA}."
 
       - name: Comment on the PR
         if: steps.state.outputs.proceed == 'true' && success()

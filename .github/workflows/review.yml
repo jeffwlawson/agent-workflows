@@ -449,9 +449,36 @@ jobs:
               2>>"$err" || true
           }
 
+          # The same count over the **other** CI surface (#107): commit
+          # statuses still `pending`, minus `agent-review` — this job's own
+          # output, the answer it has not written yet. Without this a review
+          # that starts before status-based CI finishes reads that CI as
+          # pending, and the verdict asks for a human on a pull request that
+          # would have been ready a minute later. Combined endpoint for the
+          # reason the verdict's read below gives: one state per context.
+          #
+          # Same shape as `pending_count` — one number or nothing, gated on
+          # gh's exit status — but *nothing* here is not the blind arm below.
+          # That arm is about check runs, and names them; a status read that
+          # failed is reported by the verdict's own read of the same endpoint
+          # further down, with its stderr, and reads as `unknown` there. So the
+          # wait counts an unreadable status half as zero rather than spinning
+          # on it, and its stderr goes to a file of its own so it cannot
+          # clobber the check-run count's.
+          pending_statuses() {
+            body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>"${err}.status") || return 0
+            printf '%s' "$body" \
+              | jq "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | select(.state == \"pending\")] | length" \
+              2>>"${err}.status" || true
+          }
+
           deadline=$(( $(date +%s) + WAIT_SECONDS ))
           while :; do
             pending=$(pending_count)
+            statuses_pending=$(pending_statuses)
+            case "$statuses_pending" in
+              "" | *[!0-9]*) statuses_pending=0 ;;
+            esac
 
             # Not a number — the API call failed rather than returning a
             # count. Say so once, loudly, and stop: waiting cannot fix a
@@ -474,6 +501,9 @@ jobs:
                 ;;
             esac
 
+            # After the arm above, not before it: a sum would turn a failed
+            # check-run read into a plausible number.
+            pending=$(( pending + statuses_pending ))
             [ "$pending" -eq 0 ] && break
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "_Timed out waiting for ${pending} check(s); results below may be incomplete._" >> "$out"

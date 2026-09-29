@@ -426,6 +426,53 @@ jobs:
           esac
           gh pr comment "$PR_NUMBER" --body "$body"
 
+      # Except on a **draft PRD PR** (#178). That pull request's review is the
+      # integration review, and the chain asks for it once, at handover: a round
+      # started here would review a partial chain, and its verdict and automatic
+      # fix would be spent before the last slice exists. So a mid-chain refresh
+      # — which keeps later slices building on fresh base-branch code — leaves
+      # the resolution unreviewed *for now*, and says so on the PRD PR, naming
+      # the commit under a marker the integration review looks for.
+      #
+      # `isDraft` is read live rather than from the event: the finishing run can
+      # hand the PRD PR over while this job resolves, and a PRD PR that is no
+      # longer a draft is one whose review this resolution must not miss. A
+      # read that fails reads as "not a draft", so the fallback is the ordinary
+      # request below, never a skipped review.
+      #
+      # Only the conflicted path. A clean refresh carries the verdict like any
+      # other, and every refresh after handover asks for a review like any
+      # other. Nothing on the open slice PR is touched: a clean move of the PRD
+      # branch leaves its diff and verdict standing, and a conflict there
+      # surfaces as the merge step's refusal, so this job never learns the
+      # chain's structure beyond the branch prefix and the draft flag.
+      #
+      # Failing to comment fails the run, as a failed `agent:review` add does
+      # below — the comment is the only record of the commit — with the commit
+      # in the reason, so the failure comment carries it instead.
+      - name: Name the resolution on a draft PRD PR
+        id: prd
+        if: steps.merge.outputs.status == 'conflicts' && success()
+        env:
+          RESOLVED_SHA: ${{ steps.push.outputs.head }}
+        run: |
+          set -euo pipefail
+          if [[ "$BRANCH" != agent/prd-* ]]; then
+            exit 0
+          fi
+          draft=$(gh pr view "$PR_NUMBER" --json isDraft --jq .isDraft) || draft=""
+          if [ "$draft" != "true" ]; then
+            exit 0
+          fi
+          body="<!-- agent-resolved-merge ${RESOLVED_SHA} -->
+          \`agent:update-branch\`: the conflicts merging \`${BASE_REF}\` were resolved by an agent in ${RESOLVED_SHA}, and nothing has reviewed that resolution yet. This is a draft PRD PR, so no review was requested: a review here is the integration review, which starts when the chain hands this PR over. This comment is how it finds the resolution to read."
+          if ! gh pr comment "$PR_NUMBER" --body "$body"; then
+            printf 'The conflicts are resolved and pushed as %s, but the comment recording that resolution for the integration review could not be posted. Nothing has reviewed it, and this failure is now the only record of it: comment `<!-- agent-resolved-merge %s -->` on this PR by hand so the integration review finds it. Re-adding `agent:update-branch` would find the branch up to date and do nothing.\n' \
+              "${RESOLVED_SHA}" "${RESOLVED_SHA}" > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
+          echo "held=true" >> "$GITHUB_OUTPUT"
+
       # The resolution closes itself out, the way a fix round does (#96,
       # decision 6). The commit this job just pushed is an agent's reading of a
       # conflict — the one thing this loop writes that no review has seen — and
@@ -456,7 +503,7 @@ jobs:
       # is inert here: the merge is already pushed, so a second run finds the
       # branch up to date and does nothing.
       - name: Request a review of the resolution
-        if: steps.merge.outputs.status == 'conflicts' && success()
+        if: steps.merge.outputs.status == 'conflicts' && steps.prd.outputs.held != 'true' && success()
         env:
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}

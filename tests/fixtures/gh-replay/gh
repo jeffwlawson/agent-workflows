@@ -21,8 +21,29 @@
  *   repos/{owner}/{repo}/actions/runs?…            — runs from GH_REPLAY_RUNS
  *   repos/{owner}/{repo}/actions/runs/{id}         —  "     "    "
  *
+ *   graphql                                        — the issue from GH_REPLAY_ISSUE, or
+ *                                                    a pull request's review threads
+ *                                                    from GH_REPLAY_THREADS
+ *   repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by
+ *                                                  — blockers from GH_REPLAY_BLOCKED_BY
+ *   repos/{owner}/{repo}                           — the repository from GH_REPLAY_REPO
+ *   -X DELETE repos/{owner}/{repo}/git/refs/heads/{branch}
+ *                                                  — logged to GH_REPLAY_LOG, exit 0
+ *
  * Subcommands recorded:
  *   run view {id} --log-failed                     — the log is unavailable
+ *   pr list --state open|all [--head {branch}] [--base {branch}] --json {fields}
+ *                                                  — pull requests from GH_REPLAY_PULLS
+ *   pr view {n} --json {fields}                    —  "     "    "
+ *   issue edit | issue comment                     — logged to GH_REPLAY_LOG, exit 0
+ *   pr ready | pr merge | pr create | pr edit      — logged to GH_REPLAY_LOG, exit 0
+ *
+ * Everything after `run view` serves `tests/implement-prd-preflight.test.ts`.
+ * Their *shapes* are the documented ones — a GraphQL `{"data":…}` envelope,
+ * the REST array and object, `--json` printing exactly the fields asked for,
+ * and `pr create` printing the new pull request's URL last — and what is
+ * re-verified against the real binary there is that gh accepts the flags and
+ * field names the steps compose.
  *
  * Environment:
  *   GH_REPLAY_PAGES       path to a JSON array of page bodies, in page order
@@ -32,6 +53,15 @@
  *   GH_REPLAY_FAILURE_AT  1-based check-runs call to start failing at; default 1
  *   GH_REPLAY_COUNTER     path this process counts check-runs calls in
  *   GH_REPLAY_RUNS        path to a JSON array of workflow runs; default none
+ *   GH_REPLAY_ISSUE       path to the `issue` node the graphql query returns
+ *   GH_REPLAY_BLOCKED_BY  path to a JSON array of blocking issues; default none
+ *   GH_REPLAY_PULLS       path to a JSON array of pull requests, each carrying
+ *                         a `state` of OPEN, CLOSED or MERGED; default none
+ *   GH_REPLAY_REPO        path to the repository object; default `{}`
+ *   GH_REPLAY_THREADS     path to a JSON array of review thread nodes; default none
+ *   GH_REPLAY_CREATED     the number `pr create` answers with; default 300
+ *   GH_REPLAY_LOG         path each tracker write is appended to, one JSON
+ *                         argv per line
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -69,6 +99,96 @@ const runs = () => {
 if (argv[0] === "run") {
   if (argv[1] !== "view" || !argv.includes("--log-failed")) unrecorded();
   die(`failed to get run: Get "https://localhost/api/v3/repos/…/actions/runs/${argv[2]}": dial tcp [::1]:443: connect: connection refused`, 1);
+}
+
+/** A JSON file a scenario supplies, or `fallback` when it supplies none. */
+const fixture = (name, fallback) => {
+  const file = process.env[name];
+
+  return file === undefined ? fallback : JSON.parse(readFileSync(file, "utf8"));
+};
+
+/** The flag's value, from anywhere in argv. */
+const argOf = (...names) => {
+  const i = argv.findIndex((arg) => names.includes(arg));
+  return i < 0 ? undefined : argv[i + 1];
+};
+
+// Tracker writes. Nothing reads their output, so the replay's whole job is to
+// say they happened: one line per call, which is what a scenario asserts on
+// when the point is that a refusal did — or did not — touch the issue.
+if (argv[0] === "issue" && (argv[1] === "edit" || argv[1] === "comment")) {
+  const log = process.env["GH_REPLAY_LOG"];
+
+  if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
+  process.exit(0);
+}
+
+/** `--json`'s output, through `--jq` if one was passed. */
+const printJson = (value) => {
+  const filter = argOf("--jq", "-q");
+  const json = JSON.stringify(value);
+
+  if (filter === undefined) process.stdout.write(`${json}\n`);
+  else process.stdout.write(execFileSync("jq", ["-r", filter], { input: json, encoding: "utf8" }));
+};
+
+/** One pull request holding exactly the fields `--json` named. */
+const only = (pull) => Object.fromEntries((argOf("--json") ?? "").split(",").map((field) => [field, pull[field]]));
+
+// `gh pr list`, which queries open pull requests only under `--state open`,
+// every state under `--state all`, and prints, per `--json`, an array of
+// objects holding exactly the fields named. `--head` keeps the ones from that
+// branch and `--base` the ones into it.
+if (argv[0] === "pr" && argv[1] === "list") {
+  const state = argOf("--state", "-s");
+
+  if (argOf("--json") === undefined || (state !== "open" && state !== "all")) unrecorded();
+
+  const head = argOf("--head", "-H");
+  const base = argOf("--base", "-B");
+
+  printJson(
+    fixture("GH_REPLAY_PULLS", [])
+      .filter(
+        (pull) =>
+          (state === "all" || pull.state === "OPEN") &&
+          (head === undefined || pull.headRefName === head) &&
+          (base === undefined || pull.baseRefName === base),
+      )
+      .map(only),
+  );
+  process.exit(0);
+}
+
+// `gh pr view <n> --json …`: one object rather than an array. A number the
+// scenario never mentions has no recording.
+if (argv[0] === "pr" && argv[1] === "view") {
+  const pull = fixture("GH_REPLAY_PULLS", []).find((candidate) => String(candidate.number) === argv[2]);
+
+  if (pull === undefined || argOf("--json") === undefined) unrecorded();
+  printJson(only(pull));
+  process.exit(0);
+}
+
+// Pull request writes, logged like the tracker writes above. `pr create`
+// prints the URL of the pull request it opened, last.
+if (argv[0] === "pr" && ["ready", "merge", "create", "edit"].includes(argv[1])) {
+  const log = process.env["GH_REPLAY_LOG"];
+
+  if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
+  if (argv[1] === "create") {
+    process.stdout.write(`https://github.com/acme/widgets/pull/${process.env["GH_REPLAY_CREATED"] ?? "300"}\n`);
+  }
+  process.exit(0);
+}
+
+// A branch deleted through the refs endpoint. A write, logged.
+if (argv[0] === "api" && argv[1] === "-X" && argv[2] === "DELETE" && /\/git\/refs\/heads\//.test(argv[3] ?? "")) {
+  const log = process.env["GH_REPLAY_LOG"];
+
+  if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
+  process.exit(0);
 }
 
 if (argv[0] !== "api") unrecorded();
@@ -243,6 +363,42 @@ if (/\/actions\/runs\?/.test(endpoint)) {
   const workflowRuns = runs();
 
   emit({ total_count: workflowRuns.length, workflow_runs: workflowRuns });
+  process.exit(0);
+}
+
+// The PRD preflight's shape query, and the merge step's review threads —
+// told apart by the query, which is the only thing that differs. The envelope
+// is GraphQL's own; what is inside it is whatever the scenario says. The
+// threads are one page, which `--slurp` wraps like any other.
+if (endpoint === "graphql") {
+  if (flags.some((flag) => flag.startsWith("query=") && flag.includes("reviewThreads"))) {
+    const page = {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: fixture("GH_REPLAY_THREADS", []) },
+          },
+        },
+      },
+    };
+
+    emit(has("--slurp") ? [page] : page);
+    process.exit(0);
+  }
+  emit({ data: { repository: { issue: fixture("GH_REPLAY_ISSUE", null) } } });
+  process.exit(0);
+}
+
+// The repository itself — the REST object, of which only the merge settings
+// are ever read.
+if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
+  emit(fixture("GH_REPLAY_REPO", {}));
+  process.exit(0);
+}
+
+// The parent's blockers — the REST array of issues, `state` lower-case.
+if (/\/issues\/[0-9]+\/dependencies\/blocked_by$/.test(endpoint)) {
+  emit(fixture("GH_REPLAY_BLOCKED_BY", []));
   process.exit(0);
 }
 

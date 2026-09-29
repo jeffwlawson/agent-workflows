@@ -645,7 +645,8 @@ export const diagnose = (
         problem:
           `The \`AGENT_PAT\` secret is not set. The workflows fall back to \`GITHUB_TOKEN\` and go ` +
           `on running, but a push made with it starts no CI, a label added with it fires no event, ` +
-          `and it cannot mark a pull request ready — so the loop looks alive and transitions nothing.`,
+          `and it cannot mark a pull request ready — so the loop looks alive and transitions nothing. ` +
+          `Without it, the PRD chain stops after its first slice.`,
         fix: `Set a fine-grained PAT with Contents, Pull requests, Issues and Workflows write.`,
       });
     }

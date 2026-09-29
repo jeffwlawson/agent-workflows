@@ -474,6 +474,29 @@ export const fetchPullRequestHeading = (prNumber: string): string =>
   safeGh(["pr", "view", prNumber, "--json", "title,body", "--jq", PR_HEADING_JQ]) ||
   `PR #${prNumber}`;
 
+/**
+ * A pull request's body, byte for byte. `--json` and a parse rather than
+ * `--jq .body`, which prints a newline after the body that is not in it — and a
+ * caller that writes the body back would add one on every run.
+ */
+export const fetchPullRequestBody = (prNumber: string): string => {
+  const pr = JSON.parse(gh(["pr", "view", prNumber, "--json", "body"])) as { readonly body?: unknown };
+  return typeof pr.body === "string" ? pr.body : "";
+};
+
+/**
+ * Replace a pull request's body. Through the REST endpoint with the body as a
+ * JSON file, so it arrives exactly as given: no shell, no argv length limit,
+ * and no `@file` or type coercion for `-F` to apply to a body that happens to
+ * look like either.
+ */
+export const updatePullRequestBody = (prNumber: string, body: string): void => {
+  fs.mkdirSync(outputDir(), { recursive: true });
+  const file = path.join(outputDir(), `pr-${prNumber}-body.json`);
+  fs.writeFileSync(file, JSON.stringify({ body }));
+  gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${prNumber}`, "--input", file]);
+};
+
 export const writeJson = (filename: string, value: unknown): void => {
   fs.mkdirSync(outputDir(), { recursive: true });
   fs.writeFileSync(path.join(outputDir(), filename), JSON.stringify(value, null, 2));

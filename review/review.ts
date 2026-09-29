@@ -14,6 +14,7 @@ import {
   writeText,
 } from "../shared/common.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
+import { fetchPrdContext, type PrdContext } from "../shared/prd-context.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
@@ -49,6 +50,123 @@ import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
+const BASE_REF = required("BASE_REF");
+
+/**
+ * The slice this pull request builds, when its head is a slice branch (#175):
+ * `agent/slice-<parent>-<sub>-<slug>`, the name `implement-prd` gives it. Its
+ * base is the PRD branch, which holds the slices merged before it.
+ */
+const SLICE_MATCH = /^agent\/slice-(\d+)-(\d+)-/.exec(BRANCH);
+const slice =
+  SLICE_MATCH === null ? undefined : { prd: SLICE_MATCH[1] ?? "", subIssue: SLICE_MATCH[2] ?? "" };
+
+/**
+ * The PRD this pull request delivers, when its head is a PRD branch (#179):
+ * `agent/prd-<parent>-<slug>`, the name `implement-prd` gives it. A PRD PR's
+ * review is the chain's **integration review** — asked for only when the chain
+ * holds more than one slice; a one-slice PRD's PRD PR is marked ready without
+ * one.
+ */
+const PRD_MATCH = /^agent\/prd-(\d+)-/.exec(BRANCH);
+const prdParent = PRD_MATCH?.[1];
+
+const unreadable = (what: string): string =>
+  `- ${what}: **could not be read**. Do not assume there are none — read the PRD branch's history ` +
+  "and the slices table in this pull request's body, and review as though there were.";
+
+/**
+ * The integration review's brief. Everything on this pull request was reviewed
+ * on a slice PR except the two things listed here, so those are reviewed in
+ * full and the rest only for what no slice round could see.
+ */
+const integrationReview = (prd: PrdContext): string => {
+  const slicePrs =
+    prd.slicePrs === undefined
+      ? unreadable("The slice PRs it holds")
+      : prd.slicePrs.length === 0
+        ? "- Slice PRs it holds: none."
+        : `- Slice PRs it holds, in merge order: ${prd.slicePrs
+            .map((pr) => `#${pr.number}${pr.subIssue === undefined ? "" : ` (sub-issue #${pr.subIssue})`}`)
+            .join(", ")}. Each had a review round of its own.`;
+  const preUpgrade =
+    prd.preUpgrade === undefined
+      ? unreadable("Slices built before slice PRs")
+      : prd.preUpgrade.length === 0
+        ? "- Slices built before slice PRs: none."
+        : [
+            "- **Slices built before slice PRs**, which had **no review of their own** — review each one's " +
+              "diff **in full**, on the same bar as an ordinary pull request:",
+            ...prd.preUpgrade.map(
+              (slice) =>
+                `  - sub-issue #${slice.subIssue}: ${
+                  slice.commits.length === 0
+                    ? `no commit on this branch names \`(#${slice.subIssue})\`; find its work in the branch's history`
+                    : `commit${slice.commits.length === 1 ? "" : "s"} ${slice.commits.join(", ")}`
+                }`,
+            ),
+          ].join("\n");
+  const merges =
+    prd.resolvedMerges === undefined
+      ? unreadable("Merge commits whose conflicts an agent resolved")
+      : prd.resolvedMerges.length === 0
+        ? "- Merge commits whose conflicts an agent resolved: none."
+        : `- **Merge commits whose conflicts an agent resolved** while the chain was building, and nothing ` +
+          `has reviewed since: ${prd.resolvedMerges.join(", ")}. Review each **resolution** — what the ` +
+          "merge commit chose where the two sides conflicted — in full.";
+
+  return [
+    `This is a **PRD PR**: the PRD branch \`${BRANCH}\` into \`${BASE_REF}\`, delivering PRD ` +
+      `#${prd.parent}, which the linked issue above describes. It is the one pull request of the chain a ` +
+      "human merges. Its slices were each built and reviewed on a **slice PR** of their own, merged into " +
+      "the PRD branch when that slice's review round ended. This review is the **integration review**.",
+    [slicePrs, preUpgrade, merges].join("\n"),
+    "Review the slices built before slice PRs and the agent-resolved merges above in full. " +
+      "**Everything else, look at only for what spans slices** — the problems no slice review could see, " +
+      "because each saw one slice:",
+    [
+      "- **contracts between slices**: one slice calling, reading or configuring what another wrote, " +
+        "where the two do not agree;",
+      "- **duplication**: two slices each building the same thing their own way;",
+      "- **dead scaffolding**: something one slice left in place for a later one that the later slice " +
+        "never used, or replaced beside it.",
+    ].join("\n"),
+    "A problem inside one slice that its slice review could have seen is **not** this review's: one no " +
+      "slice round raised goes to `followUps` on the bar that list states. " +
+      "And **never re-raise a slice's leftover findings** — not as a finding, not as a follow-up. " +
+      "A slice round that ended with open findings left them on its slice PR, and the slices table in " +
+      "this pull request's body links them: they are a pointer for the human who merges, not work for " +
+      "this review or its fix.",
+    "Your verdict is this pull request's own, and it means **the slices fit together** — not a roll-up " +
+      "of the slice verdicts. Every finding anchors on a line the diff below shows; the diff is the whole " +
+      "PRD against its base.",
+  ].join("\n\n");
+};
+
+/**
+ * What kind of pull request the reviewer is reading. An ordinary one is the
+ * whole change; a slice PR is one slice of a PRD, reviewed on its own round,
+ * over code the earlier slices' rounds already reviewed; a PRD PR is every
+ * slice together, reviewed once more for how they fit.
+ */
+const pullRequestKind = (prd: PrdContext | undefined): string =>
+  prd !== undefined ? integrationReview(prd) : sliceOrOrdinary();
+
+const sliceOrOrdinary = (): string =>
+  slice === undefined
+    ? `An ordinary pull request into \`${BASE_REF}\`. Review the whole change.`
+    : [
+        `This is a **slice PR**: the slice of PRD #${slice.prd} that sub-issue #${slice.subIssue} ` +
+          `describes, opened against the PRD branch \`${BASE_REF}\`. The linked issue above is that ` +
+          "sub-issue, and it is what this slice has to do; the PRD is the whole it is a part of.",
+        `The PRD branch holds every slice of the PRD merged before this one, and each of those had a ` +
+          "review round of its own on its own slice PR. Treat them as **settled context**: read them to " +
+          "understand what this slice builds on, and do not review them again. A problem you find in " +
+          "one is outside this pull request's scope, and goes to `followUps` on the bar that list states.",
+        `The diff below is this pull request's own three-dot diff against \`${BASE_REF}\` — this slice ` +
+          "alone — and every finding anchors on a line it shows. Later slices are not written yet, so " +
+          "work the PRD gives to a later slice is not missing from this one.",
+      ].join("\n\n");
 
 /**
  * Results of the PR's other checks, gathered by the workflow after waiting for
@@ -107,7 +225,9 @@ const willAutoFix = (): boolean =>
   process.env["AUTO_FIX"] === "true" && process.env["AUTO_FIXED"] !== "true";
 
 try {
-  const context = fetchPullRequestContext(PR_NUMBER);
+  const context = fetchPullRequestContext(PR_NUMBER, slice?.subIssue);
+  const prd =
+    prdParent === undefined ? undefined : fetchPrdContext(prdParent, BRANCH, BASE_REF, PR_NUMBER);
 
   // Which pass over this pull request this is, read off the repository before
   // the token goes (#96). It changes what the agent is asked to do — round 2
@@ -143,6 +263,7 @@ try {
       PR_NUMBER,
       BRANCH,
       PR_TITLE: context.prTitle,
+      PULL_REQUEST_KIND: pullRequestKind(prd),
       ISSUE_NUMBER: context.issueNumber || "(none)",
       ISSUE_TITLE: context.issueTitle || "(no linked issue)",
       LINKED_ISSUE: context.linkedIssue,

@@ -111,24 +111,33 @@ claims in primary sources at authoring time is what actually closed it before (#
 Lettered rather than numbered so the cross-references in the rest of this file keep working. #92.
 
 Labelling a **parent** issue `agent:implement` implements its sub-issues one at a time — one per
-run — accumulating onto a single branch and a single PR, and requesting review once, at the end.
+run — each on a **slice branch** of its own, opened as a **slice PR** into a single **PRD branch**.
+Every slice PR gets the ordinary review round, and the chain waits for that round to end before it
+builds the next slice. The slice PRs land on the PRD branch one merge each; the one **PRD PR**, from
+the PRD branch into the base branch, is what a human merges. Rewritten for PRD #171: until then
+every slice accumulated onto one branch and one PR, and review was requested once, at the end — the
+trade below records why that changed.
 
 | Feature | CVM | Ours | Note |
 |---|:--:|:--:|---|
 | Triggered by `agent:implement` on a parent issue | ✅ | ✅ | |
 | Refuses a **nested** PRD (a PRD that is itself a sub-issue) | ✅ | ✅ | two owners of one ordering, neither able to see the other's chain |
-| Refuses a PRD whose sub-issues have **all closed** | ✅ | ✅ | and *without* `agent:blocked` — a finished PRD is a success state, and the label would be the stale one §10 warns about |
+| Refuses a **finished** PRD | ✅ | ✅ | and *without* `agent:blocked` — a finished PRD is a success state, and the label would be the stale one §10 warns about. CVM's test is "every sub-issue closed"; ours adds "no slice PR open, and the PRD PR handed over or absent", because a PRD whose last slice PR is still open, or whose PRD PR is still a draft, is waiting on the finishing run rather than finished |
 | Refuses a `wayfinder:*` planning artifact | ❌ | ➕ | the same refusal `agent-implement` carries, for the map that has sub-issues and so reaches this workflow instead |
-| Refuses a parent with open `blocked_by` edges | ❌ | ➕ | #14, and the one place this workflow reads an edge — see the ordering note below. Being a coordinator exempts nothing, and the cost of running anyway is larger than the flat case's one wasted run: a single label lands every slice on one branch, as one PR, built on work that does not exist yet. **Last** of the refusals, after the finished one: a finished PRD can still carry an open edge, and read first it would collect the `agent:blocked` the row above withholds, on an issue no later run can clear it from |
+| Refuses a parent with open `blocked_by` edges | ❌ | ➕ | #14, and the one place this workflow reads an edge — see the ordering note below. Being a coordinator exempts nothing, and the cost of running anyway is larger than the flat case's one wasted run: a single label lands every slice on one PRD branch, built on work that does not exist yet. **Last** of the refusals, after the finished one: a finished PRD can still carry an open edge, and read first it would collect the `agent:blocked` the row above withholds, on an issue no later run can clear it from |
 | Targets the **first still-open** sub-issue, in sub-issues API order | ✅ | ✅ | see the ordering note below |
-| One branch `agent/prd-<n>-<slug>`, reused across the chain | ✅ | ✅ | found on the remote by `agent/prd-<n>-*`, never by the whole recomputed name — the slug comes from the parent's *title* and a title is editable, so a retitle mid-chain would otherwise fork slice N off `main` and open a second PR. Two matches is ambiguous and fails the run rather than guessing |
-| Plain `git push`, never force | ✅ | ✅ | the branch carries every earlier slice; a force push is a chain eating its own history |
-| One PR, opened once and reused | ✅ | ✅ | draft until the last slice |
-| Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ✅ | the only record tying a closed sub-issue to its code while the PR is still growing |
-| Chains by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | warns loudly when the PAT is absent — a `GITHUB_TOKEN` label add is a silent no-op, and here it stops the chain dead while looking like work in progress |
-| Adds `agent:review` to the PR only when no sub-issues remain | ✅ | ✅ | the trade below |
-| Both label adds run under `set -e` | — | ➕ | each step ends with the warn-if-no-PAT `if`, which returns 0 when the PAT *is* set; without `-e` a failed add exits the step green, `failure()` never fires, and the chain halts unlabelled or the PR sits finished in draft |
-| `failure_reason.txt` → issue comment, `agent:blocked`, `agent:in-progress` held | ✅ | ✅ | on the **parent**; the failure comment names which sub-issue stopped the chain, and — when there is one — the PR to hand `agent:review` to if the chain died *after* closing that sub-issue |
+| One PRD branch `agent/prd-<n>-<slug>`, reused across the chain | ✅ | ✅ | found on the remote by `agent/prd-<n>-*`, never by the whole recomputed name — the slug comes from the parent's *title* and a title is editable, so a retitle mid-chain would otherwise fork a slice off `main` and open a second PRD PR. Two matches is ambiguous and fails the run rather than guessing |
+| One **slice branch** per sub-issue, `agent/slice-<parent>-<sub>-<slug>` | ❌ | ➕ | branched from the PRD branch tip. Never under `agent/prd-`, so the PRD branch lookup cannot match it and the two cannot collide as git refs. Deleted when its slice PR merges |
+| Plain `git push`, never force | ✅ | ✅ | the PRD branch carries every earlier slice; a force push is a chain eating its own history |
+| A **draft slice PR** per sub-issue, based on the PRD branch, carrying `Part of #<sub-issue>` | ❌ | ➕ | CVM opens one PR per PRD. `Part of`, not `Closes`: the sub-issue's own state is the chain's "built" marker, and must not wait on a merge. Found by its **base**, never its name, and more than one open refuses rather than guessing which to merge |
+| Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ✅ | when its slice PR opens, so "first open sub-issue" still means the next slice to build. The only record tying a closed sub-issue to its code once the slice branch is gone |
+| Adds `agent:review` to **every** slice PR | ❌ | ➕ | CVM adds it once, when no sub-issues remain — the trade below |
+| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance job** in `review` and `fix` does, when a slice PR's round ends on 🟢, on 🟡 with no fix round starting, or on 🟡 after a fix round (§10). It parks on 🔵 and on a failed run, and a human's re-label of the parent is then the acceptance. Without the PAT it warns, and comments on the slice PR naming the by-hand re-label |
+| **Merges the waiting slice PR first**, as a step of its own | ❌ | ➕ | refuses into `agent:blocked`, naming the slice PR, while `agent:review`, `agent:fix` or `agent:in-progress` is on it, or while it is conflicted — pointing at `agent:update-branch` on it. Pinned with `--match-head-commit` to the head it inspected; squash, then rebase, then a merge commit, whichever the repository allows first. It never reads the verdict, so a human's re-label and the advance job's are one path |
+| A **draft PRD PR**, opened with the first slice merge and carrying `Closes #<parent>` | ✅ | ✅ | CVM's one PR, drafted until the chain finishes. Ours also carries the **slices table**: one row per slice, written by the run that merges it and never refreshed. Merged with `AGENT_PAT` so the PRD PR's CI and Follow-ups see each slice; the `GITHUB_TOKEN` fallback warns that neither ran |
+| A **finishing run** hands the PRD PR over | ❌ | ➕ | no model: merges the last slice PR, writes its row, then adds `agent:review` to the PRD PR for an **integration review** when more than one slice was merged, and marks it ready itself when one was |
+| Label adds and the merge run under `set -e` | — | ➕ | each warn-if-no-PAT `if` returns 0 when the PAT *is* set; without `-e` a failed add exits the step green, `failure()` never fires, and the slice PR sits in draft asking nobody for review |
+| `failure_reason.txt` → issue comment, `agent:blocked`, `agent:in-progress` held | ✅ | ✅ | on the **parent**; the failure comment names which sub-issue stopped the chain and, when there is one, the slice PR it had already opened |
 | Agent-authored PR title + body | ✅ | ❌ | same gap as §2, same fixed heredoc |
 
 **Ordering comes from creation order, not from the edges.** The chain walks sub-issues API order
@@ -159,8 +168,9 @@ else → `agent-implement`. Whichever does not own the shape calls `defer` and e
 nothing:
 
 - **no comment**, or a human sees two bot comments about one event saying opposite things;
-- **no label edit**, and this is the load-bearing half — the chain re-adds `agent:implement` to the
-  parent to start the next slice, and a second job racing to remove it eats the chain silently.
+- **no label edit**, and this is the load-bearing half — the advance job re-adds `agent:implement`
+  to the parent to start the next slice, and a second job racing to remove it eats the chain
+  silently.
 
 The partition is therefore settled *before* either preflight says anything, which is why the shape
 query moved above the state check in `agent-implement`: a closed PRD parent would otherwise collect
@@ -168,45 +178,64 @@ the same "this issue is not open" comment twice, seconds apart, from two runs th
 other. A nested PRD routes to the PRD path deliberately — it is the one shape both could claim, and
 the PRD path is the one that can explain what is wrong with it.
 
-**One count is computed rather than read.** After closing its sub-issue the run re-reads the
-parent's sub-issues — so a slice added or closed by hand mid-run still counts — but subtracts the
-one it just closed regardless of what the API reports. That read is not guaranteed to have caught
-up with the close, and reading it back as still open is the one wrong answer with no recovery: the
-chain re-labels, the next run's preflight finds nothing open and refuses "the PRD is finished", and
-`agent:review` is only ever added on the *other* leg. The PR would sit finished, in draft, reviewed
-by nobody.
+**Every preflight state is safe to re-run.** The run decides what it is from two readings — is a
+sub-issue still open, and is a slice PR open against the PRD branch — and each combination is a row
+a retried or interrupted run can land on without doing anything twice:
 
-**The same state is still reachable by failing, so both messages name the way out.** Every step
-after `Close the finished sub-issue` fails with that sub-issue already closed — so on the *last*
-slice, the failure comment's own remedy ("re-apply `agent:implement`") lands on the finished-PRD
-refusal instead of retrying anything, and the run has walked a human into the
-remedy-that-refuses-again trap the single-issue preflight warns about. Neither end of that loop can
-fix it alone, so both say the other thing: the failure comment names the PR and asks for `agent:review`
-on it by hand, and the finished-PRD refusal names the still-draft PR on `agent/prd-<n>-*`. The
-alternative — making `agent:review` reachable from a second place — is a second owner of the one
-handoff, which is what §10's residual race is already about.
+| Open sub-issue | Open slice PR | The run |
+|---|---|---|
+| yes | yes | merges it, then builds the next slice |
+| yes | no | builds the next slice — the first run, a retry after a failed build, or the first run after an upgrade |
+| no | yes | **finishing run**: merges it, hands the PRD PR over |
+| no | no, PRD PR still a draft | **resumes the handover** — a run died after the last merge |
+| no | no, PRD PR handed over or none | refuses: the PRD is finished |
 
-### The trade: review is once per PR, not once per slice
+The fourth row is what retired the manual step this section used to describe. A chain whose last
+run died after closing its last sub-issue once landed on the finished-PRD refusal, and both that
+refusal and the failure comment asked a human to add `agent:review` to the PR by hand — a second
+owner of the one handoff. Now the same re-label that retries everything else resumes the handover,
+and nothing in the chain is left for a human to finish except the merge.
 
-Verified against CVM on 2026-08-07. Its handoff step is gated on the remaining count being zero, so
-`agent:review` is applied **only** when no open sub-issues remain. Intermediate iterations close
-their sub-issue with a commit-SHA comment and nothing else — no review agent, no review label, not
-even as an addition. Adopted deliberately.
+### The trade: the slice PR is the unit of review, the PRD PR the unit of merge
 
-The PR is the unit of review because it is the unit of merge. A per-slice review would critique code
-the next slice is about to rewrite, with inline comments going outdated as the branch advances —
-the stale-anchor problem #102/#105 spent two rounds fixing at the workflow level.
+**What this section used to say**, verified against CVM on 2026-08-07: review is once per PR, not
+once per slice. CVM's handoff is gated on the remaining count being zero, so `agent:review` is
+applied only when no open sub-issues remain, and this chain adopted that deliberately. The PR was
+the unit of review because it was the unit of merge, and a per-slice review would have critiqued
+code the next slice was about to rewrite, from inline comments going outdated as the branch
+advanced — the stale-anchor problem #102/#105 spent two rounds fixing. The cost was stated and
+accepted: a design error in slice 1 is not caught until slice N is written on top of it.
 
-**The cost, stated plainly:** a design error in slice 1 is not caught until slice N is written on
-top of it. Partly covered already — `corpus.yml` runs per push on `src/**` and `verify` runs per
-slice, so behavioural regressions surface at the slice that caused them. Only *design* feedback is
-deferred.
+**PRD #171 separated the two units, because the cost came due.** A four-slice PRD reached the
+reviewer as 2,000+ lines in one pass, one automatic fix round covered the whole PRD, and
+its findings anchored across work built at different times. So:
 
-**If that ever bites, do not add a per-slice review workflow.** The cheap fix is a prompt line
-telling the implement agent to run its own review pass over the slice before committing — which is
-what a human's local `/implement` … `/code-review` loop does anyway. `implement-prd/prompt.md`
-already carries that line ("BEFORE YOU COMMIT"), which pulls correctness feedback earlier while
-keeping one review per PR. Escalating it into a workflow is the thing to resist.
+- **The slice PR is the unit of review.** The same `review` workflow runs once per slice PR, with
+  its own round and its own once-per-PR automatic fix. There is still **no per-slice review
+  workflow** — what changed is which pull request a slice is, not how review works. The stale-anchor
+  objection does not return, because nothing moves under an open round: a slice PR's diff is its own
+  three-dot diff against the PRD branch, and the next slice is not built until the round ends.
+- **The PRD PR is the unit of merge.** One per PRD, merged by a human, never by the loop, and never
+  approved by it. Its own review is the **integration review**, asked for once by the finishing run
+  and only when more than one slice was merged: every slice was already reviewed on its slice PR, so
+  it looks only for what spans slices — contracts between them, duplication, scaffolding one slice
+  left dead for a later one — and never re-raises a slice's leftover findings. A one-slice PRD
+  skips it, because its PRD PR diff is the lines its slice PR's review already read.
+- **The automatic-fix bound is unchanged.** Once per pull request (§10), which is now once per slice
+  PR plus once on the PRD PR. More fix rounds per slice would be the lever for fewer leftover 🟡
+  findings, and is out of scope for exactly that reason: it changes the bound for every pull
+  request, not just a slice's.
+
+**The cost now is wall-clock**: each slice's review and fix time adds up, plus a no-model finishing
+run per PRD. Two gaps are accepted rather than closed. A slice's CI ran against the PRD branch as it
+was when the slice was built, so the combined code is first tested by the PRD PR's CI after each
+merge; and a `GITHUB_TOKEN` fallback merge fires no event, so neither that CI nor Follow-ups runs —
+both named in the warning the merge step prints.
+
+**The self-review line stays.** `implement-prd/prompt.md` still asks the implement agent to review
+its own slice before committing ("BEFORE YOU COMMIT"), which is what a human's local `/implement` …
+`/code-review` loop does anyway. It no longer stands in for a review that comes too late; it saves
+the slice's own round a finding it could have avoided.
 
 ### Containment transfers authorisation. Sequencing does not.
 
@@ -220,7 +249,7 @@ time it is questioned is not written down yet.
 
 A PRD parent **contains** its sub-issues: the body is the spec, the slices are pieces of it, so
 authorising the parent authorises them. That is what makes one label safe to drive five runs onto
-one branch, reviewed once — the whole of §2a rests on it, and so does §10's "the parent is the
+one PRD branch, merged once — the whole of §2a rests on it, and so does §10's "the parent is the
 control point".
 
 `blocked_by` is **sequencing**. The blocker is a separate deliverable with its own PR and its own
@@ -345,7 +374,8 @@ come up was *inside* one PRD.
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
-| **Starts one fix round by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101). Opt-in per repository (`auto-fix`, default off) and once per pull request, recorded by `agent:auto-fixed`. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; the only `AGENT_PAT` use in the workflow. Bounded twice — the key it selects on can only come out of a round-1 derivation, and the marker stops a second one on the same PR (§10) |
+| **Starts one fix round by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101). Opt-in per repository (`auto-fix`, default off) and once per pull request, recorded by `agent:auto-fixed`. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; one of the two `AGENT_PAT` uses in the workflow, beside the advance job below. Bounded twice — the key it selects on can only come out of a round-1 derivation, and the marker stops a second one on the same PR (§10) |
+| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance job**, in `review` and in `fix`: re-adds `agent:implement` to the slice PR's **parent** on 🟢, on 🟡 with no fix round starting, and on 🟡 after a fix round — and, in `fix`, when the fix run pushed nothing and so ended the round itself. The same shape as the auto-fix job: no checkout, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
@@ -636,8 +666,9 @@ expensive to rediscover.
   feature can be wrong without anything failing.
 
   The job itself is where decision 2 lands: `needs:` the review job, no checkout, no toolchain, no
-  agent, `pull-requests: write` alone, and the only use of `AGENT_PAT` in this workflow — so the
-  PAT is nowhere near the job that reads untrusted pull-request content and runs a model over it.
+  agent, `pull-requests: write` alone, and — until the advance job below copied its shape — the only
+  use of `AGENT_PAT` in this workflow, so the PAT is nowhere near the job that reads untrusted
+  pull-request content and runs a model over it.
   Without the PAT it adds the label anyway and warns, as `implement-prd.yml` does, and `doctor`
   says the same thing before the first run rather than after it.
 
@@ -645,6 +676,18 @@ expensive to rediscover.
   `agent:fix` on its own initiative, and the one that adds it at all does so under an input an
   adopter has to switch on, once per pull request, on the one verdict that says no reading is
   needed.
+
+  **And since #176 review adds a second trigger label, on an issue rather than a pull request**
+  (PRD #171). The **advance job** — in `review`, and in `fix` for the round a fix run ends itself by
+  pushing nothing — re-adds `agent:implement` to a **slice PR's parent** when that slice's round
+  ends on a verdict the chain moves on from: 🟢, 🟡 with no fix round starting, or 🟡 after a fix
+  round. It is an arrow for the same reasons the return leg is one. It lands on the parent, never on
+  a pull request, so no review round can be started by it. The run it starts either merges the slice
+  PR — closing it, so no later round on that PR can fire the job again — or refuses into
+  `agent:blocked`. And it is bounded by the number of sub-issues, since a finished PRD refuses the
+  label. It is in `auto-fix`'s shape — no checkout, no model, `pull-requests: write` alone, and
+  `AGENT_PAT` or nothing — and on by default, because it only ever fires on a slice PR, which only
+  the PRD chain opens.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
   is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this.
 
@@ -723,23 +766,31 @@ expensive to rediscover.
   `agent-implement-prd-issue-<parent>` while review and fix use `agent-pr-<prNumber>` — different
   groups, so the same read-during-write race exists one level up. Group keys cannot close it: an
   `issues` event carries no PR number, so the two cannot compute a shared key. The happy path does
-  not overlap (the chain adds `agent:review` itself only after the last sub-issue closes), but a
-  human labelling `agent:review` mid-chain would hit it. Accepted knowingly rather than fixed; if
+  not overlap — the review a run requests is on a **slice PR**, whose branch the chain does not push
+  to again, and the next run's merge step refuses while `agent:review`, `agent:fix` or
+  `agent:in-progress` is on it — but a human labelling `agent:review` on the draft PRD PR mid-chain
+  would hit it. Accepted knowingly rather than fixed; if
   it ever bites, the fix is a preflight refusal in review when the linked issue has an active PRD
   chain — not a concurrency change.
-- **Review is requested once per PR, never once per slice.** `agent-implement-prd` adds
-  `agent:review` only when its parent has no open sub-issues left; every intermediate run closes its
-  sub-issue with a commit SHA and stops. The PR is the unit of review because it is the unit of
-  merge, and a per-slice review critiques code the next slice is about to rewrite from inline
-  comments that go outdated as the branch advances — the stale-anchor problem #102/#105 spent two
-  rounds fixing. The cost is real and is stated in §2a: a design error in slice 1 waits for slice N.
-  If it bites, the fix is a prompt line asking the implement agent to review its own slice — which
-  `implement-prd/prompt.md` already carries — **not** a per-slice review workflow.
+- **Review is requested once per slice PR, plus one integration review.** Until PRD #171 this read
+  "once per PR, never once per slice", and the PR was the unit of review because it was the unit of
+  merge. The two are now different pull requests. The **slice PR** is the unit of review:
+  `agent-implement-prd` adds `agent:review` to each one it opens, and the chain builds nothing
+  further until that round ends. The **PRD PR** is the unit of merge: the finishing run asks for its
+  one **integration review** when more than one slice was merged, and that review looks only at
+  what spans slices. What still holds is the half that was the point: there is **no per-slice
+  review workflow**, and a pull request is still reviewed as a whole — nothing reviews a slice while
+  code is still being added under it, so the stale-anchor problem #102/#105 spent two rounds fixing
+  does not return. The automatic fix stays **once per pull request** (above), so a slice PR gets
+  one and the PRD PR gets one, and nothing gets a second. The reasoning, and the cost this
+  replaced, are in
+  [§2a's trade](#the-trade-the-slice-pr-is-the-unit-of-review-the-prd-pr-the-unit-of-merge).
 - **Two workflows may share a trigger label only if exactly one of them speaks.** `agent-implement`
   and `agent-implement-prd` both fire on `agent:implement`, and partition by issue shape. Whichever
   does not own the shape defers: no comment, no label edit, `exit 0`. A comment there is a second
   voice contradicting the run that *is* handling the event; a label edit is a race — and the one
-  label at stake is `agent:implement` itself, which the PRD chain re-adds to start its next slice.
+  label at stake is `agent:implement` itself, which the PRD chain's advance job re-adds to start its
+  next slice.
   So the partition is settled before either preflight says anything at all, ahead of even the
   closed-issue refusal. See §2a; `tests/workflows.test.ts` holds both `defer` bodies to it.
 - **The parent is the control point; a sub-issue is never labelled directly.** A batch carries
@@ -747,7 +798,7 @@ expensive to rediscover.
   to the parent and that starts the whole chain (`docs/agents/ticket-shape.md`, §8). The chain is
   the only thing that schedules a slice, so hand-labelling one is a second scheduler with no view of
   the first — it would branch that slice off `main` while the chain accumulates onto
-  `agent/prd-<n>-*`, giving one PRD two PRs. `agent-implement` refuses any issue with a parent
+  `agent/prd-<n>-*`, giving one PRD two PRD PRs. `agent-implement` refuses any issue with a parent
   (#90), so today that attempt is caught rather than obeyed, but the refusal is a backstop and not
   the rule: the rule is that nothing labels a sub-issue in the first place.
 - **Creation order is execution order, and the edges are the record rather than the schedule.**

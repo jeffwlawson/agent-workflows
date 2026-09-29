@@ -53,14 +53,16 @@ on:
       AGENT_PAT:
         description: >-
           User PAT, used to check the branch out, push it, add the
-          `agent:review` that asks for the re-review, and mark a pull request
-          ready where this run ends the round — neither a push nor a label made
+          `agent:review` that asks for the re-review, mark a pull request
+          ready where this run ends the round, and re-add `agent:implement` to
+          a slice PR's parent when it does — neither a push nor a label made
           with `GITHUB_TOKEN` triggers another workflow, and `GITHUB_TOKEN`
           cannot convert a draft at all (docs/ADOPTING.md §1). Optional, and
           every one of those degrades rather than fails: the push still lands
           and the PR simply gets no checks, the label still goes on but starts
-          no review until a human re-adds it, and the pull request stays a draft
-          under a warning saying so.
+          no review until a human re-adds it, the pull request stays a draft
+          under a warning saying so, and a slice PR says which re-label moves
+          its chain on by hand.
         required: false
 
 jobs:
@@ -82,6 +84,11 @@ jobs:
     concurrency:
       group: agent-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
+    # What the `advance` job below reads: whether this run pushed. A job cannot
+    # read another job's steps, so the only way across is an output. See *Push
+    # branch*, which writes it on both arms.
+    outputs:
+      pushed: ${{ steps.push.outputs.pushed }}
     # Granted by the caller, bounded here. A called workflow can only *downgrade*
     # the token it is handed, so this block cannot be widened from the caller's
     # side — and the caller's identical block is the grant, without which there
@@ -491,3 +498,68 @@ jobs:
       - name: Always remove in-progress
         if: always() && steps.state.outputs.proceed == 'true'
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
+
+  # The PRD chain's advance, where this run is what ends a slice PR's round
+  # (#176, PRD #171). `review.yml`'s `advance` job is the one that fires on a
+  # verdict and carries the reasoning; this is the same job, for the round a
+  # fix run ends itself.
+  #
+  # **Which runs end the round**: one that pushed nothing, and so asked for no
+  # re-review — the arm *Mark PR ready for review* above hands back to the
+  # human. A run that pushed has handed the round to the re-review it asked
+  # for, and that review's verdict decides; advancing here too would build the
+  # next slice under a re-review still in flight. So a slice whose fix declined
+  # every finding moves the chain on rather than sitting on "fix round started"
+  # forever. `== 'false'` rather than `!= 'true'`: the push writes the output on
+  # both arms, and an unset one is a run that never got as far as the push —
+  # a refused or failed run, which parks the chain. A failed run skips this job
+  # through `needs:` besides.
+  #
+  # Same shape, same scope, same step as the review's copy — a test holds the
+  # steps equal, so the two cannot come to say different things.
+  advance:
+    needs: fix
+    if: >-
+      github.event.label.name == 'agent:fix' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
+      needs.fix.outputs.pushed == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No concurrency group, for the reason the review's copy is in none.
+    permissions:
+      # The no-PAT arm's comment on the slice PR, and nothing else — see the
+      # review's copy for why `issues: write` stays out.
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      # MUST use AGENT_PAT, for `auto-fix`'s reason: `agent:implement` added with
+      # `GITHUB_TOKEN` sits on the parent and starts nothing. So without the PAT
+      # nothing is added at all, and the one place a maintainer is already
+      # looking — this slice PR — says which re-label advances the chain by hand.
+      #
+      # `bash -e` and no `|| true` on the add, for `auto-fix`'s reason: a chain
+      # that did not advance under a round that ended is a stall with no other
+      # symptom, and a red job is the only thing that says so.
+      - name: Advance the PRD chain
+        env:
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$HEAD_REF" =~ ^agent/slice-([0-9]+)-[0-9]+- ]]; then
+            echo "::error::Slice PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/slice-<parent>-<sub-issue>-…\`, so its PRD cannot be told. Re-add \`agent:implement\` to the PRD by hand to advance its chain."
+            exit 1
+          fi
+          parent="${BASH_REMATCH[1]}"
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::AGENT_PAT is not set, so the PRD chain was not advanced: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
+            gh pr comment "$PR_NUMBER" --body "This slice's review round has ended, but the PRD chain will not advance on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to merge this slice PR into the PRD branch and move the chain on." \
+              || echo "::warning::…and that could not be said on the pull request either."
+            exit 0
+          fi
+          gh issue edit "$parent" --add-label "agent:implement"
+          echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."

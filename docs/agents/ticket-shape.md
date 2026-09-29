@@ -19,8 +19,9 @@ How `/to-tickets` publishes a batch of slices into this repo's tracker — the q
 
 Two relationships, doing different jobs:
 
-- **parent / child** — containment. It is one PR per PRD, and it is the work-list
-  `agent-implement-prd` walks.
+- **parent / child** — containment. It is one slice PR per sub-issue, each reviewed on its own,
+  plus one PRD PR per parent that collects them and that a human merges once — and it is the
+  work-list `agent-implement-prd` walks.
 - **`blocked-by`** — ordering, and the machine-readable record of *why* the order is what it is.
 
 Both are **native** GitHub relations, not prose in a body. Why that distinction is load-bearing —

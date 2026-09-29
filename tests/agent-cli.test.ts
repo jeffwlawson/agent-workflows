@@ -851,6 +851,23 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * The PRD chain's cost of skipping the PAT, named where the PAT is (#176).
+   * Every slice after the first is started by the advance job re-adding
+   * `agent:implement` to the parent, and a label added with `GITHUB_TOKEN`
+   * fires nothing — so the chain builds one slice and stops. A clause on the
+   * existing error rather than a check of its own: the missing secret is the
+   * one fault, and this is one more thing it costs.
+   */
+  it("says the PRD chain stops after its first slice when AGENT_PAT is missing", async () => {
+    const { err } = await check(await installed(), {
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    });
+
+    expect(err).toMatch(/PRD chain stops after its first slice/);
+  });
+
+  /**
    * §1's first failure. A PAT bypasses the setting entirely — a user token is
    * not the Actions bot — so the severity depends on the other answer rather
    * than on this one alone.

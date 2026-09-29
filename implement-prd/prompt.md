@@ -4,13 +4,14 @@ Implement issue #{{SUB_NUMBER}}: {{SUB_TITLE}}
 
 It is one slice of PRD #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}.
 
-You are on branch `{{BRANCH}}`, which carries **every slice of this PRD implemented so far**.
-Earlier slices are already committed there. Later ones are not yet written and are not yours.
+You are on the slice branch `{{BRANCH}}`, cut from the tip of the PRD branch `{{PRD_BRANCH}}`.
+The PRD branch holds **every earlier slice of this PRD**, so they are already in your checkout:
+build on them rather than redo them. Later slices are not yet written and are not yours.
 
 Implement **only** #{{SUB_NUMBER}}. Do not start the next sub-issue, even if it looks small, and
-even if the code you are writing would be tidier with it done. Another run does that one, on this
-same branch, with this same context — and a slice that quietly absorbs its successor leaves that
-run with nothing to do and a sub-issue nobody can honestly close.
+even if the code you are writing would be tidier with it done. Another run does that one, on a
+slice branch of its own cut from the PRD branch, with this same context — and a slice that quietly
+absorbs its successor leaves that run with nothing to do and a sub-issue nobody can honestly close.
 
 # THE SLICE
 
@@ -38,7 +39,7 @@ Read these before changing code:
 Then read what the earlier slices already did: `git log {{BASE_REF}}..HEAD` and
 `git diff {{BASE_REF}}...HEAD`.
 Build on that rather than beside it — matching a convention an earlier slice established matters
-more here than in a standalone issue, because the whole PRD lands as one PR and is reviewed once.
+more here than in a standalone issue, because every later slice is built on top of this one.
 
 Explore the code the slice touches, and its tests, before editing. Match what is there.
 
@@ -61,9 +62,9 @@ branch; read the failure before assuming which.
 # BEFORE YOU COMMIT
 
 Review your own slice — read the diff you are about to commit as though someone else wrote it.
-This is not ceremony: review happens **once per PR**, after the last slice lands, so a design
-problem you leave here is not read by anyone until several slices have been built on top of it.
-You are the only reader this slice gets while it is still cheap to change.
+This is not ceremony: this slice is opened as a pull request of its own against the PRD branch and
+reviewed there, and the next slice is built on whatever that review leaves. A design problem you
+catch now costs one edit; one the review catches costs a round.
 
 # COMMIT
 

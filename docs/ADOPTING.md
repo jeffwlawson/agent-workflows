@@ -712,10 +712,11 @@ with it:
 
 ## 4. Files to write
 
-**Nothing in the loop is copied any more.** As of #98 every workflow in the loop is split in two: a
-`*-reusable.yml` here holding the job — the fork guard, the permissions ceiling, the concurrency
-group, the preflight, every step — and a **caller** in your repo holding the trigger, the token
-grant and the secrets. You write the callers; you reference the jobs.
+**Nothing in the loop is copied any more.** As of jeffwlawson/winget-manifest-lint#98 every workflow
+in the loop is split in two: a `*-reusable.yml` here holding the job — the fork guard, the
+permissions ceiling, the concurrency group, the preflight, every step — and a **caller** in your
+repo holding the trigger, the token grant and the secrets. You write the callers; you reference the
+jobs.
 
 That is the difference between installing this loop and forking it. A control you copy is a control
 that drifts; a control behind a pinned `uses:` is one you get fixes to.
@@ -928,7 +929,7 @@ scope write.
 > was missing from v0.1.0 through v0.1.4 and nothing ever failed. The first private adopter got
 > `403 Resource not accessible by integration` on every poll, and — because the count was defaulted
 > over the error — the job spent its full 900-second budget before reviewing with no CI evidence at
-> all, the exact outcome #48 exists to prevent.
+> all, the exact outcome jeffwlawson/winget-manifest-lint#48 exists to prevent.
 >
 > All of that is about the **poll**, and it was the whole story while your caller and the job were
 > one file. They are two now, and the review job declares `checks: read`: a caller that omits it is
@@ -1200,11 +1201,11 @@ next person does not go looking for it.
 
 | Assumption | Now | Notes |
 |---|---|---|
-| Default branch is `main` | `default-branch`, on every caller that takes inputs | It means two different things by event, and both are right. On `review`, `fix` and `update-branch` the base comes from the pull request (#71, #100) and this is only the fallback for an event carrying none — which never happens on a real PR, but degrades *silently* when it does. On the two `implement` workflows there is no event field to read: an `issues` event says nothing about branches, so this **is** the branch they cut from and open the PR against. It reaches the runners as `BASE_REF` too, so the prompts name a branch that exists (#98) — `implement/implement.ts` used to count commits against a literal `main`, which was the one site here that *hard-errored* rather than misbehaving quietly |
+| Default branch is `main` | `default-branch`, on every caller that takes inputs | It means two different things by event, and both are right. On `review`, `fix` and `update-branch` the base comes from the pull request (jeffwlawson/winget-manifest-lint#71, jeffwlawson/winget-manifest-lint#100) and this is only the fallback for an event carrying none — which never happens on a real PR, but degrades *silently* when it does. On the two `implement` workflows there is no event field to read: an `issues` event says nothing about branches, so this **is** the branch they cut from and open the PR against. It reaches the runners as `BASE_REF` too, so the prompts name a branch that exists (jeffwlawson/winget-manifest-lint#98) — `implement/implement.ts` used to count commits against a literal `main`, which was the one site here that *hard-errored* rather than misbehaving quietly |
 | `npm ci` and `.nvmrc` | `setup` and `node-version-file`, on the same set | the whole toolchain assumption, and both are skippable: pass `''` and a repo whose toolchain is not Node still gets the loop, running on the image's own Node. The filing caller is outside this row rather than exempt from it — it declares no inputs, because it checks nothing out and has no toolchain to configure. Only `npm install -g @anthropic-ai/claude-code` is unconditional, and that is the agent's own runtime rather than yours |
 | The gate command (`npm run verify` here) | not an input, and not a coupling | each prompt says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of it. It cannot become an input: `runWithExtraction` drops prompt arguments before the extraction pass, so a placeholder would reach one prompt literal |
 | `CONTEXT.md` and `CLAUDE.md` exist | still yours to write | see §6. This is the coupling the others turned into — a de-domained prompt makes it total rather than partial |
-| Project domain | **not a coupling** (#95) | the prompts name no domain of their own. A test walks every prompt and runner file and fails on any adopting repo's vocabulary, so it stays that way |
+| Project domain | **not a coupling** (jeffwlawson/winget-manifest-lint#95) | the prompts name no domain of their own. A test walks every prompt and runner file and fails on any adopting repo's vocabulary, so it stays that way |
 | Sub-issues are created blockers-first | **not an input, by design** | `agent-implement-prd` walks sub-issues in **API order** and never reads `blocker` edges, so whatever publishes them owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a). The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |
 
 Your own CI is the one place a branch name is still yours to write, and it always was: `ci.yml`
@@ -1232,9 +1233,9 @@ here. Ordinary pull requests are unchanged — on a repository with no CI anywhe
 green. A CI with no `branches:` filter on `pull_request`, like this repository's, needs nothing.
 
 Nothing above will error if you get it wrong — with one exception worth knowing, because it is the
-exception on purpose. An empty base ref used to default to `main` inside the runners; since #98 it
-fails the run with a message naming the input, on the grounds that a review silently diffing
-against the wrong branch is worse than a run that stops and says so.
+exception on purpose. An empty base ref used to default to `main` inside the runners; since
+jeffwlawson/winget-manifest-lint#98 it fails the run with a message naming the input, on the grounds
+that a review silently diffing against the wrong branch is worse than a run that stops and says so.
 
 This table used to be the longest section in the file, and the work did not disappear — it moved to
 §6, where it belongs. An agent is only as good as the `CONTEXT.md` and `CLAUDE.md` it is pointed at,
@@ -1307,11 +1308,11 @@ the next slice is built on it before any human has read it.
 ## 8. If your repo is public
 
 `agent-review`, `agent-fix`, `agent-update-branch` and — if you took it — `agent-follow-ups` use
-`pull_request_target`, which runs with write access, and with secrets everywhere but the last.
-These controls are not decoration — and since #98 you no longer copy any of them: every one lives
-in a `*-reusable.yml` you reference, where a caller can skip the job but cannot loosen it. Read
-them anyway. Not to install them, but because a control you cannot see is one you cannot reason
-about, and the paragraph after the table is a decision only you can make.
+`pull_request_target`, which runs with write access, and with secrets everywhere but the last. These
+controls are not decoration — and since jeffwlawson/winget-manifest-lint#98 you no longer copy any
+of them: every one lives in a `*-reusable.yml` you reference, where a caller can skip the job but
+cannot loosen it. Read them anyway. Not to install them, but because a control you cannot see is one
+you cannot reason about, and the paragraph after the table is a decision only you can make.
 
 | Control | Why |
 |---|---|
@@ -1338,7 +1339,7 @@ are adopting into an org, this is your exposure and not ours, which is the wrong
 why it is written here. Moot while you are the only collaborator, and a real escalation path the day
 that changes. Two ways out, and it is a decision rather than a defect: check
 `github.event.sender`'s permission level, or treat "never grant Triage on a repo running this loop"
-as part of the setup. Pick one before you add a collaborator (#102).
+as part of the setup. Pick one before you add a collaborator (jeffwlawson/winget-manifest-lint#102).
 
 If you take the first, it goes in **your caller's** job-level `if:`. That is the one direction the
 seam allows — a caller's `if:` can narrow what runs, never widen it — and it is why the trade is

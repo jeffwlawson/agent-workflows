@@ -28,22 +28,22 @@ third execution model in §2b.
 | `agent-implement-pr` — act on PR feedback | ✅ | 🟡 | ours is `agent-fix`, label `agent:fix`; see §4 |
 | `agent-update-branch` — refresh a stale PR branch | ✅ | ✅ | ours merges mechanically and only calls the agent on conflicts |
 | `agent-explore` — read-only triage pass on an issue | — | ❌ | **upstream only**, not in CVM. Superseded by local planning skills *in this repo's usage* — see below, and the scope note |
-| `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | **the planning half of the PRD tier**, superseded locally by `/wayfinder` → `/to-spec` → `/to-tickets`. The **ordering contract** it owes the chain below — sub-issues *created* blockers-first (§2a) — is no longer owed but written down: `docs/agents/ticket-shape.md` (#93) is where a batch's shape and publish order are settled |
-| `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | **the execution half, shipped** (#92). Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
-| `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | **deferred: nothing to sequence between PRDs yet.** #91, detached from #87 so the chain would not build a slice nobody wanted. Not blocked on missing edges — `/wayfinder` records blockers as native dependencies, and on a `/to-tickets` batch `docs/agents/ticket-shape.md` requires them (upstream's skill writes a prose line, so they are added and verified by hand) — the point is that this tier sequences **top-level** issues, and ordering *within* a PRD is already carried by creation order (§2a). Its label exists and is human-written (§8) |
+| `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | **the planning half of the PRD tier**, superseded locally by `/wayfinder` → `/to-spec` → `/to-tickets`. The **ordering contract** it owes the chain below — sub-issues *created* blockers-first (§2a) — is no longer owed but written down: `docs/agents/ticket-shape.md` (jeffwlawson/winget-manifest-lint#93) is where a batch's shape and publish order are settled |
+| `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | **the execution half, shipped** (jeffwlawson/winget-manifest-lint#92). Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
+| `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | **deferred: nothing to sequence between PRDs yet.** jeffwlawson/winget-manifest-lint#91, detached from jeffwlawson/winget-manifest-lint#87 so the chain would not build a slice nobody wanted. Not blocked on missing edges — `/wayfinder` records blockers as native dependencies, and on a `/to-tickets` batch `docs/agents/ticket-shape.md` requires them (upstream's skill writes a prose line, so they are added and verified by hand) — the point is that this tier sequences **top-level** issues, and ordering *within* a PRD is already carried by creation order (§2a). Its label exists and is human-written (§8) |
 | `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
 | `agent-follow-ups` — file a merged PR's recorded findings | — | ➕ | #44. The review agent records what it cannot fix in the PR in front of it; this files each finding as a `needs-triage` stub once that PR merges. The only workflow here that turns an agent's output into **new issues** — `token-expiry` files a fixed one about the loop itself, and the `implement` pair only label and close — and the only one in the loop that runs **no model**, which is what makes holding `issues: write` while reading issue bodies safe. Optional per adopter: the caller file is the off switch. See §10 |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
-| `token-expiry` — warn before `AGENT_PAT` lapses | — | ➕ | weekly; #70 |
+| `token-expiry` — warn before `AGENT_PAT` lapses | — | ➕ | weekly; jeffwlawson/winget-manifest-lint#70 |
 
-**5 of CVM's 8 agent workflows** since #92 — but measured against `mattpocock/sandcastle`, which
-ships five and has no PRD tier at all, it is still **4 of 5**: `agent-implement-prd` is not one of
-the five, and the one missing there is `agent-explore`. CVM and upstream diverge here on purpose,
-and the divergence is the useful part: upstream has `explore` and no PRD tier, CVM has the PRD tier
-and no `explore`. They are two answers to the same question — *how does a well-specified issue come
-to exist?* Upstream assesses a spec that already exists and that you may not have written; CVM
-generates the spec itself, top-down.
+**5 of CVM's 8 agent workflows** since jeffwlawson/winget-manifest-lint#92 — but measured against
+`mattpocock/sandcastle`, which ships five and has no PRD tier at all, it is still **4 of 5**:
+`agent-implement-prd` is not one of the five, and the one missing there is `agent-explore`. CVM and
+upstream diverge here on purpose, and the divergence is the useful part: upstream has `explore` and
+no PRD tier, CVM has the PRD tier and no `explore`. They are two answers to the same question — *how
+does a well-specified issue come to exist?* Upstream assesses a spec that already exists and that
+you may not have written; CVM generates the spec itself, top-down.
 
 **Both are superseded by local skills — as standing practice, not as a current accident.** Issues
 here are authored by the owner and planned with `/wayfinder` → `/to-spec` → `/to-tickets` (charts a
@@ -56,10 +56,11 @@ not return as the backlog grows.
 **The seam that pipeline inherits.** `to-issues-prd` was not only a decomposer; it also *published*
 the result in the shape its own chain reads back. Handing decomposition to a skill hands that
 obligation over with it, and a skill run by a human on a laptop is not held to it by anything. So
-the contract is written down instead — `docs/agents/ticket-shape.md` (#93): a parent PRD with
-native sub-issues, published blockers-first — and §10 carries the invariants. The failure it guards
-is silent in both directions: a batch of flat peers is a PRD the chain cannot walk at all, and a
-batch in the wrong order is one it walks confidently through the wrong slice first.
+the contract is written down instead — `docs/agents/ticket-shape.md`
+(jeffwlawson/winget-manifest-lint#93): a parent PRD with native sub-issues, published blockers-first
+— and §10 carries the invariants. The failure it guards is silent in both directions: a batch of
+flat peers is a PRD the chain cannot walk at all, and a batch in the wrong order is one it walks
+confidently through the wrong slice first.
 
 There is a third answer upstream, which discharges the same obligation by not having it: sandcastle's
 planner templates infer the ordering from issue text every round and read no tracker relation at all.
@@ -77,12 +78,14 @@ six of the pilot's spec errors came from exactly there. `agent-explore` only hal
 prompt verifies an issue's claims *against the code*, and three of the six were wrong about
 **winget**, not about this repo. So the gap is real but a fifth workflow is not the fix; `explore`
 is advisory too, and nothing would force reading it before labelling `agent:implement`. Grounding
-claims in primary sources at authoring time is what actually closed it before (#36/#37).
+claims in primary sources at authoring time is what actually closed it before
+(jeffwlawson/winget-manifest-lint#36/jeffwlawson/winget-manifest-lint#37).
 
 > **Keeping this file honest.** It drifted once already — §4 still marked thread replies ❌ after
-> #50 shipped them, while §9 listed the same feature as done. A parity doc that contradicts itself
-> is worse than none, because it is consulted precisely when nobody remembers the answer. Update
-> the relevant row in the same PR that changes behaviour, not afterwards.
+> jeffwlawson/winget-manifest-lint#50 shipped them, while §9 listed the same feature as done. A
+> parity doc that contradicts itself is worse than none, because it is consulted precisely when
+> nobody remembers the answer. Update the relevant row in the same PR that changes behaviour, not
+> afterwards.
 
 ---
 
@@ -95,11 +98,11 @@ claims in primary sources at authoring time is what actually closed it before (#
 | Consumes the trigger label; `in-progress` / `blocked` transitions | ✅ | ✅ | |
 | Deterministic branch name `agent/issue-<n>-<slug>` | ✅ | ✅ | |
 | Refuses when a PR already targets the issue | ✅ | ✅ | |
-| Refuses a **closed** issue | ✅ | ✅ | added #102. Must precede the PR check, which lists *open* PRs only — so a merged-and-closed issue otherwise looks untouched |
-| Refuses a **sub-issue** / PRD-shaped issue | ✅ | ✅ | added #90, narrowed in #92. One GraphQL query settles the shape; a sub-issue is refused outright — its parent drives it — while a PRD-shaped parent is now **deferred** to `agent-implement-prd` rather than refused. §2a says why a deferral has to touch nothing at all |
+| Refuses a **closed** issue | ✅ | ✅ | added jeffwlawson/winget-manifest-lint#102. Must precede the PR check, which lists *open* PRs only — so a merged-and-closed issue otherwise looks untouched |
+| Refuses a **sub-issue** / PRD-shaped issue | ✅ | ✅ | added jeffwlawson/winget-manifest-lint#90, narrowed in jeffwlawson/winget-manifest-lint#92. One GraphQL query settles the shape; a sub-issue is refused outright — its parent drives it — while a PRD-shaped parent is now **deferred** to `agent-implement-prd` rather than refused. §2a says why a deferral has to touch nothing at all |
 | Refuses a `wayfinder:*` **planning artifact** | ❌ | ➕ | maps and decision tickets describe work rather than being it. CVM has no equivalent because its PRDs *are* issues on the tracker; ours are planned in a skill (§1) and land labelled |
 | Issue body passed in by the runner (agent never calls `gh`) | ✅ | ✅ | |
-| **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed heredoc in the workflow. Re-rated 2026-08-01: this is the only channel an agent has for reporting a **non-code** finding, and #63 hit that limit — see §9.2 |
+| **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed heredoc in the workflow. Re-rated 2026-08-01: this is the only channel an agent has for reporting a **non-code** finding, and jeffwlawson/winget-manifest-lint#63 hit that limit — see §9.2 |
 | **Auto-cascade: adds `agent:review` to the new PR** | ✅ | ✅ | needs `AGENT_PAT`; warns loudly if absent, since a `GITHUB_TOKEN` label add is a silent no-op |
 | `failure_reason.txt` → issue comment on failure | ✅ | ✅ | |
 | Opens the PR as a draft | ✅ | ✅ | |
@@ -108,7 +111,8 @@ claims in primary sources at authoring time is what actually closed it before (#
 
 ## 2a. `agent-implement-prd`
 
-Lettered rather than numbered so the cross-references in the rest of this file keep working. #92.
+Lettered rather than numbered so the cross-references in the rest of this file keep working.
+jeffwlawson/winget-manifest-lint#92.
 
 Labelling a **parent** issue `agent:implement` implements its sub-issues one at a time — one per
 run — each on a **slice branch** of its own, opened as a **slice PR** into a single **PRD branch**.
@@ -140,12 +144,13 @@ trade below records why that changed.
 | `failure_reason.txt` → issue comment, `agent:blocked`, `agent:in-progress` held | ✅ | ✅ | on the **parent**; the failure comment names which sub-issue stopped the chain and, when there is one, the slice PR it had already opened |
 | Agent-authored PR title + body | ✅ | ❌ | same gap as §2, same fixed heredoc |
 
-**Ordering comes from creation order, not from the edges.** The chain walks sub-issues API order
-and never reads `blocked-by`. That is safe only because sub-issues are *created* in dependency
-order, blockers first — the topological sort happens once, at publish time. Since #93 that is a
-written contract rather than an assumption about whoever publishes: `docs/agents/ticket-shape.md`
-holds the publish order, the verification steps, and the repair. Do not add edge-reading here; fix
-the publish order instead. The edges exist as the record of why the order is what it is (§10).
+**Ordering comes from creation order, not from the edges.** The chain walks sub-issues API order and
+never reads `blocked-by`. That is safe only because sub-issues are *created* in dependency order,
+blockers first — the topological sort happens once, at publish time. Since
+jeffwlawson/winget-manifest-lint#93 that is a written contract rather than an assumption about
+whoever publishes: `docs/agents/ticket-shape.md` holds the publish order, the verification steps,
+and the repair. Do not add edge-reading here; fix the publish order instead. The edges exist as the
+record of why the order is what it is (§10).
 
 **The preflight reads one edge, and it is not the walk.** Since #14 it asks whether the **parent**
 is `blocked_by` anything still open, and refuses the whole run if so. That is not the edge-reading
@@ -341,19 +346,21 @@ round.
 | `/to-tickets` flat (upstream skill) | native `blocked_by` | *(no executor)* | — | — |
 
 **Why it is worth recording.** It needs no native relations, so it sidesteps the `/to-tickets`
-prose-vs-native defect (`mattpocock/skills` #513/#262) entirely — the defect that cost #109 three
-review rounds and that the *Verify natively* section of `docs/agents/ticket-shape.md` exists to
-catch by hand. If publishing real batches keeps hitting it, this is the escape hatch, and reaching
-for a model that already exists upstream beats inventing one.
+prose-vs-native defect (mattpocock/skills#513, mattpocock/skills#262) entirely — the defect that
+cost jeffwlawson/winget-manifest-lint#109 three review rounds and that the *Verify natively* section
+of `docs/agents/ticket-shape.md` exists to catch by hand. If publishing real batches keeps hitting
+it, this is the escape hatch, and reaching for a model that already exists upstream beats inventing
+one.
 
-**Why it is not adopted.** The PRD tier is built, proven end to end (#87), and matches CVM, which is
-the actively-maintained reference. sandcastle is local-only and tracker-agnostic, its templates
-still pin `claude-opus-4-8` / `claude-sonnet-4-6`, and the repo was last pushed 2026-06-29. Two of
-its properties are also live costs rather than free wins here: an inferred graph can be wrong with
-no edge to check it against, and a merge agent resolving conflicts is a second writer on work no
-human has reviewed — which is the shape §10's "never auto-cascade review → fix" invariant exists to
-keep out. What it buys is parallelism this repo has never needed; every ordering that has actually
-come up was *inside* one PRD.
+**Why it is not adopted.** The PRD tier is built, proven end to end
+(jeffwlawson/winget-manifest-lint#87), and matches CVM, which is the actively-maintained reference.
+sandcastle is local-only and tracker-agnostic, its templates still pin `claude-opus-4-8` /
+`claude-sonnet-4-6`, and the repo was last pushed 2026-06-29. Two of its properties are also live
+costs rather than free wins here: an inferred graph can be wrong with no edge to check it against,
+and a merge agent resolving conflicts is a second writer on work no human has reviewed — which is
+the shape §10's "never auto-cascade review → fix" invariant exists to keep out. What it buys is
+parallelism this repo has never needed; every ordering that has actually come up was *inside* one
+PRD.
 
 ---
 
@@ -362,7 +369,7 @@ come up was *inside* one PRD.
 | Feature | CVM | Ours | Note |
 |---|:--:|:--:|---|
 | Triggered by `agent:review` on a PR | ✅ | ✅ | |
-| Refuses when the PR is closed/merged | ✅ | ✅ | added #102. Without it, labelling a merged PR ran a full agent pass and then failed at `gh pr ready`, which cannot convert a merged PR — under a warning that blames a missing `AGENT_PAT` |
+| Refuses when the PR is closed/merged | ✅ | ✅ | added jeffwlawson/winget-manifest-lint#102. Without it, labelling a merged PR ran a full agent pass and then failed at `gh pr ready`, which cannot convert a merged PR — under a warning that blames a missing `AGENT_PAT` |
 | Structured output (schema-validated JSON from the agent) | ✅ | ✅ | |
 | Findings placed against the diff rather than where the model said | ✅ | ➕ | GitHub rejects the **whole** review if one line anchor is off-hunk, so the anchor has to be checked either way. CVM filters; since #110 we reroute — an off-hunk anchor in a changed file becomes a **file-level** thread. Since #127 a finding in a file the PR never touched is neither threaded nor dropped: it is **moved to the follow-ups** and the body says so, because a fix-before-merge finding nothing in the change causes is not one (§10) |
 | Posts a review summary | ✅ | ✅ | |
@@ -414,17 +421,19 @@ merged PR, so it cannot run on anything else.
 
 Ours converses in-thread; CVM replies too, and neither closes a thread. The difference is what
 happens next: ours are closed by the **review** that verifies them (§3, #111), so they neither
-accumulate until a human clears them nor close on the word of the run that wrote the fix. Since #78
-it can also *raise* something that belongs to no thread, as a top-level comment on the PR
-conversation — the channel that was missing when
-#63's documented bug ended up buried in a test-file comment, and when #77 offered an option
-(`open a follow-up and reference it`) the agent had no way to take.
+accumulate until a human clears them nor close on the word of the run that wrote the fix. Since
+jeffwlawson/winget-manifest-lint#78 it can also *raise* something that belongs to no thread, as a
+top-level comment on the PR conversation — the channel that was missing when
+jeffwlawson/winget-manifest-lint#63's documented bug ended up buried in a test-file comment, and
+when jeffwlawson/winget-manifest-lint#77 offered an option (`open a follow-up and reference it`) the
+agent had no way to take.
 
 **Why we post top-level but not inline comments.** Inline comments need the diff-line allow-list,
-and that machinery produced two silent-failure bugs in three days: #65 (a phantom line past the end
-of the last file) and #71 (the wrong diff base on a stacked PR). Both fail identically — the review
-posts nothing and looks clean. A second producer doubles the exposure to a failure class whose
-whole signature is invisibility, for marginal value: a top-level comment can name
+and that machinery produced two silent-failure bugs in three days:
+jeffwlawson/winget-manifest-lint#65 (a phantom line past the end of the last file) and
+jeffwlawson/winget-manifest-lint#71 (the wrong diff base on a stacked PR). Both fail identically —
+the review posts nothing and looks clean. A second producer doubles the exposure to a failure class
+whose whole signature is invisibility, for marginal value: a top-level comment can name
 `shared/pr-feedback.ts:206` in prose. Secondarily, `agent:fix` is the *author* of the diff by then,
 and an author annotating their own lines inverts the review-raises / fix-answers split.
 
@@ -449,7 +458,7 @@ what it is for, what it is not (a summary of what changed), and that silence is 
 | Composite action for the repeated setup steps | ❌ | 📋 | both currently duplicate checkout→node→ci→install |
 | `Dockerfile` + local-loop `main.ts` | ✅ | ❌ | N/A by design: `noSandbox()` on the runner (Decision 2) |
 | Project skills (`.claude/skills/`) | ✅ | ❌ | CVM has 7, checked into the repo so its CI agents can load them. Ours relies on `CLAUDE.md` + `CONTEXT.md`, plus **user-level** skills (`wayfinder`, `grilling`) that are available to a human driving Claude Code locally but *not* to a CI agent. That split is deliberate: planning happens with a human in the loop, execution happens in CI |
-| `docs/agents/` platform spec + backlog + label docs | ✅ | 🟡 | ours has `docs/agents/` since #89 and four files in it — `triage-labels.md`, `issue-tracker.md`, `domain.md` (a pointer to `CONTEXT.md`, not a second copy) and `ticket-shape.md` (#93). All of it is per-repo config for the **local** skills; no workflow loads any of it, and the one file a workflow depends on the *output* of is `ticket-shape.md` (§2a). Still no platform spec or backlog: `CONTEXT.md`, `CLAUDE.md`, this file and `friction.md` cover that ground |
+| `docs/agents/` platform spec + backlog + label docs | ✅ | 🟡 | ours has `docs/agents/` since jeffwlawson/winget-manifest-lint#89 and four files in it — `triage-labels.md`, `issue-tracker.md`, `domain.md` (a pointer to `CONTEXT.md`, not a second copy) and `ticket-shape.md` (jeffwlawson/winget-manifest-lint#93). All of it is per-repo config for the **local** skills; no workflow loads any of it, and the one file a workflow depends on the *output* of is `ticket-shape.md` (§2a). Still no platform spec or backlog: `CONTEXT.md`, `CLAUDE.md`, this file and `friction.md` cover that ground |
 | `CODING_STANDARDS.md` referenced from prompts | ✅ | 🟡 | folded into `CLAUDE.md` |
 
 ---
@@ -495,7 +504,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `agent:in-progress` | ✅ | ✅ |
 | `agent:blocked` | ✅ | ✅ |
 | `agent:queued` | ✅ | 🟡 declared in `docs/agents/triage-labels.md`, written by a human, read by nothing — `promote-queued` is deferred (§1). 🟡 and not ✅ on this file's own legend: the label is present, the tier it belongs to is not |
-| `agent:to-issues` | ✅ | ❌ PRD tier — and the string is double-booked on the tracker: #79 (harvest agent comments into issues, §10) proposes the same label for an unrelated job. Neither exists here yet, so it costs nothing to settle, but #79 is the one that has to move — this row is upstream's name for upstream's workflow |
+| `agent:to-issues` | ✅ | ❌ PRD tier — and the string is double-booked on the tracker: jeffwlawson/winget-manifest-lint#79 (harvest agent comments into issues, §10) proposes the same label for an unrelated job. Neither exists here yet, so it costs nothing to settle, but jeffwlawson/winget-manifest-lint#79 is the one that has to move — this row is upstream's name for upstream's workflow |
 | `agent:follow-ups` | ❌ | ➕ PRs — the marker *and* the manual trigger in one string, disambiguated by event type rather than by a second label a human could choose wrong. Added by review, removed by any filing run that reached a verdict — including one that found every finding already filed by an earlier attempt, and one that read a retraction; removing it by hand is the opt-out (`docs/ADOPTING.md` §3) |
 | `agent:update-branch` | ✅ | ✅ |
 | `Sandcastle` (triage: "ready for an AFK agent") | ✅ | 🟡 ours is `ready-for-agent`, written by the local `/triage` and `/to-tickets` skills; no workflow reads it |
@@ -505,47 +514,52 @@ so the same label means two things depending on where you put it. Here that woul
 `agent-implement.yml` triggers on `issues:` only, so labelling a PR `agent:implement` would
 silently do nothing.
 
-**And why overloading it by issue *shape* is not the same footgun.** Since #92, `agent:implement`
-on an issue does start two workflows — but they disambiguate on something the labeller can see on
-the issue in front of them (does it have sub-issues?), not on where they put the label, and the one
-that does not own the shape leaves nothing behind. The event-type version fails silently in the
-labeller's face; this one cannot, because whichever workflow owns the shape always acts and always
-says so.
+**And why overloading it by issue *shape* is not the same footgun.** Since
+jeffwlawson/winget-manifest-lint#92, `agent:implement` on an issue does start two workflows — but
+they disambiguate on something the labeller can see on the issue in front of them (does it have
+sub-issues?), not on where they put the label, and the one that does not own the shape leaves
+nothing behind. The event-type version fails silently in the labeller's face; this one cannot,
+because whichever workflow owns the shape always acts and always says so.
 
 **Two further vocabularies sit alongside this table**, neither of which any workflow triggers on:
-the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`. `docs/agents/triage-labels.md`
-(#89) maps all three and records why `ready-for-agent` → `agent:implement` stays a human hand.
+the five canonical triage roles (`ready-for-agent`, …) and `wayfinder:*`.
+`docs/agents/triage-labels.md` (jeffwlawson/winget-manifest-lint#89) maps all three and records why
+`ready-for-agent` → `agent:implement` stays a human hand.
 
 **No ticket a skill publishes carries a label from this table.** `/to-tickets` gives every ticket in
 a batch `ready-for-agent` and nothing else, parent and slices alike (`docs/agents/ticket-shape.md`,
-#93). The promotion to `agent:implement` is one deliberate human action on **one** issue — the
-parent — and §10 records why the sub-issues stay out of it.
+jeffwlawson/winget-manifest-lint#93). The promotion to `agent:implement` is one deliberate human
+action on **one** issue — the parent — and §10 records why the sub-issues stay out of it.
 
 ---
 
 ## 9. If we closed the gaps, in order
 
-Done since first written: **conversational replies + resolution** (#49/#50 — and ours also
-*resolves* threads, which CVM does not; since #111 it is the review that closes them, not the fix), **`agent-update-branch`** (#52, motivated by a real trap,
-not theory — see `friction.md`), **implement → review auto-cascade**, **review marks the
-PR ready** (it had become a manual step on every agent PR), **`agent-implement-prd`** (#92 — the
-execution half of the PRD tier, which had been off this list entirely), and **the publish contract
-it reads back** (#93, `docs/agents/ticket-shape.md` — not a workflow, and the reason the item below
-is one line rather than three).
+Done since first written: **conversational replies + resolution**
+(jeffwlawson/winget-manifest-lint#49/jeffwlawson/winget-manifest-lint#50 — and ours also *resolves*
+threads, which CVM does not; since #111 it is the review that closes them, not the fix),
+**`agent-update-branch`** (jeffwlawson/winget-manifest-lint#52, motivated by a real trap, not theory
+— see `friction.md`), **implement → review auto-cascade**, **review marks the PR ready** (it had
+become a manual step on every agent PR), **`agent-implement-prd`**
+(jeffwlawson/winget-manifest-lint#92 — the execution half of the PRD tier, which had been off this
+list entirely), and **the publish contract it reads back** (jeffwlawson/winget-manifest-lint#93,
+`docs/agents/ticket-shape.md` — not a workflow, and the reason the item below is one line rather
+than three).
 
 What remains is ranked by value per unit of risk, not by size. Anything that widens an agent's
 write access sits below everything that does not, regardless of how useful it looks.
 
 1. **Composite action for setup** (📋) — pure cleanup, now that five workflows duplicate
-   checkout → node → ci → claude. #92 added the fifth copy without changing a line of it, which is
-   the argument.
+   checkout → node → ci → claude. jeffwlawson/winget-manifest-lint#92 added the fifth copy without
+   changing a line of it, which is the argument.
 2. **Agent-authored PR body** (❌, `write-pr`) — promoted from "cosmetic" on 2026-08-01. The body is
    a hardcoded heredoc in the implement workflow, so it is the one thing an agent **cannot** write.
-   Issue #63 asked the agent to report a bug it was told not to fix; it had nowhere to put it but a
-   comment inside a test file. Top-level comments (#78) now give `agent:fix` somewhere to put such
-   a finding, so this is no longer the *only* non-code channel — but `agent:implement` still has
-   none, and the body is still the first thing a human reads. Widens no write access: the workflow
-   already authors the PR.
+   Issue jeffwlawson/winget-manifest-lint#63 asked the agent to report a bug it was told not to fix;
+   it had nowhere to put it but a comment inside a test file. Top-level comments
+   (jeffwlawson/winget-manifest-lint#78) now give `agent:fix` somewhere to put such a finding, so
+   this is no longer the *only* non-code channel — but `agent:implement` still has none, and the
+   body is still the first thing a human reads. Widens no write access: the workflow already authors
+   the PR.
 3. **Auto-cascade fix → review** (📋) — deliberately still manual. implement → review is safe to
    automate because it fires *once per PR*; fix → review fires *every iteration*, and keeping a
    human on that leg is what makes "should we act on this feedback?" a decision rather than a
@@ -554,28 +568,32 @@ write access sits below everything that does not, regardless of how useful it lo
    and may occupy the Reviewers sidebar the way Copilot's App does.
 5. **Review self-improvement** (❌) — biggest capability gain, but flips review to
    `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
-   confidently-wrong claim is worse than one that can only say it (see #46).
-6. **`agent-promote-queued`** (❌, **deferred** — #91) — all that is left of what this list once
+   confidently-wrong claim is worse than one that can only say it (see
+   jeffwlawson/winget-manifest-lint#46).
+6. **`agent-promote-queued`** (❌, **deferred** — jeffwlawson/winget-manifest-lint#91) — all that is left of what this list once
    carried as "PRD tier, ❌ ×3". Written off originally because nothing here needed sequencing;
-   #87 then needed it, and the answer was `agent-implement-prd` (#92) plus a publish contract
-   (#93), neither of which is this workflow. This one sequences **top-level** issues, and every
-   ordering that has actually come up was *inside* one PRD, where creation order already carries it.
-   Ranked here rather than higher because the numerator is currently zero: what would raise it is a
-   second PRD that cannot start until a first one merges. #91 is open, unscheduled, and was detached
-   from #87 precisely so this chain would not build it. The label is already declared (§8), so the
-   remaining cost is the workflow alone.
+   jeffwlawson/winget-manifest-lint#87 then needed it, and the answer was `agent-implement-prd`
+   (jeffwlawson/winget-manifest-lint#92) plus a publish contract
+   (jeffwlawson/winget-manifest-lint#93), neither of which is this workflow. This one sequences
+   **top-level** issues, and every ordering that has actually come up was *inside* one PRD, where
+   creation order already carries it. Ranked here rather than higher because the numerator is
+   currently zero: what would raise it is a second PRD that cannot start until a first one merges.
+   jeffwlawson/winget-manifest-lint#91 is open, unscheduled, and was detached from
+   jeffwlawson/winget-manifest-lint#87 precisely so this chain would not build it. The label is
+   already declared (§8), so the remaining cost is the workflow alone.
 
    Its former companion, `to-issues-prd`, has **left this list**: superseded rather than deferred
    (§1). What kept it here as a gap was the ordering obligation it used to discharge by publishing
-   the sub-issues itself; that is now written down and verified by hand (#93), so nothing is
-   outstanding.
+   the sub-issues itself; that is now written down and verified by hand
+   (jeffwlawson/winget-manifest-lint#93), so nothing is outstanding.
 7. **`architecture-review`** (📋) — self-directed work generation. The autonomy tier, and the only
    *scheduled agent* in either upstream repo. Upstream publishes via `/to-prd-project`; here the
    equivalent is filing a PRD and stopping, with a human running `/to-tickets` on it to get the
    sub-issue shape the chain reads — which §10 requires anyway ("an agent that raises work never
    files it" applies at the *decomposition* step just as much). So what it now waits on is project
-   skills, not the missing planning workflows: #92 and #93 between them removed the piece that would
-   have had nothing to run the result.
+   skills, not the missing planning workflows: jeffwlawson/winget-manifest-lint#92 and
+   jeffwlawson/winget-manifest-lint#93 between them removed the piece that would have had nothing to
+   run the result.
 
 ## 10. Invariants
 
@@ -691,11 +709,11 @@ expensive to rediscover.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
   is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this.
 
-  This used to read "…and also requires moving review into the `agent-mutate-pr-*` group", which
-  had the concurrency argument backwards and cost a live race to notice (#102). Review's exclusion
-  from that group was never a consequence of it being `contents: read`: the hazard is not review
-  *writing*, it is review *reading during another job's write*, and `contents: read` does nothing
-  about that. See the next invariant.
+  This used to read "…and also requires moving review into the `agent-mutate-pr-*` group", which had
+  the concurrency argument backwards and cost a live race to notice
+  (jeffwlawson/winget-manifest-lint#102). Review's exclusion from that group was never a consequence
+  of it being `contents: read`: the hazard is not review *writing*, it is review *reading during
+  another job's write*, and `contents: read` does nothing about that. See the next invariant.
 
   **Since #133 the invariant is about the review *job*, not the review workflow.** Closing a
   verified thread needs `contents: write`: `resolveReviewThread` is refused to an installation
@@ -721,14 +739,14 @@ expensive to rediscover.
 - **One concurrency group per PR, one per issue.** Every workflow that touches PR *n* — review,
   fix, update-branch — sits in `agent-pr-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: false`; `agent-implement` sits in a per-issue group. Not one group per
-  *mutation*: until #102, review had its own group on the theory that a `contents: read` job is
-  harmless to run alongside a push, and so `agent:fix` could push while `agent:review` was diffing
-  the same branch. The review that comes out of that describes a tree state that never existed —
-  plausible, confident, and about nothing. There is no case where concurrent review + mutate on
-  one PR is wanted.
+  *mutation*: until jeffwlawson/winget-manifest-lint#102, review had its own group on the theory
+  that a `contents: read` job is harmless to run alongside a push, and so `agent:fix` could push
+  while `agent:review` was diffing the same branch. The review that comes out of that describes a
+  tree state that never existed — plausible, confident, and about nothing. There is no case where
+  concurrent review + mutate on one PR is wanted.
 
-  **The group displaces one race rather than closing it, and review has to refuse the remainder.**
-  A first draft of this said "the cost of serialising is a review that waits", which is the one cost
+  **The group displaces one race rather than closing it, and review has to refuse the remainder.** A
+  first draft of this said "the cost of serialising is a review that waits", which is the one cost
   it does not have. Review pins everything to the head SHA in its `labeled` payload — the checkout,
   and `commitOID` on the posted review — and that payload is snapshotted at *label* time while the
   group decides *start* time. So: a fix is running, a human labels `agent:review`, the run snapshots
@@ -737,18 +755,18 @@ expensive to rediscover.
   an ancestor commit and GitHub renders it outdated. The mutates already catch their version of this
   at push time — `--force-with-lease` pinned to the same payload SHA — so review, which publishes
   rather than fails, is the only one that needed a check, and it makes it in its own preflight
-  (#105). It refuses rather than re-targeting the live tip: a review is a statement about the commit
-  a human pointed at, re-pointing it would drag `commitOID` and the CI wait to a SHA nobody
-  labelled, and re-adding the label is one action.
+  (jeffwlawson/winget-manifest-lint#105). It refuses rather than re-targeting the live tip: a review
+  is a statement about the commit a human pointed at, re-pointing it would drag `commitOID` and the
+  CI wait to a SHA nobody labelled, and re-adding the label is one action.
 
   **What `cancel-in-progress: false` actually buys**, since it is not a queue and the difference
   bites: GitHub holds **at most two runs per group — one running, one waiting** — and the waiting
   slot has depth 1 and always holds the *newest* arrival. A third arrival cancels the current
   waiter. So the flag protects the run already going, **not** the work behind it, and repeatedly
-  re-labelling cannot stack runs (found by re-labelling #100 three times). There is no
-  "reject the newcomer, keep what is running" mode — only cancel-active or cancel-waiter — and a
-  job-level `if:` cannot supply one, since it reads context data only and is evaluated after the
-  group frees.
+  re-labelling cannot stack runs (found by re-labelling jeffwlawson/winget-manifest-lint#100 three
+  times). There is no "reject the newcomer, keep what is running" mode — only cancel-active or
+  cancel-waiter — and a job-level `if:` cannot supply one, since it reads context data only and is
+  evaluated after the group frees.
 
   **The collapse extends that rule across workflows, and the loss is silent.** The waiter slot is
   per *group*, not per workflow, so a queued review is now evictable by a mutate label — which it
@@ -762,16 +780,16 @@ expensive to rediscover.
   nothing inside these workflows can observe or report it — and the alternative is the separate
   group whose race this invariant exists to close.
 
-  **Residual, live since #92 (PRD tier).** `agent-implement-prd` pushes to a PR's branch under
-  `agent-implement-prd-issue-<parent>` while review and fix use `agent-pr-<prNumber>` — different
-  groups, so the same read-during-write race exists one level up. Group keys cannot close it: an
-  `issues` event carries no PR number, so the two cannot compute a shared key. The happy path does
-  not overlap — the review a run requests is on a **slice PR**, whose branch the chain does not push
-  to again, and the next run's merge step refuses while `agent:review`, `agent:fix` or
-  `agent:in-progress` is on it — but a human labelling `agent:review` on the draft PRD PR mid-chain
-  would hit it. Accepted knowingly rather than fixed; if
-  it ever bites, the fix is a preflight refusal in review when the linked issue has an active PRD
-  chain — not a concurrency change.
+  **Residual, live since jeffwlawson/winget-manifest-lint#92 (PRD tier).** `agent-implement-prd`
+  pushes to a PR's branch under `agent-implement-prd-issue-<parent>` while review and fix use
+  `agent-pr-<prNumber>` — different groups, so the same read-during-write race exists one level up.
+  Group keys cannot close it: an `issues` event carries no PR number, so the two cannot compute a
+  shared key. The happy path does not overlap — the review a run requests is on a **slice PR**,
+  whose branch the chain does not push to again, and the next run's merge step refuses while
+  `agent:review`, `agent:fix` or `agent:in-progress` is on it — but a human labelling `agent:review`
+  on the draft PRD PR mid-chain would hit it. Accepted knowingly rather than fixed; if it ever
+  bites, the fix is a preflight refusal in review when the linked issue has an active PRD chain —
+  not a concurrency change.
 - **Review is requested once per slice PR, plus one integration review.** Until PRD #171 this read
   "once per PR, never once per slice", and the PR was the unit of review because it was the unit of
   merge. The two are now different pull requests. The **slice PR** is the unit of review:
@@ -799,8 +817,9 @@ expensive to rediscover.
   the only thing that schedules a slice, so hand-labelling one is a second scheduler with no view of
   the first — it would branch that slice off `main` while the chain accumulates onto
   `agent/prd-<n>-*`, giving one PRD two PRD PRs. `agent-implement` refuses any issue with a parent
-  (#90), so today that attempt is caught rather than obeyed, but the refusal is a backstop and not
-  the rule: the rule is that nothing labels a sub-issue in the first place.
+  (jeffwlawson/winget-manifest-lint#90), so today that attempt is caught rather than obeyed, but the
+  refusal is a backstop and not the rule: the rule is that nothing labels a sub-issue in the first
+  place.
 - **Creation order is execution order, and the edges are the record rather than the schedule.**
   `agent-implement-prd` walks sub-issues in API order and never reads `blocked-by`; the topological
   sort happens once, at publish time (§2a, `docs/agents/ticket-shape.md`). Two consequences that
@@ -834,30 +853,31 @@ expensive to rediscover.
 - **Every workflow refuses a terminal target before it does any work.** A closed or merged PR, a
   closed issue: the guard is the first step, it is itself ungated, and it runs before checkout,
   before `npm ci`, and before the label transitions — so a refused run never claims
-  `agent:in-progress` and never has a working tree to be wrong about. The failure it prevents is
-  not a crash but a *plausible* result: review had no guard until #102 and would review merged work
-  in full, then fail at `gh pr ready` under a warning blaming a missing `AGENT_PAT`, which is a
-  wrong diagnosis of a real problem. Each refusal says which state it refused; two refusals that
-  read alike are two states a human cannot tell apart from the comment. `tests/workflows.test.ts`
-  holds all five workflows to all three properties — guard first, guard ungated, no
-  `agent:in-progress` on a refused run. In `agent-implement-prd` the third covers a *deferral* as
-  well as a refusal, which is the same property for a stronger reason: a run that stepped aside for
-  its sibling must not have claimed the issue on the way past.
+  `agent:in-progress` and never has a working tree to be wrong about. The failure it prevents is not
+  a crash but a *plausible* result: review had no guard until jeffwlawson/winget-manifest-lint#102
+  and would review merged work in full, then fail at `gh pr ready` under a warning blaming a missing
+  `AGENT_PAT`, which is a wrong diagnosis of a real problem. Each refusal says which state it
+  refused; two refusals that read alike are two states a human cannot tell apart from the comment.
+  `tests/workflows.test.ts` holds all five workflows to all three properties — guard first, guard
+  ungated, no `agent:in-progress` on a refused run. In `agent-implement-prd` the third covers a
+  *deferral* as well as a refusal, which is the same property for a stronger reason: a run that
+  stepped aside for its sibling must not have claimed the issue on the way past.
 
-  One difference is not yet reconciled: review adds `agent:blocked` when it refuses (#102 asked for
-  it), while fix, update-branch and implement leave only a comment. That is a difference in what a
-  refused label leaves behind, not in what gets refused. Unify it in either direction when someone
-  next touches these — the argument for the label is that a comment scrolls away; against, that a
-  merged PR keeps a stale `agent:blocked` nobody will ever clear.
+  One difference is not yet reconciled: review adds `agent:blocked` when it refuses
+  (jeffwlawson/winget-manifest-lint#102 asked for it), while fix, update-branch and implement leave
+  only a comment. That is a difference in what a refused label leaves behind, not in what gets
+  refused. Unify it in either direction when someone next touches these — the argument for the label
+  is that a comment scrolls away; against, that a merged PR keeps a stale `agent:blocked` nobody
+  will ever clear.
 
-  Re-examined in #105 for the moved-head refusal specifically, where the PR being refused is
-  healthy and green, and kept, on two grounds. The label is defined as "a run failed **or was
-  refused**; needs human attention" (docs/ADOPTING.md §3), and attention is precisely what is owed:
-  `refuse()` also consumes `agent:review`, so without the label a PR that silently never got
-  reviewed carries no signal at all. And this refusal is self-clearing where the closed/merged one
-  is not — the remedy the comment gives is re-adding `agent:review`, and `Transition labels`
-  removes `agent:blocked` on the way in. So the objection above (a stale label nobody clears)
-  applies to the terminal-state refusal only.
+  Re-examined in jeffwlawson/winget-manifest-lint#105 for the moved-head refusal specifically, where
+  the PR being refused is healthy and green, and kept, on two grounds. The label is defined as "a
+  run failed **or was refused**; needs human attention" (docs/ADOPTING.md §3), and attention is
+  precisely what is owed: `refuse()` also consumes `agent:review`, so without the label a PR that
+  silently never got reviewed carries no signal at all. And this refusal is self-clearing where the
+  closed/merged one is not — the remedy the comment gives is re-adding `agent:review`, and
+  `Transition labels` removes `agent:blocked` on the way in. So the objection above (a stale label
+  nobody clears) applies to the terminal-state refusal only.
 - **The reviewer closes a thread; the fixer never does.** Since #111 (#109, decision 1) an
   `agent:fix` run replies in every thread it was **asked about** — `addressed` or `declined`, with
   the reason — and resolves none of them. A thread closes when a **review** has read the current
@@ -1106,9 +1126,10 @@ expensive to rediscover.
   the same failure "never auto-cascade review → fix" above already guards against. Concretely: no
   workflow gets `issues: write` unless filing is its job — `tests/workflows.test.ts` holds every
   workflow to that, exempting only the two `implement` workflows — both halves of each pair since
-  #98 — `token-expiry.yml` by name, and the `follow-ups` pair for the reason immediately below, so
-  a new one is covered on arrival (`agent-review` had been granted it unused, #101) — and harvesting those comments into
-  issues (#79) is a separate workflow behind its own label.
+  jeffwlawson/winget-manifest-lint#98 — `token-expiry.yml` by name, and the `follow-ups` pair for
+  the reason immediately below, so a new one is covered on arrival (`agent-review` had been granted
+  it unused, jeffwlawson/winget-manifest-lint#101) — and harvesting those comments into issues
+  (jeffwlawson/winget-manifest-lint#79) is a separate workflow behind its own label.
 
   **Amended by `follow-ups` (#44), in its second half only.** This used to continue "*filing is a
   separate, human-labelled step*", and that clause is now false: a merged pull request's recorded
@@ -1148,15 +1169,15 @@ expensive to rediscover.
   refuses, rather than finding "feedback" the agent wrote itself.
 
   **Two markers since #104**, and since #159 an author bound under them. The marked kinds are the
-  two a fix run writes *to be read* — a top-level comment and, added by #104, the record of what
-  it did with the conversation comments, under `<!-- agent-fix:conversation-outcomes -->`. Marked
-  for the reason above — unmarked it returns next round as a comment to act on, and now also as
-  one an outcome is owed on, the agent answering its own post. Marked *separately* because the two
-  are different things to their readers: #79 harvests the top-level marker into issues and a
-  record raises no work, and `filterTopLevelComments` dedupes that channel on its marker while a
-  record is correct to repeat, each round's being about that round. The list of ids an outcome may
-  name is drawn from the comments that survive both filters, so the split is what bounds the
-  answer as well as the input.
+  two a fix run writes *to be read* — a top-level comment and, added by #104, the record of what it
+  did with the conversation comments, under `<!-- agent-fix:conversation-outcomes -->`. Marked for
+  the reason above — unmarked it returns next round as a comment to act on, and now also as one an
+  outcome is owed on, the agent answering its own post. Marked *separately* because the two are
+  different things to their readers: jeffwlawson/winget-manifest-lint#79 harvests the top-level
+  marker into issues and a record raises no work, and `filterTopLevelComments` dedupes that channel
+  on its marker while a record is correct to repeat, each round's being about that round. The list
+  of ids an outcome may name is drawn from the comments that survive both filters, so the split is
+  what bounds the answer as well as the input.
 
   **The unmarked ones are the bound #159 added**, and they are not a third marker. Every workflow
   here posts a refusal note, a failure comment or a "this label fired nothing" warning as the same
@@ -1183,7 +1204,8 @@ expensive to rediscover.
   not a control. `filterOutcomes` drops invented thread ids because a model invents them, and
   `filterTopLevelComments` caps a run at two comments and drops verbatim repeats of ones already
   posted, because "silence is the default" is otherwise aspirational — three `agent:fix` rounds
-  would leave three copies of the same note, and three issues once #79 harvests them.
+  would leave three copies of the same note, and three issues once
+  jeffwlawson/winget-manifest-lint#79 harvests them.
 
   **And the bound is on the channel, not on a field of it.** The brief tells the model to write no
   finding id of any kind; the half that enforces it is `withoutFindingMarkers`, run over the

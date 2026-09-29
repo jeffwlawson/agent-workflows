@@ -3,7 +3,8 @@ name: Agent Implement PRD
 # The trigger, the token grant and the secrets. Everything else — the label
 # guard, the partition, the chain and every step — is in
 # agent-implement-prd-reusable.yml, which an adopting repo references instead of
-# copying (#98), and which is also where the design notes for this path live.
+# copying (jeffwlawson/winget-manifest-lint#98), and which is also where the
+# design notes for this path live.
 #
 # This workflow and `agent-implement.yml` share the `agent:implement` label:
 # both jobs start on every label event and partition the work by issue shape.

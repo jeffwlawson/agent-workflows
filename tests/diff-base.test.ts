@@ -6,14 +6,15 @@ import { changedFilesCommandAgainstBase, diffCommandAgainstBase } from "../share
  * to define the PR. GitHub diffs against the PR's *base branch* merge-base, so
  * this command must too — diffing against a hardcoded `main` on a stacked PR
  * pulls in the intermediate branch's lines, the allow-list disagrees with
- * GitHub's, and GitHub rejects the entire review silently (issue #71). Only the
- * base is a variable; the seam worth testing is which base is chosen, so these
- * assert the exact argv.
+ * GitHub's, and GitHub rejects the entire review silently (issue
+ * jeffwlawson/winget-manifest-lint#71). Only the base is a variable; the seam
+ * worth testing is which base is chosen, so these assert the exact argv.
  *
  * Argv, not a command string: the base ref reaches `git` as one argument via
- * `execFileSync` and is never shell-parsed (issue #75). The last case pins that
- * a metacharacter ref passes through verbatim — no escaping, no splitting; the
- * "no shell" half of that guarantee lives in `git()` in common.ts.
+ * `execFileSync` and is never shell-parsed (issue
+ * jeffwlawson/winget-manifest-lint#75). The last case pins that a metacharacter
+ * ref passes through verbatim — no escaping, no splitting; the "no shell" half
+ * of that guarantee lives in `git()` in common.ts.
  */
 describe("diffCommandAgainstBase", () => {
   it("diffs against the given base, three-dot, HEAD on the right", () => {
@@ -42,7 +43,8 @@ describe("diffCommandAgainstBase", () => {
    * failure one level down: on a `master` repo every review diffed against a ref
    * that did not exist, or worse, one that did and was stale. Every workflow that
    * runs git against a base — all but `follow-ups.yml` — now supplies a
-   * non-empty `BASE_REF` (#98) — the PR workflows from the event with the
+   * non-empty `BASE_REF`
+   * (jeffwlawson/winget-manifest-lint#98) — the PR workflows from the event with the
    * `default-branch` input behind it, the `implement` workflows from the input
    * alone. So an empty value is a misconfiguration rather than a case to
    * absorb, and the runner's `fail()` puts the message on the PR.

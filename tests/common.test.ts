@@ -47,7 +47,8 @@ const { execFileSync: spawnForReal } =
  *
  * The ground truth below is NOT inferred from the code under test — it is the
  * thing being checked. The enum and the two bot spellings are grounded in the
- * sources named in issue #63, not in `common.ts`.
+ * sources named in issue jeffwlawson/winget-manifest-lint#63, not in
+ * `common.ts`.
  */
 
 // The complete CommentAuthorAssociation enum, from GraphQL introspection on

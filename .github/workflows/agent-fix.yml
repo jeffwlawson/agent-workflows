@@ -4,7 +4,7 @@ name: Agent Fix
 # repo the fix job cannot read for itself. Everything else — the fork guard, the
 # permissions ceiling, the concurrency group, every step — is in
 # agent-fix-reusable.yml, which an adopting repo references instead of copying
-# (#98).
+# (jeffwlawson/winget-manifest-lint#98).
 #
 # Uses pull_request_target so the labeled event fires reliably even when the PR
 # is out of date. On a PUBLIC repo that is a fork-code-execution path; the fork

@@ -47,7 +47,7 @@ const PRD_BRANCH = forBuild("PRD_BRANCH");
  * The branch the chain is based on. Only the prompt uses it — it is what the
  * agent diffs to see the slices already on this branch — and it is the
  * workflow's `default-branch` input rather than a literal, so the instruction
- * names a ref that exists on a repo whose default branch is not `main` (#98).
+ * names a ref that exists on a repo whose default branch is not `main`.
  */
 const BASE_REF = forBuild("BASE_REF");
 

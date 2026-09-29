@@ -9,7 +9,7 @@ import { VERSION } from "./shared/manifest.js";
  * One binary for the whole loop. A workflow invokes it as
  * `npx --yes @jeffwlawson/agent-workflows@<version> <command>`, with the version
  * pinned in the workflow YAML — which is what makes the runner base-controlled
- * under `pull_request_target` and retires the stale-runner trap (#96).
+ * under `pull_request_target` and retires the stale-runner trap.
  *
  * Dispatch is a table rather than separate bins because the package has two
  * surfaces: the runners a workflow step invokes, and the install path `init`

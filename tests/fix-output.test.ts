@@ -143,7 +143,8 @@ describe("fixOutputSchema topLevelComments", () => {
 /**
  * The prompt says silence is the default; this is what makes that structural.
  * Unbounded, a PR taking three `agent:fix` rounds accumulates three copies of
- * the same out-of-scope note — and three issues once #79 harvests them.
+ * the same out-of-scope note — and three issues once
+ * jeffwlawson/winget-manifest-lint#79 harvests them.
  */
 describe("filterTopLevelComments", () => {
   const comment = (body: string) => ({ body });
@@ -563,8 +564,8 @@ describe("renderConversationOutcomes", () => {
   /**
    * And it is marked, so the next run does not read it back as a comment to act
    * on — the same job the top-level marker does, under a **different** string:
-   * an outcome record is not a finding, and #79 harvests the top-level marker
-   * into issues.
+   * an outcome record is not a finding, and jeffwlawson/winget-manifest-lint#79
+   * harvests the top-level marker into issues.
    */
   it("marks the record as ours, distinguishably from a top-level comment", () => {
     const body = renderConversationOutcomes([conversationOutcome()], COMMENTS);

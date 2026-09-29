@@ -2,8 +2,10 @@ name: Agent Fix (reusable)
 
 # The fix job itself. `agent-fix.yml` is the caller — a trigger and two wires —
 # and everything that bounds what a wrong fix can do stays here, in a file an
-# adopting repo *references* rather than copies (#98, slice 4 of #88; #97 proved
-# the pattern on review).
+# adopting repo *references* rather than copies
+# (jeffwlawson/winget-manifest-lint#98, slice 4 of
+# jeffwlawson/winget-manifest-lint#88; jeffwlawson/winget-manifest-lint#97
+# proved the pattern on review).
 #
 # Address review feedback on an existing PR: the agent reads collaborator (and
 # our own review agent's) comments, fixes the branch, and pushes.
@@ -26,8 +28,8 @@ on:
           Branch to work against when the pull-request event carries no base
           ref. On a real PR `base.ref` is always set, so this fires only when
           something is already odd — but an unset fallback degrades *silently*
-          to the wrong branch, which is the #71 failure arriving by a different
-          route.
+          to the wrong branch, which is the jeffwlawson/winget-manifest-lint#71
+          failure arriving by a different route.
         type: string
         default: main
       node-version-file:
@@ -77,10 +79,11 @@ jobs:
     timeout-minutes: 30
     # One group per PR, shared with agent-update-branch (which pushes this same
     # branch) and agent-review (which reads it). Review was outside the group
-    # until #102 on the grounds that `contents: read` makes it harmless — but the
-    # race was never review writing, it was review *reading* mid-push, so a
-    # review could describe a tree that never existed. Nothing wants review and a
-    # mutate to overlap on one PR.
+    # until jeffwlawson/winget-manifest-lint#102 on the grounds that
+    # `contents: read` makes it harmless — but the race was never review
+    # writing, it was review *reading* mid-push, so a review could describe a
+    # tree that never existed. Nothing wants review and a mutate to overlap on
+    # one PR.
     concurrency:
       group: agent-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
@@ -108,7 +111,8 @@ jobs:
       BRANCH: ${{ github.event.pull_request.head.ref }}
       # The PR's real base branch — pr-feedback.ts diffs HEAD against this for
       # the DIFF context. A hardcoded `main` describes work the PR does not own
-      # on any PR stacked on another branch (#71). The event field is the source;
+      # on any PR stacked on another branch
+      # (jeffwlawson/winget-manifest-lint#71). The event field is the source;
       # `default-branch` is the fallback for an event that somehow carries none,
       # which is the adopter's call to make rather than a literal `main` buried
       # in a shell expansion.
@@ -148,10 +152,10 @@ jobs:
 
       # Shell-safe despite ref names being able to contain `$()`, backticks, `;`,
       # `|` and `&` — see the long note on the same step in
-      # agent-review-reusable.yml.
-      # Short version: BASE_REF arrives as an `env:` var rather than a workflow
-      # expression spliced into this script, and a quoted parameter expansion is
-      # not re-scanned for syntax (verified 2026-08-02, #75).
+      # agent-review-reusable.yml. Short version: BASE_REF arrives as an `env:`
+      # var rather than a workflow expression spliced into this script, and a
+      # quoted parameter expansion is not re-scanned for syntax (verified
+      # 2026-08-02, jeffwlawson/winget-manifest-lint#75).
       #
       # The `:-main` this line used to carry is gone, not lost: the fallback
       # moved up to the `env:` block, where it is the `default-branch` input
@@ -317,8 +321,8 @@ jobs:
       # One comment per run, whatever the number of outcomes, composed by the
       # runner from validated output and carrying its own marker so the next run
       # does not read this record back as feedback to act on — a different marker
-      # from the top-level one, because #79 harvests that into issues and a
-      # record raises no work.
+      # from the top-level one, because jeffwlawson/winget-manifest-lint#79
+      # harvests that into issues and a record raises no work.
       #
       # `-s` rather than `-f`: the runner writes the file on every run and leaves
       # it empty when there is nothing to record, so an empty file is "no

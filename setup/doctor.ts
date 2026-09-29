@@ -145,7 +145,7 @@ const compareVersions = (a: string, b: string): number => {
  * simplification.** Until #146 every row carried one: how its absence presented
  * — a 403 on the call the scope is spent on, softened to a warning where a
  * public repository was served that call anyway, or where no call was known to
- * need the scope at all. Every one of those accounts described the pre-#98
+ * need the scope at all. Every one of those accounts described the unsplit
  * shape, where the grant and the job were one file and a short grant cost the
  * call. Split, the caller's block is the ceiling for every job it calls and
  * GitHub refuses an elevation by refusing the **workflow file**: the run is a

@@ -26,9 +26,10 @@ import {
 } from "../setup/doctor.js";
 
 /**
- * The runners ship as one versioned package with one binary (#96), so the entry
- * point is a subcommand table rather than five scripts addressed by path. Two
- * properties are worth holding mechanically:
+ * The runners ship as one versioned package with one binary
+ * (jeffwlawson/winget-manifest-lint#96), so the entry point is a subcommand
+ * table rather than five scripts addressed by path. Two properties are worth
+ * holding mechanically:
  *
  * - **every runner is reachable.** A workflow directory with no table entry is a
  *   runner that exists and cannot be invoked, and nothing else would notice —
@@ -38,9 +39,9 @@ import {
  *   resolves to a path that exists in the source tree and not in the tarball.
  *   That failure only appears on a published version, in CI, in another repo.
  *
- * The table is deliberately open: `init` and `doctor` (#112) are two more
- * entries, so the checks below say *every runner is a command*, never *every
- * command is a runner*.
+ * The table is deliberately open: `init` and `doctor`
+ * (jeffwlawson/winget-manifest-lint#112) are two more entries, so the checks
+ * below say *every runner is a command*, never *every command is a runner*.
  */
 
 const PACKAGE_DIR = ".";
@@ -1102,12 +1103,12 @@ describe("doctor names the failures that otherwise look like something else", ()
   /**
    * …and none of them explains the absence as a status code, because a missing
    * caller grant produces no run to return one in. That was the whole of #146:
-   * every `why` here was written against the pre-#98 shape, where the grant and
-   * the job were one file and a short grant cost the call it was spent on — a
-   * 403 on a label edit, a 401 at `npx`. The caller's block is the ceiling now,
-   * so a row explaining a 403 is a row explaining a step the adopter never
-   * reaches, and an adopter who goes looking for that message finds a run with
-   * no log in it.
+   * every `why` here was written against the shape before
+   * jeffwlawson/winget-manifest-lint#98, where the grant and the job were one
+   * file and a short grant cost the call it was spent on — a 403 on a label
+   * edit, a 401 at `npx`. The caller's block is the ceiling now, so a row
+   * explaining a 403 is a row explaining a step the adopter never reaches, and
+   * an adopter who goes looking for that message finds a run with no log in it.
    *
    * The message as well as the code, because that is what those rows actually
    * printed and it names no scope either.

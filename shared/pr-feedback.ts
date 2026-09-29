@@ -719,8 +719,8 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * diff against the merge-base of its *base branch*, and the inline-comment
  * allow-list (built from this same diff by `parseDiffLines`) must match exactly:
  * too permissive and GitHub rejects the whole review, too restrictive and
- * legitimate comments are dropped — both surface as a silent, empty review
- * (issue #71). So the base is the PR's real base, not a hardcoded `main`.
+ * legitimate comments are dropped — both surface as a silent, empty review. So
+ * the base is the PR's real base, not a hardcoded `main`.
  *
  * Three-dot on purpose: `<base>...HEAD` is changes since the merge-base, which
  * is what GitHub shows. A two-dot diff has different semantics and would
@@ -734,8 +734,8 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * because a `"`, a `\` or a control character is quoted under any setting.
  *
  * Refuses an absent or empty base rather than defaulting to one. It defaulted
- * to `main` until #98, which is the same silent wrong-branch failure one level
- * down: on a `master` repo every review diffed against a ref that did not
+ * to `main` until the loop was split into reusable workflows, which is the same
+ * silent wrong-branch failure one level down: on a `master` repo every review diffed against a ref that did not
  * exist, and on one that had a stale `main` it diffed against that instead.
  * Every workflow in the loop that runs git against a base — all but
  * `follow-ups.yml` — now sets a non-empty `BASE_REF`, so an empty value is a
@@ -750,7 +750,7 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * Returns argv for `git`, not a command string: `git()` runs `execFileSync`, so
  * `baseRef` arrives as one argument and is never shell-parsed. That matters
  * because a git ref may legally contain `` ` ``, `$()`, `;`, `|` and `&`. This
- * previously carried a "must stay trusted input" warning instead (issue #75).
+ * previously carried a "must stay trusted input" warning instead.
  * The input is in fact narrow, and both sources this function can receive are
  * push-gated: a PR's `base.ref` names a branch in the *base* repository, which
  * somebody had to create there, and the `default-branch` input behind it is either set in
@@ -785,7 +785,7 @@ const threeDotRange = (baseRef: string | undefined): string => {
   const base = (baseRef ?? "").trim();
   if (!base) {
     throw new Error(
-      "BASE_REF is empty. The workflow sets it from the pull request's base ref, falling back to its `default-branch` input; without it this diff would have to guess a branch, and a wrong guess is a review that silently comments on the wrong lines (#71).",
+      "BASE_REF is empty. The workflow sets it from the pull request's base ref, falling back to its `default-branch` input; without it this diff would have to guess a branch, and a wrong guess is a review that silently comments on the wrong lines.",
     );
   }
   return `${base}...HEAD`;

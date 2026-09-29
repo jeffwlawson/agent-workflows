@@ -121,14 +121,14 @@ Cost: about 30 minutes, all of it before a single line of agent-written code exi
 
 ---
 
-## 2026-07-22 — First agent run (issue #4): agent succeeded, workflow failed
+## 2026-07-22 — First agent run (issue jeffwlawson/winget-manifest-lint#4): agent succeeded, workflow failed
 
 **Outcome.** The agent did its job correctly on the first attempt. The workflow failed at the
 step *after* the agent finished, on a repository setting.
 
 ### What the agent got right, unprompted
 
-Issue #4 (`package-identifier-format`, a single-field rule) produced one commit:
+Issue jeffwlawson/winget-manifest-lint#4 (`package-identifier-format`, a single-field rule) produced one commit:
 
 - Created `src/rules/package-identifier-format.ts` and **registered it** in
   `src/rules/index.ts`. Registration was the predicted silent failure — a rule that exists but
@@ -187,7 +187,7 @@ have been seen, rather than guessing now at what the message should say.
 
 ## 2026-07-22 — Second run: the PAT was set but the PR step never used it
 
-**What happened.** Created `AGENT_PAT`, re-labelled #4, and the run failed at `Open draft PR`
+**What happened.** Created `AGENT_PAT`, re-labelled jeffwlawson/winget-manifest-lint#4, and the run failed at `Open draft PR`
 with the *exact same* error as run one:
 
 ```
@@ -228,11 +228,11 @@ same gate. Third run is the first real test of the full path.
 
 | Step | Result |
 |---|---|
-| Agent implements #4 | rule written, registered, 8 tests |
+| Agent implements jeffwlawson/winget-manifest-lint#4 | rule written, registered, 8 tests |
 | Push branch | via PAT |
-| Open draft PR | **PR #27**, authored by the human user (PAT identity, `is_bot: false`) |
+| Open draft PR | **PR jeffwlawson/winget-manifest-lint#27**, authored by the human user (PAT identity, `is_bot: false`) |
 | CI cascades onto the PR | `verify` passed in 10s, unattended |
-| Labels settle | #4 returned to no agent labels |
+| Labels settle | jeffwlawson/winget-manifest-lint#4 returned to no agent labels |
 
 **The thing that had never worked, worked.** `ci.yml` triggered on the agent's PR by itself,
 because the branch and PR now carry a user identity rather than the Actions bot's, and
@@ -256,35 +256,35 @@ Bumping to `@v5` when convenient removes the noise. Logged so it is a decision, 
 
 ---
 
-## 2026-07-23 — Fourth run (issue #5): the loop is boring
+## 2026-07-23 — Fourth run (issue jeffwlawson/winget-manifest-lint#5): the loop is boring
 
-**Outcome.** Labelled #5, walked away, came back to a green PR. **No intervention between runs
+**Outcome.** Labelled jeffwlawson/winget-manifest-lint#5, walked away, came back to a green PR. **No intervention between runs
 — the first time that has been true.** This is the milestone that matters more than run three:
 run three proved the mechanism *can* complete once; this proves it repeats with zero plumbing
 changes, which is the bar the handoff set ("live with it until it's boring") before trusting
 harder rule classes.
 
 - `package-version-path-safe` (another class-1 single-field rule).
-- PR #29, draft, authored by the user; `ci.yml` cascaded and passed in 10s.
+- PR jeffwlawson/winget-manifest-lint#29, draft, authored by the user; `ci.yml` cascaded and passed in 10s.
 - **The agent appended to the registry** — `[packageIdentifierFormat, packageVersionPathSafe]`
   — rather than overwriting it. It read the current state of `index.ts` and extended it. The
   registry-registration step, predicted as the most likely silent failure, has now been done
   correctly on two independent rules against two different base states.
 
-**Tally so far:** two rules on `main`, one in review (#29), all class-1. Four implement runs;
+**Tally so far:** two rules on `main`, one in review (jeffwlawson/winget-manifest-lint#29), all class-1. Four implement runs;
 the only failures were the two plumbing bugs (create-PR restriction, PAT miswiring), both in
 the first two runs, both fixed. The agent's code has been correct every single run.
 
 **What this unlocks.** Class 1 is demonstrably boring. The next informative run is a class-2
-(cross-field, e.g. #13 duplicate-tuple) or class-3 (cross-file, e.g. #18 agreement) rule —
+(cross-field, e.g. jeffwlawson/winget-manifest-lint#13 duplicate-tuple) or class-3 (cross-file, e.g. jeffwlawson/winget-manifest-lint#18 agreement) rule —
 where `maxIterations: 1`, the prompt, and `CONTEXT.md`'s model actually get stress-tested. A
 green class-1 run tells us little new; a class-3 run is where the next real friction lives.
 
 ---
 
-## 2026-07-23 — Fifth run (issue #18): first cross-file rule, and CONTEXT.md paid off
+## 2026-07-23 — Fifth run (issue jeffwlawson/winget-manifest-lint#18): first cross-file rule, and CONTEXT.md paid off
 
-**Outcome.** Green, no intervention, PR #31 — but the result worth recording is *how* the agent
+**Outcome.** Green, no intervention, PR jeffwlawson/winget-manifest-lint#31 — but the result worth recording is *how* the agent
 scoped the rule, not that CI passed. This was the first class-3 (cross-file) rule, chosen
 specifically to stress the domain model. The model held.
 
@@ -295,10 +295,10 @@ instead:
 - Checked **only the version manifest** (the index file), via the `versionFile()` accessor and
   the parser's `directoryVersion`.
 - **Explicitly deferred** the "installer and locale files carry the same `PackageVersion`"
-  check to a separate cross-file rule — which is exactly issue #17 (`cross-file-fields-agree`),
+  check to a separate cross-file rule — which is exactly issue jeffwlawson/winget-manifest-lint#17 (`cross-file-fields-agree`),
   a sibling it could not see. It reasoned about a rule-boundary it had no direct knowledge of,
   purely from the rule-class model in `CONTEXT.md`.
-- Documented that boundary in a comment, so the next agent working #17 inherits the seam.
+- Documented that boundary in a comment, so the next agent working jeffwlawson/winget-manifest-lint#17 inherits the seam.
 
 That coordination-to-avoid-double-reporting is a genuine design judgment, and it is precisely
 what `CONTEXT.md`'s "three rule classes" section was written to produce. The single largest
@@ -307,15 +307,15 @@ lacked the whole-system view — did not materialise. The domain doc earned its 
 clearly than on any single-field rule.
 
 **Ramp status.** Class 1 (two rules) and now class 3 (one rule) both land clean with
-`maxIterations: 1`. Class 2 (cross-field-within-a-file, e.g. #12 duplicate-tuple) is the one
+`maxIterations: 1`. Class 2 (cross-field-within-a-file, e.g. jeffwlawson/winget-manifest-lint#12 duplicate-tuple) is the one
 remaining untested shape. On current evidence the ramp holds and the prompt does not yet need
 the harder rule classes spelled out inline.
 
 ---
 
-## 2026-07-23 — Sixth run (issue #12): class 2 lands, ramp complete
+## 2026-07-23 — Sixth run (issue jeffwlawson/winget-manifest-lint#12): class 2 lands, ramp complete
 
-**Outcome.** Green, no intervention, PR #33. This was the last untested rule class
+**Outcome.** Green, no intervention, PR jeffwlawson/winget-manifest-lint#33. This was the last untested rule class
 (cross-field-within-a-file), and the hardest reasoning yet. The agent got every subtlety the
 issue and `CONTEXT.md` called out:
 
@@ -338,16 +338,16 @@ future issue references an exact id — none currently does.
 
 | Class | Issue | |
 |---|---|---|
-| 1 — single-field | #4, #5 | clean |
-| 2 — cross-field in a file | #12 | clean, fallback resolved correctly |
-| 3 — cross-file | #18 | clean, sibling-rule scoping correct |
+| 1 — single-field | jeffwlawson/winget-manifest-lint#4, jeffwlawson/winget-manifest-lint#5 | clean |
+| 2 — cross-field in a file | jeffwlawson/winget-manifest-lint#12 | clean, fallback resolved correctly |
+| 3 — cross-file | jeffwlawson/winget-manifest-lint#18 | clean, sibling-rule scoping correct |
 
 **Tally: six implement runs, agent code correct on all six.** Every failure in the whole pilot
 was plumbing (runs 1–2: create-PR restriction, PAT miswiring), never the agent. The loop is
 boring in the sense the handoff meant it: the interesting question is no longer "does it work"
 but "what do we point it at". The remaining backlog is mechanical; the next *design* work is
 `agent-review.yml` (+ the shared-helper extraction scoped earlier) and the winget-pkgs corpus
-job (#22), which is the first time a rule meets a real manifest rather than a hand-built fixture.
+job (jeffwlawson/winget-manifest-lint#22), which is the first time a rule meets a real manifest rather than a hand-built fixture.
 
 ---
 
@@ -368,7 +368,7 @@ manifest in the corpus. Two rules, both wrong:
 | `installer-architecture-type-scope-unique` | 405 | uniqueness key omitted `InstallerLocale` |
 | `package-identifier-format` | 12 | capped identifiers at 4 segments; winget allows 8 |
 
-**Neither was an agent error.** The agent implemented issues #4 and #12 faithfully and
+**Neither was an agent error.** The agent implemented issues jeffwlawson/winget-manifest-lint#4 and jeffwlawson/winget-manifest-lint#12 faithfully and
 correctly. The bugs were in the *issue specs*, which encoded my imperfect understanding of the
 winget rules. This is exactly the failure mode the corpus exists to catch and that nothing
 upstream of it can: the agent cannot know the spec is wrong, and hand-built fixtures only test
@@ -387,18 +387,18 @@ from memory. I pulled ground truth first:
   key."* Plus two subtleties in the comparator: archive types also key on `NestedInstallerType`,
   and an unspecified scope is a wildcard, not a concrete value.
 
-Both corrected issues (#36, #37) cited these sources inline, so the agent implemented against
+Both corrected issues (jeffwlawson/winget-manifest-lint#36, jeffwlawson/winget-manifest-lint#37) cited these sources inline, so the agent implemented against
 ground truth rather than my guess. **Dropping a spec into the loop without grounding it is how
 the false positives got there in the first place; the fix was to ground the correction.**
 
 ### How the agent did on the fixes
 
-- **#36 (identifier, #38):** got the segment-count fix right and even recognised that an old
+- **jeffwlawson/winget-manifest-lint#36 (identifier, jeffwlawson/winget-manifest-lint#38):** got the segment-count fix right and even recognised that an old
   failing test (`A.B.C.D.E`, 5 segments) was now *valid* and replaced it with a 9-segment case.
   But it **skipped the secondary ask** — the per-segment 1–32 char bound. A clean example of an
-  issue with a primary fix plus a bundled extra getting the extra dropped. Hand-completed in #39
+  issue with a primary fix plus a bundled extra getting the extra dropped. Hand-completed in jeffwlawson/winget-manifest-lint#39
   (the check subsumes the empty-segment case). Cheap to finish by hand; not worth a second run.
-- **#37 (installer, #40):** the strongest agent output of the pilot. It added `InstallerLocale`
+- **jeffwlawson/winget-manifest-lint#37 (installer, jeffwlawson/winget-manifest-lint#40):** the strongest agent output of the pilot. It added `InstallerLocale`
   with root fallback, folded `NestedInstallerType` in for archives, implemented the
   scope-wildcard rule — and, unprompted, recognised that a wildcard *breaks hashset equality*
   (matching is non-transitive), so it replaced the `Set<string>` key with a pairwise `collides()`
@@ -573,7 +573,7 @@ the same author-association gate to review-thread comments, and its self-improve
 
 ## 2026-07-23 — First review run: the review agent predicted a corpus failure, and was right
 
-`agent-review.yml` ran for the first time against PR #43 (issue #16, the ReleaseDate warn rule).
+`agent-review.yml` ran for the first time against PR jeffwlawson/winget-manifest-lint#43 (issue jeffwlawson/winget-manifest-lint#16, the ReleaseDate warn rule).
 Everything worked mechanically — label transition, structured-output extraction, diff-line
 filtering, review posted, labels cleaned up. But the *content* is the result worth recording.
 
@@ -682,7 +682,7 @@ While testing that query, the author login came back as `github-actions` — but
 set contained only `github-actions[bot]`, the **REST** spelling. GraphQL spells the same account
 differently. Left unfixed, review would have silently discarded its own agent's comments and the
 review→fix handoff would have quietly done nothing. Found by smoke-testing the real query against
-PR #43 before shipping, not by reading the code. Both spellings are now listed.
+PR jeffwlawson/winget-manifest-lint#43 before shipping, not by reading the code. Both spellings are now listed.
 
 **3. Two gaps found by asking a plain question.** "Will it read comments and replies I add?"
 turned out to have an asymmetric answer: `agent:fix` read all four PR comment surfaces, but
@@ -698,12 +698,12 @@ not an accident discovered later.
 
 ## 2026-07-23 — The full cycle runs: implement → review → fix, no human in the middle
 
-Issue #13 (`nested-installer-compatibility`, class 2) travelled all three workflows in sequence
+Issue jeffwlawson/winget-manifest-lint#13 (`nested-installer-compatibility`, class 2) travelled all three workflows in sequence
 with no intervention at any stage. `agent:fix` had never run before.
 
 | Stage | Result |
 |---|---|
-| `agent:implement` | PR #46 — rule, three-file fixture, tests |
+| `agent:implement` | PR jeffwlawson/winget-manifest-lint#46 — rule, three-file fixture, tests |
 | `agent:review` | flagged helper duplication with a silent-drift risk |
 | `agent:fix` | hoisted the shared helpers into `manifest.ts` |
 
@@ -734,7 +734,7 @@ all**. There is no converse rule. Komac routinely emits `InstallerType: portable
 `PortableCommandAlias`), and Microsoft accepts it — `Gruntwork.Terragrunt`, `Navidrome`, `TEdit`,
 `iLEAPP`, `g-helper` all do exactly this.
 
-The converse check was never a winget rule. **It was invented in issue #13 — by me** — and is the
+The converse check was never a winget rule. **It was invented in issue jeffwlawson/winget-manifest-lint#13 — by me** — and is the
 third spec error of the pilot, after the identifier segment count and the installer uniqueness key.
 
 **The lesson, and it is the sharpest one here.** The review's argument was specific, domain-aware,
@@ -788,7 +788,7 @@ Every spec error in this pilot — all three — was caught by the corpus and by
 ## 2026-07-25 — The conversation loop: suggestions, replies, resolution
 
 Closed the gap between "the agents exchange data" and "the agents hold a conversation you can
-read." Three features (#49, #50), then an end-to-end test on PR #46 that found a flaw in one.
+read." Three features (jeffwlawson/winget-manifest-lint#49, jeffwlawson/winget-manifest-lint#50), then an end-to-end test on PR jeffwlawson/winget-manifest-lint#46 that found a flaw in one.
 
 ### A Copilot comparison worth recording
 
@@ -811,7 +811,7 @@ actually handed over.
 
 **Suggestions are explicitly not authoritative.** The fix prompt says to verify before applying:
 *"a confident reviewer working from a false premise produces a tidy patch that is still wrong."*
-That is #46's lesson encoded, and it matters more once suggestions arrive looking ready to apply —
+That is jeffwlawson/winget-manifest-lint#46's lesson encoded, and it matters more once suggestions arrive looking ready to apply —
 prose invites scrutiny, a patch invites a click.
 
 **Introspect before designing.** Checking the GraphQL schema first showed both
@@ -820,7 +820,7 @@ deleted a planned REST `databaseId` mapping layer entirely.
 
 ### The test, and what it caught
 
-PR #46 was usefully messy: four unresolved threads, two of them *outdated*, two saying the same
+PR jeffwlawson/winget-manifest-lint#46 was usefully messy: four unresolved threads, two of them *outdated*, two saying the same
 thing. The review produced a correctly-ranged multi-line suggestion (`87-88`); the fix applied it,
 replied to all four threads, and resolved two.
 
@@ -843,7 +843,7 @@ that produced the 13 corpus false positives.
 
 `pull_request_target` takes the **workflow YAML** from the base branch, but the job checks out the
 **PR head** — so `.sandcastle/` runner scripts come from the PR branch. An agent PR opened before
-a script change keeps running the *old* scripts, silently, with no error. #46 needed `main` merged
+a script change keeps running the *old* scripts, silently, with no error. jeffwlawson/winget-manifest-lint#46 needed `main` merged
 into it before the test meant anything.
 
 That is a standing hazard for every in-flight agent PR after any `.sandcastle/` change, and a
@@ -854,10 +854,10 @@ PR branches.
 
 ## 2026-07-25 — `agent-update-branch`, and testing the path I nearly skipped
 
-Built the workflow that refreshes a stale PR branch (#52), for a reason that had already bitten:
+Built the workflow that refreshes a stale PR branch (jeffwlawson/winget-manifest-lint#52), for a reason that had already bitten:
 `pull_request_target` takes the **workflow YAML from the base branch** but checks out the **PR
 head**, so a PR opened before a `.sandcastle/` change keeps running the *old* runner scripts —
-silently, with no error. #46 needed `main` merged in by hand before its test meant anything.
+silently, with no error. jeffwlawson/winget-manifest-lint#46 needed `main` merged in by hand before its test meant anything.
 
 Design copied from CVM and worth keeping: **the workflow does the merge in bash and calls the
 agent only when git reports conflicts.** Most refreshes are clean, so the common path skips node,
@@ -879,14 +879,14 @@ limitation down is not the same as having thought about it.
 ### The test
 
 Manufactured a real conflict with no throwaway commits on `main`: a branch editing `parity.md` §9
-one way, while #52 rewrote the same section another way. Every guard behaved — conflict detected,
+one way, while jeffwlawson/winget-manifest-lint#52 rewrote the same section another way. Every guard behaved — conflict detected,
 runner executed, `npm run verify` run (116 tests), merge **committed**, nothing half-finished
 pushed.
 
 **The resolution was better than a hand-merge would have been.** The stale branch still listed
 `agent-update-branch` as 📋 and conversational replies as ❌. Naively "preserving both sides" —
 the obvious reading of the prompt's own instruction — would have **re-listed shipped features as
-future work**: textually a clean merge, semantically wrong. The agent noticed #52 had shipped
+future work**: textually a clean merge, semantically wrong. The agent noticed jeffwlawson/winget-manifest-lint#52 had shipped
 them, folded them into the done-list, and applied the other side's value-per-risk ranking to only
 what genuinely remained. It also volunteered what it had traded away.
 
@@ -900,7 +900,7 @@ status would have been tidiness for its own sake.
 
 ## 2026-07-25 — Batching three issues, and the parity doc drifting
 
-Ran #9, #10 and #11 concurrently to answer the open batching question.
+Ran jeffwlawson/winget-manifest-lint#9, jeffwlawson/winget-manifest-lint#10 and jeffwlawson/winget-manifest-lint#11 concurrently to answer the open batching question.
 
 **The implement phase batches cleanly.** Three runs in parallel, no interference — the per-issue
 concurrency groups did their job — and all three came back green on `verify` *and* corpus.
@@ -925,7 +925,7 @@ meant the fix was wrong.
 
 `docs/parity.md` exists to make every gap a visible decision. It had gone stale in three places —
 §1 still said "3 of CVM's 8 workflows" after `agent-update-branch` shipped, and §4 still marked
-thread replies ❌ after #50 shipped them — **while §9 listed that same feature as done**. The
+thread replies ❌ after jeffwlawson/winget-manifest-lint#50 shipped them — **while §9 listed that same feature as done**. The
 document contradicted itself.
 
 That is worse than merely out of date, because a parity table is consulted precisely when nobody
@@ -940,7 +940,7 @@ in it claims to describe the present. Only "Pending" can rot, which is why it st
 
 ## 2026-08-01 — Pointing the loop at its own plumbing, and a spec that asked for the impossible
 
-Issue #63 asked for tests covering two untested functions in the agent loop itself: the author
+Issue jeffwlawson/winget-manifest-lint#63 asked for tests covering two untested functions in the agent loop itself: the author
 trust gate (`isTrustedAuthor`) and the diff-line allow-list (`parseDiffLines`). **The first agent
 run in this pilot on code that is not the linter.** It went green with no intervention, found a
 real bug, and exposed a structural limit in the workflow that nobody had noticed.
@@ -984,11 +984,11 @@ assertions. Defensible. But the reachable variant stayed prose in a comment whil
 one got a named test. **The review agent then caught it** — unprompted, correctly classified as
 "the same defect class … both stem from counting the trailing empty string," and correctly scoped
 as pre-existing and out of scope. Independently reached, and it matches what a hand-trace of the
-parser produces. Became #65, fixed in #66 the same day.
+parser produces. Became jeffwlawson/winget-manifest-lint#65, fixed in jeffwlawson/winget-manifest-lint#66 the same day.
 
 ### The spec that flagged its own limit, and got a better answer for it
 
-#65 is the first spec in this pilot to state an uncertainty instead of resolving it. Ground truth
+jeffwlawson/winget-manifest-lint#65 is the first spec in this pilot to state an uncertainty instead of resolving it. Ground truth
 established that `git diff` emits an empty context line as a single space (verified with `cat -A`),
 so within this codebase the `line === ""` branch has no legitimate input at all. The obvious spec
 would have said "delete the branch." Instead it said the evidence establishes the branch is
@@ -1011,7 +1011,7 @@ to be right about everything.
 
 ### Silence that could have meant two things
 
-Because #66 changes `.sandcastle/`, `pull_request_target` had the review agent filtering its **own**
+Because jeffwlawson/winget-manifest-lint#66 changes `.sandcastle/`, `pull_request_target` had the review agent filtering its **own**
 inline comments through the modified parser. An over-restrictive fix would have posted zero inline
 comments — indistinguishable from a review that found nothing. The issue said so explicitly: *do not
 read silence as approval on this PR.*
@@ -1025,14 +1025,14 @@ Inline comments: 0 kept of 0 produced.
 ```
 
 — plus a hand-run of the fixed parser outside CI. Both external to the review's judgement, both
-agreeing. This is the #46 shape exactly: an agent reasoning about whether its own mechanism is
+agreeing. This is the jeffwlawson/winget-manifest-lint#46 shape exactly: an agent reasoning about whether its own mechanism is
 sound, in a case where being wrong produces the same observable as being right. It happened to be
 right. The counter is why we know. **Any workflow whose failure mode is silence needs a
 produced-vs-kept counter, not an argument.** That one already existed; it is worth not losing.
 
 ### The spec asked for something the agent structurally could not do
 
-Issue #63 said the documented bug should also be "called out in the PR description." The review
+Issue jeffwlawson/winget-manifest-lint#63 said the documented bug should also be "called out in the PR description." The review
 closed by noting the PR body did not mention it and asking a human to fix that.
 
 The PR body is a hardcoded heredoc in `agent-implement.yml`:
@@ -1072,7 +1072,7 @@ step a human performs on every single agent PR, which is the definition of a gap
 ### The declined thread stayed open, on purpose
 
 Two review comments, both non-blocking. The first (trailing-line defect class) was replied to and
-resolved — captured in #65, not dropped. The second suggested swapping one trusted bot spelling for
+resolved — captured in jeffwlawson/winget-manifest-lint#65, not dropped. The second suggested swapping one trusted bot spelling for
 the other because it "would exercise a different code path"; it would not — both are members of the
 same `TRUSTED_BOT_LOGINS` set and reach the same `.has()` call. Declined, with the reasoning
 written into the thread, and **left open**.
@@ -1084,9 +1084,9 @@ recording that the invariant generalised without modification.
 
 ### Gap in this log
 
-Entries stop at 2026-07-25. Runs for issues #19, #20 and #21 (PRs #60, #61, #62, merged 07-27/28)
-are unlogged. #21 is the one that matters: review found that `--strict` could not affect the exit
-code, because issue #21 had specified `1 = diagnostics found`, lumping warnings in with errors —
+Entries stop at 2026-07-25. Runs for issues jeffwlawson/winget-manifest-lint#19, jeffwlawson/winget-manifest-lint#20 and jeffwlawson/winget-manifest-lint#21 (PRs jeffwlawson/winget-manifest-lint#60, jeffwlawson/winget-manifest-lint#61, jeffwlawson/winget-manifest-lint#62, merged 07-27/28)
+are unlogged. jeffwlawson/winget-manifest-lint#21 is the one that matters: review found that `--strict` could not affect the exit
+code, because issue jeffwlawson/winget-manifest-lint#21 had specified `1 = diagnostics found`, lumping warnings in with errors —
 so promoting warnings to errors changed nothing. The implementation was faithful; the spec was
 incoherent. That is the **fifth** spec error, and the first caught by a human reviewer rather than
 by the corpus. It is also a case the corpus structurally could not catch: there is no manifest that
@@ -1102,15 +1102,15 @@ expensive part, and it was entirely my doing.**
 
 ### Squash-merging a base branch closes its dependents, permanently
 
-PRs #67 → #68 → #70, each based on the one below. Merging #67 with `--delete-branch` did three
+PRs jeffwlawson/winget-manifest-lint#67 → jeffwlawson/winget-manifest-lint#68 → jeffwlawson/winget-manifest-lint#70, each based on the one below. Merging jeffwlawson/winget-manifest-lint#67 with `--delete-branch` did three
 things at once, only one of which was intended:
 
 1. Merged it. Fine.
-2. **Closed #68**, because GitHub closes any PR whose base branch is deleted.
-3. Made #68 **unreopenable** — `Could not open the pull request`, because the base no longer
-   exists. Not recoverable; #68 was recreated from the same commit as #72.
+2. **Closed jeffwlawson/winget-manifest-lint#68**, because GitHub closes any PR whose base branch is deleted.
+3. Made jeffwlawson/winget-manifest-lint#68 **unreopenable** — `Could not open the pull request`, because the base no longer
+   exists. Not recoverable; jeffwlawson/winget-manifest-lint#68 was recreated from the same commit as jeffwlawson/winget-manifest-lint#72.
 
-Then squash-merging bit a second time: #67's commits were rewritten into one new commit on `main`,
+Then squash-merging bit a second time: jeffwlawson/winget-manifest-lint#67's commits were rewritten into one new commit on `main`,
 so both stacked branches still carried their own copies and went `CONFLICTING/DIRTY`. Each needed
 `git rebase --onto origin/main <old-base-commit>` to drop the duplicates.
 
@@ -1120,7 +1120,7 @@ The order that works, and which nothing warned about:
 2. Rebase each stacked branch onto the new `main` to drop the squashed commits
 3. Only then merge and delete
 
-I caught #70 in time by retargeting it before deleting its base. #68 I did not. The generalisable
+I caught jeffwlawson/winget-manifest-lint#70 in time by retargeting it before deleting its base. jeffwlawson/winget-manifest-lint#68 I did not. The generalisable
 part is that `--delete-branch` is not a cleanup flag when anything is stacked — it is a
 side-effecting operation on other pull requests, and the side effect is irreversible.
 
@@ -1132,17 +1132,17 @@ from `main`, so that was indistinguishable from correct — for six weeks.
 On a stacked PR it is not. GitHub computes a PR's diff against its **real** base, so the runner's
 allow-list would have included the intermediate branch's lines, GitHub would have rejected the
 **entire** review, and the result would have looked exactly like a review that found nothing. The
-same silent-failure shape as #65, from a different cause.
+same silent-failure shape as jeffwlawson/winget-manifest-lint#65, from a different cause.
 
 The first stacked PRs in this repo's history were created about twenty minutes before that would
 have fired. Worth recording as a category: **a change in working *practice* surfaced a latent code
 bug**, and no test, corpus run or review would have found it, because none of them knew the practice
-was about to change. Fixed in #73, which threads the real base ref through both workflows and tests
+was about to change. Fixed in jeffwlawson/winget-manifest-lint#73, which threads the real base ref through both workflows and tests
 the base *selection* rather than re-testing the base-agnostic parser.
 
 ### The review predicted a failure that had a live victim
 
-Reviewing #74 (which renamed `agent-implement-pr` → `agent-fix`), the review agent flagged something
+Reviewing jeffwlawson/winget-manifest-lint#74 (which renamed `agent-implement-pr` → `agent-fix`), the review agent flagged something
 that is not a defect in the diff at all:
 
 > after this merges the base-branch `agent-fix.yml` will run
@@ -1150,8 +1150,8 @@ that is not a defect in the diff at all:
 > The run dies on module resolution *before* anything writes `failure_reason.txt`
 
 It named the mechanism (`pull_request_target` takes YAML from base, code from head), the
-consequence, and the mitigation. **PR #73 was open at that moment with `implement-pr/` on its
-branch** — a real victim, not a hypothetical. Merging #73 first made the problem never exist.
+consequence, and the mitigation. **PR jeffwlawson/winget-manifest-lint#73 was open at that moment with `implement-pr/` on its
+branch** — a real victim, not a hypothetical. Merging jeffwlawson/winget-manifest-lint#73 first made the problem never exist.
 
 This is a new *kind* of finding for the loop. Every prior review said "this code is wrong." This one
 said "this correct change will break something else when it lands," which requires reasoning about
@@ -1192,7 +1192,7 @@ because all three of the setup traps this pilot hit announce themselves as somet
 
 ### A small discipline that keeps working
 
-Issue #75 asserts that git permits shell metacharacters in ref names. Rather than write that from
+Issue jeffwlawson/winget-manifest-lint#75 asserts that git permits shell metacharacters in ref names. Rather than write that from
 memory — the habit that produced six spec errors — `git check-ref-format --branch` settled it:
 `$(id)`, `a;id`, `a|id`, `a&b` and backticks are all **permitted**; space, `:` and `~` are not. The
 table went into the issue. Cost: one command.
@@ -1201,16 +1201,16 @@ table went into the issue. Cost: one command.
 
 ## 2026-08-07 — Two PRs improving the same doc, and a tiebreaker that only points one way
 
-#100 and #101 were deliberately paired as the one genuinely parallel-safe batch: disjoint file
+jeffwlawson/winget-manifest-lint#100 and jeffwlawson/winget-manifest-lint#101 were deliberately paired as the one genuinely parallel-safe batch: disjoint file
 sets, no shared code. They ran concurrently and both produced clean, reviewed PRs. Then both
 review agents independently flagged the *same* stale row in `docs/ADOPTING.md` §5, both fix agents
 acted on it, and the two PRs collided on a file neither issue was about.
 
 ### The mechanism, because it will recur
 
-The conflict did not come from either issue's scope. It came from **review judgement calls**. #101
+The conflict did not come from either issue's scope. It came from **review judgement calls**. jeffwlawson/winget-manifest-lint#101
 was told to add a missing site to the coupling table; its review found the added sentence factually
-wrong and the fix corrected it. #104's review noticed the whole row had gone stale after #71, as a
+wrong and the fix corrected it. jeffwlawson/winget-manifest-lint#104's review noticed the whole row had gone stale after jeffwlawson/winget-manifest-lint#71, as a
 side observation, and its fix re-derived the entire inventory. Two agents, two different tickets,
 one table cell.
 
@@ -1225,9 +1225,9 @@ registry, and they behave exactly like `src/rules/index.ts`.
 `update-branch/prompt.md` resolves incompatible sides by favouring **the one matching this PR's
 stated goal**. That is a *directional* rule, not a quality one, and the asymmetry is real:
 
-- Refreshing #103 against a merged #104: #103's goal *is* improving that row, so goal-alignment and
+- Refreshing jeffwlawson/winget-manifest-lint#103 against a merged jeffwlawson/winget-manifest-lint#104: jeffwlawson/winget-manifest-lint#103's goal *is* improving that row, so goal-alignment and
   quality point the same way.
-- Refreshing #104 against a merged #103: #104's goal is the base-ref fix. Its better, re-derived row
+- Refreshing jeffwlawson/winget-manifest-lint#104 against a merged jeffwlawson/winget-manifest-lint#103: jeffwlawson/winget-manifest-lint#104's goal is the base-ref fix. Its better, re-derived row
   arrived from a review side-note, so under the stated rule the stronger text has the *weaker*
   claim.
 
@@ -1245,7 +1245,7 @@ raise `AGENT_MODEL_UPDATE_BRANCH` (`common.ts:56-62` already nominates this row 
 to suspect); resolve one table cell by hand. Only after a real failure is there a ticket worth
 writing.
 
-**Outcome, same day:** #104 merged first and #103 was refreshed with `agent:update-branch`. Sonnet
+**Outcome, same day:** jeffwlawson/winget-manifest-lint#104 merged first and jeffwlawson/winget-manifest-lint#103 was refreshed with `agent:update-branch`. Sonnet
 resolved it correctly — kept `main`'s re-derived row wholesale and folded this branch's
 hard-error correction into the same parenthetical. The part worth recording is what it noticed
 unprompted: line 175's "with the one exception called out above" was **not** in the conflict, but
@@ -1272,29 +1272,29 @@ the failure the first line" rule, and the no-push/no-label/no-comment boundary.
 Six threads across the two PRs, all addressed, all resolved, no declines — and none of the six was
 a compliant application of the suggestion.
 
-- #103 took the blocking suggestion but *narrowed* it, writing "the only **unconditional** `main` in
+- jeffwlawson/winget-manifest-lint#103 took the blocking suggestion but *narrowed* it, writing "the only **unconditional** `main` in
   a runner" because `pr-feedback.ts:101` hardcodes one too, as a fallback the reviewer's wording had
   flattened.
-- #103 chose the harder of two offered options — deriving the `issues: write` check from
+- jeffwlawson/winget-manifest-lint#103 chose the harder of two offered options — deriving the `issues: write` check from
   `workflowFiles` minus an exempt set, rather than narrowing the `parity.md` sentence to match the
   weaker check — and proved it by planting `issues: write` in `ci.yml`, a file the old allowlist
   never covered.
-- #104, asked to either widen a test's pattern or rename it to match, widened — and found that
+- jeffwlawson/winget-manifest-lint#104, asked to either widen a test's pattern or rename it to match, widened — and found that
   `runBlockLines` only tracked `run: |` block scalars, so `agent-review.yml:74`'s inline `run:`
-  fetch, *the exact line #71 fixed*, was exempt from all three workflow tests. Including the
+  fetch, *the exact line jeffwlawson/winget-manifest-lint#71 fixed*, was exempt from all three workflow tests. Including the
   empty-expression guard that exists because `agent-fix.yml` was down for two days.
-- #104 re-derived the coupling inventory rather than patching it and added a site the reviewer had
+- jeffwlawson/winget-manifest-lint#104 re-derived the coupling inventory rather than patching it and added a site the reviewer had
   missed, `implement/implement.ts:56`.
 
 The pattern worth keeping: **neither agent took a reviewer's premise on trust**, and both verified
-by injecting a regression and watching it fail rather than by asserting. #104 explicitly checked
+by injecting a regression and watching it fail rather than by asserting. jeffwlawson/winget-manifest-lint#104 explicitly checked
 that `runWithExtraction` drops `promptArgs` before agreeing that templating could not reach
 `extraction.md`.
 
 ### The first decline, and it was the right one
 
-#105 (concurrency + preflight parity) produced the pilot's first `declined` thread. Worth recording
-because the decline mechanism has existed since #49/#50 and had never fired — every prior round
+jeffwlawson/winget-manifest-lint#105 (concurrency + preflight parity) produced the pilot's first `declined` thread. Worth recording
+because the decline mechanism has existed since jeffwlawson/winget-manifest-lint#49/jeffwlawson/winget-manifest-lint#50 and had never fired — every prior round
 addressed everything.
 
 The review argued that `refuse()` adds `agent:blocked` for the stale-head case too, labelling a PR
@@ -1312,7 +1312,7 @@ closed/merged refusal is the sticky one.
 
 A fourth argument neither side made settles it: consuming `agent:review` is what makes recovery work
 at all. Because the label was removed, re-adding it fires a fresh `labeled` event — had the workflow
-left it in place, recovery would need remove-then-re-add, the trap #100 hit the same day.
+left it in place, recovery would need remove-then-re-add, the trap jeffwlawson/winget-manifest-lint#100 hit the same day.
 
 What makes this a good decline rather than a lucky one: the same round *addressed* the two findings
 that were correct, including a real regression the collapse had introduced. It declined the
@@ -1340,7 +1340,7 @@ suppressed the way `GITHUB_TOKEN`'s are. That got stated as a finding, with the 
 `parity.md` §9.4's GitHub App plan would break the cascade rather than fix it.
 
 Wrong. GitHub Actions was having a platform incident during that window. Retested at 19:39 the same
-day by labelling #90 from the identical identity: run 41 dispatched normally, and the agent worked
+day by labelling jeffwlawson/winget-manifest-lint#90 from the identical identity: run 41 dispatched normally, and the agent worked
 the issue. §9.4 is unaffected.
 
 **The lesson is about diagnosis, not about labels.** A platform incident and the documented
@@ -1353,7 +1353,7 @@ re-running the experiment later is the cheap check that separates them. It cost 
 
 ### A human error the loop caught
 
-The `implement.ts` line number in #101 was written as `:58` from memory. It is `:56`. #104's fix
+The `implement.ts` line number in jeffwlawson/winget-manifest-lint#101 was written as `:58` from memory. It is `:56`. jeffwlawson/winget-manifest-lint#104's fix
 agent re-derived it and got it right. Same lesson as the `git check-ref-format` entry above, failed
 rather than passed this time: one `grep` would have settled it, and the cost of not running it was
 a wrong line number published in an issue body that an agent then implemented from.
@@ -1362,7 +1362,7 @@ a wrong line number published in an issue body that an agent then implemented fr
 
 ## 2026-08-08 — The first PRD chain, and the trap it set for itself
 
-PRD #88 ran its slices into a single branch as designed. Slice 5 (#112) died immediately at
+PRD jeffwlawson/winget-manifest-lint#88 ran its slices into a single branch as designed. Slice 5 (jeffwlawson/winget-manifest-lint#112) died immediately at
 `required("BASE_REF")`, and the PR comment read `(no reason file written)`.
 
 The cause is the seam this loop has now been bitten by twice, arriving from the opposite
@@ -1386,7 +1386,7 @@ lives in a PR that cannot merge until those slices finish. A genuine deadlock, b
 hand.
 
 Pinning the runner to a published version **in the workflow YAML** closes it, because then both
-halves move together and a branch cannot advance one without the other. That is what #113 does,
+halves move together and a branch cannot advance one without the other. That is what jeffwlawson/winget-manifest-lint#113 does,
 and it is worth recording that the argument for the versioned package arrived here from a second,
 independent direction — it was adopted for extraction and turns out to be the only thing that
 makes the PRD tier safe on its own plumbing.
@@ -1405,10 +1405,10 @@ the reason file before exiting; until it does, that string means "look at the ru
 ## 2026-08-09 — Moving the loop out, and reversing a recommendation to get there
 
 The reframe at the top of this log — the linter is the testbed, the agent loop is the deliverable
-— became an actual repository decision (#114). Two findings settled it, and the first is the one
+— became an actual repository decision (jeffwlawson/winget-manifest-lint#114). Two findings settled it, and the first is the one
 that matters.
 
-**The remote path has never executed.** All five callers #113 produces read
+**The remote path has never executed.** All five callers jeffwlawson/winget-manifest-lint#113 produces read
 `uses: ./.github/workflows/agent-review-reusable.yml`. A local path. Every adopting repo will use
 `uses: jeffwlawson/agent-workflows/...@v1`, and a host repo can never exercise that, because it is
 not an adopter. So the extraction is complete and *entirely untested in the configuration anyone
@@ -1421,7 +1421,7 @@ moving only rises with each consumer, and there is currently one.
 
 ### The reversal
 
-The recommendation given was: merge #113, publish `0.1.0` from *here*, then migrate — on the
+The recommendation given was: merge jeffwlawson/winget-manifest-lint#113, publish `0.1.0` from *here*, then migrate — on the
 grounds that publishing validates the workflow before also changing its address. The pushback was
 one line: does that have to happen here?
 
@@ -1437,9 +1437,9 @@ instinct, and it inverts exactly when the move is what changes the thing being v
 pre-migration smoke test has to be checked against that, and the check is mechanical: name what
 the test exercises, then ask which of those survive the move.
 
-The deadlock reasoning was real but was pointed the wrong way. #113 and the publish are a package
+The deadlock reasoning was real but was pointed the wrong way. jeffwlawson/winget-manifest-lint#113 and the publish are a package
 deal — its callers `npx` a version that does not exist, so merging without publishing takes the
-whole loop down. Which means "can the publish wait?" was only ever "can #113 stay unmerged?", and
+whole loop down. Which means "can the publish wait?" was only ever "can jeffwlawson/winget-manifest-lint#113 stay unmerged?", and
 it can, indefinitely, because `main` still runs the runner from the checkout with `npx tsx`.
 
 ### A dependency that resolves by coincidence
@@ -1458,12 +1458,12 @@ to a repo root, which is the wrong reason for it to be fixed and no reason to le
 
 197 lines — `ADOPTING.md` §1's fifth silent failure, the §3 amend-before-labelling note, and 161
 lines of this log — sat on a pushed branch with **no pull request**. The migration plan's
-`git filter-repo` reads #113's branch, which contains none of it. It would have succeeded and
+`git filter-repo` reads jeffwlawson/winget-manifest-lint#113's branch, which contains none of it. It would have succeeded and
 dropped all of it, silently, because that is what a successful filter does.
 
 An unmerged branch is invisible to every tool that reasons about "the repo", and to every person
 who assumes the default branch is the state of the work. What surfaced it was a three-way line
-count across `main`, this branch and #113's branch — run only because the migration forced the
+count across `main`, this branch and jeffwlawson/winget-manifest-lint#113's branch — run only because the migration forced the
 question *which ref does history come from?* Nothing in the ordinary loop asks that. Before any
 history-rewriting move, enumerate the refs that hold work, not the files.
 
@@ -1564,7 +1564,7 @@ that was already disposable.
 
 ## 2026-08-09 (last) — The loop runs on itself from another repository, and two absences read as failures
 
-`winget-manifest-lint` stopped hosting the loop and started consuming it (#116): five caller
+`winget-manifest-lint` stopped hosting the loop and started consuming it (jeffwlawson/winget-manifest-lint#116): five caller
 workflows pinned to `@v0.1.1`, the runner tree deleted, `+187/-8,298`. Then the whole chain ran
 unattended through the cross-repo path on the first attempt — issue labelled, implement resolved
 `jeffwlawson/agent-workflows/.github/workflows/implement.yml@v0.1.1`, `npx`'d the published
@@ -1722,7 +1722,7 @@ history at the cost of accuracy; for issues nobody had commented on, accuracy wo
 The full cycle is proven, including replies, resolution, and conflict resolution. Still
 unexercised or outstanding:
 
-- **Stale agent scripts — the tooling half is now fixed, the conventions half is not** (#96). The
+- **Stale agent scripts — the tooling half is now fixed, the conventions half is not** (jeffwlawson/winget-manifest-lint#96). The
   worked-out design was a check in the **YAML**, which is always current even when the scripts it
   guards are stale, comparing the PR head against `main` for two different things: `.sandcastle/**`
   differing means the tooling is wrong and the run should **refuse**; `CONTEXT.md`/`CLAUDE.md`
@@ -1757,26 +1757,26 @@ unexercised or outstanding:
   manifest. Raising `MAX_PACKAGES` or bumping the pinned SHA are the levers, at the cost of CI
   minutes.
 - Corpus `checkout` of winget-pkgs is the slow step (~6 min). Not cached. If it becomes painful,
-  caching by SHA is the tunable the original issue (#22) called for.
+  caching by SHA is the tunable the original issue (jeffwlawson/winget-manifest-lint#22) called for.
 - Actions are on `@v4` (Node 20 deprecation warning). Bump to `@v5` eventually.
-- Remaining backlog is **9 open issues** (8 rules plus #23, a parser change), mechanical now.
+- Remaining backlog is **9 open issues** (8 rules plus jeffwlawson/winget-manifest-lint#23, a parser change), mechanical now.
   Batching answered the "one-by-one or several at once" question in the 2026-07-25 entry: batching
   is cheaper than predicted, and its cost scales with how *adjacent* the new registry names are.
-- **A declined review thread is open on #64** — the review suggested swapping one trusted bot
+- **A declined review thread is open on jeffwlawson/winget-manifest-lint#64** — the review suggested swapping one trusted bot
   spelling for the other on the grounds it exercises a different code path; it does not, since both
   are members of the same `TRUSTED_BOT_LOGINS` set. Left open on purpose, per §10: the person
   declining should not also be the person closing the argument.
 - **`agent-explore` and the PRD tier are recorded as superseded, not deferred** (`parity.md` §1,
-  added in #74). Both are answers to *how does a well-specified issue come to exist?* — upstream
+  added in jeffwlawson/winget-manifest-lint#74). Both are answers to *how does a well-specified issue come to exist?* — upstream
   assesses a spec you may not have written, CVM generates one top-down — and both are covered here
   by local planning skills, as standing practice rather than a temporary state. The residual neither
   covers is **a small issue written quickly and confidently**, which is where all six spec errors
   came from and which is below the threshold at which anyone invokes a planning skill. `explore`
   only half-addresses it: its prompt verifies claims *against the code*, and three of the six were
   wrong about winget, not about this repo.
-- **Variables reaching `git` still go through `/bin/sh`** (#75). Not exploitable — the fork guard
+- **Variables reaching `git` still go through `/bin/sh`** (jeffwlawson/winget-manifest-lint#75). Not exploitable — the fork guard
   and write-access boundary both hold — but the repo already made the argv-over-string decision once
-  for `gh`, and #73 was the first time a variable entered a `git` command. It got a doc-comment
+  for `gh`, and jeffwlawson/winget-manifest-lint#73 was the first time a variable entered a `git` command. It got a doc-comment
   instead. A comment depends on the next reader; `execFileSync` does not.
 - **The `agent-fix` rename can strand branches created before 2026-08-02.** A PR whose branch still
   has `.sandcastle/agent-workflows/implement-pr/` dies on module resolution before

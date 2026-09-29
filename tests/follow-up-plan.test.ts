@@ -7,7 +7,7 @@ import {
   type FilingReview,
   type FilingStub,
 } from "../shared/follow-up-plan.js";
-import { renderFollowUpsBlock, type FollowUp } from "../shared/review-output.js";
+import { followUpsPayload, renderFollowUpsBlock, type FollowUp } from "../shared/review-output.js";
 
 /**
  * The one seam in the filing half (#48). Everything worth arguing about — who
@@ -872,6 +872,20 @@ describe("planFollowUps: what the merged pull request is told", () => {
 
     expect(truncated.report).toMatch(/2 further findings were dropped by the cap/);
     expect(plan([followUp()]).report).not.toMatch(/dropped/i);
+  });
+
+  /**
+   * A finding the review body cut to fit GitHub's limit (#140) is not one the
+   * cap dropped, and the record that survives the merge says which is which.
+   */
+  it("names the size cut apart from the cap in the merge comment", () => {
+    const body = followUpsPayload([followUp()], 3, 0, 2);
+    const result = plan([], [], {
+      reviews: [{ author: "github-actions", body, lastEditedAt: null, url: REVIEW_URL }],
+    });
+
+    expect(result.report).toMatch(/1 further finding was dropped by the cap/);
+    expect(result.report).toMatch(/2 further findings were cut from the review body to fit GitHub's size limit/);
   });
 
   /**

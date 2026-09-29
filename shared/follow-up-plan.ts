@@ -502,7 +502,7 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
     );
   }
 
-  let block: { followUps: FollowUp[]; dropped: number; moved: number } | undefined;
+  let block: { followUps: FollowUp[]; dropped: number; moved: number; cut: number } | undefined;
   try {
     block = parseFollowUpsBlock(review.body);
   } catch (error) {
@@ -530,7 +530,12 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
   const exempt = block.followUps.slice(0, block.moved);
   const { kept: capped, dropped: over } = capFollowUps(block.followUps.slice(block.moved));
   const kept = [...exempt, ...capped];
-  const dropped = block.dropped + over;
+  // Two causes, named apart: the cap, at either end, and the review body's
+  // size, which cut the tail to fit GitHub's limit (#140). `block.dropped` is
+  // their sum and `block.cut` the size's part of it.
+  const byCap = block.dropped - block.cut + over;
+  const cut = block.cut;
+  const dropped = byCap + cut;
 
   const issues: PlannedIssue[] = [];
   const lines: string[] = [];
@@ -597,11 +602,17 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
       // The post-merge half of announcing truncation. The review body said it
       // first, where the author could still act on it; this is the half that
       // survives the merge as a record of what was lost.
-      ...(dropped === 0
+      ...(byCap === 0
         ? []
         : [
             "",
-            `${dropped} further finding${dropped === 1 ? " was" : "s were"} dropped by the cap, so nothing was filed for ${dropped === 1 ? "it" : "them"}.`,
+            `${byCap} further finding${byCap === 1 ? " was" : "s were"} dropped by the cap, so nothing was filed for ${byCap === 1 ? "it" : "them"}.`,
+          ]),
+      ...(cut === 0
+        ? []
+        : [
+            "",
+            `${cut} further finding${cut === 1 ? " was" : "s were"} cut from the review body to fit GitHub's size limit, so nothing was filed for ${cut === 1 ? "it" : "them"}.`,
           ]),
     ].join("\n"),
     removeMarker: true,

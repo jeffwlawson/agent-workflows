@@ -29,6 +29,8 @@ import {
   recordFollowUps,
   renderFollowUpsBlock,
   renderReviewBody,
+  REVIEW_BODY_LIMIT,
+  reviewBodySize,
   PREVIOUSLY_MISSED_SUBTITLE,
   reviewOutputSchema,
   reviewRecord,
@@ -451,7 +453,7 @@ describe("renderFollowUpsBlock", () => {
     );
     expect(block).not.toContain("<details>");
     expect(hasFollowUpsBlock(block)).toBe(true);
-    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0 });
+    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
   });
 });
 
@@ -474,6 +476,7 @@ describe("parseFollowUpsBlock", () => {
       followUps: list,
       dropped: 2,
       moved: 0,
+      cut: 0,
     });
   });
 
@@ -525,7 +528,7 @@ describe("parseFollowUpsBlock", () => {
   it("reads a block with no exempt prefix as exempting nothing", () => {
     const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[]} -->`;
 
-    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0 });
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
   });
 
   /**
@@ -1700,12 +1703,13 @@ describe("the posted review body", () => {
       followUps: list,
       dropped: 2,
       moved: 0,
+      cut: 0,
     });
 
     const empty = render();
     expect(empty).not.toContain("<summary><b>Follow-ups</b>");
     expect(hasFollowUpsBlock(empty)).toBe(true);
-    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0 });
+    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
   });
 
   /**
@@ -2766,5 +2770,125 @@ describe("a body entry from a v0.4.0 review", () => {
     expect(body).toContain("the cache key omits the tenant");
     expect(body).not.toContain("f-legacy");
     expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([]);
+  });
+});
+
+/**
+ * GitHub's ceiling on a review body (#140). Over it the post is a 422 that
+ * loses the threads along with the body, so the body is measured and shed in a
+ * stated order — and refused by name where shedding is not enough.
+ */
+describe("the review body against GitHub's size limit", () => {
+  const output: ReviewOutput = { findings: [], followUps: [], fixBeforeMerge: [], verified: [] };
+  const parts = {
+    verdict: VERDICTS["changes recommended"],
+    output,
+    placed: [],
+    movedToFollowUps: 0,
+    stillOpen: [],
+    resolved: [],
+    followUps: [],
+    droppedFollowUps: 0,
+    showWhatChanged: true,
+  };
+
+  /** Carried body entries, which carry their whole claim into the Open group. */
+  const carriedOpen = (n: number, text: string): CarriedFinding[] =>
+    Array.from({ length: n }, (_, i) => ({ id: `f-${i}`, severity: "medium", text: `${i} ${text}` }));
+
+  it("renders a body that fits exactly as it did before anything measured it", () => {
+    const stillOpen = carriedOpen(3, "the key omits the tenant");
+    const lines: string[] = [];
+    const body = renderReviewBody({ ...parts, stillOpen, log: (line) => lines.push(line) });
+
+    expect(body).toBe(renderReviewBody({ ...parts, stillOpen }));
+    expect(body).not.toContain("To fit GitHub's");
+    expect(lines).toEqual([]);
+  });
+
+  it("shortens an oversized Open group's evidence, says so, and keeps every id", () => {
+    const stillOpen = carriedOpen(100, "x".repeat(2_000));
+    const lines: string[] = [];
+    const body = renderReviewBody({ ...parts, stillOpen, log: (line) => lines.push(line) });
+
+    expect(reviewBodySize(body)).toBeLessThanOrEqual(REVIEW_BODY_LIMIT);
+    expect(body).toContain("the evidence quoted in the entries below was shortened");
+    expect(body).toContain("**Findings:** 100");
+    expect(carriedFindings({ threads: [], latestReviewBody: body })).toHaveLength(100);
+    expect(lines.join("\n")).toMatch(/evidence .* was shortened/);
+  });
+
+  /**
+   * Multibyte text is measured in bytes, the unit never smaller than whatever
+   * GitHub counts: 30,000 CJK characters are well under the limit in UTF-16
+   * units and three times it in bytes.
+   */
+  it("measures multibyte content in bytes rather than in string length", () => {
+    const stillOpen = carriedOpen(10, "漢".repeat(3_000));
+    const unmeasured = stillOpen.map((f) => f.text).join("");
+    expect(unmeasured.length).toBeLessThan(REVIEW_BODY_LIMIT);
+    expect(reviewBodySize(unmeasured)).toBeGreaterThan(REVIEW_BODY_LIMIT);
+
+    const body = renderReviewBody({ ...parts, stillOpen });
+    expect(reviewBodySize(body)).toBeLessThanOrEqual(REVIEW_BODY_LIMIT);
+    expect(body).toContain("was shortened");
+  });
+
+  it("cuts the payload's out-of-scope tail and never its moved prefix", () => {
+    const moved = Array.from({ length: 50 }, (_, i) =>
+      followUp({ title: `moved ${i}`, location: `src/m${i}.ts`, body: "m".repeat(1_100) }),
+    );
+    const outOfScope = Array.from({ length: 3 }, (_, i) =>
+      followUp({ title: `oos ${i}`, location: `src/o${i}.ts`, body: "o".repeat(5_000) }),
+    );
+    const lines: string[] = [];
+    const body = renderReviewBody({
+      ...parts,
+      movedToFollowUps: 50,
+      followUps: [...moved, ...outOfScope],
+      droppedFollowUps: 2,
+      log: (line) => lines.push(line),
+    });
+
+    expect(reviewBodySize(body)).toBeLessThanOrEqual(REVIEW_BODY_LIMIT);
+
+    const block = parseFollowUpsBlock(body);
+    expect(block?.moved).toBe(50);
+    expect(block?.followUps.slice(0, 50)).toEqual(moved);
+    const kept = (block?.followUps.length ?? 0) - 50;
+    expect(kept).toBeGreaterThanOrEqual(0);
+    expect(kept).toBeLessThan(3);
+    // Every entry is accounted for: what is in it, and what it says it dropped.
+    expect(block?.dropped).toBe(2 + (3 - kept));
+    // And the size's part of that is named apart from the cap's (#140).
+    expect(block?.cut).toBe(3 - kept);
+    // The filing end's own cap leaves the kept list whole.
+    expect(capFollowUps(block?.followUps.slice(block.moved) ?? []).kept).toHaveLength(kept);
+
+    expect(body).toContain("the follow-up titles were left out");
+    expect(body).toContain(`cut from the end of the list filed on merge`);
+    expect(body).toContain(`<summary><b>Follow-ups</b> — ${50 + kept} ·`);
+    // The visible group blames the cap for the cap's two alone, and claims no
+    // listing it no longer shows; the shed sentence carries the size's count.
+    expect(body).toContain("The cap keeps the 3 most serious out-of-scope findings; 2 more were dropped by it.");
+    expect(body).not.toContain("findings are listed");
+    expect(body).toContain(`${3 - kept} out-of-scope follow-up`);
+    expect(lines).toHaveLength(1);
+  });
+
+  it("reads a cut past the dropped count as no more than it", () => {
+    const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":1,"cut":4,"followUps":[]} -->`;
+
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 1, moved: 0, cut: 1 });
+  });
+
+  it("refuses a body that cannot be made to fit, naming its size and the limit", () => {
+    const moved = Array.from({ length: 70 }, (_, i) =>
+      followUp({ title: `moved ${i}`, location: `src/m${i}.ts`, body: "m".repeat(1_000) }),
+    );
+
+    expect(() =>
+      renderReviewBody({ ...parts, movedToFollowUps: 70, followUps: moved }),
+    ).toThrow(new RegExp(`is \\d+ bytes .*${REVIEW_BODY_LIMIT}-character limit`));
   });
 });

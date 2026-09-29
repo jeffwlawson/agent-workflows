@@ -4814,6 +4814,122 @@ describe("the filing invariant is amended where it is written, not only where it
 });
 
 /**
+ * PRD #171 changed what a PRD chain's pull requests are — a **slice PR** per
+ * sub-issue, each with its own review round, and one **PRD PR** a human merges
+ * — and four docs stated the old shape as a rule: `docs/parity.md` §2a and §10
+ * ("review is once per PR, never once per slice"), `CONTEXT.md` ("review adds a
+ * trigger label in exactly one case"), `docs/agents/ticket-shape.md` ("one PR
+ * per PRD"), and `docs/ADOPTING.md`, which had no word on what a verdict does
+ * to a chain.
+ *
+ * The same failure the filing invariant's describe above exists for: a rule
+ * amended only where it is obeyed is one the next reader finds contradicted by
+ * the code citing it. So each amendment is asserted where the old rule was
+ * written — the old wording gone as a rule, the new one present, and the half
+ * that survived (no per-slice review *workflow*, the once-per-PR automatic fix)
+ * restated rather than dropped.
+ */
+describe("the one-PR-per-PRD rule is amended where it is written, not only where it is obeyed", () => {
+  const parity = fs.readFileSync(path.join("docs", "parity.md"), "utf8");
+  const context = fs.readFileSync("CONTEXT.md", "utf8");
+  const adopting = fs.readFileSync(path.join("docs", "ADOPTING.md"), "utf8");
+  const ticketShape = fs.readFileSync(path.join("docs", "agents", "ticket-shape.md"), "utf8");
+
+  const topLevel = (doc: string, prefix: string): string =>
+    doc.split(/^(?=## )/m).find((s) => s.startsWith(prefix)) ?? "";
+
+  const subsection = (doc: string, heading: RegExp): string =>
+    doc.split(/^(?=#{2,6} )/m).find((s) => heading.test(s.split("\n")[0] ?? "")) ?? "";
+
+  const bullet = (doc: string, lede: string): string =>
+    doc.split(/^(?=- \*\*)/m).find((b) => b.startsWith(`- **${lede}`)) ?? "";
+
+  /**
+   * Rewritten, not patched: the trade's heading is the new rule, and the old
+   * one survives only as what the section *used* to say. The table loses the
+   * row that requested review once, on the last slice, and gains the rows the
+   * chain now runs by.
+   */
+  it("rewrites parity §2a: the slice PR is the unit of review, the PRD PR the unit of merge", () => {
+    const section = topLevel(parity, "## 2a.");
+    const trade = subsection(section, /^### The trade/);
+
+    expect(section).not.toMatch(/^### The trade: review is once per PR, not once per slice$/m);
+    expect(section).not.toContain("Adds `agent:review` to the PR only when no sub-issues remain");
+    expect(section).not.toMatch(/asks for `agent:review`\s+on it by hand/);
+    expect(trade).toMatch(/^### The trade: the slice PR is the unit of review, the PRD PR the unit of merge$/m);
+    expect(trade).toMatch(/no per-slice review\s+workflow/);
+    expect(trade).toMatch(/integration review/);
+    expect(trade).toMatch(/automatic-fix bound is unchanged/);
+    expect(section).toContain("Adds `agent:review` to **every** slice PR");
+    expect(section).toMatch(/resumes the handover/);
+  });
+
+  /**
+   * §10 names the clause it overturns in the words it used to be true in, and
+   * keeps the bound it did not touch: the automatic fix is still once per pull
+   * request, which is now once per slice PR and once on the PRD PR.
+   */
+  it("amends parity §10's review bullet, keeping the once-per-PR automatic fix", () => {
+    const invariants = topLevel(parity, "## 10.");
+    const amended = bullet(invariants, "Review is requested once per slice PR, plus one integration review.");
+
+    expect(bullet(invariants, "Review is requested once per PR, never once per slice.")).toBe("");
+    expect(amended).not.toBe("");
+    expect(amended).toContain('"once per PR, never once per slice"');
+    expect(amended).toMatch(/no per-slice\s+review workflow/);
+    expect(amended).toMatch(/once per pull\s+request/);
+    expect(amended).toContain("](#the-trade-the-slice-pr-is-the-unit-of-review-the-prd-pr-the-unit-of-merge)");
+  });
+
+  /**
+   * The advance job is a second arrow, and what makes it one rather than a
+   * cycle is said where the first arrow's reasoning is: it lands on the parent,
+   * never on a pull request, and is bounded by the number of sub-issues.
+   */
+  it("amends CONTEXT.md: review adds a trigger label in two cases, and the table has implement-prd's row", () => {
+    expect(context).not.toContain("Review adds a trigger label in exactly one case");
+    expect(context).toContain("Review adds a trigger label in two cases.");
+
+    const second = context.split(/\n\n/).find((p) => p.includes("**advance job**")) ?? "";
+    expect(second).toMatch(/second arrow/);
+    expect(second).toMatch(/\*\*parent\*\*/);
+    expect(second).toMatch(/\*\*bounded by the number of sub-issues\*\*/);
+
+    const rows = context.match(/^\| `agent:implement` on .*\|$/gm) ?? [];
+    expect(rows.find((r) => r.includes("**issue**"))).toContain("| `implement` |");
+    const prd = rows.find((r) => r.includes("**PRD parent**")) ?? "";
+    expect(prd).toContain("| `implement-prd` |");
+    expect(prd).toMatch(/slice PR/);
+    expect(prd).toMatch(/hand the PRD PR over/);
+  });
+
+  /**
+   * What an adopter sees per verdict on a slice PR — every heading the verdict
+   * table names, since each one moves the chain differently — beside the CI
+   * note the zero-checks rule already added.
+   */
+  it("gives ADOPTING.md the slice-PR experience per verdict", () => {
+    const section = subsection(adopting, /^### The verdict on a slice PR$/);
+
+    expect(topLevel(adopting, "## 3b.")).toContain(section);
+    expect(section).not.toBe("");
+    for (const row of Object.values(VERDICTS)) expect(section).toContain(row.heading);
+    expect(section).toMatch(/\*\*parks\*\*/);
+    expect(section).toMatch(/\*\*waits\*\*/);
+    expect(section).toContain("accepted by hand");
+    expect(section).toContain("*Slice PRs and your CI*");
+    expect(adopting).not.toMatch(/reviews once at the end/);
+  });
+
+  it("amends ticket-shape.md: one slice PR per sub-issue plus one PRD PR", () => {
+    expect(ticketShape).not.toMatch(/one PR per PRD/);
+    expect(ticketShape).toMatch(/one slice PR per sub-issue/);
+    expect(ticketShape).toMatch(/one PRD PR per parent/);
+  });
+});
+
+/**
  * The runner contract, held to by every workflow in the set: fetch the context
  * before the agent starts, scrub the token, and leave every tracker mutation to
  * the workflow. `implement-prd` is the first runner handed *two* issues — the

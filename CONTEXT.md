@@ -11,7 +11,8 @@ the middle. One workflow per label transition, near enough:
 
 | Label | Fires | Does |
 |---|---|---|
-| `agent:implement` on an **issue** | `implement` or `implement-prd` | branch, implement, open a draft PR, request review |
+| `agent:implement` on an **issue** | `implement` | branch, implement, open a draft PR, request review |
+| `agent:implement` on a **PRD parent** | `implement-prd` | merge the slice PR whose round has ended into the PRD branch and add its row to the PRD PR's slices table, then build the next sub-issue on a slice branch, open it as a draft slice PR, request its review — or, with no sub-issue left, hand the PRD PR over |
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
 | `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
@@ -19,11 +20,13 @@ the middle. One workflow per label transition, near enough:
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
-sub-issue per run onto one branch, and re-adds its own label to advance.
+sub-issue per run, each as a pull request of its own, and waits for that pull request's review
+round to end before it builds the next; review's advance job (below) re-adds the label that moves
+it on.
 
 That branch is the **PRD branch** (the code's "accumulating branch"), and the one pull request
 from it into the base branch is the **PRD PR** — the only PR of a chain a human merges. A **slice
-PR** is one sub-issue's pull request whose base is the PRD branch; it is planned, not built. None
+PR** is one sub-issue's pull request whose base is the PRD branch. None
 of the three is a *layer*. A slice PR's head is its **slice branch**, `agent/slice-<parent>-<sub>-…`
 — never under `agent/prd-`, so the PRD branch lookup cannot match it. The run that merges the last
 slice PR and hands the PRD PR over is the **finishing run**; it runs no model (#163). The PRD PR's
@@ -38,8 +41,8 @@ PR** — the `implement` pair adds it too, on the PR it has just opened, which i
 first row. A run that pushed asks for the review of what it pushed, so the round it was given
 closes without a human labelling again. Since #111 that leg is also what **ends** the round: a fix
 run resolves nothing, so the review it asks for is the pass that reads the fix and closes the
-findings that landed. That is one hop and cannot cycle: the one trigger label review adds is
-bounded twice over (below). The review a **fix** asks for is a **second round**, which is barred
+findings that landed. That is one hop and cannot cycle: the one trigger label review adds to a
+pull request is bounded twice over (below). The review a **fix** asks for is a **second round**, which is barred
 from the round-1 *Changes recommended* — the line that promises an automatic re-review — and so cannot ask for another fix
 round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a full round 1,
 because round 2 needs a non-merge loop commit since the verdict and a resolution leaves only a
@@ -48,10 +51,10 @@ so a round it declined its way through ends on a human rather than on another pa
 run that marks such a pull request **ready**, because there is no re-review coming to do it (#159):
 a run that pushed hands the pull request to a review, and a run that did not hands it back.
 
-Review adds a trigger label in exactly one case, and only where an adopter asked for it (#102):
-with `auto-fix: true`, a job of its own adds `agent:fix` when the verdict is the round-1 *Changes
-recommended* — **once per pull request**, recorded by `agent:auto-fixed`. It is the return leg
-`docs/parity.md` §10 used to forbid outright, and what makes it an arrow rather than a cycle is
+Review adds a trigger label in two cases. The first is on the pull request, and only where an
+adopter asked for it (#102): with `auto-fix: true`, a job of its own adds `agent:fix` when the
+verdict is the round-1 *Changes recommended* — **once per pull request**, recorded by
+`agent:auto-fixed`. It is the return leg `docs/parity.md` §10 used to forbid outright, and what makes it an arrow rather than a cycle is
 that the round rule bars the verdict key it selects on from a second round, while the marker bars
 it from a second time on the same pull request. The job holds `pull-requests: write` and nothing
 else, checks nothing out and runs no model, which is what keeps `AGENT_PAT` away from the job that
@@ -59,6 +62,18 @@ reads the pull request. Off by default, so an adopter's upgrade changes nothing.
 whose automatic fix is about to start also stays a **draft**: draft means the loop is still
 working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
 pushed, and the fix run itself where it pushed nothing and so asked for none.
+
+The second is the **advance job**, a second arrow, and it lands on an issue rather than a pull
+request (#176). When a **slice PR**'s round ends on a verdict the chain moves on from — 🟢, 🟡 with
+no fix round starting, or 🟡 after a fix round — it re-adds `agent:implement` to the slice PR's
+**parent**, and the `implement-prd` run that starts merges the slice PR and builds the next slice.
+`fix` carries the same job for the round a fix run ends itself, by pushing nothing. It parks on 🔵
+and on a failed run, and a human re-adding the label there is the acceptance. It cannot cycle: it
+never labels a pull request, the run it starts either merges the slice PR — so no later round on
+it can fire the job again — or refuses, and it is **bounded by the number of sub-issues**, because
+a finished PRD refuses the label. It has `auto-fix`'s shape — no checkout, no model,
+`pull-requests: write` alone, `AGENT_PAT` or nothing — and is on by default, since only the PRD
+chain opens a slice PR.
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a

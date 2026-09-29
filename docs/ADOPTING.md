@@ -283,7 +283,7 @@ and which value a label has is a **column**:
 |---|---|---|
 | `agent:review`, `agent:fix`, `agent:update-branch` | **consumed on entry** | the run, as it starts |
 | `agent:implement` on an ordinary issue | **consumed on entry** | the run, as it starts |
-| `agent:implement` on a PRD parent | **cursor** | the chain, by *not* re-adding it after the last slice |
+| `agent:implement` on a PRD parent | **cursor** | each run, as it starts — and put back by review's advance job when a slice PR's round ends, which never happens after the last one |
 | `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, on any run that reached a verdict — or you, to opt out |
 | `agent:auto-fixed` on a pull request | **marker, never removed** | nothing — it records that this PR's one automatic fix is spent |
 
@@ -291,10 +291,13 @@ and which value a label has is a **column**:
 on a PRD parent, and also except for the marker" — which is read as "consumed on entry", and the
 exception nobody read is the one that behaves differently at three in the morning.
 
-**The cursor.** The PRD chain re-adds `agent:implement` to the parent itself after each sub-issue
-closes, and stops by *not* re-adding it. So on a parent issue the label is a cursor rather than a
-one-shot: seeing it there means the next slice is due, and seeing it there with no run happening
-means the PAT is missing (§1).
+**The cursor.** Each `implement-prd` run takes `agent:implement` off the parent as it starts, and
+the chain moves on only when it comes back: review's **advance job** re-adds it when a slice PR's
+round ends on a verdict the chain moves on from (§3b, *The verdict on a slice PR*), and you re-add
+it to accept a slice the chain parked on. Nothing re-adds it after the PRD PR's own review, so the
+chain stops by itself. So on a parent issue the label is a cursor rather than a one-shot: seeing it
+there means the next step is due. A slice PR whose round has ended with no label on its parent and
+no run happening means the PAT is missing (§1) — and the slice PR carries a comment saying so.
 
 **The marker.** `agent:follow-ups` says *this pull request's latest review recorded out-of-scope
 findings*. The review half adds it on any run that recorded one and never removes it; removing it
@@ -318,9 +321,9 @@ answers a spec that no longer exists, and the mismatch surfaces as a review find
 anything obviously a timing problem.
 
 The PRD chain widens this. A parent's body is read fresh **by every slice**, so editing it mid-chain
-changes the brief under the slices that have not run yet, and the same PR ends up built against two
-different specs. If something has to change after labelling, say so on the PR instead: that reaches
-the review and fix agents, which the issue body no longer does.
+changes the brief under the slices that have not run yet, and the same PRD PR ends up built against
+two different specs. If something has to change after labelling, say so on the slice PR instead:
+that reaches the review and fix agents, which the issue body no longer does.
 
 **Where the labels come from is a separate question.** These are all *workflow state*. If you also
 run a triage step — a human or a planning skill deciding an issue is well enough specified to hand
@@ -466,6 +469,49 @@ claim about the merge commit it now sits on. That commit's own checks have not b
 not run when the copy was made — so a `success` carried on to a merge commit means "the last review
 of this branch found nothing to fix", and whether the merge itself is green is what the merge box's
 other checks are for.
+
+### The verdict on a slice PR
+
+A PRD — a parent issue with sub-issues, labelled `agent:implement` — is built one sub-issue at a
+time. Each sub-issue becomes a **slice PR**: a draft pull request from its own `agent/slice-…`
+branch into the PRD branch, `agent/prd-<parent>-…`, carrying `Part of #<sub-issue>` and reviewed like
+any other. Every slice PR gets the ordinary round, and the chain waits for it before building the
+next slice. What the verdict means is unchanged; what differs is what happens after it:
+
+| Verdict on the slice PR | What the chain does | What is left to you |
+|---|---|---|
+| **🟢 Approval recommended** | review marks the slice PR ready, and its advance job re-adds `agent:implement` to the parent. The next run merges the slice PR into the PRD branch and builds the next slice | nothing |
+| **🟡 Changes recommended**, automatic fix off | advances, as on 🟢. The findings stay open on the slice PR and are linked from its row in the PRD PR's slices table | nothing, unless you want them fixed before the PRD lands — see below |
+| **🟡 Changes recommended**, with the fix round already started | **waits**. The fix run's re-review decides, and a fix that pushed nothing ends the round itself and advances the chain | nothing |
+| **🟡 Changes recommended**, after a fix round | advances. The findings the fix round did not settle are linked from the slice's row | nothing, unless you want them fixed before the PRD lands |
+| **🔵 Needs a closer look** | **parks**. Nothing is re-labelled, and the slice PR stays open | steer it, or accept it — below |
+| a failed run | parks, as on 🔵 | fix what the run names, then re-add `agent:review` to the slice PR |
+
+**Steering a parked slice** uses the labels you already know, on the slice PR: `agent:fix` with a
+comment giving the direction, `agent:update-branch` if it conflicts with the PRD branch, or your own
+commits followed by `agent:review`. The round that ends on a verdict the chain moves on from
+advances it, exactly as the first one would have.
+
+**Accepting a parked slice as it stands** is re-adding `agent:implement` to the parent. The re-label
+is the acceptance: the run merges the slice PR without reading its verdict, and its row in the slices
+table reads *🔵 accepted by hand*, so the one slice nobody watched advance stands out. The run still
+refuses — naming the slice PR — while `agent:review`, `agent:fix` or `agent:in-progress` is on it,
+because a round is never cut short, and while it conflicts, pointing you at `agent:update-branch`.
+
+**Leftover 🟡 findings are pointers, not a gate.** They are linked from the slices table and never
+re-raised: the PRD PR's integration review does not take them up, the PRD PR's automatic fix is not
+spent on them, and `follow-ups` never files them. Merging the PRD PR with them open is your call. If
+you would rather a slice's findings were fixed before the next slice is built on it, turn the
+automatic fix on (above): it gives every slice PR its one fix round, and the chain waits for it.
+
+**The PRD PR** — the PRD branch into your default branch, carrying `Closes #<parent>` — opens as a
+draft with the first slice merge and stays one until every slice is merged. The finishing run then
+hands it over: for a PRD of more than one slice it asks for an **integration review**, which looks
+only for what spans slices, and whose verdict means *the slices fit together* rather than a roll-up
+of theirs; for a one-slice PRD, whose PRD PR diff its slice PR's review already read, it marks it
+ready directly. That verdict reads like any other, gets the ordinary automatic fix, and a human
+merges the PRD PR — the loop never does. A slice PR with no CI of its own reads **unknown**, not
+green, and lands on 🔵: see §5, *Slice PRs and your CI*.
 
 ### Reading the review body
 
@@ -1246,8 +1292,9 @@ break it. It is cheap in the other direction too: a criterion nobody can find a 
 usually the one that was wrong, and noticing that while writing the ticket costs a sentence.
 
 The PRD tier raises the stakes rather than changing the rule. A chain implements its slices
-unattended and reviews once at the end (docs/parity.md §2a), so an uncited criterion in slice 1 is
-built on for the length of the PRD before anybody reads it.
+unattended, and each slice's review reads that slice against its own sub-issue (docs/parity.md §2a)
+— so an uncited criterion is checked by a review reasoning from the same ticket, and on a 🟢 or 🟡
+the next slice is built on it before any human has read it.
 
 ---
 

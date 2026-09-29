@@ -3531,9 +3531,10 @@ describe("the two implement workflows partition issue shapes", () => {
 });
 
 /**
- * The PRD chain itself. One sub-issue per run, in sub-issues API order,
- * accumulating onto one branch and one PR, chaining to the next run by
- * re-labelling the parent, and asking for review exactly once at the end.
+ * The PRD chain itself. One sub-issue per run, in sub-issues API order, each
+ * built on a slice branch of its own and opened as a draft slice PR against
+ * one PRD branch, with its own review round (#172). The run re-labels nothing
+ * on the parent: the next slice waits on this one's slice PR.
  *
  * **Ordering comes from creation order, not from the edges.** The chain walks
  * sub-issue API order and never reads `blocked-by`; that is safe only because
@@ -3768,108 +3769,202 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 
   /**
-   * **Plain `git push`.** `agent-implement` force-pushes because it owns a
-   * branch it created this run; here the branch carries every earlier slice, so
-   * a force push is a chain that silently eats its own history. A rejected
-   * non-fast-forward is the correct outcome instead.
+   * **Plain `git push` for the PRD branch.** It carries every earlier slice, so
+   * a force push there is a chain that silently eats its own history, and a
+   * rejected non-fast-forward is the correct outcome instead.
+   *
+   * The slice branch is the one exception, and it is forced for
+   * `agent-implement`'s reason: this run cut it and owns it. What a force can
+   * replace there is an earlier attempt at the same sub-issue that never became
+   * an open slice PR — the preflight refuses while one is open.
    */
-  it("pushes without force", () => {
-    const text = fs.readFileSync(PRD, "utf8");
+  it("pushes the PRD branch without force, and forces only the slice branch", () => {
+    const pushes = fs
+      .readFileSync(PRD, "utf8")
+      .split("\n")
+      .filter((l) => /^\s*git push\b/.test(l));
 
-    expect(text).toContain('git push origin "$BRANCH"');
-    expect(text).not.toMatch(/git push[^\n]*--force/);
-  });
-
-  /** The PR is opened once and reused, the same way the branch is. */
-  it("reuses one PR across the chain", () => {
-    const run = runOf(PRD, "pr");
-
-    expect(run).toContain('gh pr list --head "$BRANCH"');
-    expect(run.indexOf("gh pr list")).toBeLessThan(run.indexOf("gh pr create"));
-    // Draft until review says otherwise: a PR mid-chain is precisely a pipeline
-    // that has not finished (docs/parity.md §10).
-    expect(run).toContain("gh pr create --draft");
-  });
-
-  it("closes the finished sub-issue with a comment naming the commit", () => {
-    const close = stepsOf(PRD).find((s) => (s.run ?? "").includes("gh issue close"));
-
-    expect(close?.if ?? "").toContain(NOT_REFUSED);
-    expect(close?.if ?? "").toContain("success()");
-    expect(close?.run ?? "").toContain("git rev-parse HEAD");
-    expect(close?.run ?? "").toContain("--comment");
+    expect(pushes).toContain('            git push origin "$PRD_BRANCH"');
+    expect(pushes.filter((l) => l.includes("--force"))).toEqual(['          git push --force origin "$SLICE_BRANCH"']);
   });
 
   /**
-   * Chain or hand off, never both, and gated on a **re-read** count rather than
-   * on the preflight's snapshot minus one — a sub-issue may have been added or
-   * closed by hand while the agent was running.
+   * One slice branch per sub-issue, cut from the PRD branch **tip** — the
+   * remote one when the PRD branch exists, so slice N is built on every slice
+   * already merged there — and handed to the runner as the branch it is on.
    */
-  it("chains while sub-issues remain and requests review when none do", () => {
-    const chain = stepsOf(PRD).find((s) => (s.run ?? "").includes('--add-label "agent:implement"'));
-    const review = stepsOf(PRD).find((s) => (s.run ?? "").includes('--add-label "agent:review"'));
+  it("builds each slice on an agent/slice- branch cut from the PRD branch tip", () => {
+    const prepare = runOf(PRD, "prepare");
+    const agent = stepsOf(PRD).find((s) => (s.run ?? "").includes("agent-workflows implement-prd"));
 
-    expect(runOf(PRD, "remaining")).toContain("gh api graphql");
-    expect(chain?.if ?? "").toContain("steps.remaining.outputs.count != '0'");
-    expect(review?.if ?? "").toContain("steps.remaining.outputs.count == '0'");
-    expect(chain?.run ?? "").toContain('gh issue edit "$ISSUE_NUMBER"');
+    expect(prepare).toContain('slice="agent/slice-${ISSUE_NUMBER}-${SUB}-${slug}"');
+    expect(prepare.indexOf('git checkout -B "$PRD_BRANCH" "refs/remotes/origin/${PRD_BRANCH}"')).toBeLessThan(
+      prepare.indexOf('git checkout -b "$slice"'),
+    );
+    expect(prepare).toContain('echo "slice=$slice" >> "$GITHUB_OUTPUT"');
+    expect(agent?.env?.["BRANCH"]).toBe("${{ steps.prepare.outputs.slice }}");
+    expect(agent?.env?.["PRD_BRANCH"]).toBe("${{ steps.branch.outputs.name }}");
   });
 
   /**
-   * Both label adds are silent no-ops under `GITHUB_TOKEN` — the anti-recursion
-   * rule (docs/ADOPTING.md §1). For the chain that is worse than for review: the
-   * label appears on the parent and the next slice simply never happens, which
-   * reads as "still working" forever.
+   * The PRD branch is found by a glob on the stable half of its name, and a
+   * slice branch must never be a second match — that is the ambiguity the
+   * lookup refuses — nor a base the preflight's slice PR filter reads as the
+   * PRD branch. Both are read out of the workflow and run against a slice
+   * branch built from the prepare step's own template, so a slice prefix moved
+   * under `agent/prd-` fails here by name rather than on the next chain.
+   *
+   * `git ls-remote` matches its pattern against the tail of each ref, with a
+   * `*` that crosses `/`, so the glob is anchored at a path boundary only.
    */
-  it.each(['--add-label "agent:implement"', '--add-label "agent:review"'])(
-    "warns loudly when AGENT_PAT is absent for `%s`",
-    (adds: string) => {
-      const step = stepsOf(PRD).find((s) => (s.run ?? "").includes(adds));
+  it("finds the PRD branch by a lookup no slice branch can match", () => {
+    const lookup = /git ls-remote --heads origin "([^"]+)"/.exec(runOf(PRD, "branch"))?.[1] ?? "";
+    const template = /slice="([^"]+)"/.exec(runOf(PRD, "prepare"))?.[1] ?? "";
+    const base = /startswith\(\\"([^\\]+)\\"\)/.exec(runOf(PRD, "preflight"))?.[1] ?? "";
+    const expand = (text: string): string =>
+      text.replaceAll("${ISSUE_NUMBER}", "171").replaceAll("${SUB}", "172").replaceAll("${slug}", "prd-171-x");
 
-      expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
-      expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
-      expect(step?.run ?? "").toContain("::warning::");
-    },
-  );
+    expect(lookup).not.toBe("");
+    expect(template).toMatch(/^agent\/slice-/);
+    const glob = new RegExp(
+      `(^|/)${expand(lookup).replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`,
+    );
+    const slice = `refs/heads/${expand(template)}`;
+
+    // Live rather than vacuous: the same glob does find the PRD branch.
+    expect("refs/heads/agent/prd-171-slice-prs").toMatch(glob);
+    expect(slice).not.toMatch(glob);
+    expect(expand(base)).toBe("agent/prd-171-");
+    expect(expand(template).startsWith(expand(base))).toBe(false);
+  });
+
+  /**
+   * A **draft**, against the PRD branch rather than the base branch, and `Part
+   * of` rather than `Closes`: the sub-issue's state is the chain's "built"
+   * marker, and a closing keyword would tie it to the slice PR's merge.
+   */
+  it("opens each slice as a draft slice PR against the PRD branch, part of its sub-issue", () => {
+    const step = stepsOf(PRD).find((s) => s.id === "slice_pr");
+    const run = step?.run ?? "";
+
+    expect(run).toContain('gh pr create --draft --base "$PRD_BRANCH" --head "$SLICE_BRANCH"');
+    expect(run).toContain('echo "Part of #${SUB}"');
+    expect(run).not.toMatch(/\b(Closes|Fixes|Resolves) #/);
+    expect(step?.env?.["PRD_BRANCH"]).toBe("${{ steps.branch.outputs.name }}");
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+  });
+
+  /**
+   * Closed the moment its slice PR opens, so "first open sub-issue" is still
+   * the next slice to build — and with the SHA, the only record tying a closed
+   * sub-issue to the code that closed it.
+   */
+  it("closes the finished sub-issue with a comment naming the commit, once its slice PR is open", () => {
+    const steps = stepsOf(PRD);
+    const close = steps.findIndex((s) => (s.run ?? "").includes("gh issue close"));
+    const opened = steps.findIndex((s) => s.id === "slice_pr");
+
+    expect(opened).toBeGreaterThanOrEqual(0);
+    expect(close).toBeGreaterThan(opened);
+    expect(steps[close]?.if ?? "").toContain(NOT_REFUSED);
+    expect(steps[close]?.if ?? "").toContain("success()");
+    expect(steps[close]?.run ?? "").toContain("git rev-parse HEAD");
+    expect(steps[close]?.run ?? "").toContain("--comment");
+    expect(steps[close]?.env?.["SLICE_PR"]).toBe("${{ steps.slice_pr.outputs.number }}");
+  });
+
+  /**
+   * The slice PR asks for its review the way `agent-implement`'s PR does, and
+   * that is the only label this run adds anywhere. The chain no longer
+   * re-labels the parent after a slice, and no longer asks for review of the
+   * whole PRD on the last one: the next slice waits on this one's round.
+   */
+  it("requests review on the slice PR, and re-labels nothing else", () => {
+    const adds = stepsOf(PRD).filter((s) => /--add-label "agent:(implement|review)"/.test(s.run ?? ""));
+
+    expect(adds).toHaveLength(1);
+    expect(adds[0]?.run ?? "").toContain('gh pr edit "$SLICE_PR" --add-label "agent:review"');
+    expect(adds[0]?.env?.["SLICE_PR"]).toBe("${{ steps.slice_pr.outputs.number }}");
+    expect(adds[0]?.if ?? "").not.toContain("steps.remaining");
+    expect(stepsOf(PRD).map((s) => s.id)).not.toContain("remaining");
+  });
+
+  /**
+   * The label add is a silent no-op under `GITHUB_TOKEN` — the anti-recursion
+   * rule (docs/ADOPTING.md §1) — so the slice PR would sit in draft with nobody
+   * asked to review it. Warn loudly.
+   */
+  it("warns loudly when AGENT_PAT is absent for the review label", () => {
+    const step = stepsOf(PRD).find((s) => (s.run ?? "").includes('--add-label "agent:review"'));
+
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(step?.run ?? "").toContain("::warning::");
+  });
 
   /**
    * …and fails when the add itself fails, which is a different thing and needs
-   * `-e` to hold. Both steps end with that warn-if-no-PAT `if`, which returns 0
+   * `-e` to hold. The step ends with that warn-if-no-PAT `if`, which returns 0
    * whenever the PAT *is* set — and it is the last command, so without `-e` a
-   * failed `gh ... --add-label` exits the step green. `Mark blocked on failure`
-   * is gated on `failure()` and would never fire: the chain halts on a green
-   * run with no agent label left on the parent, or the PR sits finished and in
-   * draft with nobody asked to review it.
+   * failed `gh ... --add-label` exits the step green and `Mark blocked on
+   * failure`, gated on `failure()`, never says which slice PR wants the label.
    */
-  it.each(['--add-label "agent:implement"', '--add-label "agent:review"'])(
-    "fails the run rather than swallowing a failed `%s`",
-    (adds: string) => {
-      const step = stepsOf(PRD).find((s) => (s.run ?? "").includes(adds));
+  it("fails the run rather than swallowing a failed review label", () => {
+    const step = stepsOf(PRD).find((s) => (s.run ?? "").includes('--add-label "agent:review"'));
 
-      expect(step?.run ?? "").toContain("set -euo pipefail");
-    },
-  );
+    expect(step?.run ?? "").toContain("set -euo pipefail");
+  });
 
   /**
-   * Every step after `Close the finished sub-issue` fails with that sub-issue
-   * *already closed*, so on the last slice the failure comment's own remedy —
-   * re-apply `agent:implement` — lands on the finished-PRD refusal instead of
-   * retrying anything. Both ends of that loop therefore have to name the other
-   * way in: the PR, still open and in draft, wanting `agent:review` by hand.
-   * Otherwise it is the remedy-that-refuses-again trap the single-issue
-   * preflight warns about, with no exit at all.
+   * Once the slice PR is open, re-applying `agent:implement` — the failure
+   * comment's own remedy — is refused on it rather than retrying anything. So
+   * the comment names the slice PR whenever there is one, and the two things
+   * the steps after it may not have done: the sub-issue's close and the review
+   * label.
    */
-  it("names the draft PR as the way out when the chain dies after its last close", () => {
-    const failed = stepsOf(PRD).find((s) => (s.run ?? "").includes("failure_reason.txt"));
+  it("names the slice PR as the way out when the chain dies after opening it", () => {
+    const failed = stepsOf(PRD).find((s) => s.name === "Mark blocked on failure");
 
-    expect(failed?.env?.["PR_NUMBER"]).toBe("${{ steps.pr.outputs.number }}");
+    expect(failed?.env?.["SLICE_PR"]).toBe("${{ steps.slice_pr.outputs.number }}");
     expect(failed?.run ?? "").toContain("agent:review");
-    expect(armOf(runOf(PRD, "preflight"), "no open sub-issues")).toContain("agent:review");
+    expect(failed?.run ?? "").toMatch(/close that sub-issue by hand/);
+  });
+
+  /**
+   * The waiting slice PR is found by its **base**, never by the name of the
+   * branch it comes from — a renamed slice branch must not hide it — and before
+   * the finished refusal, since a PRD whose last slice PR is still open is not
+   * finished. The no / one / many outcomes are executed in
+   * `tests/implement-prd-preflight.test.ts`; this pins where they sit.
+   */
+  it("looks up open slice PRs by base, before it calls the PRD finished", () => {
+    const run = runOf(PRD, "preflight");
+
+    expect(run).toContain("gh pr list --state open");
+    expect(run).toContain('select(.baseRefName | startswith(\\"agent/prd-${ISSUE_NUMBER}-\\"))');
+    expect(run).not.toMatch(/select\(\.headRefName/);
+    expect(run.indexOf('"$open_slices" -gt 1')).toBeLessThan(run.indexOf("no open sub-issues"));
+    expect(run.indexOf('"$open_slices" -eq 1')).toBeLessThan(run.indexOf("no open sub-issues"));
+    expect(armOf(run, '"$open_slices" -gt 1')).toContain("block ");
+    expect(armOf(run, '"$open_slices" -eq 1')).toContain("block ");
+  });
+
+  /**
+   * Those two refusals are stops, not shapes: they fail into `Mark blocked on
+   * failure` with a reason file, rather than commenting from the preflight.
+   */
+  it("blocks through the reason file and the failure step, not a comment of its own", () => {
+    const body = bashFunctionBody(runOf(PRD, "preflight"), "block");
+
+    expect(body).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
+    expect(body).toContain("exit 1");
+    expect(body).not.toContain("gh ");
+    expect(body).not.toContain("refused=");
   });
 
   /** Same `!= 'true'` gate as #90: a preflight that *dies* writes no output. */
   it("comments on a preflight that fails rather than refuses", () => {
-    const blocked = stepsOf(PRD).find((s) => (s.run ?? "").includes("failure_reason.txt"));
+    const blocked = stepsOf(PRD).find((s) => s.name === "Mark blocked on failure");
 
     expect(blocked?.if ?? "").toContain("steps.preflight.outputs.refused != 'true'");
     expect(blocked?.if ?? "").toContain("failure()");

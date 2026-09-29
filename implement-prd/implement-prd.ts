@@ -19,7 +19,15 @@ const ISSUE_TITLE = required("ISSUE_TITLE");
 const SUB_NUMBER = required("SUB_NUMBER");
 const SUB_TITLE = required("SUB_TITLE");
 
+/** The slice branch this run builds on, cut from the PRD branch's tip. */
 const BRANCH = required("BRANCH");
+
+/**
+ * The PRD branch the slice branch was cut from, and the base of the slice PR
+ * the workflow opens once this exits. Only the prompt uses it: it is where the
+ * earlier slices are, which is what the agent builds on.
+ */
+const PRD_BRANCH = required("PRD_BRANCH");
 
 /**
  * The branch the chain is based on. Only the prompt uses it — it is what the
@@ -84,6 +92,7 @@ try {
       SUB_NUMBER,
       SUB_TITLE,
       BRANCH,
+      PRD_BRANCH,
       BASE_REF,
       PRD_CONTEXT: prdContext,
       SUB_CONTEXT: subContext,

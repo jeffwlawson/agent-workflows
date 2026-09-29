@@ -6,6 +6,7 @@ import {
   claudeAgent,
   fail,
   required,
+  git,
   scrubGitHubTokens,
   sh,
   writeJson,
@@ -106,7 +107,18 @@ try {
     // not worth acting on. It still owes replies, which the workflow posts.
     console.log("Agent made no commits — nothing to push.");
   } else {
-    console.log(`Agent committed changes on ${BRANCH} (${before.slice(0, 7)} -> ${after.slice(0, 7)}).`);
+    // `HEAD` moving is not the agent committing (#188). An agent that fetched
+    // the branch and fast-forwarded onto commits already there moves `HEAD`
+    // too, and calling that a commit contradicted the push step's "nothing to
+    // push" one line later. Counted the way that step counts — what is on
+    // `HEAD` and not on the branch it pushes to.
+    const made = Number(git(["rev-list", "--count", `refs/remotes/origin/${BRANCH}..HEAD`]).trim());
+    console.log(
+      made === 0
+        ? `Agent made no commits; HEAD fast-forwarded on ${BRANCH} to a commit already on the remote ` +
+            `(${before.slice(0, 7)} -> ${after.slice(0, 7)}) — nothing to push.`
+        : `Agent committed ${made} commit(s) on ${BRANCH} (${before.slice(0, 7)} -> ${after.slice(0, 7)}).`,
+    );
   }
   console.log(
     `Thread outcomes: ${outcomes.filter((o) => o.status === "addressed").length} addressed, ` +

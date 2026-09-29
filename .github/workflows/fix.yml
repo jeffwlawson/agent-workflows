@@ -124,16 +124,72 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Pre-flight — refuse if the PR is closed or merged
+      # And refuse if the event's head SHA is not the branch's live head (#188).
+      # Everything after this is pinned to that SHA — the checkout, and the
+      # push's `--force-with-lease` — so a run started behind the branch
+      # fast-forwards onto work already done, finds nothing to do, and re-posts
+      # its replies to threads it has already answered. Each such run stacked
+      # another near-identical reply on every thread.
+      #
+      # The live head is the **branch ref**, read with `git ls-remote`, not the
+      # pull request's `headRefOid` that review's guard reads: in the case that
+      # raised this, the pull request itself went on reporting the old SHA after
+      # the branch had moved, so asking the pull request would have agreed with
+      # the stale event. There is no checkout yet, so the remote is named by URL
+      # and authenticated the way `actions/checkout` does it, with the header
+      # masked. A branch name reaches git as a quoted argument, never as syntax.
+      #
+      # **An unreadable head refuses, deliberately** — the opposite of review's
+      # guard, which proceeds on an API blip. Review only reads; this run pushes
+      # and replies, and replying twice is the harm the check exists to stop, so
+      # "could not tell" must not read as "not stale". A failed `ls-remote` and
+      # an empty answer (no such branch) both stop, each with its own sentence.
+      # The cost is a human re-adding the label after a blip, which is cheap.
+      #
+      # Every refusal after the not-open one removes `agent:fix` and adds
+      # `agent:blocked`, as review's does, so re-adding `agent:fix` is the
+      # retry — `Transition labels` clears `agent:blocked` on the way in.
+      - name: Pre-flight — refuse if the PR is closed, merged, or its head is stale
         id: state
         run: |
-          if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" = "true" ]; then
+          set -uo pipefail
+          refuse() {
             gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
-            gh pr comment "$PR_NUMBER" --body "Refused to run \`agent:fix\`: this PR is not open."
+            if [ "${2:-}" = "blocked" ]; then
+              gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
+            fi
+            gh pr comment "$PR_NUMBER" --body "$1"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          }
+
+          if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" = "true" ]; then
+            refuse "Refused to run \`agent:fix\`: this PR is not open."
+            exit 0
           fi
+
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          if ! remote=$(git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" \
+              ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"); then
+            echo "::warning::Could not read the live head of ${BRANCH}; refusing rather than risk working from a stale SHA."
+            refuse "Refused to run \`agent:fix\`: the live head of \`${BRANCH}\` could not be read, so there is no telling whether \`${BRANCH_HEAD_SHA}\`, the head this run was started for, is still current. Re-add \`agent:fix\` to retry." blocked
+            exit 0
+          fi
+          # `ls-remote` matches a pattern against the tail of each ref, so the
+          # exact name is picked out rather than taking the first line.
+          live=$(printf '%s\n' "$remote" | awk -v ref="refs/heads/${BRANCH}" '$2 == ref { print $1 }')
+          if [ -z "$live" ]; then
+            echo "::warning::Branch ${BRANCH} was not found on the remote."
+            refuse "Refused to run \`agent:fix\`: the branch \`${BRANCH}\` was not found on the remote, so there is nothing to fix and nowhere to push. Re-add \`agent:fix\` once the branch exists." blocked
+            exit 0
+          fi
+          if [ "$live" != "$BRANCH_HEAD_SHA" ]; then
+            echo "::warning::Stale head: this run was started for ${BRANCH_HEAD_SHA}, but ${BRANCH} is at ${live}. Refusing rather than redo finished work."
+            refuse "Refused to run \`agent:fix\`: this run was started for \`${BRANCH_HEAD_SHA}\`, but \`${BRANCH}\` is now at \`${live}\`. Working from the older commit would redo what is already on the branch and reply to the same threads again. If this PR still shows \`${BRANCH_HEAD_SHA:0:7}\` as its head, GitHub has not caught up with the branch: close and reopen the PR to resync it. Then re-add \`agent:fix\`." blocked
+            exit 0
+          fi
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
 
       - name: Transition labels
         if: steps.state.outputs.proceed == 'true'

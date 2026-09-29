@@ -678,3 +678,30 @@ describe("the fix runner records conversation outcomes", () => {
     expect(source).toContain("renderConversationOutcomes(");
   });
 });
+
+/**
+ * `HEAD` moving is not the agent committing (#188). A fast-forward onto commits
+ * already on the branch moves it too, and was logged as a commit one line
+ * before the push step said there was nothing to push. Asserted over the
+ * source for the reason the block above gives.
+ */
+describe("the fix runner tells a commit from a fast-forward", () => {
+  const source = fs.readFileSync("fix/fix.ts", "utf8");
+
+  it("counts what HEAD has that the branch it pushes to does not", () => {
+    expect(source).toContain('git(["rev-list", "--count", `refs/remotes/origin/${BRANCH}..HEAD`])');
+  });
+
+  it("logs a fast-forward as no commits", () => {
+    const arm = source.slice(source.indexOf("made === 0"));
+    const fastForward = arm.slice(0, arm.indexOf(":"));
+
+    expect(fastForward).toContain("Agent made no commits; HEAD fast-forwarded");
+    expect(fastForward).not.toContain("committed");
+  });
+
+  it("still logs a real commit as one", () => {
+    expect(source).toContain("`Agent committed ${made} commit(s) on ${BRANCH}");
+    expect(source).not.toContain("Agent committed changes on");
+  });
+});

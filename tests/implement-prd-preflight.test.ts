@@ -21,9 +21,10 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * reason file, so what is asserted is the reason file, the exit, and that the
  * step itself touched nothing on the tracker.
  *
- * And the two steps that come after it (#173): `Merge slice PR`, and the step
- * that opens or reuses the PRD PR once a slice has merged — executed the same
- * way, against the same replay.
+ * And the steps that come after it (#173): `Merge slice PR`, the step that
+ * gathers the merged slice's row of the slices table (#174), and the step that
+ * opens or reuses the PRD PR once a slice has merged — executed the same way,
+ * against the same replay.
  *
  * Skipped where `bash`, `jq` or `node` are not on PATH, as that file is.
  */
@@ -123,6 +124,10 @@ const runStep = (
     readonly pulls: readonly Record<string, unknown>[];
     readonly issue?: Record<string, unknown>;
     readonly repo?: Record<string, unknown>;
+    /** The slice PR's review thread nodes, as the GraphQL read returns them. */
+    readonly threads?: readonly Record<string, unknown>[];
+    /** The combined-status pages on the slice PR's head. */
+    readonly statusPages?: readonly Record<string, unknown>[];
     /** The step's own `env:`, supplied in the expressions' place. */
     readonly env?: Record<string, string>;
   },
@@ -132,6 +137,8 @@ const runStep = (
   const issueFile = path.join(temp, "issue.json");
   const pullsFile = path.join(temp, "pulls.json");
   const repoFile = path.join(temp, "repo.json");
+  const threadsFile = path.join(temp, "threads.json");
+  const statusFile = path.join(temp, "status.json");
   const output = path.join(temp, "output");
   const log = path.join(temp, "writes.log");
 
@@ -139,6 +146,11 @@ const runStep = (
   fs.writeFileSync(issueFile, JSON.stringify(options.issue ?? issue()));
   fs.writeFileSync(pullsFile, JSON.stringify(options.pulls));
   fs.writeFileSync(repoFile, JSON.stringify(options.repo ?? {}));
+  fs.writeFileSync(threadsFile, JSON.stringify(options.threads ?? []));
+  fs.writeFileSync(statusFile, JSON.stringify(options.statusPages ?? [{ state: "pending", total_count: 0, statuses: [] }]));
+  // The snapshot the preflight leaves for the steps after it, as a run that
+  // got past the preflight has it.
+  if (id !== "preflight") fs.writeFileSync(path.join(temp, "prd-issue.json"), JSON.stringify(options.issue ?? issue()));
   fs.writeFileSync(output, "");
 
   const ghDir = path.resolve(REPLAY_DIR);
@@ -161,6 +173,8 @@ const runStep = (
       GH_REPLAY_ISSUE: issueFile,
       GH_REPLAY_PULLS: pullsFile,
       GH_REPLAY_REPO: repoFile,
+      GH_REPLAY_THREADS: threadsFile,
+      GH_REPLAY_STATUS_PAGES: statusFile,
       GH_REPLAY_LOG: log,
       PATH: `${ghDir}${path.delimiter}${process.env["PATH"] ?? ""}`,
       ...options.env,
@@ -199,6 +213,13 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.output).toContain("refused=false\n");
     expect(outcome.reason).toBe("");
     expect(outcome.writes).toEqual([]);
+  });
+
+  /** What `Merge slice PR` titles the slices table's rows from (#174). */
+  it("leaves its snapshot of the PRD for the steps after it", () => {
+    const outcome = runStep("preflight", { pulls: BYSTANDERS });
+
+    expect(JSON.parse(outcome.temp("prd-issue.json"))).toEqual(issue());
   });
 
   it("hands no slice PR to the merge step when none is open", () => {
@@ -454,6 +475,162 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
   });
 });
 
+const SLICE_URL = `https://github.com/${GH_REPO}/pull/${SLICE}`;
+
+/** The step after the merge, handed merged slice PR #210 as `extra` describes it. */
+const runSliceRow = (
+  extra: Record<string, unknown> = {},
+  options: {
+    readonly issue?: Record<string, unknown>;
+    readonly bystanders?: readonly Record<string, unknown>[];
+    readonly threads?: readonly Record<string, unknown>[];
+    readonly statusPages?: readonly Record<string, unknown>[];
+  } = {},
+): StepOutcome =>
+  runStep("slice_row", {
+    pulls: [
+      ...(options.bystanders ?? BYSTANDERS),
+      pull(SLICE, SLICE_BRANCH, PRD_BRANCH, "MERGED", {
+        title: "Slice 1 (#172)",
+        body: "Part of #172\n\nOne slice of PRD #171.",
+        url: SLICE_URL,
+        ...extra,
+      }),
+    ],
+    ...(options.issue === undefined ? {} : { issue: options.issue }),
+    ...(options.threads === undefined ? {} : { threads: options.threads }),
+    ...(options.statusPages === undefined ? {} : { statusPages: options.statusPages }),
+    env: { SLICE_PR: String(SLICE), PRD_BRANCH },
+  });
+
+/** The facts the step left for the slices table, read back. */
+const facts = (outcome: StepOutcome): Record<string, unknown> => JSON.parse(outcome.temp("slices-table.json")) as Record<string, unknown>;
+
+const merged = (outcome: StepOutcome): Record<string, unknown> => facts(outcome)["merged"] as Record<string, unknown>;
+
+/** A review thread node, as the GraphQL read returns it. */
+const reviewThread = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  isResolved: false,
+  path: ".github/workflows/review.yml",
+  line: 88,
+  originalLine: 80,
+  comments: { nodes: [{ url: `${SLICE_URL}#discussion_r1` }] },
+  ...over,
+});
+
+/**
+ * The facts for the merged slice's row of the slices table (#174), gathered
+ * through `gh` by the step after the merge and left under `RUNNER_TEMP` for the
+ * runner, which renders them into the PRD PR body.
+ */
+describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, executed", () => {
+  it("names the sub-issue by its title in the preflight's snapshot, and the slice PR by number and URL", () => {
+    const outcome = runSliceRow();
+
+    expect(outcome.status).toBe(0);
+    expect(merged(outcome)).toMatchObject({ title: "Slice 1", subIssue: 172, slicePr: SLICE, slicePrUrl: SLICE_URL });
+  });
+
+  it("reads the verdict from the agent-review status on the merged head, and only that context", () => {
+    const outcome = runSliceRow(
+      {},
+      {
+        statusPages: [
+          {
+            state: "failure",
+            total_count: 2,
+            statuses: [
+              { context: "ci/build", state: "success", description: "Build passed." },
+              { context: "agent-review", state: "failure", description: "Needs a closer look. Read the review." },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(merged(outcome)["verdict"]).toBe("Needs a closer look. Read the review.");
+  });
+
+  it("records no verdict when the merged head carries none", () => {
+    expect(merged(runSliceRow())["verdict"]).toBeNull();
+  });
+
+  it("links the unresolved threads only, falling back to the original line of an outdated one", () => {
+    const outcome = runSliceRow(
+      {},
+      {
+        threads: [
+          reviewThread(),
+          reviewThread({ isResolved: true, path: "resolved.ts" }),
+          reviewThread({ path: "outdated.ts", line: null, originalLine: 12 }),
+          reviewThread({ path: "file-level.md", line: null, originalLine: null }),
+        ],
+      },
+    );
+
+    expect(merged(outcome)["openThreads"]).toEqual([
+      { path: ".github/workflows/review.yml", line: 88, url: `${SLICE_URL}#discussion_r1` },
+      { path: "outdated.ts", line: 12, url: `${SLICE_URL}#discussion_r1` },
+      { path: "file-level.md", line: null, url: `${SLICE_URL}#discussion_r1` },
+    ]);
+  });
+
+  /**
+   * #172 and #173 were built before slice PRs: closed, and no slice PR says
+   * `Part of` either. #174 is the slice being merged, and #175 is still open.
+   */
+  it("offers every closed sub-issue with no slice PR as a pre-upgrade slice, in sub-issue order", () => {
+    const outcome = runSliceRow(
+      { body: "Part of #174", title: "Slice 3 (#174)" },
+      {
+        issue: {
+          ...issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]),
+        },
+        bystanders: BYSTANDERS.filter((p) => p["number"] !== 202),
+      },
+    );
+
+    expect(outcome.status).toBe(0);
+    expect(merged(outcome)).toMatchObject({ title: "Slice 3", subIssue: 174 });
+    expect(facts(outcome)["preUpgrade"]).toEqual([
+      { title: "Slice 1", subIssue: 172 },
+      { title: "Slice 2", subIssue: 173 },
+    ]);
+  });
+
+  /** #202 is a merged slice PR for #172, found by its branch: it has no body. */
+  it("does not offer a sub-issue a slice PR of any state built", () => {
+    const outcome = runSliceRow(
+      { body: "Part of #174" },
+      { issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]) },
+    );
+
+    expect(facts(outcome)["preUpgrade"]).toEqual([{ title: "Slice 2", subIssue: 173 }]);
+  });
+
+  it("offers none on an ordinary chain, whose closed sub-issues each had a slice PR", () => {
+    expect(facts(runSliceRow())["preUpgrade"]).toEqual([]);
+  });
+
+  it("falls back to the slice branch's name when the body no longer says Part of", () => {
+    expect(merged(runSliceRow({ body: "Edited by hand." }))["subIssue"]).toBe(172);
+  });
+
+  it("stops, naming the slice PR, when it cannot tell which sub-issue the slice built", () => {
+    const outcome = runSliceRow({ body: "Edited by hand.", headRefName: "renamed-by-hand" });
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain(`slice PR #${SLICE}`);
+    expect(outcome.reason).toContain("Part of #<sub-issue>");
+    expect(outcome.reason).toContain("the merge is not repeated");
+    expect(outcome.temp("slices-table.json")).toBe("");
+  });
+
+  it("only reads", () => {
+    expect(runSliceRow().writes).toEqual([]);
+  });
+});
+
 /** The PRD PR step, handed the PRD branch the merge step read off the slice PR. */
 const runPrdPr = (pulls: readonly Record<string, unknown>[]): StepOutcome =>
   runStep("prd_pr", { pulls, env: { PRD_BRANCH } });
@@ -495,12 +672,12 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
 });
 
 /**
- * The contract the replay stands on for the two steps above, against the real
+ * The contract the replay stands on for the steps above, against the real
  * binary, the way the preflight's `pr list` is checked: the flags parse and
  * every `--json` field exists, so gh gets as far as the connection to
  * `localhost` and no further.
  */
-describe.skipIf(!onPath("gh"))("gh accepts the calls the merge and PRD PR steps compose", () => {
+describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row and PRD PR steps compose", () => {
   const attempt = (args: readonly string[]): ReturnType<typeof spawnSync> =>
     spawnSync("gh", [...args], {
       encoding: "utf8",
@@ -510,13 +687,21 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge and PRD PR steps 
 
   it.each([
     ["pr view", ["pr", "view", "210", "--json", "number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels"]],
+    ["pr view, merged", ["pr", "view", "210", "--json", "number,headRefOid,headRefName,title,body,url"]],
+    ["api graphql --paginate --slurp", ["api", "graphql", "--paginate", "--slurp", "-F", "number=210", "-f", "query=query($endCursor: String) { viewer { login } }"]],
+    ["pr list --base", ["pr", "list", "--state", "all", "--base", PRD_BRANCH, "--limit", "1000", "--json", "number,body,headRefName"]],
     ["pr merge", ["pr", "merge", "210", "--squash", "--match-head-commit", "abc"]],
     ["pr list --head", ["pr", "list", "--state", "open", "--head", PRD_BRANCH, "--limit", "100", "--json", "number"]],
   ])("%s", (_name: string, args: readonly string[]) => {
     const merge = stepById("merge").run ?? "";
     const prdPr = stepById("prd_pr").run ?? "";
 
-    expect(merge).toContain("fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels");
+    const row = stepById("slice_row").run ?? "";
+
+    expect(merge).toContain("fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels\n");
+    expect(row).toContain('gh pr view "$SLICE_PR" --json number,headRefOid,headRefName,title,body,url');
+    expect(row).toContain("gh api graphql --paginate --slurp");
+    expect(row).toContain('gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,body,headRefName');
     expect(merge).toContain('gh pr merge "$SLICE_PR" "--${method}" --match-head-commit "$head"');
     expect(prdPr).toContain('gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number');
 

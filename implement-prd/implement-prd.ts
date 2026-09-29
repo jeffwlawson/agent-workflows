@@ -1,15 +1,20 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   claudeAgent,
   fail,
+  fetchPullRequestBody,
   fetchTrustedComments,
   fetchTrustedIssue,
   git,
+  outputDir,
   required,
   scrubGitHubTokens,
+  updatePullRequestBody,
 } from "../shared/common.js";
+import { addMergedSlice, parseSlicesUpdate } from "../shared/slices-table.js";
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
 const ISSUE_NUMBER = required("ISSUE_NUMBER");
@@ -38,6 +43,38 @@ const PRD_BRANCH = required("PRD_BRANCH");
 const BASE_REF = required("BASE_REF");
 
 /**
+ * The PRD PR, when this run merged a slice PR into the PRD branch; empty when
+ * it merged none. Its body gets that slice's row of the slices table.
+ */
+const PRD_PR = process.env["PRD_PR"] ?? "";
+
+/**
+ * Write the merged slice's row into the PRD PR body (#174), from the facts the
+ * workflow gathered once the merge landed.
+ *
+ * Here rather than in a step of its own because rendering is this package's,
+ * and a workflow invokes this package exactly once — the one pinned `npm exec`
+ * line the release rewrites. First, before the agent, so a build that fails
+ * still leaves the row of the slice that did merge — and read, spliced and
+ * written back within the same second, so a maintainer's edit to the body is
+ * not overwritten with a copy read before a build that took minutes.
+ */
+const writeSliceRow = (prdPr: string): void => {
+  const update = parseSlicesUpdate(
+    JSON.parse(fs.readFileSync(path.join(outputDir(), "slices-table.json"), "utf8")) as unknown,
+  );
+  const body = fetchPullRequestBody(prdPr);
+  const next = addMergedSlice(body, update);
+
+  if (next === body) {
+    console.log(`PRD PR #${prdPr} already has a row for sub-issue #${update.merged.subIssue}.`);
+    return;
+  }
+  updatePullRequestBody(prdPr, next);
+  console.log(`Wrote slice PR #${update.merged.slicePr}'s row into PRD PR #${prdPr}.`);
+};
+
+/**
  * Read an issue and its collaborator comments into one prompt section.
  *
  * SECURITY: title/body and comments are author-gated to repo collaborators —
@@ -59,6 +96,18 @@ const issueSection = (number: string, fallbackTitle: string): string => {
 };
 
 try {
+  if (PRD_PR !== "") {
+    try {
+      writeSliceRow(PRD_PR);
+    } catch (error) {
+      throw new Error(
+        `Could not write the merged slice's row into the slices table of PRD PR #${PRD_PR} ` +
+          `(${error instanceof Error ? error.message : String(error)}). The slice PR is merged; re-add ` +
+          "`agent:implement` to retry — the merge is not repeated, and a row already written is left as it is.",
+      );
+    }
+  }
+
   // Both issues, through the same gate. The PRD is what makes the slice make
   // sense — it holds the ordering, the shared vocabulary and the reason the
   // seams are where they are — and it is exactly the context an agent working
@@ -66,9 +115,9 @@ try {
   const prdContext = issueSection(ISSUE_NUMBER, ISSUE_TITLE);
   const subContext = issueSection(SUB_NUMBER, SUB_TITLE);
 
-  // Context fetched; the agent has no legitimate use for the GitHub token.
-  // Closing the sub-issue, pushing and re-labelling all happen in workflow
-  // steps, after this process has exited.
+  // Context fetched and the slices table written; the agent has no legitimate
+  // use for the GitHub token. Closing the sub-issue, pushing and re-labelling
+  // all happen in workflow steps, after this process has exited.
   scrubGitHubTokens();
 
   // The branch tip *before* the agent runs. Counting against `main` — which is

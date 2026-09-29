@@ -4034,7 +4034,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * preflight's: a reason file and a failed step, which `Mark blocked on
    * failure` turns into `agent:blocked` and a comment.
    */
-  it.each(["merge", "prd_pr"])("%s blocks through the reason file, not a comment of its own", (id: string) => {
+  it.each(["merge", "slice_row", "prd_pr"])("%s blocks through the reason file, not a comment of its own", (id: string) => {
     const run = runOf(PRD, id);
     const body = bashFunctionBody(run, "block");
 
@@ -4042,6 +4042,38 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(body).toContain("exit 1");
     expect(run).not.toMatch(/gh (issue|pr) comment/);
     expect(run).not.toContain("--add-label");
+  });
+
+  /**
+   * The slices table (#174). The merged slice's row is gathered in a step of
+   * its own right after the merge — so the merge still reads no verdict — from
+   * the verdict on the **merged head** and the threads left open, and rendered
+   * into the PRD PR body by the runner, which is handed the PRD PR only when a
+   * slice merged. The gathering is executed in
+   * `tests/implement-prd-preflight.test.ts`; the rendering and the splice are
+   * `tests/slices-table.test.ts`.
+   */
+  it("gathers the merged slice's row after the merge, and hands the runner the PRD PR to write it into", () => {
+    const steps = stepsOf(PRD);
+    const at = steps.findIndex((s) => s.id === "slice_row");
+    const step = steps[at];
+    const run = step?.run ?? "";
+    const agent = steps.find((s) => (s.run ?? "").includes("agent-workflows implement-prd"));
+
+    expect(at).toBe(steps.findIndex((s) => s.id === "merge") + 1);
+    expect(at).toBeLessThan(steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
+    expect(step?.if).toBe(`${NOT_REFUSED} && steps.merge.outputs.merged == 'true'`);
+    expect(step?.env?.["GH_TOKEN"]).toBeUndefined();
+    expect(run).toContain('gh api "repos/${GH_REPO}/commits/${head}/status"');
+    expect(run).toContain('select(.context == "agent-review")');
+    expect(run).toContain("head=$(jq -r '.headRefOid' <<< \"$pr\")");
+    expect(run).toContain("reviewThreads");
+    expect(run).toContain("select(.isResolved | not)");
+    expect(run).toContain('> "${RUNNER_TEMP}/slices-table.json"');
+    expect(run).not.toMatch(/gh (pr|issue) (edit|comment|merge|ready)/);
+    expect(runOf(PRD, "preflight")).toContain('> "${RUNNER_TEMP}/prd-issue.json"');
+    expect(agent?.env?.["PRD_PR"]).toBe("${{ steps.prd_pr.outputs.number }}");
+    expect(agent?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
   });
 
   /**

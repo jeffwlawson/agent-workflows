@@ -149,7 +149,7 @@ jobs:
       # Every refusal after the not-open one removes `agent:fix` and adds
       # `agent:blocked`, as review's does, so re-adding `agent:fix` is the
       # retry — `Transition labels` clears `agent:blocked` on the way in.
-      - name: Pre-flight — refuse if the PR is closed, merged, or its head is stale
+      - name: "Pre-flight: refuse if the PR is closed, merged, or its head is stale"
         id: state
         run: |
           set -uo pipefail
@@ -319,7 +319,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(git log origin/"$BRANCH"..HEAD --oneline 2>/dev/null)" ]; then
-            echo "No new commits — nothing to push."
+            echo "No new commits, so there is nothing to push."
             echo "pushed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -392,7 +392,7 @@ jobs:
           set -uo pipefail
           [ -f "$RECORD" ] || { echo "No conversation outcomes file; nothing to post."; exit 0; }
           if [ ! -s "$RECORD" ]; then
-            echo "No conversation comment outcomes — nothing to record."
+            echo "No conversation comment outcomes, so there is nothing to record."
             exit 0
           fi
           gh pr comment "$PR_NUMBER" --body-file "$RECORD" >/dev/null \
@@ -423,7 +423,7 @@ jobs:
           [ -f "$COMMENTS" ] || { echo "No comments file; nothing to post."; exit 0; }
           count=$(jq 'length' "$COMMENTS")
           if [ "$count" -eq 0 ]; then
-            echo "No top-level comments — nothing outside the threads."
+            echo "No top-level comments, so there is nothing outside the threads."
             exit 0
           fi
           echo "Posting ${count} top-level comment(s)."
@@ -478,7 +478,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
-            printf 'The fix is pushed, but `agent:review` could not be added, so no re-review was requested. Add `agent:review` to this PR by hand — re-adding `agent:fix` would work the same threads again, since a thread stays open until a review verifies the fix landed.\n' \
+            printf 'The fix is pushed, but `agent:review` could not be added, so no re-review was requested. Add `agent:review` to this PR by hand. Re-adding `agent:fix` would work the same threads again, since a thread stays open until a review verifies the fix landed.\n' \
               > "${RUNNER_TEMP}/failure_reason.txt"
             exit 1
           fi
@@ -525,7 +525,7 @@ jobs:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           gh pr ready "$PR_NUMBER" \
-            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected — GITHUB_TOKEN cannot do it. Mark it ready by hand."
+            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
 
       # The remedy depends on whether the branch moved, the way
       # `update-branch.yml`'s does — and it has to, because this step's own

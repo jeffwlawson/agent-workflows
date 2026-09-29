@@ -105,7 +105,7 @@ try {
   if (before === after) {
     // Not a failure: the agent may have judged every comment already handled or
     // not worth acting on. It still owes replies, which the workflow posts.
-    console.log("Agent made no commits — nothing to push.");
+    console.log("Agent made no commits, so there is nothing to push.");
   } else {
     // `HEAD` moving is not the agent committing (#188). An agent that fetched
     // the branch and fast-forwarded onto commits already there moves `HEAD`
@@ -116,7 +116,7 @@ try {
     console.log(
       made === 0
         ? `Agent made no commits; HEAD fast-forwarded on ${BRANCH} to a commit already on the remote ` +
-            `(${before.slice(0, 7)} -> ${after.slice(0, 7)}) — nothing to push.`
+            `(${before.slice(0, 7)} -> ${after.slice(0, 7)}) and there is nothing to push.`
         : `Agent committed ${made} commit(s) on ${BRANCH} (${before.slice(0, 7)} -> ${after.slice(0, 7)}).`,
     );
   }
@@ -141,8 +141,8 @@ try {
     topLevelComments.length > 0
       ? `Top-level comments: ${topLevelComments.length} to post (${produced} produced).`
       : produced === 0
-        ? "Top-level comments: none — nothing outside the threads."
-        : `Top-level comments: none posted (${produced} produced, all dropped — see warnings above).`,
+        ? "Top-level comments: none, nothing outside the threads."
+        : `Top-level comments: none posted (${produced} produced, all dropped; see warnings above).`,
   );
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));

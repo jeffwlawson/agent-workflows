@@ -443,7 +443,7 @@ const stubBody = (
     "",
     "---",
     "",
-    `Read from [a review](${review.url}) on #${prNumber}. That review is where this finding was *read*, not necessarily where it was first raised — each review restates its whole list, so an earlier one may have raised it first.`,
+    `Read from [a review](${review.url}) on #${prNumber}. That review is where this finding was *read*, not necessarily where it was first raised: each review restates its whole list, so an earlier one may have raised it first.`,
     // After the provenance and before the key: it qualifies the finding rather
     // than the evidence above it, and it is the last thing a triager reads.
     ...(related === undefined ? [] : ["", relationLine(related, path)]),
@@ -554,7 +554,7 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
       // Neither new nor chronic: this is the same pull request meeting itself
       // on a retry, and it is what makes that retry exactly idempotent.
       lines.push(
-        `- **Already filed by this pull request** — \`${path}\` — #${already.number}, which it opened for this same finding already.`,
+        `- **Already filed by this pull request** · \`${path}\` · #${already.number}, which it opened for this same finding already.`,
       );
       continue;
     }
@@ -582,7 +582,7 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
     // report's job was making *skips* visible and there are none left to make
     // visible; a relation is for the triager of the new stub, not for a merged
     // pull request nobody opens again.
-    lines.push(`- **Filed** — \`${path}\` — ${placeholder}`);
+    lines.push(`- **Filed** · \`${path}\` · ${placeholder}`);
   }
 
   // A readable block that asked for nothing: the retraction, and the ordinary

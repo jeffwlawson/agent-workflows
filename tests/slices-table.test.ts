@@ -119,9 +119,9 @@ describe("renderPreUpgradeRow", () => {
     const [slicePart, pr, verdict, findings] = cells(renderPreUpgradeRow({ title: "Add the verdict table", subIssue: 201 }));
 
     expect(slicePart).toBe("Add the verdict table (#201)");
-    expect(pr).toBe("—");
+    expect(pr).toBe("n/a");
     expect(verdict).toBe("built before slice PRs, no review of its own");
-    expect(findings).toBe("—");
+    expect(findings).toBe("n/a");
   });
 });
 

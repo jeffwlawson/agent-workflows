@@ -573,13 +573,24 @@ const NEW_SUFFIX = /\s*\*new\*\s*$/i;
  * A no-op on a threaded finding, whose line comes off the thread rather than
  * out of a body and so carried neither decoration.
  */
-const carriedClaim = (finding: CarriedFinding): string => {
+const carriedClaim = (finding: CarriedFinding): { readonly title: string; readonly anchor?: string } => {
   const claim = oneLine(finding.text).replace(NEW_SUFFIX, "");
-
-  return (
+  const unbadged = (
     finding.severity === undefined ? claim : withoutSeverityBadge(claim, finding.severity)
   ).trim();
+
+  // The anchor `entryLine` wrote behind the claim, in both separators a release
+  // wrote it with: ` · ` now, and the em dash every body before #136 carries.
+  // Taken off so it is rendered again as an anchor, in this release's form,
+  // rather than kept as part of the title in the form it arrived in.
+  const anchored = ANCHOR_SUFFIX.exec(unbadged);
+  return anchored?.[2] === undefined
+    ? { title: unbadged }
+    : { title: unbadged.slice(0, anchored.index).trim(), anchor: anchored[2] };
 };
+
+/** The anchor `entryLine` writes behind a claim, in the current and the pre-#136 form. */
+const ANCHOR_SUFFIX = /\s+(·|—)\s+`([^`\s]+)`$/;
 
 /**
  * A finding this review produced, as an entry.
@@ -606,7 +617,7 @@ const placedEntry = (placed: PlacedFinding): RecordEntry => {
 const carriedEntry = (finding: CarriedFinding, keepId: boolean): RecordEntry => ({
   // A threaded finding's own title where the thread carried one (#134); the
   // body entry's line, stripped of what this file wrote around it, otherwise.
-  title: finding.title === undefined ? carriedClaim(finding) : oneLine(finding.title),
+  ...(finding.title === undefined ? carriedClaim(finding) : { title: oneLine(finding.title) }),
   ...(finding.anchor === undefined ? {} : { anchor: finding.anchor }),
   ...(finding.severity === undefined ? {} : { severity: finding.severity }),
   ...(keepId && finding.threadId === undefined ? { id: finding.id } : {}),
@@ -704,7 +715,7 @@ const entryLine = (entry: RecordEntry): string =>
     // than sitting beside it as "(thread)", so the line a reader scans is the
     // claim and the way to reach it is the claim.
     entry.url === undefined ? entry.title : `[${entry.title}](${entry.url})`,
-    entry.anchor === undefined ? undefined : `— \`${entry.anchor}\``,
+    entry.anchor === undefined ? undefined : `· \`${entry.anchor}\``,
     entry.isNew ? "*new*" : undefined,
     entry.id === undefined ? undefined : findingMarker(entry.id, entry.severity),
   ]
@@ -750,7 +761,7 @@ const renderGroup = (
 
   return [
     `<details${expanded ? " open" : ""}>`,
-    `<summary><b>${title}</b> — ${entries.length}</summary>`,
+    `<summary><b>${title}</b> (${entries.length})</summary>`,
     ...(subtitle === undefined ? [] : ["", `_${subtitle}_`]),
     "",
     ...entries.map(entryLine),
@@ -785,7 +796,7 @@ const findingsLine = (record: ReviewRecord): string => {
     .map(({ severity, count }) => `${count} ${severityBadge(severity)}`)
     .join(", ");
 
-  return `**Findings:** ${record.findings}${breakdown === "" ? "" : ` — ${breakdown}`}`;
+  return `**Findings:** ${record.findings}${breakdown === "" ? "" : ` (${breakdown})`}`;
 };
 
 /**
@@ -1210,7 +1221,7 @@ export const renderReviewBody = (parts: {
   const size = reviewBodySize(body);
   if (size > REVIEW_BODY_BUDGET) {
     throw new Error(
-      `The review body is ${size} bytes after shedding everything it can, over the ${REVIEW_BODY_BUDGET} this holds it to beneath GitHub's ${REVIEW_BODY_LIMIT}-character limit — posting it would be refused with a 422 that loses the review's threads as well, so nothing was posted.`,
+      `The review body is ${size} bytes after shedding everything it can, over the ${REVIEW_BODY_BUDGET} this holds it to beneath GitHub's ${REVIEW_BODY_LIMIT}-character limit. Posting it would be refused with a 422 that loses the review's threads as well, so nothing was posted.`,
     );
   }
 
@@ -1727,7 +1738,7 @@ export const renderFollowUpsGroup = (
   // sentence above the record says so; the payload still carries every one.
   const items = titles
     ? kept.map(
-        (f) => `- ${severityBadge(f.severity)} **${oneLine(f.title)}** — \`${oneLine(f.location)}\``,
+        (f) => `- ${severityBadge(f.severity)} **${oneLine(f.title)}** · \`${oneLine(f.location)}\``,
       )
     : ["_Titles left out to fit the review body; every one counted here is still filed on merge._"];
 
@@ -1755,7 +1766,7 @@ export const renderFollowUpsGroup = (
 
   return [
     "<details>",
-    `<summary><b>Follow-ups</b> — ${kept.length} · filed as issues on merge; remove <code>${FOLLOW_UPS_LABEL}</code> to skip</summary>`,
+    `<summary><b>Follow-ups</b> (${kept.length}) · filed as issues on merge; remove <code>${FOLLOW_UPS_LABEL}</code> to skip</summary>`,
     "",
     ...items,
     ...truncation,

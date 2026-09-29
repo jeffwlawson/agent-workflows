@@ -5,16 +5,17 @@ Do not change files. Do not run commands. Do not include any text outside the `<
 `comment` is posted publicly on the PR, so write it for whoever has to trust this merge. State
 each non-trivial resolution and why you chose it. If the verify command does not pass, say so in
 the **first line**.
+Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
-Name the branch that was **actually** merged — this PR's base, which is frequently not the
-repository's default branch — and name the verify command you **actually** ran, the one
+Name the branch that was **actually** merged (this PR's base, which is frequently not the
+repository's default branch) and name the verify command you **actually** ran, the one
 `CLAUDE.md` gives. This file is not templated (the extraction run gets no prompt arguments), so
 both the branch and the command below are stand-ins, never the answer.
 
 ```json
 <output>
 {
-  "comment": "Merged `release/2.x` into this branch, resolving 2 conflicts.\n\n- `src/registry.ts` — both sides added an entry to the same list; kept both, in the file's existing order.\n- `src/helpers.ts` — `release/2.x` moved a function while this branch edited its doc comment; took the moved version and reapplied the edit.\n\n`./check` passes (105 tests)."
+  "comment": "Merged `release/2.x` into this branch, resolving 2 conflicts.\n\n- `src/registry.ts`: both sides added an entry to the same list; kept both, in the file's existing order.\n- `src/helpers.ts`: `release/2.x` moved a function while this branch edited its doc comment; took the moved version and reapplied the edit.\n\n`./check` passes (105 tests)."
 }
 </output>
 ```

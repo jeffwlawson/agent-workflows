@@ -218,7 +218,7 @@ jobs:
       # new SHA. Re-adding the label after the mutate finishes is one action and
       # reviews the right thing. An unreadable `gh pr view` proceeds rather than
       # refuses — an API blip is not evidence the branch moved.
-      - name: Pre-flight — refuse if the PR is closed, merged, or has moved
+      - name: "Pre-flight: refuse if the PR is closed, merged, or has moved"
         id: state
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -238,7 +238,7 @@ jobs:
 
           current=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
           if [ -n "$current" ] && [ "$current" != "$HEAD_SHA" ]; then
-            refuse "Refused to run \`agent:review\`: the branch moved while this run was queued — the label was added at \`${HEAD_SHA:0:7}\`, the head is now \`${current:0:7}\`. Reviewing the labelled commit would put every comment on an ancestor and render it outdated. Re-add \`agent:review\` to review the current head."
+            refuse "Refused to run \`agent:review\`: the branch moved while this run was queued: the label was added at \`${HEAD_SHA:0:7}\`, the head is now \`${current:0:7}\`. Reviewing the labelled commit would put every comment on an ancestor and render it outdated. Re-add \`agent:review\` to review the current head."
             exit 0
           fi
 
@@ -544,7 +544,7 @@ jobs:
             | jq -r ".[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | \"- \(.name): \(.conclusion // .status)\"" \
             2>>"$err" >> "$out"; then
             echo "- (could not read check runs)" >> "$out"
-            echo "::warning::Could not list check runs for ${HEAD_SHA}, so the review's check list is empty. It is not the \`checks: read\` grant, which a run that started holds — see what \`gh\`/\`jq\` said below."
+            echo "::warning::Could not list check runs for ${HEAD_SHA}, so the review's check list is empty. It is not the \`checks: read\` grant, which a run that started holds. See what \`gh\`/\`jq\` said below."
             if [ -s "$err" ]; then
               cat "$err"
             fi
@@ -639,7 +639,7 @@ jobs:
               agent/slice-*)
                 checks=unknown
                 commit_statuses=unknown
-                no_ci="No CI ran on this slice PR: nothing but the loop's own jobs reported on this commit. A slice PR's base is its PRD branch, so a CI workflow that filters \`pull_request\` to the default branch does not run on it — add \`agent/prd-**\` to that filter's \`branches:\` (jeffwlawson/agent-workflows docs/ADOPTING.md §5, *Slice PRs and your CI*). Until then CI is unknown here, not green, so a clean review asks for a human rather than advancing the chain."
+                no_ci="No CI ran on this slice PR: nothing but the loop's own jobs reported on this commit. A slice PR's base is its PRD branch, so a CI workflow that filters \`pull_request\` to the default branch does not run on it. Add \`agent/prd-**\` to that filter's \`branches:\` (jeffwlawson/agent-workflows docs/ADOPTING.md §5, *Slice PRs and your CI*). Until then CI is unknown here, not green, so a clean review asks for a human rather than advancing the chain."
                 echo "::warning::${no_ci}"
                 echo "_${no_ci}_" >> "$out"
                 ;;
@@ -698,7 +698,7 @@ jobs:
             if [ -s "${err}.runs" ]; then
               cat "${err}.runs"
             fi
-            echo "_Could not list this commit's workflow runs, so failure-log output is missing here rather than absent — the token likely lacks \`actions: read\`, or the runs are unavailable._" >> "$out"
+            echo "_Could not list this commit's workflow runs, so failure-log output is missing here rather than absent: the token likely lacks \`actions: read\`, or the runs are unavailable._" >> "$out"
           fi
           for rid in $failed_runs; do
             rname=$(gh api "repos/${GH_REPO}/actions/runs/${rid}" --jq .name 2>/dev/null || echo "run ${rid}")
@@ -714,7 +714,7 @@ jobs:
             # truncation is silent. Same blindness as #28, one loop further on.
             {
               echo
-              echo "### Failure output — ${rname}"
+              echo "### Failure output: ${rname}"
               echo '```'
               gh run view "$rid" --log-failed 2>/dev/null | sed 's/^[^Z]*Z //' | tail -60 \
                 || echo "(no failure log available for run ${rid})"
@@ -1027,7 +1027,7 @@ jobs:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           gh pr ready "$PR_NUMBER" \
-            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected — GITHUB_TOKEN cannot do it. Mark it ready by hand."
+            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
 
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && failure()

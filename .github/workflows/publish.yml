@@ -102,7 +102,7 @@ jobs:
           tagged="${TAG#v}"
           declared=$(node -p "require('./package.json').version")
           if [ "$tagged" != "$declared" ]; then
-            echo "::error::Tag ${TAG} names version ${tagged}, but package.json declares ${declared}. Retag, or bump the manifest — a published version that disagrees with its tag cannot be traced back to a commit."
+            echo "::error::Tag ${TAG} names version ${tagged}, but package.json declares ${declared}. Retag, or bump the manifest. A published version that disagrees with its tag cannot be traced back to a commit."
             exit 1
           fi
           echo "version=${declared}" >> "$GITHUB_OUTPUT"

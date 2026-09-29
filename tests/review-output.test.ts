@@ -480,6 +480,27 @@ describe("parseFollowUpsBlock", () => {
     });
   });
 
+  /**
+   * A body posted before #136 opens the group `<b>Follow-ups</b> — 1`, and the
+   * merge that files it may run after the upgrade. The reader keys on the
+   * marker and never on that summary, so the old prose reads exactly as the new.
+   */
+  it("reads a v0.4.0 body, whose summary carries an em dash, by its marker alone", () => {
+    const list = [followUp({ title: "Leak in parse()", location: "src/other.ts:88" })];
+    const body = [
+      "<details>",
+      "<summary><b>Follow-ups</b> — 1 · filed as issues on merge; remove <code>agent:follow-ups</code> to skip</summary>",
+      "",
+      "- `Medium` **Leak in parse()** — `src/other.ts:88`",
+      "",
+      "</details>",
+      "",
+      renderFollowUpsBlock(list, 0, 0),
+    ].join("\n");
+
+    expect(parseFollowUpsBlock(body)?.followUps).toEqual(list);
+  });
+
   it("finds the block wherever it sits in a review body", () => {
     const body = `A summary, with prose above and below.\n\n${renderFollowUpsBlock(followUps(1), 0, 0)}\n\nMore prose.`;
 
@@ -1054,6 +1075,17 @@ describe("the verdict's commit status", () => {
   });
 
   /**
+   * And none of it carries an em dash (#136). The row is posted twice, as the
+   * status and as the body's heading and step, so this is the one place it
+   * can come back from.
+   */
+  it("writes no em dash into any verdict row", () => {
+    for (const row of Object.values(VERDICTS)) {
+      expect([row.heading, row.label, row.nextStep, row.description].join("\n"), row.verdict).not.toContain("—");
+    }
+  });
+
+  /**
    * GitHub truncates a status description past 140 characters, and truncates it
    * where the character ran out rather than where the sentence ends. The line
    * is the feature, so a line that arrives half-written is the feature broken
@@ -1288,7 +1320,7 @@ describe("the posted review body", () => {
     const body = render({ resolved: [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return" }] });
 
     expect(body).toContain("1 finding an earlier review raised was closed this round.");
-    expect(body).toContain("<summary><b>Resolved since last review</b> — 1</summary>");
+    expect(body).toContain("<summary><b>Resolved since last review</b> (1)</summary>");
   });
 
   /**
@@ -1309,7 +1341,7 @@ describe("the posted review body", () => {
       url: "https://github.com/o/r/pull/1#discussion_r1",
     };
     const line =
-      "[Warning asserts a verdict stands on a commit the read could not see](https://github.com/o/r/pull/1#discussion_r1) — `src/a.ts:4`";
+      "[Warning asserts a verdict stands on a commit the read could not see](https://github.com/o/r/pull/1#discussion_r1) · `src/a.ts:4`";
 
     it("is listed by its title under Resolved since last review", () => {
       const body = render({ resolved: [threaded] });
@@ -1363,9 +1395,9 @@ describe("the posted review body", () => {
       resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding" }],
     });
 
-    expect(body).toContain("<details open>\n<summary><b>Open</b> — 1</summary>");
-    expect(body).toContain("<details open>\n<summary><b>Previously missed</b> — 1</summary>");
-    expect(body).toContain("<details>\n<summary><b>Resolved since last review</b> — 1</summary>");
+    expect(body).toContain("<details open>\n<summary><b>Open</b> (1)</summary>");
+    expect(body).toContain("<details open>\n<summary><b>Previously missed</b> (1)</summary>");
+    expect(body).toContain("<details>\n<summary><b>Resolved since last review</b> (1)</summary>");
   });
 
   /**
@@ -1402,7 +1434,7 @@ describe("the posted review body", () => {
     const body = render({ placed: missedFinding() });
 
     expect(body).toContain(
-      `<summary><b>Previously missed</b> — 1</summary>\n\n_${PREVIOUSLY_MISSED_SUBTITLE}_`,
+      `<summary><b>Previously missed</b> (1)</summary>\n\n_${PREVIOUSLY_MISSED_SUBTITLE}_`,
     );
     expect(PREVIOUSLY_MISSED_SUBTITLE).toBe("In code that hasn't changed since last review");
   });
@@ -1443,7 +1475,7 @@ describe("the posted review body", () => {
     const body = render({ placed: placedFinding({ severity: "high" }) });
 
     expect(body).toContain(
-      `- ${severityBadge("high")} the guard runs after the return — \`src/queue.ts:206\` *new*`,
+      `- ${severityBadge("high")} the guard runs after the return · \`src/queue.ts:206\` *new*`,
     );
   });
 
@@ -1504,7 +1536,7 @@ describe("the posted review body", () => {
       ],
     });
 
-    expect(body).toContain("<summary><b>Previously missed</b> — 1</summary>");
+    expect(body).toContain("<summary><b>Previously missed</b> (1)</summary>");
     expect(body).not.toContain("<summary><b>Open</b>");
     expect(body).toContain("**Findings:** 1");
     expect(body).toContain("1 finding is open, 1 in code an earlier review had already read.");
@@ -1582,7 +1614,7 @@ describe("the posted review body", () => {
     });
 
     expect(body).toContain(
-      `- ${severityBadge("medium")} the cache key omits the tenant — \`src/queue.ts:88\` *new*`,
+      `- ${severityBadge("medium")} the cache key omits the tenant · \`src/queue.ts:88\` *new*`,
     );
     expect(body).not.toContain("  **Fix before merge.**");
     expect(body).not.toContain(findingMarker("f-b", "medium"));
@@ -1605,12 +1637,15 @@ describe("the posted review body", () => {
     const second = render({ stillOpen: carried });
 
     expect(second).toContain(
-      `- ${severityBadge("high")} the cache key omits the tenant — \`src/other.ts:88\` <!--`,
+      `- ${severityBadge("high")} the cache key omits the tenant · \`src/other.ts:88\` <!--`,
     );
     // Not `<img …> \`High\``: the v0.4.0 code span is one of the forms the
     // strip knows, so the entry carries this release's badge and only that.
     expect(second).not.toContain("`High`");
     expect(second).not.toContain("*new*");
+    // The anchor came off the v0.4.0 line behind an em dash and goes back on
+    // behind this release's separator, rather than riding along in the title.
+    expect(second).not.toContain("—");
 
     // And it holds every round after: what round three reads is what round four
     // would write, so the entry stops growing.
@@ -1665,7 +1700,7 @@ describe("the posted review body", () => {
     });
 
     expect(body).toContain(
-      `**Findings:** 2 — 1 ${severityBadge("high")}, 1 ${severityBadge("low")}`,
+      `**Findings:** 2 (1 ${severityBadge("high")}, 1 ${severityBadge("low")})`,
     );
   });
 
@@ -1709,16 +1744,48 @@ describe("the posted review body", () => {
    * pull request — and **not counted** on the `**Findings:**` line for the same
    * reason.
    */
+  /**
+   * Nothing this body writes carries an em dash (#136), in any verdict and any
+   * group. A v0.4.0 body entry is carried in on purpose: its anchor arrived
+   * behind one, and it has to leave behind this release's separator. The old
+   * form is fed in and never expected out.
+   */
+  it("writes no em dash, whatever it renders", () => {
+    const legacy = carriedFindings({ threads: [], latestReviewBody: LEGACY_V040_BODY });
+    for (const verdict of Object.values(VERDICTS)) {
+      const body = render({
+        verdict,
+        placed: [...placedFinding(), ...missedFinding()],
+        movedToFollowUps: 1,
+        stillOpen: legacy,
+        resolved: [
+          {
+            id: "f-9",
+            threadId: "PRRT_two",
+            title: "the key omits the tenant",
+            anchor: "src/a.ts:4",
+            text: "src/a.ts:4 · the key omits the tenant",
+            url: "https://github.com/o/r/pull/1#discussion_r1",
+          },
+        ],
+        followUps: [followUp({ title: "Leak in parse()", location: "src/other.ts:88" })],
+        droppedFollowUps: 1,
+      });
+
+      expect(body.split("\n").filter((line) => line.includes("—")), verdict.verdict).toEqual([]);
+    }
+  });
+
   it("renders the follow-ups as a collapsed group after Resolved, uncounted", () => {
     const body = render({
       placed: placedFinding(),
       followUps: [followUp({ title: "Leak in parse()", location: "src/other.ts:88" })],
     });
 
-    expect(body).toContain("<details>\n<summary><b>Follow-ups</b> — 1 ·");
+    expect(body).toContain("<details>\n<summary><b>Follow-ups</b> (1) ·");
     expect(body).toMatch(/remove <code>agent:follow-ups<\/code> to skip/);
     expect(body).toContain(
-      `- ${severityBadge("medium")} **Leak in parse()** — \`src/other.ts:88\``,
+      `- ${severityBadge("medium")} **Leak in parse()** · \`src/other.ts:88\``,
     );
     // Uncounted: the number is what blocks this pull request, and a follow-up
     // is by definition what does not.
@@ -1876,7 +1943,7 @@ describe("the record and the count are one set", () => {
 
     expect(countFixBeforeMerge(output(missing), 0)).toBe(1);
     expect(record(missing).findings).toBe(1);
-    expect(body(missing)).toContain("the guard runs after the return — `src/queue.ts:206`");
+    expect(body(missing)).toContain("the guard runs after the return · `src/queue.ts:206`");
   });
 
   /**
@@ -2399,7 +2466,7 @@ index 0ff3bbb..c6ca7ae 100644
     });
 
     expect(posted).toContain("4 findings were moved to follow-ups");
-    expect(posted).toContain("<summary><b>Follow-ups</b> — 4");
+    expect(posted).toContain("<summary><b>Follow-ups</b> (4)");
     for (const f of four) expect(posted).toContain(f.title);
     // And the payload, which is the surface that outlives the pull request: the
     // exempt prefix is all four, so the cap at the filing end reaches none.
@@ -2805,7 +2872,7 @@ describe("a body entry from a v0.4.0 review", () => {
 
     // It is in the record as closed, and its id is not — so the round after
     // this one is handed nothing to rule on.
-    expect(body).toContain("<summary><b>Resolved since last review</b> — 1</summary>");
+    expect(body).toContain("<summary><b>Resolved since last review</b> (1)</summary>");
     expect(body).toContain("the cache key omits the tenant");
     expect(body).not.toContain("f-legacy");
     expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([]);
@@ -2906,7 +2973,7 @@ describe("the review body against GitHub's size limit", () => {
 
     expect(body).toContain("the follow-up titles were left out");
     expect(body).toContain(`cut from the end of the list filed on merge`);
-    expect(body).toContain(`<summary><b>Follow-ups</b> — ${50 + kept} ·`);
+    expect(body).toContain(`<summary><b>Follow-ups</b> (${50 + kept}) ·`);
     // The visible group blames the cap for the cap's two alone, and claims no
     // listing it no longer shows; the shed sentence carries the size's count.
     expect(body).toContain("The cap keeps the 3 most serious out-of-scope findings; 2 more were dropped by it.");

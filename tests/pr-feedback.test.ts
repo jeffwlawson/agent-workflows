@@ -1357,6 +1357,41 @@ describe("the findings an earlier review left open", () => {
     },
   });
 
+  /**
+   * A thread a v0.4.0 review opened: the finding's body verbatim, labels joined
+   * by an em dash, and a marker with no title. Its text is rebuilt from the
+   * comment each round rather than read back off anything posted, so it takes
+   * this release's separator; the claim comes off past the old label (#136).
+   */
+  it("reads a thread a v0.4.0 review opened, em dash and all", () => {
+    const legacy = {
+      id: "PRRT_legacy",
+      isResolved: false,
+      comments: {
+        nodes: [
+          {
+            path: "src/queue.ts",
+            line: 206,
+            body: "**Fix before merge — previously missed.** the guard runs after the return\n\n<!-- agent-finding f-1 high -->",
+            ...AGENT,
+          },
+        ],
+      },
+    };
+    ghAnswers(() => response({ reviewThreads: { nodes: [legacy] } }));
+
+    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+      {
+        threadId: "PRRT_legacy",
+        findingId: "f-1",
+        severity: "high",
+        text: "src/queue.ts:206 · the guard runs after the return",
+        title: "the guard runs after the return",
+        anchor: "src/queue.ts:206",
+      },
+    ]);
+  });
+
   it("carries an open agent thread with the id the workflow wrote into it", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [agentThread("PRRT_one", "f-1")] } }));
 
@@ -1364,7 +1399,7 @@ describe("the findings an earlier review left open", () => {
       {
         threadId: "PRRT_one",
         findingId: "f-1",
-        text: "src/queue.ts:206 — the guard runs after the return",
+        text: "src/queue.ts:206 · the guard runs after the return",
         title: "the guard runs after the return",
         anchor: "src/queue.ts:206",
       },
@@ -1599,7 +1634,7 @@ describe("a severity chip in the feedback a prompt is built from", () => {
     ghAnswers(() => response(withChips()));
 
     expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toBe(
-      "src/queue.ts:206 — the guard runs after the return",
+      "src/queue.ts:206 · the guard runs after the return",
     );
   });
 
@@ -1658,7 +1693,7 @@ describe("a thread anchored to a file rather than a line", () => {
     expect(feedback.inline).not.toContain("outdated");
     expect(feedback.inline).not.toContain(":?");
     expect(feedback.agentThreads[0]?.text).toBe(
-      "src/queue.ts (the whole file) — the retry loop never terminates",
+      "src/queue.ts (the whole file) · the retry loop never terminates",
     );
   });
 
@@ -1687,7 +1722,7 @@ describe("a thread anchored to a file rather than a line", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [moved] } }));
 
     expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toContain(
-      "src/queue.ts:206 (outdated — the code here has changed since)",
+      "src/queue.ts:206 (outdated: the code here has changed since)",
     );
   });
 
@@ -1911,7 +1946,7 @@ describe("a finding the maintainer has settled", () => {
       {
         findingId: "f-1",
         resolvedBy: "maintainer",
-        text: "src/queue.ts:206 — the guard runs after the return",
+        text: "src/queue.ts:206 · the guard runs after the return",
       },
     ]);
   });
@@ -1979,7 +2014,7 @@ describe("a finding the maintainer has settled", () => {
       {
         threadId: "PRRT_one",
         findingId: "f-1",
-        text: "src/queue.ts:206 — the guard runs after the return",
+        text: "src/queue.ts:206 · the guard runs after the return",
         title: "the guard runs after the return",
         anchor: "src/queue.ts:206",
         maintainerReply: {
@@ -2130,7 +2165,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
       {
         threadId: "PRRT_one",
         findingId: "f-1",
-        text: "src/queue.ts:206 — the guard runs after the return",
+        text: "src/queue.ts:206 · the guard runs after the return",
         title: "the guard runs after the return",
         anchor: "src/queue.ts:206",
         closedAs: "ADDRESSED",

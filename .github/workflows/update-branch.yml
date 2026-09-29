@@ -117,7 +117,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Pre-flight — refuse if the PR is closed or merged
+      - name: "Pre-flight: refuse if the PR is closed or merged"
         id: state
         run: |
           if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" = "true" ]; then
@@ -184,7 +184,7 @@ jobs:
           base_sha=$(git rev-parse "origin/${base}")
           if [ "$(git merge-base HEAD "origin/${base}")" = "$base_sha" ]; then
             echo "status=uptodate" >> "$GITHUB_OUTPUT"
-            echo "Already contains origin/${base} — nothing to do."
+            echo "Already contains origin/${base}, so there is nothing to do."
             exit 0
           fi
 
@@ -377,7 +377,7 @@ jobs:
           # nobody has reviewed yet it reads as an offer rather than the fix.
           err="${RUNNER_TEMP}/carry-verdict.err"
           if ! statuses=$(gh api "repos/{owner}/{repo}/commits/${OLD_SHA}/statuses" --paginate --slurp 2>"$err"); then
-            echo "::warning::Could not read the statuses on ${OLD_SHA}, so no \`${VERDICT_CONTEXT}\` verdict was carried on to ${NEW_SHA} and this pull request now reads as unreviewed — which is not the same as its having none. GitHub's reply is printed below. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4). What lands here is transient — a 5xx, a secondary rate limit, a dropped connection — and re-running this workflow recovers none of it: the branch is refreshed already. Any verdict that stood is still the one on ${OLD_SHA} — this read could not tell whether there was one; add \`agent:review\` for a fresh one."
+            echo "::warning::Could not read the statuses on ${OLD_SHA}, so no \`${VERDICT_CONTEXT}\` verdict was carried on to ${NEW_SHA} and this pull request now reads as unreviewed, which is not the same as its having none. GitHub's reply is printed below. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4). What lands here is transient (a 5xx, a secondary rate limit, a dropped connection), and re-running this workflow recovers none of it: the branch is refreshed already. Any verdict that stood is still the one on ${OLD_SHA}; this read could not tell whether there was one; add \`agent:review\` for a fresh one."
             if [ -s "$err" ]; then
               cat "$err"
             fi
@@ -390,7 +390,7 @@ jobs:
             | jq -c '(add // []) | map(select(.context == env.VERDICT_CONTEXT and .creator.login == env.LOOP_ACCOUNT))[0] // empty') \
             || verdict=""
           if [ -z "$verdict" ]; then
-            echo "No ${VERDICT_CONTEXT} verdict of ours on ${OLD_SHA} — nothing to carry over."
+            echo "No ${VERDICT_CONTEXT} verdict of ours on ${OLD_SHA}, so there is nothing to carry over."
             exit 0
           fi
           state=$(printf '%s' "$verdict" | jq -r '.state')
@@ -419,10 +419,10 @@ jobs:
           base="$BASE_REF"
           case "$STATUS" in
             uptodate)
-              body="\`agent:update-branch\`: already up to date with \`${base}\` — no merge needed."
+              body="\`agent:update-branch\`: already up to date with \`${base}\`, so no merge was needed."
               ;;
             clean)
-              body="\`agent:update-branch\`: merged \`${base}\` (\`${BASE_SHA:0:7}\`) cleanly — no conflicts."
+              body="\`agent:update-branch\`: merged \`${base}\` (\`${BASE_SHA:0:7}\`) cleanly, with no conflicts."
               ;;
             conflicts)
               body=$(cat "${RUNNER_TEMP}/update_comment.md" 2>/dev/null \
@@ -518,7 +518,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
-            printf 'The conflicts are resolved and pushed, but `agent:review` could not be added, so no review of the resolution was requested. Add `agent:review` to this PR by hand — re-adding `agent:update-branch` would find the branch already up to date and do nothing.\n' \
+            printf 'The conflicts are resolved and pushed, but `agent:review` could not be added, so no review of the resolution was requested. Add `agent:review` to this PR by hand. Re-adding `agent:update-branch` would find the branch already up to date and do nothing.\n' \
               > "${RUNNER_TEMP}/failure_reason.txt"
             exit 1
           fi

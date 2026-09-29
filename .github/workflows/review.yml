@@ -528,15 +528,17 @@ jobs:
           #
           # A check that has not *passed* is not green, so a still-pending one
           # (the timeout arm above) counts with the failures rather than being
-          # waited for twice. A commit with no other checks at all is green:
-          # there is nothing failing, which is the honest reading for an
-          # adopter whose repository runs none.
+          # waited for twice. A commit with no other checks at all is `none`,
+          # which the arm below the statuses turns into a word: green on an
+          # ordinary pull request — there is nothing failing, which is the
+          # honest reading for an adopter whose repository runs none — and not
+          # on a slice PR (#175).
           #
           # `if !` rather than `|| { … }` on the same grounds as the arms above:
           # under `bash -e` a test as the last command of the arm ends the step.
           : > "$err"
           if ! checks=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
-            | jq -r "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | .conclusion // .status] | if any(. != \"success\" and . != \"neutral\" and . != \"skipped\") then \"red\" else \"green\" end" \
+            | jq -r "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | .conclusion // .status] | if length == 0 then \"none\" elif any(. != \"success\" and . != \"neutral\" and . != \"skipped\") then \"red\" else \"green\" end" \
             2>>"$err"); then
             checks=unknown
             echo "::warning::Could not decide whether this commit's check runs are green, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
@@ -568,13 +570,43 @@ jobs:
           # read as both.
           : > "$err"
           if ! commit_statuses=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>"$err" \
-            | jq -r "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | .state] | if any(. == \"failure\" or . == \"error\" or . == \"pending\") then \"red\" else \"green\" end" \
+            | jq -r "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | .state] | if length == 0 then \"none\" elif any(. == \"failure\" or . == \"error\" or . == \"pending\") then \"red\" else \"green\" end" \
             2>>"$err"); then
             commit_statuses=unknown
             echo "::warning::Could not read this commit's statuses, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
             if [ -s "$err" ]; then
               cat "$err"
             fi
+          fi
+
+          # **No CI at all** — `none` from both halves — is green everywhere
+          # but a slice PR (#175). A slice PR's base is a PRD branch, not the
+          # default branch, so an adopter's CI that filters `pull_request` to
+          # the default branch never runs on one. Green there would let a clean
+          # review recommend approving code no CI ran on, and on a slice PR that
+          # verdict is what moves the chain onto the next slice. `unknown`
+          # sends the review to a human instead, and the evidence says why and
+          # where the one-line fix is.
+          #
+          # Both halves, not check runs alone: a slice PR whose CI reports only
+          # through commit statuses had CI run on it. A slice branch is named
+          # by `implement-prd`'s *Prepare the slice branch* step.
+          if [ "${checks}/${commit_statuses}" = "none/none" ]; then
+            case "$BRANCH" in
+              agent/slice-*)
+                checks=unknown
+                commit_statuses=unknown
+                no_ci="No CI ran on this slice PR: nothing but the loop's own jobs reported on this commit. A slice PR's base is its PRD branch, so a CI workflow that filters \`pull_request\` to the default branch does not run on it — add \`agent/prd-**\` to that filter's \`branches:\` (jeffwlawson/agent-workflows docs/ADOPTING.md §5, *Slice PRs and your CI*). Until then CI is unknown here, not green, so a clean review asks for a human rather than advancing the chain."
+                echo "::warning::${no_ci}"
+                echo "_${no_ci}_" >> "$out"
+                ;;
+            esac
+          fi
+          if [ "$checks" = none ]; then
+            checks=green
+          fi
+          if [ "$commit_statuses" = none ]; then
+            commit_statuses=green
           fi
 
           # One word out of two, and `red` beats `unknown`: a failure that was

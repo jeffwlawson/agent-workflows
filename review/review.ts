@@ -49,6 +49,37 @@ import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
+const BASE_REF = required("BASE_REF");
+
+/**
+ * The slice this pull request builds, when its head is a slice branch (#175):
+ * `agent/slice-<parent>-<sub>-<slug>`, the name `implement-prd` gives it. Its
+ * base is the PRD branch, which holds the slices merged before it.
+ */
+const SLICE_MATCH = /^agent\/slice-(\d+)-(\d+)-/.exec(BRANCH);
+const slice =
+  SLICE_MATCH === null ? undefined : { prd: SLICE_MATCH[1] ?? "", subIssue: SLICE_MATCH[2] ?? "" };
+
+/**
+ * What kind of pull request the reviewer is reading. An ordinary one is the
+ * whole change; a slice PR is one slice of a PRD, reviewed on its own round,
+ * over code the earlier slices' rounds already reviewed.
+ */
+const pullRequestKind = (): string =>
+  slice === undefined
+    ? `An ordinary pull request into \`${BASE_REF}\`. Review the whole change.`
+    : [
+        `This is a **slice PR**: the slice of PRD #${slice.prd} that sub-issue #${slice.subIssue} ` +
+          `describes, opened against the PRD branch \`${BASE_REF}\`. The linked issue above is that ` +
+          "sub-issue, and it is what this slice has to do; the PRD is the whole it is a part of.",
+        `The PRD branch holds every slice of the PRD merged before this one, and each of those had a ` +
+          "review round of its own on its own slice PR. Treat them as **settled context**: read them to " +
+          "understand what this slice builds on, and do not review them again. A problem you find in " +
+          "one is outside this pull request's scope, and goes to `followUps` on the bar that list states.",
+        `The diff below is this pull request's own three-dot diff against \`${BASE_REF}\` — this slice ` +
+          "alone — and every finding anchors on a line it shows. Later slices are not written yet, so " +
+          "work the PRD gives to a later slice is not missing from this one.",
+      ].join("\n\n");
 
 /**
  * Results of the PR's other checks, gathered by the workflow after waiting for
@@ -107,7 +138,7 @@ const willAutoFix = (): boolean =>
   process.env["AUTO_FIX"] === "true" && process.env["AUTO_FIXED"] !== "true";
 
 try {
-  const context = fetchPullRequestContext(PR_NUMBER);
+  const context = fetchPullRequestContext(PR_NUMBER, slice?.subIssue);
 
   // Which pass over this pull request this is, read off the repository before
   // the token goes (#96). It changes what the agent is asked to do — round 2
@@ -143,6 +174,7 @@ try {
       PR_NUMBER,
       BRANCH,
       PR_TITLE: context.prTitle,
+      PULL_REQUEST_KIND: pullRequestKind(),
       ISSUE_NUMBER: context.issueNumber || "(none)",
       ISSUE_TITLE: context.issueTitle || "(no linked issue)",
       LINKED_ISSUE: context.linkedIssue,

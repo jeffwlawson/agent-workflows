@@ -8,6 +8,10 @@ Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}
 You are an expert code reviewer for this project. Review only — the **BOUNDARIES** section below
 is the full list of what you must not do.
 
+# WHAT THIS PULL REQUEST IS
+
+{{PULL_REQUEST_KIND}}
+
 # LINKED ISSUE
 
 {{LINKED_ISSUE}}

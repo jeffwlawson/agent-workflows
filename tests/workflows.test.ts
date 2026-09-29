@@ -1027,6 +1027,50 @@ describe("agent-review refuses a head that moved while it was queued", () => {
 });
 
 /**
+ * A slice PR is the ordinary `review` round on one slice of a PRD (#175). Two
+ * things change for it and nothing else does: the reviewer is told which slice
+ * of which PRD it reads, and a slice PR no CI ran on is not green. The second
+ * is executed in `tests/review-ci-wait.test.ts`; what is held here is that both
+ * halves recognise a slice PR by the one prefix `implement-prd` names its
+ * branches with, and that the doc the evidence line points at says the fix.
+ */
+describe("agent-review knows when it is reading a slice PR", () => {
+  const RUNNER = "review/review.ts";
+  const PROMPT = "review/prompt.md";
+  const waitStep = (): Step | undefined =>
+    stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
+
+  it("recognises a slice branch by the prefix implement-prd names it with", () => {
+    expect(fs.readFileSync(PRD, "utf8")).toContain('slice="agent/slice-${ISSUE_NUMBER}-${SUB}-${slug}"');
+    expect(fs.readFileSync(RUNNER, "utf8")).toContain("/^agent\\/slice-(\\d+)-(\\d+)-/");
+    expect(waitStep()?.run ?? "").toContain("agent/slice-*)");
+  });
+
+  it("gives the reviewer the slice, its PRD, and the earlier slices as settled context", () => {
+    const runner = fs.readFileSync(RUNNER, "utf8");
+
+    expect(fs.readFileSync(PROMPT, "utf8")).toContain("{{PULL_REQUEST_KIND}}");
+    expect(runner).toMatch(/PULL_REQUEST_KIND: pullRequestKind\(/);
+    expect(runner).toContain("settled context");
+    expect(runner).toContain("three-dot diff");
+    // The slice PR's body says `Part of`, which links nothing, so the sub-issue
+    // is handed to the context fetch as the linked issue in its place.
+    expect(runner).toMatch(/fetchPullRequestContext\(PR_NUMBER, slice\?\.subIssue\)/);
+  });
+
+  it("points the no-CI evidence at the adoption doc, which carries the branches: line", () => {
+    const run = waitStep()?.run ?? "";
+    const doc = fs.readFileSync("docs/ADOPTING.md", "utf8");
+    const section5 = doc.split(/^(?=## )/m).find((s) => s.startsWith("## 5.")) ?? "";
+
+    expect(run).toContain("No CI ran on this slice PR");
+    expect(run).toContain("docs/ADOPTING.md §5, *Slice PRs and your CI*");
+    expect(section5).toContain("### Slice PRs and your CI");
+    expect(section5).toMatch(/branches: \[main, 'agent\/prd-\*\*'\]/);
+  });
+});
+
+/**
  * The review's third output channel (#47). The findings themselves live in the
  * review body, where a human reads them before merging; the label is what a
  * later workflow selects on, and what removing opts a PR out of.

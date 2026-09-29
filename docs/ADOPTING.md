@@ -1161,6 +1161,24 @@ input — that is the same limitation that keeps the trigger in your caller rath
 reusable half — and your CI is not part of this loop anyway. Nothing about the conversion changes
 it; it is named here only because the row it used to share is gone.
 
+### Slice PRs and your CI
+
+`agent-implement-prd` opens each slice of a PRD as a **slice PR** whose base is the PRD branch,
+`agent/prd-<parent>-<slug>`, not your default branch. A CI workflow that filters `pull_request` to
+the default branch does not run on one. Add the PRD branches to that filter, one line:
+
+```yaml
+on:
+  pull_request:
+    branches: [main, 'agent/prd-**']
+```
+
+Without it, a slice PR carries no check but the loop's own, and review reads that as CI
+**unknown** rather than green: a clean review lands on *Needs a closer look* and the chain parks at
+the first slice, instead of approving code no CI ran on. The review's CI evidence says so and links
+here. Ordinary pull requests are unchanged — on a repository with no CI anywhere, they still read
+green. A CI with no `branches:` filter on `pull_request`, like this repository's, needs nothing.
+
 Nothing above will error if you get it wrong — with one exception worth knowing, because it is the
 exception on purpose. An empty base ref used to default to `main` inside the runners; since #98 it
 fails the run with a message naming the input, on the grounds that a review silently diffing

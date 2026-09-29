@@ -445,9 +445,14 @@ const WHOLE_QUERY = "(the whole query)";
 /** Said where a response resolved no pull request and offered no error explaining it. */
 const NO_PULL_REQUEST = "the response resolved no pull request and said nothing about why";
 
-/** What `gh` said about a failure, in as few words as it used. */
+/**
+ * What `gh` said about a failure, in as few words as it used — or what Node
+ * said, when the run failed around `gh` rather than in it. That is preferred
+ * over both streams: a binary that never ran printed nothing, and one cut off at
+ * the buffer printed JSON that stops mid-token (#131).
+ */
 const spokenReason = (outcome: GhOutcome): string => {
-  const said = [outcome.stderr, outcome.stdout]
+  const said = [outcome.spawnError ?? "", outcome.stderr, outcome.stdout]
     .map((text) => text.trim())
     .find((text) => text.length > 0);
   if (said === undefined) return "gh produced no output at all";

@@ -334,7 +334,7 @@ describe("ghOutcome — the output survives a non-zero exit", () => {
   it("reports a zero exit with its stdout", () => {
     exits(0, '{"data":{}}', "");
 
-    expect(ghOutcome(["api", "graphql", "-f", "query={}"])).toEqual({
+    expect(ghOutcome(["api", "graphql", "-f", "query={}"])).toStrictEqual({
       ok: true,
       stdout: '{"data":{}}',
       stderr: "",
@@ -357,7 +357,7 @@ describe("ghOutcome — the output survives a non-zero exit", () => {
   it("carries what gh printed to stderr beside a zero exit", () => {
     exits(0, "<html>502 Bad Gateway</html>", "gh: HTTP 502 from api.github.com\n");
 
-    expect(ghOutcome(["api", "graphql", "-f", "query={}"])).toEqual({
+    expect(ghOutcome(["api", "graphql", "-f", "query={}"])).toStrictEqual({
       ok: true,
       stdout: "<html>502 Bad Gateway</html>",
       stderr: "gh: HTTP 502 from api.github.com\n",
@@ -373,6 +373,7 @@ describe("ghOutcome — the output survives a non-zero exit", () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.stdout).toBe(partial);
     expect(outcome.stderr).toContain("do not have permission");
+    expect(outcome).not.toHaveProperty("spawnError");
   });
 
   // A failure with nothing on it at all — a missing binary never runs, so
@@ -380,9 +381,46 @@ describe("ghOutcome — the output survives a non-zero exit", () => {
   // as empty text, not as `undefined` reaching a caller that is about to
   // `JSON.parse` it.
   it("reports empty text when the failure carried no output", () => {
-    exits(null, null, null, new Error("spawn gh ENOENT"));
+    exits(null, null, null, Object.assign(new Error("spawnSync gh ENOENT"), { code: "ENOENT" }));
 
-    expect(ghOutcome(["api", "graphql"])).toEqual({ ok: false, stdout: "", stderr: "" });
+    expect(ghOutcome(["api", "graphql"])).toStrictEqual({
+      ok: false,
+      stdout: "",
+      stderr: "",
+      spawnError: "spawnSync gh ENOENT",
+    });
+  });
+
+  /**
+   * Node's own diagnosis, carried rather than read for `ok` and dropped (#131).
+   * A binary that never ran printed nothing, so without it the only sentence a
+   * caller could speak was "no output at all" for a cause Node had named. And
+   * it stays out of `stderr`, which is what `gh` printed and nothing else (#90).
+   */
+  it("carries the spawn error's words beside a gh that never ran", () => {
+    exits(null, null, null, Object.assign(new Error("spawnSync gh ENOENT"), { code: "ENOENT" }));
+
+    const outcome = ghOutcome(["api", "graphql"]);
+
+    expect(outcome.spawnError).toContain("ENOENT");
+    expect(outcome.stderr).toBe("");
+  });
+
+  // Verified against Node: past `maxBuffer` the run is cut off with `status`
+  // null and stdout truncated, and the error is the only thing that says so.
+  it("carries the spawn error beside output cut off at the buffer", () => {
+    exits(
+      null,
+      '{"data":{"repository":{"pullRequest":{"comments":{"nodes":[{"bo',
+      "",
+      Object.assign(new Error("spawnSync gh ENOBUFS"), { code: "ENOBUFS" }),
+    );
+
+    const outcome = ghOutcome(["api", "graphql"]);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.spawnError).toContain("ENOBUFS");
+    expect(outcome.stderr).toBe("");
   });
 
   /**
@@ -396,7 +434,10 @@ describe("ghOutcome — the output survives a non-zero exit", () => {
   it("reads a kill by signal as a failure, not as a zero exit", () => {
     captured.mockReturnValue({ status: null, signal: "SIGTERM", stdout: "", stderr: "" } as never);
 
-    expect(ghOutcome(["api", "graphql"]).ok).toBe(false);
+    const outcome = ghOutcome(["api", "graphql"]);
+    expect(outcome.ok).toBe(false);
+    // A signal is not a spawn error: `gh` ran, and Node has nothing to add.
+    expect(outcome).not.toHaveProperty("spawnError");
   });
 
   it("reaches gh through argv, with no shell", () => {

@@ -923,6 +923,46 @@ describe("a total failure stays distinguishable from a partial one", () => {
   });
 
   /**
+   * When `gh` never ran, Node named the cause and `gh` said nothing, so the
+   * sentence is Node's (#131). Read for `ok` and dropped, it was "gh produced
+   * no output at all" beside an error that said exactly why; past the buffer
+   * it was 300 characters of severed JSON.
+   */
+  it("reports the spawn error's own words when gh never ran", () => {
+    ghAnswers(() => "");
+    captured.mockReturnValue({
+      status: null,
+      stdout: null,
+      stderr: null,
+      error: Object.assign(new Error("spawnSync gh ENOENT"), { code: "ENOENT" }),
+    } as never);
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.status).toBe("failed");
+    expect(feedback.unreadable).toHaveLength(1);
+    expect(feedback.unreadable[0]?.reason).toContain("spawnSync gh ENOENT");
+    expect(feedback.unreadable[0]?.reason).not.toContain("no output at all");
+  });
+
+  it("reports the spawn error, not severed JSON, when the answer outran the buffer", () => {
+    ghAnswers(() => "");
+    captured.mockReturnValue({
+      status: null,
+      stdout: '{"data":{"repository":{"pullRequest":{"comments":{"nodes":[{"body":"cut he',
+      stderr: "",
+      error: Object.assign(new Error("spawnSync gh ENOBUFS"), { code: "ENOBUFS" }),
+    } as never);
+
+    const feedback = fetchPullRequestFeedback("12");
+
+    expect(feedback.status).toBe("failed");
+    expect(feedback.unreadable).toHaveLength(1);
+    expect(feedback.unreadable[0]?.reason).toContain("spawnSync gh ENOBUFS");
+    expect(feedback.unreadable[0]?.reason).not.toContain('{"data"');
+  });
+
+  /**
    * The response is read defensively rather than trusted to its type: a payload
    * malformed enough to throw inside the reader would be reported as the runner
    * crashing rather than as the API answering badly, which is the substitution

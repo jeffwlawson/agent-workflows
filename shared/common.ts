@@ -201,6 +201,18 @@ export interface GhOutcome {
    * exit code is exactly the one those words are for (#90).
    */
   readonly stderr: string;
+  /**
+   * Node's own diagnosis when the run failed around `gh` rather than in it —
+   * `spawnSync gh ENOENT` for a binary that never started, `spawnSync gh
+   * ENOBUFS` for output cut off at the buffer. Absent whenever `spawnSync`
+   * reported no error, which is every exit and every kill by signal.
+   *
+   * Beside `stderr` rather than folded into it, because `stderr` is what `gh`
+   * printed and nothing else (#90); these are words `gh` never said. Read for
+   * `ok` and then dropped, a missing binary spoke as "no output at all" and an
+   * overrun buffer as its own severed JSON (#131).
+   */
+  readonly spawnError?: string;
 }
 
 /**
@@ -252,6 +264,7 @@ export const ghOutcome = (args: readonly string[], options: GhOptions = {}): GhO
     ok: result.error === undefined && result.status === 0,
     stdout: capturedText(result.stdout),
     stderr: capturedText(result.stderr),
+    ...(result.error === undefined ? {} : { spawnError: result.error.message }),
   };
 };
 

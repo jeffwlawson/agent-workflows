@@ -4114,18 +4114,24 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 
   /**
-   * The slice PR asks for its review the way `agent-implement`'s PR does, and
-   * that is the only label this run adds anywhere. The chain no longer
-   * re-labels the parent after a slice, and no longer asks for review of the
-   * whole PRD on the last one: the next slice waits on this one's round.
+   * The slice PR asks for its review the way `agent-implement`'s PR does. The
+   * chain no longer re-labels the parent after a slice, and no longer asks for
+   * review of the whole PRD on the last one: the next slice waits on this
+   * one's round. The one other trigger label it adds is the finishing run's
+   * integration review on the PRD PR (#177), which a building run never adds.
    */
   it("requests review on the slice PR, and re-labels nothing else", () => {
     const adds = stepsOf(PRD).filter((s) => /--add-label "agent:(implement|review)"/.test(s.run ?? ""));
 
-    expect(adds).toHaveLength(1);
+    expect(adds).toHaveLength(2);
     expect(adds[0]?.run ?? "").toContain('gh pr edit "$SLICE_PR" --add-label "agent:review"');
     expect(adds[0]?.env?.["SLICE_PR"]).toBe("${{ steps.slice_pr.outputs.number }}");
+    expect(adds[0]?.if ?? "").toContain("steps.preflight.outputs.finishing == 'false'");
     expect(adds[0]?.if ?? "").not.toContain("steps.remaining");
+    expect(adds[1]?.id).toBe("handover");
+    expect(adds[1]?.run ?? "").toContain('gh pr edit "$PRD_PR" --add-label "agent:review"');
+    expect(adds[1]?.if ?? "").toContain("steps.preflight.outputs.finishing == 'true'");
+    expect(runOf(PRD, "handover")).not.toContain("agent:implement\" ");
     expect(stepsOf(PRD).map((s) => s.id)).not.toContain("remaining");
   });
 
@@ -4325,13 +4331,120 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   it("looks up open slice PRs by base, before it calls the PRD finished", () => {
     const run = runOf(PRD, "preflight");
 
+    const lookup = run.split("\n").find((l) => l.startsWith("slice_prs=")) ?? "";
+
     expect(run).toContain("gh pr list --state open");
-    expect(run).toContain('select(.baseRefName | startswith(\\"agent/prd-${ISSUE_NUMBER}-\\"))');
-    expect(run).not.toMatch(/select\(\.headRefName/);
+    expect(lookup).toContain('select(.baseRefName | startswith(\\"agent/prd-${ISSUE_NUMBER}-\\"))');
+    expect(lookup).not.toContain("headRefName");
     expect(run.indexOf('"$open_slices" -gt 1')).toBeLessThan(run.indexOf("no open sub-issues"));
     expect(run.indexOf('"$open_slices" -eq 1')).toBeLessThan(run.indexOf("no open sub-issues"));
     expect(armOf(run, '"$open_slices" -gt 1')).toContain("block ");
-    expect(armOf(run, '"$open_slices" -eq 1')).toContain("block ");
+  });
+
+  /**
+   * The preflight's state table (#177), every row safe to re-run. With no
+   * sub-issue left, one open slice PR is the **finishing run**, and none with a
+   * draft PRD PR resumes the handover — the PRD PR found by its head, the only
+   * lookup here that reads one. The rows are executed in
+   * `tests/implement-prd-preflight.test.ts`; this pins that the finishing run
+   * is a run of its own, built on nothing the build steps do.
+   */
+  it("finishes the PRD in a run of its own once no sub-issue is left", () => {
+    const run = runOf(PRD, "preflight");
+    const finishing = armOf(run, 'if [ -z "$next" ]');
+
+    expect(finishing).toContain('"$open_slices" -eq 1');
+    expect(finishing).toContain('select(.headRefName | startswith(\\"agent/prd-${ISSUE_NUMBER}-\\"))');
+    expect(finishing).toContain(".isDraft");
+    expect(finishing).toContain("the PRD is finished");
+    expect(finishing).toContain('echo "finishing=true"');
+    expect(finishing).toContain("exit 0");
+    expect(run.indexOf('if [ -z "$next" ]')).toBeLessThan(run.indexOf("/dependencies/blocked_by"));
+    expect(run).toContain('echo "finishing=false"');
+  });
+
+  /**
+   * The finishing run **runs no model**: it checks nothing out, installs no
+   * toolchain and no Claude Code, and the runner — handed the run only to
+   * write the last slice's row — exits before any agent starts. Nothing a
+   * build does happens on it either.
+   */
+  it("runs no model on the finishing run", () => {
+    const BUILDING = "steps.preflight.outputs.finishing == 'false'";
+    const steps = stepsOf(PRD);
+    const building = steps.filter(
+      (s) =>
+        (s.uses ?? "").startsWith("actions/checkout@") ||
+        (s.run ?? "").includes("${{ inputs.setup }}") ||
+        (s.if ?? "").includes("inputs.node-version-file") ||
+        (s.run ?? "").includes("@anthropic-ai/claude-code") ||
+        ["branch", "prepare", "slice_pr"].includes(s.id ?? "") ||
+        /git push|gh issue close|--add-label "agent:review"/.test(s.run ?? ""),
+    );
+    const agent = steps.find((s) => (s.run ?? "").includes("agent-workflows implement-prd"));
+    const runner = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
+
+    expect(building.filter((s) => s.id !== "handover")).toHaveLength(10);
+    for (const step of building.filter((s) => s.id !== "handover")) expect(step.if ?? "").toContain(BUILDING);
+    expect(agent?.if).toBe(`${NOT_REFUSED} && (${BUILDING} || steps.merge.outputs.merged == 'true')`);
+    expect(agent?.env?.["FINISHING"]).toBe("${{ steps.preflight.outputs.finishing }}");
+    expect(runner).toContain('process.env["FINISHING"] === "true"');
+    expect(runner.indexOf("writeSliceRow(PRD_PR)")).toBeLessThan(runner.indexOf("if (FINISHING)"));
+    expect(runner.indexOf("if (FINISHING)")).toBeLessThan(runner.indexOf("sandcastle.run"));
+  });
+
+  /**
+   * The handover (#177). More than one slice — a pre-upgrade slice counting —
+   * asks for the integration review, and review marks the PRD PR ready; one
+   * slice has had its review on its slice PR, so the PRD PR is marked ready
+   * here. Both need AGENT_PAT. After the runner, so the last row is written
+   * first, and the loop never merges the PRD PR nor approves anything. The
+   * counting is executed in `tests/implement-prd-preflight.test.ts`.
+   */
+  it("hands the PRD PR over on the finishing run, and never merges or approves it", () => {
+    const steps = stepsOf(PRD);
+    const at = steps.findIndex((s) => s.id === "handover");
+    const step = steps[at];
+    const run = step?.run ?? "";
+
+    expect(at).toBeGreaterThan(steps.findIndex((s) => (s.run ?? "").includes("agent-workflows implement-prd")));
+    expect(at).toBeLessThan(steps.findIndex((s) => s.name === "Mark blocked on failure"));
+    expect(step?.if).toBe(`${NOT_REFUSED} && steps.preflight.outputs.finishing == 'true' && success()`);
+    expect(step?.env?.["PRD_PR"]).toBe("${{ steps.prd_pr.outputs.number || steps.preflight.outputs.prd_pr }}");
+    expect(step?.env?.["PRD_BRANCH"]).toBe("${{ steps.merge.outputs.prd_branch || steps.preflight.outputs.prd_branch }}");
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(armOf(run, 'if [ "$slices" -gt 1 ]')).toContain('--add-label "agent:review"');
+    expect(armOf(run, 'if [ "$slices" -gt 1 ]')).toContain('gh pr ready "$PRD_PR"');
+    expect(run.indexOf('"$HAS_PAT" != "true"')).toBeLessThan(run.indexOf("gh pr edit"));
+    expect(bashFunctionBody(run, "block")).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
+
+    const merges = fs
+      .readFileSync(PRD, "utf8")
+      .split("\n")
+      .filter((l) => /\bgh pr (merge|review)\b/.test(l) && !l.trimStart().startsWith("#"));
+
+    expect(merges).toEqual(['            gh pr merge "$SLICE_PR" "--${method}" --match-head-commit "$head" \\']);
+  });
+
+  /**
+   * "Add `agent:review` to the PRD PR by hand" was the remedy for a run that
+   * died after the last slice, in the finished refusal and in the failure
+   * comment. The resume-the-handover row replaced it: the re-label is the
+   * remedy, so neither place sends a human to the PRD PR any more.
+   */
+  it("sends nobody to add agent:review to the PRD PR by hand", () => {
+    const preflight = runOf(PRD, "preflight");
+    const failed = stepsOf(PRD).find((s) => s.name === "Mark blocked on failure");
+    const run = (failed?.run ?? "")
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n");
+
+    expect(preflight).not.toMatch(/agent:review/);
+    expect(run).not.toMatch(/PRD PR[^.]*by hand|by hand instead/);
+    expect(failed?.env?.["FINISHING"]).toBe("${{ steps.preflight.outputs.finishing }}");
+    expect(armOf(run, 'if [ "${FINISHING}" = "true" ]')).toMatch(/resumes the handover/);
   });
 
   /**

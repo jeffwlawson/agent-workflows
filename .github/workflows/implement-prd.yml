@@ -47,6 +47,12 @@ name: Agent Implement PRD (reusable)
 # into the PRD PR's body — its verdict and its open findings, never refreshed.
 # Until the chain can see a round end, re-adding `agent:implement` to the
 # parent is a human's to do, and it is what says the round is over.
+#
+# After the last slice, a **finishing run** (#177) builds nothing and runs no
+# model: it merges the last slice PR, writes its row, and hands the PRD PR
+# over — to an integration review when the chain holds more than one slice,
+# straight to ready when it holds one. A human merges the PRD PR. The loop
+# never merges it and never approves.
 
 on:
   workflow_call:
@@ -271,8 +277,8 @@ jobs:
           #
           # Not `|| true`, for the shape query's reason: "could not look" read
           # as "none open" builds a slice on top of one nobody has merged.
-          slice_prs=$(gh pr list --state open --limit 1000 --json number,headRefName,baseRefName \
-            --jq "[.[] | select(.baseRefName | startswith(\"agent/prd-${ISSUE_NUMBER}-\"))]")
+          pulls=$(gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft)
+          slice_prs=$(jq -c "[.[] | select(.baseRefName | startswith(\"agent/prd-${ISSUE_NUMBER}-\"))]" <<< "$pulls")
           open_slices=$(jq 'length' <<< "$slice_prs")
           named=$(jq -r 'map("#\(.number) (`\(.headRefName)` into `\(.baseRefName)`)") | join(", ")' <<< "$slice_prs")
 
@@ -292,16 +298,46 @@ jobs:
           # then builds the next slice on top of it. Whether its round has
           # ended is that step's to check, not this one's.
           #
-          # Interim, until the finishing run: with no sub-issue left, the one
-          # open slice PR is the **last** slice, and merging it is the finishing
-          # run's to do together with handing the PRD PR over. Nothing does
-          # either yet, so this run stops rather than merge half of it.
-          if [ "$open_slices" -eq 1 ] && [ -z "$next" ]; then
-            block "Refused to run: slice PR ${named} is the last slice of #${ISSUE_NUMBER}, and this chain does not yet finish a PRD by itself. Once its review round has ended, merge it into the PRD branch by hand, then hand the PRD PR over — the open one whose branch starts \`agent/prd-${ISSUE_NUMBER}-\`: add \`agent:review\` to it, or open it from that branch if no slice was merged before this one."
-          fi
-
+          # With no sub-issue left, the run is the **finishing run** (#177): it
+          # builds nothing and runs no model. The whole state table, every row
+          # safe to re-run:
+          #
+          #   open sub-issue | open slice PR | the run
+          #   yes            | yes           | merges it, builds the next slice
+          #   yes            | no            | builds the next slice
+          #   no             | yes           | finishing: merges it, hands the PRD PR over
+          #   no             | no, PRD PR    | finishing: resumes the handover, since a
+          #                  |   still draft |   run died after the last merge
+          #   no             | no, otherwise | refused: the PRD is finished
+          #
+          # The PRD PR is found by its **head**, the PRD branch, the way `Open
+          # or reuse the PRD PR` finds it — and only a draft one is waiting on
+          # a handover. Ready means handed over, and none means there is
+          # nothing to hand.
           if [ -z "$next" ]; then
-            refuse "Refused to run: #${ISSUE_NUMBER} has no open sub-issues left — all ${subs} of them are closed, so the PRD is finished. Nothing was re-labelled; if there is more to do, add a sub-issue first. If its PR — the open one whose branch starts \`agent/prd-${ISSUE_NUMBER}-\` — is still in draft, nothing has handed it over yet: add \`agent:review\` to that PR by hand. Re-labelling here only returns this message."
+            if [ "$open_slices" -eq 1 ]; then
+              echo "The last slice PR ${named} is open; finishing #${ISSUE_NUMBER}."
+            else
+              prd_prs=$(jq -c "[.[] | select(.headRefName | startswith(\"agent/prd-${ISSUE_NUMBER}-\"))]" <<< "$pulls")
+              if [ "$(jq 'length' <<< "$prd_prs")" -gt 1 ]; then
+                block "Refused to run: $(jq -r 'map("#\(.number)") | join(", ")' <<< "$prd_prs") are all open from the PRD branch of #${ISSUE_NUMBER}, and the chain will not guess which of them to hand over. Close all but one, then re-add \`agent:implement\` here."
+              fi
+              if [ "$(jq -r '.[0].isDraft // false' <<< "$prd_prs")" != "true" ]; then
+                refuse "Refused to run: #${ISSUE_NUMBER} has no open sub-issues left — all ${subs} of them are closed, and no slice PR is open against its PRD branch, so the PRD is finished. Its PRD PR has been handed over, or there is none. Nothing was re-labelled and nothing was built; if there is more to do, add a sub-issue first."
+              fi
+              echo "PRD PR #$(jq -r '.[0].number' <<< "$prd_prs") is still a draft with every slice merged; resuming its handover."
+              {
+                echo "prd_pr=$(jq -r '.[0].number' <<< "$prd_prs")"
+                echo "prd_branch=$(jq -r '.[0].headRefName' <<< "$prd_prs")"
+              } >> "$GITHUB_OUTPUT"
+            fi
+            {
+              echo "sub="
+              echo "slice_pr=$(jq -r '.[0].number // ""' <<< "$slice_prs")"
+              echo "finishing=true"
+              echo "refused=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           # The same blocked-by refusal `agent-implement` carries, for the same
@@ -324,6 +360,10 @@ jobs:
           # re-adding `agent:implement` once the blocker closes lands on the
           # finished refusal, not on a slice. Ordered this way each refusal is
           # the one whose remedy is the real one.
+          #
+          # The finishing run never reaches it either, and should not: the
+          # chain it finishes was started — and so cleared of blockers — by
+          # its first run, and what is left is merging work already built.
           #
           # **The parent, and never the sub-issues.** The chain walks them in
           # sub-issues API order and reads `blocked_by` nowhere: whatever
@@ -365,6 +405,7 @@ jobs:
             echo "sub_title<<PRD_SUB_TITLE_EOF"
             jq -r '.title' <<< "$next"
             echo "PRD_SUB_TITLE_EOF"
+            echo "finishing=false"
             echo "refused=false"
           } >> "$GITHUB_OUTPUT"
 
@@ -647,8 +688,13 @@ jobs:
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
 
+      # From here to `Request review` is **building a slice**, and the finishing
+      # run (#177) skips all of it: no checkout, no toolchain, no Claude Code.
+      # It still hands over to the runner when it merged the last slice PR,
+      # since writing that slice's row is the runner's — and the runner, told
+      # it is finishing, writes the row and runs no model.
       - name: Checkout the base branch
-        if: steps.preflight.outputs.refused == 'false'
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false'
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.default-branch }}
@@ -672,7 +718,7 @@ jobs:
       # nobody can edit, so it is the part the lookup keys on; the slug is only
       # ever used to *name* a branch that does not exist yet.
       - name: Resolve the PRD branch
-        if: steps.preflight.outputs.refused == 'false'
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false'
         id: branch
         run: |
           set -euo pipefail
@@ -714,7 +760,7 @@ jobs:
       # other needs a directory. The slug is the sub-issue's, only ever used to
       # *name* the branch: nothing finds a slice PR by it (see the preflight).
       - name: Prepare the slice branch
-        if: steps.preflight.outputs.refused == 'false'
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false'
         id: prepare
         env:
           PRD_BRANCH: ${{ steps.branch.outputs.name }}
@@ -746,7 +792,7 @@ jobs:
       # agent's own runtime, and every runner image already has the Node it
       # needs for it.
       - name: Setup Node.js
-        if: steps.preflight.outputs.refused == 'false' && inputs.node-version-file != ''
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && inputs.node-version-file != ''
         uses: actions/setup-node@v7
         with:
           node-version-file: ${{ inputs.node-version-file }}
@@ -757,12 +803,12 @@ jobs:
       # from: a literal in a workflow file, never an expression reading the
       # issue event.
       - name: Install dependencies
-        if: steps.preflight.outputs.refused == 'false' && inputs.setup != ''
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && inputs.setup != ''
         run: |
           ${{ inputs.setup }}
 
       - name: Install Claude Code
-        if: steps.preflight.outputs.refused == 'false'
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false'
         run: npm install -g @anthropic-ai/claude-code
 
       # The runner package lives on GitHub Packages, which has no anonymous
@@ -773,7 +819,7 @@ jobs:
       # cache opt-out belongs to the same note: this half declares no toolchain,
       # so it must not infer one.
       - name: Authenticate to GitHub Packages
-        if: steps.preflight.outputs.refused == 'false'
+        if: steps.preflight.outputs.refused == 'false' && (steps.preflight.outputs.finishing == 'false' || steps.merge.outputs.merged == 'true')
         uses: actions/setup-node@v7
         with:
           registry-url: https://npm.pkg.github.com
@@ -781,7 +827,7 @@ jobs:
           package-manager-cache: false
 
       - name: Run implementation agent
-        if: steps.preflight.outputs.refused == 'false'
+        if: steps.preflight.outputs.refused == 'false' && (steps.preflight.outputs.finishing == 'false' || steps.merge.outputs.merged == 'true')
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -797,6 +843,9 @@ jobs:
           # slice's row of the slices table into this PR's body, first, from the
           # facts `Gather the slice's row` left in OUTPUT_DIR (#174).
           PRD_PR: ${{ steps.prd_pr.outputs.number }}
+          # `true` on the finishing run, which builds nothing: the runner writes
+          # the last slice's row and exits before any agent is started.
+          FINISHING: ${{ steps.preflight.outputs.finishing }}
           OUTPUT_DIR: ${{ runner.temp }}
         # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
         # whole point. `npx pkg@version` reuses a package already present in the
@@ -827,7 +876,7 @@ jobs:
       # after a failed build lands
       # rather than being rejected by its own leftovers.
       - name: Push branches
-        if: steps.preflight.outputs.refused == 'false' && success()
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && success()
         env:
           PRD_BRANCH: ${{ steps.branch.outputs.name }}
           EXISTS: ${{ steps.branch.outputs.exists }}
@@ -847,7 +896,7 @@ jobs:
       # the chain's "built" marker, and a closing keyword here would tie that
       # marker to when the slice PR merges instead of to when it opened.
       - name: Open the slice PR
-        if: steps.preflight.outputs.refused == 'false' && success()
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && success()
         id: slice_pr
         env:
           PRD_BRANCH: ${{ steps.branch.outputs.name }}
@@ -883,7 +932,7 @@ jobs:
       # branch is not meant to outlive its slice PR, and the PRD branch tip
       # moves on with every slice.
       - name: Close the finished sub-issue
-        if: steps.preflight.outputs.refused == 'false' && success()
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && success()
         env:
           SUB: ${{ steps.preflight.outputs.sub }}
           SLICE_BRANCH: ${{ steps.prepare.outputs.slice }}
@@ -909,7 +958,7 @@ jobs:
       # draft asking nobody for review — so it fails into `Mark blocked on
       # failure`, whose comment names the slice PR to label by hand.
       - name: Request review
-        if: steps.preflight.outputs.refused == 'false' && success()
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && success()
         env:
           SLICE_PR: ${{ steps.slice_pr.outputs.number }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
@@ -919,6 +968,74 @@ jobs:
           gh pr edit "$SLICE_PR" --add-label "agent:review"
           if [ "$HAS_PAT" != "true" ]; then
             echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on slice PR #${SLICE_PR}."
+          fi
+
+      # The finishing run's handover (#177): the PRD PR leaves draft, and a
+      # human merges it — the loop never merges it and never approves.
+      #
+      # More than one slice means an **integration review**: `agent:review` on
+      # the PRD PR, and review marks it ready once the review is posted, the
+      # way it marks any PR ready. One slice has had its review already, on
+      # its slice PR — the same lines — so the PRD PR is marked ready here. A
+      # slice built before slice PRs had no review of its own, and counts: the
+      # integration review is the one it gets.
+      #
+      # The count is read from GitHub rather than off the slices table: the
+      # slice PRs merged into the PRD branch, plus the closed sub-issues no
+      # slice PR built, which is the same "built before slice PRs" test `Gather
+      # the slice's row` applies. A body a human may edit is not evidence.
+      #
+      # Needs AGENT_PAT either way, and refuses without it rather than doing
+      # half. `gh pr ready` cannot convert a draft under GITHUB_TOKEN, and a
+      # label added with it starts no review — and would then already be on
+      # the PRD PR when a retry adds it again, which fires no event either.
+      #
+      # Safe to re-run, and that is the resume-the-handover row of the
+      # preflight: a run that died after the last merge leaves a draft PRD PR,
+      # and re-adding `agent:implement` lands here with nothing merged.
+      - name: "Hand over PRD PR #${{ steps.prd_pr.outputs.number || steps.preflight.outputs.prd_pr }}"
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'true' && success()
+        id: handover
+        env:
+          PRD_PR: ${{ steps.prd_pr.outputs.number || steps.preflight.outputs.prd_pr }}
+          PRD_BRANCH: ${{ steps.merge.outputs.prd_branch || steps.preflight.outputs.prd_branch }}
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          block() {
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [ "$HAS_PAT" != "true" ]; then
+            block "Every slice of #${ISSUE_NUMBER} is merged into the PRD branch, but PRD PR #${PRD_PR} was not handed over: AGENT_PAT is not set, and GITHUB_TOKEN can neither mark a draft ready nor add a label that starts a review. Set AGENT_PAT, then re-add \`agent:implement\` here — the run resumes the handover and merges nothing."
+          fi
+
+          # Every slice PR the PRD branch has had, for the merged count and for
+          # telling a pre-upgrade slice apart — the sub-issue from `Part of
+          # #<n>`, or failing that the slice branch's name, as the row step.
+          slice_of='(.body // "" | capture("Part of #(?<n>[0-9]+)").n) // (.headRefName | capture("^agent/slice-\($parent)-(?<n>[0-9]+)-").n) // empty'
+          prs=$(gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,state,body,headRefName) \
+            || block "Could not list the slice PRs of \`${PRD_BRANCH}\` to decide how to hand PRD PR #${PRD_PR} over. Re-add \`agent:implement\` here to retry — nothing is merged twice."
+          merged=$(jq '[.[] | select(.state == "MERGED")] | length' <<< "$prs")
+          built=$(jq -c --arg parent "$ISSUE_NUMBER" "[.[] | ${slice_of} | tonumber]" <<< "$prs")
+          before=$(jq --argjson built "$built" \
+            '[.subIssues.nodes[] | select(.state == "CLOSED" and (.number as $n | any($built[]; . == $n) | not))] | length' \
+            "${RUNNER_TEMP}/prd-issue.json")
+          slices=$((merged + before))
+          echo "PRD PR #${PRD_PR} holds ${slices} slice(s): ${merged} merged slice PR(s) and ${before} built before slice PRs."
+
+          if [ "$slices" -gt 1 ]; then
+            gh pr edit "$PRD_PR" --add-label "agent:review" \
+              || block "Could not add \`agent:review\` to PRD PR #${PRD_PR}, so its integration review was not asked for. Re-add \`agent:implement\` here to retry the handover — nothing is merged twice."
+            echo "Asked for the integration review of PRD PR #${PRD_PR}; review marks it ready."
+          else
+            gh pr ready "$PRD_PR" \
+              || block "Could not mark PRD PR #${PRD_PR} ready for review. Re-add \`agent:implement\` here to retry the handover — nothing is merged twice."
+            echo "Marked PRD PR #${PRD_PR} ready: its one slice was reviewed on its slice PR."
           fi
 
       # `!= 'true'`, not `== 'false'`: a preflight that fails hard exits before
@@ -931,6 +1048,7 @@ jobs:
         env:
           SUB: ${{ steps.preflight.outputs.sub }}
           SLICE_PR: ${{ steps.slice_pr.outputs.number }}
+          FINISHING: ${{ steps.preflight.outputs.finishing }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           reason="(no reason file written; check workflow logs)"
@@ -959,7 +1077,16 @@ jobs:
           # agent-implement: this step also covers a preflight that failed
           # before `Transition labels` ran, where the label is still attached —
           # and adding a label that is already present fires no event.
-          printf '`agent:implement` run failed on sub-issue %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to retry the same sub-issue; if it is still attached, remove it first — adding a label that is already present fires no event.%s\n' "$slice" "$reason" "$RUN_URL" "$pr_note" > "$body_file"
+          # The finishing run built nothing, so there is no sub-issue to retry.
+          # What a retry does instead is the rest of the state table: merge the
+          # last slice PR if it is still open, and resume the handover if the
+          # PRD PR is still a draft — so the remedy is the re-label, the same
+          # one as everywhere else, and nothing is left to do by hand.
+          if [ "${FINISHING}" = "true" ]; then
+            printf '`agent:implement` finishing run failed: every sub-issue is built, and this run was merging the last slice PR and handing the PRD PR over.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to pick up where it stopped — it merges the last slice PR if that is still open, then resumes the handover of the PRD PR while it is still a draft, and builds nothing. If the label is still attached, remove it first — adding a label that is already present fires no event.\n' "$reason" "$RUN_URL" > "$body_file"
+          else
+            printf '`agent:implement` run failed on sub-issue %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to retry the same sub-issue; if it is still attached, remove it first — adding a label that is already present fires no event.%s\n' "$slice" "$reason" "$RUN_URL" "$pr_note" > "$body_file"
+          fi
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
 

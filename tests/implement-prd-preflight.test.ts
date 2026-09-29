@@ -13,18 +13,20 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * built for the same reason: a string assertion passes on a step `gh` refuses
  * (#28).
  *
- * What it executes is the slice PR lookup (#172). Open slice PRs are found by
- * their **base**, the PRD branch, and the outcomes are different runs: none
- * builds the next slice, one is merged and then the next slice built on it
- * (#173) — or, with no sub-issue left, stops and names it — and more than one
- * stops and names them all. A stop fails into `Mark blocked on failure` with a
- * reason file, so what is asserted is the reason file, the exit, and that the
- * step itself touched nothing on the tracker.
+ * What it executes is the preflight's state table (#172, #177), every row of
+ * it. Open slice PRs are found by their **base**, the PRD branch, and the
+ * outcomes are different runs: none builds the next slice, one is merged and
+ * then the next slice built on it (#173), and more than one stops and names
+ * them all. With no sub-issue left, one open slice PR is the finishing run's to
+ * merge, none with a draft PRD PR resumes the handover, and none otherwise is a
+ * finished PRD. A stop fails into `Mark blocked on failure` with a reason file,
+ * so what is asserted is the reason file, the exit, and that the step itself
+ * touched nothing on the tracker.
  *
  * And the steps that come after it (#173): `Merge slice PR`, the step that
- * gathers the merged slice's row of the slices table (#174), and the step that
- * opens or reuses the PRD PR once a slice has merged — executed the same way,
- * against the same replay.
+ * gathers the merged slice's row of the slices table (#174), the step that
+ * opens or reuses the PRD PR once a slice has merged, and the finishing run's
+ * handover of it (#177) — executed the same way, against the same replay.
  *
  * Skipped where `bash`, `jq` or `node` are not on PATH, as that file is.
  */
@@ -261,38 +263,99 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.writes).toEqual([]);
   });
 
+  it("says a run that builds a slice is not the finishing run", () => {
+    expect(runPreflight({ pulls: BYSTANDERS }).output).toContain("finishing=false\n");
+  });
+
   /**
    * The last slice PR still open is a PRD waiting on it, not a finished one:
-   * the lookup sits before the finished refusal, which would otherwise tell a
-   * human there is nothing left to do. Merging it is the finishing run's, which
-   * does not exist yet, so this run stops and names it rather than merge it.
+   * the lookup sits before the finished refusal. With no sub-issue left, it is
+   * the **finishing run** (#177): it merges that slice PR and hands the PRD PR
+   * over, and builds nothing.
    */
-  it("stops on the last slice PR rather than calling the PRD finished", () => {
+  it("makes the finishing run of the last open slice PR, rather than calling the PRD finished", () => {
     const outcome = runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
       pulls: [...BYSTANDERS, pull(212, "agent/slice-171-174-slice-3", PRD_BRANCH)],
     });
 
-    expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain("slice PR #212");
-    expect(outcome.reason).toMatch(/merge it into the PRD branch by hand/);
-    expect(outcome.reason).not.toContain("finished");
-    expect(outcome.stdout).toContain("::error::Refused to run: slice PR #212");
-    // Not a refusal: `Mark blocked on failure` is gated on `refused != 'true'`,
-    // and it is what gives the parent `agent:blocked` and the comment.
-    expect(outcome.output).not.toContain("refused=");
-    expect(outcome.output).not.toContain("sub=");
+    expect(outcome.status).toBe(0);
+    expect(outcome.output).toContain("slice_pr=212\n");
+    expect(outcome.output).toContain("sub=\n");
+    expect(outcome.output).toContain("finishing=true\n");
+    expect(outcome.output).toContain("refused=false\n");
+    expect(outcome.output).not.toContain("prd_pr=");
+    expect(outcome.reason).toBe("");
     expect(outcome.writes).toEqual([]);
   });
 
-  /** …and with nothing open anywhere, it is finished, refused as before. */
-  it("refuses a PRD with no open sub-issue and no open slice PR as finished", () => {
+  /**
+   * A run that died after the last merge leaves every sub-issue closed, no
+   * slice PR open and the PRD PR still a draft. Re-labelled, it resumes the
+   * handover — the one thing left — and merges and builds nothing.
+   */
+  it("resumes the handover when nothing is open and the PRD PR is still a draft", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
+      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, isDraft: true } : p)),
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.output).toContain("finishing=true\n");
+    expect(outcome.output).toContain("slice_pr=\n");
+    expect(outcome.output).toContain("prd_pr=201\n");
+    expect(outcome.output).toContain(`prd_branch=${PRD_BRANCH}\n`);
+    expect(outcome.output).toContain("refused=false\n");
+    expect(outcome.writes).toEqual([]);
+  });
+
+  /** …with a handed-over PRD PR, it is finished, refused as before. */
+  it("refuses a PRD with no open sub-issue, no open slice PR and a handed-over PRD PR as finished", () => {
     const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED", "CLOSED"]), pulls: BYSTANDERS });
 
     expect(outcome.status).toBe(0);
     expect(outcome.output).toContain("refused=true\n");
+    expect(outcome.output).not.toContain("finishing=");
     expect(outcome.reason).toBe("");
     expect(outcome.writes.some((w) => w.includes('"comment"') && w.includes("the PRD is finished"))).toBe(true);
+  });
+
+  /** …and with no PRD PR at all, the same: there is nothing to hand over. */
+  it("refuses a PRD with no PRD PR at all as finished", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
+      pulls: BYSTANDERS.filter((p) => p["number"] !== 201),
+    });
+
+    expect(outcome.output).toContain("refused=true\n");
+    expect(outcome.writes.some((w) => w.includes("the PRD is finished"))).toBe(true);
+  });
+
+  /**
+   * The finished refusal no longer sends a human to hand the PRD PR over: the
+   * resume-the-handover row does that, on the same re-label.
+   */
+  it("tells nobody to add agent:review by hand when it refuses a finished PRD", () => {
+    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED", "CLOSED"]), pulls: BYSTANDERS });
+    const comment = outcome.writes.find((w) => w.includes('"comment"')) ?? "";
+
+    expect(comment).not.toContain("agent:review");
+    expect(comment).not.toMatch(/by hand/);
+  });
+
+  it("will not guess which of two draft PRD PRs to hand over", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
+      pulls: [
+        ...BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, isDraft: true } : p)),
+        pull(205, PRD_BRANCH, "release", "OPEN", { isDraft: true }),
+      ],
+    });
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain("#201, #205");
+    expect(outcome.output).not.toContain("refused=");
+    expect(outcome.writes).toEqual([]);
   });
 
   /**
@@ -303,7 +366,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    */
   it.skipIf(!onPath("gh"))("gh accepts the pr list call the lookup composes", () => {
     const run = preflight().run ?? "";
-    const call = "gh pr list --state open --limit 1000 --json number,headRefName,baseRefName";
+    const call = "gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft";
 
     expect(run).toContain(call);
 
@@ -671,13 +734,86 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
   });
 });
 
+/** The handover, handed PRD PR #201 and the PRD branch, as the finishing run has them. */
+const runHandover = (
+  options: { readonly issue: Record<string, unknown>; readonly pulls: readonly Record<string, unknown>[]; readonly pat?: boolean },
+): StepOutcome =>
+  runStep("handover", {
+    issue: options.issue,
+    pulls: options.pulls,
+    env: { PRD_PR: "201", PRD_BRANCH, HAS_PAT: String(options.pat ?? true) },
+  });
+
+/**
+ * The finishing run's handover (#177), executed. More than one slice asks for
+ * the integration review with `agent:review`, and review marks the PRD PR
+ * ready; one slice was reviewed on its slice PR already, so the PRD PR is
+ * marked ready here. A slice built before slice PRs is a slice.
+ */
+describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
+  it("runs under the shell the workflow actually gets", () => {
+    expect(stepById("handover").shell).toBeUndefined();
+  });
+
+  it("marks the PRD PR of a one-slice PRD ready itself, and asks for no review", () => {
+    const outcome = runHandover({ issue: issue(["CLOSED"]), pulls: BYSTANDERS });
+
+    expect(outcome.status).toBe(0);
+    expect(prWrites(outcome)).toEqual([["pr", "ready", "201"]]);
+  });
+
+  it("asks for the integration review on the PRD PR of a PRD with more than one slice PR", () => {
+    const outcome = runHandover({
+      issue: issue(["CLOSED", "CLOSED"]),
+      pulls: [...BYSTANDERS, pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH, "MERGED")],
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(prWrites(outcome)).toEqual([["pr", "edit", "201", "--add-label", "agent:review"]]);
+  });
+
+  /** #202 built #172; #173 was closed with no slice PR, before slice PRs existed. */
+  it("counts a slice built before slice PRs as a slice", () => {
+    const outcome = runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS });
+
+    expect(prWrites(outcome)).toEqual([["pr", "edit", "201", "--add-label", "agent:review"]]);
+  });
+
+  /** An open slice PR is the one the finishing run is about to merge; nothing else is built. */
+  it("does not count a slice PR that has not merged", () => {
+    const outcome = runHandover({
+      issue: issue(["CLOSED", "CLOSED"]),
+      pulls: [...BYSTANDERS, pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH, "CLOSED")],
+    });
+
+    expect(prWrites(outcome)).toEqual([["pr", "ready", "201"]]);
+  });
+
+  it("refuses without AGENT_PAT rather than add a label that starts nothing, touching nothing", () => {
+    const outcome = runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS, pat: false });
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain("PRD PR #201");
+    expect(outcome.reason).toContain("AGENT_PAT");
+    expect(outcome.reason).toContain("resumes the handover");
+    expect(outcome.writes).toEqual([]);
+  });
+
+  it("never merges the PRD PR, and never approves", () => {
+    const run = stepById("handover").run ?? "";
+
+    expect(run).not.toContain("gh pr merge");
+    expect(run).not.toMatch(/gh pr review|--approve/);
+  });
+});
+
 /**
  * The contract the replay stands on for the steps above, against the real
  * binary, the way the preflight's `pr list` is checked: the flags parse and
  * every `--json` field exists, so gh gets as far as the connection to
  * `localhost` and no further.
  */
-describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row and PRD PR steps compose", () => {
+describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row, PRD PR and handover steps compose", () => {
   const attempt = (args: readonly string[]): ReturnType<typeof spawnSync> =>
     spawnSync("gh", [...args], {
       encoding: "utf8",
@@ -692,6 +828,9 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row and PR
     ["pr list --base", ["pr", "list", "--state", "all", "--base", PRD_BRANCH, "--limit", "1000", "--json", "number,body,headRefName"]],
     ["pr merge", ["pr", "merge", "210", "--squash", "--match-head-commit", "abc"]],
     ["pr list --head", ["pr", "list", "--state", "open", "--head", PRD_BRANCH, "--limit", "100", "--json", "number"]],
+    ["pr list --base, with state", ["pr", "list", "--state", "all", "--base", PRD_BRANCH, "--limit", "1000", "--json", "number,state,body,headRefName"]],
+    ["pr edit --add-label", ["pr", "edit", "201", "--add-label", "agent:review"]],
+    ["pr ready", ["pr", "ready", "201"]],
   ])("%s", (_name: string, args: readonly string[]) => {
     const merge = stepById("merge").run ?? "";
     const prdPr = stepById("prd_pr").run ?? "";
@@ -704,6 +843,9 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row and PR
     expect(row).toContain('gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,body,headRefName');
     expect(merge).toContain('gh pr merge "$SLICE_PR" "--${method}" --match-head-commit "$head"');
     expect(prdPr).toContain('gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number');
+    expect(stepById("handover").run ?? "").toContain(
+      'gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,state,body,headRefName',
+    );
 
     const result = attempt(args);
 

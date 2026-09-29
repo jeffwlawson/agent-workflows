@@ -36,7 +36,7 @@
  *                                                  — pull requests from GH_REPLAY_PULLS
  *   pr view {n} --json {fields}                    —  "     "    "
  *   issue edit | issue comment                     — logged to GH_REPLAY_LOG, exit 0
- *   pr ready | pr merge | pr create                — logged to GH_REPLAY_LOG, exit 0
+ *   pr ready | pr merge | pr create | pr edit      — logged to GH_REPLAY_LOG, exit 0
  *
  * Everything after `run view` serves `tests/implement-prd-preflight.test.ts`.
  * Their *shapes* are the documented ones — a GraphQL `{"data":…}` envelope,
@@ -173,7 +173,7 @@ if (argv[0] === "pr" && argv[1] === "view") {
 
 // Pull request writes, logged like the tracker writes above. `pr create`
 // prints the URL of the pull request it opened, last.
-if (argv[0] === "pr" && ["ready", "merge", "create"].includes(argv[1])) {
+if (argv[0] === "pr" && ["ready", "merge", "create", "edit"].includes(argv[1])) {
   const log = process.env["GH_REPLAY_LOG"];
 
   if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });

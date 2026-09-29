@@ -20,19 +20,28 @@ import { addMergedSlice, parseSlicesUpdate } from "../shared/slices-table.js";
 const ISSUE_NUMBER = required("ISSUE_NUMBER");
 const ISSUE_TITLE = required("ISSUE_TITLE");
 
+/**
+ * The **finishing run** (#177): every sub-issue is built, and this run merged
+ * the last slice PR. It writes that slice's row and stops — no model, no
+ * agent, nothing built — and the workflow hands the PRD PR over after it. So
+ * everything below that only a build needs is required only of a build.
+ */
+const FINISHING = process.env["FINISHING"] === "true";
+const forBuild = (name: string): string => (FINISHING ? "" : required(name));
+
 /** The one sub-issue this run implements, chosen by the workflow's preflight. */
-const SUB_NUMBER = required("SUB_NUMBER");
-const SUB_TITLE = required("SUB_TITLE");
+const SUB_NUMBER = forBuild("SUB_NUMBER");
+const SUB_TITLE = forBuild("SUB_TITLE");
 
 /** The slice branch this run builds on, cut from the PRD branch's tip. */
-const BRANCH = required("BRANCH");
+const BRANCH = forBuild("BRANCH");
 
 /**
  * The PRD branch the slice branch was cut from, and the base of the slice PR
  * the workflow opens once this exits. Only the prompt uses it: it is where the
  * earlier slices are, which is what the agent builds on.
  */
-const PRD_BRANCH = required("PRD_BRANCH");
+const PRD_BRANCH = forBuild("PRD_BRANCH");
 
 /**
  * The branch the chain is based on. Only the prompt uses it — it is what the
@@ -40,7 +49,7 @@ const PRD_BRANCH = required("PRD_BRANCH");
  * workflow's `default-branch` input rather than a literal, so the instruction
  * names a ref that exists on a repo whose default branch is not `main` (#98).
  */
-const BASE_REF = required("BASE_REF");
+const BASE_REF = forBuild("BASE_REF");
 
 /**
  * The PRD PR, when this run merged a slice PR into the PRD branch; empty when
@@ -106,6 +115,11 @@ try {
           "`agent:implement` to retry — the merge is not repeated, and a row already written is left as it is.",
       );
     }
+  }
+
+  if (FINISHING) {
+    console.log(`Finishing #${ISSUE_NUMBER}: every sub-issue is built, so no agent runs.`);
+    process.exit(0);
   }
 
   // Both issues, through the same gate. The PRD is what makes the slice make

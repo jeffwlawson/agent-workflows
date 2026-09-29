@@ -2678,6 +2678,27 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
     expect(run).toContain("before any job starts");
   });
 
+  /**
+   * And what a reader does about it (#132). The write has the read's gate —
+   * this step runs only after a clean merge, and the merge is pushed by then —
+   * so a re-run reports `uptodate` and never reaches the write again. A reader
+   * who fixes the cause and re-runs is left with a head reading as unreviewed
+   * and nothing naming the label that fixes it. Unlike `review.yml`'s post,
+   * where a fresh review does post on the same head.
+   *
+   * Its own remedy rather than the read's warning copied down: the write's
+   * causes are a refusal, not an outage, so it names no transient cause.
+   */
+  it("names agent:review when the copy is refused, since a re-run never reaches the write", () => {
+    const run = copy()?.run ?? "";
+    const write = run.slice(run.indexOf('gh api "${args[@]}"'));
+    const warning = write.slice(write.indexOf("::warning::"));
+
+    expect(warning).toContain("agent:review");
+    expect(warning).toMatch(/re-running this workflow recovers none of it/i);
+    expect(warning).not.toMatch(/transient/i);
+  });
+
   it("asks for a review of the resolution it wrote", () => {
     expect(request()?.run ?? "").toContain('--add-label "agent:review"');
   });

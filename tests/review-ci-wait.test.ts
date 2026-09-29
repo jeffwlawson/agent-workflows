@@ -311,8 +311,9 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * moment a request is attempted. Reaching *that* error is the assertion: it
    * means the flags parsed.
    *
-   * Four of the step's calls since #105 added the commit-status read, and it
-   * cannot be more than four: an unreachable host fails the runs listing, so
+   * Five of the step's calls since #107 polled the commit statuses in the
+   * wait as well as reading them for the verdict (#105), and it cannot be more
+   * than five: an unreachable host fails the runs listing, so
    * `for rid in $(gh api …)` iterates nothing and the two calls in its body are
    * never composed at all.
    * Those two are the sibling test below — they are otherwise seen only by the
@@ -518,6 +519,52 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   });
 
   /**
+   * And the *wait* reads that surface too (#107). Without it a review that
+   * starts before status-based CI finishes reads the status as pending, derives
+   * `red`, and asks for a human on a pull request that would have been ready a
+   * minute later. Zero seconds, so the count is asserted through the timeout
+   * message — the check runs here are all finished or agent jobs, so the one
+   * being waited for can only be the status.
+   */
+  it("waits for a pending commit status like a pending check run", () => {
+    const outcome = runWaitStep({ waitSeconds: "0", statuses: [status("ci/build", "pending")] });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).not.toContain("::error::");
+    expect(outcome.evidence).toContain("Timed out waiting for 1 check(s)");
+  });
+
+  /**
+   * One count over both surfaces, so the timeout names every one still pending
+   * rather than whichever half was asked first.
+   */
+  it("counts pending check runs and pending statuses together", () => {
+    const outcome = runWaitStep({
+      pages: [PAGE_ONE, page([...PAGE_TWO, running("deploy", "in_progress")])],
+      waitSeconds: "0",
+      statuses: [status("ci/build", "pending"), status("ci/lint", "pending"), status("ci/docs", "success")],
+    });
+
+    expect(outcome.evidence).toContain("Timed out waiting for 3 check(s)");
+  });
+
+  /**
+   * `agent-review` is this job's own output, so waiting for it would wait for
+   * the answer this job has not written yet — the full 900 s on every round
+   * after a human re-labels. Run at the real 900 for the same reason the first
+   * scenario is: a wait that counted it would spin rather than fail, and the
+   * spawn's bound is what would end it.
+   */
+  it("never waits for the verdict's own context", () => {
+    const outcome = runWaitStep({ statuses: [status("agent-review", "pending"), status("ci/build", "success")] });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).not.toContain("Waiting for");
+    expect(outcome.evidence).not.toContain("Timed out");
+    expect(outcome.ciResult).toBe("green");
+  });
+
+  /**
    * **No CI at all is green on an ordinary pull request, and `unknown` on a
    * slice PR** (#175). A slice PR's base is a PRD branch, so a CI workflow that
    * filters `pull_request` to the base branch never runs on it — and a clean
@@ -580,13 +627,15 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   it.each([["403"], ["unreachable"]])(
     "does not know when the statuses cannot be read (%s)",
     (how: string) => {
-      const outcome = runWaitStep({
-        waitSeconds: "0",
-        statusesUnreadable: how as "403" | "unreachable",
-      });
+      // At the real 900: an unreadable status must neither spin the wait nor
+      // be blamed on the check runs, which read fine.
+      const outcome = runWaitStep({ statusesUnreadable: how as "403" | "unreachable" });
 
+      expect(outcome.status).toBe(0);
       expect(outcome.ciResult).toBe("unknown");
       expect(outcome.stdout).toContain("::warning::Could not read this commit's statuses");
+      expect(outcome.stdout).not.toContain("::error::");
+      expect(outcome.stdout).not.toContain("Waiting for");
     },
   );
 

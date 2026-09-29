@@ -714,8 +714,10 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
 
   if (!feedback.hasFeedback) {
     return (
-      "No unresolved feedback from a repo collaborator (or our review agent) to act on. " +
-      "Resolved threads and comments from non-collaborators are deliberately ignored."
+      "Nothing from a repo collaborator (or our review agent) that a fix run owes an answer on. " +
+      "Deliberately not counted: resolved threads, comments from non-collaborators, a thread " +
+      "already carrying this workflow's closing reply (it waits on the review to close it), and " +
+      "this loop's own status notes — the last two are shown to a fix run as evidence, not as asks."
     );
   }
 

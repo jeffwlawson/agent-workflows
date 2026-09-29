@@ -1133,14 +1133,14 @@ describe("refusalReason names which of the four states it is refusing on", () =>
     expect(refusalReason(feedbackFrom(() => response(pullRequest())))).toBeUndefined();
   });
 
-  it("refuses a genuinely empty result with the sentence it always had", () => {
+  it("refuses a genuinely empty result as nothing owed an answer", () => {
     const reason = refusalReason(
       feedbackFrom(() =>
         response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } }),
       ),
     );
 
-    expect(reason).toContain("No unresolved feedback from a repo collaborator");
+    expect(reason).toContain("owes an answer on");
     // And crucially it does not claim anything was unreadable.
     expect(reason).not.toContain("could not be read");
   });
@@ -1160,7 +1160,7 @@ describe("refusalReason names which of the four states it is refusing on", () =>
     // The reason a human can act on: the selection, by name.
     expect(reason).toContain("repository.collaborators");
     expect(reason).toContain("author gate");
-    expect(reason).not.toContain("No unresolved feedback");
+    expect(reason).not.toContain("owes an answer on");
   });
 
   it("refuses an empty result that had a selection refused, as the refusal", () => {
@@ -1176,7 +1176,7 @@ describe("refusalReason names which of the four states it is refusing on", () =>
     );
 
     expect(reason).toContain("repository.pullRequest.reviews");
-    expect(reason).not.toContain("No unresolved feedback from a repo collaborator");
+    expect(reason).not.toContain("owes an answer on");
   });
 
   it("refuses a total failure as no answer rather than as no feedback", () => {
@@ -1187,7 +1187,7 @@ describe("refusalReason names which of the four states it is refusing on", () =>
     );
 
     expect(reason).toContain("could not connect");
-    expect(reason).not.toContain("No unresolved feedback from a repo collaborator");
+    expect(reason).not.toContain("owes an answer on");
   });
 });
 
@@ -2081,7 +2081,10 @@ describe("a thread already carrying this workflow's closing reply", () => {
     // Still shown — the refusal is about what is owed, not what is visible.
     expect(feedback.inline).toContain("the guard runs after the return");
     expect(feedback.hasFeedback).toBe(false);
-    expect(refusalReason(feedback)).toContain("No unresolved feedback from a repo collaborator");
+    // The reason names this kind, so a maintainer looking at an open thread
+    // is not told only that unresolved feedback was absent.
+    expect(refusalReason(feedback)).toContain("owes an answer on");
+    expect(refusalReason(feedback)).toContain("already carrying this workflow's closing reply");
   });
 
   /**
@@ -2293,7 +2296,8 @@ describe("a conversation comment the fix run owes an outcome on", () => {
 
     expect(feedback.conversation).toContain("the push was rejected");
     expect(feedback.hasFeedback).toBe(false);
-    expect(refusalReason(feedback)).toContain("No unresolved feedback from a repo collaborator");
+    expect(refusalReason(feedback)).toContain("owes an answer on");
+    expect(refusalReason(feedback)).toContain("this loop's own status notes");
   });
 
   /** Whoever else posts under that login. The bound is the author, not the text. */

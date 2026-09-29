@@ -1,7 +1,7 @@
 # Ticket shape: a parent PRD with sub-issues
 
 How `/to-tickets` publishes a batch of slices into this repo's tracker — the question
-`docs/agents/issue-tracker.md` deliberately left open until #93.
+`docs/agents/issue-tracker.md` deliberately left open until jeffwlawson/winget-manifest-lint#93.
 
 > **Scope.** The same boundary as `docs/agents/issue-tracker.md`: this file configures the
 > **local, human-driven** skills. No workflow reads it. What a workflow *does* read is the result —
@@ -29,13 +29,14 @@ what a consumer can and cannot see — is in
 [`issue-tracker.md`](./issue-tracker.md#native-relations-sub-issues-and-blocking), with the
 mechanics for setting both.
 
-Upstream carries both relationships, but **as body prose, not natively**. #93 checked
-`mattpocock/course-video-manager` on 2026-08-07 — its newest feature at the time, #1514–#1518 —
-and found #1517 with `## Parent` → `#1514` and `## Blocked by` → `- #1516` written into its body,
-while the API reports `parent: null`, `blocked_by: 0` and no sub-issues on #1514 (re-verified
-2026-08-08). That is the `/to-tickets` defect below (#513) seen from the outside, and it is what
-this file exists to correct. Only the labels already match: every ticket carries `ready-for-agent`
-and no workflow trigger label.
+Upstream carries both relationships, but **as body prose, not natively**.
+jeffwlawson/winget-manifest-lint#93 checked `mattpocock/course-video-manager` on 2026-08-07 — its
+newest feature at the time, issues 1514–1518 — and found mattpocock/course-video-manager#1517 with
+`## Parent` → `#1514` and `## Blocked by` → `- #1516` written into its body, while the API reports
+`parent: null`, `blocked_by: 0` and no sub-issues on mattpocock/course-video-manager#1514
+(re-verified 2026-08-08). That is the `/to-tickets` defect below (mattpocock/skills#513) seen from
+the outside, and it is what this file exists to correct. Only the labels already match: every ticket
+carries `ready-for-agent` and no workflow trigger label.
 
 ## Creation order is execution order
 
@@ -125,16 +126,17 @@ there:
   the endpoint slice by slice, blockers first, still gives execution order.
 
 **Only publish slices you intend this chain to run.** The chain implements *every* open sub-issue,
-so a slice parked as "maybe later" is a slice the chain will build. #91 had to be detached from #87
-for exactly that reason. Park it as a standalone issue and link it from the PRD body instead.
+so a slice parked as "maybe later" is a slice the chain will build.
+jeffwlawson/winget-manifest-lint#91 had to be detached from jeffwlawson/winget-manifest-lint#87 for
+exactly that reason. Park it as a standalone issue and link it from the PRD body instead.
 
 ## Verify natively before labelling anything
 
 Not optional, and not a formality: upstream's `/to-tickets` does **not** reliably emit native
-relations. As of #93 (2026-08-08), `mattpocock/skills` #513 records it writing a prose
-`Blocked by:` line instead, and #262 — the issue tracking it — is still open. So a batch can look
-perfect in the issue bodies and carry no edges at all. The prose reads the same either way; only
-the API tells you which one you got.
+relations. As of jeffwlawson/winget-manifest-lint#93 (2026-08-08), mattpocock/skills#513 records it
+writing a prose `Blocked by:` line instead, and mattpocock/skills#262 — the issue tracking it — is
+still open. So a batch can look perfect in the issue bodies and carry no edges at all. The prose
+reads the same either way; only the API tells you which one you got.
 
 Re-read all three, and read them the way the workflow does:
 
@@ -205,5 +207,5 @@ workflow trigger label.
 
 **Do not edit the upstream skill files to achieve any of this.** They are installed, not vendored,
 and they get updated; a local edit is lost on the next update without telling anyone. The bridge
-lives in this repo — `CLAUDE.md` and this directory — which is the constraint #87 states and the
-reason `docs/agents/` exists at all.
+lives in this repo — `CLAUDE.md` and this directory — which is the constraint
+jeffwlawson/winget-manifest-lint#87 states and the reason `docs/agents/` exists at all.

@@ -45,7 +45,7 @@ export const required = (name: string): string => {
 
 /**
  * Run a **literal** command through a shell, throwing on a non-zero exit. The
- * rule is *variables go through argv*, not *never use `sh`* (#75): anything
+ * rule is *variables go through argv*, not *never use `sh`*: anything
  * holding a value goes to `git()`, and anything reaching a GitHub surface to
  * `gh()` or `safeGh()`, neither of which spawns a shell. Three `gh` calls were
  * once built as text for this, and the only thing keeping a crafted issue
@@ -264,7 +264,7 @@ export const ghOutcome = (args: readonly string[], options: GhOptions = {}): GhO
  * a branch name" is not a reason to skip it.
  *
  * Literal `sh("git ...")` calls elsewhere are fine and deliberately left alone:
- * the rule is *variables go through argv*, not *never use `sh`* (issue #75).
+ * the rule is *variables go through argv*, not *never use `sh`*.
  */
 export const git = (args: readonly string[]): string =>
   execFileSync("git", [...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -320,7 +320,7 @@ const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
  * Our own workflows post as `github-actions[bot]`, and its
  * `author_association` is never one this gate trusts — the value is
  * repository-dependent, `NONE` where the bot has never committed and
- * `CONTRIBUTOR` where it has (`nodejs/node` #66163 and #65881, checked
+ * `CONTRIBUTOR` where it has (nodejs/node#66163 and nodejs/node#65881, checked
  * 2026-09-20, #71), and neither is in the set above. So an association-only
  * gate would discard the review agent's own findings and break the review
  * → fix handoff, on this repository and on an adopter's alike.
@@ -515,7 +515,7 @@ export const writeText = (filename: string, value: string): void => {
  *
  * `vendor` names the library implementing the schema, so it is these runners —
  * not whichever repo they happen to be installed in. It read as the host repo's
- * name while the two were the same thing (#95).
+ * name while the two were the same thing.
  */
 export const standardSchema = <T>(
   validate: (value: unknown) => T,

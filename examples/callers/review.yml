@@ -3,8 +3,9 @@ name: Agent Review
 # The trigger, and the facts about *this* repo the review job cannot read for
 # itself: the check-run name this file's job id produces, the token it is
 # granted, and the secrets. Everything else — the guards, the permissions
-# ceiling, the concurrency group, every step — is in review.yml,
-# which an adopting repo references instead of copying (#97).
+# ceiling, the concurrency group, every step — is in review.yml, which an
+# adopting repo references instead of copying
+# (jeffwlawson/winget-manifest-lint#97).
 #
 # Uses pull_request_target so the labeled event runs with repo secrets and write
 # access. On a PUBLIC repo that is a fork-code-execution path; the fork guard

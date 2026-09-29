@@ -3,7 +3,7 @@ name: Agent Update Branch
 # The trigger, the token grant and the secrets. Everything else — the fork
 # guard, the permissions ceiling, the concurrency group, the merge and every
 # step after it — is in agent-update-branch-reusable.yml, which an adopting repo
-# references instead of copying (#98).
+# references instead of copying (jeffwlawson/winget-manifest-lint#98).
 #
 # `pull_request_target` reads workflow YAML from the *base* branch, so a pull
 # request cannot alter this file to change what runs. The called workflow is

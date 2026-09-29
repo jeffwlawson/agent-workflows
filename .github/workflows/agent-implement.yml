@@ -4,7 +4,7 @@ name: Agent Implement
 # implement job cannot read for itself. Everything else — the label guard, the
 # preflight's four refusals, the permissions ceiling, the concurrency group,
 # every step — is in agent-implement-reusable.yml, which an adopting repo
-# references instead of copying (#98).
+# references instead of copying (jeffwlawson/winget-manifest-lint#98).
 #
 # Take this workflow and `agent-implement-prd.yml` together or take neither:
 # they share the `agent:implement` label and partition every label event by

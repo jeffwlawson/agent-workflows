@@ -14,7 +14,7 @@ import {
  * The install path: scaffold into an adopter's repository what nothing upstream
  * covers, which is the GitHub Actions half of the loop.
  *
- * Since the reference callers became real files under test (#98),
+ * Since the reference callers became real files under test,
  * `examples/callers/` is the source and this **copies** rather than generates.
  * That is the smaller job and the better one: a generator is a second
  * description of a caller, and the first release after it drifts is one where an

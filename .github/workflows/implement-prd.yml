@@ -2,11 +2,13 @@ name: Agent Implement PRD (reusable)
 
 # The PRD job itself. `agent-implement-prd.yml` is the caller — a trigger and
 # two wires — and every guard, permission and step stays here, in a file an
-# adopting repo *references* rather than copies (#98).
+# adopting repo *references* rather than copies
+# (jeffwlawson/winget-manifest-lint#98).
 #
-# The PRD path (#92). Labelling a *parent* issue `agent:implement` implements its
-# sub-issues one at a time — one per run — each on a slice branch of its own,
-# opened as a draft slice PR against a single PRD branch (#172).
+# The PRD path (jeffwlawson/winget-manifest-lint#92). Labelling a *parent* issue
+# `agent:implement` implements its sub-issues one at a time — one per run — each
+# on a slice branch of its own, opened as a draft slice PR against a single PRD
+# branch (#172).
 #
 # It shares its trigger label with `agent-implement`, so both jobs start on
 # every `agent:implement` label event and the pair partitions the work by issue
@@ -186,10 +188,11 @@ jobs:
           # list together. Asking separately is two chances to see a different
           # answer, and every branch below reads the same snapshot.
           #
-          # Deliberately not `|| true`, the same exception #90 made: "no answer"
-          # read as "no sub-issues" would hand a PRD to the single-issue path.
-          # A failed query fails the step, which leaves the trigger label in
-          # place and the run visibly red.
+          # Deliberately not `|| true`, the same exception
+          # jeffwlawson/winget-manifest-lint#90 made: "no answer" read as "no
+          # sub-issues" would hand a PRD to the single-issue path. A failed
+          # query fails the step, which leaves the trigger label in place and
+          # the run visibly red.
           issue=$(gh api graphql \
             -f owner="${GH_REPO%/*}" -f name="${GH_REPO#*/}" -F number="$ISSUE_NUMBER" \
             -f query='

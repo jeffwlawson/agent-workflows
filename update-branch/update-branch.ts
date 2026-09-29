@@ -22,13 +22,13 @@ const BRANCH = required("BRANCH");
 
 /**
  * The branch the workflow merged in, rendered into the prompt so the agent is
- * reconciling the merge that actually happened (#100).
+ * reconciling the merge that actually happened.
  *
  * `required`, where it used to default to `main`: the workflow sets it from the
- * pull-request event with its `default-branch` input behind it (#98), so an
- * empty value here means the prompt would describe a different merge from the
- * one in the working tree — and being wrong about that quietly is worse than
- * refusing before the agent starts.
+ * pull-request event with its `default-branch` input behind it, so an empty
+ * value here means the prompt would describe a different merge from the one in
+ * the working tree — and being wrong about that quietly is worse than refusing
+ * before the agent starts.
  */
 const BASE_REF = required("BASE_REF");
 

@@ -2,20 +2,22 @@ name: Agent Update Branch (reusable)
 
 # The update-branch job itself. `agent-update-branch.yml` is the caller — a
 # trigger and two wires — and every control stays here, in a file an adopting
-# repo *references* rather than copies (#98).
+# repo *references* rather than copies (jeffwlawson/winget-manifest-lint#98).
 #
 # Refresh a stale PR branch from the branch it is based on.
 #
 # Why this exists, concretely: `pull_request_target` takes the workflow YAML
 # from the base branch but checks out the PR *head*, so everything the run reads
-# out of the working tree comes from the pull request. That bit us on #46, where
-# a review ran the pre-suggestion runner and the test proved nothing until the
-# base branch was merged in by hand.
+# out of the working tree comes from the pull request. That bit us on
+# jeffwlawson/winget-manifest-lint#46, where a review ran the pre-suggestion
+# runner and the test proved nothing until the base branch was merged in by
+# hand.
 #
-# The *runner* half of that is closed structurally since #96: the runners are a
-# version pinned in this file, which is base-controlled. What still comes from
-# the PR head is the repo's own `CONTEXT.md` and `CLAUDE.md` — an agent applying
-# superseded conventions — and the code under review itself.
+# The *runner* half of that is closed structurally since
+# jeffwlawson/winget-manifest-lint#96: the runners are a version pinned in this
+# file, which is base-controlled. What still comes from the PR head is the
+# repo's own `CONTEXT.md` and `CLAUDE.md` — an agent applying superseded
+# conventions — and the code under review itself.
 #
 # Most refreshes are a clean merge, which needs no agent at all. The agent is
 # invoked only when git reports conflicts.
@@ -27,7 +29,8 @@ on:
           Branch to merge in when the pull-request event carries no base ref. On
           a real PR `base.ref` is always set, so this fires only when something
           is already odd — but an unset fallback degrades *silently* to merging
-          the wrong branch, which is #100 arriving by a different route.
+          the wrong branch, which is jeffwlawson/winget-manifest-lint#100
+          arriving by a different route.
         type: string
         default: main
       node-version-file:
@@ -73,7 +76,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # One group per PR — shared with agent:fix, which pushes the same branch,
-    # and agent:review, which reads it while a push would move it (#102).
+    # and agent:review, which reads it while a push would move it
+    # (jeffwlawson/winget-manifest-lint#102).
     concurrency:
       group: agent-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
@@ -100,10 +104,11 @@ jobs:
       BRANCH: ${{ github.event.pull_request.head.ref }}
       # The PR's real base branch — the branch this job merges in. A hardcoded
       # `main` merges an unrelated branch into any PR stacked on another one
-      # (#71 fixed review and fix; #100 fixed this, the site they missed). The
-      # event field is the source; `default-branch` is the fallback for an event
-      # that somehow carries none, which is the adopter's call to make rather
-      # than a literal `main` buried in a shell expansion.
+      # (jeffwlawson/winget-manifest-lint#71 fixed review and fix;
+      # jeffwlawson/winget-manifest-lint#100 fixed this, the site they missed).
+      # The event field is the source; `default-branch` is the fallback for an
+      # event that somehow carries none, which is the adopter's call to make
+      # rather than a literal `main` buried in a shell expansion.
       BASE_REF: ${{ github.event.pull_request.base.ref || inputs.default-branch }}
       BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_STATE: ${{ github.event.pull_request.state }}
@@ -142,11 +147,11 @@ jobs:
       #
       # Shell-safe despite ref names being able to contain `$()`, backticks, `;`,
       # `|` and `&` — see the long note on the fetch step in
-      # agent-review-reusable.yml.
-      # Short version: BASE_REF arrives as an `env:` var rather than a workflow
-      # expression spliced into this script, and a quoted parameter expansion is
-      # not re-scanned for syntax (verified 2026-08-02, #75). So `base` is data
-      # from the moment it is assigned, and every use of it stays quoted.
+      # agent-review-reusable.yml. Short version: BASE_REF arrives as an `env:`
+      # var rather than a workflow expression spliced into this script, and a
+      # quoted parameter expansion is not re-scanned for syntax (verified
+      # 2026-08-02, jeffwlawson/winget-manifest-lint#75). So `base` is data from
+      # the moment it is assigned, and every use of it stays quoted.
       #
       # The `:-main` this line used to carry is gone, not lost: the fallback
       # moved up to the `env:` block, where it is the `default-branch` input.

@@ -2,7 +2,8 @@ name: Agent Implement (reusable)
 
 # The implement job itself. `agent-implement.yml` is the caller — a trigger and
 # two wires — and every guard, permission and step stays here, in a file an
-# adopting repo *references* rather than copies (#98).
+# adopting repo *references* rather than copies
+# (jeffwlawson/winget-manifest-lint#98).
 #
 # Unlike the three PR workflows, this one has no event field to take a base
 # branch from: an `issues` event carries no pull request, so the branch to cut
@@ -96,8 +97,9 @@ jobs:
       # in the agent: this step runs before checkout and the dependency install,
       # so neither costs more than one API call.
       #
-      # The **partition** has to come first (#92). `agent-implement-prd` shares
-      # this trigger label and owns every issue that has sub-issues, so both jobs
+      # The **partition** has to come first
+      # (jeffwlawson/winget-manifest-lint#92). `agent-implement-prd` shares this
+      # trigger label and owns every issue that has sub-issues, so both jobs
       # start on every label event and exactly one of them may speak. This step
       # settles which before it says anything at all — including about a closed
       # issue, which would otherwise collect the same "not open" comment twice,
@@ -107,12 +109,12 @@ jobs:
       # has already merged looks exactly like an issue nobody has started. It
       # then checks out the base branch, finds the work already there, and
       # usually dies at "no commits were made" — or, worse, invents a change and
-      # opens a duplicate PR (#102).
+      # opens a duplicate PR (jeffwlawson/winget-manifest-lint#102).
       #
-      # Then the rest of the shape (#90), before the PR query rather than after:
-      # an issue that must never be implemented should not be handed "close that
-      # PR, then re-add the label", a remedy that leads straight back to a
-      # refusal.
+      # Then the rest of the shape (jeffwlawson/winget-manifest-lint#90), before
+      # the PR query rather than after: an issue that must never be implemented
+      # should not be handed "close that PR, then re-add the label", a remedy
+      # that leads straight back to a refusal.
       #
       # Distinct messages throughout, on purpose. "Someone is already on this",
       # "this is finished" and "this is not implementable as labelled" call for

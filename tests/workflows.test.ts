@@ -65,13 +65,16 @@ const PIN = `v${(JSON.parse(fs.readFileSync("package.json", "utf8")) as { versio
 
 /**
  * The three PR workflows that act on a PR's branch. Every one of them has to
- * work against the PR's *real* base, not a hardcoded `main` (#71, #100).
+ * work against the PR's *real* base, not a hardcoded `main`
+ * (jeffwlawson/winget-manifest-lint#71, jeffwlawson/winget-manifest-lint#100).
  *
  * All three are named by their **reusable** half: the guards, the env and every
- * step live there, and each caller is a trigger and two wires (#97 for review,
- * #98 for the rest). A check aimed at a caller would pass by reading a file that
- * no longer contains the thing it is checking — which is the coverage failure
- * this whole file exists to catch, one level up.
+ * step live there, and each caller is a trigger and two wires
+ * (jeffwlawson/winget-manifest-lint#97 for review,
+ * jeffwlawson/winget-manifest-lint#98 for the rest). A check aimed at a caller
+ * would pass by reading a file that no longer contains the thing it is checking
+ * — which is the coverage failure this whole file exists to catch, one level
+ * up.
  */
 const PR_WORKFLOWS = [
   "review.yml",
@@ -172,7 +175,8 @@ const sandcastleFiles = RUNNER_SURFACE.flatMap((entry) =>
 const ISSUES_WRITE_EXEMPT = new Set([
   // Reads the issue and transitions its labels; the permission is used. Both
   // halves of the pair: the called job spends it, and the caller has to *grant*
-  // it — a called workflow can only downgrade the token it is handed (#98).
+  // it — a called workflow can only downgrade the token it is handed
+  // (jeffwlawson/winget-manifest-lint#98).
   "agent-implement.yml",
   "implement.yml",
   // Same, plus it closes each sub-issue it finishes and re-labels the parent to
@@ -236,7 +240,10 @@ interface Job {
   readonly env?: Record<string, string>;
   readonly outputs?: Record<string, string>;
   readonly "timeout-minutes"?: number;
-  /** Set on a caller job — the reusable workflow it hands the work to (#97). */
+  /**
+   * Set on a caller job — the reusable workflow it hands the work to
+   * (jeffwlawson/winget-manifest-lint#97).
+   */
   readonly uses?: string;
   readonly with?: Record<string, string>;
   readonly secrets?: Record<string, string> | "inherit";
@@ -472,14 +479,18 @@ const TRIGGER_TYPES: Readonly<Record<string, readonly string[]>> = {
 const triggerTypesOf = (file: string): readonly string[] =>
   TRIGGER_TYPES[path.basename(file)] ?? TRIGGER_TYPES_DEFAULT;
 
-/** The review job — the reusable half, where every step now lives (#97). */
+/**
+ * The review job — the reusable half, where every step now lives
+ * (jeffwlawson/winget-manifest-lint#97).
+ */
 const REVIEW = path.join(WORKFLOW_DIR, "review.yml");
 /** …and the caller that triggers it. */
 const REVIEW_CALLER = path.join(CALLER_DIR, "review.yml");
 
 /**
- * The two workflows that share the `agent:implement` label (#92), again named by
- * the half that holds the steps (#98).
+ * The two workflows that share the `agent:implement` label
+ * (jeffwlawson/winget-manifest-lint#92), again named by the half that holds the
+ * steps (jeffwlawson/winget-manifest-lint#98).
  */
 const IMPLEMENT = path.join(WORKFLOW_DIR, "implement.yml");
 const PRD = path.join(WORKFLOW_DIR, "implement-prd.yml");
@@ -499,7 +510,8 @@ const waitStep = (): Step => {
  * Line numbers (1-based) GitHub hands to the shell: the body of a `run:` block
  * scalar, and a single-line `run: <command>`. The inline form matters —
  * review's base fetch is written that way, so a check that only walked block
- * scalars would pass over the very line #71 fixed.
+ * scalars would pass over the very line jeffwlawson/winget-manifest-lint#71
+ * fixed.
  */
 const runBlockLines = (lines: readonly string[]): ReadonlySet<number> => {
   const inside = new Set<number>();
@@ -535,8 +547,9 @@ const runOf = (file: string, id: string): string =>
 /**
  * The two steps that make a run *expensive* — the Node setup and the dependency
  * install — which a refusal must reach neither of. Keyed on the `setup` input
- * rather than on `npm ci`: the command is the adopter's since #98, and a filter
- * still naming this repo's would match nothing and pass by finding nothing.
+ * rather than on `npm ci`: the command is the adopter's since
+ * jeffwlawson/winget-manifest-lint#98, and a filter still naming this repo's
+ * would match nothing and pass by finding nothing.
  */
 const isInstallStep = (s: Step): boolean =>
   (s.run ?? "").includes("${{ inputs.setup }}") ||
@@ -627,7 +640,8 @@ describe("workflow files", () => {
    * `docs/parity.md` §10: an agent that raises work never files it. The
    * permission is what makes that technical rather than conventional, so it has
    * to stay absent from everything outside `ISSUES_WRITE_EXEMPT` — including
-   * `review`, which was granted it unused (#101). Granted-but-unused reads as
+   * `review`, which was granted it unused
+   * (jeffwlawson/winget-manifest-lint#101). Granted-but-unused reads as
    * sanctioned to the next person editing the file.
    */
   it.each(issuesWriteChecked)("%s: grants no issues: write", (file) => {
@@ -644,15 +658,19 @@ describe("workflow files", () => {
 });
 
 /**
- * A hardcoded `main` is the #71/#100 failure class: on a PR stacked on another
- * branch — or in a repo whose default branch is `master` — every git operation
- * silently addresses the wrong branch. No error, wrong result.
+ * A hardcoded `main` is the failure class of
+ * jeffwlawson/winget-manifest-lint#71 and jeffwlawson/winget-manifest-lint#100:
+ * on a PR stacked on another branch — or in a repo whose default branch is
+ * `master` — every git operation silently addresses the wrong branch. No error,
+ * wrong result.
  *
- * #71 and #100 fixed the three PR workflows, which read the base from the event.
- * The two `implement` workflows have no event field to read: they *choose* a
- * branch to work from, and #98 made that choice the `default-branch` input
- * rather than a literal. So the rule is now one rule over the whole loop — no
- * workflow, and no runner, names a default branch of its own.
+ * jeffwlawson/winget-manifest-lint#71 and jeffwlawson/winget-manifest-lint#100
+ * fixed the three PR workflows, which read the base from the event. The two
+ * `implement` workflows have no event field to read: they *choose* a branch to
+ * work from, and jeffwlawson/winget-manifest-lint#98 made that choice the
+ * `default-branch` input rather than a literal. So the rule is now one rule
+ * over the whole loop — no workflow, and no runner, names a default branch of
+ * its own.
  */
 describe("the loop works against a base ref it is told, never a literal", () => {
   /**
@@ -702,8 +720,9 @@ describe("the loop works against a base ref it is told, never a literal", () => 
 
   /**
    * The prompts, which are the half an adopter cannot edit: they ship inside the
-   * package (#96), so a `main` in one is not a hand-edit an adopter forgot but a
-   * branch name they have no way to change at all.
+   * package (jeffwlawson/winget-manifest-lint#96), so a `main` in one is not a
+   * hand-edit an adopter forgot but a branch name they have no way to change at
+   * all.
    *
    * Walked rather than listed, for the same reason the de-domaining checks below
    * are: the next prompt is written by someone with this repo's default branch
@@ -769,12 +788,12 @@ describe("the loop works against a base ref it is told, never a literal", () => 
 });
 
 /**
- * One group per PR, across every workflow that touches it (#102). Review used
- * to sit in `agent-review-pr-*` while fix and update-branch shared
- * `agent-mutate-pr-*`, so a review could diff a branch *while* a fix pushed to
- * it — a review of a tree state that never existed. The hazard is review
- * reading during another job's write, which its `contents: read` does nothing
- * to prevent.
+ * One group per PR, across every workflow that touches it
+ * (jeffwlawson/winget-manifest-lint#102). Review used to sit in
+ * `agent-review-pr-*` while fix and update-branch shared `agent-mutate-pr-*`,
+ * so a review could diff a branch *while* a fix pushed to it — a review of a
+ * tree state that never existed. The hazard is review reading during another
+ * job's write, which its `contents: read` does nothing to prevent.
  */
 describe("every PR workflow shares one concurrency group per PR", () => {
   const PR_GROUP = "agent-pr-${{ github.event.pull_request.number }}";
@@ -798,11 +817,12 @@ describe("every PR workflow shares one concurrency group per PR", () => {
 
     // The names the loop actually produces, derived from the workflows rather
     // than listed: a called workflow's job is `<caller job id> / <called job
-    // id>`, so every sibling was renamed by the conversion (#98). This check
-    // used to assert the pattern *contained* the words `review`, `fix` and so
-    // on — which `^(review|fix|update-branch|implement)$` did while matching
-    // none of the names below, so it stayed green over a review that would
-    // queue behind a labelled `fix` and burn its whole 900 s on it.
+    // id>`, so every sibling was renamed by the conversion
+    // (jeffwlawson/winget-manifest-lint#98). This check used to assert the
+    // pattern *contained* the words `review`, `fix` and so on — which
+    // `^(review|fix|update-branch|implement)$` did while matching none of the
+    // names below, so it stayed green over a review that would queue behind a
+    // labelled `fix` and burn its whole 900 s on it.
     //
     // Deduplicated because there are two caller sets — the reference copies and
     // this repo's own — and they deliberately share job ids, so both produce
@@ -960,7 +980,7 @@ describe("every PR workflow shares one concurrency group per PR", () => {
  * A closed or merged PR is refused before any work happens. `agent-review` had
  * no guard at all: labelling a merged PR ran a full agent pass over merged
  * work, then failed at `gh pr ready` — which cannot convert a merged PR — and
- * blamed a missing `AGENT_PAT` for it (#102).
+ * blamed a missing `AGENT_PAT` for it (jeffwlawson/winget-manifest-lint#102).
  */
 describe("PR workflows refuse a closed or merged PR", () => {
   it.each(PR_WORKFLOWS)("%s: reads the PR state from the event", (file) => {
@@ -3013,10 +3033,12 @@ describe("the follow-ups workflow files a merged PR rather than refusing it", ()
 });
 
 /**
- * The whole loop is now callable (#98, slice 4 of #88; #97 proved the pattern on
- * review). The loop is the deliverable and it is installed in other repos, so
- * what an adopter writes per workflow has to be a trigger and two wires — every
- * control stays on this side, in a file they reference rather than copy.
+ * The whole loop is now callable (jeffwlawson/winget-manifest-lint#98, slice 4
+ * of jeffwlawson/winget-manifest-lint#88; jeffwlawson/winget-manifest-lint#97
+ * proved the pattern on review). The loop is the deliverable and it is
+ * installed in other repos, so what an adopter writes per workflow has to be a
+ * trigger and two wires — every control stays on this side, in a file they
+ * reference rather than copy.
  *
  * A reusable workflow rather than a composite action for one reason: an action
  * cannot declare `on:`, `permissions:`, `concurrency:` or a job-level `if:`,
@@ -3451,7 +3473,8 @@ describe("every workflow in the loop is called rather than copied", () => {
 
 /**
  * The one input that is a fact about the *caller* rather than about the repo,
- * and the one control the extraction itself put at risk (#97).
+ * and the one control the extraction itself put at risk
+ * (jeffwlawson/winget-manifest-lint#97).
  */
 describe("agent-review tells its caller what it cannot know", () => {
   const caller = (): Job => jobOf(REVIEW_CALLER);
@@ -3523,8 +3546,8 @@ describe("agent-review tells its caller what it cannot know", () => {
   /**
    * The CI wait polls every check on the head commit and excludes its own, or
    * it waits for itself: 15 of this job's 20 minutes, then a review with
-   * degraded evidence — the failure mode #48 exists to prevent, reintroduced by
-   * the extraction.
+   * degraded evidence — the failure mode jeffwlawson/winget-manifest-lint#48
+   * exists to prevent, reintroduced by the extraction.
    *
    * The name changes as a *result* of the extraction. A called workflow's job
    * appears as `<caller job id> / <called job id>`, and nothing inside a called
@@ -3609,10 +3632,11 @@ describe("agent-review tells its caller what it cannot know", () => {
 });
 
 /**
- * The issue-side equivalent (#102). `agent-implement`'s preflight only listed
- * *open* PRs, so a merged-and-closed issue that got relabelled checked out
- * `main`, found the work already there, and died at "no commits were made" —
- * or, worse, invented a spurious change and opened a duplicate PR.
+ * The issue-side equivalent (jeffwlawson/winget-manifest-lint#102).
+ * `agent-implement`'s preflight only listed *open* PRs, so a merged-and-closed
+ * issue that got relabelled checked out `main`, found the work already there,
+ * and died at "no commits were made" — or, worse, invented a spurious change
+ * and opened a duplicate PR.
  */
 describe("agent-implement refuses a closed issue", () => {
   const FILE = IMPLEMENT;
@@ -3659,9 +3683,9 @@ describe("agent-implement refuses a closed issue", () => {
 });
 
 /**
- * Issue *shape* (#90). An issue's position in a hierarchy decides whether it can
- * be implemented at all, and the workflow used to accept anything carrying the
- * label:
+ * Issue *shape* (jeffwlawson/winget-manifest-lint#90). An issue's position in a
+ * hierarchy decides whether it can be implemented at all, and the workflow used
+ * to accept anything carrying the label:
  *
  * - **has a parent** — a sub-issue implemented alone loses the ordering and the
  *   shared context its parent holds; the parent drives it or nobody does.
@@ -3671,8 +3695,9 @@ describe("agent-implement refuses a closed issue", () => {
  * Both are refused in the preflight step, which is what keeps them job-level
  * rather than agent-level: no checkout, no `npm ci`, no `agent:in-progress`.
  *
- * The third shape — **has sub-issues** — was refused too until #92, and is now
- * handed to `agent-implement-prd` instead. See the partition describe below.
+ * The third shape — **has sub-issues** — was refused too until
+ * jeffwlawson/winget-manifest-lint#92, and is now handed to
+ * `agent-implement-prd` instead. See the partition describe below.
  */
 describe("agent-implement refuses issue shapes it cannot handle", () => {
   const FILE = IMPLEMENT;
@@ -3818,11 +3843,11 @@ describe("agent-implement refuses issue shapes it cannot handle", () => {
 });
 
 /**
- * `agent-implement-prd` (#92) is triggered by the **same label on the same
- * event** as `agent-implement`, so both jobs start on every `agent:implement`
- * label event and the pair has to partition the work between them. The key is
- * the sub-issue count: an issue that has sub-issues belongs to the PRD path,
- * every other shape to `agent-implement`.
+ * `agent-implement-prd` (jeffwlawson/winget-manifest-lint#92) is triggered by
+ * the **same label on the same event** as `agent-implement`, so both jobs start
+ * on every `agent:implement` label event and the pair has to partition the work
+ * between them. The key is the sub-issue count: an issue that has sub-issues
+ * belongs to the PRD path, every other shape to `agent-implement`.
  *
  * The property worth encoding is not which one runs — it is that **exactly one
  * of them speaks**. Whichever does not own the shape has to step aside touching
@@ -3841,10 +3866,10 @@ describe("the two implement workflows partition issue shapes", () => {
   const preflight = (file: string): string => stepsOf(file)[0]?.run ?? "";
 
   /**
-   * The trigger is on the caller and the label guard on the called job (#98) —
-   * so the pair is read across both halves, which is what the partition
-   * actually depends on: two workflows woken by one event, each deciding for
-   * itself whether the shape is theirs.
+   * The trigger is on the caller and the label guard on the called job
+   * (jeffwlawson/winget-manifest-lint#98) — so the pair is read across both
+   * halves, which is what the partition actually depends on: two workflows
+   * woken by one event, each deciding for itself whether the shape is theirs.
    */
   it.each([
     [IMPLEMENT_CALLER, IMPLEMENT],
@@ -3893,7 +3918,8 @@ describe("the two implement workflows partition issue shapes", () => {
    * including about a closed issue — otherwise a closed PRD parent collects the
    * same "this issue is not open" comment twice, from two runs, seconds apart.
    * So the shape query moved above the state check in `agent-implement` (it had
-   * been first since #102, when nothing else claimed the label).
+   * been first since jeffwlawson/winget-manifest-lint#102, when nothing else
+   * claimed the label).
    */
   it.each([IMPLEMENT, PRD])("%s: settles the partition before the state check", (file) => {
     const run = preflight(file);
@@ -3960,7 +3986,10 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(first?.if).toBeUndefined();
   });
 
-  /** One query for parent, labels and the sub-issue list together — see #90. */
+  /**
+   * One query for parent, labels and the sub-issue list together — see
+   * jeffwlawson/winget-manifest-lint#90.
+   */
   it("computes the shape once, from a single API call", () => {
     const run = runOf(PRD, "preflight");
 
@@ -4102,7 +4131,10 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(armOf(run, "no open sub-issues")).not.toContain("refuse_shape");
   });
 
-  /** Same exception as #90: "no answer" must never be read as a shape. */
+  /**
+   * Same exception as jeffwlawson/winget-manifest-lint#90: "no answer" must
+   * never be read as a shape.
+   */
   it("does not swallow a failed shape query", () => {
     const tolerant = runOf(PRD, "preflight")
       .split("\n")
@@ -4608,7 +4640,10 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(body).not.toContain("refused=");
   });
 
-  /** Same `!= 'true'` gate as #90: a preflight that *dies* writes no output. */
+  /**
+   * Same `!= 'true'` gate as jeffwlawson/winget-manifest-lint#90: a preflight
+   * that *dies* writes no output.
+   */
   it("comments on a preflight that fails rather than refuses", () => {
     const blocked = stepsOf(PRD).find((s) => s.name === "Mark blocked on failure");
 
@@ -5005,15 +5040,15 @@ describe("the implement-prd runner keeps the agent off the tracker", () => {
 
 /**
  * The runners are invoked as a **version-pinned npm package**, never as a script
- * addressed by path (#96).
+ * addressed by path (jeffwlawson/winget-manifest-lint#96).
  *
  * That is what retires the stale-runner trap. `pull_request_target` takes the
  * workflow YAML from the *base* branch and checks out the **PR head**, so
  * `npx tsx .sandcastle/…/review.ts` ran whatever version of the runner the PR
- * happened to carry — silently, with no error, which is how #46 reviewed a diff
- * with the pre-suggestion `review.ts`. A version in the YAML is on the base side
- * of that split, so the runner is base-controlled like every other security
- * control in these files.
+ * happened to carry — silently, with no error, which is how
+ * jeffwlawson/winget-manifest-lint#46 reviewed a diff with the pre-suggestion
+ * `review.ts`. A version in the YAML is on the base side of that split, so the
+ * runner is base-controlled like every other security control in these files.
  *
  * The pin has to live *here*. Depending on the package from the caller's
  * `package.json` would put the version back under the PR head's control and
@@ -5031,7 +5066,8 @@ describe("every workflow invokes the runners at a pinned version", () => {
   /**
    * `agent-<name>.yml` runs the `<name>` subcommand — derived, not tabulated,
    * and `-reusable` is dropped because the two halves of a converted workflow
-   * are one workflow with one runner between them (#97).
+   * are one workflow with one runner between them
+   * (jeffwlawson/winget-manifest-lint#97).
    */
   const subcommandOf = (file: string): string =>
     path.basename(file, path.extname(file))
@@ -5127,9 +5163,9 @@ describe("every workflow invokes the runners at a pinned version", () => {
 
   /**
    * One binary for the whole set. The per-workflow runners and the operator
-   * commands `init` / `doctor` (#112) share an entry point and therefore a
-   * version, so "which runner version is this repo on?" has one answer rather
-   * than five.
+   * commands `init` / `doctor` (jeffwlawson/winget-manifest-lint#112) share an
+   * entry point and therefore a version, so "which runner version is this repo
+   * on?" has one answer rather than five.
    *
    * **The leading `./` is forbidden, not incidental.** `npm publish` normalises
    * the manifest before upload and *silently drops* a `bin` entry whose path
@@ -5961,8 +5997,8 @@ describe("the runner package is installed from GitHub Packages", () => {
 });
 
 /**
- * The publish side of the same registry (#113 review). One workflow, one tag
- * shape, two guards.
+ * The publish side of the same registry (jeffwlawson/winget-manifest-lint#113
+ * review). One workflow, one tag shape, two guards.
  *
  * **The trigger is the load-bearing part.** `workflow_dispatch` only registers
  * for workflows present on the *default branch*, so a dispatch-triggered publish
@@ -6059,10 +6095,11 @@ describe("the runner package is published from a tag push", () => {
 /**
  * Every `gh` in the shipped **runner** surface arrives as argv, never as text a
  * shell re-parses: `gh()` or `safeGh()`, both of which pass an argv array and
- * never spawn a shell. Same rule as `git` (issue #75), and the same reason: a
- * value that reaches a subprocess as syntax is a value someone else can write.
- * The workflow half ships too and reaches `gh` from bash; there the boundary is
- * a quoted env var (`gh pr edit "$PR_NUMBER"`), not argv, and this test says
+ * never spawn a shell. Same rule as `git` (issue
+ * jeffwlawson/winget-manifest-lint#75), and the same reason: a value that
+ * reaches a subprocess as syntax is a value someone else can write. The
+ * workflow half ships too and reaches `gh` from bash; there the boundary is a
+ * quoted env var (`gh pr edit "$PR_NUMBER"`), not argv, and this test says
  * nothing about it.
  *
  * This test is the record, and the record is the point. Three sites once
@@ -6167,9 +6204,10 @@ describe("every gh call reaches argv, never a shell", () => {
 });
 
 /**
- * `.sandcastle/` is the agent loop, and the loop is the deliverable (#88) — it
- * ships to other repos rather than living in this one. So nothing in it may name
- * this repo's domain, and nothing in it may name this repo's toolchain.
+ * `.sandcastle/` is the agent loop, and the loop is the deliverable
+ * (jeffwlawson/winget-manifest-lint#88) — it ships to other repos rather than
+ * living in this one. So nothing in it may name this repo's domain, and nothing
+ * in it may name this repo's toolchain.
  *
  * The seam that replaces both already exists and is load-bearing: every prompt
  * reads `CONTEXT.md` and `CLAUDE.md` first, so what is specific to a repo lives
@@ -6198,10 +6236,10 @@ describe(".sandcastle names no repo of its own", () => {
   });
 
   /**
-   * The four terms are this repo's domain vocabulary as it actually leaked (#95):
-   * the product name, the field that is the whole role-vs-`ManifestType`
-   * distinction, the directory rules are registered in, and the constructor a
-   * rule is defined with.
+   * The four terms are this repo's domain vocabulary as it actually leaked
+   * (jeffwlawson/winget-manifest-lint#95): the product name, the field that is
+   * the whole role-vs-`ManifestType` distinction, the directory rules are
+   * registered in, and the constructor a rule is defined with.
    *
    * `.ts` files are in scope too, not only prompts — `shared/common.ts` carried
    * the repo name as a Standard Schema `vendor`, which is exactly the kind of

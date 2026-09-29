@@ -37,10 +37,10 @@ export interface ThreadOutcome {
  * The channel exists for a finding that belongs to **no** thread — something
  * noticed while fixing that is out of scope, a refusal that spans threads
  * rather than sitting in one, a cross-cutting observation answering no specific
- * comment. Before it existed such a finding had nowhere to go: #63's documented
- * bug ended up as a `DOCUMENTED BUG` comment inside a test file, and #77's
- * "open a follow-up and reference it" option was simply not executable, so the
- * agent would take the weaker option and reply as if it had chosen it.
+ * comment. Before it existed such a finding had nowhere to go: one documented
+ * bug ended up as a `DOCUMENTED BUG` comment inside a test file, and an "open a
+ * follow-up and reference it" option was simply not executable, so the agent
+ * would take the weaker option and reply as if it had chosen it.
  *
  * The agent never posts these itself — it reports them, the workflow posts
  * them from validated output, and the token scrub stays exactly as it is.
@@ -296,7 +296,7 @@ export const filterConversationOutcomes = (
  *
  * *Different*, because the two are not the same kind of thing to anything that
  * reads them. The top-level marker is the selector for harvesting an
- * out-of-scope finding into an issue (#79), and an outcome record raises no
+ * out-of-scope finding into an issue (#4), and an outcome record raises no
  * work; it is also the key `filterTopLevelComments` dedupes that channel on, and
  * a record repeated across rounds is correct because each round's is about that
  * round.
@@ -374,7 +374,7 @@ export const renderConversationOutcomes = (
  * `reviewThreads`.
  *
  * Second, it is a reliable selector for harvesting these comments into issues
- * (#79), which matching on prose would not be.
+ * (#4), which matching on prose would not be.
  */
 export const TOP_LEVEL_COMMENT_MARKER = "<!-- agent-fix:top-level -->";
 
@@ -399,7 +399,7 @@ const MAX_TOP_LEVEL_COMMENTS = 2;
  * take on trust. Without this, nothing caps how many comments one run posts and
  * nothing dedupes against an earlier run's, so a PR taking three `agent:fix`
  * rounds can accumulate three copies of the same note — and three issues once
- * #79 harvests them.
+ * #4 harvests them.
  *
  * `alreadyPosted` is the bodies of marked comments already on the PR. The
  * comparison is exact after stripping the marker and trimming, so it catches a

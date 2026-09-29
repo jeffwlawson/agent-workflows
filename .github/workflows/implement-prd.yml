@@ -41,9 +41,10 @@ name: Agent Implement PRD (reusable)
 #
 # The chain therefore waits between slices: a run builds one slice, opens its
 # slice PR, requests its review and stops. It re-labels nothing. The next run
-# is refused while that slice PR is still open, so the slice is merged into the
-# PRD branch before the next is built on it — by hand, until the chain learns
-# to merge it itself.
+# starts by merging that slice PR into the PRD branch (#173), then builds the
+# next slice on top of it; the first run to merge one also opens the PRD PR.
+# Until the chain can see a round end, re-adding `agent:implement` to the
+# parent is a human's to do, and it is what says the round is over.
 
 on:
   workflow_call:
@@ -103,7 +104,7 @@ jobs:
     # the two cannot compute a common key. The residual race that leaves is
     # recorded in docs/parity.md §10 rather than papered over: the happy path
     # does not overlap, because the review this run requests is on a slice
-    # PR, and the next run is refused while that slice PR is open.
+    # PR, and the next run's merge step refuses while that round is running.
     concurrency:
       group: agent-implement-prd-issue-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -279,12 +280,19 @@ jobs:
             block "Refused to run: ${open_slices} slice PRs are open against the PRD branch of #${ISSUE_NUMBER}: ${named}. The chain builds one slice at a time and will not guess which of these is the next to land. Close or merge all but one, then re-add \`agent:implement\` here."
           fi
 
-          # Interim, until the chain merges a slice PR itself: one open slice PR
-          # is a slice built and waiting on its review round, and the next slice
-          # has to be built on top of it — so it is merged into the PRD branch
-          # by hand, and this run stops rather than build beside it.
-          if [ "$open_slices" -eq 1 ]; then
-            block "Refused to run: slice PR ${named} is still open against the PRD branch of #${ISSUE_NUMBER}, and the next slice has to be built on top of it. Once its review round has ended, merge it into the PRD branch by hand, then re-add \`agent:implement\` here."
+          # One open slice PR with a sub-issue still to build is the chain
+          # mid-flight: the slice before this one, built and waiting on its
+          # review round. The run merges it into the PRD branch first — `Merge
+          # slice PR`, the first step after this one that does anything — and
+          # then builds the next slice on top of it. Whether its round has
+          # ended is that step's to check, not this one's.
+          #
+          # Interim, until the finishing run: with no sub-issue left, the one
+          # open slice PR is the **last** slice, and merging it is the finishing
+          # run's to do together with handing the PRD PR over. Nothing does
+          # either yet, so this run stops rather than merge half of it.
+          if [ "$open_slices" -eq 1 ] && [ -z "$next" ]; then
+            block "Refused to run: slice PR ${named} is the last slice of #${ISSUE_NUMBER}, and this chain does not yet finish a PRD by itself. Once its review round has ended, merge it into the PRD branch by hand, then hand the PRD PR over — the open one whose branch starts \`agent/prd-${ISSUE_NUMBER}-\`: add \`agent:review\` to it, or open it from that branch if no slice was merged before this one."
           fi
 
           if [ -z "$next" ]; then
@@ -348,6 +356,7 @@ jobs:
           # away from being an injection into the environment file.
           {
             echo "sub=$(jq -r '.number' <<< "$next")"
+            echo "slice_pr=$(jq -r '.[0].number // ""' <<< "$slice_prs")"
             echo "sub_title<<PRD_SUB_TITLE_EOF"
             jq -r '.title' <<< "$next"
             echo "PRD_SUB_TITLE_EOF"
@@ -364,6 +373,177 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:blocked" || true
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:in-progress"
+
+      # The waiting slice PR, merged into the PRD branch before anything is
+      # built, so the next slice is cut from a PRD branch that holds it. Its
+      # own step, named for the slice PR, so a run log reads merge-then-build.
+      #
+      # It **never reads the verdict**. What started this run is `agent:implement`
+      # re-added to the parent, and a human's re-label is an acceptance exactly
+      # as the chain's own is — so there is one merge path, not one per verdict.
+      # What it does read is whether the round is still running, and whether
+      # GitHub can merge the thing at all. Every refusal names the slice PR and
+      # fails into `Mark blocked on failure` with a reason file.
+      #
+      # Before the checkout, deliberately: nothing here needs a working tree,
+      # and the checkout below then fetches a PRD branch that already has it.
+      #
+      # Merged with AGENT_PAT, because a merge made with GITHUB_TOKEN fires no
+      # event: the PRD PR's CI does not run on it, and neither does
+      # `agent-follow-ups`, which files a merged PR's findings on its close. The
+      # fallback still merges — the chain is not held for a missing secret —
+      # and says which of the two it cost.
+      #
+      # Safe to re-run from every state it can stop in: the refusals change
+      # nothing, a slice PR already marked ready is left alone, and one some
+      # earlier attempt already merged is not merged twice.
+      - name: "Merge slice PR #${{ steps.preflight.outputs.slice_pr }}"
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.slice_pr != ''
+        id: merge
+        env:
+          SLICE_PR: ${{ steps.preflight.outputs.slice_pr }}
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          block() {
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "::error::$1"
+            exit 1
+          }
+
+          # One read, so every check below rules on the same snapshot — and its
+          # head is the one the merge is pinned to.
+          fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels
+          pr=$(gh pr view "$SLICE_PR" --json "$fields") \
+            || block "Could not read slice PR #${SLICE_PR}, so nothing was merged. Re-add \`agent:implement\` here to retry."
+          state=$(jq -r '.state' <<< "$pr")
+          head=$(jq -r '.headRefOid' <<< "$pr")
+          head_ref=$(jq -r '.headRefName' <<< "$pr")
+          prd_branch=$(jq -r '.baseRefName' <<< "$pr")
+          labels=$(jq -r '[.labels[].name] | join(" ")' <<< "$pr")
+          echo "prd_branch=$prd_branch" >> "$GITHUB_OUTPUT"
+
+          # A round in flight is never cut short: the review, the fix it
+          # started, or the re-review that fix asked for is still to land on it.
+          busy=$(jq -r '[.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:in-progress")] | join("`, `")' <<< "$pr")
+          if [ -n "$busy" ]; then
+            block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: it carries \`${busy}\`, so its review round has not ended. Re-add \`agent:implement\` here once that label is gone."
+          fi
+
+          if [ "$state" = "MERGED" ]; then
+            echo "Slice PR #${SLICE_PR} is already merged into ${prd_branch}; nothing to merge."
+          elif [ "$state" != "OPEN" ]; then
+            block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: it is ${state,,}, not open. Reopen it, or close the sub-issue it built and re-open that one, then re-add \`agent:implement\` here."
+          else
+            # UNKNOWN is GitHub still computing the answer, which a read starts;
+            # a short wait settles it far more often than a refusal would.
+            mergeable=$(jq -r '.mergeable' <<< "$pr")
+            for _ in 1 2 3 4 5; do
+              [ "$mergeable" = "UNKNOWN" ] || break
+              sleep 5
+              mergeable=$(gh pr view "$SLICE_PR" --json mergeable --jq '.mergeable')
+            done
+            if [ "$mergeable" != "MERGEABLE" ]; then
+              block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: GitHub reports it as ${mergeable,,}, not mergeable — usually a conflict with a PRD branch that moved since the slice was built. Add \`agent:update-branch\` to slice PR #${SLICE_PR} to bring it up to date, then re-add \`agent:implement\` here once its round has ended."
+            fi
+
+            # A draft cannot be merged, and a slice PR accepted by hand as it
+            # stands — its round parked, nothing marked it ready — is merged
+            # like any other.
+            if [ "$(jq -r '.isDraft' <<< "$pr")" = "true" ]; then
+              gh pr ready "$SLICE_PR" \
+                || block "Could not mark slice PR #${SLICE_PR} ready for review, and a draft cannot be merged. If AGENT_PAT is unset this is expected — GITHUB_TOKEN cannot do it. Mark it ready by hand, then re-add \`agent:implement\` here."
+            fi
+
+            # The first method the repository allows, in the order that gives
+            # the PRD branch one commit per slice wherever it can. Read from the
+            # settings rather than tried in turn: a refused method is not the
+            # only reason a merge fails, and this must not guess which it was.
+            method=$(gh api "repos/${GH_REPO}" --jq '[
+                if .allow_squash_merge then "squash" else empty end,
+                if .allow_rebase_merge then "rebase" else empty end,
+                if .allow_merge_commit then "merge" else empty end
+              ] | .[0] // ""') || method=""
+            if [ -z "$method" ]; then
+              block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: this repository's settings allow none of squash, rebase or a merge commit, or this token cannot read them."
+            fi
+
+            # Pinned to the head read above. A push between that read and this
+            # merge is code nothing checked, and GitHub refuses it rather than
+            # merging it unseen.
+            gh pr merge "$SLICE_PR" "--${method}" --match-head-commit "$head" \
+              || block "Could not merge slice PR #${SLICE_PR} into the PRD branch (${method}, pinned to ${head}). If it was pushed to since this run read it, its new head has not been through a round: re-add \`agent:implement\` here once it has."
+            echo "Merged slice PR #${SLICE_PR} into ${prd_branch} (${method})."
+
+            if [ "$HAS_PAT" != "true" ]; then
+              warning="AGENT_PAT is not set, so slice PR #${SLICE_PR} was merged with GITHUB_TOKEN, which triggers no workflow: the PRD PR's CI did not run on this merge."
+              if [[ " $labels " == *" agent:follow-ups "* ]]; then
+                warning="${warning} Its follow-ups were not filed either, since agent-follow-ups fires on the merge: remove \`agent:follow-ups\` from slice PR #${SLICE_PR} and add it back to file them."
+              fi
+              echo "::warning::${warning}"
+            fi
+          fi
+
+          # A finished slice leaves no branch behind. Tolerant, because a
+          # repository that deletes head branches on merge got there first, and
+          # a re-run finds it gone.
+          gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${head_ref}" \
+            || echo "::warning::Could not delete the slice branch ${head_ref}; it may already be gone."
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+      # The PRD PR — PRD branch into the base branch, the one PR of the chain a
+      # human merges. It cannot open before a slice has merged, since until
+      # then the PRD branch has no commits the base branch lacks, so the run
+      # that merges the first slice opens it; every later run finds it by its
+      # **head** and reuses it. That lookup is also what adopts a draft PR a
+      # pre-upgrade chain opened from the PRD branch: it is that PR already.
+      #
+      # A **draft**, carrying `Closes #<parent>`, so the parent closes when the
+      # PRD lands and not before; it leaves draft only when the chain hands it
+      # over.
+      - name: Open or reuse the PRD PR
+        if: steps.preflight.outputs.refused == 'false' && steps.merge.outputs.merged == 'true'
+        id: prd_pr
+        env:
+          PRD_BRANCH: ${{ steps.merge.outputs.prd_branch }}
+          SLICE_PR: ${{ steps.preflight.outputs.slice_pr }}
+          # The Actions bot may not create a PR; see `Open the slice PR`.
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          block() {
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "::error::$1"
+            exit 1
+          }
+
+          existing=$(gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number --jq 'map(.number) | join(" ")') \
+            || block "Could not look for the PRD PR from \`${PRD_BRANCH}\`. Slice PR #${SLICE_PR} is merged; re-add \`agent:implement\` here to build the next slice, and the run that merges it opens the PRD PR."
+          count=$(wc -w <<< "$existing")
+
+          if [ "$count" -gt 1 ]; then
+            block "Refused to pick a PRD PR: ${count} open PRs come from the PRD branch \`${PRD_BRANCH}\` of #${ISSUE_NUMBER} (#${existing// /, #}). Close all but one, then re-add \`agent:implement\` here."
+          elif [ "$count" -eq 1 ]; then
+            number="$existing"
+            echo "Reusing PRD PR #${number}."
+          else
+            body_file="${RUNNER_TEMP}/prd-pr-body.md"
+            {
+              echo "Closes #${ISSUE_NUMBER}"
+              echo
+              echo "The PRD branch \`${PRD_BRANCH}\`, built one slice PR at a time by the \`agent:implement\`"
+              echo "PRD workflow. It stays a draft while the chain is still building."
+            } > "$body_file"
+            url=$(gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH" \
+              --title "${ISSUE_TITLE:0:256}" --body-file "$body_file" | tail -n1) \
+              || block "Could not open the PRD PR from \`${PRD_BRANCH}\` into \`${BASE_REF}\`. If AGENT_PAT is unset this is expected — the Actions bot may not create a pull request. Open it by hand as a draft carrying \`Closes #${ISSUE_NUMBER}\`, then re-add \`agent:implement\` here."
+            number=$(basename "$url")
+            echo "Opened PRD PR $url"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
 
       - name: Checkout the base branch
         if: steps.preflight.outputs.refused == 'false'
@@ -536,8 +716,9 @@ jobs:
       #
       # The slice branch is forced, for `agent-implement`'s reason: this run
       # cut it and owns it. What it can replace is an earlier attempt at the
-      # same sub-issue that never became an open slice PR — the preflight
-      # refuses while one is open — so a retry after a failed build lands
+      # same sub-issue that never became an open slice PR — a sub-issue is
+      # closed as its slice PR opens, so it is never built again — and a retry
+      # after a failed build lands
       # rather than being rejected by its own leftovers.
       - name: Push branches
         if: steps.preflight.outputs.refused == 'false' && success()
@@ -656,14 +837,16 @@ jobs:
           fi
           # "Re-apply the label" is the right remedy for most of the ways this
           # run can fail, and the wrong one for the late ones: once the slice
-          # PR is open, the retry is refused on it rather than rebuilding the
-          # slice. What is left to do by hand is whatever the steps after it
-          # did not — the sub-issue's close and the review label — so name the
-          # slice PR whenever there is one, rather than sending a human to the
-          # run log to work it out.
+          # PR is open, the retry starts by **merging** it rather than
+          # rebuilding the slice — and the merge step never reads a verdict, so
+          # a slice PR with no review round yet would land unreviewed. What is
+          # left to do by hand is whatever the steps after it did not — the
+          # sub-issue's close and the review label — so name the slice PR
+          # whenever there is one, rather than sending a human to the run log
+          # to work it out.
           pr_note=""
           if [ -n "${SLICE_PR}" ]; then
-            pr_note=$(printf ' Slice PR #%s was opened before the run failed, so re-applying the label will refuse on it rather than retry. It is the build of sub-issue %s: close that sub-issue by hand if it is still open, and add `agent:review` to slice PR #%s if it does not carry it.' "$SLICE_PR" "$slice" "$SLICE_PR")
+            pr_note=$(printf ' Slice PR #%s was opened before the run failed, and re-applying the label now would merge it into the PRD branch as it stands rather than retry. It is the build of sub-issue %s: close that sub-issue by hand if it is still open, and add `agent:review` to slice PR #%s if it does not carry it — re-apply the label here only once that round has ended.' "$SLICE_PR" "$slice" "$SLICE_PR")
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           # "Re-apply", and the removal clause, for the same reason as

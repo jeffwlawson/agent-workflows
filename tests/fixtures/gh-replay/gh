@@ -24,17 +24,24 @@
  *   graphql                                        — the issue from GH_REPLAY_ISSUE
  *   repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by
  *                                                  — blockers from GH_REPLAY_BLOCKED_BY
+ *   repos/{owner}/{repo}                           — the repository from GH_REPLAY_REPO
+ *   -X DELETE repos/{owner}/{repo}/git/refs/heads/{branch}
+ *                                                  — logged to GH_REPLAY_LOG, exit 0
  *
  * Subcommands recorded:
  *   run view {id} --log-failed                     — the log is unavailable
- *   pr list --state open --json {fields}           — pull requests from GH_REPLAY_PULLS
+ *   pr list --state open [--head {branch}] --json {fields}
+ *                                                  — pull requests from GH_REPLAY_PULLS
+ *   pr view {n} --json {fields}                    —  "     "    "
  *   issue edit | issue comment                     — logged to GH_REPLAY_LOG, exit 0
+ *   pr ready | pr merge | pr create                — logged to GH_REPLAY_LOG, exit 0
  *
- * The last four serve `tests/implement-prd-preflight.test.ts`. Their *shapes*
- * are the documented ones — a GraphQL `{"data":…}` envelope, the REST array,
- * and `--json` printing an array of objects holding exactly the fields asked
- * for — and what is re-verified against the real binary there is that gh
- * accepts the `pr list` flags and field names the step composes.
+ * Everything after `run view` serves `tests/implement-prd-preflight.test.ts`.
+ * Their *shapes* are the documented ones — a GraphQL `{"data":…}` envelope,
+ * the REST array and object, `--json` printing exactly the fields asked for,
+ * and `pr create` printing the new pull request's URL last — and what is
+ * re-verified against the real binary there is that gh accepts the flags and
+ * field names the steps compose.
  *
  * Environment:
  *   GH_REPLAY_PAGES       path to a JSON array of page bodies, in page order
@@ -48,6 +55,8 @@
  *   GH_REPLAY_BLOCKED_BY  path to a JSON array of blocking issues; default none
  *   GH_REPLAY_PULLS       path to a JSON array of pull requests, each carrying
  *                         a `state` of OPEN, CLOSED or MERGED; default none
+ *   GH_REPLAY_REPO        path to the repository object; default `{}`
+ *   GH_REPLAY_CREATED     the number `pr create` answers with; default 300
  *   GH_REPLAY_LOG         path each tracker write is appended to, one JSON
  *                         argv per line
  */
@@ -112,22 +121,61 @@ if (argv[0] === "issue" && (argv[1] === "edit" || argv[1] === "comment")) {
   process.exit(0);
 }
 
-// `gh pr list`, which queries open pull requests only under `--state open` and
-// prints, per `--json`, an array of objects holding exactly the fields named.
-if (argv[0] === "pr" && argv[1] === "list") {
-  const fields = argOf("--json");
-
-  if (fields === undefined || argOf("--state", "-s") !== "open") unrecorded();
-
-  const wanted = fields.split(",");
-  const pulls = fixture("GH_REPLAY_PULLS", [])
-    .filter((pull) => pull.state === "OPEN")
-    .map((pull) => Object.fromEntries(wanted.map((field) => [field, pull[field]])));
+/** `--json`'s output, through `--jq` if one was passed. */
+const printJson = (value) => {
   const filter = argOf("--jq", "-q");
-  const json = JSON.stringify(pulls);
+  const json = JSON.stringify(value);
 
   if (filter === undefined) process.stdout.write(`${json}\n`);
   else process.stdout.write(execFileSync("jq", ["-r", filter], { input: json, encoding: "utf8" }));
+};
+
+/** One pull request holding exactly the fields `--json` named. */
+const only = (pull) => Object.fromEntries((argOf("--json") ?? "").split(",").map((field) => [field, pull[field]]));
+
+// `gh pr list`, which queries open pull requests only under `--state open` and
+// prints, per `--json`, an array of objects holding exactly the fields named.
+// `--head` keeps the ones from that branch.
+if (argv[0] === "pr" && argv[1] === "list") {
+  if (argOf("--json") === undefined || argOf("--state", "-s") !== "open") unrecorded();
+
+  const head = argOf("--head", "-H");
+
+  printJson(
+    fixture("GH_REPLAY_PULLS", [])
+      .filter((pull) => pull.state === "OPEN" && (head === undefined || pull.headRefName === head))
+      .map(only),
+  );
+  process.exit(0);
+}
+
+// `gh pr view <n> --json …`: one object rather than an array. A number the
+// scenario never mentions has no recording.
+if (argv[0] === "pr" && argv[1] === "view") {
+  const pull = fixture("GH_REPLAY_PULLS", []).find((candidate) => String(candidate.number) === argv[2]);
+
+  if (pull === undefined || argOf("--json") === undefined) unrecorded();
+  printJson(only(pull));
+  process.exit(0);
+}
+
+// Pull request writes, logged like the tracker writes above. `pr create`
+// prints the URL of the pull request it opened, last.
+if (argv[0] === "pr" && ["ready", "merge", "create"].includes(argv[1])) {
+  const log = process.env["GH_REPLAY_LOG"];
+
+  if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
+  if (argv[1] === "create") {
+    process.stdout.write(`https://github.com/acme/widgets/pull/${process.env["GH_REPLAY_CREATED"] ?? "300"}\n`);
+  }
+  process.exit(0);
+}
+
+// A branch deleted through the refs endpoint. A write, logged.
+if (argv[0] === "api" && argv[1] === "-X" && argv[2] === "DELETE" && /\/git\/refs\/heads\//.test(argv[3] ?? "")) {
+  const log = process.env["GH_REPLAY_LOG"];
+
+  if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
   process.exit(0);
 }
 
@@ -310,6 +358,13 @@ if (/\/actions\/runs\?/.test(endpoint)) {
 // node inside it is whatever the scenario says the PRD looks like.
 if (endpoint === "graphql") {
   emit({ data: { repository: { issue: fixture("GH_REPLAY_ISSUE", null) } } });
+  process.exit(0);
+}
+
+// The repository itself — the REST object, of which only the merge settings
+// are ever read.
+if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
+  emit(fixture("GH_REPLAY_REPO", {}));
   process.exit(0);
 }
 

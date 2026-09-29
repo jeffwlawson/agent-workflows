@@ -3776,7 +3776,8 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * The slice branch is the one exception, and it is forced for
    * `agent-implement`'s reason: this run cut it and owns it. What a force can
    * replace there is an earlier attempt at the same sub-issue that never became
-   * an open slice PR — the preflight refuses while one is open.
+   * an open slice PR — a sub-issue closes as its slice PR opens, so one with an
+   * open slice PR is never built again.
    */
   it("pushes the PRD branch without force, and forces only the slice branch", () => {
     const pushes = fs
@@ -3917,10 +3918,12 @@ describe("agent-implement-prd works one sub-issue per run", () => {
 
   /**
    * Once the slice PR is open, re-applying `agent:implement` — the failure
-   * comment's own remedy — is refused on it rather than retrying anything. So
-   * the comment names the slice PR whenever there is one, and the two things
-   * the steps after it may not have done: the sub-issue's close and the review
-   * label.
+   * comment's own remedy — starts by **merging** it rather than retrying
+   * anything, and the merge never reads a verdict (#173). A run that died
+   * before asking for the review would land that slice unreviewed. So the
+   * comment names the slice PR whenever there is one, the two things the steps
+   * after it may not have done — the sub-issue's close and the review label —
+   * and says the re-label waits for that round.
    */
   it("names the slice PR as the way out when the chain dies after opening it", () => {
     const failed = stepsOf(PRD).find((s) => s.name === "Mark blocked on failure");
@@ -3928,6 +3931,117 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(failed?.env?.["SLICE_PR"]).toBe("${{ steps.slice_pr.outputs.number }}");
     expect(failed?.run ?? "").toContain("agent:review");
     expect(failed?.run ?? "").toMatch(/close that sub-issue by hand/);
+    expect(failed?.run ?? "").toMatch(/would merge it into the PRD branch as it stands/);
+    expect(failed?.run ?? "").toMatch(/only once that round has ended/);
+  });
+
+  /**
+   * The waiting slice PR is merged into the PRD branch in a step of its own,
+   * named for it, and before anything is built (#173) — before the checkout,
+   * so the PRD branch the slice branch is cut from already holds it. The
+   * preflight is still first: it is the step that finds the slice PR.
+   */
+  it("merges the waiting slice PR in its own named step, before the build", () => {
+    const steps = stepsOf(PRD);
+    const merge = steps.findIndex((s) => s.id === "merge");
+    const checkout = steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+    const agent = steps.findIndex((s) => (s.run ?? "").includes("agent-workflows implement-prd"));
+
+    expect(steps[merge]?.name).toBe("Merge slice PR #${{ steps.preflight.outputs.slice_pr }}");
+    expect(merge).toBeGreaterThan(steps.findIndex((s) => s.id === "preflight"));
+    expect(merge).toBeLessThan(checkout);
+    expect(checkout).toBeLessThan(agent);
+    expect(steps[merge]?.if).toBe(`${NOT_REFUSED} && steps.preflight.outputs.slice_pr != ''`);
+    expect(steps[merge]?.env?.["SLICE_PR"]).toBe("${{ steps.preflight.outputs.slice_pr }}");
+    expect(runOf(PRD, "preflight")).toContain(`echo "slice_pr=$(jq -r '.[0].number // ""' <<< "$slice_prs")"`);
+  });
+
+  /**
+   * The merge rules on the round and on mergeability, never on the verdict: a
+   * human's re-label and the chain's own are one path. The refusals, the method
+   * order and the draft case are executed in
+   * `tests/implement-prd-preflight.test.ts`; this pins what they stand on.
+   */
+  it("reads no verdict, and refuses while the slice PR's round is still running", () => {
+    const run = runOf(PRD, "merge");
+
+    expect(run).not.toMatch(/agent-review|verdict|statuses/);
+    for (const label of ["agent:review", "agent:fix", "agent:in-progress"]) expect(run).toContain(`. == "${label}"`);
+    expect(run).toContain("agent:update-branch");
+    expect(run.indexOf('gh pr ready "$SLICE_PR"')).toBeLessThan(run.indexOf("gh pr merge"));
+  });
+
+  /**
+   * Pinned to the head it read, merged with `AGENT_PAT` — a `GITHUB_TOKEN`
+   * merge fires no event, so no PRD PR CI and no Follow-ups run — and warning
+   * on the fallback, naming the follow-ups it left unfiled when there are some.
+   */
+  it("merges pinned to the inspected head, with AGENT_PAT, and warns on the fallback", () => {
+    const step = stepsOf(PRD).find((s) => s.id === "merge");
+    const run = step?.run ?? "";
+
+    expect(run).toContain('--match-head-commit "$head"');
+    expect(run).toContain("head=$(jq -r '.headRefOid' <<< \"$pr\")");
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(run).toContain("::warning::");
+    expect(run).toContain("the PRD PR's CI did not run");
+    expect(run).toContain("agent:follow-ups");
+  });
+
+  it("reads the merge method from the repo settings, squash then rebase then merge commit", () => {
+    const run = runOf(PRD, "merge");
+    const squash = run.indexOf("allow_squash_merge");
+
+    expect(squash).toBeGreaterThanOrEqual(0);
+    expect(squash).toBeLessThan(run.indexOf("allow_rebase_merge"));
+    expect(run.indexOf("allow_rebase_merge")).toBeLessThan(run.indexOf("allow_merge_commit"));
+  });
+
+  it("deletes the slice branch on merge", () => {
+    const run = runOf(PRD, "merge");
+
+    expect(run).toContain('gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${head_ref}"');
+    expect(run.indexOf("gh api -X DELETE")).toBeGreaterThan(run.indexOf("gh pr merge"));
+  });
+
+  /**
+   * The PRD PR opens in the run that merges the first slice — before that the
+   * PRD branch has nothing the base lacks — as a draft carrying `Closes
+   * #<parent>`, and is found by its **head** after, which is also what adopts a
+   * pre-upgrade draft PR from the PRD branch. Also before the build, so the
+   * PRD PR a run needs exists whether or not the build that follows succeeds.
+   */
+  it("opens the PRD PR as a draft closing the parent once a slice merges, and finds it by head after", () => {
+    const steps = stepsOf(PRD);
+    const at = steps.findIndex((s) => s.id === "prd_pr");
+    const step = steps[at];
+    const run = step?.run ?? "";
+
+    expect(at).toBeGreaterThan(steps.findIndex((s) => s.id === "merge"));
+    expect(at).toBeLessThan(steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
+    expect(step?.if).toBe(`${NOT_REFUSED} && steps.merge.outputs.merged == 'true'`);
+    expect(step?.env?.["PRD_BRANCH"]).toBe("${{ steps.merge.outputs.prd_branch }}");
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(run).toContain('gh pr list --state open --head "$PRD_BRANCH"');
+    expect(run).toContain('gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH"');
+    expect(run).toContain('echo "Closes #${ISSUE_NUMBER}"');
+    expect(run.indexOf("gh pr list")).toBeLessThan(run.indexOf("gh pr create"));
+  });
+
+  /**
+   * Every refusal of the merge and the PRD PR steps is a stop, like the
+   * preflight's: a reason file and a failed step, which `Mark blocked on
+   * failure` turns into `agent:blocked` and a comment.
+   */
+  it.each(["merge", "prd_pr"])("%s blocks through the reason file, not a comment of its own", (id: string) => {
+    const run = runOf(PRD, id);
+    const body = bashFunctionBody(run, "block");
+
+    expect(body).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
+    expect(body).toContain("exit 1");
+    expect(run).not.toMatch(/gh (issue|pr) comment/);
+    expect(run).not.toContain("--add-label");
   });
 
   /**

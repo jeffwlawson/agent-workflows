@@ -904,6 +904,26 @@ describe("every PR workflow shares one concurrency group per PR", () => {
   });
 
   /**
+   * The listing that feeds that tail needs `actions: read`, which the loop
+   * deliberately does not request: run logs can carry an echoed secret, and a
+   * log tail is not worth the scope (#80). So on a private repository the
+   * listing is refused, and fed straight to `for` that was silent. It is gated
+   * on gh's exit status instead, and a failure says in the evidence that the
+   * tail is missing — naming the likely cause, never a remedy. Behaviour is
+   * `tests/review-ci-wait.test.ts`'s; this pins the shape and the ceiling.
+   */
+  it("agent-review says so when it cannot list the runs to tail", () => {
+    const run = waitStep().run ?? "";
+
+    expect(run).toContain('if ! failed_runs=$(gh api "repos/${GH_REPO}/actions/runs?');
+    expect(run).toContain("for rid in $failed_runs; do");
+    expect(run).not.toMatch(/for rid in \$\(gh api/);
+    expect(run).toMatch(/Could not list this commit's workflow runs[^\n]*actions: read[^\n]*>> "\$out"/);
+    // No grant: the reusable half's ceiling stays without the scope.
+    expect(jobOf(REVIEW).permissions).not.toHaveProperty("actions");
+  });
+
+  /**
    * An unreadable check-runs API must stop the wait, not extend it.
    *
    * `pending_count` used to end `|| echo 0`, which had two failure shapes and

@@ -207,6 +207,8 @@ const runWaitStep = (options: {
   /** How the combined-status call fails, when the scenario is about that. */
   readonly statusesUnreadable?: "403" | "unreachable";
   readonly failedRuns?: readonly { readonly id: number; readonly name: string }[];
+  /** How the workflow-runs listing fails, when the scenario is about that. */
+  readonly runsUnreadable?: "403" | "unreachable";
   readonly gh?: string;
   /**
    * The pull request's head branch — the job's `BRANCH`, which the step reads
@@ -254,6 +256,7 @@ const runWaitStep = (options: {
         ? {}
         : { GH_REPLAY_STATUS_FAILURE: options.statusesUnreadable }),
       GH_REPLAY_RUNS: runs,
+      ...(options.runsUnreadable === undefined ? {} : { GH_REPLAY_RUNS_FAILURE: options.runsUnreadable }),
       GH_REPLAY_COUNTER: path.join(temp, "check-runs.calls"),
       ...(options.unreadable === undefined ? {} : { GH_REPLAY_FAILURE: options.unreadable }),
       ...(options.unreadableFrom === undefined ? {} : { GH_REPLAY_FAILURE_AT: String(options.unreadableFrom) }),
@@ -313,9 +316,9 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    *
    * Five of the step's calls since #107 polled the commit statuses in the
    * wait as well as reading them for the verdict (#105), and it cannot be more
-   * than five: an unreachable host fails the runs listing, so
-   * `for rid in $(gh api …)` iterates nothing and the two calls in its body are
-   * never composed at all.
+   * than five: an unreachable host fails the runs listing, so the loop over
+   * the failed runs it would have named iterates nothing and the two calls in
+   * its body are never composed at all.
    * Those two are the sibling test below — they are otherwise seen only by the
    * replay, which is the thing that can drift from the binary.
    */
@@ -749,5 +752,41 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     // step handed the agent everything rather than stopping where it stood.
     expect(outcome.stdout).toContain("--- collected CI context ---");
     expect(outcome.stdout).toContain("### Failure output — Corpus");
+  });
+
+  /**
+   * The listing that feeds the tail needs `actions: read`, which the loop does
+   * not request (#80), so on a private repository it is refused. Fed straight to
+   * `for`, that was silent — or worse: an HTTP error's body reaches stdout
+   * unfiltered, and its JSON words were iterated as run ids. The evidence now
+   * says the tail is missing rather than absent, and names no remedy: the grant
+   * is a trust decision the workflow cannot make.
+   */
+  it.each([
+    ["403", "Resource not accessible by integration"],
+    ["unreachable", "connection refused"],
+  ] as const)("says the failure logs are missing when the runs cannot be listed (%s)", (runsUnreadable, said) => {
+    const outcome = runWaitStep({ waitSeconds: "0", runsUnreadable });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.evidence).toContain("Could not list this commit's workflow runs");
+    expect(outcome.evidence).toContain("actions: read");
+    expect(outcome.evidence).not.toMatch(/grant|must|required/i);
+    // No run id was invented out of the error body.
+    expect(outcome.evidence).not.toContain("### Failure output");
+    expect(outcome.stdout).toContain("::warning::Could not list this commit's workflow runs");
+    expect(outcome.stdout).toContain(said);
+    // …and the step still reaches its end.
+    expect(outcome.stdout).toContain("--- collected CI context ---");
+    // The check runs were read, so the verdict's half is unaffected.
+    expect(outcome.ciResult).toBe("green");
+  });
+
+  /** A listing that answered with no failed run adds nothing, as before. */
+  it("adds no line when the runs were listed and none failed", () => {
+    const outcome = runWaitStep({ waitSeconds: "0" });
+
+    expect(outcome.evidence).not.toContain("Could not list this commit's workflow runs");
+    expect(outcome.stdout).not.toContain("Could not list this commit's workflow runs");
   });
 });

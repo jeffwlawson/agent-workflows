@@ -210,11 +210,11 @@ jobs:
           # whichever shape it happens to have. The PRD workflow carries the
           # same refusal, for the wayfinder map that has sub-issues.
           if [ -n "$wayfinder" ]; then
-            refuse_shape "Refused to run: this issue carries \`${wayfinder}\`. Wayfinder maps and decision tickets are planning artifacts, not implementable work — they describe what to build and where the decisions are. Label the issues they produce instead."
+            refuse_shape "Refused to run: this issue carries \`${wayfinder}\`. Wayfinder maps and decision tickets are planning artifacts, not implementable work. They describe what to build and where the decisions are. Label the issues they produce instead."
           fi
 
           if [ "$shape" = "has-parent" ]; then
-            refuse_shape "Refused to run: this issue is a sub-issue of #${parent}. Sub-issues are driven by their parent, never labelled directly — implemented alone, this one loses the ordering and the shared context the parent holds. Label #${parent} instead: the PRD workflow works its sub-issues in order, one per run."
+            refuse_shape "Refused to run: this issue is a sub-issue of #${parent}. Sub-issues are driven by their parent, never labelled directly: implemented alone, this one loses the ordering and the shared context the parent holds. Label #${parent} instead: the PRD workflow works its sub-issues in order, one per run."
           fi
 
           # Blocked-by is *sequencing*, not containment, and that distinction is
@@ -245,7 +245,7 @@ jobs:
           # Revisit when #5 lands: `agent:queued` becomes the right marker, and
           # this stops being an exception.
           if [ -n "$blockers" ]; then
-            refuse_shape "Refused to run: blocked by ${blockers}, still open. Label the blocker instead, then re-add \`agent:implement\` here once it closes — remove and re-add if the label is still attached, since adding one already present fires no event. If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges, never prose, so deleting the edge is how you say so."
+            refuse_shape "Refused to run: blocked by ${blockers}, still open. Label the blocker instead, then re-add \`agent:implement\` here once it closes (remove and re-add if the label is still attached, since adding one already present fires no event). If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges, never prose, so deleting the edge is how you say so."
           fi
 
           existing=$(gh pr list --state open --json number,url,body \
@@ -437,7 +437,7 @@ jobs:
           # "re-add" is inert on exactly the path this gate was widened to catch
           # (docs/ADOPTING.md §1). One wording is correct on both paths: consumed,
           # and never consumed.
-          printf '`agent:implement` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-apply `agent:implement` to retry. If it is still attached, remove it first — adding a label that is already present fires no event.\n' "$reason" "$RUN_URL" > "$body_file"
+          printf '`agent:implement` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-apply `agent:implement` to retry. If it is still attached, remove it first, since adding a label that is already present fires no event.\n' "$reason" "$RUN_URL" > "$body_file"
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
 

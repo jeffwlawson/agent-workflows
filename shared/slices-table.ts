@@ -122,7 +122,7 @@ export const renderSliceRow = (slice: MergedSlice): string =>
 
 /** The row of a slice built before slice PRs existed: no PR, and no review of its own. */
 export const renderPreUpgradeRow = (slice: PreUpgradeSlice): string =>
-  row([sliceCell(slice.title, slice.subIssue), "—", "built before slice PRs, no review of its own", "—"]);
+  row([sliceCell(slice.title, slice.subIssue), "n/a", "built before slice PRs, no review of its own", "n/a"]);
 
 /**
  * The sub-issue a row is for, read from the end of its first cell — the key that

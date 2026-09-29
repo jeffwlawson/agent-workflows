@@ -59,7 +59,7 @@ jobs:
             # redden the run without raising an issue. Neither is "no expiry".
             echo "http_code=$http_code" >> "$GITHUB_OUTPUT"
             if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
-              echo "::warning::GitHub rejected AGENT_PAT (HTTP $http_code) — it looks revoked or already expired."
+              echo "::warning::GitHub rejected AGENT_PAT (HTTP $http_code): it looks revoked or already expired."
               echo "state=invalid" >> "$GITHUB_OUTPUT"
             else
               echo "::warning::Could not reach GitHub to check AGENT_PAT (HTTP $http_code)."
@@ -77,7 +77,7 @@ jobs:
             | awk -F': ' 'tolower($1)=="github-authentication-token-expiration"{print $2}')
 
           if [ -z "$expiry" ]; then
-            echo "AGENT_PAT carries no expiry date — nothing to track."
+            echo "AGENT_PAT carries no expiry date, so there is nothing to track."
             echo "state=no-expiry" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -118,7 +118,7 @@ jobs:
           if [ "$STATE" = "expired" ]; then
             headline="**\`AGENT_PAT\` has expired** (expiry: $EXPIRY)."
           elif [ "$STATE" = "invalid" ]; then
-            headline="**\`AGENT_PAT\` was rejected by GitHub** (HTTP $HTTP_CODE) — it has most likely been revoked or already expired."
+            headline="**\`AGENT_PAT\` was rejected by GitHub** (HTTP $HTTP_CODE): it has most likely been revoked or already expired."
           else
             headline="**\`AGENT_PAT\` expires in $DAYS days** (expiry: $EXPIRY)."
           fi
@@ -159,9 +159,9 @@ jobs:
         run: |
           case "${{ steps.check.outputs.state }}" in
             expiring|expired)
-              echo "::error::AGENT_PAT ${{ steps.check.outputs.state }} — expires ${{ steps.check.outputs.expiry }} (${{ steps.check.outputs.days }} days)." ;;
+              echo "::error::AGENT_PAT ${{ steps.check.outputs.state }}: expires ${{ steps.check.outputs.expiry }} (${{ steps.check.outputs.days }} days)." ;;
             invalid)
-              echo "::error::AGENT_PAT was rejected by GitHub (HTTP ${{ steps.check.outputs.http_code }}) — revoked or already expired." ;;
+              echo "::error::AGENT_PAT was rejected by GitHub (HTTP ${{ steps.check.outputs.http_code }}): revoked or already expired." ;;
             *)
               echo "::error::Could not reach GitHub to check AGENT_PAT (HTTP ${{ steps.check.outputs.http_code }})." ;;
           esac

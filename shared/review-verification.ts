@@ -225,7 +225,7 @@ export const carriedFindings = (parts: {
 
 /** Said where there is nothing to verify, so the absence is a statement rather than a gap. */
 const NOTHING_CARRIED =
-  "(no finding from an earlier review of this pull request is open — either this is the first review, or every earlier finding has been verified fixed.)";
+  "(no finding from an earlier review of this pull request is open: either this is the first review, or every earlier finding has been verified fixed.)";
 
 /**
  * Said beside a finding whose thread already carries this workflow's closing
@@ -256,7 +256,7 @@ export const renderCarriedFindings = (carried: readonly CarriedFinding[]): strin
     : carried
         .map(
           (finding) =>
-            `- \`${finding.id}\` — ${withSeverityBadgesAsText(finding.text)}` +
+            `- \`${finding.id}\`: ${withSeverityBadgesAsText(finding.text)}` +
             (finding.closedAs === undefined ? "" : CLOSE_DID_NOT_LAND),
         )
         .join("\n");
@@ -287,7 +287,7 @@ export const renderSettledFindings = (settled: readonly SettledFinding[]): strin
     : [
         ...settled.map(
           (finding) =>
-            `- ${withSeverityBadgesAsText(finding.text)} — closed by @${finding.resolvedBy}`,
+            `- ${withSeverityBadgesAsText(finding.text)} · closed by @${finding.resolvedBy}`,
         ),
         "",
         "Each of these is **settled by the maintainer**. Do not raise it again, in these words or in any others.",
@@ -505,7 +505,7 @@ export const declineReply = (reply: MaintainerReply): string => {
     "",
     quoted,
     "",
-    "_Closed on a maintainer's reply, never on the review's own judgement — a review cannot decline a finding itself. If that reply was not a refusal, reopen this thread._",
+    "_Closed on a maintainer's reply, never on the review's own judgement: a review cannot decline a finding itself. If that reply was not a refusal, reopen this thread._",
     "",
     resolutionMarker("WONT_FIX"),
   ].join("\n");

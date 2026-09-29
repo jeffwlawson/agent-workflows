@@ -339,7 +339,7 @@ export const renderConversationOutcomes = (
         : comment.url === undefined
           ? `@${comment.author}'s comment`
           : `@${comment.author}'s [comment](${comment.url})`;
-    return `**${label}** — ${target}:\n\n${outcome.reply.trim()}`;
+    return `**${label}** ${target}:\n\n${outcome.reply.trim()}`;
   };
 
   const ordered = [

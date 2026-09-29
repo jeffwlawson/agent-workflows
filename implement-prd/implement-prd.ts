@@ -112,7 +112,7 @@ try {
       throw new Error(
         `Could not write the merged slice's row into the slices table of PRD PR #${PRD_PR} ` +
           `(${error instanceof Error ? error.message : String(error)}). The slice PR is merged; re-add ` +
-          "`agent:implement` to retry — the merge is not repeated, and a row already written is left as it is.",
+          "`agent:implement` to retry. The merge is not repeated, and a row already written is left as it is.",
       );
     }
   }

@@ -236,14 +236,14 @@ jobs:
           # reaches *this* workflow rather than agent-implement, so the refusal
           # has to exist in both.
           if [ -n "$wayfinder" ]; then
-            refuse_shape "Refused to run: this issue carries \`${wayfinder}\`. Wayfinder maps and decision tickets are planning artifacts, not implementable work — they describe what to build and where the decisions are. Label the issues they produce instead."
+            refuse_shape "Refused to run: this issue carries \`${wayfinder}\`. Wayfinder maps and decision tickets are planning artifacts, not implementable work. They describe what to build and where the decisions are. Label the issues they produce instead."
           fi
 
           # A nested PRD has two owners of one ordering, and neither can see the
           # other's chain: #${parent}'s run would drive its own sub-issues while
           # this one drives these, both pushing to different branches.
           if [ -n "$parent" ]; then
-            refuse_shape "Refused to run: this PRD is itself a sub-issue of #${parent}, and nested PRDs have no single owner of the ordering — #${parent}'s chain and this one would run over each other. Flatten the hierarchy, then label the outermost parent."
+            refuse_shape "Refused to run: this PRD is itself a sub-issue of #${parent}, and nested PRDs have no single owner of the ordering: #${parent}'s chain and this one would run over each other. Flatten the hierarchy, then label the outermost parent."
           fi
 
           # The query pages at 100, and `totalCount` does not. Past that, `next`
@@ -252,7 +252,7 @@ jobs:
           # when it is not, which is the plausible-wrong-answer class every
           # other guard in this file exists to prevent. Refuse loudly instead.
           if [ "$subs" -gt 100 ]; then
-            refuse_shape "Refused to run: #${ISSUE_NUMBER} has ${subs} sub-issues and this workflow reads the first 100, so it cannot see the whole chain. Split the PRD — that is the remedy on your side, since the page size lives in the reusable workflow this repo calls rather than in a file here."
+            refuse_shape "Refused to run: #${ISSUE_NUMBER} has ${subs} sub-issues and this workflow reads the first 100, so it cannot see the whole chain. Split the PRD. That is the remedy on your side, since the page size lives in the reusable workflow this repo calls rather than in a file here."
           fi
 
           # The whole scheduling policy, in one filter: keep the open ones in
@@ -326,7 +326,7 @@ jobs:
                 block "Refused to run: $(jq -r 'map("#\(.number)") | join(", ")' <<< "$prd_prs") are all open from the PRD branch of #${ISSUE_NUMBER}, and the chain will not guess which of them to hand over. Close all but one, then re-add \`agent:implement\` here."
               fi
               if [ "$(jq -r '.[0].isDraft // false' <<< "$prd_prs")" != "true" ]; then
-                refuse "Refused to run: #${ISSUE_NUMBER} has no open sub-issues left — all ${subs} of them are closed, and no slice PR is open against its PRD branch, so the PRD is finished. Its PRD PR has been handed over, or there is none. Nothing was re-labelled and nothing was built; if there is more to do, add a sub-issue first."
+                refuse "Refused to run: #${ISSUE_NUMBER} has no open sub-issues left: all ${subs} of them are closed, and no slice PR is open against its PRD branch, so the PRD is finished. Its PRD PR has been handed over, or there is none. Nothing was re-labelled and nothing was built; if there is more to do, add a sub-issue first."
               fi
               echo "PRD PR #$(jq -r '.[0].number' <<< "$prd_prs") is still a draft with every slice merged; resuming its handover."
               {
@@ -396,7 +396,7 @@ jobs:
           #
           # Revisit when #5 lands: `agent:queued` becomes the right marker.
           if [ -n "$blockers" ]; then
-            refuse_shape "Refused to run: this PRD is blocked by ${blockers}, still open — and labelling it here would not waste one run but start the whole chain, landing every slice on one branch as one PR built on work that does not exist yet. Label the blocker instead, then re-add \`agent:implement\` here once it closes — remove and re-add if the label is still attached, since adding one already present fires no event. If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges on this parent, never prose and never the sub-issues, so deleting the edge is how you say so."
+            refuse_shape "Refused to run: this PRD is blocked by ${blockers}, still open, and labelling it here would not waste one run but start the whole chain, landing every slice on one branch as one PR built on work that does not exist yet. Label the blocker instead, then re-add \`agent:implement\` here once it closes (remove and re-add if the label is still attached, since adding one already present fires no event). If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges on this parent, never prose and never the sub-issues, so deleting the edge is how you say so."
           fi
 
           # Heredoc form for the title: an issue title cannot contain a newline
@@ -495,7 +495,7 @@ jobs:
               mergeable=$(gh pr view "$SLICE_PR" --json mergeable --jq '.mergeable')
             done
             if [ "$mergeable" != "MERGEABLE" ]; then
-              block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: GitHub reports it as ${mergeable,,}, not mergeable — usually a conflict with a PRD branch that moved since the slice was built. Add \`agent:update-branch\` to slice PR #${SLICE_PR} to bring it up to date, then re-add \`agent:implement\` here once its round has ended."
+              block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: GitHub reports it as ${mergeable,,}, not mergeable. That is usually a conflict with a PRD branch that moved since the slice was built. Add \`agent:update-branch\` to slice PR #${SLICE_PR} to bring it up to date, then re-add \`agent:implement\` here once its round has ended."
             fi
 
             # A draft cannot be merged, and a slice PR accepted by hand as it
@@ -503,7 +503,7 @@ jobs:
             # like any other.
             if [ "$(jq -r '.isDraft' <<< "$pr")" = "true" ]; then
               gh pr ready "$SLICE_PR" \
-                || block "Could not mark slice PR #${SLICE_PR} ready for review, and a draft cannot be merged. If AGENT_PAT is unset this is expected — GITHUB_TOKEN cannot do it. Mark it ready by hand, then re-add \`agent:implement\` here."
+                || block "Could not mark slice PR #${SLICE_PR} ready for review, and a draft cannot be merged. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand, then re-add \`agent:implement\` here."
             fi
 
             # The first method the repository allows, in the order that gives
@@ -570,7 +570,7 @@ jobs:
           # One read of the merged slice PR. Its head is the one the merge was
           # pinned to, and a merged pull request's head no longer moves.
           pr=$(gh pr view "$SLICE_PR" --json number,headRefOid,headRefName,title,body,url) \
-            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read it back for its row of the slices table. Re-add \`agent:implement\` here to retry — the merge is not repeated."
+            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read it back for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
           head=$(jq -r '.headRefOid' <<< "$pr")
 
           # The sub-issue from `Part of #<n>`, or failing that the slice
@@ -579,7 +579,7 @@ jobs:
           slice_of='(.body // "" | capture("Part of #(?<n>[0-9]+)").n) // (.headRefName | capture("^agent/slice-\($parent)-(?<n>[0-9]+)-").n) // empty'
           sub=$(jq -r --arg parent "$ISSUE_NUMBER" "$slice_of" <<< "$pr")
           if [ -z "$sub" ]; then
-            block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not tell which sub-issue it built: its body has no \`Part of #<sub-issue>\` and its branch is not \`agent/slice-${ISSUE_NUMBER}-<sub-issue>-…\`. Put \`Part of #<sub-issue>\` back in slice PR #${SLICE_PR}'s body, then re-add \`agent:implement\` here — the merge is not repeated."
+            block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not tell which sub-issue it built: its body has no \`Part of #<sub-issue>\` and its branch is not \`agent/slice-${ISSUE_NUMBER}-<sub-issue>-…\`. Put \`Part of #<sub-issue>\` back in slice PR #${SLICE_PR}'s body, then re-add \`agent:implement\` here. The merge is not repeated."
           fi
           url=$(jq -r '.url' <<< "$pr")
 
@@ -588,7 +588,7 @@ jobs:
           # the latest post per context.
           verdict=$(gh api "repos/${GH_REPO}/commits/${head}/status" --paginate --slurp \
             | jq -c '[.[].statuses[]? | select(.context == "agent-review")] | .[0].description // null') \
-            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read the \`agent-review\` verdict on ${head} for its row of the slices table. Re-add \`agent:implement\` here to retry — the merge is not repeated."
+            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read the \`agent-review\` verdict on ${head} for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
 
           # Every review thread left open, linked from the row rather than
           # raised again: the PRD PR's review is not a second round of these.
@@ -608,7 +608,7 @@ jobs:
             | jq -c --arg url "$url" '[.[].data.repository.pullRequest.reviewThreads.nodes[]
                 | select(.isResolved | not)
                 | {path, line: (.line // .originalLine), url: (.comments.nodes[0].url // $url)}]') \
-            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read its review threads for its row of the slices table. Re-add \`agent:implement\` here to retry — the merge is not repeated."
+            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read its review threads for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
 
           # A sub-issue closed with no slice PR was built before slice PRs
           # existed. Offered on every run; the runner writes these rows only
@@ -616,7 +616,7 @@ jobs:
           # Every state, since a merged slice PR is exactly what rules one out.
           built=$(gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,body,headRefName \
             | jq -c --arg parent "$ISSUE_NUMBER" "[.[] | ${slice_of} | tonumber]") \
-            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not list the slice PRs of \`${PRD_BRANCH}\` for the slices table. Re-add \`agent:implement\` here to retry — the merge is not repeated."
+            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not list the slice PRs of \`${PRD_BRANCH}\` for the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
 
           jq -n \
             --slurpfile issue "${RUNNER_TEMP}/prd-issue.json" \
@@ -685,7 +685,7 @@ jobs:
             } > "$body_file"
             url=$(gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH" \
               --title "${ISSUE_TITLE:0:256}" --body-file "$body_file" | tail -n1) \
-              || block "Could not open the PRD PR from \`${PRD_BRANCH}\` into \`${BASE_REF}\`. If AGENT_PAT is unset this is expected — the Actions bot may not create a pull request. Open it by hand as a draft carrying \`Closes #${ISSUE_NUMBER}\`, then re-add \`agent:implement\` here."
+              || block "Could not open the PRD PR from \`${PRD_BRANCH}\` into \`${BASE_REF}\`. If AGENT_PAT is unset this is expected: the Actions bot may not create a pull request. Open it by hand as a draft carrying \`Closes #${ISSUE_NUMBER}\`, then re-add \`agent:implement\` here."
             number=$(basename "$url")
             echo "Opened PRD PR $url"
           fi
@@ -1014,7 +1014,7 @@ jobs:
           }
 
           if [ "$HAS_PAT" != "true" ]; then
-            block "Every slice of #${ISSUE_NUMBER} is merged into the PRD branch, but PRD PR #${PRD_PR} was not handed over: AGENT_PAT is not set, and GITHUB_TOKEN can neither mark a draft ready nor add a label that starts a review. Set AGENT_PAT, then re-add \`agent:implement\` here — the run resumes the handover and merges nothing."
+            block "Every slice of #${ISSUE_NUMBER} is merged into the PRD branch, but PRD PR #${PRD_PR} was not handed over: AGENT_PAT is not set, and GITHUB_TOKEN can neither mark a draft ready nor add a label that starts a review. Set AGENT_PAT, then re-add \`agent:implement\` here. The run resumes the handover and merges nothing."
           fi
 
           # Every slice PR the PRD branch has had, for the merged count and for
@@ -1022,7 +1022,7 @@ jobs:
           # #<n>`, or failing that the slice branch's name, as the row step.
           slice_of='(.body // "" | capture("Part of #(?<n>[0-9]+)").n) // (.headRefName | capture("^agent/slice-\($parent)-(?<n>[0-9]+)-").n) // empty'
           prs=$(gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,state,body,headRefName) \
-            || block "Could not list the slice PRs of \`${PRD_BRANCH}\` to decide how to hand PRD PR #${PRD_PR} over. Re-add \`agent:implement\` here to retry — nothing is merged twice."
+            || block "Could not list the slice PRs of \`${PRD_BRANCH}\` to decide how to hand PRD PR #${PRD_PR} over. Re-add \`agent:implement\` here to retry. Nothing is merged twice."
           merged=$(jq '[.[] | select(.state == "MERGED")] | length' <<< "$prs")
           built=$(jq -c --arg parent "$ISSUE_NUMBER" "[.[] | ${slice_of} | tonumber]" <<< "$prs")
           before=$(jq --argjson built "$built" \
@@ -1033,11 +1033,11 @@ jobs:
 
           if [ "$slices" -gt 1 ]; then
             gh pr edit "$PRD_PR" --add-label "agent:review" \
-              || block "Could not add \`agent:review\` to PRD PR #${PRD_PR}, so its integration review was not asked for. Re-add \`agent:implement\` here to retry the handover — nothing is merged twice."
+              || block "Could not add \`agent:review\` to PRD PR #${PRD_PR}, so its integration review was not asked for. Re-add \`agent:implement\` here to retry the handover. Nothing is merged twice."
             echo "Asked for the integration review of PRD PR #${PRD_PR}; review marks it ready."
           else
             gh pr ready "$PRD_PR" \
-              || block "Could not mark PRD PR #${PRD_PR} ready for review. Re-add \`agent:implement\` here to retry the handover — nothing is merged twice."
+              || block "Could not mark PRD PR #${PRD_PR} ready for review. Re-add \`agent:implement\` here to retry the handover. Nothing is merged twice."
             echo "Marked PRD PR #${PRD_PR} ready: its one slice was reviewed on its slice PR."
           fi
 
@@ -1073,7 +1073,7 @@ jobs:
           # to work it out.
           pr_note=""
           if [ -n "${SLICE_PR}" ]; then
-            pr_note=$(printf ' Slice PR #%s was opened before the run failed, and re-applying the label now would merge it into the PRD branch as it stands rather than retry. It is the build of sub-issue %s: close that sub-issue by hand if it is still open, and add `agent:review` to slice PR #%s if it does not carry it — re-apply the label here only once that round has ended.' "$SLICE_PR" "$slice" "$SLICE_PR")
+            pr_note=$(printf ' Slice PR #%s was opened before the run failed, and re-applying the label now would merge it into the PRD branch as it stands rather than retry. It is the build of sub-issue %s: close that sub-issue by hand if it is still open, and add `agent:review` to slice PR #%s if it does not carry it, and re-apply the label here only once that round has ended.' "$SLICE_PR" "$slice" "$SLICE_PR")
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           # "Re-apply", and the removal clause, for the same reason as
@@ -1086,9 +1086,9 @@ jobs:
           # PRD PR is still a draft — so the remedy is the re-label, the same
           # one as everywhere else, and nothing is left to do by hand.
           if [ "${FINISHING}" = "true" ]; then
-            printf '`agent:implement` finishing run failed: every sub-issue is built, and this run was merging the last slice PR and handing the PRD PR over.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to pick up where it stopped — it merges the last slice PR if that is still open, then resumes the handover of the PRD PR while it is still a draft, and builds nothing. If the label is still attached, remove it first — adding a label that is already present fires no event.\n' "$reason" "$RUN_URL" > "$body_file"
+            printf '`agent:implement` finishing run failed: every sub-issue is built, and this run was merging the last slice PR and handing the PRD PR over.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to pick up where it stopped. It merges the last slice PR if that is still open, then resumes the handover of the PRD PR while it is still a draft, and builds nothing. If the label is still attached, remove it first, since adding a label that is already present fires no event.\n' "$reason" "$RUN_URL" > "$body_file"
           else
-            printf '`agent:implement` run failed on sub-issue %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to retry the same sub-issue; if it is still attached, remove it first — adding a label that is already present fires no event.%s\n' "$slice" "$reason" "$RUN_URL" "$pr_note" > "$body_file"
+            printf '`agent:implement` run failed on sub-issue %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to retry the same sub-issue; if it is still attached, remove it first, since adding a label that is already present fires no event.%s\n' "$slice" "$reason" "$RUN_URL" "$pr_note" > "$body_file"
           fi
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"

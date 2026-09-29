@@ -1268,8 +1268,8 @@ describe("agent-review gives a PRD PR an integration review", () => {
     expect(brief).toContain("**contracts between slices**");
     expect(brief).toContain("**duplication**");
     expect(brief).toContain("**dead scaffolding**");
-    expect(brief).toContain("**never re-raise a slice's leftover findings** — not as a finding, not as a follow-up");
-    expect(brief).toContain("it means **the slices fit together** — not a roll-up");
+    expect(brief).toContain("**never re-raise a slice's leftover findings**, not as a finding and not as a follow-up");
+    expect(brief).toContain("it means **the slices fit together**, not a roll-up");
   });
 
   it("needs no new input, so no caller changes", () => {
@@ -6398,5 +6398,53 @@ describe(".sandcastle names no repo of its own", () => {
    */
   it.each(sandcastleFiles)("%s: points at the gate rather than naming it", (file: string) => {
     expect(fs.readFileSync(file, "utf8")).not.toContain("npm run verify");
+  });
+});
+
+/**
+ * Nothing the loop posts carries an em dash (#136). The agents write most of
+ * what a review, a reply or a comment says, and they write in the style of the
+ * prompt they were handed, so the prompts are held to it as well as the
+ * strings the workflows post themselves.
+ *
+ * The prompts are found by name under the runner surface, so a prompt added
+ * later is held on arrival. The workflow half reads only the lines that post:
+ * a YAML comment or an input's `description:` reaches no pull request, and
+ * those keep their dashes along with every other comment in this repo.
+ */
+describe("what the loop posts carries no em dash", () => {
+  const prompts = sandcastleFiles.filter((file) => /(^|[\\/])(prompt|extraction)\.md$/.test(file));
+
+  it("finds the prompts", () => {
+    expect(prompts.length).toBeGreaterThan(0);
+  });
+
+  it.each(prompts)("%s: is written without one", (file: string) => {
+    const offenders = fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => line.includes("—"))
+      .map(({ line, n }) => `${file}:${n} ${line.trim()}`);
+
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * A line that posts: a message command, or an assignment to one of the
+   * variables a message is built in before it is posted.
+   */
+  const POSTS =
+    /(^|[\s|&(])(echo|printf|refuse|refuse_shape|block|fail)\s|\b(body|headline|no_ci|pr_note|reason)=/;
+
+  it.each(workflowFiles)("%s: posts nothing with one", (file: string) => {
+    const offenders = fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => !line.trimStart().startsWith("#") && POSTS.test(line) && line.includes("—"))
+      .map(({ line, n }) => `${file}:${n} ${line.trim()}`);
+
+    expect(offenders).toEqual([]);
   });
 });

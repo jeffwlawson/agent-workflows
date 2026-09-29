@@ -271,7 +271,7 @@ export const describeRound = (detected: ReviewRound): string => {
   if (detected.round === 2) {
     return "This is **round 2**: a verdict from an earlier review of this pull request stands, and a fix round of the loop's own has pushed since.";
   }
-  return "This is **round 1**: no earlier verdict stands on these commits, or nothing has been attempted against one since — a human pushed, or the only commits since are merges.";
+  return "This is **round 1**: no earlier verdict stands on these commits, or nothing has been attempted against one since (a human pushed, or the only commits since are merges).";
 };
 
 /**
@@ -286,4 +286,4 @@ export const describeRound = (detected: ReviewRound): string => {
 export const unreadableRoundNote = (detected: ReviewRound): string | undefined =>
   detected.unreadable === undefined
     ? undefined
-    : `_Reviewed as a second round — the stricter reading — because ${detected.unreadable}._`;
+    : `_Reviewed as a second round, the stricter reading, because ${detected.unreadable}._`;

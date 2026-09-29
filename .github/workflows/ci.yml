@@ -86,7 +86,7 @@ jobs:
           out=$(npm publish --dry-run 2>&1) || true
           echo "$out"
           if printf '%s' "$out" | grep -q 'invalid and removed'; then
-            echo "::error::npm publish would strip an entry from package.json. A bin path beginning with './' is the known cause — write it as 'dist/cli.js', not './dist/cli.js'. Publishing in this state succeeds and produces a package whose commands cannot be run."
+            echo "::error::npm publish would strip an entry from package.json. A bin path beginning with './' is the known cause: write it as 'dist/cli.js', not './dist/cli.js'. Publishing in this state succeeds and produces a package whose commands cannot be run."
             exit 1
           fi
           echo "Publish-time manifest normalisation removed nothing."

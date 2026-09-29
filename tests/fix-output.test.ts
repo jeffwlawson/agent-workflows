@@ -544,6 +544,20 @@ describe("renderConversationOutcomes", () => {
     expect(body).toContain("@other");
   });
 
+  /** Neither label carries an em dash (#136): the reply is the model's, the frame is ours. */
+  it("frames an outcome without an em dash", () => {
+    const body = renderConversationOutcomes(
+      [
+        conversationOutcome({ commentId: "IC_a", status: "declined", reply: "did not" }),
+        conversationOutcome({ commentId: "IC_b", status: "addressed", reply: "did it" }),
+        conversationOutcome({ commentId: "IC_gone", status: "addressed", reply: "did it too" }),
+      ],
+      COMMENTS,
+    );
+
+    expect(body).not.toContain("—");
+  });
+
   /**
    * Declines first. A run with three addressed outcomes and one decline buries
    * the only half a human has to act on; the addressed half is a claim the next

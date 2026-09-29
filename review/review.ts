@@ -72,7 +72,7 @@ const PRD_MATCH = /^agent\/prd-(\d+)-/.exec(BRANCH);
 const prdParent = PRD_MATCH?.[1];
 
 const unreadable = (what: string): string =>
-  `- ${what}: **could not be read**. Do not assume there are none — read the PRD branch's history ` +
+  `- ${what}: **could not be read**. Do not assume there are none: read the PRD branch's history ` +
   "and the slices table in this pull request's body, and review as though there were.";
 
 /**
@@ -95,7 +95,7 @@ const integrationReview = (prd: PrdContext): string => {
       : prd.preUpgrade.length === 0
         ? "- Slices built before slice PRs: none."
         : [
-            "- **Slices built before slice PRs**, which had **no review of their own** — review each one's " +
+            "- **Slices built before slice PRs**, which had **no review of their own**. Review each one's " +
               "diff **in full**, on the same bar as an ordinary pull request:",
             ...prd.preUpgrade.map(
               (slice) =>
@@ -112,8 +112,8 @@ const integrationReview = (prd: PrdContext): string => {
       : prd.resolvedMerges.length === 0
         ? "- Merge commits whose conflicts an agent resolved: none."
         : `- **Merge commits whose conflicts an agent resolved** while the chain was building, and nothing ` +
-          `has reviewed since: ${prd.resolvedMerges.join(", ")}. Review each **resolution** — what the ` +
-          "merge commit chose where the two sides conflicted — in full.";
+          `has reviewed since: ${prd.resolvedMerges.join(", ")}. Review each **resolution** (what the ` +
+          "merge commit chose where the two sides conflicted) in full.";
 
   return [
     `This is a **PRD PR**: the PRD branch \`${BRANCH}\` into \`${BASE_REF}\`, delivering PRD ` +
@@ -122,7 +122,7 @@ const integrationReview = (prd: PrdContext): string => {
       "the PRD branch when that slice's review round ended. This review is the **integration review**.",
     [slicePrs, preUpgrade, merges].join("\n"),
     "Review the slices built before slice PRs and the agent-resolved merges above in full. " +
-      "**Everything else, look at only for what spans slices** — the problems no slice review could see, " +
+      "**Everything else, look at only for what spans slices**: the problems no slice review could see, " +
       "because each saw one slice:",
     [
       "- **contracts between slices**: one slice calling, reading or configuring what another wrote, " +
@@ -133,11 +133,11 @@ const integrationReview = (prd: PrdContext): string => {
     ].join("\n"),
     "A problem inside one slice that its slice review could have seen is **not** this review's: one no " +
       "slice round raised goes to `followUps` on the bar that list states. " +
-      "And **never re-raise a slice's leftover findings** — not as a finding, not as a follow-up. " +
+      "And **never re-raise a slice's leftover findings**, not as a finding and not as a follow-up. " +
       "A slice round that ended with open findings left them on its slice PR, and the slices table in " +
       "this pull request's body links them: they are a pointer for the human who merges, not work for " +
       "this review or its fix.",
-    "Your verdict is this pull request's own, and it means **the slices fit together** — not a roll-up " +
+    "Your verdict is this pull request's own, and it means **the slices fit together**, not a roll-up " +
       "of the slice verdicts. Every finding anchors on a line the diff below shows; the diff is the whole " +
       "PRD against its base.",
   ].join("\n\n");
@@ -163,8 +163,8 @@ const sliceOrOrdinary = (): string =>
           "review round of its own on its own slice PR. Treat them as **settled context**: read them to " +
           "understand what this slice builds on, and do not review them again. A problem you find in " +
           "one is outside this pull request's scope, and goes to `followUps` on the bar that list states.",
-        `The diff below is this pull request's own three-dot diff against \`${BASE_REF}\` — this slice ` +
-          "alone — and every finding anchors on a line it shows. Later slices are not written yet, so " +
+        `The diff below is this pull request's own three-dot diff against \`${BASE_REF}\` (this slice ` +
+          "alone), and every finding anchors on a line it shows. Later slices are not written yet, so " +
           "work the PRD gives to a later slice is not missing from this one.",
       ].join("\n\n");
 
@@ -235,7 +235,7 @@ try {
   // derivation may conclude, which is the half that is not the agent's.
   const round = detectReviewRound(PR_NUMBER);
   console.log(
-    `Round: ${round.round}${round.unreadable === undefined ? "" : ` — assumed, because ${round.unreadable}`}.`,
+    `Round: ${round.round}${round.unreadable === undefined ? "" : `, assumed because ${round.unreadable}`}.`,
   );
 
   // A review proceeds on what survived a partial answer — but says so twice:
@@ -476,7 +476,7 @@ try {
   const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
   const missed = output.findings.filter(isPreviouslyMissed).length;
   console.log(
-    `Findings: ${output.findings.length} produced — ${placements("line")} on a line, ${placements("file")} on a file, ${unanchored.length} moved to follow-ups for having no anchor in the diff; ${missed} in code an earlier review had already read.`,
+    `Findings: ${output.findings.length} produced: ${placements("line")} on a line, ${placements("file")} on a file, ${unanchored.length} moved to follow-ups for having no anchor in the diff; ${missed} in code an earlier review had already read.`,
   );
   // The ratings, for a human explaining why the record reads the way it does.
   // They change no outcome above (#113) — which is exactly why the log is the
@@ -490,7 +490,7 @@ try {
   const closedAs = (reason: ResolutionReason): number =>
     resolutions.filter((r) => r.reason === reason).length;
   console.log(
-    `Earlier findings: ${context.carriedFindings.length} open before this review — ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${stillOpen.length} still open.`,
+    `Earlier findings: ${context.carriedFindings.length} open before this review: ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${stillOpen.length} still open.`,
   );
   console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);

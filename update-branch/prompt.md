@@ -36,7 +36,7 @@ For each conflict:
    matching this PR's stated goal, and say in your comment what you traded away.
 3. **Reconcile, do not invent.** This is not the place for new behaviour. If a clean resolution
    seems to need logic that exists on neither side, that is a signal you have misread one of
-   them — go back to step 1. If it still holds, take the smallest defensible option and flag the
+   them; go back to step 1. If it still holds, take the smallest defensible option and flag the
    uncertainty prominently.
 
 Watch for conflicts that are textually trivial but semantically real: two entries added to the
@@ -48,14 +48,15 @@ compiles and is still wrong.
 Run the verify command `CLAUDE.md` names after resolving. It must pass before you commit.
 
 If it cannot pass, fix what you can, commit anyway so the work is not lost, and make the failure
-the **first line** of your comment — a silently broken merge is far worse than a declared one.
+the **first line** of your comment: a silently broken merge is far worse than a declared one.
 
 # COMMIT
 
 Commit the merge on `{{BRANCH}}`. Keep the default merge-commit subject, but replace the body
 with a summary of each non-trivial resolution and why.
+Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
-Do not push. Do not edit labels. Do not create GitHub comments — your comment is returned as
+Do not push. Do not edit labels. Do not create GitHub comments; your comment is returned as
 structured output and posted by the workflow.
 
 When complete, output `<promise>COMPLETE</promise>`.

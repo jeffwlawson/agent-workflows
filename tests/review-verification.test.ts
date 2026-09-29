@@ -130,10 +130,10 @@ describe("carriedFindings", () => {
 describe("renderCarriedFindings", () => {
   it("leads with the id, which is what the review answers on", () => {
     const rendered = renderCarriedFindings([
-      { id: "f-1", threadId: "PRRT_one", text: "src/queue.ts:206 — the guard runs after the return" },
+      { id: "f-1", threadId: "PRRT_one", text: "src/queue.ts:206 · the guard runs after the return" },
     ]);
 
-    expect(rendered).toBe("- `f-1` — src/queue.ts:206 — the guard runs after the return");
+    expect(rendered).toBe("- `f-1`: src/queue.ts:206 · the guard runs after the return");
   });
 
   /**
@@ -155,12 +155,12 @@ describe("renderCarriedFindings", () => {
       {
         id: "f-2",
         severity: "high",
-        text: `${severityBadge("high")} the cache key omits the tenant — \`src/other.ts:88\``,
+        text: `${severityBadge("high")} the cache key omits the tenant · \`src/other.ts:88\``,
       },
     ]);
 
     expect(rendered).toBe(
-      "- `f-2` — High the cache key omits the tenant — `src/other.ts:88`",
+      "- `f-2`: High the cache key omits the tenant · `src/other.ts:88`",
     );
   });
 });
@@ -581,6 +581,21 @@ describe("a thread that already carries its closing reply", () => {
 
     expect(rendered.split("\n")[0]).toMatch(/already verified.*did not go through/i);
     expect(rendered.split("\n")[1]).not.toMatch(/already verified/i);
+  });
+});
+
+/**
+ * The replies a review posts on a thread it closes carry no em dash (#136).
+ * The maintainer's own words are quoted as they were written, so the reply
+ * quoted here is dash-free and the frame is what is under test.
+ */
+describe("the closing replies, as posted", () => {
+  it.each([
+    ["verified fixed", resolutionReply({ id: "f-1", status: "landed" })],
+    ["verified fixed, with a note", resolutionReply({ id: "f-1", status: "landed", note: "`key()` now hashes the tenant." })],
+    ["declined", declineReply({ login: "maintainer", body: "Won't fix, the duplicate write is intended." })],
+  ])("writes no em dash in the %s reply", (_: string, reply: string) => {
+    expect(reply).not.toContain("—");
   });
 });
 

@@ -580,7 +580,7 @@ export const describeUnreadable = (unreadable: readonly UnreadableSelection[]): 
   unreadable
     .map(
       (selection) =>
-        `\`${selection.path}\` — ${selection.reason}` +
+        `\`${selection.path}\` · ${selection.reason}` +
         (selection.surfaces.length === 0
           ? ""
           : ` (${selection.surfaces.map((surface) => SURFACE_LABELS[surface]).join(", ")})`),
@@ -605,15 +605,15 @@ export const describeUnreadable = (unreadable: readonly UnreadableSelection[]): 
  */
 const notePreamble = (unreadable: readonly UnreadableSelection[]): string =>
   unreadable.some((selection) => selection.surfaces.length > 0)
-    ? "Part of the query behind this pull request's own feedback — its review summaries, " +
-      "unresolved review threads and conversation comments — was refused, so what it " +
+    ? "Part of the query behind this pull request's own feedback (its review summaries, " +
+      "unresolved review threads and conversation comments) was refused, so what it " +
       "covers is **unknown** rather than empty. That holds whether the affected section " +
       "is short or missing entirely: do not read its absence as agreement, and say so in " +
       "your output if it matters to a conclusion you would otherwise draw."
     : "Part of the same query was refused, but none of it renders this pull request's " +
       "feedback: the review summaries, unresolved review threads and conversation comments " +
       "you were shown are what the API returned, in full. It is named here because a " +
-      "refusal is worth knowing about — not as a caveat on anything below.";
+      "refusal is worth knowing about, not as a caveat on anything below.";
 
 /**
  * The same thing as a block for a prompt — for the consumer that **degrades**
@@ -638,7 +638,7 @@ export const unreadableNote = (unreadable: readonly UnreadableSelection[]): stri
         "",
         ...unreadable.map(
           (selection) =>
-            `- \`${selection.path}\` — ${selection.reason}` +
+            `- \`${selection.path}\`: ${selection.reason}` +
             (selection.surfaces.length === 0
               ? ""
               : ` (${selection.surfaces.map((surface) => SURFACE_LABELS[surface]).join(", ")})`),
@@ -667,8 +667,8 @@ export const surfaceText = (feedback: PullRequestFeedback, surface: FeedbackSurf
 
   const note = describeUnreadable(refused);
   return text
-    ? `${text}\n\n---\n\n(part of this section could not be read, so what it covers is unknown rather than absent — ${note})`
-    : `(could not be read — ${note})`;
+    ? `${text}\n\n---\n\n(part of this section could not be read, so what it covers is unknown rather than absent: ${note})`
+    : `(could not be read: ${note})`;
 };
 
 /**
@@ -691,7 +691,7 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
   if (feedback.status === "failed") {
     return (
       `The pull request's feedback could not be read at all: ${describeUnreadable(feedback.unreadable)}. ` +
-      "That is not an empty feedback set, it is no answer — refusing rather than pushing commits " +
+      "That is not an empty feedback set, it is no answer. This refuses rather than pushing commits " +
       "without knowing what was asked for."
     );
   }
@@ -701,7 +701,7 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
     return (
       `A selection the author gate depends on could not be read: ${describeUnreadable(gating)}. ` +
       "The feedback that did return cannot be placed behind the trust boundary, and this run " +
-      "pushes commits — so it refuses rather than acting on feedback whose author it cannot establish."
+      "pushes commits, so it refuses rather than acting on feedback whose author it cannot establish."
     );
   }
 
@@ -717,7 +717,7 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
       "Nothing from a repo collaborator (or our review agent) that a fix run owes an answer on. " +
       "Deliberately not counted: resolved threads, comments from non-collaborators, a thread " +
       "already carrying this workflow's closing reply (it waits on the review to close it), and " +
-      "this loop's own status notes — the last two are shown to a fix run as evidence, not as asks."
+      "this loop's own status notes. The last two are shown to a fix run as evidence, not as asks."
     );
   }
 
@@ -881,7 +881,7 @@ const anchorOf = (c: GqlThreadComment, fileLevel = false): string => {
   if (fileLevel) return `${locationOf(c, fileLevel)} (the whole file)`;
 
   const outdated = c.line === null || c.line === undefined;
-  return `${locationOf(c)}${outdated ? " (outdated — the code here has changed since)" : ""}`;
+  return `${locationOf(c)}${outdated ? " (outdated: the code here has changed since)" : ""}`;
 };
 
 /**
@@ -950,7 +950,7 @@ const findingOn = (
     findingId,
     ...(severity === undefined ? {} : { severity }),
     ...(url === undefined ? {} : { url }),
-    text: `${anchorOf(marked, isFileLevel(thread))} — ${claim}`,
+    text: `${anchorOf(marked, isFileLevel(thread))} · ${claim}`,
     // What a record entry lists it as (#134): the title the raising review
     // wrote, off the marker, and the claim alone for a thread a release before
     // that wrote — never `text`, whose anchor and clause belong beside a title
@@ -1055,7 +1055,7 @@ const closedAsOn = (comments: readonly GqlThreadComment[]): ResolutionReason | u
  * commit than one whose answer is silently discarded.
  */
 const AWAITING_CLOSE =
-  "_(this workflow has already verified this finding and replied above. The thread is open only because the close that should have followed it did not go through — a later review retries that close, and does not reply again. Nothing here is owed a fix unless the code now says otherwise, and nothing is owed a reply: this thread is shown for its evidence, and is not one of the threads to report an outcome on.)_";
+  "_(this workflow has already verified this finding and replied above. The thread is open only because the close that should have followed it did not go through; a later review retries that close, and does not reply again. Nothing here is owed a fix unless the code now says otherwise, and nothing is owed a reply: this thread is shown for its evidence, and is not one of the threads to report an outcome on.)_";
 
 /**
  * Rendered under a conversation comment **this loop wrote** and did not mark
@@ -1077,7 +1077,7 @@ const AWAITING_CLOSE =
  * whose answer is silently discarded.
  */
 const LOOP_NOTE =
-  "_(posted by this loop's own workflows rather than by a person: a status note, shown for its evidence. It asks for nothing, so no outcome is owed on it — which is why it carries no comment id.)_";
+  "_(posted by this loop's own workflows rather than by a person: a status note, shown for its evidence. It asks for nothing, so no outcome is owed on it, which is why it carries no comment id.)_";
 
 /**
  * The elements a partial answer actually left behind.
@@ -1225,7 +1225,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
   // leaving the omission to be read as an oversight.
   const conversation = render(conversationNodes, (n, login) =>
     owedAnOutcome(n)
-      ? `**@${login}** — comment \`${n.id}\`\n${(n.body ?? "").trim()}`
+      ? `**@${login}** · comment \`${n.id}\`\n${(n.body ?? "").trim()}`
       : [
           `**@${login}:**\n${(n.body ?? "").trim()}`,
           ...(isWorkflowBot(login) ? [LOOP_NOTE] : []),
@@ -1286,7 +1286,7 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
   const inline = threads
     .map((thread) => {
       const first = thread.comments[0];
-      const header = `**${anchorOf(first!, isFileLevel(thread))}** — thread \`${thread.id}\``;
+      const header = `**${anchorOf(first!, isFileLevel(thread))}** · thread \`${thread.id}\``;
       // The chip a thread opens with, as its alt text — the same reduction the
       // review bodies get, for the same reason: this is what the fix agent and
       // the next round's reviewer read (#135).

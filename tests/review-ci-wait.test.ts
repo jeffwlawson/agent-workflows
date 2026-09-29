@@ -743,15 +743,15 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     });
 
     expect(outcome.status).toBe(0);
-    expect(outcome.evidence).toContain("### Failure output — CI");
-    expect(outcome.evidence).toContain("### Failure output — Corpus");
+    expect(outcome.evidence).toContain("### Failure output: CI");
+    expect(outcome.evidence).toContain("### Failure output: Corpus");
     expect(outcome.evidence).toContain("(no failure log available for run 101)");
     // Excluded by the `Agent ` prefix, on the same grounds as AGENT_CHECKS.
     expect(outcome.evidence).not.toContain("Agent Review");
     // The end of the script, which is the whole point: reaching it means the
     // step handed the agent everything rather than stopping where it stood.
     expect(outcome.stdout).toContain("--- collected CI context ---");
-    expect(outcome.stdout).toContain("### Failure output — Corpus");
+    expect(outcome.stdout).toContain("### Failure output: Corpus");
   });
 
   /**

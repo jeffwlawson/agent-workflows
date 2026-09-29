@@ -685,7 +685,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain(`slice PR #${SLICE}`);
     expect(outcome.reason).toContain("Part of #<sub-issue>");
-    expect(outcome.reason).toContain("the merge is not repeated");
+    expect(outcome.reason).toContain("The merge is not repeated");
     expect(outcome.temp("slices-table.json")).toBe("");
   });
 

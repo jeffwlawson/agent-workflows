@@ -1128,6 +1128,21 @@ describe("a finding an earlier review missed", () => {
     );
   });
 
+  /**
+   * A thread a v0.4.0 review opened joins its labels with an em dash, and one
+   * this release's prompt shapes joins them with a colon; the claim reader
+   * takes both, plus the en dash and hyphen a model reaches for (#136). The
+   * prompts stopped writing the dash; the reader must not stop reading it.
+   */
+  it.each(["—", "–", "-", ":"])("strips both labels joined by %s", (joint: string) => {
+    expect(openingClaim(`**Fix before merge ${joint} previously missed.** the cache key omits the tenant`)).toBe(
+      "the cache key omits the tenant",
+    );
+    expect(openingClaim(`**Fix before merge${joint}** the cache key omits the tenant`)).toBe(
+      "the cache key omits the tenant",
+    );
+  });
+
   it("spells the label in one place", () => {
     expect(PREVIOUSLY_MISSED_LABEL).toBe("Previously missed");
   });

@@ -381,7 +381,7 @@ PRD.
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
-| **Starts one fix round by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101). Opt-in per repository (`auto-fix`, default off) and once per pull request, recorded by `agent:auto-fixed`. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; one of the two `AGENT_PAT` uses in the workflow, beside the advance job below. Bounded twice — the key it selects on can only come out of a round-1 derivation, and the marker stops a second one on the same PR (§10) |
+| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the verdicts that announced them; the `auto-fix` input it replaced is a deprecated alias for one release. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; one of the two `AGENT_PAT` uses in the workflow, beside the advance job below. Bounded twice: the key it selects on can only come out of a round-1 derivation, and the budget stops it past N rounds on the same PR (§10) |
 | **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance job**, in `review` and in `fix`: re-adds `agent:implement` to the slice PR's **parent** on 🟢, on 🟡 with no fix round starting, and on 🟡 after a fix round — and, in `fix`, when the fix run pushed nothing and so ended the round itself. The same shape as the auto-fix job: no checkout, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
@@ -600,8 +600,8 @@ write access sits below everything that does not, regardless of how useful it lo
 Rules that must hold as features are added, each recording a decision that is cheap now and
 expensive to rediscover.
 
-- **Auto-cascade review → fix at most once per pull request, and only where an adopter asked
-  for it.** This bullet read **never** until #102, and the amendment is below rather than in place
+- **Auto-cascade review → fix only within a fix-round budget per pull request** (once, and only
+  where an adopter asked for it, until #201 made it a budget). This bullet read **never** until #102, and the amendment is below rather than in place
   of it, because the reasoning is what makes the new rule safe: `agent:fix` → `agent:review` was
   safe *only* because review added no trigger label, so every round still needed a human
   `agent:fix`. Automating the return leg with nothing bounding it closes a true cycle with no gate.
@@ -667,8 +667,11 @@ expensive to rediscover.
   - **The round rule.** The review a fix round asks for is a round 2, and a round-2 review can
     never produce the round-1 row (above). The automatic fix selects on a verdict **key** that only
     a round-1 derivation can emit, so the second time round there is nothing for it to match.
-  - **The `agent:auto-fixed` marker.** One automatic fix per pull request, recorded on the pull
-    request itself. A human's own commits make a later review a fresh round 1, which may recommend
+  - **The fix-round budget** (#201, which replaced the `agent:auto-fixed` marker that held it to
+    one). `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the
+    verdicts on the pull request that announced a round, so nothing but those verdicts records
+    them. Until #201 this was one automatic fix per pull request, recorded by a marker label on the
+    pull request itself. A human's own commits make a later review a fresh round 1, which may recommend
     changes again — and the fix is spent by then, so that verdict asks the maintainer for the
     label. Without this, a pull request a human kept pushing to could be fixed automatically over
     and over, each round legitimately a round 1.
@@ -678,7 +681,7 @@ expensive to rediscover.
   product from the one PRD #101 asked for.
 
   What holds the two halves together is that the sentence and the job are one decision. The verdict
-  key is derived where the round is known (`deriveVerdict`), from the input and the marker the
+  key is derived where the round is known (`deriveVerdict`), from the budget step's answer the
   workflow passes in, and the job's `if:` matches that key — so a line saying *a fix round has
   already started* cannot be posted over a pull request where none did, which is the only way this
   feature can be wrong without anything failing.
@@ -687,13 +690,14 @@ expensive to rediscover.
   agent, `pull-requests: write` alone, and — until the advance job below copied its shape — the only
   use of `AGENT_PAT` in this workflow, so the PAT is nowhere near the job that reads untrusted
   pull-request content and runs a model over it.
-  Without the PAT it adds the label anyway and warns, as `implement-prd.yml` does, and `doctor`
-  says the same thing before the first run rather than after it.
+  Without the PAT no round is announced at all since #201: the budget step starts none, and the
+  verdict asks for the label. And since #201 the job decides from live state: it adds nothing where
+  `agent:fix` is already on the pull request or a newer verdict stands, and a round it fails to
+  start is said on the pull request.
 
   What is still worth saying twice is which arrow this is *not*: no workflow in the loop adds
-  `agent:fix` on its own initiative, and the one that adds it at all does so under an input an
-  adopter has to switch on, once per pull request, on the one verdict that says no reading is
-  needed.
+  `agent:fix` on its own initiative, and the one that adds it at all does so within a budget an
+  adopter sets (and may set to 0), on the one verdict that says no reading is needed.
 
   **And since #176 review adds a second trigger label, on an issue rather than a pull request**
   (PRD #171). The **advance job** — in `review`, and in `fix` for the round a fix run ends itself by
@@ -799,8 +803,8 @@ expensive to rediscover.
   what spans slices. What still holds is the half that was the point: there is **no per-slice
   review workflow**, and a pull request is still reviewed as a whole — nothing reviews a slice while
   code is still being added under it, so the stale-anchor problem #102/#105 spent two rounds fixing
-  does not return. The automatic fix stays **once per pull request** (above), so a slice PR gets
-  one and the PRD PR gets one, and nothing gets a second. The reasoning, and the cost this
+  does not return. The automatic fix stays **bounded per pull request** (above), so a slice PR and
+  the PRD PR each get the budget, and nothing gets more. The reasoning, and the cost this
   replaced, are in
   [§2a's trade](#the-trade-the-slice-pr-is-the-unit-of-review-the-prd-pr-the-unit-of-merge).
 - **Two workflows may share a trigger label only if exactly one of them speaks.** `agent-implement`
@@ -1259,7 +1263,7 @@ expensive to rediscover.
   the PR in draft: the pipeline has not finished, another agent run is next, and the re-review at
   the end of it marks the PR ready itself. The three verdicts that *are* the human's turn — both
   the ones asking them to read, and the one saying nothing is left to fix — mark it ready as
-  before, and so does the round-1 *Changes recommended* wherever `auto-fix` is off. The condition
+  before, and so does the round-1 *Changes recommended* wherever no automatic round is starting. The condition
   the step reads is the automatic fix's own verdict key, not a second reading of the three facts
   behind it, so the draft state and the job cannot disagree about whether a fix round is coming.
 

@@ -382,13 +382,14 @@ export interface VerdictInputs {
   readonly movedToFollowUps: number;
   /**
    * Whether the workflow will add `agent:fix` itself if this review recommends
-   * changes — the `auto-fix` input is on and this pull request's one automatic
-   * fix has not been spent (#102, PRD #101 decision 1).
+   * changes: the pull request's automatic fix rounds are fewer than its
+   * fix-round budget, and `AGENT_PAT` is there to start one (#201, PRD #200).
    *
-   * Two facts only the workflow holds, and neither is about the review: an
-   * adopter's opt-in, and a label on the pull request. The **round** is not one
-   * of them — it is already an input here, and the arm below reads it — so the
-   * three conditions the automatic fix fires on are ruled on in one place.
+   * Facts only the workflow holds, and none is about the review: a repository
+   * variable, the verdicts already posted on the pull request, and a secret.
+   * The **round** is not one of them (it is already an input here, and the
+   * arm below reads it), so the conditions the automatic fix fires on are
+   * ruled on in one place.
    *
    * Required rather than defaulted to `false`, for the reason `round` is. A
    * caller that forgot it derives the round-1 row, whose key the automatic-fix
@@ -396,6 +397,17 @@ export interface VerdictInputs {
    * to add the label, and the feature is off with nothing anywhere saying so.
    */
   readonly autoFix: boolean;
+  /**
+   * The fix-round budget and how much of it this pull request has spent, where
+   * the workflow could count it (#201). Read only where no round is starting:
+   * a spent budget is a reason the loop has stopped, and the verdict names it
+   * with the three ways on, rather than asking for `agent:fix` as though
+   * nothing had been tried.
+   *
+   * Optional, because nothing is lost where it is absent: the verdict falls
+   * back to the plain round-1 line, which asks for the label and is true.
+   */
+  readonly fixRounds?: FixRounds;
   /**
    * The branch this pull request merges into. Named in the step a review with
    * no readable CI gives (#209), because the fix there is to make CI run on
@@ -410,6 +422,12 @@ export interface VerdictInputs {
    * pull request says what moves it on.
    */
   readonly sliceParent?: string;
+}
+
+/** A pull request's fix-round budget, and the automatic rounds spent against it. */
+export interface FixRounds {
+  readonly spent: number;
+  readonly budget: number;
 }
 
 /**
@@ -1263,7 +1281,8 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
   // one it verified — where the two halves inside `countFixBeforeMerge` are
   // two restatements of one set. Their sum is the record's own size, which is
   // what `**Findings:** N` states.
-  if (countFixBeforeMerge(output, inputs.movedToFollowUps) + inputs.stillOpen > 0) {
+  const open = countFixBeforeMerge(output, inputs.movedToFollowUps) + inputs.stillOpen;
+  if (open > 0) {
     // **A round-2 review can never produce the round-1 row** (#96, decision 5),
     // and it is enforced here rather than asked of the prompt. The fix round
     // has already run and already pushed; findings that survived it are
@@ -1290,15 +1309,41 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
     // fix round nothing starts is the failure this arm exists to prevent, and
     // it has no symptom beyond the sentence being false.
     //
-    // Below the round-2 arm, so `autoFix` cannot reach a second round: the fix
-    // is spent by then, and the bound that stops the loop cycling is the
-    // round-2 row holding this key out of reach.
-    return inputs.autoFix
-      ? VERDICTS["changes recommended, fix round started"]
-      : VERDICTS["changes recommended"];
+    // Below the round-2 arm, so `autoFix` cannot reach a second round: the
+    // bound that stops the loop cycling is the round-2 row holding this key out
+    // of reach, and the fix-round budget bounds it per pull request besides.
+    if (inputs.autoFix) return VERDICTS["changes recommended, fix round started"];
+    // And where no round starts because the budget is spent, the line says so
+    // (#201): the rounds used, what is still open, and the three ways on. Not
+    // on a budget of 0, where nothing was spent and the plain line, which asks
+    // for the label, is the whole of it.
+    const rounds = inputs.fixRounds;
+    if (rounds !== undefined && rounds.budget > 0 && rounds.spent >= rounds.budget) {
+      return budgetSpent(rounds, open);
+    }
+    return VERDICTS["changes recommended"];
   }
   if (inputs.ci !== "green") return closerLook(inputs.ci, inputs);
   return VERDICTS["approval recommended"];
+};
+
+/**
+ * The *changes recommended* row for a pull request whose automatic fix rounds
+ * are spent (#201). The key, heading, label and state are the table's, so the
+ * advance job reads it as the round-1 row it is: no automatic fix is starting.
+ * Only the step and the status line differ, as `closerLook`'s do.
+ */
+const budgetSpent = (rounds: FixRounds, open: number): VerdictRow => {
+  const row = VERDICTS["changes recommended"];
+  const used = `${rounds.spent} of ${rounds.budget}`;
+  const findings = open === 1 ? "1 finding is" : `${open} findings are`;
+  return {
+    ...row,
+    nextStep:
+      `The automatic fix rounds are spent (${used} used), and ${findings} still open. ` +
+      "To go on, add agent:fix for another round, reply to a finding to decline it, or push a commit.",
+    description: `${row.label}. Fix rounds spent (${used}). Add agent:fix, decline a finding in a reply, or push a commit.`,
+  };
 };
 
 /**

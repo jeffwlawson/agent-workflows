@@ -33,6 +33,7 @@ import {
   reviewOutputSchema,
   VERDICT_CONTEXT,
   type CiResult,
+  type FixRounds,
 } from "../shared/review-output.js";
 import {
   describeRound,
@@ -209,20 +210,30 @@ const readCiResult = (): CiResult => {
 
 /**
  * Whether the workflow will start a fix round itself if this review recommends
- * changes (#102) — the adopter's `auto-fix` input, minus the pull requests
- * whose one automatic fix is already spent.
+ * changes (#201): what *Settle the fix-round budget* decided from the
+ * repository's budget, the rounds this pull request has spent and the PAT.
+ * None of those is readable here once the token is gone, and the job that adds
+ * `agent:fix` selects on the key this decides, so the step's one answer is
+ * taken rather than a second one worked out.
  *
- * Both halves come from the workflow because neither is readable here: the
- * input is the caller's, and the label is read off the same `labeled` payload
- * the job that adds `agent:fix` guards on, so the two cannot disagree about a
- * label added between them. The **round** is not read here — `deriveVerdict`
- * already has it, and it is the arm that keeps this out of a second round.
- *
- * Absent is off, on both: `auto-fix` defaults off, and a run that could not say
- * whether the marker is there must not claim a fix round has started.
+ * Absent is off: a run that could not say must not claim a fix round started.
  */
-const willAutoFix = (): boolean =>
-  process.env["AUTO_FIX"] === "true" && process.env["AUTO_FIXED"] !== "true";
+const willAutoFix = (): boolean => process.env["AUTO_FIX"] === "true";
+
+/**
+ * The budget and the rounds spent against it, where the same step could count
+ * them, for the line a spent budget gets. Anything unreadable is left out, and
+ * the verdict falls back to the plain line that asks for the label.
+ */
+const fixRounds = (): FixRounds | undefined => {
+  const count = (name: string): number | undefined => {
+    const value = process.env[name] ?? "";
+    return /^[0-9]+$/.test(value) ? Number(value) : undefined;
+  };
+  const spent = count("FIX_ROUNDS_SPENT");
+  const budget = count("FIX_ROUND_BUDGET");
+  return spent === undefined || budget === undefined ? undefined : { spent, budget };
+};
 
 try {
   const context = fetchPullRequestContext(PR_NUMBER, slice?.subIssue);
@@ -358,12 +369,14 @@ try {
   // outcome is the first thing a reader sees and the same words the commit
   // status carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
+  const rounds = fixRounds();
   const verdict = deriveVerdict(output, {
     ci,
     round: round.round,
     stillOpen: stillOpen.length,
     movedToFollowUps: unanchored.length,
     autoFix: willAutoFix(),
+    ...(rounds === undefined ? {} : { fixRounds: rounds }),
     base: BASE_REF,
     ...(slice === undefined ? {} : { sliceParent: slice.prd }),
   });

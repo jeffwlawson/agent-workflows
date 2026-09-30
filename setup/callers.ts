@@ -55,9 +55,10 @@ export interface InstalledCaller {
   /** `self-check`, on the one caller that takes it. */
   readonly selfCheck: string | undefined;
   /**
-   * Whether this caller turns the automatic fix on (#102) — `auto-fix: true`
-   * on the review caller, and `false` everywhere else including every caller
-   * that says nothing, since the input defaults off.
+   * Whether this caller passes `auto-fix: true` on the review caller (#102),
+   * the input the fix-round budget deprecated (#201); `false` everywhere else,
+   * including every caller that says nothing, which leaves the budget to the
+   * repository variable.
    *
    * A field rather than the whole `with:` map, because `diagnose` rules on a
    * fixed list: an input it was not taught about is one nothing here can say

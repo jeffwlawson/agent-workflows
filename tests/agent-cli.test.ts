@@ -9,7 +9,6 @@ import { callersIn } from "../setup/callers.js";
 import {
   ADVISORY_LABELS,
   advisoryLabelSpecsFor,
-  AUTO_FIXED_LABEL,
   init,
   labelCommand,
   POLICY_CHANGE,
@@ -803,10 +802,8 @@ describe("init installs the reference callers into an adopting repo", () => {
    * a checklist stops being worked through.
    *
    * Keyed on the **filing caller's own** advisory labels rather than on every
-   * conditional label §3 documents, since #102 put a second caller in that map:
-   * `agent:auto-fixed` belongs to the review caller, which is still installed
-   * here, so naming it is the rule being obeyed rather than broken. What is
-   * asserted is the per-caller part — the reason the map is a map.
+   * conditional label §3 documents. What is asserted is the per-caller part:
+   * the reason the map is a map.
    */
   it("says nothing about them once the caller that wants them is gone", async () => {
     const root = adopted();
@@ -821,10 +818,6 @@ describe("init installs the reference callers into an adopting repo", () => {
     expect(filing.length).toBeGreaterThan(0);
     for (const label of filing) {
       expect(setup).not.toContain(label.name);
-    }
-    // …and the review caller's, which is still there, still is.
-    for (const label of ADVISORY_LABELS["review"] ?? []) {
-      expect(setup).toContain(labelCommand(label));
     }
     // The mandated six are untouched by any of that.
     for (const label of [...TRIGGER_LABELS, ...STATE_LABELS]) {
@@ -2309,42 +2302,30 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * The automatic fix, switched on and unable to fire (#102). `auto-fix: true`
-   * makes a review add `agent:fix` itself — and a label added with
-   * `GITHUB_TOKEN` fires no event, so without the PAT the label lands, the run
-   * stays green and nothing starts. What makes this worth its own row rather
-   * than leaving it to the `AGENT_PAT` row above: that row says the loop stops
-   * transitioning, and this one says a **posted verdict is wrong**. The review
-   * will have told a maintainer a fix round started.
+   * asks the review to add `agent:fix` itself, and a label added with
+   * `GITHUB_TOKEN` fires no event, so without the PAT no automatic round ever
+   * starts. Deprecated since the fix-round budget (#201), and still honoured
+   * for a release, so still worth the row.
    *
    * A warning, not an error: the loop still works and a human adding the label
    * by hand loses only the automation.
    *
-   * The gesture is the one an adopter makes — uncommenting the line `init` gave
-   * them — so the check is exercised against the reference caller rather than
-   * against a caller written to suit it.
+   * The gesture is the one an adopter who kept the input has made: the line
+   * added to the reference caller's `with:` block.
    */
   const withAutoFix = async (): Promise<string> => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace("# auto-fix: true", "auto-fix: true"));
+    edit(root, "agent-review.yml", (text) =>
+      text.replace("self-check: review / review", "self-check: review / review\n      auto-fix: true"),
+    );
     return root;
   };
 
-  /**
-   * And the other half of throwing that switch: the marker label, which
-   * `healthy()` has no business carrying — it is the six every installation
-   * needs, and this is the one a repository creates only if it turns the input
-   * on (#159).
-   */
-  const withMarkerLabel = (facts: RepoFacts): RepoFacts => ({
-    ...facts,
-    labels: [...(facts.labels ?? []), AUTO_FIXED_LABEL.name],
-  });
-
   it("warns when the automatic fix is on and no PAT can make it fire", async () => {
-    const { code, out, err } = await check(
-      await withAutoFix(),
-      withMarkerLabel({ ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] }),
-    );
+    const { code, out, err } = await check(await withAutoFix(), {
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    });
 
     expect(out).toContain("auto-fix");
     expect(out).toMatch(/fires no event/);
@@ -2354,61 +2335,16 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(code).toBe(1);
   });
 
-  it("says nothing about the automatic fix when the PAT and the label are there", async () => {
-    const { code, out, err } = await check(await withAutoFix(), withMarkerLabel(healthy()));
+  /**
+   * And no marker label to demand: the rounds spent are counted from the pull
+   * request's own verdicts (#201), so a healthy repository with the input on
+   * passes clean without `agent:auto-fixed`.
+   */
+  it("says nothing about the automatic fix when the PAT is there", async () => {
+    const { code, out, err } = await check(await withAutoFix(), healthy());
 
     expect(err).toBe("");
     expect(out).not.toContain("auto-fix");
-    expect(code).toBe(0);
-  });
-
-  /**
-   * **The marker label, which is an error rather than a warning** (#159). The
-   * `auto-fix` job adds it first and under `bash -e`, so a repository that
-   * switched the input on without creating it does not lose the automation —
-   * it loses the job, after the review has already posted a verdict saying a
-   * fix round started.
-   *
-   * It is in `ADVISORY_LABELS` and so outside `labelSpecsFor`'s demanded set,
-   * which is right for every repository that left the input alone and is
-   * exactly why this check has to read the input instead.
-   */
-  it("errors when the automatic fix is on and its marker label does not exist", async () => {
-    const { code, out, err } = await check(await withAutoFix(), healthy());
-
-    expect(err).toContain(AUTO_FIXED_LABEL.name);
-    expect(err).toMatch(/auto-fix without its marker label/);
-    // With the one command that creates it, and the same one `init`'s
-    // `SETUP.md` offers rather than a second spelling of it.
-    expect(err).toContain(labelCommand(AUTO_FIXED_LABEL));
-    expect(code).toBe(1);
-  });
-
-  /**
-   * …and says nothing about it on a repository that left the input alone. That
-   * is every repository `init` has just finished with, so a demand here would
-   * be a preflight failing a correctly-installed loop over a label nothing in
-   * it will ever add.
-   */
-  it("demands the marker label only where the input is on", async () => {
-    const { code, out, err } = await check(await installed(), healthy());
-
-    expect(out).not.toContain(AUTO_FIXED_LABEL.name);
-    expect(err).toBe("");
-    expect(code).toBe(0);
-  });
-
-  /**
-   * Unreadable stays unreadable on this half too: `doctor` runs where nobody
-   * could list the labels, and "the list did not come back" is not "the label
-   * is missing". The unreadable-labels warning is the honest answer and is
-   * already there.
-   */
-  it("does not claim the marker label is missing when the labels could not be read", async () => {
-    const { code, out, err } = await check(await withAutoFix(), { ...healthy(), labels: undefined });
-
-    expect(err).toBe("");
-    expect(out).toMatch(/could not list this repository's labels/i);
     expect(code).toBe(0);
   });
 
@@ -2433,10 +2369,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    * warning below is the honest answer, and it is already there.
    */
   it("does not claim the automatic fix is broken when the secrets could not be read", async () => {
-    const { code, out } = await check(
-      await withAutoFix(),
-      withMarkerLabel({ ...healthy(), secrets: undefined }),
-    );
+    const { code, out } = await check(await withAutoFix(), { ...healthy(), secrets: undefined });
 
     expect(out).not.toContain("auto-fix");
     expect(out).toMatch(/could not read the actions secrets/i);

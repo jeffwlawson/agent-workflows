@@ -241,6 +241,11 @@ export const asVisibility = (raw: string | undefined): "public" | "private" | un
  * `conditions` or `rules`, so ruling on it saw every policy as allowing
  * nothing, `init`'s own included. A policy whose detail could not be read is
  * `undefined` in its place: unknown, never absent.
+ *
+ * A parent's policy is read through the repository's endpoint as well, not its
+ * owner's: GitHub's REST description gives an enterprise-sourced policy as that
+ * endpoint's example, and the owner's endpoint wants the owner's admin, which a
+ * repository admin running this need not be.
  */
 export const readPolicies = (
   dir: string,

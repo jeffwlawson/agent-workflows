@@ -77,7 +77,8 @@
  *   GH_REPLAY_THREADS     path to a JSON array of review thread nodes; default none
  *   GH_REPLAY_VISIBILITY  what `repo view` answers, e.g. PUBLIC; unset has no recording
  *   GH_REPLAY_POLICIES    path to a JSON array of Actions policies, each in full
- *                         (`conditions` and `rules` included); default none
+ *                         (`conditions` and `rules` included), a parent's as well
+ *                         as the repository's; default none
  *   GH_REPLAY_POLICY_FAILURE  comma-separated policy ids whose detail cannot be read
  *   GH_REPLAY_CREATED     the number `pr create` answers with; default 300
  *   GH_REPLAY_MERGE_FAILURE  set: `pr merge` is logged, then refused
@@ -510,15 +511,19 @@ if (endpoint === "graphql") {
 // enforcement, source and target and nothing of what it says: no `conditions`,
 // no `rules`. Found 2026-09-30 against the live API, where `init`'s own policy
 // listed as allowing nothing, and a replay serving full objects here is what
-// let that ship. What a policy says comes from its own endpoint.
-if (/\/actions\/policies\?/.test(endpoint)) {
+// let that ship. What a policy says comes from its own endpoint, and that is
+// the **repository's** for a parent's policy too: GitHub's REST description
+// (github/rest-api-description, "Get a repository Actions policy") gives an
+// enterprise-sourced policy as that endpoint's example. Only the repository's
+// endpoints are recorded, so a reader that went to `orgs/…` would not be served.
+if (/^repos\/[^/]+\/[^/]+\/actions\/policies\?/.test(endpoint)) {
   const policies = fixture("GH_REPLAY_POLICIES", []).map(({ conditions: _c, rules: _r, ...listed }) => listed);
 
   emit({ total_count: policies.length, policies });
   process.exit(0);
 }
 
-const policyId = /\/actions\/policies\/([0-9]+)$/.exec(endpoint);
+const policyId = /^repos\/[^/]+\/[^/]+\/actions\/policies\/([0-9]+)$/.exec(endpoint);
 
 if (policyId !== null) {
   const failing = (process.env["GH_REPLAY_POLICY_FAILURE"] ?? "").split(",");

@@ -1000,7 +1000,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
 
     expect(first.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
     expect(first.writes.map((call) => call.slice(0, 3))).toEqual([["api", "--method", "POST"]]);
-    const created = { id: 6133, source: "repository", ...(first.writes[0]?.[4] as object) };
+    const created = { id: 6133, target: "actions", source_type: "Repository", source: "repo", ...(first.writes[0]?.[4] as object) };
 
     const second = replayed({ visibility: "PUBLIC", policies: [created] }, () =>
       init({ dir: root, github: livePolicySurface(root) }),
@@ -1249,7 +1249,9 @@ describe("doctor names the failures that otherwise look like something else", ()
         id: 6133,
         name: POLICY_NAME,
         enforcement: "active",
-        source: "repository",
+        target: "actions",
+        source_type: "Repository",
+        source: "repo",
         conditions: { workflow_path: { include: callers, exclude: [] } },
         rules: [{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }],
       };
@@ -1259,6 +1261,34 @@ describe("doctor names the failures that otherwise look like something else", ()
 
       expect(actionsPolicies).toEqual([
         { id: 6133, name: POLICY_NAME, enforcement: "active", include: callers, exclude: [], allowedEvents: ["pull_request_target"] },
+      ]);
+      expect(`${out}${err}`).not.toContain("pull_request_target policy");
+      expect(code).toBe(0);
+    });
+
+    /**
+     * A parent's policy is read through the repository's own per-id endpoint,
+     * the one GitHub's REST description gives an enterprise-sourced example for,
+     * and the only one the replay serves. One allowing every caller is a pass.
+     */
+    it.skipIf(process.platform === "win32")("passes on a parent's policy, read through the repository", async () => {
+      const root = await installed();
+      const theirs = {
+        id: 1,
+        name: "Allow the loop",
+        target: "actions",
+        source_type: "Enterprise",
+        source: "enterprise",
+        enforcement: "active",
+        conditions: { workflow_path: { include: callers, exclude: [] } },
+        rules: [{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }],
+      };
+
+      const { result: actionsPolicies } = replayed({ policies: [theirs] }, () => readPolicies(root));
+      const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
+
+      expect(actionsPolicies).toEqual([
+        { id: 1, name: "Allow the loop", enforcement: "active", include: callers, exclude: [], allowedEvents: ["pull_request_target"] },
       ]);
       expect(`${out}${err}`).not.toContain("pull_request_target policy");
       expect(code).toBe(0);

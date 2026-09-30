@@ -126,6 +126,14 @@ export const DEFAULT_FIX_ROUNDS = 3;
 const COUNT = /^[0-9]+$/;
 
 /**
+ * An input value GitHub works out at run time: any `${{`, anywhere in the
+ * string, makes the whole of it an expression. What it comes to is not in the
+ * caller, so `doctor` can say neither the budget it sets nor that the review
+ * refuses it.
+ */
+const isExpression = (value: string): boolean => value.includes("${{");
+
+/**
  * The reusable halves that declare **no secrets at all**, and so have no wire
  * for a caller to get wrong.
  *
@@ -633,6 +641,7 @@ export const diagnose = (
   // unreadable variable, which is not an unset one.
   const budgetOf = (caller: InstalledCaller): { rounds: number; from: string } | undefined => {
     if (caller.autoFix !== undefined) {
+      if (isExpression(caller.autoFix)) return undefined;
       if (caller.autoFix === "true") return { rounds: 1, from: "`auto-fix: true`" };
       if (caller.autoFix === "false") return { rounds: 0, from: "`auto-fix: false`" };
       return undefined;
@@ -692,20 +701,27 @@ export const diagnose = (
   // `auto-fix`, deprecated (#201, PRD #200 decision 4). The review honours it
   // for one release, and the release after stops declaring it, which GitHub
   // answers by failing the whole caller at startup. A warning while it still
-  // works, and an error where its value is one the review refuses already.
+  // works, and an error where its value is one the review refuses already. A
+  // `${{` expression is neither: what it comes to is settled at run time, so
+  // it is only the deprecation this can speak to.
   for (const caller of reviews) {
     if (caller.autoFix === undefined) continue;
+    const expression = isExpression(caller.autoFix);
     const rounds = caller.autoFix === "true" ? "1" : caller.autoFix === "false" ? "0" : undefined;
+    const refused = rounds === undefined && !expression;
     add({
-      severity: rounds === undefined ? "error" : "warning",
+      severity: refused ? "error" : "warning",
       check: "auto-fix deprecated",
       problem:
         `${caller.file} passes \`auto-fix: ${caller.autoFix}\` on the \`${caller.jobId}\` job. ` +
         `The input is deprecated and goes in the next release, and a caller that passes an input ` +
         `the called workflow no longer declares fails before any job starts. ` +
-        (rounds === undefined
+        (refused
           ? `This value is neither \`true\` nor \`false\`, so the review refuses it today.`
-          : `Until then it wins over \`${FIX_ROUNDS_VARIABLE}\`.`),
+          : expression
+            ? `Until then, whatever it comes to at run time other than empty wins over ` +
+              `\`${FIX_ROUNDS_VARIABLE}\`, and the review refuses anything but \`true\` or \`false\`.`
+            : `Until then it wins over \`${FIX_ROUNDS_VARIABLE}\`.`),
       fix:
         `Remove \`auto-fix\` from that job's \`with:\` block and set the repository variable ` +
         (rounds === undefined

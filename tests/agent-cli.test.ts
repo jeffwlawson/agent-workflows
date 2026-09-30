@@ -2429,6 +2429,40 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * **YAML's null is not passed.** `auto-fix:` with nothing after it, `~` and
+   * `null` all parse to null, which GitHub hands the review as the empty
+   * string, and the review reads empty as "not passed". Read through `String`
+   * it was the word `null`, and a refused value.
+   */
+  it("reads an auto-fix left empty or null as not passed", async () => {
+    for (const value of ["", "~", "null"]) {
+      const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"], maxFixRounds: "5" };
+      const { out, err } = await check(await withAutoFix(value), noPat);
+
+      expect(`${out}${err}`, value).not.toContain("auto-fix deprecated");
+      // The variable is what the review reads, so it is the budget named.
+      expect(out, value).toMatch(/budget of 5 \(`AGENT_MAX_FIX_ROUNDS`\)/);
+    }
+  });
+
+  /**
+   * **An expression is settled at run time**, and may come to `true`, `false`
+   * or empty, none of which the review refuses. So still the deprecation, as a
+   * warning, and no budget: a round count out of `${{ vars.X }}` is a guess.
+   */
+  it("warns on an auto-fix expression without ruling on what it comes to", async () => {
+    for (const value of ["${{ vars.AUTO_FIX }}", "${{ github.event_name == 'push' }}", "x-${{ vars.A }}"]) {
+      const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] };
+      const { out, err } = await check(await withAutoFix(`"${value}"`), noPat);
+
+      expect(out, value).toContain("warn  auto-fix deprecated");
+      expect(out, value).not.toContain("refuses it today");
+      expect(out, value).not.toContain("fix rounds without a PAT");
+      expect(err, value).not.toContain("auto-fix");
+    }
+  });
+
+  /**
    * The alias wins over the variable, in `doctor` as in the review: `false`
    * is a budget of 0 however the variable reads, so there is no round for a
    * missing PAT to stop; `true` is a budget of 1 even where the variable says

@@ -1653,7 +1653,7 @@ describe("agent-review starts one fix round, where it was asked to", () => {
     expect(
       deriveVerdict(
         { findings: [], followUps: [], fixBeforeMerge: ["the guard runs after the return"], verified: [] },
-        { ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, autoFix: true },
+        { ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, autoFix: true, base: "main" },
       ).verdict,
       "a round-2 derivation must not be able to produce the key this job fires on",
     ).not.toBe(AUTO_FIX_VERDICT);

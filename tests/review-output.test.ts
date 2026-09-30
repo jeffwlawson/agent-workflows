@@ -645,7 +645,7 @@ describe("deriveVerdict", () => {
   });
 
   it("recommends approval when nothing is wrong and the checks are green", () => {
-    expect(deriveVerdict(output(), { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe("approval recommended");
+    expect(deriveVerdict(output(), { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe("approval recommended");
   });
 
   it("recommends changes when the findings are the only thing wrong", () => {
@@ -653,7 +653,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), { autoFix: false,
         ci: "green",
         round: 1,
-        stillOpen: 0, movedToFollowUps: 0 }).verdict,
+        stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
     ).toBe("changes recommended");
   });
 
@@ -662,7 +662,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), { autoFix: false,
         ci: "green",
         round: 1,
-        stillOpen: 0, movedToFollowUps: 0 }).verdict,
+        stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
     ).toBe("needs a closer look");
   });
 
@@ -676,9 +676,85 @@ describe("deriveVerdict", () => {
     ["red", "red"],
     ["unreadable", "unknown"],
   ])("needs a closer look when the checks are %s and the review found nothing", (_case, ci) => {
-    expect(deriveVerdict(output(), { autoFix: false, ci: ci as CiResult, round: 1, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe(
+    expect(deriveVerdict(output(), { autoFix: false, ci: ci as CiResult, round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
       "needs a closer look",
     );
+  });
+
+  /**
+   * Three ways into *needs a closer look*, and one step for each (#209). The
+   * table's line fits only the reviewer asking for a human: a red check with
+   * nothing found is a check to read, and CI that never reported is one no fix
+   * round can repair. The key stays the one row's, so everything selecting on
+   * it reads all three alike.
+   */
+  describe("the step a closer look gives, by cause", () => {
+    const inputs = { autoFix: false, round: 1, stillOpen: 0, movedToFollowUps: 0, base: "agent/prd-14-search" } as const;
+
+    it("keeps the table's line where the reviewer asked for a human", () => {
+      const row = deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), { ...inputs, ci: "red" });
+
+      expect(row).toEqual(VERDICTS["needs a closer look"]);
+    });
+
+    it("sends a red check with nothing found to the failing check", () => {
+      const row = deriveVerdict(output(), { ...inputs, ci: "red" });
+
+      expect(row.verdict).toBe("needs a closer look");
+      expect(row.heading).toBe(VERDICTS["needs a closer look"].heading);
+      expect(row.nextStep).toContain("A check failed and the review found nothing to aim a fix at.");
+      expect(row.nextStep).toContain("Read the failing check");
+      expect(row.description).toBe(
+        "Needs a closer look. A check failed and the review found nothing to fix. Read the failing check the review names.",
+      );
+    });
+
+    it("says a fix round cannot help where no CI result could be read, and names the base", () => {
+      const row = deriveVerdict(output(), { ...inputs, ci: "unknown" });
+
+      expect(row.verdict).toBe("needs a closer look");
+      expect(row.nextStep).toContain("a fix round cannot help");
+      expect(row.nextStep).toContain("Make CI run on pull requests into `agent/prd-14-search`, then re-add agent:review.");
+      expect(row.description).toBe(
+        "Needs a closer look. No CI ran on this PR, or it could not be read. Make CI run on PRs into its base, then re-add agent:review.",
+      );
+    });
+
+    it.each([
+      ["the reviewer asked", { needsYou: "the wrong thing was built" }, "green"],
+      ["a check failed", {}, "red"],
+      ["no CI result", {}, "unknown"],
+    ] as const)("adds the way to accept a slice where %s", (_case, over, ci) => {
+      const plain = deriveVerdict(output(over), { ...inputs, ci });
+      const slice = deriveVerdict(output(over), { ...inputs, ci, sliceParent: "14" });
+      const acceptance =
+        "Or re-add agent:implement to #14 to accept this slice as it stands and move the chain on.";
+
+      expect(plain.nextStep).not.toContain("agent:implement");
+      expect(slice.nextStep).toBe(`${plain.nextStep} ${acceptance}`);
+      // The status keeps the short form: the slice line would not fit in 140.
+      expect(slice.description).toBe(plain.description);
+    });
+
+    it.each(["green", "red", "unknown"] as const)(
+      "keeps the status line on %s checks inside GitHub's limit, plain, and in the BMP",
+      (ci) => {
+        const over = ci === "green" ? { needsYou: "x" } : {};
+        const row = deriveVerdict(output(over), { ...inputs, ci, sliceParent: "14" });
+
+        expect(row.description.length).toBeLessThanOrEqual(140);
+        expect(row.description.startsWith(`${row.label}. `)).toBe(true);
+        expect(row.description).not.toMatch(/[`—]/);
+        expect([...row.description].every((ch) => (ch.codePointAt(0) ?? 0) <= 0xffff)).toBe(true);
+        expect(row.nextStep).not.toContain("—");
+      },
+    );
+
+    it("leaves every other verdict's step alone on a slice PR", () => {
+      const approved = deriveVerdict(output(), { ...inputs, ci: "green", sliceParent: "14" });
+
+      expect(approved).toEqual(VERDICTS["approval recommended"]);
+    });
   });
 
   /**
@@ -691,7 +767,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["the new test asserts the old behaviour"] }), { autoFix: false,
         ci: "red",
         round: 1,
-        stillOpen: 0, movedToFollowUps: 0 }).verdict,
+        stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
     ).toBe("changes recommended");
   });
 
@@ -707,8 +783,8 @@ describe("deriveVerdict", () => {
       findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
     });
 
-    expect(deriveVerdict(listless, { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe("changes recommended");
-    expect(deriveVerdict(listless, { autoFix: false, ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe(
+    expect(deriveVerdict(listless, { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(listless, { autoFix: false, ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
       "changes recommended after a fix round",
     );
   });
@@ -737,7 +813,7 @@ describe("deriveVerdict", () => {
     "the guard runs after the return",
   ])("counts a finding whatever its body opens with: %s", (body: string) => {
     expect(
-      deriveVerdict(output({ findings: [finding({ body })] }), { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0 })
+      deriveVerdict(output({ findings: [finding({ body })] }), { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" })
         .verdict,
       body,
     ).toBe("changes recommended");
@@ -752,7 +828,7 @@ describe("deriveVerdict", () => {
     // One set, not the sum of two: a restatement counts only where the list is
     // longer than the findings it restates. Either way a fix is a fix, so what
     // this pins is the arithmetic rather than the verdict.
-    expect(deriveVerdict(both, { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(both, { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe("changes recommended");
     expect(countFixBeforeMerge(both, 0)).toBe(1);
   });
 
@@ -761,7 +837,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["a"], needsYou: "the wrong thing was built" }), { autoFix: false,
         ci: "green",
         round: 1,
-        stillOpen: 0, movedToFollowUps: 0 }).verdict,
+        stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
     ).toBe("needs a closer look");
   });
 
@@ -781,7 +857,7 @@ describe("deriveVerdict", () => {
     const second = deriveVerdict(output({ fixBeforeMerge: ["the guard still runs after the return"] }), { autoFix: false,
       ci: "green",
       round: 2,
-      stillOpen: 0, movedToFollowUps: 0 });
+      stillOpen: 0, movedToFollowUps: 0, base: "main" });
 
     expect(second.verdict).toBe("changes recommended after a fix round");
     expect(second.heading).toBe(VERDICTS["changes recommended"].heading);
@@ -809,7 +885,7 @@ describe("deriveVerdict", () => {
       ci: "green",
       round: 1,
       stillOpen: 0,
-      movedToFollowUps: 0,
+      movedToFollowUps: 0, base: "main",
       autoFix: true,
     });
 
@@ -832,7 +908,7 @@ describe("deriveVerdict", () => {
    */
   it("asks for the label where nothing is about to add it", () => {
     const findings = output({ fixBeforeMerge: ["the guard runs after the return"] });
-    const inputs = { ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0 } as const;
+    const inputs = { ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" } as const;
 
     expect(deriveVerdict(findings, { ...inputs, autoFix: false }).verdict).toBe(
       "changes recommended",
@@ -860,7 +936,7 @@ describe("deriveVerdict", () => {
         ci: "green",
         round: 2,
         stillOpen: 0,
-        movedToFollowUps: 0,
+        movedToFollowUps: 0, base: "main",
         autoFix: true,
       }).verdict,
     ).toBe("changes recommended after a fix round");
@@ -871,7 +947,7 @@ describe("deriveVerdict", () => {
         ci: "green",
         round: 2,
         stillOpen: 1,
-        movedToFollowUps: 0,
+        movedToFollowUps: 0, base: "main",
         autoFix: true,
       }).verdict,
     ).toBe("changes recommended after a fix round");
@@ -892,7 +968,7 @@ describe("deriveVerdict", () => {
         ci: ci as CiResult,
         round: 1,
         stillOpen: 0,
-        movedToFollowUps: 0,
+        movedToFollowUps: 0, base: "main",
         autoFix: true,
       }).verdict,
     ).toBe(verdict);
@@ -910,7 +986,7 @@ describe("deriveVerdict", () => {
         ci: "green",
         round: 1,
         stillOpen: 0,
-        movedToFollowUps: 0,
+        movedToFollowUps: 0, base: "main",
         autoFix: true,
       }).verdict,
     ).toBe("needs a closer look");
@@ -922,7 +998,7 @@ describe("deriveVerdict", () => {
    * round exists to reach.
    */
   it("still recommends approval in a second round that found nothing", () => {
-    expect(deriveVerdict(output(), { autoFix: false, ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe(
+    expect(deriveVerdict(output(), { autoFix: false, ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
       "approval recommended",
     );
   });
@@ -935,7 +1011,7 @@ describe("deriveVerdict", () => {
    * closes anything, so nothing else would stop it.
    */
   it("recommends changes when the only thing wrong is what an earlier round asked for", () => {
-    expect(deriveVerdict(output(), { autoFix: false, ci: "green", round: 1, stillOpen: 1, movedToFollowUps: 0 }).verdict).toBe(
+    expect(deriveVerdict(output(), { autoFix: false, ci: "green", round: 1, stillOpen: 1, movedToFollowUps: 0, base: "main" }).verdict).toBe(
       "changes recommended",
     );
   });
@@ -947,7 +1023,7 @@ describe("deriveVerdict", () => {
    * round-2 row, which either source alone is enough to reach.
    */
   it("carries an earlier round's unfixed finding into the round-2 line", () => {
-    expect(deriveVerdict(output(), { autoFix: false, ci: "green", round: 2, stillOpen: 2, movedToFollowUps: 0 }).verdict).toBe(
+    expect(deriveVerdict(output(), { autoFix: false, ci: "green", round: 2, stillOpen: 2, movedToFollowUps: 0, base: "main" }).verdict).toBe(
       "changes recommended after a fix round",
     );
   });
@@ -971,10 +1047,10 @@ describe("deriveVerdict", () => {
     });
 
     expect(countFixBeforeMerge(missed, 0)).toBe(1);
-    expect(deriveVerdict(missed, { autoFix: false, ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe(
+    expect(deriveVerdict(missed, { autoFix: false, ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
       "changes recommended after a fix round",
     );
-    expect(deriveVerdict(missed, { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe(
+    expect(deriveVerdict(missed, { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
       "changes recommended",
     );
   });
@@ -2090,7 +2166,7 @@ describe("a finding the record does not read a label on", () => {
   it("counts in the round that raised it, rather than recommending approval over itself", () => {
     expect(countFixBeforeMerge(output([unlabelled]), 0)).toBe(1);
     expect(
-      deriveVerdict(output([unlabelled]), { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0 }).verdict,
+      deriveVerdict(output([unlabelled]), { autoFix: false, ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
     ).toBe("changes recommended");
   });
 
@@ -2222,6 +2298,7 @@ describe("the record's size is the count the verdict was given", () => {
         round: 1,
         stillOpen: stillOpen.length,
         movedToFollowUps: unanchored.length,
+        base: "main",
       }).verdict === "approval recommended",
     ).toBe(record.findings === 0);
   });
@@ -2265,10 +2342,10 @@ describe("severity changes no outcome", () => {
       const baseline = deriveVerdict(reviewed(["medium", "medium", "medium"]), { autoFix: false,
         ci,
         round: 1,
-        stillOpen: 0, movedToFollowUps: 0 });
+        stillOpen: 0, movedToFollowUps: 0, base: "main" });
 
       for (const severities of assignments) {
-        expect(deriveVerdict(reviewed(severities), { autoFix: false, ci, round: 1, stillOpen: 0, movedToFollowUps: 0 }), severities.join()).toEqual(
+        expect(deriveVerdict(reviewed(severities), { autoFix: false, ci, round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main" }), severities.join()).toEqual(
           baseline,
         );
       }
@@ -2363,6 +2440,7 @@ index 0ff3bbb..c6ca7ae 100644
         round: 1,
         stillOpen: 0,
         movedToFollowUps: unanchored.length,
+        base: "main",
       }),
       output: reviewed,
       placed,
@@ -2509,6 +2587,7 @@ index 0ff3bbb..c6ca7ae 100644
         round: 1,
         stillOpen: 0,
         movedToFollowUps: moved.unanchored.length,
+        base: "main",
       }).verdict,
     ).toBe("approval recommended");
   });

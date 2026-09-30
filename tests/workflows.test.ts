@@ -297,8 +297,11 @@ const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
    * …and the PRD chain's advance (#176), in `review` and in `fix` alike: it
    * spends `AGENT_PAT` on the parent issue when a slice PR's round ends, and is
    * kept out of the job that runs a model for the same reason.
+   *
+   * …and its hand-merge twin (#209), which re-adds the same label when a
+   * slice PR is merged by hand rather than by the chain.
    */
-  [path.join(WORKFLOW_DIR, "review.yml")]: ["resolve", "auto-fix", "advance"],
+  [path.join(WORKFLOW_DIR, "review.yml")]: ["resolve", "auto-fix", "advance", "advance-merged"],
   [path.join(WORKFLOW_DIR, "fix.yml")]: ["advance"],
 };
 
@@ -475,6 +478,13 @@ const TRIGGER_TYPES: Readonly<Record<string, readonly string[]>> = {
    */
   "agent-follow-ups.yml": ["closed", "labeled"],
   "follow-ups.yml": ["closed", "labeled"],
+  /**
+   * The review pair (#209). `labeled` is the review; `closed` is
+   * `advance-merged`, which moves the PRD chain on from a slice PR merged by
+   * hand. Every other job in `review.yml` guards on the label and skips it.
+   */
+  "agent-review.yml": ["closed", "labeled"],
+  "review.yml": ["closed", "labeled"],
 };
 const triggerTypesOf = (file: string): readonly string[] =>
   TRIGGER_TYPES[path.basename(file)] ?? TRIGGER_TYPES_DEFAULT;
@@ -841,7 +851,7 @@ describe("every PR workflow shares one concurrency group per PR", () => {
       ),
     ];
 
-    expect(checkRuns).toHaveLength(10);
+    expect(checkRuns).toHaveLength(11);
     expect(checkRuns).toContain("review / resolve");
     // …and the third (#102), on the same footing: it runs after this wait, and
     // it is not evidence about the diff whenever it does.
@@ -849,7 +859,10 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // …and the fourth (#176), in both workflows whose round can end a slice's.
     expect(checkRuns).toContain("review / advance");
     expect(checkRuns).toContain("fix / advance");
+    // …and its hand-merge twin (#209).
+    expect(checkRuns).toContain("review / advance-merged");
     for (const name of checkRuns) expect(name).toMatch(excluded);
+    expect("agent-review / advance-merged").toMatch(excluded);
     // And under a caller job an adopter renamed, where only the second half is
     // ours to know.
     expect("agent-review / resolve").toMatch(excluded);
@@ -1653,7 +1666,7 @@ describe("agent-review starts one fix round, where it was asked to", () => {
     expect(
       deriveVerdict(
         { findings: [], followUps: [], fixBeforeMerge: ["the guard runs after the return"], verified: [] },
-        { ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, autoFix: true },
+        { ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, autoFix: true, base: "main" },
       ).verdict,
       "a round-2 derivation must not be able to produce the key this job fires on",
     ).not.toBe(AUTO_FIX_VERDICT);
@@ -2270,6 +2283,138 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
     (caller: string) => {
       expect(jobOf(caller).permissions?.["pull-requests"]).toBe("write");
       expect(jobOf(caller).permissions?.["issues"]).toBeUndefined();
+    },
+  );
+});
+
+/**
+ * A slice PR merged **by hand** moves the chain on too (#209). Merging a slice
+ * PR whose round parked is the obvious move, and it used to be a dead end: the
+ * chain moved only on `agent:implement` re-added to the parent.
+ *
+ * The hard half is the chain's own merge, which must start nothing: that run
+ * builds the next slice already, and a second label queues a second run. Both
+ * merges are under the maintainer's login, so the chain leaves a mark in the
+ * slice PR's body before it merges, pinned to the head it merges, and the job
+ * reads the body the `closed` payload carries. Nothing here has a runtime
+ * symptom when it breaks: a mark the job cannot see is a doubled run, and a
+ * job that never fires is the dead end back.
+ */
+describe("a slice PR merged by hand advances the PRD chain", () => {
+  const job = (): Job => jobNamed(REVIEW, "advance-merged");
+  const condition = (): string => (job().if ?? "").replace(/\s+/g, " ");
+  const step = (): Step | undefined =>
+    (job().steps ?? []).find((s) => s.name === "Advance the PRD chain past a hand-merged slice");
+  const MARK = "<!-- agent-chain-merge ";
+
+  it("fires on a merged slice PR into a PRD branch, from this repository, and on nothing else", () => {
+    const text = condition();
+
+    expect(text).toContain("github.event.action == 'closed'");
+    expect(text).toContain("github.event.pull_request.merged == true");
+    expect(text).toContain("github.event.pull_request.head.repo.full_name == github.repository");
+    expect(text).toContain("startsWith(github.event.pull_request.base.ref, 'agent/prd-')");
+    expect(text).toContain("startsWith(github.event.pull_request.head.ref, 'agent/slice-')");
+    // Not on a label, and no status function: it has no `needs:` to widen.
+    expect(text).not.toContain("github.event.label.name");
+    expect(job().needs).toBeUndefined();
+    expect(step()?.run ?? "").toContain("^agent/slice-([0-9]+)-[0-9]+-");
+  });
+
+  /**
+   * Every other job in the workflow guards on the label, so the `closed` type
+   * the review callers now carry reaches this job and no other.
+   */
+  it("is the only job in review a closed event can reach", () => {
+    for (const [id, other] of Object.entries(workflowOf(REVIEW).jobs)) {
+      if (id === "advance-merged") continue;
+      expect(other.if ?? "", id).toContain("github.event.label.name == 'agent:review'");
+    }
+  });
+
+  it("skips the chain's own merge, by the mark on the head it merged", () => {
+    expect(condition()).toContain(
+      "!contains(github.event.pull_request.body, format('<!-- agent-chain-merge {0} -->', github.event.pull_request.head.sha))",
+    );
+  });
+
+  /**
+   * The chain writes the mark into the body **before** it merges, pinned to the
+   * head the merge is pinned to, and merges nothing if it cannot: merged
+   * unmarked, the chain's own merge would read as a hand merge.
+   */
+  it("is marked by implement-prd before it merges, on the head it merges", () => {
+    const merge = stepsOf(PRD).find((s) => s.id === "merge");
+    const run = merge?.run ?? "";
+    const mark = run.indexOf(`marker="${MARK}\${head} -->"`);
+    const write = run.indexOf('gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body="${body}"');
+    const merged = run.indexOf('gh pr merge "$SLICE_PR"');
+
+    expect(mark).toBeGreaterThanOrEqual(0);
+    expect(write).toBeGreaterThan(mark);
+    expect(merged).toBeGreaterThan(write);
+    expect(run).toContain('--match-head-commit "$head"');
+    // Refused rather than tolerated: an unmarked chain merge starts a second run.
+    expect(run.slice(write, merged)).toContain("|| block ");
+    // And taken back out on every exit short of the merge, a cancel included:
+    // a mark that outlives a failed merge hides a later hand merge of that head.
+    const armed = run.indexOf("trap unmark EXIT");
+    expect(armed).toBeGreaterThan(mark);
+    expect(armed).toBeLessThan(write);
+    expect(run.slice(armed, write)).toContain("trap 'exit 1' INT TERM");
+    const disarmed = run.indexOf("trap - EXIT INT TERM");
+    expect(disarmed).toBeGreaterThan(merged);
+  });
+
+  it("stands aside while the chain is already moving", () => {
+    const run = step()?.run ?? "";
+    const busy = run.indexOf('gh issue view "$parent" --json labels');
+    const add = run.indexOf('gh issue edit "$parent" --add-label "agent:implement"');
+
+    expect(busy).toBeGreaterThanOrEqual(0);
+    expect(add).toBeGreaterThan(busy);
+    expect(run.slice(busy, add)).toContain('. == "agent:implement" or . == "agent:in-progress"');
+    expect(run.slice(busy, add)).toContain("exit 0");
+  });
+
+  /** In `advance`'s shape: one step, no checkout, no model, one scope, the PAT or a comment. */
+  it("checks nothing out, runs no model, and holds only what it needs", () => {
+    const steps = job().steps ?? [];
+
+    expect(steps).toHaveLength(1);
+    for (const s of steps) {
+      expect(s.uses).toBeUndefined();
+      expect(s.run ?? "").not.toContain("npm exec");
+      expect(s.run ?? "").not.toContain("claude");
+      expect(s.run ?? "").not.toContain("git ");
+    }
+    expect(job().permissions).toEqual({ "pull-requests": "write" });
+    expect(job().concurrency).toBeUndefined();
+  });
+
+  it("labels the parent with the PAT, and comments when there is none", () => {
+    const s = step();
+    const run = s?.run ?? "";
+
+    expect(s?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(s?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(run).toContain("set -euo pipefail");
+    const noPat = run.indexOf('if [ "$HAS_PAT" != "true" ]; then');
+    const add = run.indexOf('gh issue edit "$parent" --add-label "agent:implement"');
+    expect(noPat).toBeGreaterThanOrEqual(0);
+    expect(add).toBeGreaterThan(noPat);
+    const arm = run.slice(noPat, run.indexOf("\nfi", noPat));
+    expect(arm).toContain('gh pr comment "$PR_NUMBER"');
+    expect(arm).toContain("Re-add \\`agent:implement\\` to #${parent} by hand");
+    expect(arm).toContain("exit 0");
+    expect(arm).not.toContain("--add-label");
+    expect(run.slice(add).split("\n")[0]).not.toContain("||");
+  });
+
+  it.each(callerWorkflows.filter((file) => targetOf(file) === REVIEW))(
+    "%s: listens for the close",
+    (file: string) => {
+      expect(workflowOf(file).on?.pull_request_target?.types).toContain("closed");
     },
   );
 });

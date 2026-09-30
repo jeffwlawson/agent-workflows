@@ -546,7 +546,7 @@ jobs:
 
           # One read, so every check below rules on the same snapshot — and its
           # head is the one the merge is pinned to.
-          fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels
+          fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels,body
           pr=$(gh pr view "$SLICE_PR" --json "$fields") \
             || block "Could not read slice PR #${SLICE_PR}, so nothing was merged. Re-add \`agent:implement\` here to retry."
           state=$(jq -r '.state' <<< "$pr")
@@ -601,11 +601,48 @@ jobs:
               block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: this repository's settings allow none of squash, rebase or a merge commit, or this token cannot read them."
             fi
 
+            # The chain's own mark, for review's `advance-merged` (#209), which
+            # re-adds `agent:implement` when a slice PR is merged by hand and
+            # must not when this run merges it: this run builds the next slice
+            # already, and a second label would queue a second run. The merge
+            # is under AGENT_PAT, the maintainer's own login, so who merged
+            # cannot tell them apart; the body the `closed` event carries can.
+            # Pinned to the head the merge is, and written before it, so the
+            # event cannot arrive without it.
+            #
+            # And gone again unless the merge happens. A mark that outlives a
+            # merge that did not (refused by a required check or review, a
+            # transient error, a cancelled run) makes a later hand merge of the
+            # same head read as the chain's, and nothing then moves the chain
+            # on. So every exit from here to the merge takes it back out: the
+            # merge's own failure arm, any other error, and a cancel, which is
+            # turned into an exit so the trap runs. Tolerant, since the step is
+            # already failing and says why; a mark it could not take back is
+            # said too. Set before the write, so a mark an earlier run left on
+            # this head and could not remove is taken out as well.
+            marker="<!-- agent-chain-merge ${head} -->"
+            body=$(jq -r '.body // ""' <<< "$pr")
+            unmarked=${body//$'\n\n'"$marker"/}
+            unmarked=${unmarked//"$marker"/}
+            unmark() {
+              gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body="${unmarked}" >/dev/null \
+                || echo "::warning::Could not take the chain's mark back out of slice PR #${SLICE_PR}'s body. Delete \`${marker}\` from it by hand, or merging it by hand will not move the PRD chain on."
+            }
+            trap unmark EXIT
+            trap 'exit 1' INT TERM
+            if [[ "$body" != *"$marker"* ]]; then
+              gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body="${body}"$'\n\n'"${marker}" >/dev/null \
+                || block "Could not mark slice PR #${SLICE_PR} as merged by the chain, so nothing was merged: merged without the mark, it would read as a hand merge and start a second run. Re-add \`agent:implement\` here to retry."
+            fi
+
             # Pinned to the head read above. A push between that read and this
             # merge is code nothing checked, and GitHub refuses it rather than
             # merging it unseen.
             gh pr merge "$SLICE_PR" "--${method}" --match-head-commit "$head" \
               || block "Could not merge slice PR #${SLICE_PR} into the PRD branch (${method}, pinned to ${head}). If it was pushed to since this run read it, its new head has not been through a round: re-add \`agent:implement\` here once it has."
+            # Merged, so the mark is the chain's to keep: the `closed` event it
+            # answers has already been sent.
+            trap - EXIT INT TERM
             echo "Merged slice PR #${SLICE_PR} into ${prd_branch} (${method})."
 
             if [ "$HAS_PAT" != "true" ]; then

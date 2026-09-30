@@ -396,6 +396,20 @@ export interface VerdictInputs {
    * to add the label, and the feature is off with nothing anywhere saying so.
    */
   readonly autoFix: boolean;
+  /**
+   * The branch this pull request merges into. Named in the step a review with
+   * no readable CI gives (#209), because the fix there is to make CI run on
+   * pull requests into it, and a PRD branch is the base an adopter's CI is
+   * most likely to skip.
+   */
+  readonly base: string;
+  /**
+   * The PRD parent, where this is a slice PR (head `agent/slice-<parent>-…`).
+   * Every *needs a closer look* step on one adds the way to accept the slice as
+   * it stands (#209): the chain parks on that verdict, and nothing else on the
+   * pull request says what moves it on.
+   */
+  readonly sliceParent?: string;
 }
 
 /**
@@ -1243,7 +1257,7 @@ export const renderReviewBody = (parts: {
  * derivation keyed only on findings would recommend approving.
  */
 export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): VerdictRow => {
-  if (output.needsYou !== undefined) return VERDICTS["needs a closer look"];
+  if (output.needsYou !== undefined) return closerLook("needs you", inputs);
   // This review's findings **and** the earlier ones it checked and found still
   // open. Added, because the two are disjoint sets — one this review found,
   // one it verified — where the two halves inside `countFixBeforeMerge` are
@@ -1283,8 +1297,50 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
       ? VERDICTS["changes recommended, fix round started"]
       : VERDICTS["changes recommended"];
   }
-  if (inputs.ci !== "green") return VERDICTS["needs a closer look"];
+  if (inputs.ci !== "green") return closerLook(inputs.ci, inputs);
   return VERDICTS["approval recommended"];
+};
+
+/**
+ * Why a review needs a closer look, which decides what the step says (#209).
+ * Three ways into one row, and only the first is the one the table's line was
+ * written for: a failing check the review could not explain is a check for a
+ * human to read, and CI that never reported is one no fix round can repair.
+ */
+type CloserLookCause = "needs you" | Exclude<CiResult, "green">;
+
+/**
+ * The *needs a closer look* row for one cause, and for a slice PR the way on.
+ *
+ * The key, heading, label and state are the table's, so everything that
+ * selects on the verdict (the advance job parks on it, the slices table marks
+ * a slice merged over it as accepted by hand) reads all three causes as one.
+ * Only the step and the status line differ. The status line is the short form
+ * of the cause and carries neither the base nor the slice line: it has 140
+ * characters, and the body under it has the rest.
+ */
+const closerLook = (
+  cause: CloserLookCause,
+  inputs: Pick<VerdictInputs, "base" | "sliceParent">,
+): VerdictRow => {
+  const row = VERDICTS["needs a closer look"];
+  const [step, short] =
+    cause === "needs you"
+      ? [row.nextStep, row.nextStep]
+      : cause === "red"
+        ? [
+            "A check failed and the review found nothing to aim a fix at. Read the failing check the review's evidence names, then add agent:fix with guidance or close the PR.",
+            "A check failed and the review found nothing to fix. Read the failing check the review names.",
+          ]
+        : [
+            `No CI ran on this PR, or its result could not be read, so a fix round cannot help. Make CI run on pull requests into \`${inputs.base}\`, then re-add agent:review.`,
+            "No CI ran on this PR, or it could not be read. Make CI run on PRs into its base, then re-add agent:review.",
+          ];
+  const nextStep =
+    inputs.sliceParent === undefined
+      ? step
+      : `${step} Or re-add agent:implement to #${inputs.sliceParent} to accept this slice as it stands and move the chain on.`;
+  return { ...row, nextStep, description: `${row.label}. ${short}` };
 };
 
 const parseFollowUp = (value: unknown): FollowUp => {

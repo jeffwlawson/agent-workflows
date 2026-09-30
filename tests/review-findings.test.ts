@@ -977,6 +977,7 @@ describe("an identifier the model smuggled into its output", () => {
         round: 2,
         stillOpen: carried.length,
         movedToFollowUps: 0,
+        base: "main",
       }).verdict,
     ).toBe("approval recommended");
   });

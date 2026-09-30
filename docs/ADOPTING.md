@@ -129,7 +129,9 @@ left so the manual remedy is one remove-and-re-add.
 The one failure here that has nothing to do with `GITHUB_TOKEN`, and the only one a correct PAT does
 not fix.
 
-Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`.
+Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`
+(two also listen on `closed`: `follow-ups`, and `review`, whose `closed` moves the PRD chain on from
+a slice PR merged by hand).
 Labels passed in the **create** call produce only `issues.opened` — they ride along in that
 payload, but no `labeled` event is emitted and `github.event.label` does not exist on `opened`. The
 label is really on the issue, and the workflow correctly never saw an event.
@@ -1239,7 +1241,9 @@ Without it, a slice PR carries no check but the loop's own, and review reads tha
 **unknown** rather than green: a clean review lands on *Needs a closer look* and the chain parks at
 the first slice, instead of approving code no CI ran on. The review's CI evidence says so and links
 here. Ordinary pull requests are unchanged — on a repository with no CI anywhere, they still read
-green. A CI with no `branches:` filter on `pull_request`, like this repository's, needs nothing.
+green. A CI with no `branches:` filter on `pull_request`, like this repository's, needs nothing. `doctor`
+checks this where `agent-implement-prd` is installed: it fails when no workflow of yours has a
+`pull_request` trigger whose branch filter lets a PRD branch through.
 
 Nothing above will error if you get it wrong — with one exception worth knowing, because it is the
 exception on purpose. An empty base ref used to default to `main` inside the runners; since

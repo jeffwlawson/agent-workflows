@@ -75,6 +75,16 @@ a finished PRD refuses the label. It has `auto-fix`'s shape — no checkout, no 
 `pull-requests: write` alone, `AGENT_PAT` or nothing — and is on by default, since only the PRD
 chain opens a slice PR.
 
+So is merging the slice PR by hand (#209). `review` carries a twin of the advance job on the
+`closed` event its caller also listens for: a slice PR merged into its PRD branch by anyone but the
+chain re-adds `agent:implement` to the parent, and the run that starts finds the slice PR merged,
+writes its row and builds the next slice. The chain's own merge is told apart by a mark, not by
+who merged, since both are the maintainer's login: `implement-prd` writes
+`<!-- agent-chain-merge <head sha> -->` into the slice PR's body before it merges, and the job's
+`if:` skips a `closed` payload carrying the mark for the head it merged. It also stands aside while
+the parent already carries `agent:implement` or `agent:in-progress`: the chain is moving, and a
+second label would only queue a second run.
+
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
 commit status belongs to a commit, so without the copy every merge into a base branch would wipe
@@ -218,7 +228,8 @@ class the pair exists to remove.
 
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
 the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape
-and its freshness, `self-check`, the labels — and reads nothing out of `examples/callers/`, so a
+and its freshness, `self-check`, the labels, and a CI that runs on slice PRs where the PRD chain is
+installed (#209) — and reads nothing out of `examples/callers/`, so a
 release that changes a caller *body* is a release that teaches `diagnose` about it in the same
 commit, exactly as a new pin site is a change to `shared/pins.ts` in the same commit. Diffing an
 adopter's caller against the reference is the other design and it is the wrong one here: most of

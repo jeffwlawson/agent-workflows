@@ -588,12 +588,21 @@ const SLICE_BRANCH = "agent/slice-171-172-slice-1";
 /** The merge step, handed slice PR #210 in the state `extra` describes. */
 const runMerge = (
   extra: Record<string, unknown> = {},
-  options: { readonly repo?: Record<string, unknown>; readonly pat?: boolean } = {},
+  options: {
+    readonly repo?: Record<string, unknown>;
+    readonly pat?: boolean;
+    /** GitHub refuses the merge itself, as a required check or review does. */
+    readonly mergeRefused?: boolean;
+  } = {},
 ): StepOutcome =>
   runStep("merge", {
     pulls: [...BYSTANDERS, pull(SLICE, SLICE_BRANCH, PRD_BRANCH, "OPEN", extra)],
     repo: options.repo ?? REPO,
-    env: { SLICE_PR: String(SLICE), HAS_PAT: String(options.pat ?? true) },
+    env: {
+      SLICE_PR: String(SLICE),
+      HAS_PAT: String(options.pat ?? true),
+      ...(options.mergeRefused === true ? { GH_REPLAY_MERGE_FAILURE: "1" } : {}),
+    },
   });
 
 /** The pull request writes, as the argv each was made with. */
@@ -670,6 +679,78 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain(`slice PR #${SLICE}`);
     expect(merges(outcome)).toEqual([]);
+  });
+
+  /**
+   * The chain's mark (#209): written into the slice PR's body before the merge,
+   * pinned to the head the merge is pinned to, so review's `advance-merged`
+   * can tell this merge from one made by hand under the same login.
+   */
+  it("marks the slice PR's body with the head it merges, before it merges", () => {
+    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" });
+    const writes = prWrites(outcome);
+    const mark = writes.findIndex((argv) => argv[0] === "api" && argv[2] === "PATCH");
+
+    expect(outcome.status).toBe(0);
+    expect(mark).toBeGreaterThanOrEqual(0);
+    expect(writes[mark]?.[3]).toBe(`repos/${GH_REPO}/pulls/${SLICE}`);
+    expect(writes[mark]?.at(-1)).toBe("body=Part of #172\n\n<!-- agent-chain-merge 0123abc -->");
+    expect(mark).toBeLessThan(writes.findIndex((argv) => argv[1] === "merge"));
+  });
+
+  it("does not mark a body that already carries the mark for this head", () => {
+    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172\n\n<!-- agent-chain-merge 0123abc -->" });
+
+    expect(outcome.status).toBe(0);
+    expect(prWrites(outcome).some((argv) => argv[2] === "PATCH")).toBe(false);
+    expect(merges(outcome)).toHaveLength(1);
+  });
+
+  /**
+   * And takes it back out when the merge does not happen (#209, review of
+   * #210). A mark that outlived a refused merge would make a later hand merge
+   * of the same head read as the chain's, and nothing would move the chain on.
+   */
+  it("takes the mark back out when the merge is refused", () => {
+    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" }, { mergeRefused: true });
+    const writes = prWrites(outcome);
+    const patches = writes.filter((argv) => argv[2] === "PATCH");
+    const merged = writes.findIndex((argv) => argv[1] === "merge");
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain(`Could not merge slice PR #${SLICE}`);
+    expect(patches.map((argv) => argv.at(-1))).toEqual([
+      "body=Part of #172\n\n<!-- agent-chain-merge 0123abc -->",
+      "body=Part of #172",
+    ]);
+    expect(writes.lastIndexOf(patches[1] ?? [])).toBeGreaterThan(merged);
+  });
+
+  /** A mark on this head an earlier run could not remove goes too, and nothing else in the body does. */
+  it("takes out a mark an earlier run left on this head, when the merge is refused", () => {
+    const outcome = runMerge(
+      { headRefOid: "0123abc", body: "Part of #172\n\n<!-- agent-chain-merge 0123abc -->\n\n<!-- agent-chain-merge 9999fff -->" },
+      { mergeRefused: true },
+    );
+    const patches = prWrites(outcome).filter((argv) => argv[2] === "PATCH");
+
+    expect(outcome.status).toBe(1);
+    expect(patches.map((argv) => argv.at(-1))).toEqual([
+      "body=Part of #172\n\n<!-- agent-chain-merge 9999fff -->",
+    ]);
+  });
+
+  it("keeps the mark once the merge has happened", () => {
+    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" });
+
+    expect(outcome.status).toBe(0);
+    expect(prWrites(outcome).filter((argv) => argv[2] === "PATCH")).toHaveLength(1);
+  });
+
+  it("marks nothing on a slice PR that is already merged", () => {
+    const outcome = runMerge({ state: "MERGED" });
+
+    expect(prWrites(outcome).some((argv) => argv[2] === "PATCH")).toBe(false);
   });
 
   it("pins the merge to the head it inspected", () => {
@@ -1107,7 +1188,8 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row, PRD P
     });
 
   it.each([
-    ["pr view", ["pr", "view", "210", "--json", "number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels"]],
+    ["pr view", ["pr", "view", "210", "--json", "number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels,body"]],
+    ["api -X PATCH pulls, the chain's mark", ["api", "-X", "PATCH", `repos/${GH_REPO}/pulls/210`, "-f", "body=x"]],
     ["pr view, merged", ["pr", "view", "210", "--json", "number,headRefOid,headRefName,title,body,url"]],
     ["api graphql --paginate --slurp", ["api", "graphql", "--paginate", "--slurp", "-F", "number=210", "-f", "query=query($endCursor: String) { viewer { login } }"]],
     ["pr list --base", ["pr", "list", "--state", "all", "--base", PRD_BRANCH, "--limit", "1000", "--json", "number,body,headRefName"]],
@@ -1122,7 +1204,8 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row, PRD P
 
     const row = stepById("slice_row").run ?? "";
 
-    expect(merge).toContain("fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels\n");
+    expect(merge).toContain("fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels,body\n");
+    expect(merge).toContain('gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body=');
     expect(row).toContain('gh pr view "$number" --json number,headRefOid,headRefName,title,body,url');
     expect(row).toContain("gh api graphql --paginate --slurp");
     expect(row).toContain('gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,body,headRefName');

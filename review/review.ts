@@ -364,6 +364,8 @@ try {
     stillOpen: stillOpen.length,
     movedToFollowUps: unanchored.length,
     autoFix: willAutoFix(),
+    base: BASE_REF,
+    ...(slice === undefined ? {} : { sliceParent: slice.prd }),
   });
   // And a round nothing could establish says so in the body as well as in the
   // brief. The agent was told it was a second round; what it cannot say — and

@@ -18,9 +18,15 @@ name: Agent Review
 # **pinned to**, not because it is local. Pin a tag or a SHA, never a branch:
 # `@main` would hand a job that runs with your secrets to whatever currently
 # sits on another repository's default branch (docs/ADOPTING.md §9).
+#
+# Two activity types. `labeled` is the review. `closed` is the PRD chain's
+# `advance-merged` (#209): a slice PR merged by hand re-adds `agent:implement`
+# to its parent, so the chain moves on from it. It is **not** a default
+# `pull_request_target` type, so without it a hand merge is a dead end. Every
+# other job in the called workflow skips a `closed` event.
 on:
   pull_request_target:
-    types: [labeled]
+    types: [closed, labeled]
 
 jobs:
   # The job id is load-bearing: it is the first half of the check-run name

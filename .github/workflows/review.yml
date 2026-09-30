@@ -372,7 +372,10 @@ jobs:
           # `advance` is the fourth (#176), in `fix` as well as here, and runs
           # after a round ends on a slice PR. A later round on the same head —
           # a human's re-label — would otherwise read `review / advance` as CI.
-          AGENT_CHECKS: '(^|/ )(review|resolve|auto-fix|advance|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
+          # `advance-merged` (#209) is its hand-merge twin, named in its own
+          # right for the reason `auto-fix` is: `advance` does not match a name
+          # that goes on past it.
+          AGENT_CHECKS: '(^|/ )(review|resolve|auto-fix|advance|advance-merged|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller
@@ -1441,3 +1444,83 @@ jobs:
           fi
           gh issue edit "$parent" --add-label "agent:implement"
           echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."
+
+  # A slice PR merged **by hand** advances the chain too (#209). Merging a
+  # slice PR whose round parked is the obvious move for a maintainer, and until
+  # this job it was a dead end: the chain moved only on `agent:implement`
+  # re-added to the parent, and nothing on the slice PR said so. This re-adds
+  # it, and the `implement-prd` run that starts finds the slice PR merged,
+  # writes its row of the slices table and builds the next slice (#207).
+  #
+  # **Not on the chain's own merge.** `implement-prd` merges each slice PR
+  # itself, and that run already builds the next slice: a second label would
+  # queue a second run behind it. Who merged cannot tell the two apart, since
+  # the chain merges under `AGENT_PAT`, which is the maintainer's own login. So
+  # the chain leaves a mark instead: just before it merges, it writes
+  # `<!-- agent-chain-merge <head sha> -->` into the slice PR's body, and the
+  # `closed` payload carries the body as it was at the merge. Pinned to the
+  # head, so a mark left by a chain merge that failed does not hide a later
+  # hand merge of a head pushed since. Read in the `if:`, so the chain's own
+  # merge starts no job at all, and there is no race with the run that made it.
+  #
+  # **Not while the chain is already moving.** A human merge can land while
+  # the run `advance` started is queued or building (the parent carries
+  # `agent:implement` or `agent:in-progress`); that run finds the slice PR
+  # merged and goes on, and a second label would only queue a second run.
+  #
+  # **Only on a slice PR**, for `advance`'s reason and by the same head, and
+  # only into a PRD branch. `closed` with `merged`, and the action named:
+  # a label added to a pull request that is already merged is a `labeled`
+  # event carrying `merged: true` too.
+  #
+  # In `advance`'s shape: no checkout, no toolchain, no model, `pull-requests:
+  # write` alone, `AGENT_PAT` or nothing. It cannot cycle: it labels an issue,
+  # never a pull request, and a merged slice PR closes once.
+  advance-merged:
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.base.ref, 'agent/prd-') &&
+      startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
+      !contains(github.event.pull_request.body, format('<!-- agent-chain-merge {0} -->', github.event.pull_request.head.sha))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # **No concurrency group**, for the reason `advance` is in none.
+    permissions:
+      # The comment the no-PAT arm leaves on the slice PR, and nothing else,
+      # for `advance`'s reason.
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      # MUST use AGENT_PAT, for `advance`'s reason. `bash -e` and no `|| true`
+      # on the add or the read before it: a hand merge that did not move the
+      # chain is the dead end this job exists to remove, and a red job is the
+      # only thing that says so.
+      - name: Advance the PRD chain past a hand-merged slice
+        env:
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$HEAD_REF" =~ ^agent/slice-([0-9]+)-[0-9]+- ]]; then
+            echo "::error::Slice PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/slice-<parent>-<sub-issue>-…\`, so its PRD cannot be told. Re-add \`agent:implement\` to the PRD by hand to advance its chain."
+            exit 1
+          fi
+          parent="${BASH_REMATCH[1]}"
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::AGENT_PAT is not set, so the PRD chain was not advanced past this hand merge: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
+            gh pr comment "$PR_NUMBER" --body "This slice PR was merged by hand, but the PRD chain will not move on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to record this slice in the PRD PR and build the next one." \
+              || echo "::warning::…and that could not be said on the pull request either."
+            exit 0
+          fi
+          busy=$(gh issue view "$parent" --json labels --jq '[.labels[].name | select(. == "agent:implement" or . == "agent:in-progress")] | join(", ")')
+          if [ -n "$busy" ]; then
+            echo "#${parent} carries ${busy}: the PRD chain is already moving, and its run finds slice PR #${PR_NUMBER} merged. Nothing to add."
+            exit 0
+          fi
+          gh issue edit "$parent" --add-label "agent:implement"
+          echo "Re-added agent:implement to #${parent}: slice PR #${PR_NUMBER} was merged by hand, and the PRD chain moves on from it."

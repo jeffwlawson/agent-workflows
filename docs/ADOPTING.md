@@ -1239,7 +1239,9 @@ Without it, a slice PR carries no check but the loop's own, and review reads tha
 **unknown** rather than green: a clean review lands on *Needs a closer look* and the chain parks at
 the first slice, instead of approving code no CI ran on. The review's CI evidence says so and links
 here. Ordinary pull requests are unchanged — on a repository with no CI anywhere, they still read
-green. A CI with no `branches:` filter on `pull_request`, like this repository's, needs nothing.
+green. A CI with no `branches:` filter on `pull_request`, like this repository's, needs nothing. `doctor`
+checks this where `agent-implement-prd` is installed: it fails when no workflow of yours has a
+`pull_request` trigger whose branch filter lets a PRD branch through.
 
 Nothing above will error if you get it wrong — with one exception worth knowing, because it is the
 exception on purpose. An empty base ref used to default to `main` inside the runners; since

@@ -730,14 +730,23 @@ describe("doctor names the failures that otherwise look like something else", ()
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  /** A repository `init` has just finished with — the state doctor should pass. */
+  /**
+   * A repository `init` has just finished with, beside a CI of the adopter's
+   * own that runs on every pull request — the state doctor should pass. `init`
+   * writes no CI, and a repository with none parks the PRD chain (#209).
+   */
   const installed = async (): Promise<string> => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
     roots.push(root);
     fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
     await init({ dir: root });
+    fs.writeFileSync(path.join(root, ".github", "workflows", "ci.yml"), ciOn("  pull_request:"));
     return root;
   };
+
+  /** An adopter's CI, triggered by `on` as given. */
+  const ciOn = (...on: readonly string[]): string =>
+    ["name: CI", "on:", ...on, "jobs:", "  test:", "    runs-on: ubuntu-latest", "    steps:", "      - run: true", ""].join("\n");
 
   /**
    * A caller written by hand rather than copied, for the shapes the reference
@@ -829,6 +838,116 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(err).toBe("");
     expect(code).toBe(0);
+  });
+
+  /**
+   * CI on slice PRs (#209). A slice PR's base is its PRD branch, and a CI
+   * filtered to the default branch never runs on one: review reads CI as
+   * unknown, a clean slice lands on *Needs a closer look*, and the chain parks
+   * at its first slice. Nothing errors, which is why it is looked for here.
+   */
+  describe("CI on slice PRs", () => {
+    const ci = (root: string, text: string, file = "ci.yml"): void => {
+      fs.writeFileSync(path.join(root, ".github", "workflows", file), text);
+    };
+
+    it("fails a CI filtered to the default branch, names it, and gives the one line", async () => {
+      const root = await installed();
+      ci(root, ciOn("  pull_request:", "    branches: [main]"));
+
+      const { code, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      expect(err).toContain("CI on slice PRs");
+      expect(err).toContain(".github/workflows/ci.yml");
+      expect(err).toContain("branches: [main, 'agent/prd-**']");
+    });
+
+    it("fails where nothing but the loop's own workflows triggers on pull_request", async () => {
+      const root = await installed();
+      ci(root, ciOn("  push:", "    branches: [main]"));
+
+      const { code, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      expect(err).toContain("No workflow here other than the loop's own triggers on `pull_request`");
+    });
+
+    it("does not count a loop caller that also triggers on pull_request", async () => {
+      const root = await installed();
+      fs.rmSync(path.join(root, ".github", "workflows", "ci.yml"));
+      edit(root, "agent-review.yml", (text) => text.replace(/^on:\n/m, "on:\n  pull_request:\n"));
+
+      const { code, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      expect(err).toContain("CI on slice PRs");
+    });
+
+    it.each([
+      ["the PRD branches added to the filter", ["  pull_request:", "    branches: [main, 'agent/prd-**']"]],
+      ["a single-star PRD pattern", ["  pull_request:", "    branches: [main, 'agent/prd-*']"]],
+      ["an ignore list that leaves them in", ["  pull_request:", "    branches-ignore: [gh-pages]"]],
+      ["no filter, as a list of events", ["  [push, pull_request]"]],
+      ["types but no branch filter", ["  pull_request:", "    types: [opened, synchronize]"]],
+    ])("passes %s", async (_case, on) => {
+      const root = await installed();
+      const text = ciOn(...on).replace("on:\n  [", "on: [");
+      ci(root, text);
+
+      const { code, err } = await check(root, healthy());
+
+      expect(err).toBe("");
+      expect(code).toBe(0);
+    });
+
+    it.each([
+      ["an ignore list that names them", ["  pull_request:", "    branches-ignore: ['agent/**']"]],
+      ["a later negation that takes them back out", ["  pull_request:", "    branches: ['**', '!agent/prd-**']"]],
+      ["a single star, which stops at a slash", ["  pull_request:", "    branches: ['*']"]],
+    ])("fails %s", async (_case, on) => {
+      const root = await installed();
+      ci(root, ciOn(...on));
+
+      const { code, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      expect(err).toContain("CI on slice PRs");
+    });
+
+    it("passes when one workflow of several runs on slice PRs", async () => {
+      const root = await installed();
+      ci(root, ciOn("  pull_request:", "    branches: [main]"));
+      ci(root, ciOn("  pull_request:"), "lint.yml");
+
+      const { code } = await check(root, healthy());
+
+      expect(code).toBe(0);
+    });
+
+    /** Unreadable is not a pass, and not a fault either: it could be the one that runs. */
+    it("warns rather than passing or failing where a workflow could not be read", async () => {
+      const root = await installed();
+      ci(root, ciOn("  pull_request:", "    branches: [main]"));
+      ci(root, "on: [unclosed\n", "broken.yml");
+
+      const { code, out, err } = await check(root, healthy());
+
+      expect(code).toBe(0);
+      expect(err).toBe("");
+      expect(out).toContain("CI on slice PRs");
+      expect(out).toContain(".github/workflows/broken.yml");
+    });
+
+    it("says nothing where the PRD chain is not installed", async () => {
+      const root = await installed();
+      fs.rmSync(path.join(root, ".github", "workflows", "agent-implement-prd.yml"));
+      ci(root, ciOn("  pull_request:", "    branches: [main]"));
+
+      const { out, err } = await check(root, healthy());
+
+      expect(out + err).not.toContain("CI on slice PRs");
+    });
   });
 
   it("fails a repository with no caller at all, and names init", async () => {

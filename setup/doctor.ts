@@ -2,11 +2,14 @@ import { safeGh, writeText } from "../shared/common.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
   passesSecret,
+  PRD_BRANCH_EXAMPLE,
   readInstalledCallers,
+  readOtherWorkflows,
   repoSlug,
   selfCheckFor,
   selfCheckMatches,
   type InstalledCaller,
+  type OtherWorkflow,
 } from "./callers.js";
 import { AUTO_FIXED_LABEL, labelCommand, labelSpecsFor } from "./init.js";
 import type { CliIo } from "../cli.js";
@@ -352,12 +355,14 @@ const REFUSED =
   `as a workflow file issue, and which no job log records at all.`;
 
 /**
- * Rule on the installed callers and the facts. Pure: everything it needs has
- * already been read, and everything it cannot know arrives as `undefined`.
+ * Rule on the installed callers, the workflows beside them and the facts. Pure:
+ * everything it needs has already been read, and everything it cannot know
+ * arrives as `undefined`.
  */
 export const diagnose = (
   callers: readonly InstalledCaller[],
   facts: RepoFacts,
+  others: readonly OtherWorkflow[],
   packageName: string = PACKAGE_NAME,
 ): readonly Finding[] => {
   const findings: Finding[] = [];
@@ -627,6 +632,53 @@ export const diagnose = (
           `failure — so every review whose verdict is the first-round *Changes recommended* ends ` +
           `in a red job, having already posted a verdict saying a fix round started.`,
         fix: labelCommand(AUTO_FIXED_LABEL),
+      });
+    }
+  }
+
+  // CI on slice PRs (#209). The PRD chain opens each slice PR into its PRD
+  // branch, and a CI whose `pull_request` trigger is filtered to the default
+  // branch never runs on one. Nothing errors: review reads CI as unknown, a
+  // clean slice lands on *Needs a closer look* and the chain parks at its first
+  // slice, which is jeffwlawson/mealie-mcp-server#80.
+  //
+  // One workflow that runs is enough. An unreadable one could be it, so where
+  // none is known to run and one could not be read this is a warning rather
+  // than a pass or a fault.
+  if (callers.some((caller) => caller.workflow === "implement-prd")) {
+    const runs = others.some((workflow) => workflow.onSlicePrs === "runs");
+    const unreadable = others.filter((workflow) => workflow.onSlicePrs === undefined);
+    const filtered = others.filter((workflow) => workflow.onSlicePrs === "filtered out");
+    const line = `branches: [main, 'agent/prd-**']`;
+    if (!runs && unreadable.length > 0) {
+      add({
+        severity: "warning",
+        check: "CI on slice PRs",
+        problem:
+          `${unreadable.map((workflow) => workflow.file).join(", ")} could not be read, and no other ` +
+          `workflow here runs on a pull request into a PRD branch (\`${PRD_BRANCH_EXAMPLE}\`). ` +
+          `If none does, every slice PR reads its CI as unknown and the PRD chain parks at its first slice.`,
+        fix:
+          `Check that your CI's \`pull_request\` trigger covers the PRD branches, one line: ` +
+          `\`${line}\` (docs/ADOPTING.md, *Slice PRs and your CI*).`,
+      });
+    } else if (!runs) {
+      add({
+        severity: "error",
+        check: "CI on slice PRs",
+        problem:
+          (filtered.length === 0
+            ? `No workflow here other than the loop's own triggers on \`pull_request\`, so `
+            : `${filtered.map((workflow) => workflow.file).join(", ")} ${filtered.length === 1 ? "filters" : "filter"} ` +
+              `\`pull_request\` to branches that leave out the PRD branches (\`${PRD_BRANCH_EXAMPLE}\`), so `) +
+          `nothing runs on a slice PR. Review reads its CI as unknown rather than green, a clean ` +
+          `slice lands on *Needs a closer look*, and the PRD chain parks at its first slice.`,
+        fix:
+          filtered.length === 0
+            ? `Give your CI a \`pull_request\` trigger that covers the PRD branches: ` +
+              `\`pull_request: { ${line} }\` (docs/ADOPTING.md, *Slice PRs and your CI*).`
+            : `Add the PRD branches to that filter, one line: \`${line}\` ` +
+              `(docs/ADOPTING.md, *Slice PRs and your CI*).`,
       });
     }
   }
@@ -967,7 +1019,7 @@ const render = (finding: Finding): string =>
 export const runDoctor = async (options: DoctorOptions, io: CliIo): Promise<number> => {
   const callers = readInstalledCallers(options.dir, PACKAGE_NAME);
   const facts = options.facts ?? gatherFacts(options.dir);
-  const findings = diagnose(callers, facts);
+  const findings = diagnose(callers, facts, readOtherWorkflows(options.dir, PACKAGE_NAME));
 
   const errors = findings.filter((finding) => finding.severity === "error");
   const warnings = findings.filter((finding) => finding.severity === "warning");

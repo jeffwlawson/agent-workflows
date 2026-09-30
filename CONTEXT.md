@@ -218,7 +218,8 @@ class the pair exists to remove.
 
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
 the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape
-and its freshness, `self-check`, the labels — and reads nothing out of `examples/callers/`, so a
+and its freshness, `self-check`, the labels, and a CI that runs on slice PRs where the PRD chain is
+installed (#209) — and reads nothing out of `examples/callers/`, so a
 release that changes a caller *body* is a release that teaches `diagnose` about it in the same
 commit, exactly as a new pin site is a change to `shared/pins.ts` in the same commit. Diffing an
 adopter's caller against the reference is the other design and it is the wrong one here: most of

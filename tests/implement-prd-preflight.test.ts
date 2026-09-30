@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { SLICES_END, SLICES_HEADING, SLICES_START } from "../shared/slices-table.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -94,16 +95,30 @@ const pull = (
   ...extra,
 });
 
+/** A PRD PR body whose slices table holds a row for each of `subs`. */
+const prdBody = (subs: readonly number[]): string =>
+  [
+    `Closes #${PARENT}`,
+    "",
+    SLICES_HEADING,
+    SLICES_START,
+    "| Slice | PR | Verdict | Open findings |",
+    "|---|---|---|---|",
+    ...subs.map((sub) => `| Slice \\| ${sub - 171} (#${sub}) | #${sub + 30} | 🟢 | none |`),
+    SLICES_END,
+    "",
+  ].join("\n");
+
 /**
  * What the preflight must look past: an ordinary PR into the base branch, the
- * PRD PR itself (whose *head* is the PRD branch), a merged slice PR, and an
- * open slice PR of PRD #1710 — whose branch starts with this one's number, and
- * is kept out only by the dash after it.
+ * PRD PR itself (whose *head* is the PRD branch), a merged slice PR whose row
+ * the PRD PR already has, and an open slice PR of PRD #1710, whose branch
+ * starts with this one's number, and is kept out only by the dash after it.
  */
 const BYSTANDERS = [
   pull(200, "agent/issue-9-typo", "main"),
-  pull(201, PRD_BRANCH, "main"),
-  pull(202, "agent/slice-171-172-slice-1", PRD_BRANCH, "MERGED"),
+  pull(201, PRD_BRANCH, "main", "OPEN", { body: prdBody([172]) }),
+  pull(202, "agent/slice-171-172-slice-1", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-01T10:00:00Z" }),
   pull(203, "agent/slice-1710-1711-other", "agent/prd-1710-other"),
 ];
 
@@ -320,11 +335,15 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.writes.some((w) => w.includes('"comment"') && w.includes("the PRD is finished"))).toBe(true);
   });
 
-  /** …and with no PRD PR at all, the same: there is nothing to hand over. */
+  /**
+   * …and with no PRD PR at all, the same: there is nothing to hand over. A
+   * merged slice PR with no PRD PR is a row nobody wrote, resumed below, so
+   * this chain's slices were all built before slice PRs.
+   */
   it("refuses a PRD with no PRD PR at all as finished", () => {
     const outcome = runPreflight({
       issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
-      pulls: BYSTANDERS.filter((p) => p["number"] !== 201),
+      pulls: BYSTANDERS.filter((p) => p["number"] !== 201 && p["number"] !== 202),
     });
 
     expect(outcome.output).toContain("refused=true\n");
@@ -359,27 +378,204 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   });
 
   /**
+   * A run that merged a slice PR and then died left it merged with no row in
+   * the slices table (#207), and the PRD PR unopened if it was the first. The
+   * re-label resumes it: the merged, rowless slice PR is handed to the merge
+   * step, whose `MERGED` arm merges nothing twice, so the row and the PRD PR
+   * steps run, and then the next slice is built as usual.
+   */
+  it("hands a merged slice PR with no row to the merge step, when no PRD PR was opened", () => {
+    const outcome = runPreflight({ pulls: BYSTANDERS.filter((p) => p["number"] !== 201) });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.output).toContain("slice_pr=202\n");
+    expect(outcome.output).toContain("backfill=\n");
+    expect(outcome.output).toContain("sub=173\n");
+    expect(outcome.output).toContain("finishing=false\n");
+    expect(outcome.output).toContain("refused=false\n");
+    expect(outcome.writes).toEqual([]);
+  });
+
+  it("hands a merged slice PR to the merge step when the PRD PR has no row for its sub-issue", () => {
+    const outcome = runPreflight({
+      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, body: `Closes #${PARENT}\n` } : p)),
+    });
+
+    expect(outcome.output).toContain("slice_pr=202\n");
+    expect(outcome.output).toContain("sub=173\n");
+  });
+
+  /** The row is keyed by sub-issue, read out of the table between its markers and nowhere else. */
+  it("never picks a merged slice PR up again once its row is written", () => {
+    const outcome = runPreflight({ pulls: BYSTANDERS });
+
+    expect(outcome.output).toContain("slice_pr=\n");
+    expect(outcome.output).toContain("backfill=\n");
+  });
+
+  it("does not take a mention of the sub-issue outside the table for its row", () => {
+    const outcome = runPreflight({
+      pulls: BYSTANDERS.map((p) =>
+        p["number"] === 201 ? { ...p, body: `Closes #${PARENT}\n\n| Slice 1 (#172) | #202 | 🟢 | none |\n` } : p,
+      ),
+    });
+
+    expect(outcome.output).toContain("slice_pr=202\n");
+  });
+
+  /**
+   * The state the #207 retry left behind: the rowless slice PR, and the slice
+   * PR the retry built on top of it, open and waiting. This run merges the open
+   * one as it would anyway, and writes the rowless one's row first, in merge
+   * order, rather than building a second slice on an unmerged one.
+   */
+  it("backfills a rowless merged slice PR beside the open one it merges", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "OPEN"]),
+      pulls: [
+        ...BYSTANDERS.filter((p) => p["number"] !== 201),
+        pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH),
+      ],
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.output).toContain("slice_pr=210\n");
+    expect(outcome.output).toContain("backfill=202\n");
+    expect(outcome.output).toContain("sub=174\n");
+  });
+
+  /**
+   * More than one is backfilled, not refused: each row is read off its own
+   * merged slice PR, which no later run can change, so there is nothing for a
+   * human to decide, and a refusal would leave them writing rows by hand.
+   * The latest-merged goes through the merge step; the rest are written before
+   * it, in the order they merged.
+   */
+  it("backfills every rowless merged slice PR, in the order they merged", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]),
+      pulls: [
+        ...BYSTANDERS.filter((p) => p["number"] !== 201 && p["number"] !== 202),
+        pull(212, "agent/slice-171-174-slice-3", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-03T10:00:00Z" }),
+        pull(202, "agent/slice-171-172-slice-1", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-01T10:00:00Z" }),
+        pull(211, "agent/slice-171-173-slice-2", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-02T10:00:00Z" }),
+      ],
+    });
+
+    expect(outcome.output).toContain("slice_pr=212\n");
+    expect(outcome.output).toContain("backfill=202 211\n");
+    expect(outcome.output).toContain("sub=175\n");
+  });
+
+  /**
+   * Found by base, as the open ones are. A merged PR into another PRD's branch
+   * is not this chain's, and one into this PRD branch that names no sub-issue,
+   * by body or by branch, is not a slice a row could be written for.
+   */
+  it("backfills nothing merged into another PRD branch, or that names no sub-issue", () => {
+    const outcome = runPreflight({
+      pulls: [
+        ...BYSTANDERS,
+        pull(204, "agent/slice-1710-1711-other", "agent/prd-1710-other", "MERGED", { body: "Part of #1711" }),
+        pull(205, "hand-made", PRD_BRANCH, "MERGED", { body: "A fix by hand." }),
+      ],
+    });
+
+    expect(outcome.output).toContain("slice_pr=\n");
+    expect(outcome.output).toContain("backfill=\n");
+  });
+
+  /**
+   * The same death on the last slice: every sub-issue closed, nothing open, and
+   * the last merge rowless. That is not a finished PRD but a finishing run to
+   * resume, which writes the row, opens the PRD PR if it has to, and hands it
+   * over.
+   */
+  it("makes the finishing run of a rowless last slice PR, rather than calling the PRD finished", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
+      pulls: [
+        ...BYSTANDERS.filter((p) => p["number"] !== 201),
+        pull(212, "agent/slice-171-174-slice-3", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-03T10:00:00Z" }),
+      ],
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.output).toContain("slice_pr=212\n");
+    expect(outcome.output).toContain("backfill=202\n");
+    expect(outcome.output).toContain("finishing=true\n");
+    expect(outcome.output).toContain("refused=false\n");
+    expect(outcome.writes).toEqual([]);
+  });
+
+  /**
+   * A PRD reopened after its PRD PR merged, to add a sub-issue: its rows are in
+   * a merged body. Read from open PRD PRs only, every slice would look rowless
+   * and the run would try to open a PRD PR from a branch already merged. Rows
+   * are read from PRD PRs in every state, so it builds the new sub-issue.
+   */
+  it("reads rows from a merged PRD PR, so a reopened PRD resumes nothing", () => {
+    const outcome = runPreflight({
+      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "MERGED" } : p)),
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.output).toContain("slice_pr=\n");
+    expect(outcome.output).toContain("backfill=\n");
+    expect(outcome.output).toContain("sub=173\n");
+  });
+
+  /** …and with nothing left to build, it is refused as finished, as before, not made a finishing run. */
+  it("refuses a PRD whose PRD PR merged with every row as finished", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
+      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "MERGED" } : p)),
+    });
+
+    expect(outcome.output).toContain("refused=true\n");
+    expect(outcome.output).not.toContain("finishing=");
+  });
+
+  it("reads rows from a closed PRD PR too", () => {
+    const outcome = runPreflight({
+      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "CLOSED" } : p)),
+    });
+
+    expect(outcome.output).toContain("slice_pr=\n");
+    expect(outcome.output).toContain("backfill=\n");
+  });
+
+  /** The markers the rows are read between are the ones the runner splices between. */
+  it("reads rows between the slices table's own markers", () => {
+    expect(preflight().run ?? "").toContain(`--arg start "${SLICES_START}" --arg end "${SLICES_END}"`);
+  });
+
+  /**
    * The contract the `pr list` replay stands on, against the real binary: the
    * flags parse and every `--json` field exists, so gh gets as far as the
    * connection to `localhost` and no further. gh checks field names before any
    * request, so a misspelt one is refused here rather than on a PRD.
    */
-  it.skipIf(!onPath("gh"))("gh accepts the pr list call the lookup composes", () => {
+  it.skipIf(!onPath("gh"))("gh accepts the pr list calls the lookup composes", () => {
     const run = preflight().run ?? "";
-    const call = "gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft";
 
-    expect(run).toContain(call);
+    for (const call of [
+      "gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft",
+      "gh pr list --state all --limit 1000 --json number,state,headRefName,baseRefName,body,mergedAt",
+    ]) {
+      expect(run).toContain(call);
 
-    const attempt = spawnSync("gh", [...call.split(" ").slice(1), "--jq", "."], {
-      encoding: "utf8",
-      timeout: SUBPROCESS_TIMEOUT,
-      env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
-    });
+      const attempt = spawnSync("gh", [...call.split(" ").slice(1), "--jq", "."], {
+        encoding: "utf8",
+        timeout: SUBPROCESS_TIMEOUT,
+        env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
+      });
 
-    expect(attempt.status).not.toBe(0);
-    expect(attempt.stderr).not.toContain("unknown flag");
-    expect(attempt.stderr).not.toContain("Unknown JSON field");
-    expect(attempt.stderr).toContain("connection refused");
+      expect(attempt.status).not.toBe(0);
+      expect(attempt.stderr).not.toContain("unknown flag");
+      expect(attempt.stderr).not.toContain("Unknown JSON field");
+      expect(attempt.stderr).toContain("connection refused");
+    }
   });
 });
 
@@ -548,6 +744,8 @@ const runSliceRow = (
     readonly bystanders?: readonly Record<string, unknown>[];
     readonly threads?: readonly Record<string, unknown>[];
     readonly statusPages?: readonly Record<string, unknown>[];
+    /** The rowless merged slice PRs the preflight found before this one. */
+    readonly backfill?: string;
   } = {},
 ): StepOutcome =>
   runStep("slice_row", {
@@ -563,7 +761,7 @@ const runSliceRow = (
     ...(options.issue === undefined ? {} : { issue: options.issue }),
     ...(options.threads === undefined ? {} : { threads: options.threads }),
     ...(options.statusPages === undefined ? {} : { statusPages: options.statusPages }),
-    env: { SLICE_PR: String(SLICE), PRD_BRANCH },
+    env: { SLICE_PR: String(SLICE), PRD_BRANCH, BACKFILL: options.backfill ?? "" },
   });
 
 /** The facts the step left for the slices table, read back. */
@@ -692,6 +890,56 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
   it("only reads", () => {
     expect(runSliceRow().writes).toEqual([]);
   });
+
+  it("backfills nothing when the preflight found no other rowless slice PR", () => {
+    expect(facts(runSliceRow())["backfill"]).toEqual([]);
+  });
+
+  /**
+   * #202 merged in a run that died before writing its row (#207). Its row is
+   * gathered the way the merged slice's is, from its own merged head, and
+   * listed in the order the preflight found them, before the merged slice's.
+   */
+  it("gathers the row of every backfilled slice PR, in the order it is handed them", () => {
+    const outcome = runSliceRow(
+      { body: "Part of #174", title: "Slice 3 (#174)" },
+      {
+        issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]),
+        backfill: "202 211",
+        bystanders: [
+          ...BYSTANDERS.map((p) => (p["number"] === 202 ? { ...p, url: `https://github.com/${GH_REPO}/pull/202` } : p)),
+          pull(211, "agent/slice-171-173-slice-2", PRD_BRANCH, "MERGED", {
+            body: "Part of #173",
+            url: `https://github.com/${GH_REPO}/pull/211`,
+          }),
+        ],
+      },
+    );
+
+    expect(outcome.status).toBe(0);
+    expect(facts(outcome)["backfill"]).toEqual([
+      expect.objectContaining({ title: "Slice 1", subIssue: 172, slicePr: 202, slicePrUrl: `https://github.com/${GH_REPO}/pull/202` }),
+      expect.objectContaining({ title: "Slice 2", subIssue: 173, slicePr: 211 }),
+    ]);
+    expect(merged(outcome)).toMatchObject({ subIssue: 174, slicePr: SLICE });
+    expect(facts(outcome)["preUpgrade"]).toEqual([]);
+    expect(outcome.writes).toEqual([]);
+  });
+
+  it("stops, naming the backfilled slice PR, when it cannot tell which sub-issue that one built", () => {
+    const outcome = runSliceRow(
+      { body: "Part of #174" },
+      {
+        backfill: "205",
+        bystanders: [...BYSTANDERS, pull(205, "renamed-by-hand", PRD_BRANCH, "MERGED", { body: "Edited by hand." })],
+      },
+    );
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain("slice PR #205");
+    expect(outcome.reason).toContain("The merge is not repeated");
+    expect(outcome.temp("slices-table.json")).toBe("");
+  });
 });
 
 /** The PRD PR step, handed the PRD branch the merge step read off the slice PR. */
@@ -731,6 +979,43 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("#201, #205");
     expect(prWrites(outcome)).toEqual([]);
+  });
+});
+
+/** One output a step wrote, read back as the expression after it would. */
+const outputOf = (outcome: Outcome, name: string): string =>
+  new RegExp(`^${name}=(.*)$`, "m").exec(outcome.output)?.[1] ?? "";
+
+/**
+ * The #207 sequence, replayed: slice PR #202 merged in a run that died before
+ * its row or the PRD PR, and a re-label. Every step up to the build is run on
+ * the outputs of the one before it, as the workflow wires them.
+ */
+describe.skipIf(!CAN_RUN)("agent-implement-prd resumes a run that died after merging a slice", () => {
+  it("merges nothing twice, gathers the missing row, opens the PRD PR, and builds the next slice", () => {
+    const pulls = BYSTANDERS.filter((p) => p["number"] !== 201).map((p) =>
+      p["number"] === 202 ? { ...p, body: "Part of #172", url: `https://github.com/${GH_REPO}/pull/202` } : p,
+    );
+
+    const preflighted = runPreflight({ pulls });
+    expect(preflighted.status).toBe(0);
+    expect(outputOf(preflighted, "sub")).toBe("173");
+    expect(outputOf(preflighted, "finishing")).toBe("false");
+
+    const env = { SLICE_PR: outputOf(preflighted, "slice_pr"), BACKFILL: outputOf(preflighted, "backfill") };
+    const merge = runStep("merge", { pulls, repo: REPO, env: { ...env, HAS_PAT: "true" } });
+    expect(merge.status).toBe(0);
+    expect(merges(merge)).toEqual([]);
+    expect(outputOf(merge, "merged")).toBe("true");
+
+    const row = runStep("slice_row", { pulls, env: { ...env, PRD_BRANCH: outputOf(merge, "prd_branch") } });
+    expect(row.status).toBe(0);
+    expect(facts(row)["merged"]).toMatchObject({ subIssue: 172, slicePr: 202 });
+
+    const prdPr = runStep("prd_pr", { pulls, env: { ...env, PRD_BRANCH: outputOf(merge, "prd_branch") } });
+    expect(prdPr.status).toBe(0);
+    expect(prWrites(prdPr).filter((argv) => argv[1] === "create")).toHaveLength(1);
+    expect(outputOf(prdPr, "number")).toBe("300");
   });
 });
 
@@ -838,7 +1123,7 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row, PRD P
     const row = stepById("slice_row").run ?? "";
 
     expect(merge).toContain("fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels\n");
-    expect(row).toContain('gh pr view "$SLICE_PR" --json number,headRefOid,headRefName,title,body,url');
+    expect(row).toContain('gh pr view "$number" --json number,headRefOid,headRefName,title,body,url');
     expect(row).toContain("gh api graphql --paginate --slurp");
     expect(row).toContain('gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,body,headRefName');
     expect(merge).toContain('gh pr merge "$SLICE_PR" "--${method}" --match-head-commit "$head"');

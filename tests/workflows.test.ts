@@ -4501,7 +4501,8 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(checkout).toBeLessThan(agent);
     expect(steps[merge]?.if).toBe(`${NOT_REFUSED} && steps.preflight.outputs.slice_pr != ''`);
     expect(steps[merge]?.env?.["SLICE_PR"]).toBe("${{ steps.preflight.outputs.slice_pr }}");
-    expect(runOf(PRD, "preflight")).toContain(`echo "slice_pr=$(jq -r '.[0].number // ""' <<< "$slice_prs")"`);
+    expect(runOf(PRD, "preflight")).toContain(`slice_pr=$(jq -r '.[0].number' <<< "$slice_prs")`);
+    expect(runOf(PRD, "preflight")).toContain('echo "slice_pr=${slice_pr}"');
   });
 
   /**
@@ -4672,7 +4673,9 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     const finishing = armOf(run, 'if [ -z "$next" ]');
 
     expect(finishing).toContain('"$open_slices" -eq 1');
-    expect(finishing).toContain('select(.headRefName | startswith(\\"agent/prd-${ISSUE_NUMBER}-\\"))');
+    expect(finishing).toContain('-n "$slice_pr"');
+    expect(run).toContain('prd_prs=$(jq -c "[.[] | select(.headRefName | startswith(\\"agent/prd-${ISSUE_NUMBER}-\\"))]" <<< "$pulls")');
+    expect(finishing).toContain('"$prd_prs"');
     expect(finishing).toContain(".isDraft");
     expect(finishing).toContain("the PRD is finished");
     expect(finishing).toContain('echo "finishing=true"');
@@ -5594,12 +5597,14 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
   /**
    * Comments count. A label named only in a `#` line is still a label somebody
    * reading the file will reach for, and `agent:queued` — declared, inert, and
-   * named in two workflow comments — is exactly that case.
+   * named in two workflow comments — is exactly that case. An HTML comment
+   * marker such as the slices table's `<!-- agent:slices -->` is body text a
+   * step reads, never a label, and is not counted.
    */
   it("names every agent label the workflow files name", () => {
     const used = [
       ...new Set(
-        workflowFiles.flatMap((file) => fs.readFileSync(file, "utf8").match(/agent:[a-z-]+/g) ?? []),
+        workflowFiles.flatMap((file) => fs.readFileSync(file, "utf8").match(/(?<!<!-- \/?)agent:[a-z-]+/g) ?? []),
       ),
     ].sort();
 

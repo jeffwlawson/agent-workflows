@@ -245,7 +245,7 @@ jobs:
       # The one place a caller's text becomes a script. That is what the input
       # *is* — a command — so the boundary to hold is where the value comes
       # from: a literal in a workflow file, which `pull_request_target` reads
-      # from the base branch, and never an expression reading the PR event.
+      # from the default branch, and never an expression reading the PR event.
       - name: Install dependencies
         if: steps.state.outputs.proceed == 'true' && inputs.setup != ''
         run: |

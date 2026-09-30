@@ -32,7 +32,7 @@ That is a deliberate choice with one decisive reason and one supporting one.
 
 **The runner version is baked into the reusable workflow** (`npm exec …@<version>`, held equal to
 `package.json` by a test), so the `uses:` ref selects the runner too. A pinned remote therefore
-takes YAML and runner from the *same release*, always. A local `./` path takes YAML from the **base
+takes YAML and runner from the *same release*, always. A local `./` path takes YAML from the **default
 branch** instead — and the moment `npm version` lands on `main`, that YAML names a version the
 registry does not have yet. Every agent run in this repo would die at the install step until the tag
 is pushed and the publish finishes. A window that opens on every release.

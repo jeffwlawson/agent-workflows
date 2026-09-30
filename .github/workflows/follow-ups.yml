@@ -27,7 +27,7 @@ name: Agent Follow-ups (reusable)
 # | any of the above, from a fork | any | any | the job never starts |
 #
 # `pull_request_target` for two reasons that both belong in the file: it reads
-# workflow YAML from the base branch, so a pull request cannot alter what runs,
+# workflow YAML from the default branch, so a pull request cannot alter what runs,
 # and it carries the write token unconditionally — a `pull_request` close from
 # a fork would arrive read-only, which is a filing run that silently files
 # nothing.

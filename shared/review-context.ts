@@ -37,10 +37,10 @@ export interface PullRequestContext {
    * fixed yet — the open threads this loop opened, and the open entries in the
    * latest review body it posted (#111).
    *
-   * Handed to **every** review, round 1 included. A human may have pushed the
-   * fix, and "is this still true of the code in front of me" has the same
-   * answer whoever wrote the commit; a record only round 2 read would be one
-   * that a human's push silently emptied.
+   * Handed to **every** review, after a fix round or not. A human may have
+   * pushed the fix, and "is this still true of the code in front of me" has
+   * the same answer whoever wrote the commit; a record only the review after a
+   * fix round read would be one that a human's push silently emptied.
    */
   readonly carriedFindings: readonly CarriedFinding[];
   /**

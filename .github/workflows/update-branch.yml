@@ -312,11 +312,11 @@ jobs:
       # would launder an outside integration's approval on to a commit.
       # The creator narrows it to *a workflow in this repository* and no
       # further — `github-actions[bot]` is the account every workflow here posts
-      # as, not only the loop's — which is the bound the round rule is safe
+      # as, not only the loop's — which is the bound the verdict history is safe
       # under and a required check is not (docs/ADOPTING.md §3b). An
       # `error` is copied along with the rest — it says "the last review of this
       # branch produced no verdict", which a merge does not make untrue, and
-      # `verdictOn` already declines to count it as a round.
+      # `verdictOn` already declines to count it as a verdict.
       #
       # Posted under the job's own `GITHUB_TOKEN` rather than the PAT the
       # checkout and the push prefer, and that is the whole of why the copy is
@@ -484,13 +484,13 @@ jobs:
       # The resolution closes itself out, the way a fix round does (#96,
       # decision 6). The commit this job just pushed is an agent's reading of a
       # conflict — the one thing this loop writes that no review has seen — and
-      # by the round rule the review it asks for is a full **round 1**: round 2
-      # needs a non-merge loop commit since the last verdict, and a resolution
-      # leaves only the merge (#105). Which is the reading that suits it: the
-      # earlier round's findings have not been attempted, so a verification pass
-      # over them would answer with the round-2 line — "a fix round didn't
-      # settle these" — on the strength of the base branch having moved, about
-      # findings no fix round ever saw.
+      # the review it asks for describes it as a change of its own: it follows
+      # no fix round unless the latest verdict started one (#202,
+      # `shared/review-round.ts`), and a resolution posts no verdict. Which is
+      # the reading that suits it. The earlier findings have not been attempted,
+      # so judging a fix round's progress on them would stop the loop on the
+      # strength of the base branch having moved, about findings no fix round
+      # ever saw.
       #
       # So this is the other half of the step above, not an addition to it: a
       # clean merge carries the old verdict forward because it is still true,

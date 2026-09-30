@@ -42,11 +42,13 @@ first row. A run that pushed asks for the review of what it pushed, so the round
 closes without a human labelling again. Since #111 that leg is also what **ends** the round: a fix
 run resolves nothing, so the review it asks for is the pass that reads the fix and closes the
 findings that landed. That is one hop and cannot cycle: the one trigger label review adds to a
-pull request is bounded twice over (below). The review a **fix** asks for is a **second round**, which is barred
-from the round-1 *Changes recommended* — the line that promises an automatic re-review — and so cannot ask for another fix
-round (`docs/parity.md` §10); the review a **conflict resolution** asks for is a full round 1,
-because round 2 needs a non-merge loop commit since the verdict and a resolution leaves only a
-merge. A fix run that pushed nothing asks for nothing — and leaves every thread it answered open,
+pull request is bounded twice over (below), by the fix-round budget and by the **early stop**. The
+review a **fix** asks for may recommend changes and, with budget left, start another round, unless
+the fix round it follows closed none of the findings it was given (`docs/parity.md` §10). Whether a
+review follows a fix round is read from the **verdict history**, never from who authored the
+commits: the latest verdict announced a round, and commits have landed since. The review a
+**conflict resolution** asks for follows no fix round, because a resolution posts no verdict and
+the one before it announced none. A fix run that pushed nothing asks for nothing — and leaves every thread it answered open,
 so a round it declined its way through ends on a human rather than on another pass. It is also the
 run that marks such a pull request **ready**, because there is no re-review coming to do it (#159):
 a run that pushed hands the pull request to a review, and a run that did not hands it back.
@@ -60,7 +62,7 @@ reviews the tip where it descends from the labelled commit, refuses by name wher
 and checks out, waits on CI for and posts every status on that one commit.
 
 Review adds a trigger label in two cases. The first is on the pull request (#102): a job of its
-own adds `agent:fix` when the verdict is the round-1 *Changes recommended* and the pull request has
+own adds `agent:fix` when the verdict is *Changes recommended* and the pull request has
 automatic fix rounds left in its **fix-round budget** (#201): the repository variable
 `AGENT_MAX_FIX_ROUNDS`, default 3, `0` for none. **Rounds spent** are counted from the pull request
 itself: the verdicts the loop posted there that announced a round. There is no marker label, so the
@@ -69,8 +71,14 @@ budget is settled before the review runs, so the verdict announces a round only 
 start, and the job decides from live state rather than the event payload: it adds nothing where
 `agent:fix` is already on the pull request or a newer verdict stands, and says on the pull request
 when a round it should have started did not. It is the return leg `docs/parity.md` §10 used to
-forbid outright, and what makes it an arrow rather than a cycle is that the round rule bars the
-verdict key it selects on from a second round, while the budget bounds it per pull request. The job
+forbid outright, and what makes it an arrow rather than a cycle is two bounds, both ruled on before
+the key it selects on is derived. The budget bounds it per pull request, and the **early stop**
+(#202) ends it sooner: after a fix round that closed none of the findings it was given, matched by
+the ids the workflow wrote into them, no further automatic round starts, whatever budget is left.
+New findings the re-review raised neither count as progress nor reset anything. The verdict then
+says why the loop stopped, and gives the same three ways on as a spent budget: add `agent:fix`,
+decline a finding in a reply, or push a commit. The **round rule** it replaced, which barred a
+second-round review from recommending another round, is retired (PRD #200 decision 6). The job
 holds `pull-requests: write` and nothing else, checks nothing out and runs no model, which is what
 keeps `AGENT_PAT` away from the job that reads the pull request. The `auto-fix` input it replaced is
 a deprecated alias for one release (`true` a budget of 1, `false` of 0). A pull request whose
@@ -79,8 +87,8 @@ working, and what marks it ready is whichever end the round comes to — the re-
 pushed, and the fix run itself where it pushed nothing and so asked for none.
 
 The second is the **advance job**, a second arrow, and it lands on an issue rather than a pull
-request (#176). When a **slice PR**'s round ends on a verdict the chain moves on from — 🟢, 🟡 with
-no fix round starting, or 🟡 after a fix round — it re-adds `agent:implement` to the slice PR's
+request (#176). When a **slice PR**'s round ends on a verdict the chain moves on from (🟢, or 🟡 with
+no fix round starting), it re-adds `agent:implement` to the slice PR's
 **parent**, and the `implement-prd` run that starts merges the slice PR and builds the next slice.
 `fix` carries the same job for the round a fix run ends itself, by pushing nothing. It parks on 🔵
 and on a failed run, and a human re-adding the label there is the acceptance. It cannot cycle: it
@@ -109,10 +117,10 @@ writing code no review has seen, so it copies nothing and asks.
 **The reviewer closes a finding; the fixer never does** (#109, decision 1). A `fix` run replies in
 every thread it is asked about — every open one bar a thread whose close failed, which already
 carries the reply that settles it and is shown for its evidence only (#133) — and resolves none of
-them, and every review — round 1 or round 2 — takes the findings an earlier review left open, rules
+them, and every review, after a fix round or not, takes the findings an earlier review left open, rules
 on each by the id the workflow wrote into it, and resolves the ones the current code settles. That is not tidiness: a resolved thread is dropped from the feedback
 the next review is handed, so while the fixer closed its own threads the one pass whose job is *did
-it land?* could not see what it was checking. Round 1 does it too, because a human may have pushed
+it land?* could not see what it was checking. A review after no fix round does it too, because a human may have pushed
 the fix and the question has the same answer whoever wrote the commit.
 
 **And a maintainer's decision outranks both** (#109, decision 10). A thread a *human* resolved is
@@ -186,9 +194,9 @@ the only record such a finding exists.
 The prose beside the record is capped by the schema rather than asked for in the brief, and
 **restates no finding**: the findings are above it with their severities, and the one 250-word
 paragraph that mixed *what the change is* with *what the reviewer verified* is what made a body
-long enough to bury the record in it. *What changed in this PR* is also omitted on the rounds where
-the reader has already been handed it — a round-2 verification, and a re-review with nothing pushed
-since the last verdict (`shared/review-round.ts`'s `describesTheChange`).
+long enough to bury the record in it. *What changed in this PR* is also omitted on the reviews where
+the reader has already been handed it: the review after a fix round, and a re-review with nothing
+pushed since the last verdict (`shared/review-round.ts`'s `describesTheChange`).
 
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather

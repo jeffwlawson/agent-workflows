@@ -119,12 +119,11 @@ jobs:
     # resolve job*.
     outputs:
       resolutions: ${{ steps.resolutions.outputs.resolutions }}
-      # …and what `auto-fix` reads: the verdict's machine-readable key and the
-      # round it was derived under, both out of the file the runner wrote. A
-      # job cannot read another job's `RUNNER_TEMP`, so the only way across is
-      # an output. See *Hand the verdict to what reads it*.
+      # …and what `auto-fix` reads: the verdict's machine-readable key, out of
+      # the file the runner wrote. A job cannot read another job's
+      # `RUNNER_TEMP`, so the only way across is an output. See *Hand the
+      # verdict to what reads it*.
       verdict: ${{ steps.verdict.outputs.verdict }}
-      round: ${{ steps.verdict.outputs.round }}
       # …and which verdict it was, for the live-state guard in `auto-fix`: the
       # commit it was posted on and the review its status links to, which is
       # how that job tells this verdict from a newer one (#201).
@@ -322,7 +321,10 @@ jobs:
       # recommends changes, starts a fix round itself. Settled **before** the
       # review, so the verdict announces a round only where one will start, and
       # the `auto-fix` job below starts exactly the rounds announced (the key the
-      # runner derives from `start` is the one it selects on).
+      # runner derives from `start` is the one it selects on). `start` is a
+      # ceiling, not a promise: the runner still stops the loop where the fix
+      # round this review follows closed none of its findings (#202), and then
+      # derives a key nothing selects on.
       #
       # **The budget** is the repository variable `AGENT_MAX_FIX_ROUNDS`,
       # automatic fix rounds per pull request, default 3 and `0` for none. A
@@ -978,9 +980,10 @@ jobs:
           CI_RESULT_FILE: ${{ runner.temp }}/ci_result.txt
           # What *Settle the fix-round budget* decided (#201): whether an
           # automatic fix round starts if this review recommends changes, and
-          # the budget and rounds spent it decided from. The derivation adds the
-          # round and picks the verdict row whose key the `auto-fix` job below
-          # selects on, so the line a maintainer reads and the job that makes it
+          # the budget and rounds spent it decided from. The derivation adds
+          # whether the fix round this review follows made progress (#202),
+          # judged from the verdict history and the findings' ids, and picks the
+          # verdict row whose key the `auto-fix` job below selects on, so the line a maintainer reads and the job that makes it
           # true come from one decision. The two numbers are for the line alone:
           # where the budget is spent, the verdict says how much of it was used.
           AUTO_FIX: ${{ steps.budget.outputs.start }}
@@ -1073,12 +1076,9 @@ jobs:
       # the `auto-fix` job below has its own runner and its own temp, so the
       # only way across is an output.
       #
-      # The **key**, not the heading: three rows share a heading and the
+      # The **key**, not the heading: two rows share a heading and the
       # automatic fix fires on exactly one of them, so a selector on anything
-      # but the key would fire on all three. And the round beside it, which
-      # nothing derives anything from — it is the second half of a guard a
-      # human reads in this file, where "never twice round the loop" is
-      # otherwise only inferable from which keys a second round can produce.
+      # but the key would fire on both.
       #
       # A step of its own rather than a line added to the status post above,
       # for the reason `Hand the verified threads to the resolve job` is one: a
@@ -1092,7 +1092,7 @@ jobs:
         run: |
           file="${RUNNER_TEMP}/verdict.json"
           [ -f "$file" ] || { echo "No verdict file; nothing to hand over."; exit 0; }
-          jq -r '"verdict=\(.verdict)", "round=\(.round)"' "$file" >> "$GITHUB_OUTPUT"
+          jq -r '"verdict=\(.verdict)"' "$file" >> "$GITHUB_OUTPUT"
 
       # The threads this review checked and found fixed (#111, and #109 decision
       # 1), handed to the `resolve` job below, which closes them. The
@@ -1452,25 +1452,25 @@ jobs:
   # which holds four scopes. Its whole input is two literals, the verdict the
   # review job derived and where that verdict was posted.
   #
-  # **Why it cannot loop.** The budget bounds it per pull request, and the
-  # count it is checked against is the verdicts that announced a round, so
-  # nothing here has to be written down for the bound to hold. The round rule
-  # bounds it again for now: the review a fix round asks for is a round 2, and
-  # a round-2 review can never produce the key below (`deriveVerdict`,
-  # docs/parity.md §10).
+  # **Why it cannot loop.** Two bounds, both ruled on before the key below is
+  # derived. The budget bounds it per pull request, and the count it is
+  # checked against is the verdicts that announced a round, so nothing here has
+  # to be written down for the bound to hold. And the early stop (#202): a
+  # review after a fix round that closed none of the findings it was given
+  # cannot produce the key below, whatever budget is left (`deriveVerdict`,
+  # docs/parity.md §10). The round rule that bounded it before, a second round
+  # barred from recommending another, is retired (PRD #200 decision 6).
   #
   # **Why the guards are restated.** Same reason `resolve` restates them: today
   # `needs:` implies the two standing ones, but only while this `if:` carries
   # no status function, and a later `always()` added for some other reason
-  # would drop both. The round is restated so a human reading this `if:` can see
-  # that bound without reconstructing it from a string literal.
+  # would drop both.
   auto-fix:
     needs: review
     if: >-
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.review.outputs.verdict == 'changes recommended, fix round started' &&
-      needs.review.outputs.round == '1'
+      needs.review.outputs.verdict == 'changes recommended, fix round started'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # **No concurrency group**, for the reason `resolve` is in none: the
@@ -1581,18 +1581,18 @@ jobs:
   # the slice PR into the PRD branch and builds the next slice — or, after the
   # last slice, is the finishing run that hands the PRD PR over.
   #
-  # **Which verdicts advance.** The three a slice round ends on without a
-  # human: *approval recommended*; *changes recommended* where no automatic fix
-  # is starting (a budget of 0 or spent, or no `AGENT_PAT`); and
-  # *changes recommended after a fix round*, the round-2 answer. Not the key
-  # the `auto-fix` job selects on — a fix and its re-review are still in
+  # **Which verdicts advance.** The two a slice round ends on without a
+  # human: *approval recommended*; and *changes recommended* where no automatic
+  # fix is starting (a budget of 0 or spent, a fix round that made no progress,
+  # or no `AGENT_PAT`). Not the key the `auto-fix` job selects on — a fix and
+  # its re-review are still in
   # flight, and the round ends at their end, here or in `fix.yml`'s copy of
   # this job — and not *needs a closer look*, which is a reviewer asking for a
   # human: the chain parks on that slice PR until one re-adds `agent:implement`
   # to the parent, which is itself the acceptance. A failed review skips this
   # job — `needs.review.result` below — so the chain parks there too.
   #
-  # Keys, matched exactly, for the reason `auto-fix` matches one: three rows
+  # Keys, matched exactly, for the reason `auto-fix` matches one: two rows
   # share a heading, and it is the key that tells them apart.
   #
   # **Why a separate job**, and in `auto-fix`'s shape: it spends `AGENT_PAT`,
@@ -1615,9 +1615,9 @@ jobs:
   # **After `resolve`, not beside it.** The `implement-prd` run this starts
   # reads the slice PR's unresolved threads for its row of the slices table,
   # and rows are never refreshed. Run in parallel, that read can land before
-  # `resolve` has closed the threads this round verified fixed — likeliest on
-  # *changes recommended after a fix round*, the verdict that follows a fix —
-  # and the PRD PR would link fixed findings as open for good. So this waits
+  # `resolve` has closed the threads this round verified fixed (likeliest on
+  # the review that follows a fix round), and the PRD PR would link fixed
+  # findings as open for good. So this waits
   # for `resolve`, runs when `resolve` was skipped (a round with nothing to
   # close), and parks when `resolve` failed: the threads it would have closed
   # are still open, and a row written now would say so. That takes a status
@@ -1638,8 +1638,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
       (needs.review.outputs.verdict == 'approval recommended' ||
-       needs.review.outputs.verdict == 'changes recommended' ||
-       needs.review.outputs.verdict == 'changes recommended after a fix round')
+       needs.review.outputs.verdict == 'changes recommended')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # **No concurrency group**, for the reason `auto-fix` is in none. The

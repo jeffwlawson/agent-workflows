@@ -189,23 +189,25 @@ export type CiResult = "green" | "red" | "unknown";
  * Copilot code review headings, verbatim, so anyone who has read one of those
  * already knows what ours mean.
  *
- * Five keys and three headings, because *changes recommended* has three cases —
- * the same heading, a different next step — and they have to be told apart by
+ * Four keys and three headings, because *changes recommended* has two cases
+ * (the same heading, a different next step), and they have to be told apart by
  * something a machine reads. The key is that something, and a consumer matches
- * it **exactly**: every one of the three starts with the round-1 key, so a
- * prefix match would fire the automatic fix on all of them.
+ * it **exactly**: the automatic-fix key starts with the plain one, so a prefix
+ * match would fire the automatic fix on both.
  *
- * The three: a round-1 review on a pull request nothing is about to fix, a
- * round-2 one, and a round-1 one where the workflow is adding `agent:fix`
- * itself (#102). The last is the key the automatic-fix job selects on, so the
- * line a maintainer reads and the job that makes it true are one decision
- * rather than two that can disagree.
+ * The two: a review on a pull request nothing is about to fix, and one where
+ * the workflow is adding `agent:fix` itself (#102). The last is the key the
+ * automatic-fix job selects on, so the line a maintainer reads and the job
+ * that makes it true are one decision rather than two that can disagree.
+ *
+ * A third, *changes recommended after a fix round*, was the round-2 answer and
+ * went with the round rule (#202, PRD #200 decision 6): a later review may now
+ * start another round, and the budget and the early stop bound the loop.
  */
 export type Verdict =
   | "approval recommended"
   | "changes recommended"
   | "changes recommended, fix round started"
-  | "changes recommended after a fix round"
   | "needs a closer look";
 
 export interface VerdictRow {
@@ -228,7 +230,7 @@ export interface VerdictRow {
    * character outside the Basic Multilingual Plane — `422 Description doesn't
    * accept 4-byte Unicode` — and every marker here is one. v0.3.0 put the
    * heading in the description, so every verdict it tried to post was
-   * rejected, and the round rule that reads them back saw none (#121).
+   * rejected, and the round detection that read them back saw none (#121).
    */
   readonly label: string;
   /**
@@ -287,7 +289,7 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
       "Changes recommended. The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically.",
   },
   // Same assessment, and the step is already happening: the workflow adds
-  // `agent:fix` itself on this one (#102, PRD #101 decision 1). The round-1
+  // `agent:fix` itself on this one (#102, PRD #101 decision 1). The plain
   // line above would ask a maintainer to do the thing being done, which reads
   // as the loop not having noticed — so the promise of an automatic re-review
   // stays and the instruction goes.
@@ -300,19 +302,6 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
       "The fixes are clear. A fix round has already started; a re-review follows automatically.",
     description:
       "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically.",
-  },
-  // Same assessment, a different step: the fix round that was supposed to
-  // settle these has already run. So the line stops promising an automatic
-  // re-review and asks for the decision first.
-  "changes recommended after a fix round": {
-    verdict: "changes recommended after a fix round",
-    heading: "🟡 Changes recommended",
-    label: "Changes recommended",
-    state: "failure",
-    nextStep:
-      "A fix round didn't settle these. Read the review, add guidance where it helps, then add agent:fix.",
-    description:
-      "Changes recommended. A fix round didn't settle these. Read the review, add guidance where it helps, then add agent:fix.",
   },
   "needs a closer look": {
     verdict: "needs a closer look",
@@ -327,29 +316,28 @@ export const VERDICTS: Readonly<Record<Verdict, VerdictRow>> = {
 };
 
 /**
- * Which pass over this pull request a review is. 1 is the first review of these
- * commits; 2 is the verification pass that follows a fix round's push, and is
- * established from the repository rather than counted — see
- * `shared/review-round.ts`.
- *
- * A union rather than a number, so the two values are the whole of it: a third
- * round is a second round by everything that acts on this, and "how many times
- * have we been round" is a question nothing here asks.
- */
-export type ReviewRoundNumber = 1 | 2;
-
-/**
  * Everything the verdict depends on that is not in the review itself.
  *
- * An object rather than positional arguments, and `round` is required rather
- * than defaulted: a default of 1 would be a caller that forgot the round
- * silently getting the *weaker* reading, which is the one failure here with no
- * symptom — a second round that promises an automatic re-review and sends the
- * loop back around a fix that already did not work.
+ * An object rather than positional arguments, and the facts a caller could
+ * forget are required rather than defaulted: a default is a caller that forgot
+ * one silently getting the reading with no symptom.
  */
 export interface VerdictInputs {
   readonly ci: CiResult;
-  readonly round: ReviewRoundNumber;
+  /**
+   * What the fix round this review follows did with the findings it was given
+   * (#202, PRD #200 decision 5), or `undefined` where this review follows no
+   * fix round: the first review, or one nothing was pushed for.
+   *
+   * Where it closed none of them, no further automatic round starts, whatever
+   * budget is left, and the verdict says why. New findings this review raised
+   * are not in it: they neither count as progress nor reset anything.
+   *
+   * Required rather than optional, for the reason `stillOpen` is: a caller that
+   * forgot it would never early-stop, and a loop that keeps spending rounds on
+   * a fix that changes nothing looks, from outside, like a loop working.
+   */
+  readonly fixRoundProgress: FixRoundProgress | undefined;
   /**
    * How many findings an **earlier** review raised that this one checked and
    * found still open (#111, and #109 decision 1).
@@ -359,8 +347,7 @@ export interface VerdictInputs {
    * the merge than a fresh one, not less. A review that found nothing new and
    * three things still unfixed is not an approval.
    *
-   * Required rather than defaulted to zero, for the reason `round` is required:
-   * a caller that forgot it recommends approving a pull request with unfixed
+   * Required rather than defaulted to zero: a caller that forgot it recommends approving a pull request with unfixed
    * findings on it, which is the one failure here with no symptom.
    */
   readonly stillOpen: number;
@@ -387,12 +374,12 @@ export interface VerdictInputs {
    *
    * Facts only the workflow holds, and none is about the review: a repository
    * variable, the verdicts already posted on the pull request, and a secret.
-   * The **round** is not one of them (it is already an input here, and the
-   * arm below reads it), so the conditions the automatic fix fires on are
-   * ruled on in one place.
+   * Whether the last fix round made progress is not one of them (it is an
+   * input of its own, and the arm below reads it first), so the conditions the
+   * automatic fix fires on are ruled on in one place.
    *
-   * Required rather than defaulted to `false`, for the reason `round` is. A
-   * caller that forgot it derives the round-1 row, whose key the automatic-fix
+   * Required rather than defaulted to `false`, for the reason `stillOpen` is. A
+   * caller that forgot it derives the plain row, whose key the automatic-fix
    * job does not select on: the fix never starts, the line tells a maintainer
    * to add the label, and the feature is off with nothing anywhere saying so.
    */
@@ -405,7 +392,7 @@ export interface VerdictInputs {
    * nothing had been tried.
    *
    * Optional, because nothing is lost where it is absent: the verdict falls
-   * back to the plain round-1 line, which asks for the label and is true.
+   * back to the plain line, which asks for the label and is true.
    */
   readonly fixRounds?: FixRounds;
   /**
@@ -428,6 +415,18 @@ export interface VerdictInputs {
 export interface FixRounds {
   readonly spent: number;
   readonly budget: number;
+}
+
+/**
+ * The findings a fix round was asked to address, and how many of them the
+ * review after it closed, matched by the ids the workflow wrote into them
+ * (#202). Counts rather than the ids themselves, because the verdict's line
+ * states counts; the matching is `fixRoundProgress`'s, in
+ * `shared/review-round.ts`.
+ */
+export interface FixRoundProgress {
+  readonly given: number;
+  readonly closed: number;
 }
 
 /**
@@ -1136,11 +1135,12 @@ export const renderReviewBody = (parts: {
   /**
    * Whether *What changed in this PR* is rendered at all.
    *
-   * The caller's, because it is a fact about the **round** and not about the
-   * review: it belongs on the first review of a pull request and on a later
-   * round-1 review with commits on it no verdict has seen — a human push, or a
-   * conflict resolution — and nowhere else. A round-2 verification pass is
-   * answering an earlier review's findings, and a re-review with nothing pushed
+   * The caller's, because it is a fact about the **verdict history** and not
+   * about the review: it belongs on the first review of a pull request and on a
+   * later review with commits on it no verdict has seen that no automatic fix
+   * round made (a human push, or a conflict resolution), and nowhere else. The
+   * review after a fix round is answering an earlier review's findings, and a
+   * re-review with nothing pushed
    * since the last verdict would be describing a change it has already
    * described. *How this was checked* carries no such rule and appears on every
    * review.
@@ -1283,35 +1283,28 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
   // what `**Findings:** N` states.
   const open = countFixBeforeMerge(output, inputs.movedToFollowUps) + inputs.stillOpen;
   if (open > 0) {
-    // **A round-2 review can never produce the round-1 row** (#96, decision 5),
-    // and it is enforced here rather than asked of the prompt. The fix round
-    // has already run and already pushed; findings that survived it are
-    // findings a second one has no more reason to settle than the first, and
-    // the loop's one bound is that a fix cannot ask for another fix. A prompt
-    // line would leave that bound to a model's judgement about its own output.
+    // **A fix round that closed none of its findings stops the loop** (#202,
+    // PRD #200 decision 5), whatever budget is left, and ahead of `autoFix` so
+    // no key the automatic fix selects on can come out of it. Judged by id,
+    // not by count: a round that closed two findings and uncovered two new
+    // ones made progress, and one where the same finding returns reworded did
+    // not. Where this review follows no fix round there is nothing to judge,
+    // so a pull request with one review round so far never stops here.
     //
-    // The two rows share a heading and differ in the step, which is where the
-    // bound lives: the round-1 line promises an automatic re-review, and the
-    // round-2 line asks the maintainer to read the review first, guidance
-    // optional. The key differs too, so the automatic fix PRD #101 describes
-    // can fire on the round-1 case and on nothing else.
-    //
-    // It costs a true round-1 answer on the round where a fix broke something
-    // new and obvious, which reads as a human being asked to look at a PR they
-    // did not have to. That is the direction this is meant to fail in: the
-    // alternative is a cycle with no gate in it.
-    if (inputs.round === 2) return VERDICTS["changes recommended after a fix round"];
-    // And the round-1 case splits in two on a fact about the *workflow* rather
-    // than about the review (#102): where it is about to add `agent:fix`
-    // itself, the line stops asking a maintainer for the label and says the
-    // round has started. Its key is the automatic fix's own selector, which is
-    // what makes the sentence and the job one decision — a line promising a
-    // fix round nothing starts is the failure this arm exists to prevent, and
-    // it has no symptom beyond the sentence being false.
-    //
-    // Below the round-2 arm, so `autoFix` cannot reach a second round: the
-    // bound that stops the loop cycling is the round-2 row holding this key out
-    // of reach, and the fix-round budget bounds it per pull request besides.
+    // This and the budget are what bound review → fix now. The round rule that
+    // did it before, a later review barred from recommending another round,
+    // is retired: it asked for guidance 9 times in 40 PRs and got it 0 times.
+    const progress = inputs.fixRoundProgress;
+    if (progress !== undefined && progress.given > 0 && progress.closed === 0) {
+      return noProgress(progress, open);
+    }
+    // And the case splits in two on a fact about the *workflow* rather than
+    // about the review (#102): where it is about to add `agent:fix` itself,
+    // the line stops asking a maintainer for the label and says the round has
+    // started. Its key is the automatic fix's own selector, which is what
+    // makes the sentence and the job one decision. A line promising a fix
+    // round nothing starts is the failure this arm exists to prevent, and it
+    // has no symptom beyond the sentence being false.
     if (inputs.autoFix) return VERDICTS["changes recommended, fix round started"];
     // And where no round starts because the budget is spent, the line says so
     // (#201): the rounds used, what is still open, and the three ways on. Not
@@ -1330,7 +1323,7 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
 /**
  * The *changes recommended* row for a pull request whose automatic fix rounds
  * are spent (#201). The key, heading, label and state are the table's, so the
- * advance job reads it as the round-1 row it is: no automatic fix is starting.
+ * advance job reads it as the plain row it is: no automatic fix is starting.
  * Only the step and the status line differ, as `closerLook`'s do.
  */
 const budgetSpent = (rounds: FixRounds, open: number): VerdictRow => {
@@ -1343,6 +1336,29 @@ const budgetSpent = (rounds: FixRounds, open: number): VerdictRow => {
       `The automatic fix rounds are spent (${used} used), and ${findings} still open. ` +
       "To go on, add agent:fix for another round, reply to a finding to decline it, or push a commit.",
     description: `${row.label}. Fix rounds spent (${used}). Add agent:fix, decline a finding in a reply, or push a commit.`,
+  };
+};
+
+/**
+ * The *changes recommended* row for a pull request whose last fix round closed
+ * none of the findings it was given (#202). The plain row's key, as a spent
+ * budget's is, so nothing selects on it as a round starting; the step says why
+ * the loop stopped and gives the same three ways on.
+ */
+const noProgress = (progress: FixRoundProgress, open: number): VerdictRow => {
+  const row = VERDICTS["changes recommended"];
+  const given =
+    progress.given === 1
+      ? "did not close the 1 finding it was given"
+      : `closed none of the ${progress.given} findings it was given`;
+  const findings = open === 1 ? "1 finding is" : `${open} findings are`;
+  const closed = `0 of ${progress.given} ${progress.given === 1 ? "finding" : "findings"} closed`;
+  return {
+    ...row,
+    nextStep:
+      `No progress: the fix round ${given}, so no further round starts on its own, and ${findings} still open. ` +
+      "To go on, add agent:fix for another round, reply to a finding to decline it, or push a commit.",
+    description: `${row.label}. No progress (${closed}). Add agent:fix, decline a finding in a reply, or push a commit.`,
   };
 };
 

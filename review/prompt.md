@@ -40,16 +40,16 @@ where it changes a conclusion you would otherwise draw.
 
 {{DISCUSSION}}
 
-# WHICH ROUND THIS IS
+# WHAT THIS REVIEW FOLLOWS
 
-{{ROUND}}
+{{HISTORY}}
 
-**Round 1** is the review described everywhere else in this brief: read the change, and report what
-you find.
+**A review that follows no fix round** is the review described everywhere else in this brief: read
+the change, and report what you find.
 
-**Round 2 is a verification pass.** An earlier review of this pull request stands, a fix round has
-pushed since, and the question is no longer *what is wrong with this change* but *did the last
-round's findings land, and did the new commits break anything?* In that case:
+**A review that follows a fix round is a verification pass.** An earlier review of this pull request
+stands, a fix round has pushed since, and the question is no longer *what is wrong with this change*
+but *did the last round's findings land, and did the new commits break anything?* In that case:
 
 - Rule on every open finding, as the section below says. That is the pass.
 - Read the new commits for what they broke. A fix that resolves its own finding and regresses

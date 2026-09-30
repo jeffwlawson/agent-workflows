@@ -396,10 +396,10 @@ jobs:
       # Cascade: every agent PR gets reviewed without a human labelling it.
       #
       # Safe because the hop it starts is bounded at the other end. Since #102
-      # agent-review can add `agent:fix` back: only on the round-1 "Changes
-      # recommended" line a round 2 cannot produce, and only within the pull
-      # request's fix-round budget (#201). The invariant that records
-      # both the old rule and the amendment is docs/parity.md §10; a return leg
+      # agent-review can add `agent:fix` back: only within the pull request's
+      # fix-round budget (#201), and never after a fix round that closed none
+      # of the findings it was given (#202). The invariant that records the
+      # old rule and both amendments is docs/parity.md §10; a return leg
       # without those bounds closes the loop with no human gate.
       #
       # MUST use AGENT_PAT: a label added with GITHUB_TOKEN does not trigger

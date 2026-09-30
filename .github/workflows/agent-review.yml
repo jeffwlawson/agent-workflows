@@ -78,8 +78,8 @@ jobs:
       # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci` —
       # so there is nothing to say about them here.
       self-check: review / review
-      # One automatic fix per pull request (#102): where the verdict is the
-      # round-1 *Changes recommended*, the review workflow adds `agent:fix`
+      # One automatic fix per pull request (#102): where the verdict is
+      # *Changes recommended*, the review workflow adds `agent:fix`
       # itself and a re-review follows. Deprecated from the release that
       # replaces it with the fix-round budget (`AGENT_MAX_FIX_ROUNDS`, #201),
       # where it still wins as a budget of 1 and warns. Kept while the pin

@@ -95,7 +95,6 @@ describe("renderSliceRow", () => {
     ["approval recommended", "🟢"],
     ["changes recommended", "🟡"],
     ["changes recommended, fix round started", "🟡"],
-    ["changes recommended after a fix round", "🟡"],
     ["needs a closer look", "🔵 accepted by hand"],
   ] as const)("reads %s off the merged head as %s", (verdict, shown) => {
     expect(cells(renderSliceRow(slice({ verdict: VERDICTS[verdict].description })))[2]).toBe(shown);

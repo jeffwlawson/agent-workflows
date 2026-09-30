@@ -11,25 +11,28 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 import { execFileSync } from "node:child_process";
 import {
-  describeRound,
+  describeHistory,
   describesTheChange,
-  detectReviewRound,
-  LOOP_COMMIT_AUTHOR,
-  unreadableRoundNote,
+  fixRoundProgress,
+  readReviewHistory,
+  unreadableHistoryNote,
+  type ReviewHistory,
 } from "../shared/review-round.js";
-import { VERDICT_CONTEXT } from "../shared/review-output.js";
+import { VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
+import type { CarriedFinding } from "../shared/review-verification.js";
 
 /**
- * Which round a review is (#96, decision 4), and it is read off the repository
- * rather than counted, because nothing in the loop holds a count: a review run
- * knows the commit it was pointed at and nothing about the ones before it.
+ * What the verdicts on a pull request say about the review now running (#202,
+ * PRD #200), read off the repository: whether it follows a fix round, and
+ * whether it is looking at commits nothing has described.
  *
- * The consequence of getting it wrong is asymmetric, and these tests are
- * written around that asymmetry. Reading a first round as a second makes the
- * review stricter — a fix-before-merge finding is answered "a fix round didn't
- * settle these" — and costs a human a look they did not owe. Reading a second as a first lets a fix round
- * that did not work ask for another one, which is the cycle the loop is built
- * not to have. So every case that cannot be established lands on 2.
+ * Read from the verdict history and nothing else. The round rule this replaced
+ * decided a "round 2" from who authored the commits since the last verdict; it
+ * is retired, and no code decides anything from commit authorship.
+ *
+ * Where the history cannot be read, it is taken as following a fix round: the
+ * stricter reading, since the early stop then parks the loop for a human
+ * rather than spending a round nobody can judge.
  */
 
 const spawned = vi.mocked(execFileSync);
@@ -38,30 +41,27 @@ const HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const MIDDLE = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const FIRST = "cccccccccccccccccccccccccccccccccccccccc";
 
-/** An ordinary commit: one parent, which is what a fix round pushes. */
-const commit = (sha: string, author = LOOP_COMMIT_AUTHOR): unknown => ({
-  sha,
-  parents: [{ sha: "parent" }],
-  commit: { author: { name: author } },
-});
-
 /**
- * And the other kind this loop makes: the merge `update-branch` commits when it
- * resolves conflicts. Two parents, the same author, and *not* an attempt at
- * anybody's findings — which is the whole of why the round rule now asks.
+ * A commit as the listing returns it. The author and the parents are there
+ * because the real listing carries them, and the round rule this replaced read
+ * both; nothing here may (#202), which the tests below pin by varying them.
  */
-const merge = (sha: string, author = LOOP_COMMIT_AUTHOR): unknown => ({
+const commit = (sha: string, author = "sandcastle-agent[bot]", parents = 1): unknown => ({
   sha,
-  parents: [{ sha: "parent" }, { sha: "base" }],
+  parents: Array.from({ length: parents }, (_, i) => ({ sha: `parent-${i}` })),
   commit: { author: { name: author } },
 });
 
-/** The verdict as the loop posts it: our context, our account, a real state. */
-const verdict = (state = "failure"): unknown => ({
+/** A verdict as the loop posts it: our context, our account, a real state. */
+const verdict = (description = VERDICTS["changes recommended"].description, state = "failure"): unknown => ({
   context: VERDICT_CONTEXT,
   state,
+  description,
   creator: { login: "github-actions[bot]" },
 });
+
+/** The verdict that announced an automatic fix round. */
+const started = (): unknown => verdict(VERDICTS["changes recommended, fix round started"].description);
 
 interface Repo {
   /** Pages exactly as `gh api --paginate --slurp` returns them: an array of arrays. */
@@ -131,40 +131,66 @@ afterEach(() => {
   else process.env["GH_REPO"] = PREVIOUS;
 });
 
-describe("detectReviewRound", () => {
-  it("is round 1 when no commit carries a verdict yet", () => {
+describe("readReviewHistory", () => {
+  it("follows no fix round when no commit carries a verdict yet", () => {
     ghAnswers({ commits: [[commit(FIRST), commit(HEAD)]], statuses: statuses() });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
   /**
-   * The shape a fix round leaves behind, and the one this exists to recognise:
-   * a verdict stands on the commit that was reviewed, and everything pushed
-   * since is the loop's own.
+   * The shape an automatic round leaves behind, and the one this exists to
+   * recognise: the verdict that announced the round stands on the commit that
+   * was reviewed, and the fix has pushed since.
    */
-  it("is round 2 when a verdict stands and only the loop has pushed since", () => {
+  it("follows a fix round when the latest verdict started one and commits have landed since", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
-      statuses: statuses({ [MIDDLE]: [verdict()] }),
+      statuses: statuses({ [MIDDLE]: [started()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 2, unreviewedCommits: true });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   /**
-   * A human's commit resets it. The branch now carries work no review has seen,
-   * and a verification pass over an earlier round's findings is the wrong
-   * reading of that — they would be verified against a diff that moved for
-   * reasons the earlier round said nothing about.
+   * **Not from authorship.** Whoever wrote the commits since, and whether they
+   * are merges, the answer is the verdict's: the round rule that read both is
+   * retired (#202).
    */
-  it("is round 1 again when a human has pushed since the verdict", () => {
+  it.each([
+    ["a human's commit", commit(HEAD, "A Maintainer")],
+    ["a merge", commit(HEAD, "sandcastle-agent[bot]", 2)],
+    ["a human's merge", commit(HEAD, "A Maintainer", 2)],
+  ])("gives the same answer when the commit since is %s", (_case, head) => {
     ghAnswers({
-      commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD, "A Maintainer")]],
+      commits: [[commit(FIRST), commit(MIDDLE), head]],
+      statuses: statuses({ [MIDDLE]: [started()] }),
+    });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
+
+    ghAnswers({
+      commits: [[commit(FIRST), commit(MIDDLE), head]],
       statuses: statuses({ [MIDDLE]: [verdict()] }),
     });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
+  });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
+  /**
+   * Any other verdict started no round, so what landed since it is a human's
+   * push, a human-started fix, or a merge: none of it spent the budget, and the
+   * early stop has nothing to judge.
+   */
+  it.each([
+    ["changes recommended"],
+    ["approval recommended"],
+    ["needs a closer look"],
+  ] as const)("follows no fix round after a %s verdict", (key) => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
+      statuses: statuses({ [MIDDLE]: [verdict(VERDICTS[key].description)] }),
+    });
+
+    expect(readReviewHistory("12").afterFixRound).toBe(false);
   });
 
   /**
@@ -177,102 +203,87 @@ describe("detectReviewRound", () => {
       statuses: {
         ...statuses(),
         [FIRST]: () =>
-          JSON.stringify([[{ context: VERDICT_CONTEXT, state: "success", creator: { login: "someone-else" } }]]),
+          JSON.stringify([
+            [
+              {
+                context: VERDICT_CONTEXT,
+                state: "failure",
+                description: VERDICTS["changes recommended, fix round started"].description,
+                creator: { login: "someone-else" },
+              },
+            ],
+          ]),
       },
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
   /**
-   * `error` is the review saying *there is no verdict* — the run died before it
-   * reviewed anything. Counting it would make the retry after every failed run
-   * a verification pass over findings that were never posted, and a round-2 run
-   * with findings can only answer "a fix round didn't settle these".
+   * `error` is the review saying *there is no verdict*: the run died before it
+   * reviewed anything. So the retry after a failed review of a fix still reads
+   * the verdict that started the round.
    */
   it("ignores an error status, which is a run that produced no verdict", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(HEAD)]],
-      statuses: statuses({ [FIRST]: [verdict("error")] }),
+      statuses: statuses({ [FIRST]: [started()], [HEAD]: [verdict("the review failed", "error")] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   it("takes the latest verdict, not the first one it can find", () => {
     ghAnswers({
-      commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD, "A Maintainer")]],
-      statuses: statuses({ [FIRST]: [verdict()], [MIDDLE]: [verdict()] }),
+      commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
+      statuses: statuses({ [FIRST]: [started()], [MIDDLE]: [verdict()] }),
     });
 
-    // Read from FIRST it would be round 1 either way; what this pins is that a
-    // human commit *after the latest* verdict is what decides, so an older
-    // verdict cannot be the one a later loop-only stretch is measured from.
-    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
+    expect(readReviewHistory("12").afterFixRound).toBe(false);
+  });
+
+  /**
+   * And the latest verdict *on* a commit, which the endpoint lists first: a
+   * re-review of one commit posts a second verdict over the first.
+   */
+  it("takes the newest verdict on a commit that carries two", () => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(HEAD)]],
+      statuses: statuses({ [FIRST]: [verdict(), started()] }),
+    });
+
+    expect(readReviewHistory("12").afterFixRound).toBe(false);
   });
 
   /**
    * The head's own verdict, with nothing pushed after it: a human re-adding
-   * `agent:review` on a commit that already carries one. A round **1**, because
-   * the third condition has nothing to find — no fix has been attempted, so
-   * there is nothing for a verification pass to verify.
-   *
-   * Pinned because it reads the opposite way to the rest of the file and the
-   * reason is worth keeping: reaching this at all takes a human adding the
-   * label by hand, and every automatic leg into review runs off a push. The
-   * cycle the round rule bounds cannot be opened from here.
+   * `agent:review` on a commit that already carries one. No fix has pushed, so
+   * there is nothing for the early stop to judge, even where that verdict
+   * started a round.
    */
-  it("is round 1 when the commit being reviewed carries a verdict and nothing was pushed after", () => {
+  it("follows no fix round when the commit being reviewed carries the verdict", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(HEAD)]],
-      statuses: statuses({ [HEAD]: [verdict()] }),
+      statuses: statuses({ [HEAD]: [started()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: false });
-  });
-
-  /**
-   * A conflict resolution is a **merge** commit under the loop's own identity,
-   * so without the third condition it would make the next review a round 2 —
-   * and a pull request sitting at *changes recommended* that then hit conflicts
-   * would have its never-attempted findings answered with the round-2 line by
-   * nothing more than the base branch moving (#105).
-   */
-  it("is round 1 when the only loop commit since the verdict is a merge", () => {
-    ghAnswers({
-      commits: [[commit(FIRST), commit(MIDDLE), merge(HEAD)]],
-      statuses: statuses({ [MIDDLE]: [verdict()] }),
-    });
-
-    expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
-  });
-
-  /** And a fix that was attempted stays a round 2, merge or no merge after it. */
-  it("is round 2 when a fix commit and a merge have both landed since the verdict", () => {
-    ghAnswers({
-      commits: [[commit(FIRST), commit(MIDDLE), merge(HEAD)]],
-      statuses: statuses({ [FIRST]: [verdict()] }),
-    });
-
-    expect(detectReviewRound("12")).toEqual({ round: 2, unreviewedCommits: true });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: false });
   });
 
   it("reads every page, so a long pull request's head is not off the end", () => {
     ghAnswers({
       commits: [[commit(FIRST)], [commit(MIDDLE), commit(HEAD)]],
-      statuses: statuses({ [MIDDLE]: [verdict()] }),
+      statuses: statuses({ [MIDDLE]: [started()] }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 2, unreviewedCommits: true });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   /**
    * And every page of the *statuses*, which is the endpoint that pages fastest:
    * it returns one entry per status post rather than one per context, so an
    * adopter's external CI spends two of the thirty on every
-   * `pending → success`. Unpaginated this answered `false` rather than
-   * `undefined` — a second round read as a first, the one direction this file
-   * must never fail in.
+   * `pending → success`.
    */
   it("finds a verdict that has fallen off the first page of statuses", () => {
     ghAnswers({
@@ -284,88 +295,23 @@ describe("detectReviewRound", () => {
             state: "success",
             creator: { login: "deploy-bot[bot]" },
           })),
-          [verdict()],
+          [started()],
         ],
       }),
     });
 
-    expect(detectReviewRound("12")).toEqual({ round: 2, unreviewedCommits: true });
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
-  /**
-   * **Whether there is code on this pull request nothing has described yet**,
-   * which the round alone cannot say: three different situations are all
-   * `round: 1`, and only two of them are looking at unreviewed commits.
-   *
-   * What reads it is *What changed in this PR*, rendered on those two and
-   * omitted on the third (#109, decision 8 as the maintainer settled it). The
-   * failure it prevents is silent and cheap to reintroduce — a body that
-   * describes the change again, at the top, to a reader who was handed that
-   * description last round.
-   */
-  describe("whether commits have landed that no verdict has seen", () => {
-    it("says yes on the first review, where no verdict exists anywhere", () => {
-      ghAnswers({ commits: [[commit(FIRST), commit(HEAD)]], statuses: statuses() });
-
-      expect(detectReviewRound("12").unreviewedCommits).toBe(true);
-    });
-
-    it("says no on a re-review with nothing pushed since the last verdict", () => {
-      ghAnswers({
-        commits: [[commit(FIRST), commit(HEAD)]],
-        statuses: statuses({ [HEAD]: [verdict()] }),
-      });
-
-      expect(detectReviewRound("12").unreviewedCommits).toBe(false);
-    });
-
-    it("says yes on a round 1 a human's push made", () => {
-      ghAnswers({
-        commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD, "A Maintainer")]],
-        statuses: statuses({ [MIDDLE]: [verdict()] }),
-      });
-
-      expect(detectReviewRound("12")).toEqual({ round: 1, unreviewedCommits: true });
-    });
-
-    /**
-     * And nothing at all where the history could not be read. The round goes
-     * to 2 there, which omits the section anyway; asserting a fact this file
-     * could not establish is the habit worth not having.
-     */
-    it("claims nothing when the commits could not be listed", () => {
-      ghAnswers({ commits: "gh: Not Found", statuses: statuses() });
-
-      expect(detectReviewRound("12").unreviewedCommits).toBe(false);
-    });
-  });
-
-  /**
-   * The join the body reads: whether this review describes the change at all.
-   *
-   * Here rather than in the runner, which has no test around it, and not in the
-   * renderer, which knows nothing about rounds.
-   */
-  describe("describesTheChange", () => {
-    it.each([
-      ["a first review", { round: 1, unreviewedCommits: true }, true],
-      ["a round 1 a push made", { round: 1, unreviewedCommits: true }, true],
-      ["a re-review with nothing pushed", { round: 1, unreviewedCommits: false }, false],
-      ["a verification pass", { round: 2, unreviewedCommits: true }, false],
-      ["an unreadable history", { round: 2, unreviewedCommits: false }, false],
-    ] as const)("is %s: %o", (_case, detected, expected) => {
-      expect(describesTheChange(detected)).toBe(expected);
-    });
-  });
-
-  describe("an unreadable history is round 2, and says so", () => {
+  describe("an unreadable history follows a fix round, and says so", () => {
     it("when the commits cannot be listed", () => {
       ghAnswers({ commits: "gh: Not Found", statuses: statuses() });
 
-      const detected = detectReviewRound("12");
+      const history = readReviewHistory("12");
 
-      expect(detected.round).toBe(2);
-      expect(detected.unreadable).toContain("commits");
+      expect(history.afterFixRound).toBe(true);
+      expect(history.unreviewedCommits).toBe(false);
+      expect(history.unreadable).toContain("commits");
     });
 
     it("when a commit's statuses cannot be read", () => {
@@ -379,68 +325,124 @@ describe("detectReviewRound", () => {
         },
       });
 
-      const detected = detectReviewRound("12");
+      const history = readReviewHistory("12");
 
-      expect(detected.round).toBe(2);
-      expect(detected.unreadable).toContain(HEAD.slice(0, 7));
+      expect(history.afterFixRound).toBe(true);
+      expect(history.unreadable).toContain(HEAD.slice(0, 7));
     });
 
     /**
      * A commit with no SHA takes the whole listing with it rather than being
-     * skipped: skipping it would drop a commit from the "every commit since"
-     * test, which is the one test missing data can only weaken.
+     * skipped: skipping it could drop the commits landed since the verdict.
      */
     it("when a commit in the listing has no SHA to look up", () => {
-      ghAnswers({
-        commits: [[{ parents: [], commit: { author: { name: LOOP_COMMIT_AUTHOR } } }]],
-        statuses: statuses(),
-      });
+      ghAnswers({ commits: [[{ parents: [] }]], statuses: statuses() });
 
-      expect(detectReviewRound("12").round).toBe(2);
-    });
-
-    /**
-     * And a commit with no `parents` goes the same way, for the same reason:
-     * guessing at it would decide "was anything attempted since the verdict"
-     * from data that was not there, and the two guesses are a full review
-     * nobody needed or a verification pass over an untouched branch.
-     */
-    it("when a commit in the listing does not say how many parents it has", () => {
-      ghAnswers({
-        commits: [[{ sha: HEAD, commit: { author: { name: LOOP_COMMIT_AUTHOR } } }]],
-        statuses: statuses(),
-      });
-
-      expect(detectReviewRound("12").round).toBe(2);
+      expect(readReviewHistory("12").afterFixRound).toBe(true);
     });
   });
 });
 
-describe("what a round is reported as", () => {
-  it("tells the agent which pass it is doing", () => {
-    expect(describeRound({ round: 1, unreviewedCommits: true })).toContain("round 1");
-    expect(describeRound({ round: 2, unreviewedCommits: true })).toContain("round 2");
+/**
+ * **The progress test** (#202, PRD #200 decision 5): what the fix round this
+ * review follows closed of the findings it was given, matched by id. The rule
+ * that turns the counts into an early stop is `deriveVerdict`'s, and is tested
+ * with it.
+ */
+describe("fixRoundProgress", () => {
+  const finding = (id: string, over: Partial<CarriedFinding> = {}): CarriedFinding => ({
+    id,
+    threadId: `T_${id}`,
+    text: `src/a.ts:1: claim ${id}`,
+    ...over,
+  });
+  const AFTER: ReviewHistory = { afterFixRound: true, unreviewedCommits: true };
+
+  it("counts the given findings this review closed", () => {
+    const given = [finding("f-1"), finding("f-2"), finding("f-3")];
+
+    expect(fixRoundProgress(AFTER, given, [given[0]!, given[2]!])).toEqual({ given: 3, closed: 2 });
+    expect(fixRoundProgress(AFTER, given, [])).toEqual({ given: 3, closed: 0 });
   });
 
   /**
-   * And an assumed round says it was assumed, in both places a reader meets it:
-   * the brief the agent works from and the summary a human reads. A review that
-   * quietly reads as a verification of a round that may not exist is the
-   * hardest state here to notice from the outside.
+   * By id and never by text: a closure of a finding the round was not given is
+   * not its progress, whatever it says.
    */
-  it("says a round it could not establish was the stricter reading", () => {
-    const detected = {
-      round: 2,
+  it("matches by id, so a finding it was not given is not progress", () => {
+    const given = [finding("f-1")];
+
+    expect(fixRoundProgress(AFTER, given, [finding("f-9", { text: given[0]!.text })])).toEqual({
+      given: 1,
+      closed: 0,
+    });
+  });
+
+  /**
+   * A thread already carrying the closing reply was verified by an earlier
+   * review; only its resolve failed. Closing it again says nothing about this
+   * fix round, so it is in neither count.
+   */
+  it("leaves out a finding an earlier review already verified", () => {
+    const earlier = finding("f-1", { closedAs: "ADDRESSED" });
+    const given = [earlier, finding("f-2")];
+
+    expect(fixRoundProgress(AFTER, given, [earlier])).toEqual({ given: 1, closed: 0 });
+  });
+
+  it("is nothing to judge where this review follows no fix round", () => {
+    expect(
+      fixRoundProgress({ afterFixRound: false, unreviewedCommits: true }, [finding("f-1")], []),
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * The join the body reads: whether this review describes the change at all
+ * (#109, decision 8 as the maintainer settled it).
+ */
+describe("describesTheChange", () => {
+  it.each([
+    ["a first review, or a push after a verdict that started no round", { afterFixRound: false, unreviewedCommits: true }, true],
+    ["a re-review with nothing pushed", { afterFixRound: false, unreviewedCommits: false }, false],
+    ["the review after a fix round", { afterFixRound: true, unreviewedCommits: true }, false],
+    [
+      "an unreadable history",
+      { afterFixRound: true, unreviewedCommits: false, unreadable: "the commits could not be listed" },
+      false,
+    ],
+  ] as const)("is %s: %o", (_case, history, expected) => {
+    expect(describesTheChange(history)).toBe(expected);
+  });
+});
+
+describe("what the history is reported as", () => {
+  it("tells the agent whether it follows a fix round, and names no round number", () => {
+    const after = describeHistory({ afterFixRound: true, unreviewedCommits: true });
+    const first = describeHistory({ afterFixRound: false, unreviewedCommits: true });
+
+    expect(after).toContain("follows a fix round");
+    expect(first).toContain("no fix round");
+    for (const line of [after, first]) expect(line).not.toMatch(/round [12]/);
+  });
+
+  /**
+   * And an assumed history says it was assumed, in both places a reader meets
+   * it: the brief the agent works from and the summary a human reads.
+   */
+  it("says a history it could not establish was the stricter reading", () => {
+    const history = {
+      afterFixRound: true,
       unreadable: "this pull request's commits could not be listed",
       unreviewedCommits: false,
     } as const;
 
-    expect(describeRound(detected)).toContain("could not be listed");
-    expect(unreadableRoundNote(detected)).toContain("could not be listed");
+    expect(describeHistory(history)).toContain("could not be listed");
+    expect(unreadableHistoryNote(history)).toContain("could not be listed");
   });
 
-  it("adds nothing to the summary of a round it did establish", () => {
-    expect(unreadableRoundNote({ round: 2, unreviewedCommits: true })).toBeUndefined();
-    expect(unreadableRoundNote({ round: 1, unreviewedCommits: true })).toBeUndefined();
+  it("adds nothing to the summary of a history it did establish", () => {
+    expect(unreadableHistoryNote({ afterFixRound: true, unreviewedCommits: true })).toBeUndefined();
+    expect(unreadableHistoryNote({ afterFixRound: false, unreviewedCommits: true })).toBeUndefined();
   });
 });

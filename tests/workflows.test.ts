@@ -1801,22 +1801,29 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * **Never on a round 2.** The key above is unreachable from a round-2
-   * derivation (`deriveVerdict`, asserted in `tests/review-output.test.ts`),
-   * and the round is restated in the guard so a reader of this file can see
-   * the bound without reconstructing it from a string literal.
+   * **Never after a fix round that made no progress** (#202). The key above is
+   * unreachable from a derivation whose fix round closed none of the findings
+   * it was given (`deriveVerdict`, asserted in `tests/review-output.test.ts`),
+   * whatever budget is left.
+   *
+   * **And no round rule** (PRD #200 decision 6). The guard selected on
+   * `round == '1'` and the review handed the round across; both are gone, so a
+   * later round with open findings and budget left starts another.
    */
-  it("cannot fire on the round that followed a fix", () => {
+  it("cannot fire after a fix round that closed nothing, and reads no round", () => {
+    const findings = { findings: [], followUps: [], fixBeforeMerge: ["the guard runs after the return"], verified: [] };
+    const inputs = { ci: "green", stillOpen: 0, movedToFollowUps: 0, autoFix: true, base: "main" } as const;
     expect(
-      deriveVerdict(
-        { findings: [], followUps: [], fixBeforeMerge: ["the guard runs after the return"], verified: [] },
-        { ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, autoFix: true, base: "main" },
-      ).verdict,
-      "a round-2 derivation must not be able to produce the key this job fires on",
+      deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 0 } }).verdict,
+      "a fix round that made no progress must not be able to produce the key this job fires on",
     ).not.toBe(AUTO_FIX_VERDICT);
+    expect(deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 2 } }).verdict).toBe(
+      AUTO_FIX_VERDICT,
+    );
 
-    expect(job().if ?? "").toContain("needs.review.outputs.round == '1'");
-    expect(jobOf(REVIEW).outputs?.["round"]).toBe("${{ steps.verdict.outputs.round }}");
+    expect(job().if ?? "").not.toContain("outputs.round");
+    expect(jobOf(REVIEW).outputs?.["round"]).toBeUndefined();
+    expect(stepsOf(REVIEW).find((s) => s.name === "Hand the verdict to what reads it")?.run ?? "").not.toContain("round");
     expect(jobOf(REVIEW).outputs?.["verdict"]).toBe("${{ steps.verdict.outputs.verdict }}");
   });
 
@@ -2021,7 +2028,7 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     expect(hand?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
     expect(hand?.run ?? "").toContain("${RUNNER_TEMP}/verdict.json");
     expect(hand?.run ?? "").toContain("verdict=");
-    expect(hand?.run ?? "").toContain("round=");
+    expect(hand?.run ?? "").not.toContain("round=");
     // A run that wrote no file hands over nothing, and this job does not run.
     expect(hand?.run ?? "").toContain('[ -f "$file" ]');
   });
@@ -2058,11 +2065,12 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
  * on a branch where the fix has already landed.
  *
  * This is the `agent:fix` → `agent:review` leg that `docs/parity.md` §10
- * already calls safe, and the bound it rests on is that a round-2 review cannot
- * answer with the round-1 *Changes recommended* line, the one that promises an
- * automatic re-review (`deriveVerdict`) — so this leg cannot be walked a second
- * time off one human label. (Not "review adds no trigger label of its own",
- * which stopped being true at #102.)
+ * already calls safe, and the bounds it rests on are the fix-round budget
+ * (#201) and the early stop (#202): the review this asks for starts another
+ * round only within the budget, and never after a round that closed none of
+ * its findings (`deriveVerdict`). (Not "review adds no trigger label of its
+ * own", which stopped being true at #102, and no longer the round rule, which
+ * PRD #200 retired.)
  *
  * Nothing here has a runtime symptom when it breaks, which is why it is
  * asserted against the workflow text. A request that never fires leaves a
@@ -2232,9 +2240,8 @@ describe("agent-fix asks for the re-review its own push needs", () => {
  * reviewed nothing and changed nothing the review read, so the verdict standing
  * on the old head is still true of the new one and is copied verbatim. A
  * conflict resolution is the loop writing code no review has seen, so nothing is
- * copied and a review is asked for instead — a full **round 1** by the round
- * rule (`shared/review-round.ts`), because round 2 needs a non-merge loop
- * commit since the verdict and a resolution leaves only the merge (#105).
+ * copied and a review is asked for instead, one that follows no fix round
+ * unless the latest verdict started one (`shared/review-round.ts`, #202).
  *
  * Neither has a runtime symptom when it breaks. A copy that never fires leaves a
  * refreshed pull request looking unreviewed, which is merely the cost of the
@@ -2263,16 +2270,12 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
   const condition = (file: string): string => (advance(file).if ?? "").replace(/\s+/g, " ");
 
   /**
-   * The verdict keys the chain moves on from: 🟢, 🟡 with no automatic fix
-   * starting, and 🟡 after a fix round. Exactly those, matched as keys — the
-   * three *changes recommended* rows share a heading, so only the key tells
-   * the fix round starting from the two that end a round.
+   * The verdict keys the chain moves on from: 🟢, and 🟡 with no automatic
+   * fix starting. Exactly those, matched as keys: the two *changes
+   * recommended* rows share a heading, so only the key tells the fix round
+   * starting from the one that ends a round.
    */
-  const ADVANCING: readonly Verdict[] = [
-    "approval recommended",
-    "changes recommended",
-    "changes recommended after a fix round",
-  ];
+  const ADVANCING: readonly Verdict[] = ["approval recommended", "changes recommended"];
 
   it("selects on the advancing verdict keys, and on no other", () => {
     const selected = [...condition(REVIEW).matchAll(/needs\.review\.outputs\.verdict == '([^']+)'/g)].map(
@@ -5367,7 +5370,7 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
     expect(trade).toMatch(/^### The trade: the slice PR is the unit of review, the PRD PR the unit of merge$/m);
     expect(trade).toMatch(/no per-slice review\s+workflow/);
     expect(trade).toMatch(/integration review/);
-    expect(trade).toMatch(/automatic-fix bound is unchanged/);
+    expect(trade).toMatch(/automatic-fix bound is per pull request/);
     expect(section).toContain("Adds `agent:review` to **every** slice PR");
     expect(section).toMatch(/resumes the handover/);
   });

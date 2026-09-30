@@ -5,10 +5,21 @@ import { rewritePins, WORKFLOW_DIR } from "../shared/pins.js";
 import {
   callersIn,
   readInstalledCallers,
+  type InstalledCaller,
   repoSlug,
   selfCheckFor,
   selfCheckMatches,
 } from "./callers.js";
+import {
+  livePolicySurface,
+  policyBody,
+  policyCommand,
+  POLICY_NAME,
+  POLICY_SETTINGS,
+  triggeredFiles,
+  unallowedFiles,
+  type PolicySurface,
+} from "./policies.js";
 
 /**
  * The install path: scaffold into an adopter's repository what nothing upstream
@@ -207,7 +218,10 @@ export const labelCommand = ({ name, color, description }: LabelSpec): string =>
   `gh label create "${name}" --color ${color} --description "${description}"`;
 
 export interface InitChange {
-  /** Repo-relative, forward-slashed. */
+  /**
+   * Repo-relative, forward-slashed; or, for the one change that is not a file,
+   * `POLICY_CHANGE`.
+   */
   readonly file: string;
   /**
    * `kept` is the one that is a **refusal**: a file this will not write over,
@@ -222,7 +236,16 @@ export interface InitChange {
 export interface InitOptions {
   /** The adopting repository's root. */
   readonly dir: string;
+  /**
+   * What `gh` would have answered about the Actions policy, and the writes it
+   * would have made. Supplied by the tests so the step can be exercised
+   * without an authenticated GitHub; asked for real otherwise.
+   */
+  readonly github?: PolicySurface | undefined;
 }
+
+/** How the policy step names itself in the list of changes. */
+export const POLICY_CHANGE = `Actions policy "${POLICY_NAME}"`;
 
 const referenceFiles = (): readonly string[] =>
   fs
@@ -423,7 +446,83 @@ export const init = (options: InitOptions): readonly InitChange[] => {
   }
 
   changes.push(putSetup(dir, workflows, callerFiles));
+
+  const policy = allowPullRequestTarget(
+    readInstalledCallers(dir, PACKAGE_NAME),
+    options.github ?? livePolicySurface(dir),
+  );
+  if (policy !== undefined) changes.push(policy);
   return changes;
+};
+
+/**
+ * Let the callers keep running on a public repository once GitHub blocks
+ * `pull_request_target` there by default (#219): an Actions event policy
+ * allowing it for **the callers' files and nothing else**, so every other
+ * workflow in the repository stays under the block. `setup/policies.ts` holds
+ * the shape and why it is that shape.
+ *
+ * Idempotent: a policy already allowing it for every caller is `unchanged`,
+ * whoever wrote it. One this wrote that is short of a caller added since is
+ * extended in place rather than doubled. And it never fails the install: the
+ * callers are on disk by now, and a token that cannot write the policy is a
+ * step left to a human, named with the exact call and the settings page.
+ *
+ * A private or internal repository is outside the rule and hears nothing.
+ */
+const allowPullRequestTarget = (
+  callers: readonly InstalledCaller[],
+  github: PolicySurface,
+): InitChange | undefined => {
+  const triggered = triggeredFiles(callers);
+  if (triggered.length === 0) return undefined;
+
+  const byHand = (why: string, files: readonly string[]): InitChange => ({
+    file: POLICY_CHANGE,
+    action: "kept",
+    note:
+      `${why} GitHub blocks \`pull_request_target\` on a public repository from 2026-11-02 unless a ` +
+      `policy allows it, and ${files.join(", ")} run on it. As a repository admin, run ` +
+      `\`${policyCommand(policyBody(callers, files))}\`, or add it under ${POLICY_SETTINGS}`,
+  });
+
+  const visibility = github.visibility();
+  if (visibility === "private") return undefined;
+  if (visibility === undefined) {
+    return byHand(`Could not read this repository's visibility; a private one needs nothing here.`, triggered);
+  }
+
+  const policies = github.policies();
+  if (policies === undefined) return byHand(`Could not read this repository's Actions policies.`, triggered);
+
+  const unallowed = unallowedFiles(callers, policies);
+  if (unallowed.length === 0) {
+    return { file: POLICY_CHANGE, action: "unchanged", note: `allows \`pull_request_target\` for ${triggered.join(", ")}` };
+  }
+
+  const ours = policies.find((policy) => policy.name === POLICY_NAME && policy.id !== undefined);
+  if (ours?.id !== undefined) {
+    // Switched off, or to evaluate, by somebody: that is a decision, and
+    // turning it back on behind them is the silent reversion a re-run must
+    // never perform.
+    if (ours.enforcement !== "active") {
+      return {
+        file: POLICY_CHANGE,
+        action: "kept",
+        note: `its enforcement is \`${ours.enforcement}\`, which allows nothing; set it to active under ${POLICY_SETTINGS} if that was not deliberate`,
+      };
+    }
+    const files = [...new Set([...(ours.include ?? []), ...unallowed])].sort();
+    const refused = github.update(ours.id, policyBody(callers, files, ours.allowedEvents ?? []));
+    return refused === undefined
+      ? { file: POLICY_CHANGE, action: "updated", note: `now allows \`pull_request_target\` for ${unallowed.join(", ")} too` }
+      : byHand(`GitHub refused the update (${refused}).`, unallowed);
+  }
+
+  const refused = github.create(policyBody(callers, unallowed));
+  return refused === undefined
+    ? { file: POLICY_CHANGE, action: "created", note: `allows \`pull_request_target\` for ${unallowed.join(", ")} and no other workflow` }
+    : byHand(`GitHub refused to create it (${refused}).`, unallowed);
 };
 
 /**

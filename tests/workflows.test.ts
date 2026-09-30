@@ -239,7 +239,8 @@ interface Job {
   readonly needs?: string | readonly string[];
   readonly env?: Record<string, string>;
   readonly outputs?: Record<string, string>;
-  readonly "timeout-minutes"?: number;
+  /** A number, or an expression that comes to one (#220). */
+  readonly "timeout-minutes"?: number | string;
   /**
    * Set on a caller job — the reusable workflow it hands the work to
    * (jeffwlawson/winget-manifest-lint#97).
@@ -300,8 +301,12 @@ const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
    *
    * …and its hand-merge twin (#209), which re-adds the same label when a
    * slice PR is merged by hand rather than by the chain.
+   *
+   * …and the review's time limit (#220), which is its CI wait plus its own
+   * time: an expression cannot add, so a job ahead of the review does the sum.
+   * It holds no permission at all.
    */
-  [path.join(WORKFLOW_DIR, "review.yml")]: ["resolve", "auto-fix", "advance", "advance-merged"],
+  [path.join(WORKFLOW_DIR, "review.yml")]: ["time-limit", "resolve", "auto-fix", "advance", "advance-merged"],
   [path.join(WORKFLOW_DIR, "fix.yml")]: ["advance"],
 };
 
@@ -336,6 +341,21 @@ const jobNamed = (file: string, id: string): Job => {
 const jobsOf = (file: string): readonly Job[] => Object.values(workflowOf(file).jobs);
 
 const stepsOf = (file: string): readonly Step[] => jobOf(file).steps ?? [];
+
+/**
+ * The step every runner workflow's job starts with (#220): it notes the time,
+ * which is how the failure step tells a run that timed out from one cancelled
+ * by hand, and does nothing else.
+ */
+const CLOCK = 'echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"';
+
+/** The step a job's work starts with: the first after the clock. */
+const firstWorkStep = (file: string): Step | undefined => {
+  const [clock, first] = stepsOf(file);
+
+  expect(clock?.run).toBe(CLOCK);
+  return first;
+};
 
 /**
  * Every workflow in the loop, split by which half of a `workflow_call` pair it
@@ -851,7 +871,7 @@ describe("every PR workflow shares one concurrency group per PR", () => {
       ),
     ];
 
-    expect(checkRuns).toHaveLength(11);
+    expect(checkRuns).toHaveLength(12);
     expect(checkRuns).toContain("review / resolve");
     // …and the third (#102), on the same footing: it runs after this wait, and
     // it is not evidence about the diff whenever it does.
@@ -861,6 +881,10 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     expect(checkRuns).toContain("fix / advance");
     // …and its hand-merge twin (#209).
     expect(checkRuns).toContain("review / advance-merged");
+    // …and the review's time limit (#220), which finishes before the review
+    // starts and is no evidence about the diff either.
+    expect(checkRuns).toContain("review / time-limit");
+    expect("agent-review / time-limit").toMatch(excluded);
     for (const name of checkRuns) expect(name).toMatch(excluded);
     expect("agent-review / advance-merged").toMatch(excluded);
     // And under a caller job an adopter renamed, where only the second half is
@@ -1023,8 +1047,11 @@ describe("PR workflows refuse a closed or merged PR", () => {
     expect(text).toContain("PR_MERGED: ${{ github.event.pull_request.merged }}");
   });
 
+  // Second only to the clock a failure step reads its time limit off (#220),
+  // which does nothing but note the time and is asserted exactly below, in
+  // *a run that times out or is cancelled says so*.
   it.each(PR_WORKFLOWS)("%s: the guard is the first step and is itself ungated", (file) => {
-    const first = stepsOf(file)[0];
+    const first = firstWorkStep(file);
 
     expect(first?.id).toBe("state");
     expect(first?.if).toBeUndefined();
@@ -1111,7 +1138,7 @@ describe("a run that pushed waits for the PR head before asking for a review", (
  * wiring, which no execution of one step can see.
  */
 describe("agent-review settles on one commit and reads nothing else", () => {
-  const guard = (): Step | undefined => stepsOf(REVIEW)[0];
+  const guard = (): Step | undefined => firstWorkStep(REVIEW);
   const run = (): string => guard()?.run ?? "";
   const RESOLVED = "${{ steps.state.outputs.sha }}";
 
@@ -1156,7 +1183,7 @@ describe("agent-review settles on one commit and reads nothing else", () => {
     expect(named("Wait for other checks")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
     expect(named("Post the verdict as a commit status")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
     expect(named("Post an error verdict")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
-    for (const step of steps.slice(1)) {
+    for (const step of steps.slice(steps.findIndex((s) => s.id === "state") + 1)) {
       expect(JSON.stringify(step)).not.toContain("pull_request.head.sha");
     }
   });
@@ -1171,7 +1198,7 @@ describe("agent-review settles on one commit and reads nothing else", () => {
  */
 describe("agent-fix refuses an event head behind the live branch", () => {
   const FIX = path.join(WORKFLOW_DIR, "fix.yml");
-  const guard = (): Step | undefined => stepsOf(FIX)[0];
+  const guard = (): Step | undefined => firstWorkStep(FIX);
   const run = (): string => guard()?.run ?? "";
 
   it("compares the event SHA with the branch ref, in the guard", () => {
@@ -1598,7 +1625,9 @@ describe("agent-review posts its verdict as a commit status", () => {
   it("posts error when the run failed", () => {
     const step = errorStep();
 
-    expect(step?.if).toBe("steps.state.outputs.proceed == 'true' && failure()");
+    // A cancelled run too, and a timed-out one is cancelled (#220): it leaves
+    // the last verdict standing exactly as a failed one would.
+    expect(step?.if).toBe("steps.state.outputs.proceed == 'true' && (failure() || cancelled())");
     expect(step?.run ?? "").toContain("state=error");
 
     // Below every step it is the arm for, the verdict's own posting included:
@@ -4079,7 +4108,7 @@ describe("agent-implement refuses a closed issue", () => {
   });
 
   it("refuses before the existing-PR query, with its own message", () => {
-    const preflight = stepsOf(FILE)[0];
+    const preflight = firstWorkStep(FILE);
     const run = preflight?.run ?? "";
 
     expect(preflight?.id).toBe("preflight");
@@ -4132,7 +4161,7 @@ describe("agent-implement refuses a closed issue", () => {
  */
 describe("agent-implement refuses issue shapes it cannot handle", () => {
   const FILE = IMPLEMENT;
-  const preflightRun = (): string => stepsOf(FILE)[0]?.run ?? "";
+  const preflightRun = (): string => firstWorkStep(FILE)?.run ?? "";
 
   /**
    * One query, not three. Parent and sub-issue count come back together —
@@ -4294,7 +4323,7 @@ describe("agent-implement refuses issue shapes it cannot handle", () => {
  * That is what `defer` is, in both preflights: a bare `exit 0` with a log line.
  */
 describe("the two implement workflows partition issue shapes", () => {
-  const preflight = (file: string): string => stepsOf(file)[0]?.run ?? "";
+  const preflight = (file: string): string => firstWorkStep(file)?.run ?? "";
 
   /**
    * The trigger is on the caller and the label guard on the called job
@@ -4411,7 +4440,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 
   it("guards first, and the guard is itself ungated", () => {
-    const first = stepsOf(PRD)[0];
+    const first = firstWorkStep(PRD);
 
     expect(first?.id).toBe("preflight");
     expect(first?.if).toBeUndefined();
@@ -6796,5 +6825,139 @@ describe("what the loop posts carries no em dash", () => {
       .map(({ line, n }) => `${file}:${n} ${line.trim()}`);
 
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * A job that reaches its `timeout-minutes` is **cancelled**, not failed (#220).
+ * Every failure step here was gated on `failure()` alone, so a run that timed
+ * out posted nothing and added no `agent:blocked`, while the `always()`
+ * cleanup still took `agent:in-progress` off: the issue looked as if nothing
+ * had run. Observed on #152, whose implement run hit 30 minutes and vanished.
+ *
+ * So each failure step also runs on `cancelled()`, and is told which it was by
+ * `job.status` and the clock. What the comment then says is executed in
+ * `tests/failure-step.test.ts`; this is the wiring it depends on.
+ */
+describe("a run that times out or is cancelled says so, as a failure does", () => {
+  /** The failure step of each workflow, and the guard it carried before #220. */
+  const FAILURE_STEPS: Readonly<Record<string, { readonly name: string; readonly guard: string }>> = {
+    implement: { name: "Mark blocked on failure", guard: "steps.preflight.outputs.refused != 'true'" },
+    "implement-prd": { name: "Mark blocked on failure", guard: "steps.preflight.outputs.refused != 'true'" },
+    fix: { name: "Mark blocked on failure", guard: "steps.state.outputs.proceed == 'true'" },
+    "update-branch": { name: "Mark blocked on failure", guard: "steps.state.outputs.proceed == 'true'" },
+    review: { name: "Mark blocked on failure", guard: "steps.state.outputs.proceed == 'true'" },
+    "follow-ups": { name: "Report the failure on the PR", guard: "" },
+  };
+
+  /**
+   * The four agent jobs share one variable. `vars` is in the contexts
+   * `jobs.<id>.timeout-minutes` may read, and in a called workflow it resolves
+   * against the caller's repository; `fromJSON` because a variable is a string
+   * and the key wants a number.
+   */
+  const AGENT_LIMIT = "${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}";
+  const AGENT_MINUTES = "${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}";
+
+  /** Each job's limit, and the same figure as its failure step reads it. */
+  const LIMITS: Readonly<Record<string, { readonly job: number | string; readonly step: string }>> = {
+    implement: { job: AGENT_LIMIT, step: AGENT_MINUTES },
+    "implement-prd": { job: AGENT_LIMIT, step: AGENT_MINUTES },
+    fix: { job: AGENT_LIMIT, step: AGENT_MINUTES },
+    "update-branch": { job: AGENT_LIMIT, step: AGENT_MINUTES },
+    review: { job: "${{ fromJSON(needs.time-limit.outputs.minutes) }}", step: "${{ needs.time-limit.outputs.minutes }}" },
+    "follow-ups": { job: 10, step: "10" },
+  };
+
+  const fileOf = (command: string): string => path.join(WORKFLOW_DIR, `${command}.yml`);
+  const failureStep = (command: string): Step => {
+    const want = FAILURE_STEPS[command];
+    const step = stepsOf(fileOf(command)).find((s) => s.name === want?.name);
+
+    expect(step, `${command} has no \`${want?.name}\` step`).toBeDefined();
+    return step as Step;
+  };
+
+  it("covers every runner workflow", () => {
+    expect(Object.keys(FAILURE_STEPS).sort()).toEqual([...RUNNER_COMMANDS].sort());
+  });
+
+  it.each(RUNNER_COMMANDS)("%s: runs its failure step on a cancelled job too", (command: string) => {
+    const { guard } = FAILURE_STEPS[command] ?? { guard: "" };
+    const step = failureStep(command);
+
+    expect(step.if).toBe(guard === "" ? "failure() || cancelled()" : `${guard} && (failure() || cancelled())`);
+    expect(step.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
+    expect(step.run ?? "").toContain('if [ "$JOB_STATUS" = "cancelled" ]; then');
+  });
+
+  it.each(RUNNER_COMMANDS)("%s: starts the clock before anything else", (command: string) => {
+    const [first] = stepsOf(fileOf(command));
+
+    expect(first?.if).toBeUndefined();
+    expect(first?.run).toBe(CLOCK);
+  });
+
+  it.each(RUNNER_COMMANDS)("%s: names the limit it runs under, as the job states it", (command: string) => {
+    expect(jobOf(fileOf(command))["timeout-minutes"]).toBe(LIMITS[command]?.job);
+    expect(failureStep(command).env?.["TIMEOUT_MINUTES"]).toBe(LIMITS[command]?.step);
+  });
+
+  /**
+   * A time limit is not a reason to stop a run: nothing in the loop cancels a
+   * job but its limit and a person, and a queued label waits its turn.
+   */
+  it.each(RUNNER_COMMANDS)("%s: cancels no run in progress", (command: string) => {
+    for (const job of jobsOf(fileOf(command))) expect(job.concurrency?.["cancel-in-progress"] ?? false).toBe(false);
+  });
+
+  /**
+   * **The review's limit is its CI wait plus its own time**, so a slow CI no
+   * longer eats the review. An expression cannot add, so a job ahead of it
+   * does the sum and the review reads it through `needs`, which
+   * `timeout-minutes` may also read.
+   */
+  describe("the review's limit", () => {
+    const limits = (): Job => jobNamed(REVIEW, "time-limit");
+    const sum = (): Step => {
+      const step = limits().steps?.find((s) => s.id === "limits");
+
+      expect(step).toBeDefined();
+      return step as Step;
+    };
+
+    it("is summed by a job that runs where the review does, and holds nothing", () => {
+      expect(jobOf(REVIEW).needs).toEqual(["time-limit"]);
+      expect(limits().if).toBe(jobOf(REVIEW).if);
+      expect(limits().permissions).toEqual({});
+      expect(limits().outputs?.["minutes"]).toBe("${{ steps.limits.outputs.minutes }}");
+    });
+
+    it("adds the CI wait the review actually waits", () => {
+      const wait = Number(sum().env?.["CI_WAIT_MINUTES"]);
+
+      expect(wait * 60).toBe(Number(waitStep().env?.["WAIT_SECONDS"]));
+      expect(sum().run ?? "").toContain('minutes=$((CI_WAIT_MINUTES + own))');
+    });
+
+    it("is 20 minutes, today's, where the variable is unset", () => {
+      expect(sum().env?.["REVIEW_MINUTES"]).toBe("${{ vars.AGENT_REVIEW_TIMEOUT_MINUTES }}");
+      expect(sum().run ?? "").toContain('own="${REVIEW_MINUTES:-5}"');
+      expect(Number(sum().env?.["CI_WAIT_MINUTES"]) + 5).toBe(20);
+    });
+
+    /**
+     * A value that is not a positive integer is refused by the review, naming
+     * it, the way the fix-round budget is: summed, it would be a limit nobody
+     * wrote down, and failed in `limits` it would skip the review silently.
+     */
+    it("refuses a variable that is not a positive integer in the review, where it is said", () => {
+      const refusal = stepsOf(REVIEW).find((s) => (s.if ?? "").includes("needs.time-limit.outputs.refused == 'true'"));
+
+      expect(sum().run ?? "").toContain("^[1-9][0-9]*$");
+      expect(refusal?.if).toBe("steps.state.outputs.proceed == 'true' && needs.time-limit.outputs.refused == 'true'");
+      expect(refusal?.run ?? "").toContain("failure_reason.txt");
+      expect(refusal?.run ?? "").toContain("AGENT_REVIEW_TIMEOUT_MINUTES");
+    });
   });
 });

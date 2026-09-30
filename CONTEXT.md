@@ -256,7 +256,7 @@ class the pair exists to remove.
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
 the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape
 and its freshness, `self-check`, the labels, a CI that runs on slice PRs where the PRD chain is
-installed (#209), an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with no `AGENT_PAT` behind it (the default counts), and a caller still passing the deprecated `auto-fix` — and reads nothing out of `examples/callers/`, so a
+installed (#209), an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with no `AGENT_PAT` behind it (the default counts), a caller still passing the deprecated `auto-fix`, and a time limit variable that is not a positive integer (#220) — and reads nothing out of `examples/callers/`, so a
 release that changes a caller *body* is a release that teaches `diagnose` about it in the same
 commit, exactly as a new pin site is a change to `shared/pins.ts` in the same commit. Diffing an
 adopter's caller against the reference is the other design and it is the wrong one here: most of
@@ -335,7 +335,7 @@ construction**, and the pin is the only thing that closes it. `docs/friction.md`
 The ones worth knowing because nothing fails when they break:
 
 - **`self-check`** is `<caller job id> / <called job id>`. The CI wait excludes its own check run or
-  it waits for itself — 15 of 20 minutes, then a review on degraded evidence. Nothing inside a
+  it waits for itself — the whole 15-minute wait, then a review on degraded evidence. Nothing inside a
   called workflow can read its caller's job id, hence a required input with no default.
 - **`bin` must not start with `./`.** `npm publish` silently drops such an entry and exits 0. The
   tarball is fine; only the registry manifest loses it, and the symptom is `npx <pkg> <cmd>` finding
@@ -346,6 +346,10 @@ The ones worth knowing because nothing fails when they break:
   is every release. The break shows up on somebody else's year-old pull request and in no build
   here; `severityAssetPath` holds the one copy of the path, and the test that reads it only proves
   the *current* release is intact.
+- **A job that reaches its `timeout-minutes` is cancelled, not failed** (#220). A step gated on
+  `failure()` alone never sees it, so every failure step here runs on `cancelled()` too, and tells a
+  timeout from a hand cancel by how long the job ran, off a clock its first step starts. Before that
+  a timed-out run posted nothing, while the `always()` cleanup still took `agent:in-progress` off.
 - **A label set when an issue is *created* fires no `labeled` event.** Label in a separate call,
   always; recovery is remove-then-re-add.
 - **A label added with `GITHUB_TOKEN` is a silent no-op**, which is why `AGENT_PAT` exists.

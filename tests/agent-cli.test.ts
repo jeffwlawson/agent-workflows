@@ -22,6 +22,7 @@ import {
   availableVariable,
   DEFAULT_FIX_ROUNDS,
   FIX_ROUNDS_VARIABLE,
+  TIMEOUT_VARIABLES,
   parseList,
   REQUIRED_PERMISSIONS,
   runDoctor,
@@ -1129,6 +1130,8 @@ describe("doctor names the failures that otherwise look like something else", ()
     actionsPolicies: [],
     // Unset, which is the budget's default of 3.
     maxFixRounds: null,
+    // Unset, which is every limit at today's value.
+    timeoutMinutes: Object.fromEntries(TIMEOUT_VARIABLES.map((variable) => [variable.name, null])),
   });
 
   /**
@@ -2391,6 +2394,60 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * **A time limit that is not a positive integer** (#220). The agent jobs read
+   * theirs straight into `timeout-minutes`, where one GitHub cannot read as a
+   * number fails the job before any step, with no comment and the label left
+   * on; the review refuses its own on the pull request. An error either way,
+   * wherever a caller whose job reads it is installed.
+   */
+  it("errors on a time limit variable that is not a positive integer", async () => {
+    for (const variable of TIMEOUT_VARIABLES) {
+      const set = (value: string): RepoFacts => ({
+        ...healthy(),
+        timeoutMinutes: { ...healthy().timeoutMinutes, [variable.name]: value },
+      });
+
+      for (const value of ["0", "-5", "1.5", "thirty", "030", " 30"]) {
+        const { code, err } = await check(await installed(), set(value));
+        expect(err, `${variable.name}=${value}`).toContain("FAIL  time limit");
+        expect(err, `${variable.name}=${value}`).toContain(`\`${variable.name}\` is \`${value}\``);
+        expect(code, `${variable.name}=${value}`).toBe(1);
+      }
+      for (const value of ["1", "45", "120"]) {
+        const { code, err } = await check(await installed(), set(value));
+        expect(err, `${variable.name}=${value}`).toBe("");
+        expect(code, `${variable.name}=${value}`).toBe(0);
+      }
+    }
+  });
+
+  /** …and says nothing about one that was never read. */
+  it("does not rule on time limits it could not read", async () => {
+    const { code, err } = await check(await installed(), { ...healthy(), timeoutMinutes: undefined });
+
+    expect(err).not.toContain("time limit");
+    expect(code).toBe(0);
+  });
+
+  /**
+   * The defaults `doctor` names are the ones the workflows apply, read out of
+   * the workflows: two copies of each number, held equal.
+   */
+  it("names the default each workflow applies", () => {
+    const [agent, review] = TIMEOUT_VARIABLES;
+    const workflow = (name: string): string =>
+      fs.readFileSync(path.join(".github", "workflows", `${name}.yml`), "utf8");
+
+    expect(agent?.workflows).toEqual(["implement", "implement-prd", "fix", "update-branch"]);
+    for (const name of agent?.workflows ?? []) {
+      expect(workflow(name)).toContain(`fromJSON(vars.${agent?.name} || '${agent?.defaultMinutes}')`);
+    }
+    expect(review?.workflows).toEqual(["review"]);
+    expect(workflow("review")).toContain(`REVIEW_MINUTES: \${{ vars.${review?.name} }}`);
+    expect(workflow("review")).toContain(`own="\${REVIEW_MINUTES:-${review?.defaultMinutes}}"`);
+  });
+
+  /**
    * **`auto-fix`, deprecated** (#201, PRD #200 decision 4). The review honours
    * it for one release and wins it over the variable, and the release after
    * stops declaring it, which GitHub answers by failing the caller that still
@@ -2550,6 +2607,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       releases: undefined,
       actionsPolicies: undefined,
       maxFixRounds: undefined,
+      timeoutMinutes: undefined,
     });
 
     expect(code).toBe(0);
@@ -2574,6 +2632,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       releases: undefined,
       actionsPolicies: undefined,
       maxFixRounds: undefined,
+      timeoutMinutes: undefined,
     });
 
     expect(code).toBe(0);

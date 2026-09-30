@@ -61,7 +61,14 @@ jobs:
     # own `if:` can skip this job, it cannot loosen this one.
     if: github.event.label.name == 'agent:implement'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
+    # shared by the four jobs that run an agent to write code, and 30 where it
+    # is not. `vars` is among the contexts this key may read, and in a called
+    # workflow it resolves against the caller's repository. `fromJSON` because
+    # a variable is a string and this key wants a number; a value that is not
+    # one fails the job before any step, which `doctor` reports. The failure
+    # step below names the same figure.
+    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
     concurrency:
       group: agent-implement-issue-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -93,6 +100,14 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
+      # The clock the failure step reads a time limit off (#220). A job that
+      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
+      # the `job` context says which cancellation it was, so that step compares
+      # how long the job ran with its limit. First, so it starts as near the
+      # job's own start as a step can.
+      - name: Start the clock
+        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       # Four refusals and one deferral, in order, all of them here rather than
       # in the agent: this step runs before checkout and the dependency install,
       # so neither costs more than one API call.
@@ -446,13 +461,30 @@ jobs:
       # still attached, and a red run nobody is watching. Refusals exit 0, so
       # `failure()` keeps them out of here regardless.
       - name: Mark blocked on failure
-        if: steps.preflight.outputs.refused != 'true' && failure()
+        if: steps.preflight.outputs.refused != 'true' && (failure() || cancelled())
         env:
+          JOB_STATUS: ${{ job.status }}
+          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           reason="(no reason file written; check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+          fi
+          # Cancelled is not failed (#220), and a job that reached its limit
+          # is cancelled too. What tells the two apart is the clock the first
+          # step started: a timed-out job ran its whole limit, less the moment
+          # the runner took to reach that step, hence a minute's slack. A
+          # reason file is not read on either; what wrote one was stopped, not
+          # failing. The labels and the retry are a failure's, word for word.
+          what="failed"
+          if [ "$JOB_STATUS" = "cancelled" ]; then
+            what="was cancelled"
+            reason="The run was cancelled before it finished, by hand or by GitHub."
+            if [ -n "${JOB_STARTED:-}" ] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+              what="timed out after ${TIMEOUT_MINUTES} minutes"
+              reason="The job reached its time limit of ${TIMEOUT_MINUTES} minutes and was stopped there. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises it."
+            fi
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           # "Re-apply", not "re-add", and the removal clause is load-bearing. This
@@ -462,7 +494,7 @@ jobs:
           # "re-add" is inert on exactly the path this gate was widened to catch
           # (docs/ADOPTING.md §1). One wording is correct on both paths: consumed,
           # and never consumed.
-          printf '`agent:implement` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-apply `agent:implement` to retry. If it is still attached, remove it first, since adding a label that is already present fires no event.\n' "$reason" "$RUN_URL" > "$body_file"
+          printf '`agent:implement` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-apply `agent:implement` to retry. If it is still attached, remove it first, since adding a label that is already present fires no event.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
 

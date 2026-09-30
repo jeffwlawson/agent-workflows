@@ -73,8 +73,8 @@ on:
           The check-run name this job appears under on the PR, which for a
           called workflow is `<caller job id> / <this workflow's job id>`. The
           CI wait below polls every check on the head commit and has to
-          recognise its own, or it waits for itself: 15 of this job's 20
-          minutes, then a review with the degraded evidence
+          recognise its own, or it waits for itself: the whole 15 minutes of
+          its CI wait, then a review with the degraded evidence
           jeffwlawson/winget-manifest-lint#48 exists to prevent. Nothing inside
           a called workflow can read its caller's job id, hence an input — and
           required rather than defaulted, because a default that is wrong fails
@@ -96,6 +96,53 @@ on:
         required: false
 
 jobs:
+  # The review's time limit (#220): its CI wait plus its own time, so a slow CI
+  # no longer eats the review. Its own time is the repository variable
+  # `AGENT_REVIEW_TIMEOUT_MINUTES`, 5 where it is unset, which with the 15
+  # minutes of the wait is the 20 this job had before it was a sum.
+  #
+  # **A job, because an expression cannot add.** `timeout-minutes` may read
+  # `vars` and `needs` and nothing a step computes, and GitHub's expression
+  # language has no arithmetic, so the sum is done here and handed across as an
+  # output. It runs where the review does, the same two guards, and holds no
+  # permission at all: it reads one variable and writes one number.
+  #
+  # **It never fails.** A failed job here would skip the review silently, which
+  # is the class this issue is about. A value that is not a positive integer is
+  # summed as the default instead and flagged, and the review refuses it where
+  # it can say so: on the pull request, naming the variable, as the fix-round
+  # budget is refused.
+  time-limit:
+    if: >-
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      minutes: ${{ steps.limits.outputs.minutes }}
+      refused: ${{ steps.limits.outputs.refused }}
+    steps:
+      - name: Add the CI wait to the review's own time
+        id: limits
+        env:
+          REVIEW_MINUTES: ${{ vars.AGENT_REVIEW_TIMEOUT_MINUTES }}
+          # `WAIT_SECONDS` in *Wait for other checks*, in minutes. A test holds
+          # the two equal.
+          CI_WAIT_MINUTES: "15"
+        run: |
+          own="${REVIEW_MINUTES:-5}"
+          refused=false
+          if [[ ! "$own" =~ ^[1-9][0-9]*$ ]]; then
+            refused=true
+            own=5
+          fi
+          echo "Review time limit: ${CI_WAIT_MINUTES} minutes of CI wait and ${own} of its own."
+          {
+            echo "minutes=$((CI_WAIT_MINUTES + own))"
+            echo "refused=${refused}"
+          } >> "$GITHUB_OUTPUT"
+
   review:
     # Two guards, both required:
     #  - the trigger label, and
@@ -104,8 +151,12 @@ jobs:
     if: >-
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository
+    needs: [time-limit]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The sum `time-limit` made, which is the repository variable where it is set
+    # and today's 20 where it is not. `needs` is among the contexts this key may
+    # read. The failure step below names the same figure.
+    timeout-minutes: ${{ fromJSON(needs.time-limit.outputs.minutes) }}
     # One group per PR, shared with agent-fix and agent-update-branch. Review is
     # `contents: read` and cannot push, but that is not what the group protects
     # against: the hazard is review *reading* a branch while a fix is writing to
@@ -200,6 +251,14 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
+      # The clock the failure step reads a time limit off (#220). A job that
+      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
+      # the `job` context says which cancellation it was, so that step compares
+      # how long the job ran with its limit. First, so it starts as near the
+      # job's own start as a step can.
+      - name: Start the clock
+        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       # Same guard as agent-fix and agent-update-branch. Review had none until
       # jeffwlawson/winget-manifest-lint#102, so labelling a merged PR ran a
       # full agent pass over merged work and then died at `gh pr ready` — which
@@ -316,6 +375,19 @@ jobs:
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
+
+      # The review's own time, refused the way the fix-round budget below is:
+      # a limit nobody wrote down is not one to guess (#220). `time-limit` summed
+      # the default in its place so that this run could start and say so.
+      - name: Refuse a time limit that is not a positive integer
+        if: steps.state.outputs.proceed == 'true' && needs.time-limit.outputs.refused == 'true'
+        env:
+          REVIEW_MINUTES: ${{ vars.AGENT_REVIEW_TIMEOUT_MINUTES }}
+        run: |
+          reason="The repository variable \`AGENT_REVIEW_TIMEOUT_MINUTES\` is \`${REVIEW_MINUTES}\`, which is not a positive integer. Set it to the minutes a review may take beyond its CI wait, or delete it for the default of 5, then re-add \`agent:review\`."
+          printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
+          echo "::error::${reason}"
+          exit 1
 
       # The fix-round budget (#201, PRD #200): whether this review, if it
       # recommends changes, starts a fix round itself. Settled **before** the
@@ -511,8 +583,8 @@ jobs:
       # (jeffwlawson/winget-manifest-lint#102). A `fix` labelled while a review
       # is running now sits queued behind it — and a queued job is a check run
       # in a non-completed state, so waiting on it is waiting on a job that
-      # cannot start until we finish. The timeout bounds that at 15 of this
-      # job's 20 minutes, which is not a bound worth having. They are not CI
+      # cannot start until we finish. The timeout bounds that at the whole
+      # 15-minute wait, which is not a bound worth having. They are not CI
       # either way: "fix: queued" is not evidence about the diff.
       - name: Wait for other checks, collect results
         if: steps.state.outputs.proceed == 'true'
@@ -557,7 +629,12 @@ jobs:
           # `advance-merged` (#209) is its hand-merge twin, named in its own
           # right for the reason `auto-fix` is: `advance` does not match a name
           # that goes on past it.
-          AGENT_CHECKS: '(^|/ )(review|resolve|auto-fix|advance|advance-merged|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
+          #
+          # `time-limit` (#220) runs *before* this job, so it has finished by the
+          # time this wait reads anything. Named all the same, for the reason
+          # `resolve` is: under a renamed caller job it is `agent-review /
+          # time-limit`, and a job that sums two numbers is not CI.
+          AGENT_CHECKS: '(^|/ )(review|time-limit|resolve|auto-fix|advance|advance-merged|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller
@@ -1215,21 +1292,39 @@ jobs:
             || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
 
       - name: Mark blocked on failure
-        if: steps.state.outputs.proceed == 'true' && failure()
+        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
         env:
+          JOB_STATUS: ${{ job.status }}
+          TIMEOUT_MINUTES: ${{ needs.time-limit.outputs.minutes }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           reason="(no reason file written; check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
+          # Cancelled is not failed (#220), and a job that reached its limit
+          # is cancelled too. What tells the two apart is the clock the first
+          # step started: a timed-out job ran its whole limit, less the moment
+          # the runner took to reach that step, hence a minute's slack. A
+          # reason file is not read on either; what wrote one was stopped, not
+          # failing. The labels and the retry are a failure's, word for word.
+          what="failed"
+          if [ "$JOB_STATUS" = "cancelled" ]; then
+            what="was cancelled"
+            reason="The run was cancelled before it finished, by hand or by GitHub."
+            if [ -n "${JOB_STARTED:-}" ] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+              what="timed out after ${TIMEOUT_MINUTES} minutes"
+              reason="The job reached its time limit of ${TIMEOUT_MINUTES} minutes and was stopped there. The repository variable \`AGENT_REVIEW_TIMEOUT_MINUTES\` raises the review's own time, which its CI wait is added to."
+            fi
+          fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '`agent:review` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-add `agent:review` to retry.\n' "$reason" "$RUN_URL" > "$body_file"
+          printf '`agent:review` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-add `agent:review` to retry.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
           gh pr comment "$PR_NUMBER" --body-file "$body_file"
 
       # And a run that failed says so in the same place, rather than leaving the
-      # last verdict standing. Silence is the dangerous answer here: a status is
+      # last verdict standing. So does one that was cancelled or timed out
+      # (#220), which leaves it standing just the same. Silence is the dangerous answer here: a status is
       # per commit and per context, so a review that died half way reads from
       # the outside exactly like one that recommended approval — right up until
       # someone merges on it.
@@ -1242,14 +1337,14 @@ jobs:
       # `verdict.json` to read it from, so this literal is held to
       # `VERDICT_CONTEXT` by a test instead.
       - name: Post an error verdict
-        if: steps.state.outputs.proceed == 'true' && failure()
+        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
         env:
           HEAD_SHA: ${{ steps.state.outputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh api --method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}" \
             -f "context=agent-review" -f "state=error" -f "target_url=${RUN_URL}" \
-            -f "description=The review run failed, so there's no verdict. Check the run, then re-add agent:review." \
+            -f "description=The review run did not finish, so there's no verdict. Check the run, then re-add agent:review." \
             || echo "::warning::Could not post the failed \`agent-review\` verdict for ${HEAD_SHA}. The failure comment on the pull request is the only record of this run."
 
       - name: Always remove in-progress

@@ -37,6 +37,7 @@
  *   pr view {n} --json {fields}                    —  "     "    "
  *   issue edit | issue comment                     — logged to GH_REPLAY_LOG, exit 0
  *   pr ready | pr merge | pr create | pr edit      — logged to GH_REPLAY_LOG, exit 0
+ *                                                    (pr merge exits 1 under GH_REPLAY_MERGE_FAILURE)
  *
  * Everything after `run view` serves `tests/implement-prd-preflight.test.ts`.
  * Their *shapes* are the documented ones — a GraphQL `{"data":…}` envelope,
@@ -61,6 +62,7 @@
  *   GH_REPLAY_REPO        path to the repository object; default `{}`
  *   GH_REPLAY_THREADS     path to a JSON array of review thread nodes; default none
  *   GH_REPLAY_CREATED     the number `pr create` answers with; default 300
+ *   GH_REPLAY_MERGE_FAILURE  set: `pr merge` is logged, then refused
  *   GH_REPLAY_LOG         path each tracker write is appended to, one JSON
  *                         argv per line
  */
@@ -178,6 +180,10 @@ if (argv[0] === "pr" && ["ready", "merge", "create", "edit"].includes(argv[1])) 
   const log = process.env["GH_REPLAY_LOG"];
 
   if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
+  if (argv[1] === "merge" && process.env["GH_REPLAY_MERGE_FAILURE"] !== undefined) {
+    process.stderr.write("GraphQL: Required status check \"ci\" is expected. (mergePullRequest)\n");
+    process.exit(1);
+  }
   if (argv[1] === "create") {
     process.stdout.write(`https://github.com/acme/widgets/pull/${process.env["GH_REPLAY_CREATED"] ?? "300"}\n`);
   }

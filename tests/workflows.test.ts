@@ -2347,7 +2347,7 @@ describe("a slice PR merged by hand advances the PRD chain", () => {
     const merge = stepsOf(PRD).find((s) => s.id === "merge");
     const run = merge?.run ?? "";
     const mark = run.indexOf(`marker="${MARK}\${head} -->"`);
-    const write = run.indexOf('gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body=');
+    const write = run.indexOf('gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body="${body}"');
     const merged = run.indexOf('gh pr merge "$SLICE_PR"');
 
     expect(mark).toBeGreaterThanOrEqual(0);
@@ -2356,6 +2356,14 @@ describe("a slice PR merged by hand advances the PRD chain", () => {
     expect(run).toContain('--match-head-commit "$head"');
     // Refused rather than tolerated: an unmarked chain merge starts a second run.
     expect(run.slice(write, merged)).toContain("|| block ");
+    // And taken back out on every exit short of the merge, a cancel included:
+    // a mark that outlives a failed merge hides a later hand merge of that head.
+    const armed = run.indexOf("trap unmark EXIT");
+    expect(armed).toBeGreaterThan(mark);
+    expect(armed).toBeLessThan(write);
+    expect(run.slice(armed, write)).toContain("trap 'exit 1' INT TERM");
+    const disarmed = run.indexOf("trap - EXIT INT TERM");
+    expect(disarmed).toBeGreaterThan(merged);
   });
 
   it("stands aside while the chain is already moving", () => {

@@ -55,16 +55,21 @@ export interface InstalledCaller {
   /** `self-check`, on the one caller that takes it. */
   readonly selfCheck: string | undefined;
   /**
-   * Whether this caller passes `auto-fix: true` on the review caller (#102),
-   * the input the fix-round budget deprecated (#201); `false` everywhere else,
-   * including every caller that says nothing, which leaves the budget to the
-   * repository variable.
+   * What this caller passes as `auto-fix` (#102), the input the fix-round
+   * budget deprecated (#201): the value as written, and `undefined` where it
+   * passes nothing, the empty string or YAML's null, which is the input's own
+   * default and leaves the budget to the repository variable. A `${{`
+   * expression is kept as written: it is settled at run time, and nothing here
+   * can say what it comes to. A value rather than a
+   * boolean, because `false` is a budget of 0 that wins over the variable, and
+   * reading it as "not passed" would hand the budget back to a variable the
+   * review never consults.
    *
    * A field rather than the whole `with:` map, because `diagnose` rules on a
    * fixed list: an input it was not taught about is one nothing here can say
    * anything useful about, and a map invites a reader to go looking.
    */
-  readonly autoFix: boolean;
+  readonly autoFix: string | undefined;
   /**
    * What this job hands the workflow it calls: the names in its `secrets:`
    * block, the literal `"inherit"`, or `undefined` where it declares no block.
@@ -166,6 +171,23 @@ const asStringMap = (value: unknown): Record<string, string> =>
         Object.entries(value as Record<string, unknown>).map(([key, held]) => [key, String(held)]),
       )
     : {};
+
+/**
+ * `auto-fix` as the review receives it, read from the parsed `with:` value
+ * rather than out of `asStringMap`, whose `String` turns YAML's null (`auto-fix:`
+ * with nothing after it, `~`, `null`) into the word `"null"`. GitHub hands the
+ * review the empty string for all of those, and the review tests for empty and
+ * nothing else, so each is "not passed". YAML's own boolean still goes through
+ * `String`, which is what makes `auto-fix: true` and `auto-fix: "true"` the
+ * same answer, as they are to the string input the review declares.
+ */
+const autoFixOf = (inputs: unknown): string | undefined => {
+  if (typeof inputs !== "object" || inputs === null || Array.isArray(inputs)) return undefined;
+  const held = (inputs as Record<string, unknown>)["auto-fix"];
+  if (held === undefined || held === null) return undefined;
+  const value = String(held);
+  return value === "" ? undefined : value;
+};
 
 /**
  * `permissions:` is usually a map and may legally be the string `write-all` or
@@ -274,11 +296,7 @@ export const callersIn = (
         ref: match[2] ?? "",
         ...grantsFor(job, top, topDeclared),
         selfCheck,
-        // `asStringMap` has already put YAML's own boolean through `String`,
-        // which is what makes `auto-fix: true` and `auto-fix: "true"` the same
-        // answer here — GitHub coerces a `workflow_call` boolean input the
-        // same way. Anything else is off, which is the input's own default.
-        autoFix: inputs["auto-fix"] === "true",
+        autoFix: autoFixOf(job.with),
         secrets: secretsOf(job.secrets),
         pullRequestTypes,
         events,

@@ -81,7 +81,9 @@ decline a finding in a reply, or push a commit. The **round rule** it replaced, 
 second-round review from recommending another round, is retired (PRD #200 decision 6). The job
 holds `pull-requests: write` and nothing else, checks nothing out and runs no model, which is what
 keeps `AGENT_PAT` away from the job that reads the pull request. The `auto-fix` input it replaced is
-a deprecated alias for one release (`true` a budget of 1, `false` of 0). A pull request whose
+a deprecated alias for one release (`true` a budget of 1, `false` of 0). Waiting has no label
+either: `agent:queued` is retired with the marker (#204), because a native "blocked by" link says an
+issue waits, and `implement` refuses while one is open. A pull request whose
 automatic fix is about to start also stays a **draft**: draft means the loop is still
 working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
 pushed, and the fix run itself where it pushed nothing and so asked for none.
@@ -254,7 +256,7 @@ class the pair exists to remove.
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
 the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape
 and its freshness, `self-check`, the labels, a CI that runs on slice PRs where the PRD chain is
-installed (#209), and an Actions policy letting `pull_request_target` run on a public repository (#219) — and reads nothing out of `examples/callers/`, so a
+installed (#209), an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with no `AGENT_PAT` behind it (the default counts), and a caller still passing the deprecated `auto-fix` — and reads nothing out of `examples/callers/`, so a
 release that changes a caller *body* is a release that teaches `diagnose` about it in the same
 commit, exactly as a new pin site is a change to `shared/pins.ts` in the same commit. Diffing an
 adopter's caller against the reference is the other design and it is the wrong one here: most of

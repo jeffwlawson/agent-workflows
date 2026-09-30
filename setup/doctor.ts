@@ -36,8 +36,8 @@ import type { CliIo } from "../cli.js";
  *
  * - **`gatherFacts`** asks GitHub the questions a checkout cannot answer — which
  *   secrets are set, whether Actions may open pull requests, what the default
- *   `GITHUB_TOKEN` grants a job that asks for nothing, which labels exist, which Actions policies apply, and
- *   what this package's latest release is. Every one of them can come back
+ *   `GITHUB_TOKEN` grants a job that asks for nothing, which labels exist, which Actions policies apply,
+ *   what the fix-round budget variable holds, and what this package's latest release is. Every one of them can come back
  *   unreadable (no `gh`, no auth, no admin), and an unreadable answer is
  *   reported as unknown rather than folded into a pass.
  * - **`diagnose`** rules on the callers and those facts and nothing else. It is
@@ -104,7 +104,34 @@ export interface RepoFacts {
   readonly actionsPolicies: readonly (ActionsPolicy | undefined)[] | undefined;
   /** This package's tags, newest first — what a pin is measured against. */
   readonly releases: readonly string[] | undefined;
+  /**
+   * The fix-round budget variable, `AGENT_MAX_FIX_ROUNDS` (#204): its value,
+   * `null` where it is set nowhere a workflow here can read it, and `undefined`
+   * where that could not be known. Three states, because "unset" is the
+   * default budget of 3 and "unreadable" is no budget anybody knows.
+   */
+  readonly maxFixRounds: string | null | undefined;
 }
+
+/** The repository variable the review reads its fix-round budget from (#201). */
+export const FIX_ROUNDS_VARIABLE = "AGENT_MAX_FIX_ROUNDS";
+
+/**
+ * The budget the review applies where the variable is set nowhere. A second
+ * copy of the review's own `${MAX_FIX_ROUNDS:-3}`, held equal to it by a test.
+ */
+export const DEFAULT_FIX_ROUNDS = 3;
+
+/** The test the review's budget step applies to the variable, and no looser. */
+const COUNT = /^[0-9]+$/;
+
+/**
+ * An input value GitHub works out at run time: any `${{`, anywhere in the
+ * string, makes the whole of it an expression. What it comes to is not in the
+ * caller, so `doctor` can say neither the budget it sets nor that the review
+ * refuses it.
+ */
+const isExpression = (value: string): boolean => value.includes("${{");
 
 /**
  * The reusable halves that declare **no secrets at all**, and so have no wire
@@ -596,35 +623,113 @@ export const diagnose = (
     });
   }
 
-  // The automatic fix, switched on and unable to fire (#102, #159). `auto-fix:
-  // true` makes the review add `agent:fix` itself, and since the fix-round
-  // budget (#201) it is a deprecated alias that the review still honours for a
-  // release.
+  // The fix-round budget (#201, #204). A review with budget left starts a fix
+  // round itself by adding `agent:fix`, and without `AGENT_PAT` that label
+  // fires no event: the review knows, and asks for the label on every verdict
+  // instead, so no automatic round ever starts. The default counts, which makes
+  // this true of every repository that set nothing and has no PAT.
   //
-  // **Without the PAT**, a label added with `GITHUB_TOKEN` fires no `labeled`
-  // event, so the review starts no round at all: it asks for the label instead.
-  // A warning, because the loop itself is unharmed and a human adding the label
-  // by hand loses nothing but the automation.
+  // The budget is settled the way the review settles it: the deprecated
+  // `auto-fix` input wins where a caller still passes it (`true` is 1, `false`
+  // is 0), and otherwise the variable, 3 where it is unset. A value neither
+  // would accept is no budget, and has its own finding below.
   //
-  // It reads `facts.secrets` directly rather than `hasPat`: that is `undefined`
-  // in exactly the case this must not rule on, and `!hasPat` would collapse it
-  // into the failing one. There is no marker label to check any more: the
-  // rounds spent are counted from the pull request's own verdicts.
-  for (const caller of callers) {
-    if (!caller.autoFix) continue;
-    if (facts.secrets !== undefined && !facts.secrets.includes("AGENT_PAT")) {
+  // A warning, because the loop itself is unharmed and the `AGENT_PAT` row is
+  // already the error for the same secret. It reads `facts.secrets` directly
+  // rather than `hasPat`: that is `undefined` in exactly the case this must not
+  // rule on, and `!hasPat` would collapse it into the failing one. So is an
+  // unreadable variable, which is not an unset one.
+  const budgetOf = (caller: InstalledCaller): { rounds: number; from: string } | undefined => {
+    if (caller.autoFix !== undefined) {
+      if (isExpression(caller.autoFix)) return undefined;
+      if (caller.autoFix === "true") return { rounds: 1, from: "`auto-fix: true`" };
+      if (caller.autoFix === "false") return { rounds: 0, from: "`auto-fix: false`" };
+      return undefined;
+    }
+    if (facts.maxFixRounds === undefined) return undefined;
+    if (facts.maxFixRounds === null) return { rounds: DEFAULT_FIX_ROUNDS, from: "the default" };
+    if (!COUNT.test(facts.maxFixRounds)) return undefined;
+    return { rounds: Number(facts.maxFixRounds), from: `\`${FIX_ROUNDS_VARIABLE}\`` };
+  };
+  const reviews = callers.filter((caller) => caller.workflow === "review");
+  if (facts.secrets !== undefined && !facts.secrets.includes("AGENT_PAT")) {
+    for (const caller of reviews) {
+      const budget = budgetOf(caller);
+      if (budget === undefined || budget.rounds === 0) continue;
       add({
         severity: "warning",
-        check: "auto-fix without a PAT",
+        check: "fix rounds without a PAT",
         problem:
-          `${caller.file} sets \`auto-fix: true\` on the \`${caller.jobId}\` job, asking the review ` +
-          `to start a fix round itself, but \`AGENT_PAT\` is not set, and a label added with ` +
-          `\`GITHUB_TOKEN\` fires no event, so no automatic fix round ever starts.`,
+          `${caller.file}'s \`${caller.jobId}\` job reviews with a fix-round budget of ` +
+          `${budget.rounds} (${budget.from}), so a review that recommends changes starts a fix ` +
+          `round itself by adding \`agent:fix\`. \`AGENT_PAT\` is not set, and a label added with ` +
+          `\`GITHUB_TOKEN\` fires no event, so no automatic fix round ever starts: every verdict ` +
+          `asks for \`agent:fix\` by hand instead.`,
         fix:
-          `Set \`AGENT_PAT\` (above), or drop \`auto-fix: true\` from that job's \`with:\` block and ` +
-          `add \`agent:fix\` by hand.`,
+          `Set \`AGENT_PAT\` (above), or set the repository variable \`${FIX_ROUNDS_VARIABLE}\` to ` +
+          `\`0\` to say that fix rounds here are started by hand.`,
       });
     }
+  }
+
+  // A variable the review refuses (#201): not a non-negative integer, so every
+  // review ends red before it starts, naming it. An error wherever a review
+  // caller reads it, and a warning where every one still passes `auto-fix`,
+  // which wins over it for one release and leaves it unread until the next.
+  if (
+    reviews.length > 0 &&
+    typeof facts.maxFixRounds === "string" &&
+    !COUNT.test(facts.maxFixRounds)
+  ) {
+    const read = reviews.some((caller) => caller.autoFix === undefined);
+    add({
+      severity: read ? "error" : "warning",
+      check: "fix-round budget",
+      problem:
+        `The repository variable \`${FIX_ROUNDS_VARIABLE}\` is \`${facts.maxFixRounds}\`, which is ` +
+        `not a non-negative integer. The review refuses it rather than guess a number of fix ` +
+        `rounds, so ` +
+        (read
+          ? `every review fails before it starts.`
+          : `every review will fail once \`auto-fix\`, which overrides it today, is gone.`),
+      fix:
+        `Set it to the number of automatic fix rounds a pull request may have (\`0\` for none), ` +
+        `or delete it for the default of ${DEFAULT_FIX_ROUNDS}.`,
+    });
+  }
+
+  // `auto-fix`, deprecated (#201, PRD #200 decision 4). The review honours it
+  // for one release, and the release after stops declaring it, which GitHub
+  // answers by failing the whole caller at startup. A warning while it still
+  // works, and an error where its value is one the review refuses already. A
+  // `${{` expression is neither: what it comes to is settled at run time, so
+  // it is only the deprecation this can speak to.
+  for (const caller of reviews) {
+    if (caller.autoFix === undefined) continue;
+    const expression = isExpression(caller.autoFix);
+    const rounds = caller.autoFix === "true" ? "1" : caller.autoFix === "false" ? "0" : undefined;
+    const refused = rounds === undefined && !expression;
+    add({
+      severity: refused ? "error" : "warning",
+      check: "auto-fix deprecated",
+      problem:
+        `${caller.file} passes \`auto-fix: ${caller.autoFix}\` on the \`${caller.jobId}\` job. ` +
+        `The input is deprecated and goes in the next release, and a caller that passes an input ` +
+        `the called workflow no longer declares fails before any job starts. ` +
+        (refused
+          ? `This value is neither \`true\` nor \`false\`, so the review refuses it today.`
+          : expression
+            ? `Until then, whatever it comes to at run time other than empty wins over ` +
+              `\`${FIX_ROUNDS_VARIABLE}\`, and the review refuses anything but \`true\` or \`false\`.`
+            : `Until then it wins over \`${FIX_ROUNDS_VARIABLE}\`.`),
+      fix:
+        `Remove \`auto-fix\` from that job's \`with:\` block and set the repository variable ` +
+        (rounds === undefined
+          ? `\`${FIX_ROUNDS_VARIABLE}\` to the number of automatic fix rounds a pull request may ` +
+            `have (\`0\` for none, unset for ${DEFAULT_FIX_ROUNDS}).`
+          : `\`${FIX_ROUNDS_VARIABLE}\` to \`${rounds}\`, which is what \`auto-fix: ` +
+            `${caller.autoFix}\` does today; unset, it is ${DEFAULT_FIX_ROUNDS}.`),
+    });
   }
 
   // CI on slice PRs (#209). The PRD chain opens each slice PR into its PRD
@@ -937,6 +1042,26 @@ export const availableSecrets = (
 };
 
 /**
+ * The budget variable out of the two lists `vars` resolves it from, the
+ * repository's own and the organization's shared with it (#204). Each list is
+ * the values of variables by that name, so empty or one long; the repository's
+ * wins, as it does in a workflow. `null` is "set nowhere", and is concluded
+ * only from lists that were read, on `availableSecrets`' terms.
+ */
+export const availableVariable = (
+  repository: readonly string[] | undefined,
+  organization: readonly string[] | undefined,
+  inOrganization: boolean | undefined,
+): string | null | undefined => {
+  if (repository === undefined) return undefined;
+  const [own] = repository;
+  if (own !== undefined) return own;
+  if (inOrganization === false) return null;
+  if (organization === undefined) return undefined;
+  return organization[0] ?? null;
+};
+
+/**
  * Moved beside the policy it now also decides (#219), and still exported here
  * for the callers that know it by this module.
  */
@@ -1012,6 +1137,27 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
           dir,
         );
 
+  // The budget variable, from the same two places as the secrets and for the
+  // same reason: `vars` resolves an organization variable shared with this
+  // repository too, and a repository one of the same name over it. Selected by
+  // name out of the list rather than asked for by name, because asking for one
+  // that is not set is a 404, which `safeGh` renders as the same empty string a
+  // 403 gives, and "unset" must not collapse into "unreadable". The list is
+  // served a page at a time, so one longer than its page is refused by `error`
+  // rather than read as a list that happens not to hold the name.
+  const variable = (endpoint: string): readonly string[] | undefined =>
+    list(
+      ["api", `repos/{owner}/{repo}/actions/${endpoint}?per_page=30`],
+      `if .total_count > (.variables | length) then error("more variables than one page") ` +
+        `else .variables[] | select(.name == "${FIX_ROUNDS_VARIABLE}") | .value end`,
+      dir,
+    );
+  const repositoryVariable = variable("variables");
+  const organizationVariable =
+    repositoryVariable === undefined || repositoryVariable.length > 0 || inOrg === false
+      ? undefined
+      : variable("organization-variables");
+
   return {
     secrets: availableSecrets(repositorySecrets, organizationSecrets, inOrg),
     // Both spellings named, so the third case stays `undefined`: a field a
@@ -1028,6 +1174,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
     visibility: asVisibility(visibility),
     actionsPolicies: readPolicies(dir),
     releases: list(["api", `repos/${repoSlug(packageName)}/tags`], ".[].name", dir),
+    maxFixRounds: availableVariable(repositoryVariable, organizationVariable, inOrg),
   };
 };
 

@@ -30,7 +30,7 @@ third execution model in §2b.
 | `agent-explore` — read-only triage pass on an issue | — | ❌ | **upstream only**, not in CVM. Superseded by local planning skills *in this repo's usage* — see below, and the scope note |
 | `agent-to-issues-prd` — PRD issue → sub-issues | ✅ | ❌ | **the planning half of the PRD tier**, superseded locally by `/wayfinder` → `/to-spec` → `/to-tickets`. The **ordering contract** it owes the chain below — sub-issues *created* blockers-first (§2a) — is no longer owed but written down: `docs/agents/ticket-shape.md` (jeffwlawson/winget-manifest-lint#93) is where a batch's shape and publish order are settled |
 | `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | **the execution half, shipped** (jeffwlawson/winget-manifest-lint#92). Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
-| `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | **deferred: nothing to sequence between PRDs yet.** jeffwlawson/winget-manifest-lint#91, detached from jeffwlawson/winget-manifest-lint#87 so the chain would not build a slice nobody wanted. Not blocked on missing edges — `/wayfinder` records blockers as native dependencies, and on a `/to-tickets` batch `docs/agents/ticket-shape.md` requires them (upstream's skill writes a prose line, so they are added and verified by hand) — the point is that this tier sequences **top-level** issues, and ordering *within* a PRD is already carried by creation order (§2a). Its label exists and is human-written (§8) |
+| `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | **deferred: nothing to sequence between PRDs yet.** jeffwlawson/winget-manifest-lint#91, detached from jeffwlawson/winget-manifest-lint#87 so the chain would not build a slice nobody wanted. Not blocked on missing edges — `/wayfinder` records blockers as native dependencies, and on a `/to-tickets` batch `docs/agents/ticket-shape.md` requires them (upstream's skill writes a prose line, so they are added and verified by hand) — the point is that this tier sequences **top-level** issues, and ordering *within* a PRD is already carried by creation order (§2a). Its label is retired (§8): native "blocked by" links carry the dependency, and `implement` refuses while one is open |
 | `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
 | `agent-follow-ups` — file a merged PR's recorded findings | — | ➕ | #44. The review agent records what it cannot fix in the PR in front of it; this files each finding as a `needs-triage` stub once that PR merges. The only workflow here that turns an agent's output into **new issues** — `token-expiry` files a fixed one about the loop itself, and the `implement` pair only label and close — and the only one in the loop that runs **no model**, which is what makes holding `issues: write` while reading issue bodies safe. Optional per adopter: the caller file is the off switch. See §10 |
 | `ci` — typecheck + test | ✅ | ✅ | |
@@ -504,7 +504,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `agent:review` | ✅ | ✅ |
 | `agent:in-progress` | ✅ | ✅ |
 | `agent:blocked` | ✅ | ✅ |
-| `agent:queued` | ✅ | 🟡 declared in `docs/agents/triage-labels.md`, written by a human, read by nothing — `promote-queued` is deferred (§1). 🟡 and not ✅ on this file's own legend: the label is present, the tier it belongs to is not |
+| `agent:queued` | ✅ | ❌ **retired** (#204). Declared once in `docs/agents/triage-labels.md`, written by a human and read by nothing, since `promote-queued` is deferred (§1). Native "blocked by" links do its job, and `implement` already refuses an issue whose blocker is open (§10) |
 | `agent:to-issues` | ✅ | ❌ PRD tier — and the string is double-booked on the tracker: jeffwlawson/winget-manifest-lint#79 (harvest agent comments into issues, §10) proposes the same label for an unrelated job. Neither exists here yet, so it costs nothing to settle, but jeffwlawson/winget-manifest-lint#79 is the one that has to move — this row is upstream's name for upstream's workflow |
 | `agent:follow-ups` | ❌ | ➕ PRs — the marker *and* the manual trigger in one string, disambiguated by event type rather than by a second label a human could choose wrong. Added by review, removed by any filing run that reached a verdict — including one that found every finding already filed by an earlier attempt, and one that read a retraction; removing it by hand is the opt-out (`docs/ADOPTING.md` §3) |
 | `agent:update-branch` | ✅ | ✅ |
@@ -860,15 +860,12 @@ expensive to rediscover.
   reasoning are in §2a, under
   [*Containment transfers authorisation*](#containment-transfers-authorisation-sequencing-does-not);
   it is there rather than only here because the rule keeps being re-derived when it is questioned.
-- **`agent:queued` is written by a human, never by a workflow.** It is the one `agent:*` label no
-  workflow touches at all (§8) — `agent:in-progress` and `agent:blocked` have no consumer either,
-  but a workflow applies and clears them — and until `promote-queued` exists (§1, §9.6) nothing
-  removes it either, so a workflow applying it would be manufacturing a state only a human can
-  clear. It also does not
-  belong *inside* a PRD: every slice after the first is queued by construction, and a label saying
-  so is one more thing that can go stale against an ordering the chain already holds. If
-  `promote-queued` ever ships, this becomes "written by a human or by that workflow, on top-level
-  issues only" — and not before.
+- **No label marks a waiting issue; the "blocked by" link does.** `agent:queued` was declared for
+  it, written by a human and touched by no workflow, and it is retired (#204, §8). A native
+  `blocked_by` edge says the same thing and is read: `implement` and `implement-prd` refuse an issue
+  whose blocker is still open, naming it. A label beside the edge was one more thing that could go
+  stale against it, and inside a PRD against an ordering the chain already holds. If
+  `promote-queued` ever ships (§1, §9.6), it reads the edge.
 - **Every workflow refuses a terminal target before it does any work.** A closed or merged PR, a
   closed issue: the guard is the first step, it is itself ungated, and it runs before checkout,
   before `npm ci`, and before the label transitions — so a refused run never claims

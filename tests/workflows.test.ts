@@ -1056,35 +1056,109 @@ describe("PR workflows refuse a closed or merged PR", () => {
 });
 
 /**
- * The refusal the shared group made necessary. Review pins everything to the
- * head SHA in its `labeled` payload — the checkout, and `commitOID` on the
- * posted review — and that payload is snapshotted at label time, so a review
- * queued behind a fix starts once the fix has pushed and still reviews the
- * pre-fix commit. Serialising turned reading-during-a-write into
- * reading-after-one; it did not remove the race. The mutates catch their
- * version at push time via `--force-with-lease` on the same SHA, review
- * publishes instead of failing, so it has to check up front.
+ * The pushing half of #229: every run that pushes and then asks for a review
+ * waits for the pull request to show the pushed commit as its head first, so
+ * the `labeled` payload names it. Bounded, and a timeout still labels, with a
+ * warning naming both commits: the review side settles on the tip itself.
  */
-describe("agent-review refuses a head that moved while it was queued", () => {
-  it("compares the payload SHA against the live head, in the guard", () => {
-    const guard = stepsOf(REVIEW)[0];
-    const run = guard?.run ?? "";
+describe("a run that pushed waits for the PR head before asking for a review", () => {
+  const cases: readonly (readonly [string, string, string])[] = [
+    ["fix.yml", "Request re-review", "PR_NUMBER"],
+    ["update-branch.yml", "Request a review of the resolution", "PR_NUMBER"],
+    ["implement.yml", "Request review", "NEW_PR"],
+    ["implement-prd.yml", "Request review", "SLICE_PR"],
+  ];
 
-    expect(guard?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
-    expect(run).toContain("--json headRefOid");
-    expect(run).toContain('"$current" != "$HEAD_SHA"');
+  it.each(cases)("%s: waits for headRefOid to equal the pushed commit, then labels", (file, name, pr) => {
+    const steps = stepsOf(path.join(WORKFLOW_DIR, file));
+    const push = steps.find((s) => s.id === "push");
+    const step = steps.find((s) => s.name === name);
+    const run = step?.run ?? "";
+
+    expect(push?.run ?? "").toContain('echo "head=$(git rev-parse HEAD)"');
+    expect(step?.env?.["PUSHED_SHA"]).toBe("${{ steps.push.outputs.head }}");
+    expect(step?.env?.["HEAD_WAIT_SECONDS"]).toBe("60");
+    expect(run).toContain(`gh pr view "$${pr}" --json headRefOid --jq .headRefOid`);
+    expect(run).toContain('[ "$head" = "$PUSHED_SHA" ]');
+    expect(run.indexOf("--json headRefOid")).toBeLessThan(run.indexOf('--add-label "agent:review"'));
+  });
+
+  it.each(cases)("%s: a wait that times out warns, naming both commits, and labels anyway", (file, name) => {
+    const run = stepsOf(path.join(WORKFLOW_DIR, file)).find((s) => s.name === name)?.run ?? "";
+    const timeout = run.slice(run.indexOf('if [ "$SECONDS" -ge "$deadline" ]; then'));
+    const arm = timeout.slice(0, timeout.search(/\n\s*fi\n/));
+
+    expect(arm).toContain("::warning::");
+    expect(arm).toContain("${head:-an unreadable head}");
+    expect(arm).toContain("${PUSHED_SHA}");
+    expect(arm).toContain("break");
+    expect(arm).not.toContain("exit");
+  });
+});
+
+/**
+ * Which commit a review is about (#229). The `labeled` payload names the head
+ * at label time, and that is stale twice over: a review queued behind a fix
+ * starts after the fix has pushed, and GitHub moves a pull request's head
+ * asynchronously after a push, so a label added the moment a run pushed can
+ * carry the commit before the push, with `headRefOid` agreeing. #228 posted its
+ * verdict on the pre-fix commit that way.
+ *
+ * So the pre-flight reads the branch tip from git, reviews it where it
+ * descends from the payload's commit, refuses by name where it does not, and
+ * everything after reads the one commit it settled on. The branches are
+ * executed in `tests/review-preflight.test.ts`; what is held here is the
+ * wiring, which no execution of one step can see.
+ */
+describe("agent-review settles on one commit and reads nothing else", () => {
+  const guard = (): Step | undefined => stepsOf(REVIEW)[0];
+  const run = (): string => guard()?.run ?? "";
+  const RESOLVED = "${{ steps.state.outputs.sha }}";
+
+  it("reads the branch tip from git, not from the pull request", () => {
+    expect(guard()?.id).toBe("state");
+    expect(guard()?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(run()).toContain('ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"');
+    expect(run()).toContain(`awk -v ref="refs/heads/\${BRANCH}" '$2 == ref { print $1 }'`);
+    expect(run()).toContain('[ "$tip" != "$HEAD_SHA" ]');
     // Distinct from the not-open refusal: same step, two states, and a human
     // reading only the comment has to be able to tell them apart.
-    expect(run).toContain("this PR is not open");
-    expect(run).toContain("moved while this run was queued");
+    expect(run()).toContain("this PR is not open");
+    expect(run()).toContain("moved while this run was queued");
+  });
+
+  it("follows the tip only where it descends from the labelled commit, and waits for the PR to show it", () => {
+    const moved = run().slice(run().indexOf('[ "$tip" != "$HEAD_SHA" ]'));
+
+    expect(moved).toContain('compare/${HEAD_SHA}...${tip}');
+    expect(moved).toContain('[ "$relation" != "ahead" ]');
+    expect(moved.indexOf('[ "$relation" != "ahead" ]')).toBeLessThan(moved.indexOf("--json headRefOid"));
+    expect(moved).toContain('[ "$head" = "$tip" ]');
+    expect(guard()?.env?.["HEAD_WAIT_SECONDS"]).toBe("60");
+  });
+
+  it("writes the commit it settled on beside the go-ahead, and nowhere else says proceed", () => {
+    expect(run()).toContain('echo "sha=${tip}" >> "$GITHUB_OUTPUT"');
+    expect(run().match(/proceed=true/g)).toHaveLength(1);
+    expect(run().indexOf('echo "sha=${tip}"')).toBeLessThan(run().indexOf('echo "proceed=true"'));
   });
 
   /**
-   * An unreadable `gh pr view` must not refuse — an API blip is not evidence
-   * the branch moved — so the comparison is guarded on a non-empty answer.
+   * The acceptance criterion in one place: the checkout, the CI wait and both
+   * status posts read the resolved commit, and no step past the guard reads the
+   * payload's head again.
    */
-  it("proceeds when the live head cannot be read", () => {
-    expect(stepsOf(REVIEW)[0]?.run ?? "").toContain('[ -n "$current" ]');
+  it("checks out, waits on CI for, and posts every status on the resolved commit", () => {
+    const steps = stepsOf(REVIEW);
+    const named = (prefix: string): Step | undefined => steps.find((s) => (s.name ?? "").startsWith(prefix));
+
+    expect(named("Checkout PR head")?.with?.["ref"]).toBe(RESOLVED);
+    expect(named("Wait for other checks")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
+    expect(named("Post the verdict as a commit status")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
+    expect(named("Post an error verdict")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
+    for (const step of steps.slice(1)) {
+      expect(JSON.stringify(step)).not.toContain("pull_request.head.sha");
+    }
   });
 });
 
@@ -1383,10 +1457,10 @@ describe("agent-review posts its verdict as a commit status", () => {
   const errorStep = (): Step | undefined => stepNamed("Post an error verdict");
 
   /**
-   * On the SHA the payload named, which is the same one the checkout, the CI
-   * wait and the review's own `commitOID` are pinned to — and which the
-   * pre-flight above refuses to proceed past if the branch has moved. Reading
-   * the live head here instead would post a verdict about a diff nobody read.
+   * On the commit the pre-flight settled on (#229), which is the same one the
+   * checkout, the CI wait and the review's own `commitOID` are pinned to.
+   * Reading the payload or the live head here instead would post a verdict
+   * about a diff nobody read.
    */
   it.each([
     ["the verdict", "Post the verdict as a commit status"],
@@ -1394,7 +1468,7 @@ describe("agent-review posts its verdict as a commit status", () => {
   ])("posts %s on the commit that was reviewed", (_case: string, name: string) => {
     const step = stepNamed(name);
 
-    expect(step?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(step?.env?.["HEAD_SHA"]).toBe("${{ steps.state.outputs.sha }}");
     expect(step?.run ?? "").toContain('/statuses/${HEAD_SHA}');
   });
 
@@ -1930,7 +2004,7 @@ describe("agent-fix asks for the re-review its own push needs", () => {
     const push = stepNamed("Push branch");
 
     expect(push?.id).toBe("push");
-    expect(push?.run ?? "").toContain('echo "pushed=true" >> "$GITHUB_OUTPUT"');
+    expect(push?.run ?? "").toContain('echo "pushed=true"');
     expect(push?.run ?? "").toContain('echo "pushed=false" >> "$GITHUB_OUTPUT"');
   });
 
@@ -3491,13 +3565,19 @@ describe("every workflow in the loop is called rather than copied", () => {
    * checks the base branch out without it, and every run would then act on the
    * wrong tree. Two reasons, one line, and the weaker of them was the one with
    * no check.
+   *
+   * Review's ref is the commit its pre-flight settled on rather than the
+   * payload's (#229), which is still an explicit ref and still the PR head.
    */
   it.each(PR_WORKFLOWS)("%s: checks the PR head out by explicit ref", (file) => {
     const checkout = stepsOf(file).filter((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+    const ref = file.endsWith("review.yml")
+      ? "${{ steps.state.outputs.sha }}"
+      : "${{ github.event.pull_request.head.sha }}";
 
     expect(checkout).not.toHaveLength(0);
     for (const step of checkout) {
-      expect(step.with?.["ref"]).toBe("${{ github.event.pull_request.head.sha }}");
+      expect(step.with?.["ref"]).toBe(ref);
     }
   });
 

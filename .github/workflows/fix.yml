@@ -132,10 +132,11 @@ jobs:
       # another near-identical reply on every thread.
       #
       # The live head is the **branch ref**, read with `git ls-remote`, not the
-      # pull request's `headRefOid` that review's guard reads: in the case that
-      # raised this, the pull request itself went on reporting the old SHA after
-      # the branch had moved, so asking the pull request would have agreed with
-      # the stale event. There is no checkout yet, so the remote is named by URL
+      # pull request's `headRefOid`: in the case that raised this, the pull
+      # request itself went on reporting the old SHA after the branch had moved,
+      # so asking the pull request would have agreed with the stale event.
+      # Review's guard reads the tip the same way since #229. There is no
+      # checkout yet, so the remote is named by URL
       # and authenticated the way `actions/checkout` does it, with the header
       # masked. A branch name reaches git as a quoted argument, never as syntax.
       #
@@ -324,7 +325,10 @@ jobs:
             exit 0
           fi
           git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
-          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "pushed=true"
+            echo "head=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
 
       # Reply into every thread the agent reported on, and resolve **none** of
       # them (#111, and #109 decision 1). The reply still says whether the run
@@ -475,8 +479,27 @@ jobs:
         env:
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # The commit this run pushed, and how long the PR gets to show it as
+          # its head before the label goes on anyway (#229).
+          PUSHED_SHA: ${{ steps.push.outputs.head }}
+          HEAD_WAIT_SECONDS: "60"
         run: |
           set -euo pipefail
+          # Wait for the pull request to show the pushed commit as its head
+          # before asking for the review (#229). GitHub moves a PR's head
+          # asynchronously after a push, and a label added before it has would
+          # carry the commit before the push in its payload. Bounded: past it,
+          # the label goes on anyway with a warning, since review reads the
+          # branch tip itself and refuses by name where it cannot settle on it.
+          head=""
+          deadline=$((SECONDS + HEAD_WAIT_SECONDS))
+          until head=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$PUSHED_SHA" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::warning::PR #${PR_NUMBER} still shows ${head:-an unreadable head} as its head ${HEAD_WAIT_SECONDS}s after ${PUSHED_SHA} was pushed. Asking for the review anyway: it reads the branch tip itself, and refuses by name if it cannot settle on ${PUSHED_SHA}."
+              break
+            fi
+            sleep 5
+          done
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
             printf 'The fix is pushed, but `agent:review` could not be added, so no re-review was requested. Add `agent:review` to this PR by hand. Re-adding `agent:fix` would work the same threads again, since a thread stays open until a review verifies the fix landed.\n' \
               > "${RUNNER_TEMP}/failure_reason.txt"

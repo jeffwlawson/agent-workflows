@@ -51,6 +51,14 @@ so a round it declined its way through ends on a human rather than on another pa
 run that marks such a pull request **ready**, because there is no re-review coming to do it (#159):
 a run that pushed hands the pull request to a review, and a run that did not hands it back.
 
+A review asked for **right after a push** is about the pushed commit, and two halves make it so
+(#229). GitHub moves a pull request's head asynchronously after a push, so a label added at once
+can carry the commit before the push in its payload. Each run that pushes waits, about a minute,
+for the pull request to show the pushed commit before it labels, and labels anyway with a warning
+if it never does. And the review does not trust its payload: it reads the branch tip from git,
+reviews the tip where it descends from the labelled commit, refuses by name where it does not,
+and checks out, waits on CI for and posts every status on that one commit.
+
 Review adds a trigger label in two cases. The first is on the pull request, and only where an
 adopter asked for it (#102): with `auto-fix: true`, a job of its own adds `agent:fix` when the
 verdict is the round-1 *Changes recommended* — **once per pull request**, recorded by

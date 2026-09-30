@@ -356,11 +356,16 @@ jobs:
         # process `cwd`: the runner still does its git work in the checkout.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.2 -- agent-workflows implement
 
+      # `head` is the commit `Request review` waits for the new PR to show.
       - name: Push branch
+        id: push
         if: steps.preflight.outputs.refused == 'false' && success()
         env:
           BRANCH: ${{ steps.branch.outputs.name }}
-        run: git push --force origin "$BRANCH"
+        run: |
+          set -euo pipefail
+          git push --force origin "$BRANCH"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Open draft PR
         if: steps.preflight.outputs.refused == 'false' && success()
@@ -406,8 +411,27 @@ jobs:
           NEW_PR: ${{ steps.open_pr.outputs.number }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # The commit this run pushed, and how long the PR gets to show it as
+          # its head before the label goes on anyway (#229).
+          PUSHED_SHA: ${{ steps.push.outputs.head }}
+          HEAD_WAIT_SECONDS: "60"
         run: |
           set -uo pipefail
+          # Wait for the pull request to show the pushed commit as its head
+          # before asking for the review (#229). GitHub moves a PR's head
+          # asynchronously after a push, and a label added before it has would
+          # carry the commit before the push in its payload. Bounded: past it,
+          # the label goes on anyway with a warning, since review reads the
+          # branch tip itself and refuses by name where it cannot settle on it.
+          head=""
+          deadline=$((SECONDS + HEAD_WAIT_SECONDS))
+          until head=$(gh pr view "$NEW_PR" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$PUSHED_SHA" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::warning::PR #${NEW_PR} still shows ${head:-an unreadable head} as its head ${HEAD_WAIT_SECONDS}s after ${PUSHED_SHA} was pushed. Asking for the review anyway: it reads the branch tip itself, and refuses by name if it cannot settle on ${PUSHED_SHA}."
+              break
+            fi
+            sleep 5
+          done
           gh pr edit "$NEW_PR" --add-label "agent:review"
           if [ "$HAS_PAT" != "true" ]; then
             echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${NEW_PR}."

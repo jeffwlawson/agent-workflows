@@ -20,6 +20,7 @@ import {
   readPolicies,
   triggeredFiles,
   unallowedFiles,
+  unreadable,
   type ActionsPolicy,
 } from "./policies.js";
 import type { CliIo } from "../cli.js";
@@ -97,9 +98,10 @@ export interface RepoFacts {
   /**
    * Every Actions policy that applies here, this repository's own and its
    * parents'. `undefined` where the list could not be read, which is never "no
-   * policy": the first is a thing to check and the second an error.
+   * policy": the first is a thing to check and the second an error. An entry is
+   * `undefined` where that one policy could not be read, on the same terms.
    */
-  readonly actionsPolicies: readonly ActionsPolicy[] | undefined;
+  readonly actionsPolicies: readonly (ActionsPolicy | undefined)[] | undefined;
   /** This package's tags, newest first — what a pin is measured against. */
   readonly releases: readonly string[] | undefined;
 }
@@ -741,7 +743,9 @@ export const diagnose = (
       `GitHub blocks \`pull_request_target\` on a public repository from 2026-11-02 unless an ` +
       `Actions event policy allows it, and these callers run on nothing else: a label is added ` +
       `and no run starts, with nothing in the loop saying why.`;
-    if (facts.actionsPolicies === undefined) {
+    // One policy unread is as unknown as the list unread, but only where the
+    // ones that were read leave a caller uncovered.
+    if (facts.actionsPolicies === undefined || (unallowed.length > 0 && unreadable(facts.actionsPolicies))) {
       add({
         severity: "warning",
         check: "pull_request_target policy",

@@ -17,6 +17,7 @@ import {
   POLICY_SETTINGS,
   triggeredFiles,
   unallowedFiles,
+  unreadable,
   type PolicySurface,
 } from "./policies.js";
 
@@ -501,7 +502,13 @@ const allowPullRequestTarget = (
     return { file: POLICY_CHANGE, action: "unchanged", note: `allows \`pull_request_target\` for ${triggered.join(", ")}` };
   }
 
-  const ours = policies.find((policy) => policy.name === POLICY_NAME && policy.id !== undefined);
+  // One that could not be read may be the one allowing them, or this step's
+  // own: creating a second beside it is a write on a fact nobody read.
+  if (unreadable(policies)) {
+    return byHand(`Could not read every Actions policy that applies to this repository.`, unallowed);
+  }
+
+  const ours = policies.find((policy) => policy?.name === POLICY_NAME && policy.id !== undefined);
   if (ours?.id !== undefined) {
     // Switched off, or to evaluate, by somebody: that is a decision, and
     // turning it back on behind them is the silent reversion a re-run must
@@ -527,6 +534,21 @@ const allowPullRequestTarget = (
 };
 
 /**
+ * Whether `dir` is this package's own checkout (#238), by the name its
+ * manifest declares. Its callers are real and pinned like anyone's, but the
+ * setup prompt is an adopter's to-do list, and here it is a stray file at the
+ * root of the repository that wrote it.
+ */
+const isOwnRepository = (dir: string): boolean => {
+  try {
+    const manifest: unknown = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+    return typeof manifest === "object" && manifest !== null && (manifest as { name?: unknown }).name === PACKAGE_NAME;
+  } catch {
+    return false;
+  }
+};
+
+/**
  * The one file here that is not ours by construction. `SETUP.md` is a name an
  * adopter may already be using for something of their own, and overwriting a
  * document somebody wrote is not the same act as updating a caller this wrote —
@@ -537,6 +559,13 @@ const putSetup = (
   workflows: readonly string[],
   callers: readonly string[],
 ): InitChange => {
+  if (isOwnRepository(dir)) {
+    return {
+      file: SETUP_FILE,
+      action: "kept",
+      note: `this is ${PACKAGE_NAME}'s own repository, and the setup prompt is for an adopter's`,
+    };
+  }
   const full = path.join(dir, SETUP_FILE);
   if (fs.existsSync(full) && !fs.readFileSync(full, "utf8").includes(setupMarker())) {
     return {

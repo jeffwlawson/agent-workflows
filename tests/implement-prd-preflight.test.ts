@@ -508,6 +508,43 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.writes).toEqual([]);
   });
 
+  /**
+   * A PRD reopened after its PRD PR merged, to add a sub-issue: its rows are in
+   * a merged body. Read from open PRD PRs only, every slice would look rowless
+   * and the run would try to open a PRD PR from a branch already merged. Rows
+   * are read from PRD PRs in every state, so it builds the new sub-issue.
+   */
+  it("reads rows from a merged PRD PR, so a reopened PRD resumes nothing", () => {
+    const outcome = runPreflight({
+      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "MERGED" } : p)),
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.output).toContain("slice_pr=\n");
+    expect(outcome.output).toContain("backfill=\n");
+    expect(outcome.output).toContain("sub=173\n");
+  });
+
+  /** …and with nothing left to build, it is refused as finished, as before, not made a finishing run. */
+  it("refuses a PRD whose PRD PR merged with every row as finished", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
+      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "MERGED" } : p)),
+    });
+
+    expect(outcome.output).toContain("refused=true\n");
+    expect(outcome.output).not.toContain("finishing=");
+  });
+
+  it("reads rows from a closed PRD PR too", () => {
+    const outcome = runPreflight({
+      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "CLOSED" } : p)),
+    });
+
+    expect(outcome.output).toContain("slice_pr=\n");
+    expect(outcome.output).toContain("backfill=\n");
+  });
+
   /** The markers the rows are read between are the ones the runner splices between. */
   it("reads rows between the slices table's own markers", () => {
     expect(preflight().run ?? "").toContain(`--arg start "${SLICES_START}" --arg end "${SLICES_END}"`);
@@ -523,8 +560,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     const run = preflight().run ?? "";
 
     for (const call of [
-      "gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft,body",
-      "gh pr list --state merged --limit 1000 --json number,headRefName,baseRefName,body,mergedAt",
+      "gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft",
+      "gh pr list --state all --limit 1000 --json number,state,headRefName,baseRefName,body,mergedAt",
     ]) {
       expect(run).toContain(call);
 

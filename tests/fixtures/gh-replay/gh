@@ -32,7 +32,7 @@
  *
  * Subcommands recorded:
  *   run view {id} --log-failed                     — the log is unavailable
- *   pr list --state open|merged|all [--head {branch}] [--base {branch}] --json {fields}
+ *   pr list --state open|all [--head {branch}] [--base {branch}] --json {fields}
  *                                                  — pull requests from GH_REPLAY_PULLS
  *   pr view {n} --json {fields}                    —  "     "    "
  *   issue edit | issue comment                     — logged to GH_REPLAY_LOG, exit 0
@@ -138,13 +138,13 @@ const printJson = (value) => {
 const only = (pull) => Object.fromEntries((argOf("--json") ?? "").split(",").map((field) => [field, pull[field]]));
 
 // `gh pr list`, which queries open pull requests only under `--state open`,
-// merged ones only under `--state merged`, every state under `--state all`,
-// and prints, per `--json`, an array of objects holding exactly the fields
-// named. `--head` keeps the ones from that branch and `--base` the ones into it.
+// every state under `--state all`, and prints, per `--json`, an array of
+// objects holding exactly the fields named. `--head` keeps the ones from that
+// branch and `--base` the ones into it.
 if (argv[0] === "pr" && argv[1] === "list") {
   const state = argOf("--state", "-s");
 
-  if (argOf("--json") === undefined || !["open", "merged", "all"].includes(state)) unrecorded();
+  if (argOf("--json") === undefined || (state !== "open" && state !== "all")) unrecorded();
 
   const head = argOf("--head", "-H");
   const base = argOf("--base", "-B");
@@ -153,7 +153,7 @@ if (argv[0] === "pr" && argv[1] === "list") {
     fixture("GH_REPLAY_PULLS", [])
       .filter(
         (pull) =>
-          (state === "all" || pull.state === state.toUpperCase()) &&
+          (state === "all" || pull.state === "OPEN") &&
           (head === undefined || pull.headRefName === head) &&
           (base === undefined || pull.baseRefName === base),
       )

@@ -286,7 +286,7 @@ jobs:
           #
           # Not `|| true`, for the shape query's reason: "could not look" read
           # as "none open" builds a slice on top of one nobody has merged.
-          pulls=$(gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft,body)
+          pulls=$(gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft)
           slice_prs=$(jq -c "[.[] | select(.baseRefName | startswith(\"agent/prd-${ISSUE_NUMBER}-\"))]" <<< "$pulls")
           open_slices=$(jq 'length' <<< "$slice_prs")
           named=$(jq -r 'map("#\(.number) (`\(.headRefName)` into `\(.baseRefName)`)") | join(", ")' <<< "$slice_prs")
@@ -321,6 +321,12 @@ jobs:
           # every merged slice PR is rowless, which is the first slice's merge
           # dying before it could open one.
           #
+          # Rows are read from PRD PRs in **every state**, not only the open
+          # one. A PRD reopened after its PRD PR merged (to add a sub-issue,
+          # say) has its rows in a merged body; read from open PRs only, every
+          # slice it ever built would look rowless, and the run would try to
+          # open a PRD PR from a branch that is merged or gone.
+          #
           # A merged PR into the PRD branch that names no sub-issue, by `Part of
           # #<n>` or by slice branch name, is not a slice a row could be written
           # for, and is left alone rather than holding the chain up.
@@ -336,16 +342,17 @@ jobs:
           #
           # Not `|| true`, for the shape query's reason: "could not look" read
           # as "every row written" is the skip this lookup exists to end.
-          rows=$(jq -c --arg start "<!-- agent:slices -->" --arg end "<!-- /agent:slices -->" '[.[].body // ""
+          history=$(gh pr list --state all --limit 1000 --json number,state,headRefName,baseRefName,body,mergedAt)
+          rows=$(jq -c --arg parent "$ISSUE_NUMBER" --arg start "<!-- agent:slices -->" --arg end "<!-- /agent:slices -->" '[.[]
+            | select(.headRefName | startswith("agent/prd-\($parent)-")) | .body // ""
             | select(contains($start)) | split($start)[1] | split($end)[0] | split("\n")[]
             | capture("^\\s*\\|(?<cell>(?:[^|\\\\]|\\\\.)*)\\|").cell
-            | capture("\\(#(?<n>[0-9]+)\\)\\s*$").n | tonumber]' <<< "$prd_prs")
-          rowless=$(gh pr list --state merged --limit 1000 --json number,headRefName,baseRefName,body,mergedAt \
-            | jq -c --arg parent "$ISSUE_NUMBER" --argjson rows "$rows" '[.[]
-                | select(.baseRefName | startswith("agent/prd-\($parent)-"))
+            | capture("\\(#(?<n>[0-9]+)\\)\\s*$").n | tonumber]' <<< "$history")
+          rowless=$(jq -c --arg parent "$ISSUE_NUMBER" --argjson rows "$rows" '[.[]
+                | select(.state == "MERGED" and (.baseRefName | startswith("agent/prd-\($parent)-")))
                 | {number, mergedAt, sub: ((.body // "" | capture("Part of #(?<n>[0-9]+)").n) // (.headRefName | capture("^agent/slice-\($parent)-(?<n>[0-9]+)-").n) // null)}
                 | select(.sub != null) | select(.sub | tonumber | IN($rows[]) | not)]
-              | sort_by(.mergedAt) | map(.number)')
+              | sort_by(.mergedAt) | map(.number)' <<< "$history")
 
           # One slice PR goes through the merge step: the open one, merged this
           # run and so last in merge order, or failing that the rowless one that

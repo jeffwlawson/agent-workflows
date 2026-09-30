@@ -2389,7 +2389,7 @@ time, about 100 minutes were slices parked on 🔵 because slice PRs got no CI, 
 was 38 minutes of a human rebuilding evidence by hand. 115 workflow runs started; about 70% did
 nothing.
 
-The run filed nine issues against this repository (#199, #207, #209, #211, #212–#217). Read one at a
+The run filed ten issues against this repository (#199, #207, #209, #211, #212–#217). Read one at a
 time, each is a bug with a fix. Read together, most trace to one decision: a slice PR's base is the
 PRD branch, not the default branch. CI filters written for the default branch miss it; the branch it
 targets drifts; `Closes #N` does nothing on a non-default base, so the chain closes sub-issues itself

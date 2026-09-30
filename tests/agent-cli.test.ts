@@ -26,8 +26,10 @@ import {
   type RepoFacts,
 } from "../setup/doctor.js";
 import {
+  livePolicySurface,
   parsePolicies,
   POLICY_NAME,
+  readPolicies,
   type ActionsPolicy,
   type PolicyBody,
   type PolicySurface,
@@ -48,6 +50,44 @@ const offline: PolicySurface = {
   update: () => {
     throw new Error("init wrote an Actions policy in a test that is not about it");
   },
+};
+
+/**
+ * `gh` as the replay in `tests/fixtures/gh-replay`, for the tests that run the
+ * live policy surface. Its policy list has the real list's shape, with no
+ * `conditions` or `rules` (#238), so a reader that rules on the list rather
+ * than on each policy's own endpoint sees nothing allowed and fails here.
+ * `policies` are served in full from the per-id endpoint, and what `init`
+ * wrote is read back from `GH_REPLAY_LOG`, one call per line.
+ */
+const replayed = <T>(
+  scenario: { visibility?: string; policies?: readonly object[]; unreadable?: readonly number[] },
+  body: () => T,
+): { result: T; writes: unknown[][] } => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-gh-replay-"));
+  const log = path.join(temp, "writes.log");
+  const policies = path.join(temp, "policies.json");
+  fs.writeFileSync(policies, JSON.stringify(scenario.policies ?? []));
+  const env: Record<string, string> = {
+    PATH: `${path.resolve("tests", "fixtures", "gh-replay")}${path.delimiter}${process.env["PATH"] ?? ""}`,
+    GH_REPLAY_LOG: log,
+    GH_REPLAY_POLICIES: policies,
+    ...(scenario.visibility === undefined ? {} : { GH_REPLAY_VISIBILITY: scenario.visibility }),
+    ...(scenario.unreadable === undefined ? {} : { GH_REPLAY_POLICY_FAILURE: scenario.unreadable.join(",") }),
+  };
+  const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  try {
+    const result = body();
+    const written = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
+    return { result, writes: written.map((line) => JSON.parse(line) as unknown[]) };
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 };
 
 /**
@@ -514,6 +554,24 @@ describe("init installs the reference callers into an adopting repo", () => {
   });
 
   /**
+   * `SETUP.md` is the adopter's judgement work, and in this package's own
+   * repository it is noise at the root of a tree that already does that work
+   * (#238). The callers are still pinned, since this repository runs them.
+   */
+  it("writes no SETUP.md into the package's own repository", async () => {
+    const root = adopted();
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: manifest.name }));
+
+    const changes = await init({ dir: root, github: offline });
+
+    expect(fs.existsSync(path.join(root, "SETUP.md"))).toBe(false);
+    const change = changes.find((c) => c.file === "SETUP.md");
+    expect(change?.action).toBe("kept");
+    expect(change?.note).toContain(manifest.name);
+    expect(changes.filter((c) => c.file.endsWith(".yml")).every((c) => c.action === "created")).toBe(true);
+  });
+
+  /**
    * `SETUP.md` is a name an adopter may already be using. Overwriting the
    * callers is the point; overwriting a document somebody wrote is not, so the
    * one file that is not ours by construction is the one that carries a marker
@@ -930,6 +988,47 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     expect(changes.filter((c) => c.file.endsWith(".yml")).every((c) => c.action === "created")).toBe(true);
   });
 
+  /**
+   * Against the replay, whose list omits what each policy says (#238): a
+   * second run reads the policy the first one created from its own endpoint,
+   * finds it allows every caller, and writes nothing.
+   */
+  it.skipIf(process.platform === "win32")("reads each policy in full, so a re-run leaves its own alone", () => {
+    const root = adopted();
+
+    const first = replayed({ visibility: "PUBLIC" }, () => init({ dir: root, github: livePolicySurface(root) }));
+
+    expect(first.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
+    expect(first.writes.map((call) => call.slice(0, 3))).toEqual([["api", "--method", "POST"]]);
+    const created = { id: 6133, target: "actions", source_type: "Repository", source: "repo", ...(first.writes[0]?.[4] as object) };
+
+    const second = replayed({ visibility: "PUBLIC", policies: [created] }, () =>
+      init({ dir: root, github: livePolicySurface(root) }),
+    );
+
+    expect(second.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(second.writes).toEqual([]);
+  });
+
+  /**
+   * A policy whose detail could not be read may be the very one that allows
+   * the callers, or this step's own: creating a second beside it, or calling
+   * the repository uncovered, would both be verdicts on a fact nobody read.
+   */
+  it.skipIf(process.platform === "win32")("leaves the policy to a human where one could not be read", () => {
+    const root = adopted();
+    const theirs = { id: 4, name: "theirs", enforcement: "active" };
+
+    const { result, writes } = replayed({ visibility: "PUBLIC", policies: [theirs], unreadable: [4] }, () =>
+      init({ dir: root, github: livePolicySurface(root) }),
+    );
+
+    const policy = result.find((c) => c.file === POLICY_CHANGE);
+    expect(policy?.action).toBe("kept");
+    expect(policy?.note).toContain("Could not read");
+    expect(writes).toEqual([]);
+  });
+
   it.each([
     ["visibility", undefined, []],
     ["policies", "public", undefined],
@@ -1137,6 +1236,88 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(code).toBe(0);
       expect(err).not.toContain("pull_request_target policy");
       expect(out).toContain("warn  pull_request_target policy: Could not read the Actions policies");
+    });
+
+    /**
+     * Read the way `gatherFacts` reads them, from the replay whose list omits
+     * what each policy says (#238): the policy `init` creates, listed and then
+     * read in full, is a pass.
+     */
+    it.skipIf(process.platform === "win32")("passes on the policy init creates, read the way GitHub serves it", async () => {
+      const root = await installed();
+      const created = {
+        id: 6133,
+        name: POLICY_NAME,
+        enforcement: "active",
+        target: "actions",
+        source_type: "Repository",
+        source: "repo",
+        conditions: { workflow_path: { include: callers, exclude: [] } },
+        rules: [{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }],
+      };
+
+      const { result: actionsPolicies } = replayed({ policies: [created] }, () => readPolicies(root));
+      const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
+
+      expect(actionsPolicies).toEqual([
+        { id: 6133, name: POLICY_NAME, enforcement: "active", include: callers, exclude: [], allowedEvents: ["pull_request_target"] },
+      ]);
+      expect(`${out}${err}`).not.toContain("pull_request_target policy");
+      expect(code).toBe(0);
+    });
+
+    /**
+     * A parent's policy is read through the repository's own per-id endpoint,
+     * the one GitHub's REST description gives an enterprise-sourced example for,
+     * and the only one the replay serves. One allowing every caller is a pass.
+     */
+    it.skipIf(process.platform === "win32")("passes on a parent's policy, read through the repository", async () => {
+      const root = await installed();
+      const theirs = {
+        id: 1,
+        name: "Allow the loop",
+        target: "actions",
+        source_type: "Enterprise",
+        source: "enterprise",
+        enforcement: "active",
+        conditions: { workflow_path: { include: callers, exclude: [] } },
+        rules: [{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }],
+      };
+
+      const { result: actionsPolicies } = replayed({ policies: [theirs] }, () => readPolicies(root));
+      const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
+
+      expect(actionsPolicies).toEqual([
+        { id: 1, name: "Allow the loop", enforcement: "active", include: callers, exclude: [], allowedEvents: ["pull_request_target"] },
+      ]);
+      expect(`${out}${err}`).not.toContain("pull_request_target policy");
+      expect(code).toBe(0);
+    });
+
+    /** One policy unreadable is that policy unknown, and never that policy absent. */
+    it.skipIf(process.platform === "win32")("warns rather than failing where one policy could not be read", async () => {
+      const root = await installed();
+
+      const { result: actionsPolicies } = replayed({ policies: [{ id: 4, name: "theirs", enforcement: "active" }], unreadable: [4] }, () =>
+        readPolicies(root),
+      );
+      const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
+
+      expect(actionsPolicies).toEqual([undefined]);
+      expect(code).toBe(0);
+      expect(err).not.toContain("pull_request_target policy");
+      expect(out).toContain("warn  pull_request_target policy: Could not read");
+    });
+
+    it("rules on the policies it could read where those already allow every caller", async () => {
+      const { code, out, err } = await check(await installed(), {
+        ...healthy(),
+        visibility: "public",
+        actionsPolicies: [undefined, allowing(callers)],
+      });
+
+      expect(`${out}${err}`).not.toContain("pull_request_target policy");
+      expect(code).toBe(0);
     });
 
     it("says nothing on a private repository", async () => {

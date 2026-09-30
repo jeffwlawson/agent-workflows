@@ -28,6 +28,10 @@ npx --yes @jeffwlawson/agent-workflows@<version> init      # scaffold the caller
 npx --yes @jeffwlawson/agent-workflows@<version> doctor    # check what fails silently
 ```
 
+Run them from **outside** this package's own checkout. Inside it, `npx` resolves the local project
+instead of the published package and fails with `sh: 1: agent-workflows: not found`; point `init` at
+this repository with `--dir` from somewhere else.
+
 Those two are typed at a terminal, so no workflow has written the scoped `.npmrc` for them — see
 *Installing it* below for the two `npm config set` lines. Without them the scope resolves to npmjs
 and `npx` exits `404 Not Found`, which reads as "no such package" rather than "not authenticated".

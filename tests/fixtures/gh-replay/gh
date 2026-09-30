@@ -28,11 +28,17 @@
  *                                                  — blockers from GH_REPLAY_BLOCKED_BY
  *   repos/{owner}/{repo}                           — the repository from GH_REPLAY_REPO
  *   repos/{owner}/{repo}/compare/{base}...{head}   : the comparison from GH_REPLAY_COMPARE
+ *   repos/{owner}/{repo}/actions/policies?…        : the list, from GH_REPLAY_POLICIES,
+ *                                                    in the list's own shape (below)
+ *   repos/{owner}/{repo}/actions/policies/{id}     : one policy in full, from the same
+ *   --method POST|PUT repos/{owner}/{repo}/actions/policies[/{id}]
+ *                                                  : logged to GH_REPLAY_LOG, exit 0
  *   -X DELETE repos/{owner}/{repo}/git/refs/heads/{branch}
  *                                                  — logged to GH_REPLAY_LOG, exit 0
  *
  * Subcommands recorded:
  *   run view {id} --log-failed                     — the log is unavailable
+ *   repo view --json visibility --jq .visibility   : GH_REPLAY_VISIBILITY, bare
  *   pr list --state open|all [--head {branch}] [--base {branch}] --json {fields}
  *                                                  — pull requests from GH_REPLAY_PULLS
  *   pr view {n} --json {fields}                    —  "     "    "
@@ -69,6 +75,11 @@
  *   GH_REPLAY_COMPARE_FAILURE  set: the comparison cannot be read
  *   GH_REPLAY_REPO        path to the repository object; default `{}`
  *   GH_REPLAY_THREADS     path to a JSON array of review thread nodes; default none
+ *   GH_REPLAY_VISIBILITY  what `repo view` answers, e.g. PUBLIC; unset has no recording
+ *   GH_REPLAY_POLICIES    path to a JSON array of Actions policies, each in full
+ *                         (`conditions` and `rules` included), a parent's as well
+ *                         as the repository's; default none
+ *   GH_REPLAY_POLICY_FAILURE  comma-separated policy ids whose detail cannot be read
  *   GH_REPLAY_CREATED     the number `pr create` answers with; default 300
  *   GH_REPLAY_MERGE_FAILURE  set: `pr merge` is logged, then refused
  *   GH_REPLAY_LOG         path each tracker write is appended to, one JSON
@@ -143,6 +154,27 @@ const printJson = (value) => {
   if (filter === undefined) process.stdout.write(`${json}\n`);
   else process.stdout.write(execFileSync("jq", ["-r", filter], { input: json, encoding: "utf8" }));
 };
+
+// `gh repo view --json visibility --jq .visibility`, which prints the enum
+// upper-case and bare (#219). The one filter `init` composes, so no `jq`.
+if (argv[0] === "repo" && argv[1] === "view" && argOf("--json") === "visibility") {
+  const visibility = process.env["GH_REPLAY_VISIBILITY"];
+
+  if (visibility === undefined || argOf("--jq", "-q") !== ".visibility") unrecorded();
+  process.stdout.write(`${visibility}\n`);
+  process.exit(0);
+}
+
+// Actions policy writes: `init`'s create and update (#219). Logged with the
+// body they sent, which `--input` names a file for.
+if (argv[0] === "api" && argv[1] === "--method" && /\/actions\/policies(\/[0-9]+)?$/.test(argv[3] ?? "")) {
+  const log = process.env["GH_REPLAY_LOG"];
+  const input = argOf("--input");
+  const body = input === undefined ? undefined : JSON.parse(readFileSync(input, "utf8"));
+
+  if (log !== undefined) writeFileSync(log, `${JSON.stringify([...argv.slice(0, 4), body])}\n`, { flag: "a" });
+  process.exit(0);
+}
 
 /** One pull request holding exactly the fields `--json` named. */
 const only = (pull) => Object.fromEntries((argOf("--json") ?? "").split(",").map((field) => [field, pull[field]]));
@@ -472,6 +504,34 @@ if (endpoint === "graphql") {
     process.exit(0);
   }
   emit({ data: { repository: { issue: fixture("GH_REPLAY_ISSUE", null) } } });
+  process.exit(0);
+}
+
+// The Actions policies (#238). The **list** carries each policy's id, name,
+// enforcement, source and target and nothing of what it says: no `conditions`,
+// no `rules`. Found 2026-09-30 against the live API, where `init`'s own policy
+// listed as allowing nothing, and a replay serving full objects here is what
+// let that ship. What a policy says comes from its own endpoint, and that is
+// the **repository's** for a parent's policy too: GitHub's REST description
+// (github/rest-api-description, "Get a repository Actions policy") gives an
+// enterprise-sourced policy as that endpoint's example. Only the repository's
+// endpoints are recorded, so a reader that went to `orgs/…` would not be served.
+if (/^repos\/[^/]+\/[^/]+\/actions\/policies\?/.test(endpoint)) {
+  const policies = fixture("GH_REPLAY_POLICIES", []).map(({ conditions: _c, rules: _r, ...listed }) => listed);
+
+  emit({ total_count: policies.length, policies });
+  process.exit(0);
+}
+
+const policyId = /^repos\/[^/]+\/[^/]+\/actions\/policies\/([0-9]+)$/.exec(endpoint);
+
+if (policyId !== null) {
+  const failing = (process.env["GH_REPLAY_POLICY_FAILURE"] ?? "").split(",");
+  const policy = fixture("GH_REPLAY_POLICIES", []).find((candidate) => String(candidate.id) === policyId[1]);
+
+  if (failing.includes(policyId[1])) die("gh: Resource not accessible by integration (HTTP 403)", 1);
+  if (policy === undefined) die("gh: Not Found (HTTP 404)", 1);
+  emit(policy);
   process.exit(0);
 }
 

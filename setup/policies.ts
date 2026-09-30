@@ -83,6 +83,33 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
+/** One policy object, as far as `ActionsPolicy` reads it. */
+const asPolicy = (entry: unknown): ActionsPolicy => {
+  const policy = record(entry);
+  const workflowPath = record(record(policy["conditions"])["workflow_path"]);
+  const events = (Array.isArray(policy["rules"]) ? policy["rules"] : [])
+    .map(record)
+    .find((rule) => rule["type"] === "restrict_action_events");
+  return {
+    id: typeof policy["id"] === "number" ? policy["id"] : undefined,
+    name: typeof policy["name"] === "string" ? policy["name"] : "",
+    enforcement: typeof policy["enforcement"] === "string" ? policy["enforcement"] : "",
+    include: strings(workflowPath["include"]),
+    exclude: strings(workflowPath["exclude"]) ?? [],
+    allowedEvents:
+      events === undefined ? undefined : (strings(record(events["parameters"])["allowed_events"]) ?? []),
+  };
+};
+
+const parseJson = (out: string): unknown => {
+  if (out.trim() === "") return undefined;
+  try {
+    return JSON.parse(out) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
 /**
  * The list endpoint's answer, read as policies, or `undefined` where there was
  * no answer to read, which is never the same as an empty list: "no policy
@@ -92,34 +119,22 @@ const record = (value: unknown): Record<string, unknown> =>
  * Accepts the documented `{ total_count, policies }` and a bare array, since
  * the reference describes the first by reference to another endpoint rather
  * than by example.
+ *
+ * The list names each policy and says nothing of what it does: no
+ * `conditions`, no `rules` (#238). What this returns for an entry of it is
+ * therefore only good for its `id`; `readPolicies` reads the rest from each
+ * policy's own endpoint.
  */
 export const parsePolicies = (out: string): readonly ActionsPolicy[] | undefined => {
-  if (out.trim() === "") return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(out);
-  } catch {
-    return undefined;
-  }
+  const parsed = parseJson(out);
   const list = Array.isArray(parsed) ? parsed : record(parsed)["policies"];
-  if (!Array.isArray(list)) return undefined;
+  return Array.isArray(list) ? list.map(asPolicy) : undefined;
+};
 
-  return list.map((entry): ActionsPolicy => {
-    const policy = record(entry);
-    const workflowPath = record(record(policy["conditions"])["workflow_path"]);
-    const events = (Array.isArray(policy["rules"]) ? policy["rules"] : [])
-      .map(record)
-      .find((rule) => rule["type"] === "restrict_action_events");
-    return {
-      id: typeof policy["id"] === "number" ? policy["id"] : undefined,
-      name: typeof policy["name"] === "string" ? policy["name"] : "",
-      enforcement: typeof policy["enforcement"] === "string" ? policy["enforcement"] : "",
-      include: strings(workflowPath["include"]),
-      exclude: strings(workflowPath["exclude"]) ?? [],
-      allowedEvents:
-        events === undefined ? undefined : (strings(record(events["parameters"])["allowed_events"]) ?? []),
-    };
-  });
+/** One policy's own endpoint, read, or `undefined` where it gave no policy. */
+export const parsePolicy = (out: string): ActionsPolicy | undefined => {
+  const parsed = parseJson(out);
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? asPolicy(parsed) : undefined;
 };
 
 /** A `workflow_path` pattern: `*` stays inside a path segment, `**` crosses them. */
@@ -145,12 +160,21 @@ const allows = (policy: ActionsPolicy, file: string): boolean =>
 export const triggeredFiles = (callers: readonly InstalledCaller[]): readonly string[] =>
   [...new Set(callers.filter((caller) => caller.events.includes(TRIGGER)).map((caller) => caller.file))].sort();
 
-/** Those of them no active policy allows the trigger for. Pure. */
+/**
+ * Those of them no active policy allows the trigger for, ruling only on the
+ * policies that could be read. Pure. Where one could not be (`undefined`) and
+ * this is not empty, the answer is "unknown" rather than "blocked", which is
+ * the caller's to say: see `unreadable`.
+ */
 export const unallowedFiles = (
   callers: readonly InstalledCaller[],
-  policies: readonly ActionsPolicy[],
+  policies: readonly (ActionsPolicy | undefined)[],
 ): readonly string[] =>
-  triggeredFiles(callers).filter((file) => !policies.some((policy) => allows(policy, file)));
+  triggeredFiles(callers).filter((file) => !policies.some((policy) => policy !== undefined && allows(policy, file)));
+
+/** Whether any policy in the list could not be read. */
+export const unreadable = (policies: readonly (ActionsPolicy | undefined)[]): boolean =>
+  policies.some((policy) => policy === undefined);
 
 /**
  * The policy for exactly these files: every event any of them triggers on (see
@@ -212,14 +236,31 @@ export const asVisibility = (raw: string | undefined): "public" | "private" | un
  * Every policy that applies here: the repository's own and, through
  * `has_parents`, its organization's and enterprise's, since an allowing policy
  * up there covers the callers as well as one down here does.
+ *
+ * Listed, then each read from its own endpoint (#238): the list carries no
+ * `conditions` or `rules`, so ruling on it saw every policy as allowing
+ * nothing, `init`'s own included. A policy whose detail could not be read is
+ * `undefined` in its place: unknown, never absent.
+ *
+ * A parent's policy is read through the repository's endpoint as well, not its
+ * owner's: GitHub's REST description gives an enterprise-sourced policy as that
+ * endpoint's example, and the owner's endpoint wants the owner's admin, which a
+ * repository admin running this need not be.
  */
-export const readPolicies = (dir: string, options: GhOptions = { cwd: dir }): readonly ActionsPolicy[] | undefined =>
-  parsePolicies(safeGh(["api", "repos/{owner}/{repo}/actions/policies?per_page=100&has_parents=true"], options));
+export const readPolicies = (
+  dir: string,
+  options: GhOptions = { cwd: dir },
+): readonly (ActionsPolicy | undefined)[] | undefined =>
+  parsePolicies(safeGh(["api", "repos/{owner}/{repo}/actions/policies?per_page=100&has_parents=true"], options))?.map(
+    ({ id }) =>
+      id === undefined ? undefined : parsePolicy(safeGh(["api", `repos/{owner}/{repo}/actions/policies/${id}`], options)),
+  );
 
 /** What `init` asks GitHub and the two writes it may make. The tests supply their own. */
 export interface PolicySurface {
   readonly visibility: () => "public" | "private" | undefined;
-  readonly policies: () => readonly ActionsPolicy[] | undefined;
+  /** As `readPolicies` returns them: `undefined` for the list, or for one policy, unread. */
+  readonly policies: () => readonly (ActionsPolicy | undefined)[] | undefined;
   /** `undefined` on success, and GitHub's words for the refusal otherwise. */
   readonly create: (body: PolicyBody) => string | undefined;
   readonly update: (id: number, body: PolicyBody) => string | undefined;

@@ -20,8 +20,9 @@ jobs:
     # token it is handed, so these have to be at least what the job needs:
     # `contents: write` to push, `issues: write` to transition the parent's
     # labels and close each finished sub-issue, `pull-requests: write` to open
-    # and label the one accumulating PR, and the `packages: read` explained
-    # below.
+    # and label the one accumulating PR, `statuses: read` to record each
+    # merged slice's `agent-review` verdict in the slices table, and the
+    # `packages: read` explained below.
     permissions:
       contents: write
       issues: write
@@ -34,6 +35,7 @@ jobs:
       # any job starts (docs/ADOPTING.md §4).
       packages: read
       pull-requests: write
+      statuses: read
     # No `with:`. The three inputs (`default-branch`, `node-version-file`,
     # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
     secrets:

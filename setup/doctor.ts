@@ -273,6 +273,17 @@ export const REQUIRED_PERMISSIONS: readonly {
       "because the merge is pushed by the time it runs",
   },
   {
+    permission: "statuses",
+    value: "read",
+    workflows: ["implement-prd"],
+    why:
+      "the slices table records each slice's `agent-review` verdict, read from the merged " +
+      "commit's status, and a status is its own scope rather than part of `contents` or " +
+      "`pull-requests`. The read happens on the run after a slice's review round ends, once the " +
+      "slice is already merged into the PRD branch, so a job short of it merges the slice and " +
+      "then stops the chain before its row is written (#199)",
+  },
+  {
     permission: "contents",
     value: "write",
     workflows: ["review"],

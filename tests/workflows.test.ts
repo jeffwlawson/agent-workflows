@@ -4625,6 +4625,21 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 
   /**
+   * The grant that row's verdict read spends, in all three places it has to
+   * be (#199). The combined-status endpoint needs `statuses: read`, and a
+   * scope a `permissions:` block leaves out is `none`, so without it the read
+   * 403s on the run after a slice's round ends, with the merge already done.
+   * Nothing checks that a job's scopes cover the endpoints its steps call, so
+   * this pair is pinned by value.
+   */
+  it("holds the statuses grant the slice row's verdict read spends, in the ceiling and in every caller", () => {
+    const halves = [PRD, ...callerWorkflows.filter((file) => targetOf(file) === PRD)];
+
+    expect(halves).toHaveLength(3);
+    for (const file of halves) expect(jobOf(file).permissions?.["statuses"]).toBe("read");
+  });
+
+  /**
    * The waiting slice PR is found by its **base**, never by the name of the
    * branch it comes from — a renamed slice branch must not hide it — and before
    * the finished refusal, since a PRD whose last slice PR is still open is not

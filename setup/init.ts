@@ -11,7 +11,6 @@ import {
   selfCheckMatches,
 } from "./callers.js";
 import {
-  livePolicySurface,
   policyBody,
   policyCommand,
   POLICY_NAME,
@@ -237,11 +236,13 @@ export interface InitOptions {
   /** The adopting repository's root. */
   readonly dir: string;
   /**
-   * What `gh` would have answered about the Actions policy, and the writes it
-   * would have made. Supplied by the tests so the step can be exercised
-   * without an authenticated GitHub; asked for real otherwise.
+   * Where the Actions policy is read and written: `livePolicySurface(dir)`
+   * from the CLI, a stand-in from the tests. Required rather than defaulted to
+   * the live one, so no call can reach a real GitHub without naming it; a
+   * default made every test calling `init` spawn `gh` against whatever
+   * repository the environment named.
    */
-  readonly github?: PolicySurface | undefined;
+  readonly github: PolicySurface;
 }
 
 /** How the policy step names itself in the list of changes. */
@@ -449,7 +450,7 @@ export const init = (options: InitOptions): readonly InitChange[] => {
 
   const policy = allowPullRequestTarget(
     readInstalledCallers(dir, PACKAGE_NAME),
-    options.github ?? livePolicySurface(dir),
+    options.github,
   );
   if (policy !== undefined) changes.push(policy);
   return changes;

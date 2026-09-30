@@ -286,7 +286,6 @@ export const callersIn = (
   });
 };
 
-/** Forward slashes, because the result is quoted back to a human. */
 /** `on:` in any of the three shapes GitHub takes it in. */
 const eventsOf = (on: unknown): readonly string[] =>
   typeof on === "string"
@@ -297,6 +296,7 @@ const eventsOf = (on: unknown): readonly string[] =>
         ? Object.keys(on)
         : [];
 
+/** Forward slashes, because the result is quoted back to a human. */
 const workflowFiles = (dir: string): readonly string[] => {
   const full = path.join(dir, ...WORKFLOW_DIR.split("/"));
   if (!fs.existsSync(full)) return [];

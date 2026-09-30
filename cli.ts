@@ -130,9 +130,10 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
     summary: "Install the caller workflows into this repo, and say what is left.",
     run: async (args, io) => {
       const { init } = await import("./setup/init.js");
+      const { livePolicySurface } = await import("./setup/policies.js");
       const dir = targetDir("init", args);
       io.stdout(`  in ${dir}\n`);
-      for (const change of init({ dir })) {
+      for (const change of init({ dir, github: livePolicySurface(dir) })) {
         io.stdout(`  ${change.action.padEnd(9)} ${change.file}${change.note ? ` (${change.note})` : ""}\n`);
       }
     },

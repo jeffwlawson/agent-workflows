@@ -34,6 +34,23 @@ import {
 } from "../setup/policies.js";
 
 /**
+ * The Actions policy step, for the tests that are not about it: a private
+ * repository, which it leaves alone, and a write that fails the test rather
+ * than reaching anything. `init` takes its surface as a required option, so a
+ * test cannot fall through to a live `gh` by leaving it out.
+ */
+const offline: PolicySurface = {
+  visibility: () => "private",
+  policies: () => [],
+  create: () => {
+    throw new Error("init wrote an Actions policy in a test that is not about it");
+  },
+  update: () => {
+    throw new Error("init wrote an Actions policy in a test that is not about it");
+  },
+};
+
+/**
  * The runners ship as one versioned package with one binary
  * (jeffwlawson/winget-manifest-lint#96), so the entry point is a subcommand
  * table rather than five scripts addressed by path. Two properties are worth
@@ -360,7 +377,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes one caller per reference file, pinned to this package's own version", async () => {
     const root = adopted();
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "created"),
@@ -381,7 +398,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes a self-check naming the job it sits in", async () => {
     const root = adopted();
 
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     expect(read(root, ".github/workflows/agent-review.yml")).toMatch(
       /^\s*self-check: review \/ review$/m,
@@ -404,7 +421,7 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("moves the pin on a re-run and changes nothing else in a caller", async () => {
     const root = adopted();
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
     const theirs = read(root, ".github/workflows/agent-review.yml")
       .replace(/^  review:$/m, "  agent_review:")
       .replace(/self-check: review \/ review/, "self-check: agent_review / review")
@@ -413,7 +430,7 @@ describe("init installs the reference callers into an adopting repo", () => {
       .replace(`@v${manifest.version}`, "@v0.0.1");
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), theirs);
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     const text = read(root, ".github/workflows/agent-review.yml");
     expect(text).toBe(theirs.replace("@v0.0.1", `@v${manifest.version}`));
@@ -436,10 +453,10 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("does not put back a caller the adopter deleted, and says it did not", async () => {
     const root = adopted();
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
     fs.rmSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"));
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"))).toBe(
       false,
@@ -460,7 +477,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const theirs = "name: Our own fix job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-fix.yml"), theirs);
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(read(root, ".github/workflows/agent-fix.yml")).toBe(theirs);
     expect(changes.find((c) => c.file.endsWith("agent-fix.yml"))?.action).toBe("kept");
@@ -468,9 +485,9 @@ describe("init installs the reference callers into an adopting repo", () => {
 
   it("reports an unchanged caller rather than rewriting it", async () => {
     const root = adopted();
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "unchanged"),
@@ -486,7 +503,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("emits a SETUP.md prompt for the work it cannot do", async () => {
     const root = adopted();
 
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     const setup = read(root, "SETUP.md");
     expect(setup).toContain("CLAUDE_CODE_OAUTH_TOKEN");
@@ -506,7 +523,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     fs.writeFileSync(path.join(root, "SETUP.md"), "# How we set this repo up\n");
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(read(root, "SETUP.md")).toBe("# How we set this repo up\n");
     const change = changes.find((c) => c.file === "SETUP.md");
@@ -522,6 +539,41 @@ describe("init installs the reference callers into an adopting repo", () => {
     expect(code).toBe(0);
     expect(out).toContain("agent-implement.yml");
     expect(fs.existsSync(path.join(root, "SETUP.md"))).toBe(true);
+  });
+
+  /**
+   * The CLI is the one caller of the live policy surface, and it runs inside
+   * agent jobs whose environment sets `GH_REPO` to the repository the job is
+   * for. The surface asks about the checkout it was given and nothing else, so
+   * outside a checkout it reads nothing and writes nothing. A stand-in `gh`
+   * records what it was asked, and under what `GH_REPO`.
+   */
+  it.skipIf(process.platform === "win32")("asks gh about the target checkout only, never GH_REPO", async () => {
+    const root = adopted();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fake-gh-"));
+    roots.push(bin);
+    const log = path.join(bin, "calls.log");
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/bin/sh\necho "GH_REPO=\${GH_REPO:-} $*" >> "${log}"\nexit 1\n`,
+      { mode: 0o755 },
+    );
+    const saved = { PATH: process.env["PATH"], GH_REPO: process.env["GH_REPO"] };
+    process.env["PATH"] = `${bin}${path.delimiter}${saved.PATH ?? ""}`;
+    process.env["GH_REPO"] = "acme/live";
+    try {
+      const { code, out } = await invoke(["init", "--dir", root]);
+
+      expect(code).toBe(0);
+      expect(out).toMatch(/kept\s+Actions policy/);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const calls = fs.readFileSync(log, "utf8").trim().split("\n");
+    expect(calls).toEqual(["GH_REPO= repo view --json visibility --jq .visibility"]);
   });
 
   it("refuses a flag it does not know rather than ignoring it", async () => {
@@ -585,7 +637,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("leaves no placeholder unsubstituted in the prompt it writes", async () => {
     const root = adopted();
 
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     expect(read(root, "SETUP.md")).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
@@ -680,7 +732,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     const conditional = documentedLabels().slice(1).flat();
 
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     expect(byName(advisoryLabelSpecsFor(referenceNames))).toEqual(byName(conditional));
     for (const label of conditional) expect(read(root, "SETUP.md")).toContain(labelCommand(label));
@@ -700,10 +752,10 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("says nothing about them once the caller that wants them is gone", async () => {
     const root = adopted();
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     fs.rmSync(path.join(root, ".github", "workflows", "agent-follow-ups.yml"));
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     const setup = read(root, "SETUP.md");
     const filing = ADVISORY_LABELS["follow-ups"] ?? [];
@@ -723,14 +775,6 @@ describe("init installs the reference callers into an adopting repo", () => {
   });
 });
 
-/**
- * `doctor` is the other half: every check below is a failure `docs/ADOPTING.md`
- * §1 describes as announcing itself as something else. The facts it cannot read
- * from a checkout — the secrets, the repository setting, the labels, this repo's
- * releases — are gathered through `gh` and passed in, so the diagnosis is
- * exercised here without depending on whoever is running the suite being
- * authenticated to anything.
- */
 /**
  * GitHub blocks `pull_request_target` on a public repository with no event
  * policy allowing it, from 2026-11-02 (#219), and four of the callers run on
@@ -902,6 +946,14 @@ describe("init allows pull_request_target for the loop's callers on a public rep
   });
 });
 
+/**
+ * `doctor` is the other half: every check below is a failure `docs/ADOPTING.md`
+ * §1 describes as announcing itself as something else. The facts it cannot read
+ * from a checkout — the secrets, the repository setting, the labels, this repo's
+ * releases — are gathered through `gh` and passed in, so the diagnosis is
+ * exercised here without depending on whoever is running the suite being
+ * authenticated to anything.
+ */
 describe("doctor names the failures that otherwise look like something else", () => {
   const roots: string[] = [];
 
@@ -918,7 +970,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
     roots.push(root);
     fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
     fs.writeFileSync(path.join(root, ".github", "workflows", "ci.yml"), ciOn("  pull_request:"));
     return root;
   };

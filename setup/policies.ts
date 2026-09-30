@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ghOutcome, safeGh } from "../shared/common.js";
+import { ghOutcome, safeGh, type GhOptions } from "../shared/common.js";
 import { escapeRe } from "../shared/pins.js";
 import { repoSlug, type InstalledCaller } from "./callers.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
@@ -213,10 +213,8 @@ export const asVisibility = (raw: string | undefined): "public" | "private" | un
  * `has_parents`, its organization's and enterprise's, since an allowing policy
  * up there covers the callers as well as one down here does.
  */
-export const readPolicies = (dir: string): readonly ActionsPolicy[] | undefined =>
-  parsePolicies(
-    safeGh(["api", "repos/{owner}/{repo}/actions/policies?per_page=100&has_parents=true"], { cwd: dir }),
-  );
+export const readPolicies = (dir: string, options: GhOptions = { cwd: dir }): readonly ActionsPolicy[] | undefined =>
+  parsePolicies(safeGh(["api", "repos/{owner}/{repo}/actions/policies?per_page=100&has_parents=true"], options));
 
 /** What `init` asks GitHub and the two writes it may make. The tests supply their own. */
 export interface PolicySurface {
@@ -232,12 +230,17 @@ export interface PolicySurface {
  * give it none, and rather than `-f` fields, which cannot spell an array of
  * objects.
  */
-const send = (dir: string, method: "POST" | "PUT", endpoint: string, body: PolicyBody): string | undefined => {
+const send = (
+  options: GhOptions,
+  method: "POST" | "PUT",
+  endpoint: string,
+  body: PolicyBody,
+): string | undefined => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agent-policy-"));
   const file = path.join(scratch, "policy.json");
   try {
     fs.writeFileSync(file, JSON.stringify(body));
-    const outcome = ghOutcome(["api", "--method", method, endpoint, "--input", file], { cwd: dir });
+    const outcome = ghOutcome(["api", "--method", method, endpoint, "--input", file], options);
     if (outcome.ok) return undefined;
     return (outcome.stderr.trim() || outcome.spawnError || outcome.stdout.trim() || "gh exited non-zero").split("\n")[0];
   } finally {
@@ -245,10 +248,24 @@ const send = (dir: string, method: "POST" | "PUT", endpoint: string, body: Polic
   }
 };
 
-export const livePolicySurface = (dir: string): PolicySurface => ({
-  visibility: () =>
-    asVisibility(safeGh(["repo", "view", "--json", "visibility", "--jq", ".visibility"], { cwd: dir })),
-  policies: () => readPolicies(dir),
-  create: (body) => send(dir, "POST", "repos/{owner}/{repo}/actions/policies", body),
-  update: (id, body) => send(dir, "PUT", `repos/{owner}/{repo}/actions/policies/${id}`, body),
-});
+/**
+ * `gh` against the repository **`dir` is a checkout of**, and no other. The
+ * callers this targets are the ones just written there, so a policy anywhere
+ * else allows nothing for them; and `GH_REPO`, which `gh` prefers over the
+ * checkout's remote, is set in every agent job this repository runs. Without
+ * this, a test calling `init` inside one would read, and could write, the
+ * policies of the repository the job runs for. Outside a checkout `gh` cannot
+ * name a repository at all, so the step reports itself unreadable and writes
+ * nothing.
+ */
+export const livePolicySurface = (dir: string): PolicySurface => {
+  const { GH_REPO: _ignored, ...env } = process.env;
+  const options: GhOptions = { cwd: dir, env };
+  return {
+    visibility: () =>
+      asVisibility(safeGh(["repo", "view", "--json", "visibility", "--jq", ".visibility"], options)),
+    policies: () => readPolicies(dir, options),
+    create: (body) => send(options, "POST", "repos/{owner}/{repo}/actions/policies", body),
+    update: (id, body) => send(options, "PUT", `repos/{owner}/{repo}/actions/policies/${id}`, body),
+  };
+};

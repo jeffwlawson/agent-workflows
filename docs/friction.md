@@ -2360,3 +2360,45 @@ cause" in `docs/ADOPTING.md` §3b, in `review.yml`'s verdict step and in the tes
 already been corrected. Each round's grep was for the phrasing the *previous* round had found. A
 retired claim has as many spellings as it has authors, and the way to enumerate them is the surface
 it is allowed to appear on — which is the guard above — not the words it used last time.
+
+## 2026-09-30 — auto-fix never ran here, and the review said it had, seven times
+
+Between 2026-09-22 and 09-30 this repository's auto-fix job ran seven times and failed seven times,
+on `'agent:auto-fixed' not found`. The label had never been created here. Each failure came after the
+review had already posted its verdict, and the verdict's round-1 wording is *a fix round has
+started* — so seven pull requests carried a sentence that was false the moment the job behind it
+went red, and a human added `agent:fix` by hand on every one of them. Across 40 regular PRs in the
+same window, 17 needed that hand label; in the adopter, auto-fix was simply off.
+
+`doctor` has an error-level check for exactly this — "auto-fix without its marker label" — and it
+would have named the missing label and printed the command. Nothing ran it. A check that exists only
+when someone thinks to run it is a check on the day of install, and configuration drifts after that
+(#223).
+
+The same sample showed the round-2 stop earning nothing: the loop deliberately halts after a fix
+round and asks for "guidance, then `agent:fix`", and in nine such stops the guidance was given zero
+times — the label was re-added bare. Both findings went into #200: a fix-round budget counted from
+the PR rather than recorded by a label, and the round rule retired. The label was created by hand the
+same day as a stopgap, to be deleted once #201 ships.
+
+## 2026-09-30 — the first real PRD chain on slice PRs, and what one structural choice cost
+
+jeffwlawson/mealie-mcp-server#14 was the first chain run on slice PRs (#171). It took 14h11m from
+label to a ready PRD PR. 11h40m of that was one `agent:blocked` window (#199); of the 2h22m of active
+time, about 100 minutes were slices parked on 🔵 because slice PRs got no CI, and the finishing pass
+was 38 minutes of a human rebuilding evidence by hand. 115 workflow runs started; about 70% did
+nothing.
+
+The run filed nine issues against this repository (#199, #207, #209, #211, #212–#217). Read one at a
+time, each is a bug with a fix. Read together, most trace to one decision: a slice PR's base is the
+PRD branch, not the default branch. CI filters written for the default branch miss it; the branch it
+targets drifts; `Closes #N` does nothing on a non-default base, so the chain closes sub-issues itself
+— when the slice PR *opens*; the cursor sits on the parent while the verdict sits on the slice PR, so
+every way a round can end needs a translator job; and every piece of evidence stays on the PR it was
+found on. Neither design map (#115, #162) weighed the shape that avoids all of it — each slice a
+review round on the one PRD PR — because each moved from the previous design to its nearest
+neighbour: one PR reviewed once, then stacks, then slice PRs.
+
+The lesson for the next map is about the option space rather than the options: when a design is
+chosen by amending the last one, write down the alternatives that were *not* adjacent before choosing
+between the adjacent ones. #222 carries the redesign; #227 tracks the whole change in order.

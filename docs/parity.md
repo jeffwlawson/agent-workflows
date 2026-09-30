@@ -1040,8 +1040,9 @@ expensive to rediscover.
 
   `whatChanged` is also the one part of the body that is **not** on every review: it appears on the
   first review of a pull request and on a later review with commits nothing has described that no
-  automatic fix round made (a human's push, or a conflict resolution), and is omitted on the
-  review after a fix round and on a re-review with nothing pushed since the last verdict
+  automatic fix round made (a human's push, a conflict resolution, or a fix round a human started
+  by adding `agent:fix`, which posts no verdict to tell it from a push), and is omitted on the
+  review after an automatic fix round and on a re-review with nothing pushed since the last verdict
   (`describesTheChange`, read from the verdict history since #202). Describing the
   change again, at the top, to a reader handed that description last round is the body spending its
   opening on something already read.

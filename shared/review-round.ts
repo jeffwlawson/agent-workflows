@@ -23,8 +23,10 @@ export interface ReviewHistory {
    *
    * Only the automatic rounds, because only they spend the budget (PRD #200
    * decision 7), and they are the rounds the early stop exists to bound. A round
-   * a human started by adding `agent:fix` posts no verdict of its own; the
-   * review after it starts another automatic round where budget is left, and
+   * a human started by adding `agent:fix` posts no verdict of its own, so the
+   * review after it reads as following none, exactly as after a human's push:
+   * the brief names it among those cases, and the body renders *What changed
+   * in this PR*. It starts another automatic round where budget is left, and
    * that round is judged.
    */
   readonly afterFixRound: boolean;
@@ -222,8 +224,10 @@ export const fixRoundProgress = (
  * (#109, decision 8 as the maintainer settled it).
  *
  * Where there are commits no verdict has seen that no automatic fix round made:
- * the first review, a human's push, or a conflict resolution. Not the review
- * after a fix round, which is answering an earlier review's findings rather
+ * the first review, a human's push, a conflict resolution, or a fix round a
+ * human started by adding `agent:fix`. That last posts no verdict, so nothing
+ * in the history tells it from a human's push, and it gets the description a
+ * push would. Not the review after an automatic fix round, which is answering an earlier review's findings rather
  * than meeting the change, and not a re-review with nothing pushed since the
  * last verdict, which would be handing a reader a description they were handed
  * last time.
@@ -240,7 +244,7 @@ export const describeHistory = (history: ReviewHistory): string => {
     return "This review **follows a fix round**: an earlier review of this pull request started one, and commits have landed since.";
   }
   if (history.unreviewedCommits) {
-    return "This review follows **no fix round**: either no earlier verdict stands on this pull request, or the commits since the last one are a human's push or a merge.";
+    return "This review follows **no fix round** it can recognise: either no earlier verdict stands on this pull request, or the commits since the last one are a human's push, a merge, or a fix round a human started by adding `agent:fix`, which posts no verdict of its own. Review them as a change in full.";
   }
   return "This review follows **no fix round**: an earlier verdict stands on these very commits, and nothing has been pushed since.";
 };

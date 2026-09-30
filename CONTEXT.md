@@ -195,8 +195,10 @@ The prose beside the record is capped by the schema rather than asked for in the
 **restates no finding**: the findings are above it with their severities, and the one 250-word
 paragraph that mixed *what the change is* with *what the reviewer verified* is what made a body
 long enough to bury the record in it. *What changed in this PR* is also omitted on the reviews where
-the reader has already been handed it: the review after a fix round, and a re-review with nothing
-pushed since the last verdict (`shared/review-round.ts`'s `describesTheChange`).
+the reader has already been handed it: the review after an automatic fix round, and a re-review with
+nothing pushed since the last verdict (`shared/review-round.ts`'s `describesTheChange`). A fix round
+a human started by adding `agent:fix` posts no verdict, so the review after it cannot tell it from a
+human's push and describes the change again.
 
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather

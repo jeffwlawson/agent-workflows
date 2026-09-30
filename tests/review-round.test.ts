@@ -427,6 +427,19 @@ describe("what the history is reported as", () => {
   });
 
   /**
+   * A fix round a human started by adding `agent:fix` posts no verdict, so the
+   * review after it reads as following none. The line names that case rather
+   * than calling every such commit a human's push or a merge.
+   */
+  it("names a fix round a human started among the commits that follow no recognised round", () => {
+    const line = describeHistory({ afterFixRound: false, unreviewedCommits: true });
+
+    expect(line).toContain("a human's push");
+    expect(line).toContain("a merge");
+    expect(line).toContain("a fix round a human started by adding `agent:fix`");
+  });
+
+  /**
    * And an assumed history says it was assumed, in both places a reader meets
    * it: the brief the agent works from and the summary a human reads.
    */

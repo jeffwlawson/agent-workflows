@@ -595,8 +595,10 @@ Two collapsed sections follow the groups, and neither is a place a finding is ev
   traced, files it opened past the diff. It is how you weigh the review, and it is on every one.
 - **What changed in this PR** — one sentence and up to five lines describing the change. It appears
   on the first review of a pull request, and again when commits have landed that no verdict has
-  seen that no automatic fix round made (your own push, or a conflict resolution). The review after
-  a fix round omits it, because you were handed that description last round.
+  seen that no automatic fix round made: your own push, a conflict resolution, or a fix round you
+  started yourself by adding `agent:fix`, which posts no verdict to tell it apart from a push. The
+  review after an automatic fix round omits it, because you were handed that description last
+  round.
 
 A carried entry's title is a **link to the thread it was raised in**, which is what saves you
 scrolling back through an older review to find it. A finding this review is the first to raise has

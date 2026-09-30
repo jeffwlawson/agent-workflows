@@ -1138,8 +1138,9 @@ export const renderReviewBody = (parts: {
    * The caller's, because it is a fact about the **verdict history** and not
    * about the review: it belongs on the first review of a pull request and on a
    * later review with commits on it no verdict has seen that no automatic fix
-   * round made (a human push, or a conflict resolution), and nowhere else. The
-   * review after a fix round is answering an earlier review's findings, and a
+   * round made (a human push, a conflict resolution, or a fix round a human
+   * started, which posts no verdict), and nowhere else. The review after an
+   * automatic fix round is answering an earlier review's findings, and a
    * re-review with nothing pushed
    * since the last verdict would be describing a change it has already
    * described. *How this was checked* carries no such rule and appears on every

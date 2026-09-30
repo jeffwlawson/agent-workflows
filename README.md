@@ -89,7 +89,7 @@ a called one can only downgrade the token it is handed.
 
 ## Pin the version in the workflow, not in `package.json`
 
-`pull_request_target` takes the workflow YAML from the **base** branch and checks out the **PR
+`pull_request_target` takes the workflow YAML from the **default** branch and checks out the **PR
 head**. A runner addressed by path therefore comes from the pull request, so a branch opened before
 a runner change keeps executing the old code — silently, with no error. Invoking a pinned version
 from the YAML puts the runner on the base side of that split, where the rest of the loop's controls

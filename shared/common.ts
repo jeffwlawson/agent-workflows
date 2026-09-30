@@ -156,6 +156,8 @@ export const claudeAgent = (workflow: string) => {
  */
 export interface GhOptions {
   readonly cwd?: string | undefined;
+  /** The whole environment `gh` runs with, where it must not be this process's. */
+  readonly env?: NodeJS.ProcessEnv | undefined;
 }
 
 /** Run `gh` with argv (no shell), so arguments with spaces/quotes are safe. */
@@ -164,6 +166,7 @@ export const gh = (args: string[], options: GhOptions = {}): string =>
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.env === undefined ? {} : { env: options.env }),
   });
 
 /**
@@ -258,6 +261,7 @@ export const ghOutcome = (args: readonly string[], options: GhOptions = {}): GhO
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.env === undefined ? {} : { env: options.env }),
   });
 
   return {

@@ -764,7 +764,7 @@ export const refusalReason = (feedback: PullRequestFeedback): string | undefined
  * The input is in fact narrow, and both sources this function can receive are
  * push-gated: a PR's `base.ref` names a branch in the *base* repository, which
  * somebody had to create there, and the `default-branch` input behind it is either set in
- * caller YAML, which `pull_request_target` reads from the base branch, or left
+ * caller YAML, which `pull_request_target` reads from the default branch, or left
  * to the pinned reusable's `default: main` — a pull request can edit neither.
  * Push access is this input's provenance and nothing wider — it is not the
  * line `isTrustedAuthor` draws over the world-writable feedback surfaces,

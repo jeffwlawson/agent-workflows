@@ -12,6 +12,16 @@ import {
   type OtherWorkflow,
 } from "./callers.js";
 import { AUTO_FIXED_LABEL, labelCommand, labelSpecsFor } from "./init.js";
+import {
+  asVisibility,
+  policyBody,
+  policyCommand,
+  POLICY_SETTINGS,
+  readPolicies,
+  triggeredFiles,
+  unallowedFiles,
+  type ActionsPolicy,
+} from "./policies.js";
 import type { CliIo } from "../cli.js";
 
 /**
@@ -25,7 +35,7 @@ import type { CliIo } from "../cli.js";
  *
  * - **`gatherFacts`** asks GitHub the questions a checkout cannot answer — which
  *   secrets are set, whether Actions may open pull requests, what the default
- *   `GITHUB_TOKEN` grants a job that asks for nothing, which labels exist, and
+ *   `GITHUB_TOKEN` grants a job that asks for nothing, which labels exist, which Actions policies apply, and
  *   what this package's latest release is. Every one of them can come back
  *   unreadable (no `gh`, no auth, no admin), and an unreadable answer is
  *   reported as unknown rather than folded into a pass.
@@ -73,16 +83,23 @@ export interface RepoFacts {
   readonly defaultWorkflowPermissions: "read" | "write" | undefined;
   readonly labels: readonly string[] | undefined;
   /**
-   * Read, and ruled on by nothing since #146: the elevation refusal fires
-   * wherever the repository sits, so the one severity that turned on this — a
-   * public repository being served the check-runs API without `checks: read` —
-   * has no basis. Kept because that is the class this preflight got wrong twice:
-   * missing entirely from v0.1.0 through v0.1.4, then softened to a warning for
-   * a run-time reason that no longer applies. The grant scenarios in
-   * `tests/agent-cli.test.ts` set both spellings and insist the verdict is
-   * identical, which is an assertion only while the fact can still be set.
+   * Ruled on by no grant since #146: the elevation refusal fires wherever the
+   * repository sits, so the one severity that turned on this (a public
+   * repository being served the check-runs API without `checks: read`) has no
+   * basis. The grant scenarios in `tests/agent-cli.test.ts` set both spellings
+   * and insist the verdict is identical.
+   *
+   * It decides one thing again since #219: GitHub's default rule blocks
+   * `pull_request_target` on a **public** repository with no event policy
+   * allowing it, and leaves a private or internal one alone.
    */
   readonly visibility: "public" | "private" | undefined;
+  /**
+   * Every Actions policy that applies here, this repository's own and its
+   * parents'. `undefined` where the list could not be read, which is never "no
+   * policy": the first is a thing to check and the second an error.
+   */
+  readonly actionsPolicies: readonly ActionsPolicy[] | undefined;
   /** This package's tags, newest first — what a pin is measured against. */
   readonly releases: readonly string[] | undefined;
 }
@@ -704,6 +721,53 @@ export const diagnose = (
     }
   }
 
+  // GitHub's default rule blocks `pull_request_target` on a public repository
+  // with no event policy allowing it, enforced from 2026-11-02 (#219). The
+  // blocked run is GitHub's, not ours, so no step of the loop gets to say why:
+  // a label lands and nothing happens. Private and internal repositories are
+  // outside the rule and hear nothing about it.
+  //
+  // Read only where it was read. An unreadable policy list is a thing to check,
+  // never "no policy"; an unreadable visibility is one too, since the rule only
+  // bites if the answer is public.
+  const triggered = triggeredFiles(callers);
+  if (triggered.length > 0 && facts.visibility !== "private") {
+    const unallowed =
+      facts.actionsPolicies === undefined ? triggered : unallowedFiles(callers, facts.actionsPolicies);
+    const fix =
+      `Run \`init\` again, which creates it; or, as a repository admin, ` +
+      `\`${policyCommand(policyBody(callers, unallowed))}\`; or add it under ${POLICY_SETTINGS}.`;
+    const consequence =
+      `GitHub blocks \`pull_request_target\` on a public repository from 2026-11-02 unless an ` +
+      `Actions event policy allows it, and these callers run on nothing else: a label is added ` +
+      `and no run starts, with nothing in the loop saying why.`;
+    if (facts.actionsPolicies === undefined) {
+      add({
+        severity: "warning",
+        check: "pull_request_target policy",
+        problem:
+          `Could not read the Actions policies that apply here, so nothing here knows whether ` +
+          `${unallowed.join(", ")} may still run. ${consequence}` +
+          (facts.visibility === undefined ? ` This repository's visibility could not be read either; a private one is not affected.` : ``),
+        fix: `Check ${POLICY_SETTINGS} for a policy allowing \`pull_request_target\` for those files. ${fix}`,
+      });
+    } else if (unallowed.length > 0) {
+      const unknown = facts.visibility === undefined;
+      add({
+        severity: unknown ? "warning" : "error",
+        check: "pull_request_target policy",
+        problem:
+          `No active Actions policy allows \`pull_request_target\` for ${unallowed.join(", ")}. ` +
+          consequence +
+          (unknown
+            ? ` This repository's visibility could not be read, so this is something to check ` +
+              `rather than a fault: a private or internal repository is not affected.`
+            : ``),
+        fix,
+      });
+    }
+  }
+
   if (facts.secrets === undefined) {
     add({
       severity: "warning",
@@ -897,24 +961,10 @@ export const availableSecrets = (
 };
 
 /**
- * `gh`'s answer for a repository's visibility, as the two cases anything here
- * would distinguish. An **internal** repository is private as far as this loop
- * is concerned: the check-runs API 403s without the scope exactly as it does on
- * a private one.
- *
- * Folded to one case rather than matched in two, because which case `gh` emits
- * is version-dependent — `repo view --json visibility` has answered both
- * `PUBLIC` and `public` across releases. Accepting one spelling of `INTERNAL`
- * and both of the others would be an asymmetry with a consequence, since the
- * fall-through is `undefined`: an internal repository whose `gh` lowercased the
- * field would read as one whose visibility could not be read at all.
+ * Moved beside the policy it now also decides (#219), and still exported here
+ * for the callers that know it by this module.
  */
-export const asVisibility = (raw: string | undefined): "public" | "private" | undefined => {
-  const held = raw?.trim().toUpperCase();
-  if (held === "PUBLIC") return "public";
-  if (held === "PRIVATE" || held === "INTERNAL") return "private";
-  return undefined;
-};
+export { asVisibility };
 
 /**
  * Ask GitHub the questions a checkout cannot answer. Every call goes
@@ -1000,6 +1050,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
         : undefined,
     labels: list(["label", "list", "--limit", "200", "--json", "name"], ".[].name", dir),
     visibility: asVisibility(visibility),
+    actionsPolicies: readPolicies(dir),
     releases: list(["api", `repos/${repoSlug(packageName)}/tags`], ".[].name", dir),
   };
 };

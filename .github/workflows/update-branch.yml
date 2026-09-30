@@ -7,7 +7,7 @@ name: Agent Update Branch (reusable)
 # Refresh a stale PR branch from the branch it is based on.
 #
 # Why this exists, concretely: `pull_request_target` takes the workflow YAML
-# from the base branch but checks out the PR *head*, so everything the run reads
+# from the default branch but checks out the PR *head*, so everything the run reads
 # out of the working tree comes from the pull request. That bit us on
 # jeffwlawson/winget-manifest-lint#46, where a review ran the pre-suggestion
 # runner and the test proved nothing until the base branch was merged in by
@@ -213,7 +213,7 @@ jobs:
       # The one place a caller's text becomes a script. That is what the input
       # *is* — a command — so the boundary to hold is where the value comes
       # from: a literal in a workflow file, which `pull_request_target` reads
-      # from the base branch, and never an expression reading the PR event.
+      # from the default branch, and never an expression reading the PR event.
       - name: Install dependencies
         if: steps.merge.outputs.status == 'conflicts' && inputs.setup != ''
         run: |

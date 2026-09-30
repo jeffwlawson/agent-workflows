@@ -44,6 +44,12 @@ npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
 `SETUP.md` listing what is left: the two secrets (§2), the repository setting (§1), the labels (§3),
 and the two documents §6 is about. A `SETUP.md` it did not write is left alone.
 
+On a **public** repository it also creates the Actions event policy that lets the callers run on
+`pull_request_target` (§1, *On a public repository, `pull_request_target` stops running*), targeted
+at the caller files it installed or found and at nothing else. A re-run that finds the policy says
+`unchanged`. Creating it needs a repository admin; where the token `init` runs with is refused, it
+says so and prints the exact `gh api` call and the settings page, and the install still completes.
+
 It **updates on a re-run** rather than refusing, so it is also how you take a release — and an
 update moves the pin in the files you have and changes nothing else. A caller is yours (§4): the
 `with:` inputs below, a job you renamed, your own `permissions:` additions, a second job in the same
@@ -67,6 +73,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for 15 of its 20 minutes |
 | the labels exist | §3 — a transition that is a silent no-op |
+| on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | §1: from 2026-11-02 a label is added and no run starts |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
 
 The rows it cannot have are §1's last two, and for one reason: both are an event that never fired,
@@ -82,6 +89,33 @@ whichever repository that directory is.
 
 Read these before setting anything up. Each cost a run to diagnose, and none of them says what is
 actually wrong.
+
+### On a public repository, `pull_request_target` stops running
+
+From **2026-11-02** GitHub blocks `pull_request_target` on every public repository that has no
+Actions event policy allowing it ([workflow execution protections](https://github.blog/changelog/2026-09-17-workflow-execution-protections-in-github-actions-generally-available/),
+in evaluate mode until then). `agent-review`, `agent-fix`, `agent-update-branch` and
+`agent-follow-ups` run on nothing else. The label lands, no run starts, and nothing in the loop can
+say why: the refusal is GitHub's, before any step of ours exists to explain it. Private and internal
+repositories are not affected.
+
+The fix is a policy allowing the trigger for **those caller files only**, so every other workflow in
+the repository stays under the default block. `init` creates it; `doctor` fails a public repository
+without it. By hand, as a repository admin, **Settings → Actions → Policies**, or the call `doctor`
+prints, which has this shape:
+
+```json
+{
+  "name": "jeffwlawson/agent-workflows callers: allow pull_request_target",
+  "enforcement": "active",
+  "conditions": { "workflow_path": { "include": [".github/workflows/agent-review.yml", "…"], "exclude": [] } },
+  "rules": [{ "type": "restrict_action_events", "parameters": { "allowed_events": ["pull_request_target"] } }]
+}
+```
+
+`allowed_events` lists every event the targeted callers trigger on, not only the blocked one: the
+documentation does not say whether the list is exhaustive for the files it targets, and listing the
+rest is right either way.
 
 ### "GitHub Actions is not permitted to create or approve pull requests"
 
@@ -837,8 +871,8 @@ jobs:
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
 ```
 
-> **Pin a tag or a SHA, never a branch.** `pull_request_target` reads workflow YAML from the base
-> branch, so a pull request cannot edit your caller to change what runs. That protection used to
+> **Pin a tag or a SHA, never a branch.** `pull_request_target` reads workflow YAML from the
+> default branch (the PR's base, before 2025-12-08), so a pull request cannot edit your caller to change what runs. That protection used to
 > cover the called workflow for free, when the `uses:` was a local path resolving against the same
 > commit. Remote, the reference is what decides: `@main` hands a job holding `contents: write` and
 > your secrets to whatever currently sits on this repository's default branch, and nothing anywhere
@@ -1321,7 +1355,8 @@ the next slice is built on it before any human has read it.
 ## 8. If your repo is public
 
 `agent-review`, `agent-fix`, `agent-update-branch` and — if you took it — `agent-follow-ups` use
-`pull_request_target`, which runs with write access, and with secrets everywhere but the last. These
+`pull_request_target`, which runs with write access, and with secrets everywhere but the last. From
+2026-11-02 it runs on a public repository only where an Actions policy allows it (§1). These
 controls are not decoration — and since jeffwlawson/winget-manifest-lint#98 you no longer copy any
 of them: every one lives in a `*-reusable.yml` you reference, where a caller can skip the job but
 cannot loosen it. Read them anyway. Not to install them, but because a control you cannot see is one
@@ -1377,7 +1412,7 @@ runners.
 ## 9. Two traps once it is running
 
 **Stale runner scripts, silently — closed, and worth understanding anyway.** `pull_request_target`
-takes the workflow YAML from the *base* branch but checks out the **PR head**, so anything a run
+takes the workflow YAML from the *default* branch but checks out the **PR head**, so anything a run
 reads out of the working tree comes from the pull request. While the runners were scripts in the
 repo, a PR opened before a runner change kept executing the old ones with no error.
 

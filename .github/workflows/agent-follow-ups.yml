@@ -20,7 +20,7 @@ name: Agent Follow-ups
 # failure. Both are narrowed in the called job's condition, which an adopter
 # cannot loosen.
 #
-# `pull_request_target` reads workflow YAML from the *base* branch, so a pull
+# `pull_request_target` reads workflow YAML from the *default* branch, so a pull
 # request cannot alter this file to change what runs. The called workflow is
 # equally out of a PR's reach — but because of what the `uses:` below is
 # **pinned to**, not because it is local. Pin a tag or a SHA, never a branch:

@@ -81,6 +81,13 @@ export interface InstalledCaller {
    * installed before that has `labeled` alone.
    */
   readonly pullRequestTypes: readonly string[];
+  /**
+   * The events its workflow file triggers on: the keys of `on:`, or the one or
+   * several it names as a string or a list. Read for the Actions policy (#219),
+   * which targets a workflow **file** and has to know which of them run on
+   * `pull_request_target`, and which events such a file also starts on.
+   */
+  readonly events: readonly string[];
 }
 
 /**
@@ -217,6 +224,7 @@ export const callersIn = (
   let top: unknown;
   let topDeclared = false;
   let pullRequestTypes: readonly string[] = [];
+  let events: readonly string[] = [];
   try {
     const document = parse(text) as
       | { readonly jobs?: unknown; readonly permissions?: unknown; readonly on?: unknown }
@@ -224,6 +232,7 @@ export const callersIn = (
     const trigger = (document?.on as { readonly pull_request_target?: unknown } | null | undefined)
       ?.pull_request_target as { readonly types?: unknown } | null | undefined;
     pullRequestTypes = patternsOf(trigger?.types) ?? [];
+    events = eventsOf(document?.on);
     const held = document?.jobs;
     if (typeof held === "object" && held !== null && !Array.isArray(held)) {
       jobs = held as Record<string, unknown>;
@@ -271,10 +280,21 @@ export const callersIn = (
         autoFix: inputs["auto-fix"] === "true",
         secrets: secretsOf(job.secrets),
         pullRequestTypes,
+        events,
       },
     ];
   });
 };
+
+/** `on:` in any of the three shapes GitHub takes it in. */
+const eventsOf = (on: unknown): readonly string[] =>
+  typeof on === "string"
+    ? [on]
+    : Array.isArray(on)
+      ? on.filter((event): event is string => typeof event === "string")
+      : typeof on === "object" && on !== null
+        ? Object.keys(on)
+        : [];
 
 /** Forward slashes, because the result is quoted back to a human. */
 const workflowFiles = (dir: string): readonly string[] => {

@@ -228,8 +228,8 @@ class the pair exists to remove.
 
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
 the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape
-and its freshness, `self-check`, the labels, and a CI that runs on slice PRs where the PRD chain is
-installed (#209) — and reads nothing out of `examples/callers/`, so a
+and its freshness, `self-check`, the labels, a CI that runs on slice PRs where the PRD chain is
+installed (#209), and an Actions policy letting `pull_request_target` run on a public repository (#219) — and reads nothing out of `examples/callers/`, so a
 release that changes a caller *body* is a release that teaches `diagnose` about it in the same
 commit, exactly as a new pin site is a change to `shared/pins.ts` in the same commit. Diffing an
 adopter's caller against the reference is the other design and it is the wrong one here: most of
@@ -276,8 +276,16 @@ repo: it runs with repo secrets and write access. Three things close it, and non
 
 ## Base-controlled, and what that now depends on
 
-`pull_request_target` reads workflow YAML from the **base** branch while checking out the **PR
-head**. So a pull request cannot edit a caller to change what runs.
+`pull_request_target` reads workflow YAML from the repository's **default** branch while checking
+out the **PR head**. So a pull request cannot edit a caller to change what runs. Until 2025-12-08 it
+read the PR's *base* branch instead; the move made the protection stronger, since a pull request into
+a branch somebody else controls no longer picks that branch's copy of the caller.
+
+And on a **public** repository it runs only where an Actions event policy lets it (#219). GitHub's
+workflow execution protections block `pull_request_target` there by default from 2026-11-02, so
+`init` creates a policy allowing it for the loop's callers, targeted by workflow path so every other
+workflow stays blocked, and `doctor` fails a public repository without one. A blocked run is
+GitHub's refusal rather than a failed step, which is why it is looked for rather than reported.
 
 That protection used to extend to the called workflow for free, because `uses:` was a local path
 resolving against the same commit. **Remote, the reference is what decides.** `@main` would hand a
@@ -286,7 +294,7 @@ default branch, and nothing would report it. Callers pin a tag or a SHA; a test 
 
 ## The version pin keeps two halves in step
 
-The workflow YAML and the runner code come from different places — YAML from the base branch,
+The workflow YAML and the runner code come from different places — YAML from the default branch,
 runner from the published package. Pinning the version **in the YAML** is what makes them move
 together.
 

@@ -12,6 +12,7 @@ import {
   AUTO_FIXED_LABEL,
   init,
   labelCommand,
+  POLICY_CHANGE,
   labelSpecsFor,
   STATE_LABELS,
   TRIGGER_LABELS,
@@ -24,6 +25,30 @@ import {
   runDoctor,
   type RepoFacts,
 } from "../setup/doctor.js";
+import {
+  parsePolicies,
+  POLICY_NAME,
+  type ActionsPolicy,
+  type PolicyBody,
+  type PolicySurface,
+} from "../setup/policies.js";
+
+/**
+ * The Actions policy step, for the tests that are not about it: a private
+ * repository, which it leaves alone, and a write that fails the test rather
+ * than reaching anything. `init` takes its surface as a required option, so a
+ * test cannot fall through to a live `gh` by leaving it out.
+ */
+const offline: PolicySurface = {
+  visibility: () => "private",
+  policies: () => [],
+  create: () => {
+    throw new Error("init wrote an Actions policy in a test that is not about it");
+  },
+  update: () => {
+    throw new Error("init wrote an Actions policy in a test that is not about it");
+  },
+};
 
 /**
  * The runners ship as one versioned package with one binary
@@ -352,7 +377,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes one caller per reference file, pinned to this package's own version", async () => {
     const root = adopted();
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "created"),
@@ -373,7 +398,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes a self-check naming the job it sits in", async () => {
     const root = adopted();
 
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     expect(read(root, ".github/workflows/agent-review.yml")).toMatch(
       /^\s*self-check: review \/ review$/m,
@@ -396,7 +421,7 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("moves the pin on a re-run and changes nothing else in a caller", async () => {
     const root = adopted();
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
     const theirs = read(root, ".github/workflows/agent-review.yml")
       .replace(/^  review:$/m, "  agent_review:")
       .replace(/self-check: review \/ review/, "self-check: agent_review / review")
@@ -405,7 +430,7 @@ describe("init installs the reference callers into an adopting repo", () => {
       .replace(`@v${manifest.version}`, "@v0.0.1");
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), theirs);
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     const text = read(root, ".github/workflows/agent-review.yml");
     expect(text).toBe(theirs.replace("@v0.0.1", `@v${manifest.version}`));
@@ -428,10 +453,10 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("does not put back a caller the adopter deleted, and says it did not", async () => {
     const root = adopted();
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
     fs.rmSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"));
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"))).toBe(
       false,
@@ -452,7 +477,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const theirs = "name: Our own fix job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-fix.yml"), theirs);
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(read(root, ".github/workflows/agent-fix.yml")).toBe(theirs);
     expect(changes.find((c) => c.file.endsWith("agent-fix.yml"))?.action).toBe("kept");
@@ -460,9 +485,9 @@ describe("init installs the reference callers into an adopting repo", () => {
 
   it("reports an unchanged caller rather than rewriting it", async () => {
     const root = adopted();
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "unchanged"),
@@ -478,7 +503,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("emits a SETUP.md prompt for the work it cannot do", async () => {
     const root = adopted();
 
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     const setup = read(root, "SETUP.md");
     expect(setup).toContain("CLAUDE_CODE_OAUTH_TOKEN");
@@ -498,7 +523,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     fs.writeFileSync(path.join(root, "SETUP.md"), "# How we set this repo up\n");
 
-    const changes = await init({ dir: root });
+    const changes = await init({ dir: root, github: offline });
 
     expect(read(root, "SETUP.md")).toBe("# How we set this repo up\n");
     const change = changes.find((c) => c.file === "SETUP.md");
@@ -514,6 +539,41 @@ describe("init installs the reference callers into an adopting repo", () => {
     expect(code).toBe(0);
     expect(out).toContain("agent-implement.yml");
     expect(fs.existsSync(path.join(root, "SETUP.md"))).toBe(true);
+  });
+
+  /**
+   * The CLI is the one caller of the live policy surface, and it runs inside
+   * agent jobs whose environment sets `GH_REPO` to the repository the job is
+   * for. The surface asks about the checkout it was given and nothing else, so
+   * outside a checkout it reads nothing and writes nothing. A stand-in `gh`
+   * records what it was asked, and under what `GH_REPO`.
+   */
+  it.skipIf(process.platform === "win32")("asks gh about the target checkout only, never GH_REPO", async () => {
+    const root = adopted();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fake-gh-"));
+    roots.push(bin);
+    const log = path.join(bin, "calls.log");
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/bin/sh\necho "GH_REPO=\${GH_REPO:-} $*" >> "${log}"\nexit 1\n`,
+      { mode: 0o755 },
+    );
+    const saved = { PATH: process.env["PATH"], GH_REPO: process.env["GH_REPO"] };
+    process.env["PATH"] = `${bin}${path.delimiter}${saved.PATH ?? ""}`;
+    process.env["GH_REPO"] = "acme/live";
+    try {
+      const { code, out } = await invoke(["init", "--dir", root]);
+
+      expect(code).toBe(0);
+      expect(out).toMatch(/kept\s+Actions policy/);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const calls = fs.readFileSync(log, "utf8").trim().split("\n");
+    expect(calls).toEqual(["GH_REPO= repo view --json visibility --jq .visibility"]);
   });
 
   it("refuses a flag it does not know rather than ignoring it", async () => {
@@ -577,7 +637,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("leaves no placeholder unsubstituted in the prompt it writes", async () => {
     const root = adopted();
 
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     expect(read(root, "SETUP.md")).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
@@ -672,7 +732,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     const conditional = documentedLabels().slice(1).flat();
 
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     expect(byName(advisoryLabelSpecsFor(referenceNames))).toEqual(byName(conditional));
     for (const label of conditional) expect(read(root, "SETUP.md")).toContain(labelCommand(label));
@@ -692,10 +752,10 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("says nothing about them once the caller that wants them is gone", async () => {
     const root = adopted();
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     fs.rmSync(path.join(root, ".github", "workflows", "agent-follow-ups.yml"));
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
 
     const setup = read(root, "SETUP.md");
     const filing = ADVISORY_LABELS["follow-ups"] ?? [];
@@ -712,6 +772,177 @@ describe("init installs the reference callers into an adopting repo", () => {
     for (const label of [...TRIGGER_LABELS, ...STATE_LABELS]) {
       expect(setup).toContain(labelCommand(label));
     }
+  });
+});
+
+/**
+ * GitHub blocks `pull_request_target` on a public repository with no event
+ * policy allowing it, from 2026-11-02 (#219), and four of the callers run on
+ * nothing else. `init` leaves the policy behind it, for those callers' files
+ * and no other workflow, and never fails the install over it.
+ */
+describe("init allows pull_request_target for the loop's callers on a public repository", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** An adopter's checkout, with a CI of their own beside where the callers go. */
+  const adopted = (): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-policy-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".github", "workflows", "ci.yml"),
+      "name: CI\non:\n  pull_request_target:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n",
+    );
+    return root;
+  };
+
+  /**
+   * GitHub, as far as this step talks to it: a policy list that a create or
+   * an update really changes, so a second run reads what the first one wrote.
+   */
+  const github = (
+    visibility: "public" | "private" | undefined,
+    start: readonly ActionsPolicy[] | undefined,
+    refuse?: string,
+  ) => {
+    let policies = start;
+    const sent: { method: string; id?: number; body: PolicyBody }[] = [];
+    const asPolicy = (id: number, body: PolicyBody): ActionsPolicy =>
+      parsePolicies(JSON.stringify([{ id, ...body }]))?.[0] as ActionsPolicy;
+    const surface: PolicySurface = {
+      visibility: () => visibility,
+      policies: () => policies,
+      create: (body) => {
+        sent.push({ method: "POST", body });
+        if (refuse !== undefined) return refuse;
+        policies = [...(policies ?? []), asPolicy(7, body)];
+        return undefined;
+      },
+      update: (id, body) => {
+        sent.push({ method: "PUT", id, body });
+        if (refuse !== undefined) return refuse;
+        policies = (policies ?? []).map((policy) => (policy.id === id ? asPolicy(id, body) : policy));
+        return undefined;
+      },
+    };
+    return { surface, sent };
+  };
+
+  const triggered = ["agent-fix.yml", "agent-follow-ups.yml", "agent-review.yml", "agent-update-branch.yml"].map(
+    (file) => `.github/workflows/${file}`,
+  );
+
+  it("creates the policy for the callers alone, and a second run reports it unchanged", async () => {
+    const root = adopted();
+    const { surface, sent } = github("public", []);
+
+    const first = await init({ dir: root, github: surface });
+
+    expect(first.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
+    expect(sent).toHaveLength(1);
+    const body = sent[0]?.body;
+    expect(body?.name).toBe(POLICY_NAME);
+    expect(body?.enforcement).toBe("active");
+    // Only the callers that run on the blocked trigger, found by what they
+    // call: the adopter's own CI, on the same trigger, stays blocked.
+    expect(body?.conditions.workflow_path.include).toEqual(triggered);
+    expect(body?.conditions.workflow_path.include).not.toContain(".github/workflows/ci.yml");
+    expect(body?.rules).toEqual([{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }]);
+
+    const second = await init({ dir: root, github: surface });
+
+    expect(second.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(sent).toHaveLength(1);
+  });
+
+  /**
+   * Whether `allowed_events` is exhaustive for the files it targets is not
+   * documented, so the rule lists every event a targeted caller starts on: a
+   * rule naming only the blocked trigger would, if it is, block the rest.
+   */
+  it("lists every event a targeted caller also triggers on", async () => {
+    const root = adopted();
+    await init({ dir: root, github: github("private", []).surface });
+    const review = path.join(root, ".github", "workflows", "agent-review.yml");
+    fs.writeFileSync(review, fs.readFileSync(review, "utf8").replace(/^on:$/m, "on:\n  workflow_dispatch:"));
+    const { surface, sent } = github("public", []);
+
+    await init({ dir: root, github: surface });
+
+    expect(sent[0]?.body.rules[0].parameters.allowed_events).toEqual(["pull_request_target", "workflow_dispatch"]);
+  });
+
+  it("extends its own policy in place when a caller has been added since", async () => {
+    const root = adopted();
+    const { surface, sent } = github("public", [
+      { id: 3, name: POLICY_NAME, enforcement: "active", include: triggered.slice(1), exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, github: surface });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
+    expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
+    expect(sent[0]?.body.conditions.workflow_path.include).toEqual(triggered);
+  });
+
+  it("counts a policy somebody else wrote, if it allows the trigger for every caller", async () => {
+    const root = adopted();
+    const { surface, sent } = github("public", [
+      { id: 9, name: "theirs", enforcement: "active", include: [".github/workflows/agent-*.yml"], exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, github: surface });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(sent).toHaveLength(0);
+  });
+
+  it("says nothing and writes nothing on a private repository", async () => {
+    const root = adopted();
+    const { surface, sent } = github("private", []);
+
+    const changes = await init({ dir: root, github: surface });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)).toBeUndefined();
+    expect(sent).toHaveLength(0);
+  });
+
+  /**
+   * A token that cannot write the policy is not a failed install: the callers
+   * are on disk, and what is left is one call a repository admin makes, named
+   * exactly, with the page it can be done on instead.
+   */
+  it("names the call and the settings page when GitHub refuses it, and still installs", async () => {
+    const root = adopted();
+    const { surface } = github("public", [], "HTTP 403: Resource not accessible by integration");
+
+    const changes = await init({ dir: root, github: surface });
+
+    const policy = changes.find((c) => c.file === POLICY_CHANGE);
+    expect(policy?.action).toBe("kept");
+    expect(policy?.note).toContain("HTTP 403");
+    expect(policy?.note).toContain("gh api --method POST repos/{owner}/{repo}/actions/policies --input -");
+    expect(policy?.note).toContain('"workflow_path":{"include":[".github/workflows/agent-fix.yml"');
+    expect(policy?.note).toContain("Settings → Actions → Policies");
+    expect(changes.filter((c) => c.file.endsWith(".yml")).every((c) => c.action === "created")).toBe(true);
+  });
+
+  it.each([
+    ["visibility", undefined, []],
+    ["policies", "public", undefined],
+  ] as const)("reports an unreadable %s as a step left to do, never as done", async (_what, visibility, policies) => {
+    const root = adopted();
+    const { surface, sent } = github(visibility, policies);
+
+    const changes = await init({ dir: root, github: surface });
+
+    const policy = changes.find((c) => c.file === POLICY_CHANGE);
+    expect(policy?.action).toBe("kept");
+    expect(policy?.note).toContain("gh api --method POST");
+    expect(sent).toHaveLength(0);
   });
 });
 
@@ -739,7 +970,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
     roots.push(root);
     fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
-    await init({ dir: root });
+    await init({ dir: root, github: offline });
     fs.writeFileSync(path.join(root, ".github", "workflows", "ci.yml"), ciOn("  pull_request:"));
     return root;
   };
@@ -800,6 +1031,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     ],
     visibility: "private",
     releases: [`v${manifest.version}`],
+    actionsPolicies: [],
   });
 
   /**
@@ -838,6 +1070,88 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(err).toBe("");
     expect(code).toBe(0);
+  });
+
+  /**
+   * The Actions policy a public repository needs from 2026-11-02 (#219): a
+   * label added there and no run started, with nothing in the loop saying why.
+   */
+  describe("pull_request_target on a public repository", () => {
+    const allowing = (include: readonly string[] | undefined, overrides: Partial<ActionsPolicy> = {}): ActionsPolicy => ({
+      id: 1,
+      name: "any",
+      enforcement: "active",
+      include,
+      exclude: [],
+      allowedEvents: ["pull_request_target"],
+      ...overrides,
+    });
+    const callers = [".github/workflows/agent-fix.yml", ".github/workflows/agent-follow-ups.yml", ".github/workflows/agent-review.yml", ".github/workflows/agent-update-branch.yml"];
+
+    it("is silent where a policy allows it for every caller", async () => {
+      const { code, out, err } = await check(await installed(), {
+        ...healthy(),
+        visibility: "public",
+        actionsPolicies: [allowing(callers)],
+      });
+
+      expect(`${out}${err}`).not.toContain("pull_request_target policy");
+      expect(code).toBe(0);
+    });
+
+    it("fails where none does, and names the callers and the fix", async () => {
+      const { code, err } = await check(await installed(), { ...healthy(), visibility: "public", actionsPolicies: [] });
+
+      expect(code).toBe(1);
+      expect(err).toContain("FAIL  pull_request_target policy");
+      for (const file of callers) expect(err).toContain(file);
+      expect(err).not.toContain(".github/workflows/agent-implement.yml");
+      expect(err).toContain("gh api --method POST repos/{owner}/{repo}/actions/policies");
+      expect(err).toContain("Settings → Actions → Policies");
+    });
+
+    /** A policy that allows nothing for a caller is no policy for it. */
+    it.each([
+      ["one caller missing", allowing(callers.slice(1))],
+      ["excluded", allowing([], { exclude: [".github/workflows/agent-fix.yml"] })],
+      ["only in evaluate mode", allowing(callers, { enforcement: "evaluate" })],
+      ["another event only", allowing(callers, { allowedEvents: ["push"] })],
+    ] as const)("fails on a policy that is %s", async (_what, policy) => {
+      const { code, err } = await check(await installed(), { ...healthy(), visibility: "public", actionsPolicies: [policy] });
+
+      expect(code).toBe(1);
+      expect(err).toContain(".github/workflows/agent-fix.yml");
+    });
+
+    it("counts a policy on every workflow, or a glob over the callers", async () => {
+      for (const policy of [allowing(undefined), allowing(["~ALL"]), allowing([".github/workflows/agent-*.yml"])]) {
+        const { code } = await check(await installed(), { ...healthy(), visibility: "public", actionsPolicies: [policy] });
+        expect(code).toBe(0);
+      }
+    });
+
+    /** Unreadable is a thing to check, never "absent". */
+    it("warns rather than failing where the policies could not be read", async () => {
+      const { code, out, err } = await check(await installed(), { ...healthy(), visibility: "public", actionsPolicies: undefined });
+
+      expect(code).toBe(0);
+      expect(err).not.toContain("pull_request_target policy");
+      expect(out).toContain("warn  pull_request_target policy: Could not read the Actions policies");
+    });
+
+    it("says nothing on a private repository", async () => {
+      const { code, out, err } = await check(await installed(), { ...healthy(), visibility: "private", actionsPolicies: [] });
+
+      expect(code).toBe(0);
+      expect(`${out}${err}`).not.toContain("pull_request_target");
+    });
+
+    it("warns rather than failing where the visibility could not be read", async () => {
+      const { code, out } = await check(await installed(), { ...healthy(), visibility: undefined, actionsPolicies: [] });
+
+      expect(code).toBe(0);
+      expect(out).toContain("warn  pull_request_target policy");
+    });
   });
 
   /**
@@ -1984,6 +2298,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       labels: undefined,
       visibility: undefined,
       releases: undefined,
+      actionsPolicies: undefined,
     });
 
     expect(code).toBe(0);
@@ -2006,6 +2321,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       labels: undefined,
       visibility: undefined,
       releases: undefined,
+      actionsPolicies: undefined,
     });
 
     expect(code).toBe(0);

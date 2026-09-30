@@ -47,6 +47,8 @@ name: Agent Implement PRD (reusable)
 # next slice on top of it; the first run to merge one also opens the PRD PR,
 # and every run that merges one writes that slice's row of the slices table
 # into the PRD PR's body — its verdict and its open findings, never refreshed.
+# A run that died after its merge left a slice with no row; the next run finds
+# it by that absence and writes it, merging nothing twice (#207).
 # Until the chain can see a round end, re-adding `agent:implement` to the
 # parent is a human's to do, and it is what says the round is over.
 #
@@ -284,10 +286,13 @@ jobs:
           #
           # Not `|| true`, for the shape query's reason: "could not look" read
           # as "none open" builds a slice on top of one nobody has merged.
-          pulls=$(gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft)
+          pulls=$(gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft,body)
           slice_prs=$(jq -c "[.[] | select(.baseRefName | startswith(\"agent/prd-${ISSUE_NUMBER}-\"))]" <<< "$pulls")
           open_slices=$(jq 'length' <<< "$slice_prs")
           named=$(jq -r 'map("#\(.number) (`\(.headRefName)` into `\(.baseRefName)`)") | join(", ")' <<< "$slice_prs")
+          # The PRD PR, found by its **head**, the PRD branch, the way `Open or
+          # reuse the PRD PR` finds it.
+          prd_prs=$(jq -c "[.[] | select(.headRefName | startswith(\"agent/prd-${ISSUE_NUMBER}-\"))]" <<< "$pulls")
 
           # Before the finished refusal: a PRD whose last slice PR is still
           # open is not finished, it is waiting on that PR.
@@ -296,6 +301,64 @@ jobs:
           # place in the order, and building a third stacks work on neither.
           if [ "$open_slices" -gt 1 ]; then
             block "Refused to run: ${open_slices} slice PRs are open against the PRD branch of #${ISSUE_NUMBER}: ${named}. The chain builds one slice at a time and will not guess which of these is the next to land. Close or merge all but one, then re-add \`agent:implement\` here."
+          fi
+
+          # The merged slice PRs with no row in the slices table (#207). A row
+          # is written only by the run that merges its slice, so one that died
+          # after the merge (reading the row's facts, opening the PRD PR, or in
+          # the runner writing it) left a slice PR that is closed, which the
+          # open lookup above cannot see, and a row nothing else will write.
+          # So they are looked for here, by base like the open ones, and handed
+          # to the steps after this one: the merge step's `MERGED` arm merges
+          # nothing twice, and the row and PRD PR steps then do what the dead
+          # run did not. That is what makes "the merge is not repeated", in
+          # every failure text after the merge, a resume rather than a skip.
+          #
+          # A row is keyed by sub-issue, read out of the first cell of each row
+          # between the slices-table markers of the PRD PR's body, the key the
+          # runner's splice uses, and nowhere else: a sub-issue mentioned
+          # outside the table is not a row. No PRD PR means no rows at all, so
+          # every merged slice PR is rowless, which is the first slice's merge
+          # dying before it could open one.
+          #
+          # A merged PR into the PRD branch that names no sub-issue, by `Part of
+          # #<n>` or by slice branch name, is not a slice a row could be written
+          # for, and is left alone rather than holding the chain up.
+          #
+          # More than one is **backfilled, in merge order**, not refused. Each
+          # row is read off its own merged slice PR, which nothing can change
+          # any more, so there is nothing for a human to decide, and a refusal
+          # would leave them writing rows by hand. Beside an open slice PR they
+          # are backfilled too, before it: that is exactly the state a retry
+          # that skipped them left behind, a slice built on top of the rowless
+          # one, and building nothing until they are written would cost a
+          # re-label and gain nothing.
+          #
+          # Not `|| true`, for the shape query's reason: "could not look" read
+          # as "every row written" is the skip this lookup exists to end.
+          rows=$(jq -c --arg start "<!-- agent:slices -->" --arg end "<!-- /agent:slices -->" '[.[].body // ""
+            | select(contains($start)) | split($start)[1] | split($end)[0] | split("\n")[]
+            | capture("^\\s*\\|(?<cell>(?:[^|\\\\]|\\\\.)*)\\|").cell
+            | capture("\\(#(?<n>[0-9]+)\\)\\s*$").n | tonumber]' <<< "$prd_prs")
+          rowless=$(gh pr list --state merged --limit 1000 --json number,headRefName,baseRefName,body,mergedAt \
+            | jq -c --arg parent "$ISSUE_NUMBER" --argjson rows "$rows" '[.[]
+                | select(.baseRefName | startswith("agent/prd-\($parent)-"))
+                | {number, mergedAt, sub: ((.body // "" | capture("Part of #(?<n>[0-9]+)").n) // (.headRefName | capture("^agent/slice-\($parent)-(?<n>[0-9]+)-").n) // null)}
+                | select(.sub != null) | select(.sub | tonumber | IN($rows[]) | not)]
+              | sort_by(.mergedAt) | map(.number)')
+
+          # One slice PR goes through the merge step: the open one, merged this
+          # run and so last in merge order, or failing that the rowless one that
+          # merged last. The rest are the backfill, written before it.
+          if [ "$open_slices" -eq 1 ]; then
+            slice_pr=$(jq -r '.[0].number' <<< "$slice_prs")
+            backfill=$(jq -r 'map(tostring) | join(" ")' <<< "$rowless")
+          else
+            slice_pr=$(jq -r '.[-1] // ""' <<< "$rowless")
+            backfill=$(jq -r '.[:-1] | map(tostring) | join(" ")' <<< "$rowless")
+          fi
+          if [ "$(jq 'length' <<< "$rowless")" -gt 0 ]; then
+            echo "Merged slice PR(s) with no row in the slices table of #${ISSUE_NUMBER}: $(jq -r 'map("#\(.)") | join(", ")' <<< "$rowless"). Writing their rows this run; none is merged twice."
           fi
 
           # One open slice PR with a sub-issue still to build is the chain
@@ -309,23 +372,29 @@ jobs:
           # builds nothing and runs no model. The whole state table, every row
           # safe to re-run:
           #
-          #   open sub-issue | open slice PR | the run
-          #   yes            | yes           | merges it, builds the next slice
-          #   yes            | no            | builds the next slice
-          #   no             | yes           | finishing: merges it, hands the PRD PR over
-          #   no             | no, PRD PR    | finishing: resumes the handover, since a
-          #                  |   still draft |   run died after the last merge
-          #   no             | no, otherwise | refused: the PRD is finished
+          #   open sub-issue | open slice PR  | the run
+          #   yes            | yes            | merges it, builds the next slice
+          #   yes            | no, one merged | writes its row, builds the next slice,
+          #                  |   with no row  |   since a run died after merging it
+          #   yes            | no             | builds the next slice
+          #   no             | yes            | finishing: merges it, hands the PRD PR over
+          #   no             | no, one merged | finishing: writes its row, hands the
+          #                  |   with no row  |   PRD PR over
+          #   no             | no, PRD PR     | finishing: resumes the handover, since a
+          #                  |   still draft  |   run died after the last row
+          #   no             | no, otherwise  | refused: the PRD is finished
           #
-          # The PRD PR is found by its **head**, the PRD branch, the way `Open
-          # or reuse the PRD PR` finds it — and only a draft one is waiting on
-          # a handover. Ready means handed over, and none means there is
-          # nothing to hand.
+          # Any other rowless merged slice PR is backfilled on the way, in
+          # every row of the table that merges or writes one.
+          #
+          # Only a draft PRD PR is waiting on a handover. Ready means handed
+          # over, and none means there is nothing to hand.
           if [ -z "$next" ]; then
             if [ "$open_slices" -eq 1 ]; then
               echo "The last slice PR ${named} is open; finishing #${ISSUE_NUMBER}."
+            elif [ -n "$slice_pr" ]; then
+              echo "Slice PR #${slice_pr} merged with no row in the slices table; finishing #${ISSUE_NUMBER} from it."
             else
-              prd_prs=$(jq -c "[.[] | select(.headRefName | startswith(\"agent/prd-${ISSUE_NUMBER}-\"))]" <<< "$pulls")
               if [ "$(jq 'length' <<< "$prd_prs")" -gt 1 ]; then
                 block "Refused to run: $(jq -r 'map("#\(.number)") | join(", ")' <<< "$prd_prs") are all open from the PRD branch of #${ISSUE_NUMBER}, and the chain will not guess which of them to hand over. Close all but one, then re-add \`agent:implement\` here."
               fi
@@ -340,7 +409,8 @@ jobs:
             fi
             {
               echo "sub="
-              echo "slice_pr=$(jq -r '.[0].number // ""' <<< "$slice_prs")"
+              echo "slice_pr=${slice_pr}"
+              echo "backfill=${backfill}"
               echo "finishing=true"
               echo "refused=false"
             } >> "$GITHUB_OUTPUT"
@@ -408,7 +478,8 @@ jobs:
           # away from being an injection into the environment file.
           {
             echo "sub=$(jq -r '.number' <<< "$next")"
-            echo "slice_pr=$(jq -r '.[0].number // ""' <<< "$slice_prs")"
+            echo "slice_pr=${slice_pr}"
+            echo "backfill=${backfill}"
             echo "sub_title<<PRD_SUB_TITLE_EOF"
             jq -r '.title' <<< "$next"
             echo "PRD_SUB_TITLE_EOF"
@@ -556,11 +627,16 @@ jobs:
       # Runs on a re-run that finds the slice PR already merged too, since a
       # run that died after the merge wrote no row. The row is keyed by
       # sub-issue, so one an earlier attempt did write is left as it stands.
+      #
+      # And gathers the rows of the backfill (#207): the other merged slice PRs
+      # the preflight found with no row, in merge order, each read exactly the
+      # way the merged one is, and written before it.
       - name: Gather the slice's row
         if: steps.preflight.outputs.refused == 'false' && steps.merge.outputs.merged == 'true'
         id: slice_row
         env:
           SLICE_PR: ${{ steps.preflight.outputs.slice_pr }}
+          BACKFILL: ${{ steps.preflight.outputs.backfill }}
           PRD_BRANCH: ${{ steps.merge.outputs.prd_branch }}
         run: |
           set -euo pipefail
@@ -571,48 +647,74 @@ jobs:
             exit 1
           }
 
-          # One read of the merged slice PR. Its head is the one the merge was
-          # pinned to, and a merged pull request's head no longer moves.
-          pr=$(gh pr view "$SLICE_PR" --json number,headRefOid,headRefName,title,body,url) \
-            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read it back for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
-          head=$(jq -r '.headRefOid' <<< "$pr")
-
           # The sub-issue from `Part of #<n>`, or failing that the slice
           # branch's name — the one place a name is read, and only to label a
           # row, never to find a PR.
           slice_of='(.body // "" | capture("Part of #(?<n>[0-9]+)").n) // (.headRefName | capture("^agent/slice-\($parent)-(?<n>[0-9]+)-").n) // empty'
-          sub=$(jq -r --arg parent "$ISSUE_NUMBER" "$slice_of" <<< "$pr")
-          if [ -z "$sub" ]; then
-            block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not tell which sub-issue it built: its body has no \`Part of #<sub-issue>\` and its branch is not \`agent/slice-${ISSUE_NUMBER}-<sub-issue>-…\`. Put \`Part of #<sub-issue>\` back in slice PR #${SLICE_PR}'s body, then re-add \`agent:implement\` here. The merge is not repeated."
-          fi
-          url=$(jq -r '.url' <<< "$pr")
 
-          # The verdict on the **merged head**, the one the merge was pinned
-          # to: the verdict of the code that landed. The combined status holds
-          # the latest post per context.
-          verdict=$(gh api "repos/${GH_REPO}/commits/${head}/status" --paginate --slurp \
-            | jq -c '[.[].statuses[]? | select(.context == "agent-review")] | .[0].description // null') \
-            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read the \`agent-review\` verdict on ${head} for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+          # One merged slice PR's facts, left in `row`. Not in a subshell, so
+          # a `block` here ends the step rather than one command substitution.
+          gather() {
+            local number=$1 pr head sub url verdict threads
 
-          # Every review thread left open, linked from the row rather than
-          # raised again: the PRD PR's review is not a second round of these.
-          threads=$(gh api graphql --paginate --slurp \
-            -f owner="${GH_REPO%/*}" -f name="${GH_REPO#*/}" -F number="$SLICE_PR" \
-            -f query='
-              query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
-                repository(owner: $owner, name: $name) {
-                  pullRequest(number: $number) {
-                    reviewThreads(first: 100, after: $endCursor) {
-                      pageInfo { hasNextPage endCursor }
-                      nodes { isResolved path line originalLine comments(first: 1) { nodes { url } } }
+            # One read of the merged slice PR. Its head is the one the merge
+            # was pinned to, and a merged pull request's head no longer moves.
+            pr=$(gh pr view "$number" --json number,headRefOid,headRefName,title,body,url) \
+              || block "Merged slice PR #${number} into the PRD branch, but could not read it back for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+            head=$(jq -r '.headRefOid' <<< "$pr")
+
+            sub=$(jq -r --arg parent "$ISSUE_NUMBER" "$slice_of" <<< "$pr")
+            if [ -z "$sub" ]; then
+              block "Merged slice PR #${number} into the PRD branch, but could not tell which sub-issue it built: its body has no \`Part of #<sub-issue>\` and its branch is not \`agent/slice-${ISSUE_NUMBER}-<sub-issue>-…\`. Put \`Part of #<sub-issue>\` back in slice PR #${number}'s body, then re-add \`agent:implement\` here. The merge is not repeated."
+            fi
+            url=$(jq -r '.url' <<< "$pr")
+
+            # The verdict on the **merged head**, the one the merge was pinned
+            # to: the verdict of the code that landed. The combined status
+            # holds the latest post per context.
+            verdict=$(gh api "repos/${GH_REPO}/commits/${head}/status" --paginate --slurp \
+              | jq -c '[.[].statuses[]? | select(.context == "agent-review")] | .[0].description // null') \
+              || block "Merged slice PR #${number} into the PRD branch, but could not read the \`agent-review\` verdict on ${head} for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+
+            # Every review thread left open, linked from the row rather than
+            # raised again: the PRD PR's review is not a second round of these.
+            threads=$(gh api graphql --paginate --slurp \
+              -f owner="${GH_REPO%/*}" -f name="${GH_REPO#*/}" -F number="$number" \
+              -f query='
+                query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      reviewThreads(first: 100, after: $endCursor) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes { isResolved path line originalLine comments(first: 1) { nodes { url } } }
+                      }
                     }
                   }
-                }
-              }' \
-            | jq -c --arg url "$url" '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-                | select(.isResolved | not)
-                | {path, line: (.line // .originalLine), url: (.comments.nodes[0].url // $url)}]') \
-            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not read its review threads for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+                }' \
+              | jq -c --arg url "$url" '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+                  | select(.isResolved | not)
+                  | {path, line: (.line // .originalLine), url: (.comments.nodes[0].url // $url)}]') \
+              || block "Merged slice PR #${number} into the PRD branch, but could not read its review threads for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+
+            row=$(jq -n \
+              --slurpfile issue "${RUNNER_TEMP}/prd-issue.json" \
+              --argjson sub "$sub" --argjson slice_pr "$number" --arg url "$url" \
+              --arg pr_title "$(jq -r '.title' <<< "$pr")" \
+              --argjson verdict "$verdict" --argjson threads "$threads" \
+              '{
+                title: (first($issue[0].subIssues.nodes[] | select(.number == $sub) | .title) // $pr_title),
+                subIssue: $sub, slicePr: $slice_pr, slicePrUrl: $url,
+                verdict: $verdict, openThreads: $threads
+              }')
+          }
+
+          backfill="[]"
+          for number in $BACKFILL; do
+            gather "$number"
+            backfill=$(jq -c --argjson row "$row" '. + [$row]' <<< "$backfill")
+          done
+          gather "$SLICE_PR"
+          merged="$row"
 
           # A sub-issue closed with no slice PR was built before slice PRs
           # existed. Offered on every run; the runner writes these rows only
@@ -624,16 +726,11 @@ jobs:
 
           jq -n \
             --slurpfile issue "${RUNNER_TEMP}/prd-issue.json" \
-            --argjson sub "$sub" --argjson slice_pr "$SLICE_PR" --arg url "$url" \
-            --arg pr_title "$(jq -r '.title' <<< "$pr")" \
-            --argjson verdict "$verdict" --argjson threads "$threads" --argjson built "$built" \
-            '$issue[0].subIssues.nodes as $subs | {
-              merged: {
-                title: (first($subs[] | select(.number == $sub) | .title) // $pr_title),
-                subIssue: $sub, slicePr: $slice_pr, slicePrUrl: $url,
-                verdict: $verdict, openThreads: $threads
-              },
-              preUpgrade: [$subs[] | select(.state == "CLOSED" and (.number as $n | any($built[]; . == $n) | not))
+            --argjson backfill "$backfill" --argjson merged "$merged" --argjson built "$built" \
+            '{
+              backfill: $backfill,
+              merged: $merged,
+              preUpgrade: [$issue[0].subIssues.nodes[] | select(.state == "CLOSED" and (.number as $n | any($built[]; . == $n) | not))
                 | {title, subIssue: .number}]
             }' > "${RUNNER_TEMP}/slices-table.json"
 
@@ -671,7 +768,7 @@ jobs:
           }
 
           existing=$(gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number --jq 'map(.number) | join(" ")') \
-            || block "Could not look for the PRD PR from \`${PRD_BRANCH}\`. Slice PR #${SLICE_PR} is merged; re-add \`agent:implement\` here to build the next slice, and the run that merges it opens the PRD PR."
+            || block "Could not look for the PRD PR from \`${PRD_BRANCH}\`. Slice PR #${SLICE_PR} is merged; re-add \`agent:implement\` here to retry. The merge is not repeated."
           count=$(wc -w <<< "$existing")
 
           if [ "$count" -gt 1 ]; then

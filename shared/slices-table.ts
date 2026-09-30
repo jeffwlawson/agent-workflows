@@ -59,6 +59,11 @@ export interface PreUpgradeSlice {
 
 /** What one merge adds to the table. */
 export interface SlicesUpdate {
+  /**
+   * Slices merged by an earlier run that died before writing their rows (#207),
+   * in merge order. Written before `merged`, which merged after them.
+   */
+  readonly backfill: readonly MergedSlice[];
   readonly merged: MergedSlice;
   /** Closed sub-issues with no slice PR, in sub-issue order. Written only when the table is created. */
   readonly preUpgrade: readonly PreUpgradeSlice[];
@@ -205,15 +210,17 @@ const dedupe = (existing: readonly string[], rows: readonly string[]): string[] 
 };
 
 /**
- * One merge's worth of table: the merged slice's row, preceded — **the first
- * time the table is written**, and only then — by a row for each slice a
- * pre-upgrade chain built. Those were built first, so merge order puts them
- * first; and once the table exists, a sub-issue closed with no slice PR is not
- * one the chain built before the upgrade.
+ * One merge's worth of table: the merged slice's row, preceded by the rows of
+ * any slices an earlier run merged and died before writing, and (**the first
+ * time the table is written**, and only then) by a row for each slice a
+ * pre-upgrade chain built. Each group was merged before the next, so merge
+ * order is the order they are listed in; and once the table exists, a sub-issue
+ * closed with no slice PR is not one the chain built before the upgrade.
  */
 export const addMergedSlice = (body: string, update: SlicesUpdate): string =>
   spliceSliceRows(body, [
     ...(hasSlicesTable(body) ? [] : update.preUpgrade.map(renderPreUpgradeRow)),
+    ...update.backfill.map(renderSliceRow),
     renderSliceRow(update.merged),
   ]);
 
@@ -229,31 +236,37 @@ const asNumber = (value: unknown, label: string): number => {
  */
 export const parseSlicesUpdate = (raw: unknown): SlicesUpdate => {
   const record = asRecord(raw, "slices table facts");
-  const merged = asRecord(record["merged"], "merged");
-  const verdict = merged["verdict"];
 
   return {
-    merged: {
-      title: asString(merged["title"], "merged.title"),
-      subIssue: asNumber(merged["subIssue"], "merged.subIssue"),
-      slicePr: asNumber(merged["slicePr"], "merged.slicePr"),
-      slicePrUrl: asString(merged["slicePrUrl"], "merged.slicePrUrl"),
-      verdict: verdict === null || verdict === undefined ? null : asString(verdict, "merged.verdict"),
-      openThreads: asArray(merged["openThreads"], "merged.openThreads").map((raw, i) => {
-        const thread = asRecord(raw, `merged.openThreads[${i}]`);
-        const line = thread["line"];
-        return {
-          path: asString(thread["path"], `merged.openThreads[${i}].path`),
-          line: line === null || line === undefined ? null : asNumber(line, `merged.openThreads[${i}].line`),
-          url: asString(thread["url"], `merged.openThreads[${i}].url`),
-        };
-      }),
-    },
+    backfill: asArray(record["backfill"], "backfill").map((slice, i) => parseMergedSlice(slice, `backfill[${i}]`)),
+    merged: parseMergedSlice(record["merged"], "merged"),
     preUpgrade: asArray(record["preUpgrade"], "preUpgrade").map((raw, i) => {
       const slice = asRecord(raw, `preUpgrade[${i}]`);
       return {
         title: asString(slice["title"], `preUpgrade[${i}].title`),
         subIssue: asNumber(slice["subIssue"], `preUpgrade[${i}].subIssue`),
+      };
+    }),
+  };
+};
+
+const parseMergedSlice = (raw: unknown, label: string): MergedSlice => {
+  const merged = asRecord(raw, label);
+  const verdict = merged["verdict"];
+
+  return {
+    title: asString(merged["title"], `${label}.title`),
+    subIssue: asNumber(merged["subIssue"], `${label}.subIssue`),
+    slicePr: asNumber(merged["slicePr"], `${label}.slicePr`),
+    slicePrUrl: asString(merged["slicePrUrl"], `${label}.slicePrUrl`),
+    verdict: verdict === null || verdict === undefined ? null : asString(verdict, `${label}.verdict`),
+    openThreads: asArray(merged["openThreads"], `${label}.openThreads`).map((raw, i) => {
+      const thread = asRecord(raw, `${label}.openThreads[${i}]`);
+      const line = thread["line"];
+      return {
+        path: asString(thread["path"], `${label}.openThreads[${i}].path`),
+        line: line === null || line === undefined ? null : asNumber(line, `${label}.openThreads[${i}].line`),
+        url: asString(thread["url"], `${label}.openThreads[${i}].url`),
       };
     }),
   };

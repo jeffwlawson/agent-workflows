@@ -59,7 +59,8 @@ const PRD_PR = process.env["PRD_PR"] ?? "";
 
 /**
  * Write the merged slice's row into the PRD PR body (#174), from the facts the
- * workflow gathered once the merge landed.
+ * workflow gathered once the merge landed, after the rows of any slices an
+ * earlier run merged and died before writing (#207).
  *
  * Here rather than in a step of its own because rendering is this package's,
  * and a workflow invokes this package exactly once — the one pinned `npm exec`
@@ -75,12 +76,14 @@ const writeSliceRow = (prdPr: string): void => {
   const body = fetchPullRequestBody(prdPr);
   const next = addMergedSlice(body, update);
 
+  const slices = [...update.backfill, update.merged];
+
   if (next === body) {
-    console.log(`PRD PR #${prdPr} already has a row for sub-issue #${update.merged.subIssue}.`);
+    console.log(`PRD PR #${prdPr} already has a row for ${slices.map((s) => `sub-issue #${s.subIssue}`).join(", ")}.`);
     return;
   }
   updatePullRequestBody(prdPr, next);
-  console.log(`Wrote slice PR #${update.merged.slicePr}'s row into PRD PR #${prdPr}.`);
+  console.log(`Wrote the rows of ${slices.map((s) => `slice PR #${s.slicePr}`).join(", ")} into PRD PR #${prdPr}.`);
 };
 
 /**

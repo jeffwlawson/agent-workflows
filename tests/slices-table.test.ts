@@ -185,7 +185,7 @@ describe("addMergedSlice", () => {
   ];
 
   it("writes the pre-upgrade slices first, each with its own row, the first time the table is written", () => {
-    const out = addMergedSlice("Closes #171\n", { merged: slice({ subIssue: 204 }), preUpgrade });
+    const out = addMergedSlice("Closes #171\n", { backfill: [], merged: slice({ subIssue: 204 }), preUpgrade });
     const rows = out.split("\n").filter((line) => /\(#\d+\)/.test(line));
 
     expect(rows).toEqual([
@@ -196,17 +196,52 @@ describe("addMergedSlice", () => {
   });
 
   it("adds no pre-upgrade row once the table exists", () => {
-    const existing = addMergedSlice("Closes #171\n", { merged: slice({ subIssue: 204 }), preUpgrade: [] });
-    const out = addMergedSlice(existing, { merged: slice({ subIssue: 205, slicePr: 212 }), preUpgrade });
+    const existing = addMergedSlice("Closes #171\n", { backfill: [], merged: slice({ subIssue: 204 }), preUpgrade: [] });
+    const out = addMergedSlice(existing, { backfill: [], merged: slice({ subIssue: 205, slicePr: 212 }), preUpgrade });
 
     expect(out).not.toContain("built before slice PRs");
     expect(out).toContain("(#205)");
+  });
+
+  /** A run that died after its merge left that slice rowless (#207); the next run writes it first. */
+  it("writes the backfilled slices' rows before the merged slice's, in the order given", () => {
+    const existing = addMergedSlice("Closes #171\n", { backfill: [], merged: slice({ subIssue: 204 }), preUpgrade: [] });
+    const backfill = [slice({ subIssue: 205, slicePr: 212 }), slice({ subIssue: 206, slicePr: 213 })];
+    const out = addMergedSlice(existing, { backfill, merged: slice({ subIssue: 207, slicePr: 214 }), preUpgrade });
+    const rows = out.split("\n").filter((line) => /\(#\d+\)/.test(line));
+
+    expect(rows).toEqual([
+      renderSliceRow(slice({ subIssue: 204 })),
+      ...backfill.map(renderSliceRow),
+      renderSliceRow(slice({ subIssue: 207, slicePr: 214 })),
+    ]);
+  });
+
+  it("writes the pre-upgrade slices before the backfilled ones, when it creates the table", () => {
+    const out = addMergedSlice("Closes #171\n", {
+      backfill: [slice({ subIssue: 205, slicePr: 212 })],
+      merged: slice({ subIssue: 206, slicePr: 213 }),
+      preUpgrade,
+    });
+    const keys = out.split("\n").flatMap((line) => /\(#(\d+)\) \|/.exec(line)?.[1] ?? []);
+
+    expect(keys).toEqual(["201", "203", "205", "206"]);
   });
 });
 
 describe("parseSlicesUpdate", () => {
   it("reads back the facts file the merge step writes", () => {
     const raw = {
+      backfill: [
+        {
+          title: "Add the verdict table",
+          subIssue: 201,
+          slicePr: 210,
+          slicePrUrl: PR_URL,
+          verdict: "Accepted. Nothing to fix.",
+          openThreads: [],
+        },
+      ],
       merged: {
         title: "Wire the advance job",
         subIssue: 202,
@@ -215,13 +250,14 @@ describe("parseSlicesUpdate", () => {
         verdict: null,
         openThreads: [{ path: "a.ts", line: null, url: `${PR_URL}#discussion_r1` }],
       },
-      preUpgrade: [{ title: "Add the verdict table", subIssue: 201 }],
+      preUpgrade: [{ title: "Add the verdict table", subIssue: 200 }],
     };
 
     expect(parseSlicesUpdate(raw)).toEqual(raw);
   });
 
   it("refuses a file missing a fact, rather than writing a row that would stand forever", () => {
-    expect(() => parseSlicesUpdate({ merged: { title: "x" }, preUpgrade: [] })).toThrow(/subIssue/);
+    expect(() => parseSlicesUpdate({ backfill: [], merged: { title: "x" }, preUpgrade: [] })).toThrow(/subIssue/);
+    expect(() => parseSlicesUpdate({ backfill: [{ title: "x" }], merged: {}, preUpgrade: [] })).toThrow(/backfill\[0\]\.subIssue/);
   });
 });

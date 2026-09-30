@@ -848,7 +848,7 @@ The permissions per workflow, which are what each job actually spends:
 | Caller | `checks` | `contents` | `issues` | `packages` | `pull-requests` | `statuses` |
 |---|---|---|---|---|---|---|
 | `agent-implement` | — | write | write | read | write | — |
-| `agent-implement-prd` | — | write | write | read | write | — |
+| `agent-implement-prd` | — | write | write | read | write | **read** |
 | `agent-review` | **read** | **write** | — | read | write | **write** |
 | `agent-fix` | — | write | — | read | write | — |
 | `agent-update-branch` | — | write | — | read | write | **write** |
@@ -922,6 +922,15 @@ scope write.
 > by the time it runs. Omitting the grant does not buy you the warning, though — it buys you the
 > refusal at the head of this table. A refresh that had to *resolve* conflicts copies nothing and
 > adds `agent:review` instead, which is a label rather than a status and needs no scope of its own.
+
+> **`statuses: read` on implement-prd is what fills the slices table.** Each merged slice's row
+> records its `agent-review` verdict, read from the merged commit's status, and a status is a scope
+> of its own. The read happens on the run after a slice's review round ends, after the slice has
+> been merged into the PRD branch. v0.7.0 read it without declaring the scope, so the read 403d and
+> the chain stopped there (#199). **Move the grant when you move the pin**: a caller without it
+> gets the refusal at the head of this table, not a 403. To recover a chain that stopped there,
+> re-add `agent:implement` to the PRD issue. The run sees the slice is already merged, skips the
+> merge, and retries the row.
 
 > **`checks: read` on review is the row only a private repository *spends* — and it is not optional
 > on a public one.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a

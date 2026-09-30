@@ -128,6 +128,10 @@ jobs:
       # bound, it grants nothing without the caller's own `packages: read`.
       packages: read
       pull-requests: write
+      # The slices table's row records each merged slice's `agent-review`
+      # verdict, read from the merged head's combined status — its own scope,
+      # which a block that leaves it out sets to `none` (#199).
+      statuses: read
 
     env:
       # Throughout this file, ISSUE_* is the **parent PRD**. The sub-issue being

@@ -74,6 +74,13 @@ export interface InstalledCaller {
    * `secrets: inherit`.
    */
   readonly secrets: readonly string[] | "inherit" | undefined;
+  /**
+   * The activity types its `pull_request_target` trigger lists, or none where
+   * it lists none. Read for one rule (#209): the review caller's `closed` is
+   * what moves the PRD chain on from a slice PR merged by hand, and a caller
+   * installed before that has `labeled` alone.
+   */
+  readonly pullRequestTypes: readonly string[];
 }
 
 /**
@@ -209,10 +216,14 @@ export const callersIn = (
   let jobs: Record<string, unknown> = {};
   let top: unknown;
   let topDeclared = false;
+  let pullRequestTypes: readonly string[] = [];
   try {
     const document = parse(text) as
-      | { readonly jobs?: unknown; readonly permissions?: unknown }
+      | { readonly jobs?: unknown; readonly permissions?: unknown; readonly on?: unknown }
       | null;
+    const trigger = (document?.on as { readonly pull_request_target?: unknown } | null | undefined)
+      ?.pull_request_target as { readonly types?: unknown } | null | undefined;
+    pullRequestTypes = patternsOf(trigger?.types) ?? [];
     const held = document?.jobs;
     if (typeof held === "object" && held !== null && !Array.isArray(held)) {
       jobs = held as Record<string, unknown>;
@@ -259,6 +270,7 @@ export const callersIn = (
         // same way. Anything else is off, which is the input's own default.
         autoFix: inputs["auto-fix"] === "true",
         secrets: secretsOf(job.secrets),
+        pullRequestTypes,
       },
     ];
   });

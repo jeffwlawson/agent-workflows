@@ -129,7 +129,9 @@ left so the manual remedy is one remove-and-re-add.
 The one failure here that has nothing to do with `GITHUB_TOKEN`, and the only one a correct PAT does
 not fix.
 
-Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`.
+Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`
+(two also listen on `closed`: `follow-ups`, and `review`, whose `closed` moves the PRD chain on from
+a slice PR merged by hand).
 Labels passed in the **create** call produce only `issues.opened` — they ride along in that
 payload, but no `labeled` event is emitted and `github.event.label` does not exist on `opened`. The
 label is really on the issue, and the workflow correctly never saw an event.

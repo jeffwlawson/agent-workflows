@@ -546,7 +546,7 @@ jobs:
 
           # One read, so every check below rules on the same snapshot — and its
           # head is the one the merge is pinned to.
-          fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels
+          fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels,body
           pr=$(gh pr view "$SLICE_PR" --json "$fields") \
             || block "Could not read slice PR #${SLICE_PR}, so nothing was merged. Re-add \`agent:implement\` here to retry."
           state=$(jq -r '.state' <<< "$pr")
@@ -599,6 +599,21 @@ jobs:
               ] | .[0] // ""') || method=""
             if [ -z "$method" ]; then
               block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: this repository's settings allow none of squash, rebase or a merge commit, or this token cannot read them."
+            fi
+
+            # The chain's own mark, for review's `advance-merged` (#209), which
+            # re-adds `agent:implement` when a slice PR is merged by hand and
+            # must not when this run merges it: this run builds the next slice
+            # already, and a second label would queue a second run. The merge
+            # is under AGENT_PAT, the maintainer's own login, so who merged
+            # cannot tell them apart; the body the `closed` event carries can.
+            # Pinned to the head the merge is, and written before it, so the
+            # event cannot arrive without it.
+            marker="<!-- agent-chain-merge ${head} -->"
+            body=$(jq -r '.body // ""' <<< "$pr")
+            if [[ "$body" != *"$marker"* ]]; then
+              gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body="${body}"$'\n\n'"${marker}" >/dev/null \
+                || block "Could not mark slice PR #${SLICE_PR} as merged by the chain, so nothing was merged: merged without the mark, it would read as a hand merge and start a second run. Re-add \`agent:implement\` here to retry."
             fi
 
             # Pinned to the head read above. A push between that read and this

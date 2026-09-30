@@ -192,6 +192,15 @@ if (argv[0] === "api" && argv[1] === "-X" && argv[2] === "DELETE" && /\/git\/ref
   process.exit(0);
 }
 
+// A pull request's body rewritten through the REST endpoint: the chain's mark
+// before it merges a slice PR (#209). A write, logged.
+if (argv[0] === "api" && argv[1] === "-X" && argv[2] === "PATCH" && /\/pulls\/\d+$/.test(argv[3] ?? "")) {
+  const log = process.env["GH_REPLAY_LOG"];
+
+  if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
+  process.exit(0);
+}
+
 if (argv[0] !== "api") unrecorded();
 
 const endpoint = argv[1] ?? "";

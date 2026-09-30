@@ -732,7 +732,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * A repository `init` has just finished with, beside a CI of the adopter's
-   * own that runs on every pull request — the state doctor should pass. `init`
+   * own that runs on every pull request: the state doctor should pass. `init`
    * writes no CI, and a repository with none parks the PRD chain (#209).
    */
   const installed = async (): Promise<string> => {
@@ -948,6 +948,27 @@ describe("doctor names the failures that otherwise look like something else", ()
 
       expect(out + err).not.toContain("CI on slice PRs");
     });
+  });
+
+  /**
+   * The review caller's `closed` trigger (#209), which moves the PRD chain on
+   * from a slice PR merged by hand. A caller installed before it lists
+   * `labeled` alone, and `init` moves pins and nothing else, so this is the one
+   * place an adopter hears of it. A warning: nothing that worked stops.
+   */
+  it("warns where the review caller does not listen for a slice PR's merge", async () => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) => text.replace("types: [closed, labeled]", "types: [labeled]"));
+
+    const { code, out, err } = await check(root, healthy());
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("hand-merged slice PRs");
+    expect(out).toContain("types: [closed, labeled]");
+
+    fs.rmSync(path.join(root, ".github", "workflows", "agent-implement-prd.yml"));
+    expect((await check(root, healthy())).out).not.toContain("hand-merged slice PRs");
   });
 
   it("fails a repository with no caller at all, and names init", async () => {

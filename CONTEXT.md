@@ -75,6 +75,16 @@ a finished PRD refuses the label. It has `auto-fix`'s shape — no checkout, no 
 `pull-requests: write` alone, `AGENT_PAT` or nothing — and is on by default, since only the PRD
 chain opens a slice PR.
 
+So is merging the slice PR by hand (#209). `review` carries a twin of the advance job on the
+`closed` event its caller also listens for: a slice PR merged into its PRD branch by anyone but the
+chain re-adds `agent:implement` to the parent, and the run that starts finds the slice PR merged,
+writes its row and builds the next slice. The chain's own merge is told apart by a mark, not by
+who merged, since both are the maintainer's login: `implement-prd` writes
+`<!-- agent-chain-merge <head sha> -->` into the slice PR's body before it merges, and the job's
+`if:` skips a `closed` payload carrying the mark for the head it merged. It also stands aside while
+the parent already carries `agent:implement` or `agent:in-progress`: the chain is moving, and a
+second label would only queue a second run.
+
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
 commit status belongs to a commit, so without the copy every merge into a base branch would wipe

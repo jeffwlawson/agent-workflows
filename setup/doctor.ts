@@ -683,6 +683,27 @@ export const diagnose = (
     }
   }
 
+  // The review caller's `closed` trigger (#209), which a caller installed
+  // before it does not carry and `init` does not add back: it moves pins and
+  // nothing else. Without it the loop works exactly as it did, and a slice PR
+  // merged by hand is the dead end it was, so a warning, and only where there
+  // is a chain to move.
+  if (callers.some((caller) => caller.workflow === "implement-prd")) {
+    for (const caller of callers) {
+      if (caller.workflow !== "review" || caller.pullRequestTypes.includes("closed")) continue;
+      add({
+        severity: "warning",
+        check: "hand-merged slice PRs",
+        problem:
+          `${caller.file} triggers on \`pull_request_target\` types ` +
+          `${caller.pullRequestTypes.length === 0 ? "it does not list" : caller.pullRequestTypes.map((type) => `\`${type}\``).join(", ")}, ` +
+          `without \`closed\`. A slice PR merged by hand then does not move the PRD chain on: ` +
+          `nothing re-adds \`agent:implement\` to its parent, and nothing says so.`,
+        fix: `Set \`types: [closed, labeled]\` on that trigger, as examples/callers/review.yml does.`,
+      });
+    }
+  }
+
   if (facts.secrets === undefined) {
     add({
       severity: "warning",

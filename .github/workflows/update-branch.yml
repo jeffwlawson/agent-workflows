@@ -515,8 +515,27 @@ jobs:
         env:
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # The commit this run pushed, and how long the PR gets to show it as
+          # its head before the label goes on anyway (#229).
+          PUSHED_SHA: ${{ steps.push.outputs.head }}
+          HEAD_WAIT_SECONDS: "60"
         run: |
           set -euo pipefail
+          # Wait for the pull request to show the pushed commit as its head
+          # before asking for the review (#229). GitHub moves a PR's head
+          # asynchronously after a push, and a label added before it has would
+          # carry the commit before the push in its payload. Bounded: past it,
+          # the label goes on anyway with a warning, since review reads the
+          # branch tip itself and refuses by name where it cannot settle on it.
+          head=""
+          deadline=$((SECONDS + HEAD_WAIT_SECONDS))
+          until head=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$PUSHED_SHA" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::warning::PR #${PR_NUMBER} still shows ${head:-an unreadable head} as its head ${HEAD_WAIT_SECONDS}s after ${PUSHED_SHA} was pushed. Asking for the review anyway: it reads the branch tip itself, and refuses by name if it cannot settle on ${PUSHED_SHA}."
+              break
+            fi
+            sleep 5
+          done
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
             printf 'The conflicts are resolved and pushed, but `agent:review` could not be added, so no review of the resolution was requested. Add `agent:review` to this PR by hand. Re-adding `agent:update-branch` would find the branch already up to date and do nothing.\n' \
               > "${RUNNER_TEMP}/failure_reason.txt"

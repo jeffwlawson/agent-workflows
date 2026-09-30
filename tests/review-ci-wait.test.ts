@@ -111,7 +111,9 @@ const HEAD_SHA = "35da2fc0e3a94c2d8b1b0e4e9f1c2d3a4b5c6d7e";
 const SELF_CHECK = "review / review";
 const GH_REPO = "acme/widgets";
 const EXPRESSIONS: Readonly<Record<string, string>> = {
-  "${{ github.event.pull_request.head.sha }}": HEAD_SHA,
+  // The commit the pre-flight settled on (#229), which the wait reads rather
+  // than the payload's.
+  "${{ steps.state.outputs.sha }}": HEAD_SHA,
   "${{ inputs.self-check }}": SELF_CHECK,
 };
 

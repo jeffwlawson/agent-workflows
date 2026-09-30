@@ -198,30 +198,48 @@ jobs:
       # run a human asked for and did not get, and the review pipeline already
       # uses that label for exactly that; the comment alone scrolls away.
       #
-      # The second refusal is the one the shared concurrency group makes
-      # necessary. Everything this job reads is pinned to the head SHA in the
-      # `labeled` payload — the checkout below, and `commitOID` on the posted
-      # review, which is `git rev-parse HEAD` of that checkout. The payload is
-      # snapshotted at label time, and joining `agent-pr-*` means the run can
-      # start long after: label `agent:review` while a fix is running and the
-      # review starts once the fix has pushed, still pinned to the pre-fix
-      # commit. Serialising did not remove the race, it turned reading-during-a-
-      # write into reading-after-one — a clean review of a superseded tree,
-      # every inline comment on an ancestor commit and rendered outdated. The
-      # mutates catch their version of this at push time
-      # (`--force-with-lease` on the same payload SHA); review publishes
-      # instead of failing, so it has to check before it starts.
+      # The rest is settling **which commit this run reviews**, and everything
+      # after this step reads that one answer, `steps.state.outputs.sha`: the
+      # checkout, the CI wait's check and status reads, and every status this
+      # job posts. The payload's `head.sha` is not read again past this step.
       #
-      # Refuse rather than re-target the current tip: a review is a statement
-      # about the commit a human pointed at, and re-pointing it at whatever
-      # arrived since would also need the CI wait and `commitOID` moved to the
-      # new SHA. Re-adding the label after the mutate finishes is one action and
-      # reviews the right thing. An unreadable `gh pr view` proceeds rather than
-      # refuses — an API blip is not evidence the branch moved.
+      # The payload is not enough on its own, for two reasons. It is snapshotted
+      # at label time, and joining `agent-pr-*` means the run can start long
+      # after: label `agent:review` while a fix is running and the review starts
+      # once the fix has pushed. And GitHub moves a pull request's head
+      # **asynchronously** after a push (#229), so a label added the moment a
+      # fix, a conflict resolution or an implement run has pushed can carry the
+      # commit *before* the push in its payload, and `headRefOid` can agree with
+      # it for a while. That is what #228 saw: the fix pushed `cb00b28`, the
+      # review checked out `34c3fe5`, and its verdict went on `34c3fe5`, where
+      # branch protection never looks.
+      #
+      # So the branch tip is read from **git**, with `ls-remote` on the head
+      # ref, which moves as soon as the push lands. It is the reading `fix`'s
+      # guard makes (#188), and authenticated the same way. Then:
+      #
+      #  - the tip is the payload's commit: review it;
+      #  - the tip **descends** from it: the branch moved forward since the
+      #    label, which is the push-then-label sequence above. Wait, bounded,
+      #    for `headRefOid` to catch up, then review the tip. The wait is what
+      #    makes the posted review land on the pull request's head: GitHub
+      #    anchors `commitOID` against it, and a review posted ahead of it is
+      #    one the pull request does not yet know the commit for;
+      #  - the tip does not descend from it (a rewritten branch), the ancestry
+      #    cannot be read, or `headRefOid` never catches up: refuse, naming both
+      #    commits. None of those is a commit anybody pointed at.
+      #
+      # An unreadable tip proceeds on the payload's commit, with a warning: an
+      # API blip is not evidence the branch moved, and this run only reads.
+      # `fix` refuses there instead, because replying twice is its harm.
       - name: "Pre-flight: refuse if the PR is closed, merged, or has moved"
         id: state
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # How long `headRefOid` gets to catch up with a tip that moved, and
+          # how often it is asked. About a minute: GitHub catches up in seconds.
+          HEAD_WAIT_SECONDS: "60"
+          HEAD_POLL_SECONDS: "5"
         run: |
           set -uo pipefail
           refuse() {
@@ -236,12 +254,47 @@ jobs:
             exit 0
           fi
 
-          current=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
-          if [ -n "$current" ] && [ "$current" != "$HEAD_SHA" ]; then
-            refuse "Refused to run \`agent:review\`: the branch moved while this run was queued: the label was added at \`${HEAD_SHA:0:7}\`, the head is now \`${current:0:7}\`. Reviewing the labelled commit would put every comment on an ancestor and render it outdated. Re-add \`agent:review\` to review the current head."
-            exit 0
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          tip=""
+          if remote=$(git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" \
+              ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"); then
+            # `ls-remote` matches a pattern against the tail of each ref, so the
+            # exact name is picked out rather than taking the first line.
+            tip=$(printf '%s\n' "$remote" | awk -v ref="refs/heads/${BRANCH}" '$2 == ref { print $1 }')
+          fi
+          if [ -z "$tip" ]; then
+            echo "::warning::Could not read the tip of ${BRANCH}, so this reviews ${HEAD_SHA}, the commit the label was added at, without confirming it is still the head."
+            tip="$HEAD_SHA"
           fi
 
+          if [ "$tip" != "$HEAD_SHA" ]; then
+            # `ahead` is the compare API's word for "the second commit descends
+            # from the first". Anything else, or no answer, is not a review of
+            # what the label pointed at.
+            relation=$(gh api "repos/${GH_REPO}/compare/${HEAD_SHA}...${tip}" --jq .status 2>/dev/null || echo "")
+            if [ -z "$relation" ]; then
+              refuse "Refused to run \`agent:review\`: the label was added at \`${HEAD_SHA}\`, but \`${BRANCH}\` is now at \`${tip}\`, and whether that descends from it could not be read. Re-add \`agent:review\` to review the current head."
+              exit 0
+            fi
+            if [ "$relation" != "ahead" ]; then
+              refuse "Refused to run \`agent:review\`: the branch moved while this run was queued: the label was added at \`${HEAD_SHA}\`, but \`${BRANCH}\` is now at \`${tip}\`, which does not descend from it (\`${relation}\`). Reviewing either would be reviewing a commit nobody asked about. Re-add \`agent:review\` to review the current head."
+              exit 0
+            fi
+
+            head=""
+            deadline=$((SECONDS + HEAD_WAIT_SECONDS))
+            until head=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$tip" ]; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                refuse "Refused to run \`agent:review\`: the label was added at \`${HEAD_SHA}\`, and \`${BRANCH}\` has since moved on to \`${tip}\`, but after ${HEAD_WAIT_SECONDS}s this PR still shows \`${head:-an unreadable head}\` as its head, so a review of \`${tip}\` could not be posted against it. Re-add \`agent:review\` to review the current head."
+                exit 0
+              fi
+              sleep "$HEAD_POLL_SECONDS"
+            done
+            echo "::notice::The label was added at ${HEAD_SHA}; ${BRANCH} has moved on to ${tip}, which descends from it, so this run reviews ${tip}."
+          fi
+
+          echo "sha=${tip}" >> "$GITHUB_OUTPUT"
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
       - name: Transition labels
@@ -251,17 +304,20 @@ jobs:
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
+      # The commit the pre-flight settled on, not the payload's (#229). Still an
+      # explicit `ref:`, which is what keeps `actions/checkout`'s own fork check
+      # on; the job's `if:` is the other half.
       - name: Checkout PR head
         if: steps.state.outputs.proceed == 'true'
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ steps.state.outputs.sha }}
           fetch-depth: 0
 
       - name: Make the PR base available for diffing
         if: steps.state.outputs.proceed == 'true'
-        # Create a local ref for the PR's base branch (the checkout is of
-        # head.sha, so the base is not present). review-context.ts diffs against
+        # Create a local ref for the PR's base branch (the checkout is of one
+        # commit, so the base is not present). review-context.ts diffs against
         # it; a bare `git fetch origin <ref>` would populate FETCH_HEAD but no
         # named ref, so keep the refspec. Falls back to `main` when base.ref is
         # somehow empty, matching diffCommandAgainstBase's own default.
@@ -336,7 +392,7 @@ jobs:
         if: steps.state.outputs.proceed == 'true'
         continue-on-error: true
         env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.state.outputs.sha }}
           # The sibling agent jobs, which the conversion renamed too: a called
           # workflow's job appears as `<caller job id> / <this workflow's job
           # id>`, so `agent-fix.yml` now produces `fix / fix`. The pattern
@@ -873,7 +929,7 @@ jobs:
       - name: Post the verdict as a commit status
         if: steps.state.outputs.proceed == 'true' && success()
         env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.state.outputs.sha }}
           REVIEW_URL: ${{ steps.review.outputs.url }}
         run: |
           context=$(jq -r .context "${RUNNER_TEMP}/verdict.json")
@@ -1062,7 +1118,7 @@ jobs:
       - name: Post an error verdict
         if: steps.state.outputs.proceed == 'true' && failure()
         env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.state.outputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh api --method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}" \

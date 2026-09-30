@@ -1859,7 +1859,11 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     expect(jobOf(REVIEW).outputs?.["sha"]).toBe("${{ steps.state.outputs.sha }}");
     expect(jobOf(REVIEW).outputs?.["url"]).toBe("${{ steps.review.outputs.url }}");
     const newer = run.indexOf('!= "$REVIEW_URL" ]');
-    expect(run.indexOf('[ "$head" != "$REVIEWED_SHA" ]')).toBeLessThan(add);
+    // A moved head is not an arm of its own (#240): a clean update-branch
+    // copies the verdict on to the new head, where the round still stands, and
+    // an unreviewed push leaves no verdict there, which `no_round` says.
+    expect(run).not.toMatch(/"\$head" != "\$REVIEWED_SHA" \]; then[^\n]*\n[^\n]*Adding nothing/);
+    expect(run).toMatch(/if \[ -z "\$newest" \]; then\n\s*no_round /);
     expect(newer).toBeGreaterThanOrEqual(0);
     expect(newer).toBeLessThan(add);
     // Each "adds nothing" arm ends the job green: nothing went wrong.

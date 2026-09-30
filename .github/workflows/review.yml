@@ -1503,8 +1503,13 @@ jobs:
       #  - `agent:fix` is already on it: a round is starting anyway, whoever
       #    added it. Adding nothing.
       #  - the newest `agent-review` verdict on its head is not this review's,
-      #    by the review URL the status links to: a newer verdict stands, or
-      #    the head moved and this one no longer applies. Adding nothing.
+      #    by the review URL the status links to: a newer verdict stands.
+      #    Adding nothing.
+      #
+      # The head alone decides nothing. A clean `update-branch` moves it and
+      # copies this verdict on to the new one, where the round still stands; a
+      # push nobody reviewed leaves the head with no verdict, which is a round
+      # announced and not coming, and is said like the failures below.
       #
       # **Say only what will happen.** The verdict has already announced a
       # round, so every arm that does not start one when it should, a read
@@ -1542,11 +1547,13 @@ jobs:
             exit 0
           fi
 
+          # A head that moved is not a reason on its own (#240): a clean
+          # `update-branch` copies this verdict, link and all, on to the merge
+          # commit, and the round it announced still stands there. What decides
+          # is which verdict the head carries, so a moved head is only named.
           head=$(printf '%s' "$live" | jq -r .headRefOid)
-          if [ "$head" != "$REVIEWED_SHA" ]; then
-            echo "PR #${PR_NUMBER} has moved on from ${REVIEWED_SHA} to ${head} since the review, so its verdict no longer stands on the head. Adding nothing."
-            exit 0
-          fi
+          where="the head commit \`${head}\`"
+          [ "$head" = "$REVIEWED_SHA" ] || where="${where}, which moved on from the reviewed \`${REVIEWED_SHA}\`"
           if ! statuses=$(gh api "repos/${GH_REPO}/commits/${head}/statuses" --paginate --slurp); then
             no_round "the verdicts on its head could not be read, so whether a newer one stands could not be told"
           fi
@@ -1554,7 +1561,7 @@ jobs:
           newest=$(printf '%s' "$statuses" \
             | jq -c '(add // []) | map(select(.context == env.VERDICT_CONTEXT and .creator.login == env.LOOP_ACCOUNT))[0] // empty')
           if [ -z "$newest" ]; then
-            no_round "the verdict that announced it is not on the head commit \`${head}\`"
+            no_round "the verdict that announced it is not on ${where}"
           fi
           if [ "$(printf '%s' "$newest" | jq -r '.target_url // ""')" != "$REVIEW_URL" ]; then
             echo "A newer verdict stands on ${head} than the review that announced this round. Adding nothing."

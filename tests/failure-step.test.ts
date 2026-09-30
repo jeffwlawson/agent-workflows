@@ -66,9 +66,10 @@ interface Outcome {
 /**
  * The step, run as it would be once the job has ended `status`, `elapsed`
  * seconds after the clock was started. A reason file is written as a runner
- * that failed would have written it.
+ * that failed would have written it. `minutes` is the limit as the step reads
+ * it, the job's own where it is not given.
  */
-const run = (c: Case, status: "failure" | "cancelled", elapsed: number): Outcome => {
+const run = (c: Case, status: "failure" | "cancelled", elapsed: number, minutes = String(c.minutes)): Outcome => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-failure-step-"));
   const bin = path.join(temp, "bin");
   const log = path.join(temp, "gh.log");
@@ -92,7 +93,7 @@ const run = (c: Case, status: "failure" | "cancelled", elapsed: number): Outcome
       RUN_URL: "https://github.com/acme/widgets/actions/runs/1",
       JOB_STATUS: status,
       JOB_STARTED: String(Math.floor(Date.now() / 1000) - elapsed),
-      TIMEOUT_MINUTES: String(c.minutes),
+      TIMEOUT_MINUTES: minutes,
     },
   });
   const comment = path.join(temp, "failure-comment.md");
@@ -131,5 +132,29 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
     expect(outcome.comment).toContain("The runner wrote this.");
     expect(outcome.comment).not.toMatch(/timed out|cancelled/);
     expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(c.blocks);
+  });
+
+  /**
+   * A limit `fromJSON` reads as a number but bash arithmetic does not: `1.5`,
+   * `1e1`, `1.0`, and the ones it reads but that are no limit, `0` and `-5`.
+   * Compared, the first three ended the step under `bash -e` before its comment,
+   * which is the silent timeout #220 removes. Not compared, the run reads as
+   * cancelled, and still says so.
+   */
+  const UNCOMPARABLE = ["1.5", "1e1", "1.0", "0", "-5"] as const;
+
+  it.each(CASES)("$command: a limit it cannot compare still ends in a comment", (c: Case) => {
+    for (const minutes of UNCOMPARABLE) {
+      // Each is a number to `fromJSON`, so the job itself would have started.
+      expect(typeof JSON.parse(minutes), minutes).toBe("number");
+
+      const outcome = run(c, "cancelled", c.minutes * 60, minutes);
+
+      expect(outcome.status, minutes).toBe(0);
+      expect(outcome.comment, minutes).toContain("was cancelled");
+      expect(outcome.comment, minutes).not.toContain("timed out");
+      expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked")), minutes).toBe(c.blocks);
+      expect(outcome.gh.some((argv) => / comment /.test(` ${argv} `)), minutes).toBe(true);
+    }
   });
 });

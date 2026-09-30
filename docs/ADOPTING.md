@@ -320,8 +320,9 @@ the time the review itself gets. The small jobs (`follow-ups` at 10 minutes, the
 threads, start a fix round or advance a PRD at 5) are fixed.
 
 A value must be a positive integer, written without a leading zero. `AGENT_TIMEOUT_MINUTES` is read
-straight into `timeout-minutes`, so anything else fails those jobs before their first step, where
-nothing can comment; the review refuses its own on the pull request. `doctor` reports both.
+straight into `timeout-minutes`, so a value that is not a number fails those jobs before their first
+step, where nothing can comment, and one that is a number but not a whole one (`1.5`) runs, but its
+timeout reads as a cancel. The review refuses its own on the pull request. `doctor` reports both.
 
 A run that reaches its limit says so. GitHub **cancels** a job at its limit rather than failing it,
 and the failure step runs on both: the comment says "timed out after N minutes", adds

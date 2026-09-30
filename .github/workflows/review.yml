@@ -1308,11 +1308,15 @@ jobs:
           # the runner took to reach that step, hence a minute's slack. A
           # reason file is not read on either; what wrote one was stopped, not
           # failing. The labels and the retry are a failure's, word for word.
+          # The limit is compared only where it is a positive integer: `fromJSON`
+          # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
+          # `bash -e` that would end this step before its comment. A limit the
+          # step cannot compare reads as a cancel, which is still said.
           what="failed"
           if [ "$JOB_STATUS" = "cancelled" ]; then
             what="was cancelled"
             reason="The run was cancelled before it finished, by hand or by GitHub."
-            if [ -n "${JOB_STARTED:-}" ] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+            if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
               what="timed out after ${TIMEOUT_MINUTES} minutes"
               reason="The job reached its time limit of ${TIMEOUT_MINUTES} minutes and was stopped there. The repository variable \`AGENT_REVIEW_TIMEOUT_MINUTES\` raises the review's own time, which its CI wait is added to."
             fi

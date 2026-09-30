@@ -33,12 +33,14 @@ import {
   reviewOutputSchema,
   VERDICT_CONTEXT,
   type CiResult,
+  type FixRounds,
 } from "../shared/review-output.js";
 import {
-  describeRound,
+  describeHistory,
   describesTheChange,
-  detectReviewRound,
-  unreadableRoundNote,
+  fixRoundProgress,
+  readReviewHistory,
+  unreadableHistoryNote,
 } from "../shared/review-round.js";
 import {
   renderCarriedFindings,
@@ -209,33 +211,44 @@ const readCiResult = (): CiResult => {
 
 /**
  * Whether the workflow will start a fix round itself if this review recommends
- * changes (#102) — the adopter's `auto-fix` input, minus the pull requests
- * whose one automatic fix is already spent.
+ * changes (#201): what *Settle the fix-round budget* decided from the
+ * repository's budget, the rounds this pull request has spent and the PAT.
+ * None of those is readable here once the token is gone, and the job that adds
+ * `agent:fix` selects on the key this decides, so the step's one answer is
+ * taken rather than a second one worked out.
  *
- * Both halves come from the workflow because neither is readable here: the
- * input is the caller's, and the label is read off the same `labeled` payload
- * the job that adds `agent:fix` guards on, so the two cannot disagree about a
- * label added between them. The **round** is not read here — `deriveVerdict`
- * already has it, and it is the arm that keeps this out of a second round.
- *
- * Absent is off, on both: `auto-fix` defaults off, and a run that could not say
- * whether the marker is there must not claim a fix round has started.
+ * Absent is off: a run that could not say must not claim a fix round started.
  */
-const willAutoFix = (): boolean =>
-  process.env["AUTO_FIX"] === "true" && process.env["AUTO_FIXED"] !== "true";
+const willAutoFix = (): boolean => process.env["AUTO_FIX"] === "true";
+
+/**
+ * The budget and the rounds spent against it, where the same step could count
+ * them, for the line a spent budget gets. Anything unreadable is left out, and
+ * the verdict falls back to the plain line that asks for the label.
+ */
+const fixRounds = (): FixRounds | undefined => {
+  const count = (name: string): number | undefined => {
+    const value = process.env[name] ?? "";
+    return /^[0-9]+$/.test(value) ? Number(value) : undefined;
+  };
+  const spent = count("FIX_ROUNDS_SPENT");
+  const budget = count("FIX_ROUND_BUDGET");
+  return spent === undefined || budget === undefined ? undefined : { spent, budget };
+};
 
 try {
   const context = fetchPullRequestContext(PR_NUMBER, slice?.subIssue);
   const prd =
     prdParent === undefined ? undefined : fetchPrdContext(prdParent, BRANCH, BASE_REF, PR_NUMBER);
 
-  // Which pass over this pull request this is, read off the repository before
-  // the token goes (#96). It changes what the agent is asked to do — round 2
-  // verifies that the last round's findings landed — and it changes what the
-  // derivation may conclude, which is the half that is not the agent's.
-  const round = detectReviewRound(PR_NUMBER);
+  // What the verdicts already on this pull request say about this review,
+  // read off the repository before the token goes (#202). Whether it follows a
+  // fix round changes what the agent is asked to do (verify that the last
+  // round's findings landed) and what the derivation may conclude: the early
+  // stop judges that round, which is the half that is not the agent's.
+  const history = readReviewHistory(PR_NUMBER);
   console.log(
-    `Round: ${round.round}${round.unreadable === undefined ? "" : `, assumed because ${round.unreadable}`}.`,
+    `Follows a fix round: ${history.afterFixRound ? "yes" : "no"}${history.unreadable === undefined ? "" : `, assumed because ${history.unreadable}`}.`,
   );
 
   // A review proceeds on what survived a partial answer — but says so twice:
@@ -269,7 +282,7 @@ try {
       LINKED_ISSUE: context.linkedIssue,
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
-      ROUND: describeRound(round),
+      HISTORY: describeHistory(history),
       OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
       SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),
       PR_DIFF: context.diff,
@@ -358,18 +371,24 @@ try {
   // outcome is the first thing a reader sees and the same words the commit
   // status carries — one statement in two places, not two that can disagree.
   const ci = readCiResult();
+  const rounds = fixRounds();
+  // What the fix round this review follows closed of the findings it was
+  // given, matched by id (#202). New findings this review raised are in
+  // neither half, so they neither count as progress nor reset anything.
+  const progress = fixRoundProgress(history, context.carriedFindings, resolved);
   const verdict = deriveVerdict(output, {
     ci,
-    round: round.round,
+    fixRoundProgress: progress,
     stillOpen: stillOpen.length,
     movedToFollowUps: unanchored.length,
     autoFix: willAutoFix(),
+    ...(rounds === undefined ? {} : { fixRounds: rounds }),
     base: BASE_REF,
     ...(slice === undefined ? {} : { sliceParent: slice.prd }),
   });
-  // And a round nothing could establish says so in the body as well as in the
-  // brief. The agent was told it was a second round; what it cannot say — and
-  // what changes how a reader weighs the review — is that the round was the
+  // And a history nothing could establish says so in the body as well as in
+  // the brief. The agent was told it followed a fix round; what it cannot say,
+  // and what changes how a reader weighs the review, is that this was the
   // stricter reading rather than a fact about this pull request.
   //
   // What the body is made of, and in what order, is `renderReviewBody`'s: it is
@@ -385,7 +404,7 @@ try {
   const reviewBody = renderReviewBody({
     verdict,
     output,
-    roundNote: unreadableRoundNote(round),
+    roundNote: unreadableHistoryNote(history),
     placed,
     movedToFollowUps: movedFollowUps,
     stillOpen,
@@ -393,11 +412,11 @@ try {
     followUps,
     droppedFollowUps,
     // *What changed in this PR* describes the change, so it is rendered where
-    // there is a change nothing has described. Which rounds those are is
-    // `describesTheChange`'s, beside the detection it reads — a fact about the
-    // round rather than about the review, and one this file has no test around
-    // it to hold.
-    showWhatChanged: describesTheChange(round),
+    // there is a change nothing has described. Which reviews those are is
+    // `describesTheChange`'s, beside the history it reads: a fact about the
+    // verdicts rather than about the review, and one this file has no test
+    // around it to hold.
+    showWhatChanged: describesTheChange(history),
     runUrl: workflowRunUrl(),
     // What was shed, where the body had to be cut to fit GitHub's limit (#140).
     // A body that cannot be made to fit throws, and the catch below writes the
@@ -438,21 +457,15 @@ try {
   // context that is *not* read from here is the one the failure arm posts,
   // which by definition runs on a review that wrote no file.
   //
-  // `verdict` is the row's key rather than its heading, because the three
+  // `verdict` is the row's key rather than its heading, because the two
   // *changes recommended* rows share a heading and a reader of this file has to
-  // tell them apart — the automatic fix (#102) fires on exactly one of them,
+  // tell them apart: the automatic fix (#102) fires on exactly one of them,
   // and the workflow selects on the key this writes.
-  //
-  // `round` is beside it for the job that reads it back: the automatic fix is
-  // barred from a second round by the key alone, and a guard a human can read
-  // in the workflow file is worth the one extra field. Nothing derives
-  // anything from it.
   writeJson("verdict.json", {
     context: VERDICT_CONTEXT,
     verdict: verdict.verdict,
     state: verdict.state,
     description: verdict.description,
-    round: round.round,
   });
 
   // How the workflow knows to mark the pull request: a step cannot read this
@@ -473,8 +486,13 @@ try {
 
   console.log("Review complete.");
   console.log(
-    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(output, unanchored.length)} to fix before merge, checks ${ci}, round ${round.round}).`,
+    `Verdict: ${verdict.verdict} (${countFixBeforeMerge(output, unanchored.length)} to fix before merge, checks ${ci}).`,
   );
+  if (progress !== undefined) {
+    console.log(
+      `Fix round progress: ${progress.closed} of the ${progress.given} findings it was given closed by this review.`,
+    );
+  }
   const placements = (kind: string): number => placed.filter((p) => p.placement === kind).length;
   const missed = output.findings.filter(isPreviouslyMissed).length;
   console.log(

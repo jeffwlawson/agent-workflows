@@ -1679,24 +1679,27 @@ describe("agent-review posts its verdict as a commit status", () => {
 });
 
 /**
- * The one automatic fix (#102, PRD #101 decisions 1–4). Where the verdict is
- * the round-1 *Changes recommended* — the line that already promises an
- * automatic re-review — the review workflow adds `agent:fix` itself, once per
- * pull request, if the adopter asked for it.
+ * The automatic fix round (#102, and the fix-round budget of #201, PRD #200).
+ * Where the verdict is the round-1 *Changes recommended* and the pull request
+ * has automatic rounds left in its budget, the review workflow adds
+ * `agent:fix` itself.
  *
  * This is the review → fix leg `docs/parity.md` §10 forbade outright, so every
  * bound on it is asserted here rather than left to read correctly. None has a
  * runtime symptom when it breaks and each fails differently: a job that fires
  * on the wrong verdict spends a fix round on findings a maintainer was supposed
- * to read; one that fires twice is the cycle the invariant exists to prevent;
+ * to read; one that fires past the budget is the cycle the invariant exists to prevent;
  * one that never fires is a feature switched on and silently off, under a
  * verdict telling a maintainer a fix round started.
  */
-describe("agent-review starts one fix round, where it was asked to", () => {
+describe("agent-review starts fix rounds itself, within the fix-round budget", () => {
   const AUTO_FIX_VERDICT = "changes recommended, fix round started";
   const job = (): Job => jobNamed(REVIEW, "auto-fix");
   const startStep = (): Step | undefined =>
     (job().steps ?? []).find((s) => (s.run ?? "").includes('--add-label "agent:fix"'));
+  const budgetStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "budget");
+  const runnerStep = (): Step | undefined =>
+    stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent");
 
   /**
    * The key the job selects on is the one the derivation emits, held to the
@@ -1711,82 +1714,188 @@ describe("agent-review starts one fix round, where it was asked to", () => {
   });
 
   /**
-   * **Off unless an adopter said otherwise** (decision 3). A boolean input
-   * defaulting `false`, so an upgrade changes nothing for a repository that has
-   * not read enough verdicts to trust them — and restated in the job's own
-   * `if:`, where a human looking for "is this on?" looks.
+   * **The budget, and its default** (#201, PRD #200 decision 2). The
+   * repository variable `AGENT_MAX_FIX_ROUNDS`, 3 where unset, read by the
+   * reusable half: `vars.*` resolves against the caller's repository, so no
+   * caller carries it. Settled before the agent runs, so a value that is not a
+   * non-negative integer fails the run before an agent pass is spent, into the
+   * reason file the failure comment posts, naming the variable and the value.
    */
-  it("is off by default, and says so in the input and in the guard", () => {
-    const input = workflowOf(REVIEW).on?.workflow_call?.inputs?.["auto-fix"];
+  it("reads the budget from AGENT_MAX_FIX_ROUNDS, default 3, and refuses a value that is not a count", () => {
+    const step = budgetStep();
+    const run = step?.run ?? "";
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
 
-    expect(input?.type).toBe("boolean");
-    expect(input?.default).toBe(false);
-    expect(input?.required).toBeUndefined();
-    expect(input?.description ?? "").not.toBe("");
-    expect(job().if ?? "").toContain("inputs.auto-fix");
+    expect(step?.env?.["MAX_FIX_ROUNDS"]).toBe("${{ vars.AGENT_MAX_FIX_ROUNDS }}");
+    expect(run).toContain('budget="${MAX_FIX_ROUNDS:-3}"');
+    expect(run).toContain('[[ ! "$budget" =~ ^[0-9]+$ ]]');
+    expect(run).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
+    const refusal = run.slice(run.indexOf('[[ ! "$budget"'));
+    expect(refusal).toMatch(/refuse "The repository variable \\`AGENT_MAX_FIX_ROUNDS\\` is \\`\$\{MAX_FIX_ROUNDS\}\\`/);
+
+    // After the labels transition, so a refusal is the ordinary failure path,
+    // and before the runner, which reads the answer.
+    expect(step?.if).toBe("steps.state.outputs.proceed == 'true'");
+    expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(names.indexOf("Transition labels"));
+    expect(names.indexOf(step?.name ?? "")).toBeLessThan(names.indexOf("Run review agent"));
+
+    // And no caller passes it: the reusable reads the caller's variables itself.
+    for (const caller of [REVIEW_CALLER, path.join(WORKFLOW_DIR, "agent-review.yml")]) {
+      expect(fs.readFileSync(caller, "utf8")).not.toContain("max-fix-rounds");
+    }
   });
 
   /**
-   * **Never on a round 2.** Twice over, and the second is the one that holds:
-   * the key above is unreachable from a round-2 derivation (`deriveVerdict`,
-   * asserted in `tests/review-output.test.ts`), and the round is restated in
-   * the guard so a reader of this file can see the bound without reconstructing
-   * it from a string literal.
-   *
-   * The round comes out of the review job as an output for that restatement and
-   * for nothing else, which is why it is asserted as a wire as well as a guard.
+   * **The comparison.** A round starts where the rounds already spent are fewer
+   * than the budget, and only with `AGENT_PAT`, since a label added without it
+   * starts nothing. Rounds spent are the verdicts this loop posted that
+   * started one, matched on the row's own status line (held to the table
+   * here, so rewording the row cannot silently zero the count) and counted
+   * once per review, because `update-branch` copies a verdict on to its merge
+   * commit.
    */
-  it("cannot fire on the round that followed a fix", () => {
-    expect(
-      deriveVerdict(
-        { findings: [], followUps: [], fixBeforeMerge: ["the guard runs after the return"], verified: [] },
-        { ci: "green", round: 2, stillOpen: 0, movedToFollowUps: 0, autoFix: true, base: "main" },
-      ).verdict,
-      "a round-2 derivation must not be able to produce the key this job fires on",
-    ).not.toBe(AUTO_FIX_VERDICT);
+  it("starts a round only while the rounds spent are fewer than the budget", () => {
+    const step = budgetStep();
+    const run = step?.run ?? "";
 
-    expect(job().if ?? "").toContain("needs.review.outputs.round == '1'");
-    expect(jobOf(REVIEW).outputs?.["round"]).toBe("${{ steps.verdict.outputs.round }}");
+    expect(run).toContain('[ "$spent" -lt "$budget" ] && [ "$HAS_PAT" = "true" ]');
+    expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(step?.env?.["STARTED"]).toBe(VERDICTS[AUTO_FIX_VERDICT].description);
+    expect(step?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
+    expect(run).toContain(".description == env.STARTED");
+    expect(run).toContain(".creator.login == env.LOOP_ACCOUNT");
+    expect(run).toContain("sort -u");
+    // An unreadable count starts nothing.
+    expect(run).toMatch(/if \[ -z "\$spent" \]; then\n\s*echo "::warning::/);
+    expect(run).toContain('echo "start=${start}"');
+
+    // The runner is handed the answer, not the facts, so the line it writes
+    // and the job that makes it true come from one decision.
+    expect(runnerStep()?.env?.["AUTO_FIX"]).toBe("${{ steps.budget.outputs.start }}");
+    expect(runnerStep()?.env?.["FIX_ROUNDS_SPENT"]).toBe("${{ steps.budget.outputs.spent }}");
+    expect(runnerStep()?.env?.["FIX_ROUND_BUDGET"]).toBe("${{ steps.budget.outputs.budget }}");
+  });
+
+  /**
+   * **The deprecated alias** (decision 4). `auto-fix` stays one release, a
+   * string so that unset can be told from `false`, and where a caller sets it
+   * it wins: `true` is a budget of 1, `false` of 0, and the run warns, naming
+   * the variable that replaces it.
+   */
+  it("keeps auto-fix one release as an alias that wins over the variable, and warns", () => {
+    const input = workflowOf(REVIEW).on?.workflow_call?.inputs?.["auto-fix"];
+    const run = budgetStep()?.run ?? "";
+
+    expect(input?.type).toBe("string");
+    expect(input?.default).toBe("");
+    expect(input?.required).toBeUndefined();
+    expect(input?.description ?? "").toContain("Deprecated");
+    expect(budgetStep()?.env?.["AUTO_FIX"]).toBe("${{ inputs.auto-fix }}");
+
+    expect(run).toContain("true) budget=1 ;;");
+    expect(run).toContain("false) budget=0 ;;");
+    expect(run).toMatch(/::warning::The \\`auto-fix\\` input is deprecated[^\n]*AGENT_MAX_FIX_ROUNDS/);
+    // Wins: the variable is read only where the input is empty.
+    expect(run.indexOf('if [ -n "$AUTO_FIX" ]; then')).toBeGreaterThanOrEqual(0);
+    expect(run.indexOf('if [ -n "$AUTO_FIX" ]; then')).toBeLessThan(run.indexOf('budget="${MAX_FIX_ROUNDS:-3}"'));
+  });
+
+  /**
+   * **Never after a fix round that made no progress** (#202). The key above is
+   * unreachable from a derivation whose fix round closed none of the findings
+   * it was given (`deriveVerdict`, asserted in `tests/review-output.test.ts`),
+   * whatever budget is left.
+   *
+   * **And no round rule** (PRD #200 decision 6). The guard selected on
+   * `round == '1'` and the review handed the round across; both are gone, so a
+   * later round with open findings and budget left starts another.
+   */
+  it("cannot fire after a fix round that closed nothing, and reads no round", () => {
+    const findings = { findings: [], followUps: [], fixBeforeMerge: ["the guard runs after the return"], verified: [] };
+    const inputs = { ci: "green", stillOpen: 0, movedToFollowUps: 0, autoFix: true, base: "main" } as const;
+    expect(
+      deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 0 } }).verdict,
+      "a fix round that made no progress must not be able to produce the key this job fires on",
+    ).not.toBe(AUTO_FIX_VERDICT);
+    expect(deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 2 } }).verdict).toBe(
+      AUTO_FIX_VERDICT,
+    );
+
+    expect(job().if ?? "").not.toContain("outputs.round");
+    expect(jobOf(REVIEW).outputs?.["round"]).toBeUndefined();
+    expect(stepsOf(REVIEW).find((s) => s.name === "Hand the verdict to what reads it")?.run ?? "").not.toContain("round");
     expect(jobOf(REVIEW).outputs?.["verdict"]).toBe("${{ steps.verdict.outputs.verdict }}");
   });
 
   /**
-   * **Never twice on one pull request.** The round rule bounds a chain; this
-   * bounds the pull request, which is the different thing PRD #101 decision 1
-   * asks for: a human's own commits make a later review a fresh round 1, and
-   * without the marker each of those could start another fix round.
-   *
-   * Read off the `labeled` payload, which is the same snapshot the review job
-   * hands the runner — so the sentence the verdict posts and the job that makes
-   * it true cannot disagree about a label added in between.
+   * **Nothing writes or reads `agent:auto-fixed`** (#201). The count is the
+   * pull request's own verdicts, so the marker label is retired from the
+   * workflows, both caller sets, `init` and `doctor` alike.
    */
-  it("spends the fix once, against a label on the pull request", () => {
-    expect(job().if ?? "").toContain(
-      "!contains(github.event.pull_request.labels.*.name, 'agent:auto-fixed')",
-    );
-    expect(stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent")?.env?.["AUTO_FIXED"]).toBe(
-      "${{ contains(github.event.pull_request.labels.*.name, 'agent:auto-fixed') }}",
-    );
+  it("neither writes nor reads the retired marker label", () => {
+    const files = [
+      ...workflowFiles,
+      ...fs.readdirSync(CALLER_DIR).map((f) => path.join(CALLER_DIR, f)),
+      ...fs.readdirSync("setup").filter((f) => f.endsWith(".ts")).map((f) => path.join("setup", f)),
+      "review/review.ts",
+    ];
+    for (const file of files) expect(fs.readFileSync(file, "utf8"), file).not.toContain("agent:auto-fixed");
+    expect(job().if ?? "").not.toContain("labels");
+    expect(runnerStep()?.env?.["AUTO_FIXED"]).toBeUndefined();
   });
 
   /**
-   * …and the marker goes on **first**. A failure between the two adds costs
-   * this pull request its automatic fix and nothing else; the other order
-   * leaves a fix round running with nothing recording it, and the next round-1
-   * verdict starts another.
+   * **Decided from live state, not the event payload** (#201). The job can
+   * start after a later verdict or a human's own label, so before adding
+   * anything it re-reads the pull request, and adds nothing where `agent:fix`
+   * is already there or the newest verdict on the head is not the one that
+   * announced this round. Both checks come before the add.
    */
-  it("records the fix as spent before starting it", () => {
-    const run = startStep()?.run ?? "";
-    const marker = run.indexOf('--add-label "agent:auto-fixed"');
-    const fix = run.indexOf('--add-label "agent:fix"');
+  it("re-reads the labels and the newest verdict, and adds nothing where either has moved on", () => {
+    const step = startStep();
+    const run = step?.run ?? "";
+    const add = run.indexOf('gh pr edit "$PR_NUMBER" --add-label "agent:fix"');
 
-    expect(marker).toBeGreaterThanOrEqual(0);
-    expect(fix).toBeGreaterThan(marker);
-    // Neither add is tolerated away. A label this cannot add is a loop that has
-    // stopped transitioning, under a posted verdict saying a fix round started
-    // — and a red job is the only thing that says it did not.
+    expect(run).toContain('gh pr view "$PR_NUMBER" --json labels,headRefOid');
+    const labelled = run.indexOf('any(.labels[]; .name == "agent:fix")');
+    expect(labelled).toBeGreaterThanOrEqual(0);
+    expect(labelled).toBeLessThan(add);
+
+    expect(step?.env?.["REVIEWED_SHA"]).toBe("${{ needs.review.outputs.sha }}");
+    expect(step?.env?.["REVIEW_URL"]).toBe("${{ needs.review.outputs.url }}");
+    expect(jobOf(REVIEW).outputs?.["sha"]).toBe("${{ steps.state.outputs.sha }}");
+    expect(jobOf(REVIEW).outputs?.["url"]).toBe("${{ steps.review.outputs.url }}");
+    const newer = run.indexOf('!= "$REVIEW_URL" ]');
+    // A moved head is not an arm of its own (#240): a clean update-branch
+    // copies the verdict on to the new head, where the round still stands, and
+    // an unreviewed push leaves no verdict there, which `no_round` says.
+    expect(run).not.toMatch(/"\$head" != "\$REVIEWED_SHA" \]; then[^\n]*\n[^\n]*Adding nothing/);
+    expect(run).toMatch(/if \[ -z "\$newest" \]; then\n\s*no_round /);
+    expect(newer).toBeGreaterThanOrEqual(0);
+    expect(newer).toBeLessThan(add);
+    // Each "adds nothing" arm ends the job green: nothing went wrong.
+    for (const arm of run.split(/\n\s*fi\n/).filter((a) => a.includes("Adding nothing."))) {
+      expect(arm).toContain("exit 0");
+    }
+  });
+
+  /**
+   * **Say only what will happen.** The verdict has already announced a round,
+   * so a round that did not start says so on the pull request, and why, and
+   * the job ends red. Not `|| true` anywhere: a label this cannot add is a
+   * loop that has stopped transitioning.
+   */
+  it("says on the pull request that no fix round started when the add fails", () => {
+    const run = startStep()?.run ?? "";
+
     expect(run).toContain("set -euo pipefail");
     expect(run).not.toContain("|| true");
+    expect(run).toMatch(
+      /if ! gh pr edit "\$PR_NUMBER" --add-label "agent:fix"; then\n\s*no_round "adding \\`agent:fix\\` failed/,
+    );
+    const noRound = run.slice(run.indexOf("no_round() {"), run.indexOf("\n}", run.indexOf("no_round() {")));
+    expect(noRound).toContain('gh pr comment "$PR_NUMBER" --body "No fix round started');
+    expect(noRound).toContain("exit 1");
   });
 
   /**
@@ -1804,10 +1913,9 @@ describe("agent-review starts one fix round, where it was asked to", () => {
   });
 
   /**
-   * **No checkout and no agent** (decision 2). This is the only job in the
-   * workflow that spends `AGENT_PAT`, and it must not be the one that reads
-   * untrusted pull-request content and runs a model over it. Its whole input is
-   * two literals and a key the review job derived.
+   * **No checkout and no agent** (decision 2). This job spends `AGENT_PAT`,
+   * and it must not be the one that reads untrusted pull-request content and
+   * runs a model over it.
    */
   it("checks nothing out, installs nothing and runs no model", () => {
     const steps = job().steps ?? [];
@@ -1831,18 +1939,11 @@ describe("agent-review starts one fix round, where it was asked to", () => {
 
   /**
    * MUST use `AGENT_PAT`: a label added with `GITHUB_TOKEN` fires no `labeled`
-   * event, so `agent:fix` would sit on the pull request triggering nothing.
-   * Without the secret the label still goes on and a warning names what to do
-   * by hand — the shape `implement-prd.yml` already uses — because the verdict
-   * has already told a maintainer a fix round started.
+   * event. The budget step starts no round without it, so the fallback here is
+   * for the comment alone.
    */
-  it("labels with the PAT, and says so when there is none", () => {
-    const step = startStep();
-
-    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
-    expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
-    expect(step?.run ?? "").toContain('[ "$HAS_PAT" != "true" ]');
-    expect(step?.run ?? "").toContain("::warning::");
+  it("labels with the PAT", () => {
+    expect(startStep()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
   });
 
   /**
@@ -1900,12 +2001,9 @@ describe("agent-review starts one fix round, where it was asked to", () => {
 
   /**
    * **Draft means the loop is still working** (decision 4). A pull request
-   * whose fix round is about to start is not the human's turn, and the end of
-   * that round is what marks it ready — the re-review where the fix pushed,
-   * and the fix run's own no-push arm where it did not (#159, asserted with
-   * that arm). Predicted from the same verdict key the job selects on rather
-   * than from a second reading of the three facts behind it, so the draft state
-   * and the job cannot disagree.
+   * whose fix round is about to start is not the human's turn. Predicted from
+   * the same verdict key the job selects on, so the draft state and the job
+   * cannot disagree.
    */
   it("leaves the pull request in draft exactly when the fix round is starting", () => {
     const ready = stepsOf(REVIEW).find((s) => (s.name ?? "") === "Mark PR ready for review");
@@ -1918,11 +2016,11 @@ describe("agent-review starts one fix round, where it was asked to", () => {
   });
 
   /**
-   * The wire the two halves meet on: the runner derives the key from the input
-   * and the marker, and writes it into `verdict.json`; one step lifts it into a
-   * job output; the job and the draft step read it back. A job cannot read
-   * another job's `RUNNER_TEMP`, and nothing in YAML may re-derive the key —
-   * that would be a second copy of #96's table where nothing can test it.
+   * The wire the two halves meet on: the runner derives the key and writes it
+   * into `verdict.json`; one step lifts it into a job output; the job and the
+   * draft step read it back. A job cannot read another job's `RUNNER_TEMP`,
+   * and nothing in YAML may re-derive the key: that would be a second copy of
+   * #96's table where nothing can test it.
    */
   it("carries the key out of the file the runner wrote, deriving nothing", () => {
     const hand = stepsOf(REVIEW).find((s) => s.id === "verdict");
@@ -1930,45 +2028,34 @@ describe("agent-review starts one fix round, where it was asked to", () => {
     expect(hand?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
     expect(hand?.run ?? "").toContain("${RUNNER_TEMP}/verdict.json");
     expect(hand?.run ?? "").toContain("verdict=");
-    expect(hand?.run ?? "").toContain("round=");
+    expect(hand?.run ?? "").not.toContain("round=");
     // A run that wrote no file hands over nothing, and this job does not run.
     expect(hand?.run ?? "").toContain('[ -f "$file" ]');
-    // The input the runner reads the other half of the decision from.
-    expect(stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent")?.env?.["AUTO_FIX"]).toBe(
-      "${{ inputs.auto-fix }}",
-    );
   });
 
   /**
    * In no concurrency group, for the reason `resolve` is in none: the
    * `agent-pr-*` waiter slot has depth 1 and holds the newest arrival, so
    * joining would let this job evict a fix a human queued while the review ran.
-   * The `agent:fix` it adds fires a run that *does* join the group, so the
-   * serialisation still happens where the work is.
    */
   it("joins no concurrency group", () => {
     expect(job().concurrency).toBeUndefined();
   });
 
   /**
-   * And both caller sets move with it (#102). This repository turns it on —
-   * it is the one that has been reading these verdicts since #96 — and the
-   * reference caller ships the input commented out beside a line saying what it
-   * does, like the other optional inputs. A reference caller that turned it on
-   * would switch the feature on for every adopter who copied it.
+   * And both caller sets move with it. The reference caller no longer offers
+   * the deprecated input; it names the variable instead. This repository's
+   * caller still passes `auto-fix: true`, because it pins a release that
+   * predates the budget and reads the input as a boolean; it goes with the
+   * release after the one that ships the budget.
    */
-  it("is on in this repo's caller and offered, off, in the reference one", () => {
+  it("names the variable in the reference caller, and offers the deprecated input nowhere new", () => {
     expect(jobOf(path.join(WORKFLOW_DIR, "agent-review.yml")).with?.["auto-fix"]).toBe(true);
 
+    const text = fs.readFileSync(REVIEW_CALLER, "utf8");
     expect(jobOf(REVIEW_CALLER).with?.["auto-fix"]).toBeUndefined();
-    const lines = fs.readFileSync(REVIEW_CALLER, "utf8").split("\n");
-    const offered = lines.findIndex((line) => /^\s*#\s*auto-fix:\s*true\s*$/.test(line));
-
-    expect(offered, "examples/callers/review.yml offers no commented auto-fix").toBeGreaterThan(0);
-    // And a line saying what it does, since "what happens if I uncomment this"
-    // is the whole of what a commented input has to answer.
-    expect(lines[offered - 1] ?? "").toMatch(/^\s*#\s*\S/);
-    expect(lines.slice(0, offered).join(" ")).toMatch(/fix round/);
+    expect(text).not.toMatch(/auto-fix:/);
+    expect(text).toContain("AGENT_MAX_FIX_ROUNDS");
   });
 });
 
@@ -1978,11 +2065,12 @@ describe("agent-review starts one fix round, where it was asked to", () => {
  * on a branch where the fix has already landed.
  *
  * This is the `agent:fix` → `agent:review` leg that `docs/parity.md` §10
- * already calls safe, and the bound it rests on is that a round-2 review cannot
- * answer with the round-1 *Changes recommended* line, the one that promises an
- * automatic re-review (`deriveVerdict`) — so this leg cannot be walked a second
- * time off one human label. (Not "review adds no trigger label of its own",
- * which stopped being true at #102.)
+ * already calls safe, and the bounds it rests on are the fix-round budget
+ * (#201) and the early stop (#202): the review this asks for starts another
+ * round only within the budget, and never after a round that closed none of
+ * its findings (`deriveVerdict`). (Not "review adds no trigger label of its
+ * own", which stopped being true at #102, and no longer the round rule, which
+ * PRD #200 retired.)
  *
  * Nothing here has a runtime symptom when it breaks, which is why it is
  * asserted against the workflow text. A request that never fires leaves a
@@ -2152,9 +2240,8 @@ describe("agent-fix asks for the re-review its own push needs", () => {
  * reviewed nothing and changed nothing the review read, so the verdict standing
  * on the old head is still true of the new one and is copied verbatim. A
  * conflict resolution is the loop writing code no review has seen, so nothing is
- * copied and a review is asked for instead — a full **round 1** by the round
- * rule (`shared/review-round.ts`), because round 2 needs a non-merge loop
- * commit since the verdict and a resolution leaves only the merge (#105).
+ * copied and a review is asked for instead, one that follows no fix round
+ * unless the latest verdict started one (`shared/review-round.ts`, #202).
  *
  * Neither has a runtime symptom when it breaks. A copy that never fires leaves a
  * refreshed pull request looking unreviewed, which is merely the cost of the
@@ -2183,16 +2270,12 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
   const condition = (file: string): string => (advance(file).if ?? "").replace(/\s+/g, " ");
 
   /**
-   * The verdict keys the chain moves on from: 🟢, 🟡 with no automatic fix
-   * starting, and 🟡 after a fix round. Exactly those, matched as keys — the
-   * three *changes recommended* rows share a heading, so only the key tells
-   * the fix round starting from the two that end a round.
+   * The verdict keys the chain moves on from: 🟢, and 🟡 with no automatic
+   * fix starting. Exactly those, matched as keys: the two *changes
+   * recommended* rows share a heading, so only the key tells the fix round
+   * starting from the one that ends a round.
    */
-  const ADVANCING: readonly Verdict[] = [
-    "approval recommended",
-    "changes recommended",
-    "changes recommended after a fix round",
-  ];
+  const ADVANCING: readonly Verdict[] = ["approval recommended", "changes recommended"];
 
   it("selects on the advancing verdict keys, and on no other", () => {
     const selected = [...condition(REVIEW).matchAll(/needs\.review\.outputs\.verdict == '([^']+)'/g)].map(
@@ -5287,17 +5370,18 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
     expect(trade).toMatch(/^### The trade: the slice PR is the unit of review, the PRD PR the unit of merge$/m);
     expect(trade).toMatch(/no per-slice review\s+workflow/);
     expect(trade).toMatch(/integration review/);
-    expect(trade).toMatch(/automatic-fix bound is unchanged/);
+    expect(trade).toMatch(/automatic-fix bound is per pull request/);
     expect(section).toContain("Adds `agent:review` to **every** slice PR");
     expect(section).toMatch(/resumes the handover/);
   });
 
   /**
    * §10 names the clause it overturns in the words it used to be true in, and
-   * keeps the bound it did not touch: the automatic fix is still once per pull
-   * request, which is now once per slice PR and once on the PRD PR.
+   * keeps the bound it did not touch: the automatic fix is still bounded per
+   * pull request (once, until #201 made it a budget), so a slice PR and the PRD
+   * PR each get the budget.
    */
-  it("amends parity §10's review bullet, keeping the once-per-PR automatic fix", () => {
+  it("amends parity §10's review bullet, keeping the per-PR automatic-fix bound", () => {
     const invariants = topLevel(parity, "## 10.");
     const amended = bullet(invariants, "Review is requested once per slice PR, plus one integration review.");
 
@@ -5305,7 +5389,7 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
     expect(amended).not.toBe("");
     expect(amended).toContain('"once per PR, never once per slice"');
     expect(amended).toMatch(/no per-slice\s+review workflow/);
-    expect(amended).toMatch(/once per pull\s+request/);
+    expect(amended).toMatch(/bounded per pull\s+request/);
     expect(amended).toContain("](#the-trade-the-slice-pr-is-the-unit-of-review-the-prd-pr-the-unit-of-merge)");
   });
 
@@ -5795,11 +5879,6 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
     "consumed on entry",
     "cursor",
     "marker, removed on success",
-    // The fourth (#102). `agent:auto-fixed` records that this pull request's
-    // one automatic fix is spent, which is a fact about the pull request's
-    // whole life rather than about a run — so nothing clears it, and the
-    // lifecycle it needed did not exist.
-    "marker, never removed",
   ];
 
   const cellsOf = (row: string): readonly string[] =>
@@ -5821,8 +5900,8 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
 
   /**
    * Comments count. A label named only in a `#` line is still a label somebody
-   * reading the file will reach for, and `agent:queued` — declared, inert, and
-   * named in two workflow comments — is exactly that case. An HTML comment
+   * reading the file will reach for, and a label named only in comments, as
+   * the retired `agent:queued` once was in two, is exactly that case. An HTML comment
    * marker such as the slices table's `<!-- agent:slices -->` is body text a
    * step reads, never a label, and is not counted.
    */
@@ -5835,6 +5914,32 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
 
     expect(used.length).toBeGreaterThan(0);
     for (const label of used) expect(labelSection()).toContain(`\`${label}\``);
+  });
+
+  /**
+   * **The retired labels are nobody's to create** (#204). `agent:auto-fixed`
+   * went with #201, when the rounds spent began to be counted from the pull
+   * request's verdicts, and `agent:queued` because native "blocked by" links do
+   * its job. Named as history where a doc explains the change, and never in
+   * §3's list of labels to create nor in a `gh label create` line anywhere.
+   */
+  it("offers no retired label as a live one", () => {
+    const docs = [
+      "CONTEXT.md",
+      ADOPTING,
+      TRIAGE,
+      path.join("docs", "parity.md"),
+      path.join("docs", "agents", "ticket-shape.md"),
+      path.join("setup", "SETUP.md"),
+    ];
+    for (const label of ["agent:auto-fixed", "agent:queued"]) {
+      expect(labelSection(), label).not.toContain(label);
+      for (const doc of docs) {
+        expect(fs.readFileSync(doc, "utf8"), `${doc}: ${label}`).not.toMatch(
+          new RegExp(`gh label create +"${label}"`),
+        );
+      }
+    }
   });
 
   /**

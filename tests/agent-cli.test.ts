@@ -9,7 +9,6 @@ import { callersIn } from "../setup/callers.js";
 import {
   ADVISORY_LABELS,
   advisoryLabelSpecsFor,
-  AUTO_FIXED_LABEL,
   init,
   labelCommand,
   POLICY_CHANGE,
@@ -20,6 +19,9 @@ import {
 import {
   asVisibility,
   availableSecrets,
+  availableVariable,
+  DEFAULT_FIX_ROUNDS,
+  FIX_ROUNDS_VARIABLE,
   parseList,
   REQUIRED_PERMISSIONS,
   runDoctor,
@@ -803,10 +805,8 @@ describe("init installs the reference callers into an adopting repo", () => {
    * a checklist stops being worked through.
    *
    * Keyed on the **filing caller's own** advisory labels rather than on every
-   * conditional label §3 documents, since #102 put a second caller in that map:
-   * `agent:auto-fixed` belongs to the review caller, which is still installed
-   * here, so naming it is the rule being obeyed rather than broken. What is
-   * asserted is the per-caller part — the reason the map is a map.
+   * conditional label §3 documents. What is asserted is the per-caller part:
+   * the reason the map is a map.
    */
   it("says nothing about them once the caller that wants them is gone", async () => {
     const root = adopted();
@@ -821,10 +821,6 @@ describe("init installs the reference callers into an adopting repo", () => {
     expect(filing.length).toBeGreaterThan(0);
     for (const label of filing) {
       expect(setup).not.toContain(label.name);
-    }
-    // …and the review caller's, which is still there, still is.
-    for (const label of ADVISORY_LABELS["review"] ?? []) {
-      expect(setup).toContain(labelCommand(label));
     }
     // The mandated six are untouched by any of that.
     for (const label of [...TRIGGER_LABELS, ...STATE_LABELS]) {
@@ -1131,6 +1127,8 @@ describe("doctor names the failures that otherwise look like something else", ()
     visibility: "private",
     releases: [`v${manifest.version}`],
     actionsPolicies: [],
+    // Unset, which is the budget's default of 3.
+    maxFixRounds: null,
   });
 
   /**
@@ -2308,139 +2306,190 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
-   * The automatic fix, switched on and unable to fire (#102). `auto-fix: true`
-   * makes a review add `agent:fix` itself — and a label added with
-   * `GITHUB_TOKEN` fires no event, so without the PAT the label lands, the run
-   * stays green and nothing starts. What makes this worth its own row rather
-   * than leaving it to the `AGENT_PAT` row above: that row says the loop stops
-   * transitioning, and this one says a **posted verdict is wrong**. The review
-   * will have told a maintainer a fix round started.
+   * **The fix-round budget without a PAT** (#204, PRD #200). A review with
+   * budget left starts a fix round itself by adding `agent:fix`, and a label
+   * added with `GITHUB_TOKEN` fires no event, so without the PAT no automatic
+   * round ever starts. The default counts: a repository that set nothing has a
+   * budget of 3, which is every repository `init` has just finished with.
    *
-   * A warning, not an error: the loop still works and a human adding the label
-   * by hand loses only the automation.
-   *
-   * The gesture is the one an adopter makes — uncommenting the line `init` gave
-   * them — so the check is exercised against the reference caller rather than
-   * against a caller written to suit it.
+   * A warning, not an error: the `AGENT_PAT` row is already the error for the
+   * same missing secret, and this one must not add a second exit code to it.
    */
-  const withAutoFix = async (): Promise<string> => {
+  it("warns that no fix round can start where the default budget has no PAT behind it", async () => {
+    const { code, out, err } = await check(await installed(), {
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+      maxFixRounds: null,
+    });
+
+    expect(out).toContain("warn  fix rounds without a PAT");
+    expect(out).toMatch(/budget of 3 \(the default\)/);
+    expect(out).toContain(FIX_ROUNDS_VARIABLE);
+    expect(err).not.toContain("fix rounds without a PAT");
+    // The missing PAT itself, which is the acceptance: reported, and failing.
+    expect(err).toMatch(/The `AGENT_PAT` secret is not set/);
+    expect(code).toBe(1);
+  });
+
+  it("names a budget that was set, and says nothing where it is 0", async () => {
+    const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] };
+
+    const five = await check(await installed(), { ...noPat, maxFixRounds: "5" });
+    expect(five.out).toMatch(/budget of 5 \(`AGENT_MAX_FIX_ROUNDS`\)/);
+
+    const none = await check(await installed(), { ...noPat, maxFixRounds: "0" });
+    expect(none.out).not.toContain("fix rounds without a PAT");
+  });
+
+  /**
+   * **Unreadable stays unreadable**, on both facts. Secrets and variables are
+   * readable only with more than a checkout, and "nobody could ask" is not "the
+   * PAT is missing" nor "the variable is unset": a budget read out of a
+   * variable nobody could list would be a default nobody knows applies.
+   */
+  it("does not rule on the budget where the secrets or the variable could not be read", async () => {
+    const unreadVariable = await check(await installed(), {
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+      maxFixRounds: undefined,
+    });
+    expect(unreadVariable.out).not.toContain("fix rounds without a PAT");
+
+    const unreadSecrets = await check(await installed(), { ...healthy(), secrets: undefined });
+    expect(unreadSecrets.out).not.toContain("fix rounds without a PAT");
+    expect(unreadSecrets.out).toMatch(/could not read the actions secrets/i);
+    expect(unreadSecrets.code).toBe(0);
+  });
+
+  /**
+   * **A variable that is not a count** fails every review: the budget step
+   * refuses it rather than guessing a number of rounds out of `three` or
+   * `-1`. An error, and the same test the step applies.
+   */
+  it("errors on a budget variable that is not a non-negative integer", async () => {
+    for (const value of ["three", "-1", "1.5", " 2"]) {
+      const { code, err } = await check(await installed(), { ...healthy(), maxFixRounds: value });
+      expect(err, value).toContain("FAIL  fix-round budget");
+      expect(err, value).toContain(`\`${value}\``);
+      expect(code, value).toBe(1);
+    }
+    for (const value of ["0", "3", "007"]) {
+      const { code, err } = await check(await installed(), { ...healthy(), maxFixRounds: value });
+      expect(err, value).toBe("");
+      expect(code, value).toBe(0);
+    }
+  });
+
+  /**
+   * The default `doctor` assumes is the one the review applies, read out of
+   * the budget step itself: two copies of the number, held equal.
+   */
+  it("assumes the default budget the review applies", () => {
+    const review = fs.readFileSync(path.join(".github", "workflows", "review.yml"), "utf8");
+    expect(review).toContain(`budget="\${MAX_FIX_ROUNDS:-${DEFAULT_FIX_ROUNDS}}"`);
+    expect(review).toContain(`MAX_FIX_ROUNDS: \${{ vars.${FIX_ROUNDS_VARIABLE} }}`);
+  });
+
+  /**
+   * **`auto-fix`, deprecated** (#201, PRD #200 decision 4). The review honours
+   * it for one release and wins it over the variable, and the release after
+   * stops declaring it, which GitHub answers by failing the caller that still
+   * passes it. So a warning now, naming the variable to set and the value that
+   * keeps today's behaviour.
+   *
+   * The gesture is the one an adopter who kept the input has made: the line
+   * added to the reference caller's `with:` block.
+   */
+  const withAutoFix = async (value: string): Promise<string> => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace("# auto-fix: true", "auto-fix: true"));
+    edit(root, "agent-review.yml", (text) =>
+      text.replace("self-check: review / review", `self-check: review / review\n      auto-fix: ${value}`),
+    );
     return root;
   };
 
-  /**
-   * And the other half of throwing that switch: the marker label, which
-   * `healthy()` has no business carrying — it is the six every installation
-   * needs, and this is the one a repository creates only if it turns the input
-   * on (#159).
-   */
-  const withMarkerLabel = (facts: RepoFacts): RepoFacts => ({
-    ...facts,
-    labels: [...(facts.labels ?? []), AUTO_FIXED_LABEL.name],
+  it("warns that auto-fix is deprecated, naming the variable to set instead", async () => {
+    for (const [value, budget] of [["true", "1"], ["false", "0"]] as const) {
+      const { code, out, err } = await check(await withAutoFix(value), healthy());
+
+      expect(out, value).toContain("warn  auto-fix deprecated");
+      expect(out, value).toContain(FIX_ROUNDS_VARIABLE);
+      expect(out, value).toContain(`\`${FIX_ROUNDS_VARIABLE}\` to \`${budget}\``);
+      expect(err, value).toBe("");
+      expect(code, value).toBe(0);
+    }
   });
 
-  it("warns when the automatic fix is on and no PAT can make it fire", async () => {
-    const { code, out, err } = await check(
-      await withAutoFix(),
-      withMarkerLabel({ ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] }),
-    );
+  /** …and an error where its value is one the review refuses outright. */
+  it("errors on an auto-fix value the review refuses", async () => {
+    const { code, err } = await check(await withAutoFix("yes"), healthy());
 
-    expect(out).toContain("auto-fix");
-    expect(out).toMatch(/fires no event/);
-    // The row above is the error for the same missing secret; this one must not
-    // add a second exit code to it.
-    expect(err).not.toContain("auto-fix without a PAT");
-    expect(code).toBe(1);
-  });
-
-  it("says nothing about the automatic fix when the PAT and the label are there", async () => {
-    const { code, out, err } = await check(await withAutoFix(), withMarkerLabel(healthy()));
-
-    expect(err).toBe("");
-    expect(out).not.toContain("auto-fix");
-    expect(code).toBe(0);
-  });
-
-  /**
-   * **The marker label, which is an error rather than a warning** (#159). The
-   * `auto-fix` job adds it first and under `bash -e`, so a repository that
-   * switched the input on without creating it does not lose the automation —
-   * it loses the job, after the review has already posted a verdict saying a
-   * fix round started.
-   *
-   * It is in `ADVISORY_LABELS` and so outside `labelSpecsFor`'s demanded set,
-   * which is right for every repository that left the input alone and is
-   * exactly why this check has to read the input instead.
-   */
-  it("errors when the automatic fix is on and its marker label does not exist", async () => {
-    const { code, out, err } = await check(await withAutoFix(), healthy());
-
-    expect(err).toContain(AUTO_FIXED_LABEL.name);
-    expect(err).toMatch(/auto-fix without its marker label/);
-    // With the one command that creates it, and the same one `init`'s
-    // `SETUP.md` offers rather than a second spelling of it.
-    expect(err).toContain(labelCommand(AUTO_FIXED_LABEL));
+    expect(err).toContain("FAIL  auto-fix deprecated");
     expect(code).toBe(1);
   });
 
   /**
-   * …and says nothing about it on a repository that left the input alone. That
-   * is every repository `init` has just finished with, so a demand here would
-   * be a preflight failing a correctly-installed loop over a label nothing in
-   * it will ever add.
+   * **YAML's null is not passed.** `auto-fix:` with nothing after it, `~` and
+   * `null` all parse to null, which GitHub hands the review as the empty
+   * string, and the review reads empty as "not passed". Read through `String`
+   * it was the word `null`, and a refused value.
    */
-  it("demands the marker label only where the input is on", async () => {
-    const { code, out, err } = await check(await installed(), healthy());
+  it("reads an auto-fix left empty or null as not passed", async () => {
+    for (const value of ["", "~", "null"]) {
+      const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"], maxFixRounds: "5" };
+      const { out, err } = await check(await withAutoFix(value), noPat);
 
-    expect(out).not.toContain(AUTO_FIXED_LABEL.name);
-    expect(err).toBe("");
-    expect(code).toBe(0);
+      expect(`${out}${err}`, value).not.toContain("auto-fix deprecated");
+      // The variable is what the review reads, so it is the budget named.
+      expect(out, value).toMatch(/budget of 5 \(`AGENT_MAX_FIX_ROUNDS`\)/);
+    }
   });
 
   /**
-   * Unreadable stays unreadable on this half too: `doctor` runs where nobody
-   * could list the labels, and "the list did not come back" is not "the label
-   * is missing". The unreadable-labels warning is the honest answer and is
-   * already there.
+   * **An expression is settled at run time**, and may come to `true`, `false`
+   * or empty, none of which the review refuses. So still the deprecation, as a
+   * warning, and no budget: a round count out of `${{ vars.X }}` is a guess.
    */
-  it("does not claim the marker label is missing when the labels could not be read", async () => {
-    const { code, out, err } = await check(await withAutoFix(), { ...healthy(), labels: undefined });
+  it("warns on an auto-fix expression without ruling on what it comes to", async () => {
+    for (const value of ["${{ vars.AUTO_FIX }}", "${{ github.event_name == 'push' }}", "x-${{ vars.A }}"]) {
+      const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] };
+      const { out, err } = await check(await withAutoFix(`"${value}"`), noPat);
 
-    expect(err).toBe("");
-    expect(out).toMatch(/could not list this repository's labels/i);
-    expect(code).toBe(0);
+      expect(out, value).toContain("warn  auto-fix deprecated");
+      expect(out, value).not.toContain("refuses it today");
+      expect(out, value).not.toContain("fix rounds without a PAT");
+      expect(err, value).not.toContain("auto-fix");
+    }
   });
 
   /**
-   * And nothing on a repository that left the input alone, which is every
-   * repository `init` has just finished with: the reference caller ships it
-   * commented out.
+   * The alias wins over the variable, in `doctor` as in the review: `false`
+   * is a budget of 0 however the variable reads, so there is no round for a
+   * missing PAT to stop; `true` is a budget of 1 even where the variable says
+   * 0.
    */
-  it("says nothing about the automatic fix on a caller that did not turn it on", async () => {
-    const { out } = await check(await installed(), {
-      ...healthy(),
-      secrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
-    });
+  it("reads the budget from auto-fix where a caller still passes it", async () => {
+    const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] };
 
-    expect(out).not.toContain("auto-fix");
+    const off = await check(await withAutoFix("false"), { ...noPat, maxFixRounds: "3" });
+    expect(off.out).not.toContain("fix rounds without a PAT");
+
+    const on = await check(await withAutoFix("true"), { ...noPat, maxFixRounds: "0" });
+    expect(on.out).toMatch(/budget of 1 \(`auto-fix: true`\)/);
   });
 
   /**
-   * **Unreadable stays unreadable.** Secrets are readable only to an admin, and
-   * "nobody could ask" is not "the PAT is missing" — a warning here would tell
-   * every non-admin their automatic fix is broken. The unreadable-secrets
-   * warning below is the honest answer, and it is already there.
+   * **No marker label to demand**, and none to create: the rounds spent are
+   * counted from the pull request's own verdicts (#201), so `agent:auto-fixed`
+   * is retired and a healthy repository passes clean without it.
    */
-  it("does not claim the automatic fix is broken when the secrets could not be read", async () => {
-    const { code, out } = await check(
-      await withAutoFix(),
-      withMarkerLabel({ ...healthy(), secrets: undefined }),
-    );
+  it("neither demands nor offers the retired marker label", async () => {
+    const root = await installed();
+    const { code, out, err } = await check(root, healthy());
 
-    expect(out).not.toContain("auto-fix");
-    expect(out).toMatch(/could not read the actions secrets/i);
+    expect(`${out}${err}`).not.toContain("agent:auto-fixed");
     expect(code).toBe(0);
+    expect(fs.readFileSync(path.join(root, "SETUP.md"), "utf8")).not.toContain("agent:auto-fixed");
   });
 
   /**
@@ -2470,6 +2519,26 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(availableSecrets(undefined, ["AGENT_PAT"], false)).toBeUndefined();
   });
 
+  /**
+   * The budget variable, read the way the secrets are: a repository variable
+   * wins over an organization one of the same name, as it does in `vars`, and
+   * "not set" is concluded only from lists that were read. Unset is `null`,
+   * unreadable is `undefined`, and the two lead to opposite rulings: the first
+   * is the default of 3, the second is nothing anybody knows.
+   */
+  it("reads the budget variable without collapsing unset into unreadable", () => {
+    expect(availableVariable(["2"], ["5"], true)).toBe("2");
+    expect(availableVariable([], ["5"], true)).toBe("5");
+    expect(availableVariable(["2"], undefined, undefined)).toBe("2");
+    expect(availableVariable([], [], true)).toBeNull();
+    // No organization to ask about: the repository's own list is the answer.
+    expect(availableVariable([], undefined, false)).toBeNull();
+    // One that may have an organization, whose list could not be read.
+    expect(availableVariable([], undefined, true)).toBeUndefined();
+    expect(availableVariable([], undefined, undefined)).toBeUndefined();
+    expect(availableVariable(undefined, ["5"], false)).toBeUndefined();
+  });
+
   /** A fact `gh` could not answer is reported as unknown, never as a pass. */
   it("says what it could not read rather than treating it as fine", async () => {
     const { code, out } = await check(await installed(), {
@@ -2480,6 +2549,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       visibility: undefined,
       releases: undefined,
       actionsPolicies: undefined,
+      maxFixRounds: undefined,
     });
 
     expect(code).toBe(0);
@@ -2503,6 +2573,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       visibility: undefined,
       releases: undefined,
       actionsPolicies: undefined,
+      maxFixRounds: undefined,
     });
 
     expect(code).toBe(0);

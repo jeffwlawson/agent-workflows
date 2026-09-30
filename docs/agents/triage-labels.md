@@ -109,30 +109,17 @@ tracker that spells its triage label differently gets `needs-triage` beside its 
 rather than inside it. `docs/ADOPTING.md` §3 says the same thing to an adopter, and the two files
 are held to the same colour and description by a test.
 
-## `agent:queued` — declared, and inert
+## `agent:queued`, retired
 
-There is one `agent:*` label that no workflow reads at all. It is **written by a human, never by a
-workflow, and read by nothing.**
+Retired in #204. It was declared here for one job: marking a top-level issue that is specified and
+authorised but waits on another. It was written by a human, read by nothing, and removed by nothing,
+because the workflow that would have consumed it, `promote-queued`, was never built.
 
-It marks a dependency between *top-level* issues: this one is specified and authorised, but waits
-on another. The workflow that would consume it, `promote-queued`, does not exist in this repo — so
-nothing removes it either, which is why no workflow applies it. A workflow that did would be
-manufacturing a state only a human can clear. `docs/parity.md` §10 carries the full reasoning; §8
-is where the label is tabulated.
-
-It also does not belong **inside** a PRD. Every slice after the first is queued by construction,
-and the chain already holds that ordering in the parent's sub-issue list; a label saying the same
-thing is one more thing that can go stale against it.
-
-The label does not exist in the repo. Create it only when you actually intend to hand-mark a
-waiting issue:
-
-```bash
-gh label create "agent:queued" --color C5DEF5 --description "Authorised, but waiting on another issue; read by nothing today"
-```
-
-If `promote-queued` ever ships, this becomes "written by a human **or** by that workflow, on
-top-level issues only" — and not before.
+Native "blocked by" links do that job, and something reads them. `implement` and `implement-prd`
+refuse an issue whose blocker is still open, naming the blocker, and a human re-adds
+`agent:implement` once it closes. Inside a PRD the chain already holds the ordering in the parent's
+sub-issue list. So a label saying the same thing is only one more thing that can go stale against
+the link. Do not create it; where a repository already has it, it can be deleted.
 
 ## The `wayfinder:*` planning labels
 

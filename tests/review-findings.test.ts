@@ -974,7 +974,7 @@ describe("an identifier the model smuggled into its output", () => {
     expect(
       deriveVerdict(parse({}), { autoFix: false,
         ci: "green",
-        round: 2,
+        fixRoundProgress: { given: 0, closed: 0 },
         stillOpen: carried.length,
         movedToFollowUps: 0,
         base: "main",

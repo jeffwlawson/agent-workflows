@@ -242,8 +242,9 @@ jobs:
           # nothing else will surface them. A plain `refuse` would strip the
           # trigger label and leave the issue carrying nothing at all.
           #
-          # Revisit when #5 lands: `agent:queued` becomes the right marker, and
-          # this stops being an exception.
+          # There is no queued label to use instead: the one declared for this
+          # was retired (#204), because the native edge read above already says
+          # the issue waits, and this refusal is what reads it.
           if [ -n "$blockers" ]; then
             refuse_shape "Refused to run: blocked by ${blockers}, still open. Label the blocker instead, then re-add \`agent:implement\` here once it closes (remove and re-add if the label is still attached, since adding one already present fires no event). If the work really can proceed, the blocking relation is the thing to remove: this reads the native \`blocked_by\` edges, never prose, so deleting the edge is how you say so."
           fi
@@ -396,10 +397,10 @@ jobs:
       # Cascade: every agent PR gets reviewed without a human labelling it.
       #
       # Safe because the hop it starts is bounded at the other end. Since #102
-      # agent-review can add `agent:fix` back — only where the adopter switched
-      # `auto-fix` on, only on the round-1 "Changes recommended" line a round 2
-      # cannot produce, and once per pull request. The invariant that records
-      # both the old rule and the amendment is docs/parity.md §10; a return leg
+      # agent-review can add `agent:fix` back: only within the pull request's
+      # fix-round budget (#201), and never after a fix round that closed none
+      # of the findings it was given (#202). The invariant that records the
+      # old rule and both amendments is docs/parity.md §10; a return leg
       # without those bounds closes the loop with no human gate.
       #
       # MUST use AGENT_PAT: a label added with GITHUB_TOKEN does not trigger

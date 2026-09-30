@@ -37,7 +37,7 @@ import type { CliIo } from "../cli.js";
  * - **`gatherFacts`** asks GitHub the questions a checkout cannot answer — which
  *   secrets are set, whether Actions may open pull requests, what the default
  *   `GITHUB_TOKEN` grants a job that asks for nothing, which labels exist, which Actions policies apply,
- *   what the fix-round budget variable holds, and what this package's latest release is. Every one of them can come back
+ *   what the fix-round budget and time limit variables hold, and what this package's latest release is. Every one of them can come back
  *   unreadable (no `gh`, no auth, no admin), and an unreadable answer is
  *   reported as unknown rather than folded into a pass.
  * - **`diagnose`** rules on the callers and those facts and nothing else. It is
@@ -111,6 +111,13 @@ export interface RepoFacts {
    * default budget of 3 and "unreadable" is no budget anybody knows.
    */
   readonly maxFixRounds: string | null | undefined;
+  /**
+   * The time limit variables (#220), keyed by name: each one's value, or `null`
+   * where it is set nowhere. `undefined` as a whole where the variables could
+   * not be listed; they are read from the same lists, so they are known or
+   * unknown together.
+   */
+  readonly timeoutMinutes: Readonly<Record<string, string | null | undefined>> | undefined;
 }
 
 /** The repository variable the review reads its fix-round budget from (#201). */
@@ -124,6 +131,39 @@ export const DEFAULT_FIX_ROUNDS = 3;
 
 /** The test the review's budget step applies to the variable, and no looser. */
 const COUNT = /^[0-9]+$/;
+
+/**
+ * The repository variables a job's time limit is read from (#220), the
+ * workflows whose jobs read each, and the default where it is unset: a second
+ * copy of each workflow's own, held equal to it by a test.
+ */
+export const TIMEOUT_VARIABLES = [
+  {
+    name: "AGENT_TIMEOUT_MINUTES",
+    workflows: ["implement", "implement-prd", "fix", "update-branch"],
+    defaultMinutes: 30,
+    // Read straight into `timeout-minutes`, where a value GitHub cannot read as
+    // a number fails the job before its first step.
+    consequence:
+      "the four jobs that write code read it straight into their `timeout-minutes`, so every one " +
+      "of them fails before its first step: no comment, and the label left on",
+    meaning: "the minutes an implement, fix or update-branch run may take",
+  },
+  {
+    name: "AGENT_REVIEW_TIMEOUT_MINUTES",
+    workflows: ["review"],
+    defaultMinutes: 5,
+    consequence: "every review refuses to start, naming it",
+    meaning: "the minutes a review may take beyond its 15-minute CI wait",
+  },
+] as const;
+
+/**
+ * The test a time limit is held to: a positive integer, and written as JSON
+ * writes one, since the agent jobs read it through `fromJSON`, which refuses a
+ * leading zero.
+ */
+const MINUTES = /^[1-9][0-9]*$/;
 
 /**
  * An input value GitHub works out at run time: any `${{`, anywhere in the
@@ -698,6 +738,26 @@ export const diagnose = (
     });
   }
 
+  // A time limit that is not a positive integer (#220). An error wherever a
+  // caller whose job reads it is installed, and a warning where none is, since
+  // nothing reads it yet. Unset is the default and unreadable is no finding.
+  for (const variable of TIMEOUT_VARIABLES) {
+    const value = facts.timeoutMinutes?.[variable.name];
+    if (typeof value !== "string" || MINUTES.test(value)) continue;
+    const read = callers.some((caller) => (variable.workflows as readonly string[]).includes(caller.workflow));
+    add({
+      severity: read ? "error" : "warning",
+      check: "time limit",
+      problem:
+        `The repository variable \`${variable.name}\` is \`${value}\`, which is not a positive ` +
+        `integer, so ` +
+        (read ? `${variable.consequence}.` : `once a caller that reads it is installed, ${variable.consequence}.`),
+      fix:
+        `Set it to ${variable.meaning}, as a whole number with no leading zero, or delete it for the ` +
+        `default of ${variable.defaultMinutes}.`,
+    });
+  }
+
   // `auto-fix`, deprecated (#201, PRD #200 decision 4). The review honours it
   // for one release, and the release after stops declaring it, which GitHub
   // answers by failing the whole caller at startup. A warning while it still
@@ -1137,26 +1197,37 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
           dir,
         );
 
-  // The budget variable, from the same two places as the secrets and for the
-  // same reason: `vars` resolves an organization variable shared with this
-  // repository too, and a repository one of the same name over it. Selected by
-  // name out of the list rather than asked for by name, because asking for one
-  // that is not set is a 404, which `safeGh` renders as the same empty string a
-  // 403 gives, and "unset" must not collapse into "unreadable". The list is
-  // served a page at a time, so one longer than its page is refused by `error`
-  // rather than read as a list that happens not to hold the name.
-  const variable = (endpoint: string): readonly string[] | undefined =>
+  // The budget and time limit variables, from the same two places as the
+  // secrets and for the same reason: `vars` resolves an organization variable
+  // shared with this repository too, and a repository one of the same name over
+  // it. Picked by name out of the list rather than asked for by name, because
+  // asking for one that is not set is a 404, which `safeGh` renders as the same
+  // empty string a 403 gives, and "unset" must not collapse into "unreadable".
+  // The list is served a page at a time, so one longer than its page is refused
+  // by `error` rather than read as a list that happens not to hold the name.
+  //
+  // Each variable comes back as its name and then its value, flat, which is the
+  // list `parseList` reads.
+  const wanted: readonly string[] = [FIX_ROUNDS_VARIABLE, ...TIMEOUT_VARIABLES.map((v) => v.name)];
+  const variables = (endpoint: string): readonly string[] | undefined =>
     list(
       ["api", `repos/{owner}/{repo}/actions/${endpoint}?per_page=30`],
       `if .total_count > (.variables | length) then error("more variables than one page") ` +
-        `else .variables[] | select(.name == "${FIX_ROUNDS_VARIABLE}") | .value end`,
+        `else .variables[] | select(${wanted.map((name) => `.name == "${name}"`).join(" or ")}) ` +
+        `| .name, .value end`,
       dir,
     );
-  const repositoryVariable = variable("variables");
-  const organizationVariable =
-    repositoryVariable === undefined || repositoryVariable.length > 0 || inOrg === false
+  const valuesOf = (flat: readonly string[] | undefined, name: string): readonly string[] | undefined =>
+    flat?.filter((_, i) => i % 2 === 1 && flat[i - 1] === name);
+  const repositoryVariables = variables("variables");
+  const organizationVariables =
+    repositoryVariables === undefined ||
+    inOrg === false ||
+    wanted.every((name) => (valuesOf(repositoryVariables, name) ?? []).length > 0)
       ? undefined
-      : variable("organization-variables");
+      : variables("organization-variables");
+  const variable = (name: string): string | null | undefined =>
+    availableVariable(valuesOf(repositoryVariables, name), valuesOf(organizationVariables, name), inOrg);
 
   return {
     secrets: availableSecrets(repositorySecrets, organizationSecrets, inOrg),
@@ -1174,7 +1245,11 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
     visibility: asVisibility(visibility),
     actionsPolicies: readPolicies(dir),
     releases: list(["api", `repos/${repoSlug(packageName)}/tags`], ".[].name", dir),
-    maxFixRounds: availableVariable(repositoryVariable, organizationVariable, inOrg),
+    maxFixRounds: variable(FIX_ROUNDS_VARIABLE),
+    timeoutMinutes:
+      repositoryVariables === undefined
+        ? undefined
+        : Object.fromEntries(TIMEOUT_VARIABLES.map(({ name }) => [name, variable(name)])),
   };
 };
 

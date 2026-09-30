@@ -76,7 +76,14 @@ jobs:
       github.event.label.name == 'agent:fix' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
+    # shared by the four jobs that run an agent to write code, and 30 where it
+    # is not. `vars` is among the contexts this key may read, and in a called
+    # workflow it resolves against the caller's repository. `fromJSON` because
+    # a variable is a string and this key wants a number; a value that is not
+    # one fails the job before any step, which `doctor` reports. The failure
+    # step below names the same figure.
+    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
     # One group per PR, shared with agent-update-branch (which pushes this same
     # branch) and agent-review (which reads it). Review was outside the group
     # until jeffwlawson/winget-manifest-lint#102 on the grounds that
@@ -124,6 +131,14 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
+      # The clock the failure step reads a time limit off (#220). A job that
+      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
+      # the `job` context says which cancellation it was, so that step compares
+      # how long the job ran with its limit. First, so it starts as near the
+      # job's own start as a step can.
+      - name: Start the clock
+        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       # And refuse if the event's head SHA is not the branch's live head (#188).
       # Everything after this is pinned to that SHA — the checkout, and the
       # push's `--force-with-lease` — so a run started behind the branch
@@ -561,8 +576,10 @@ jobs:
       # review verifies the fix, so a second fix run re-reads feedback this one
       # has already acted on and answers it twice.
       - name: Mark blocked on failure
-        if: steps.state.outputs.proceed == 'true' && failure()
+        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
         env:
+          JOB_STATUS: ${{ job.status }}
+          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUSHED: ${{ steps.push.outputs.pushed }}
         run: |
@@ -570,12 +587,31 @@ jobs:
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
+          # Cancelled is not failed (#220), and a job that reached its limit
+          # is cancelled too. What tells the two apart is the clock the first
+          # step started: a timed-out job ran its whole limit, less the moment
+          # the runner took to reach that step, hence a minute's slack. A
+          # reason file is not read on either; what wrote one was stopped, not
+          # failing. The labels and the retry are a failure's, word for word.
+          # The limit is compared only where it is a positive integer: `fromJSON`
+          # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
+          # `bash -e` that would end this step before its comment. A limit the
+          # step cannot compare reads as a cancel, which is still said.
+          what="failed"
+          if [ "$JOB_STATUS" = "cancelled" ]; then
+            what="was cancelled"
+            reason="The run was cancelled before it finished, by hand or by GitHub."
+            if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+              what="timed out after ${TIMEOUT_MINUTES} minutes"
+              reason="The job reached its time limit of ${TIMEOUT_MINUTES} minutes and was stopped there. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises it."
+            fi
+          fi
           outcome="Re-add \`agent:fix\` to retry."
           if [ "$PUSHED" = "true" ]; then
             outcome="The fix is pushed; what failed came after it, so re-adding \`agent:fix\` would work threads this run has already answered. Act on the reason above instead."
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '`agent:fix` run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\n%s\n' "$reason" "$RUN_URL" "$outcome" > "$body_file"
+          printf '`agent:fix` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\n%s\n' "$what" "$reason" "$RUN_URL" "$outcome" > "$body_file"
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
           gh pr comment "$PR_NUMBER" --body-file "$body_file"
 

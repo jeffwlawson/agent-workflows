@@ -105,7 +105,14 @@ jobs:
     # seam, where a caller can skip it but cannot loosen it.
     if: github.event.label.name == 'agent:implement'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
+    # shared by the four jobs that run an agent to write code, and 30 where it
+    # is not. `vars` is among the contexts this key may read, and in a called
+    # workflow it resolves against the caller's repository. `fromJSON` because
+    # a variable is a string and this key wants a number; a value that is not
+    # one fails the job before any step, which `doctor` reports. The failure
+    # step below names the same figure.
+    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
     # Per *parent issue*, first-come, so consecutive slices of one PRD never
     # overlap: the chaining step re-labels the parent while this job is still
     # running, and the next run waits for this one to finish every step —
@@ -150,6 +157,14 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
+      # The clock the failure step reads a time limit off (#220). A job that
+      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
+      # the `job` context says which cancellation it was, so that step compares
+      # how long the job ran with its limit. First, so it starts as near the
+      # job's own start as a step can.
+      - name: Start the clock
+        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       # Everything that decides whether this run happens, before checkout and
       # the dependency install, so a refusal costs one API call and nothing else.
       #
@@ -1216,8 +1231,10 @@ jobs:
       # Refusals and deferrals exit 0, so `failure()` keeps them out regardless
       # — all but the preflight's `block`, which exits 1 to land here.
       - name: Mark blocked on failure
-        if: steps.preflight.outputs.refused != 'true' && failure()
+        if: steps.preflight.outputs.refused != 'true' && (failure() || cancelled())
         env:
+          JOB_STATUS: ${{ job.status }}
+          TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
           SUB: ${{ steps.preflight.outputs.sub }}
           SLICE_PR: ${{ steps.slice_pr.outputs.number }}
           FINISHING: ${{ steps.preflight.outputs.finishing }}
@@ -1226,6 +1243,25 @@ jobs:
           reason="(no reason file written; check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+          fi
+          # Cancelled is not failed (#220), and a job that reached its limit
+          # is cancelled too. What tells the two apart is the clock the first
+          # step started: a timed-out job ran its whole limit, less the moment
+          # the runner took to reach that step, hence a minute's slack. A
+          # reason file is not read on either; what wrote one was stopped, not
+          # failing. The labels and the retry are a failure's, word for word.
+          # The limit is compared only where it is a positive integer: `fromJSON`
+          # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
+          # `bash -e` that would end this step before its comment. A limit the
+          # step cannot compare reads as a cancel, which is still said.
+          what="failed"
+          if [ "$JOB_STATUS" = "cancelled" ]; then
+            what="was cancelled"
+            reason="The run was cancelled before it finished, by hand or by GitHub."
+            if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+              what="timed out after ${TIMEOUT_MINUTES} minutes"
+              reason="The job reached its time limit of ${TIMEOUT_MINUTES} minutes and was stopped there. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises it."
+            fi
           fi
           slice="(no sub-issue was selected)"
           if [ -n "${SUB}" ]; then
@@ -1242,7 +1278,7 @@ jobs:
           # to work it out.
           pr_note=""
           if [ -n "${SLICE_PR}" ]; then
-            pr_note=$(printf ' Slice PR #%s was opened before the run failed, and re-applying the label now would merge it into the PRD branch as it stands rather than retry. It is the build of sub-issue %s: close that sub-issue by hand if it is still open, and add `agent:review` to slice PR #%s if it does not carry it, and re-apply the label here only once that round has ended.' "$SLICE_PR" "$slice" "$SLICE_PR")
+            pr_note=$(printf ' Slice PR #%s was opened before the run ended, and re-applying the label now would merge it into the PRD branch as it stands rather than retry. It is the build of sub-issue %s: close that sub-issue by hand if it is still open, and add `agent:review` to slice PR #%s if it does not carry it, and re-apply the label here only once that round has ended.' "$SLICE_PR" "$slice" "$SLICE_PR")
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           # "Re-apply", and the removal clause, for the same reason as
@@ -1255,9 +1291,9 @@ jobs:
           # PRD PR is still a draft — so the remedy is the re-label, the same
           # one as everywhere else, and nothing is left to do by hand.
           if [ "${FINISHING}" = "true" ]; then
-            printf '`agent:implement` finishing run failed: every sub-issue is built, and this run was merging the last slice PR and handing the PRD PR over.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to pick up where it stopped. It merges the last slice PR if that is still open, then resumes the handover of the PRD PR while it is still a draft, and builds nothing. If the label is still attached, remove it first, since adding a label that is already present fires no event.\n' "$reason" "$RUN_URL" > "$body_file"
+            printf '`agent:implement` finishing run %s: every sub-issue is built, and this run was merging the last slice PR and handing the PRD PR over.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to pick up where it stopped. It merges the last slice PR if that is still open, then resumes the handover of the PRD PR while it is still a draft, and builds nothing. If the label is still attached, remove it first, since adding a label that is already present fires no event.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
           else
-            printf '`agent:implement` run failed on sub-issue %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to retry the same sub-issue; if it is still attached, remove it first, since adding a label that is already present fires no event.%s\n' "$slice" "$reason" "$RUN_URL" "$pr_note" > "$body_file"
+            printf '`agent:implement` run %s on sub-issue %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nThe chain has stopped. Re-apply `agent:implement` to this PRD to retry the same sub-issue; if it is still attached, remove it first, since adding a label that is already present fires no event.%s\n' "$what" "$slice" "$reason" "$RUN_URL" "$pr_note" > "$body_file"
           fi
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"

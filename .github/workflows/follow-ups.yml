@@ -146,6 +146,14 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
+      # The clock the failure step reads a time limit off (#220). A job that
+      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
+      # the `job` context says which cancellation it was, so that step compares
+      # how long the job ran with its limit. First, so it starts as near the
+      # job's own start as a step can.
+      - name: Start the clock
+        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       # No state step and no shell guard: the merge gate is the job condition
       # alone. A shell guard exists elsewhere to post a comment explaining a
       # refusal; the case refused here is a pull request closed without merging,
@@ -192,14 +200,35 @@ jobs:
       # and re-adding an already-present label fires no event
       # (docs/ADOPTING.md §1). Hence the gesture named below.
       - name: Report the failure on the PR
-        if: failure()
+        if: failure() || cancelled()
         env:
+          JOB_STATUS: ${{ job.status }}
+          TIMEOUT_MINUTES: "10"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           reason="(no reason file written; check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
+          # Cancelled is not failed (#220), and a job that reached its limit
+          # is cancelled too. What tells the two apart is the clock the first
+          # step started: a timed-out job ran its whole limit, less the moment
+          # the runner took to reach that step, hence a minute's slack. A
+          # reason file is not read on either; what wrote one was stopped, not
+          # failing. The labels and the retry are a failure's, word for word.
+          # The limit is compared only where it is a positive integer: `fromJSON`
+          # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
+          # `bash -e` that would end this step before its comment. A limit the
+          # step cannot compare reads as a cancel, which is still said.
+          what="failed"
+          if [ "$JOB_STATUS" = "cancelled" ]; then
+            what="was cancelled"
+            reason="The run was cancelled before it finished, by hand or by GitHub."
+            if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+              what="timed out after ${TIMEOUT_MINUTES} minutes"
+              reason="The job reached its time limit of ${TIMEOUT_MINUTES} minutes and was stopped there."
+            fi
+          fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '`agent:follow-ups` filing run failed.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nNothing was filed, or only part of it was; the run is safe to repeat either way. The marker was left in place, so remove `agent:follow-ups` and add it back to retry.\n' "$reason" "$RUN_URL" > "$body_file"
+          printf '`agent:follow-ups` filing run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nNothing was filed, or only part of it was; the run is safe to repeat either way. The marker was left in place, so remove `agent:follow-ups` and add it back to retry.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
           gh pr comment "$PR_NUMBER" --body-file "$body_file"

@@ -71,9 +71,10 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | a caller that declares no `permissions:` block at all | §4 — it runs with the default token, and the restricted setting is `contents` and `packages` read, which is less than every job here declares: refused at startup too. The permissive setting grants every scope write and under-grants nothing |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
 | every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
-| `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for 15 of its 20 minutes |
+| `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for the whole of its 15-minute CI wait |
 | the labels exist | §3 — a transition that is a silent no-op |
 | the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; and, as warnings, that a budget above 0 (the default of 3 included) has `AGENT_PAT` behind it, and that no review caller still passes the deprecated `auto-fix` | §3b — a variable the review refuses fails every review; without the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand; and the release after this one fails a caller that passes `auto-fix` before any job starts |
+| the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | §1: from 2026-11-02 a label is added and no run starts |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
 
@@ -301,6 +302,33 @@ timestamp, which also lets you attribute a change in output quality to it.
 The precedence chain is covered by tests in `tests/common.test.ts`, including the empty-string case
 above. A wrong order does not error — it quietly runs every agent on the wrong model, and the only
 trace is a log line nobody reads until output quality is questioned weeks later.
+
+---
+
+## 2c. Time limits
+
+Every job runs under a `timeout-minutes`. Two are yours to move, as **repository variables** set the
+way the model ones are:
+
+| Variable | Default | What it bounds |
+|---|---|---|
+| `AGENT_TIMEOUT_MINUTES` | 30 | each `implement`, `implement-prd`, `fix` and `update-branch` run |
+| `AGENT_REVIEW_TIMEOUT_MINUTES` | 5 | a review's own time, **after** its CI wait of up to 15 minutes |
+
+The review's limit is the two added: 20 minutes with neither set, and a slow CI no longer eats into
+the time the review itself gets. The small jobs (`follow-ups` at 10 minutes, the jobs that resolve
+threads, start a fix round or advance a PRD at 5) are fixed.
+
+A value must be a positive integer, written without a leading zero. `AGENT_TIMEOUT_MINUTES` is read
+straight into `timeout-minutes`, so a value that is not a number fails those jobs before their first
+step, where nothing can comment, and one that is a number but not a whole one (`1.5`) runs, but its
+timeout reads as a cancel. The review refuses its own on the pull request. `doctor` reports both.
+
+A run that reaches its limit says so. GitHub **cancels** a job at its limit rather than failing it,
+and the failure step runs on both: the comment says "timed out after N minutes", adds
+`agent:blocked` and gives a failure's retry instructions. A run cancelled by hand says "cancelled"
+instead. The two are told apart by how long the job ran, so a run cancelled by hand in its last
+minute reads as a timeout. `follow-ups` comments the same way and, as on a failure, adds no label.
 
 ---
 
@@ -1060,7 +1088,7 @@ jobs:
 ```
 
 Rename the job, change the input. A name review does not recognise as its own is a job waiting for
-itself — 15 of its 20 minutes, then a review with degraded evidence and no error anywhere.
+itself — the whole 15-minute CI wait, then a review with degraded evidence and no error anywhere.
 
 How many fix rounds a review may start by itself is the repository variable
 `AGENT_MAX_FIX_ROUNDS`, not an input: §3b is where you decide about it. The `auto-fix` input it

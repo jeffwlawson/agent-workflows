@@ -59,15 +59,22 @@ if it never does. And the review does not trust its payload: it reads the branch
 reviews the tip where it descends from the labelled commit, refuses by name where it does not,
 and checks out, waits on CI for and posts every status on that one commit.
 
-Review adds a trigger label in two cases. The first is on the pull request, and only where an
-adopter asked for it (#102): with `auto-fix: true`, a job of its own adds `agent:fix` when the
-verdict is the round-1 *Changes recommended* — **once per pull request**, recorded by
-`agent:auto-fixed`. It is the return leg `docs/parity.md` §10 used to forbid outright, and what makes it an arrow rather than a cycle is
-that the round rule bars the verdict key it selects on from a second round, while the marker bars
-it from a second time on the same pull request. The job holds `pull-requests: write` and nothing
-else, checks nothing out and runs no model, which is what keeps `AGENT_PAT` away from the job that
-reads the pull request. Off by default, so an adopter's upgrade changes nothing. A pull request
-whose automatic fix is about to start also stays a **draft**: draft means the loop is still
+Review adds a trigger label in two cases. The first is on the pull request (#102): a job of its
+own adds `agent:fix` when the verdict is the round-1 *Changes recommended* and the pull request has
+automatic fix rounds left in its **fix-round budget** (#201): the repository variable
+`AGENT_MAX_FIX_ROUNDS`, default 3, `0` for none. **Rounds spent** are counted from the pull request
+itself: the verdicts the loop posted there that announced a round. There is no marker label, so the
+count survives re-runs and hand edits, only automatic rounds count, and a push resets nothing. The
+budget is settled before the review runs, so the verdict announces a round only where one will
+start, and the job decides from live state rather than the event payload: it adds nothing where
+`agent:fix` is already on the pull request or a newer verdict stands, and says on the pull request
+when a round it should have started did not. It is the return leg `docs/parity.md` §10 used to
+forbid outright, and what makes it an arrow rather than a cycle is that the round rule bars the
+verdict key it selects on from a second round, while the budget bounds it per pull request. The job
+holds `pull-requests: write` and nothing else, checks nothing out and runs no model, which is what
+keeps `AGENT_PAT` away from the job that reads the pull request. The `auto-fix` input it replaced is
+a deprecated alias for one release (`true` a budget of 1, `false` of 0). A pull request whose
+automatic fix is about to start also stays a **draft**: draft means the loop is still
 working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
 pushed, and the fix run itself where it pushed nothing and so asked for none.
 

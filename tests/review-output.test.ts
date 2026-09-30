@@ -919,6 +919,61 @@ describe("deriveVerdict", () => {
   });
 
   /**
+   * **A spent budget says so** (#201). Where no round starts because the pull
+   * request has used every automatic round it was given, the line names the
+   * rounds used, what is still open and the three ways on, rather than asking
+   * for the label as though nothing had been tried.
+   *
+   * The key stays the round-1 one: nothing is starting, which is what the
+   * advance job and the draft step select on, and only the words differ.
+   */
+  it("says the fix rounds are spent, how many were used and the three ways on", () => {
+    const row = deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
+      ci: "green",
+      round: 1,
+      stillOpen: 1,
+      movedToFollowUps: 0, base: "main",
+      autoFix: false,
+      fixRounds: { spent: 3, budget: 3 },
+    });
+
+    expect(row.verdict).toBe("changes recommended");
+    expect(row.heading).toBe(VERDICTS["changes recommended"].heading);
+    expect(row.nextStep).toContain("3 of 3 used");
+    expect(row.nextStep).toContain("2 findings are still open");
+    expect(row.nextStep).toContain("add agent:fix");
+    expect(row.nextStep).toContain("reply to a finding to decline it");
+    expect(row.nextStep).toContain("push a commit");
+    expect(row.description).toContain("(3 of 3)");
+    // The status line's own limits, at a budget far past any real one.
+    const wide = deriveVerdict(output(), {
+      ci: "green", round: 1, stillOpen: 1, movedToFollowUps: 0, base: "main",
+      autoFix: false, fixRounds: { spent: 999999999, budget: 999999999 },
+    });
+    expect(wide.description.length).toBeLessThanOrEqual(140);
+    expect(wide.description.startsWith(`${wide.label}. `)).toBe(true);
+    expect(wide.description).not.toMatch(/[`—]/);
+  });
+
+  /**
+   * …and only a spent one. Rounds still left with no round starting (no PAT)
+   * and a budget of 0 both ask for the label: nothing was spent, and saying a
+   * budget ran out would be a reason the loop never had.
+   */
+  it.each([
+    ["rounds left", { spent: 1, budget: 3 }],
+    ["a budget of 0", { spent: 0, budget: 0 }],
+    ["no count", undefined],
+  ])("asks for the label with %s", (_case, fixRounds) => {
+    const row = deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
+      ci: "green", round: 1, stillOpen: 0, movedToFollowUps: 0, base: "main",
+      autoFix: false,
+      ...(fixRounds === undefined ? {} : { fixRounds }),
+    });
+    expect(row).toEqual(VERDICTS["changes recommended"]);
+  });
+
+  /**
    * **A second round can never reach it**, whatever the workflow passes in —
    * which is the bound that stops the automatic fix cycling (#96 decision 5,
    * PRD #101 decision 1). The job selects on the key alone, so a round-2 review
@@ -927,7 +982,7 @@ describe("deriveVerdict", () => {
    * unlikely.
    *
    * Enforced by the arm order here rather than by the caller: `review.ts`
-   * passes `autoFix` from the input and the marker and never from the round,
+   * passes `autoFix` from the budget step's answer and never from the round,
    * so this file is the only place the two facts meet.
    */
   it("never says a fix round started on the round that followed one", () => {

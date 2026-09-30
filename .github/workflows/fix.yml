@@ -459,9 +459,9 @@ jobs:
       # twice off one human label.
       #
       # That bound, rather than "review adds no trigger label", which stopped
-      # being the whole story at #102: with `auto-fix` on, review does add
-      # `agent:fix` — on the round-1 line alone, which is exactly the line a
-      # round 2 cannot produce, and once per pull request besides.
+      # being the whole story at #102: review does add `agent:fix`, on the
+      # round-1 line alone, which is exactly the line a round 2 cannot produce,
+      # and within the pull request's fix-round budget besides (#201).
       #
       # MUST use AGENT_PAT, like every other label this loop adds: a label
       # added with GITHUB_TOKEN triggers nothing, so the PR would carry

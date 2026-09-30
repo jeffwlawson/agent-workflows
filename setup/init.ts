@@ -140,21 +140,6 @@ export const labelSpecsFor = (workflows: readonly string[]): readonly LabelSpec[
 ];
 
 /**
- * The marker that records a pull request's one automatic fix as spent (#102).
- *
- * Named rather than written inline below because `doctor` rules on it directly
- * (#159): the `auto-fix` job adds it under `bash -e`, so a repository that
- * switched the input on without creating it has a job that **fails** rather
- * than a feature that degrades. A second copy of the string would be a check
- * and a setup step able to name two different labels.
- */
-export const AUTO_FIXED_LABEL: LabelSpec = {
-  name: "agent:auto-fixed",
-  color: "C5DEF5",
-  description: "This PR's one automatic fix round has been started",
-};
-
-/**
  * The labels `doctor` **does not demand**, keyed by the workflow that wants
  * them — every block `docs/ADOPTING.md` §3 prints after its first.
  *
@@ -167,32 +152,12 @@ export const AUTO_FIXED_LABEL: LabelSpec = {
  * a preflight that errors on a correctly-installed one is a preflight people
  * learn to skip. So these reach `renderSetup` and never `labelSpecsFor`.
  *
- * "Not demanded" is about this table rather than about the labels: `diagnose`
- * demands `AUTO_FIXED_LABEL` once it can see the input that makes a repository
- * need it (#159), which is the condition a set keyed on installed callers
- * cannot express.
- *
  * Conditional on the caller, which is why it is a map rather than a list: the
  * filing caller is the one file in the loop an adopter can decline (§4), and
  * labels prescribed to a repository that declined it are labels nothing in it
  * will ever read.
  */
 export const ADVISORY_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
-  /**
-   * The one-shot marker (#102), and the only entry here that a repository
-   * needs **conditionally on an input** rather than on having taken the caller
-   * at all: `auto-fix` defaults off, and the reference caller ships it
-   * commented out. So it is named rather than demanded, like the three below —
-   * but for the opposite reason. Those are labels a live feature reaches for
-   * and warns about; this is one a feature an adopter may switch on later
-   * reaches for and **fails** on, which is worth knowing before the switch
-   * rather than after it.
-   *
-   * And demanded after all once the switch is thrown, by `diagnose` reading the
-   * input rather than by this map (#159) — `AUTO_FIXED_LABEL` is the one copy
-   * both halves name.
-   */
-  review: [AUTO_FIXED_LABEL],
   "follow-ups": [
     { name: "agent:follow-ups", color: "0052CC", description: "This PR's review recorded out-of-scope findings" },
     { name: "pr-follow-up", color: "D4C5F9", description: "Filed from a merged PR's review by the follow-ups workflow" },
@@ -320,8 +285,7 @@ const renderSetup = (workflows: readonly string[], callers: readonly string[]): 
           "**More labels, for the callers listed at the top of this file.** None of them is a",
           "transition and the check at the bottom demands none of them — but a review then marks",
           "nothing, a filed issue arrives unlabelled (invisible to the triage queue it was filed for,",
-          "and to the duplicate check the next merge runs), and a review caller switched to",
-          "`auto-fix: true` fails on the label that records the fix as spent.",
+          "and to the duplicate check the next merge runs).",
           "",
           "```bash",
           ...advisory,

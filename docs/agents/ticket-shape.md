@@ -85,9 +85,10 @@ Labelling a sub-issue `agent:implement` does not fork the chain — `agent-imple
 issue with a parent, and says to label the parent instead — but it is a refusal, not a plan. Don't
 rely on it.
 
-`agent:queued` is not part of this shape either. It is the tier *above*: dependencies between
-top-level issues, promoted by a workflow this repo does not have. Within a PRD the ordering is
-already carried by creation order, and the chain does not need to be told to wait.
+No label marks a waiting issue either. Dependencies between top-level issues are native "blocked
+by" links, which `implement` reads and refuses on while a blocker is open; the `agent:queued`
+label that once stood for them is retired (#204). Within a PRD the ordering is already carried by
+creation order, and the chain does not need to be told to wait.
 
 ## Publishing
 

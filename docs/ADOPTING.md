@@ -73,6 +73,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for 15 of its 20 minutes |
 | the labels exist | §3 — a transition that is a silent no-op |
+| the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; and, as warnings, that a budget above 0 (the default of 3 included) has `AGENT_PAT` behind it, and that no review caller still passes the deprecated `auto-fix` | §3b — a variable the review refuses fails every review; without the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand; and the release after this one fails a caller that passes `auto-fix` before any job starts |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | §1: from 2026-11-02 a label is added and no run starts |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
 
@@ -370,8 +371,7 @@ that reaches the review and fix agents, which the issue body no longer does.
 run a triage step — a human or a planning skill deciding an issue is well enough specified to hand
 over — that is a second vocabulary, and joining the two is a decision you have to make explicitly.
 `docs/agents/triage-labels.md` records this repo's answer: the canonical triage roles, the
-`agent:*` label no workflow reads (`agent:queued`, declared but inert), the `wayfinder:*` planning
-labels that never trigger a workflow, why `ready-for-agent` → `agent:implement` stays a human hand
+`wayfinder:*` planning labels that never trigger a workflow, why `ready-for-agent` → `agent:implement` stays a human hand
 rather than an automation, and the one join that is *not* a human hand — a filed stub arriving
 `needs-triage`. Take it alongside the workflows and edit the mapping — in the order §4 gives, since
 the file is also a skill's output path — and the reasoning survives the rename.
@@ -499,10 +499,17 @@ The `auto-fix` input this replaced is **deprecated** and goes in the next releas
 still sets it, it wins over the variable (`true` is a budget of 1, `false` a budget of 0), and the
 run warns. Remove it and set the variable instead.
 
-It is off by default, it needs `AGENT_PAT` (a label added with `GITHUB_TOKEN` fires no event, so
-nothing would start), and `doctor` warns if you turn it on without one. Switch it on when you trust
-the verdicts, not before: the whole of what it automates is a decision the verdict says needs no
-reading, and until you have read a few you do not know that.
+**Upgrading turns it on.** Before the budget, automatic fixing was the `auto-fix` input and off by
+default. A repository that sets nothing now gets **3 automatic rounds** on every regular pull
+request, from the first review after the pin bump. That is deliberate: measured over 40 pull requests in this loop, 17
+needed a human to add `agent:fix`, and most of the hours they were open were spent waiting on one. If you want your verdicts read first, set
+`AGENT_MAX_FIX_ROUNDS` to `0` before you bump, and raise it once you trust them. A regular pull
+request is still never merged automatically, whatever the budget.
+
+It needs `AGENT_PAT` (a label added with `GITHUB_TOKEN` fires no event, so nothing would start).
+`doctor` warns where the budget is above 0, the default included, and `AGENT_PAT` is not set; it
+fails a variable that is not a whole number, and warns on a caller still passing `auto-fix`, naming
+the value to set instead.
 
 Everywhere else, `agent:fix` is the human hand in the loop, and the table above is where you are
 asked for it.

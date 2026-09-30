@@ -55,16 +55,19 @@ export interface InstalledCaller {
   /** `self-check`, on the one caller that takes it. */
   readonly selfCheck: string | undefined;
   /**
-   * Whether this caller passes `auto-fix: true` on the review caller (#102),
-   * the input the fix-round budget deprecated (#201); `false` everywhere else,
-   * including every caller that says nothing, which leaves the budget to the
-   * repository variable.
+   * What this caller passes as `auto-fix` (#102), the input the fix-round
+   * budget deprecated (#201): the value as written, and `undefined` where it
+   * passes nothing or the empty string, which is the input's own default and
+   * leaves the budget to the repository variable. A value rather than a
+   * boolean, because `false` is a budget of 0 that wins over the variable, and
+   * reading it as "not passed" would hand the budget back to a variable the
+   * review never consults.
    *
    * A field rather than the whole `with:` map, because `diagnose` rules on a
    * fixed list: an input it was not taught about is one nothing here can say
    * anything useful about, and a map invites a reader to go looking.
    */
-  readonly autoFix: boolean;
+  readonly autoFix: string | undefined;
   /**
    * What this job hands the workflow it calls: the names in its `secrets:`
    * block, the literal `"inherit"`, or `undefined` where it declares no block.
@@ -276,9 +279,9 @@ export const callersIn = (
         selfCheck,
         // `asStringMap` has already put YAML's own boolean through `String`,
         // which is what makes `auto-fix: true` and `auto-fix: "true"` the same
-        // answer here — GitHub coerces a `workflow_call` boolean input the
-        // same way. Anything else is off, which is the input's own default.
-        autoFix: inputs["auto-fix"] === "true",
+        // answer here, as they are to the string input the review declares.
+        // Empty is not passed: the review tests for that and nothing else.
+        autoFix: inputs["auto-fix"] === "" ? undefined : inputs["auto-fix"],
         secrets: secretsOf(job.secrets),
         pullRequestTypes,
         events,

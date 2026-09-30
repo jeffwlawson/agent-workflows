@@ -5900,8 +5900,8 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
 
   /**
    * Comments count. A label named only in a `#` line is still a label somebody
-   * reading the file will reach for, and `agent:queued` — declared, inert, and
-   * named in two workflow comments — is exactly that case. An HTML comment
+   * reading the file will reach for, and a label named only in comments, as
+   * the retired `agent:queued` once was in two, is exactly that case. An HTML comment
    * marker such as the slices table's `<!-- agent:slices -->` is body text a
    * step reads, never a label, and is not counted.
    */
@@ -5914,6 +5914,32 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
 
     expect(used.length).toBeGreaterThan(0);
     for (const label of used) expect(labelSection()).toContain(`\`${label}\``);
+  });
+
+  /**
+   * **The retired labels are nobody's to create** (#204). `agent:auto-fixed`
+   * went with #201, when the rounds spent began to be counted from the pull
+   * request's verdicts, and `agent:queued` because native "blocked by" links do
+   * its job. Named as history where a doc explains the change, and never in
+   * §3's list of labels to create nor in a `gh label create` line anywhere.
+   */
+  it("offers no retired label as a live one", () => {
+    const docs = [
+      "CONTEXT.md",
+      ADOPTING,
+      TRIAGE,
+      path.join("docs", "parity.md"),
+      path.join("docs", "agents", "ticket-shape.md"),
+      path.join("setup", "SETUP.md"),
+    ];
+    for (const label of ["agent:auto-fixed", "agent:queued"]) {
+      expect(labelSection(), label).not.toContain(label);
+      for (const doc of docs) {
+        expect(fs.readFileSync(doc, "utf8"), `${doc}: ${label}`).not.toMatch(
+          new RegExp(`gh label create +"${label}"`),
+        );
+      }
+    }
   });
 
   /**

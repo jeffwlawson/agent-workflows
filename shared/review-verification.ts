@@ -15,7 +15,7 @@ import {
  * posted on, so a finding survives being reworded, re-anchored, or answered by
  * a fix run that reworded it again. Text is never matched across rounds.
  *
- * Every review is handed these, round 1 included (#109, decision 1). A human
+ * Every review is handed these, after a fix round or not (#109, decision 1). A human
  * may have pushed the fix, and the question "is this still true of the code in
  * front of me" has the same answer whoever wrote the commit.
  */

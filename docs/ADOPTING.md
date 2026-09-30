@@ -428,15 +428,18 @@ with, taken verbatim. If you have read one of those, you already know what ours 
 | **🟢 Approval recommended** | `success` | Approval recommended. Nothing left to fix. Merge when ready; follow-ups are filed as issues on merge. |
 | **🟡 Changes recommended** | `failure` | Changes recommended. The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically. |
 | **🟡 Changes recommended**, with the fix round already started | `failure` | Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically. |
-| **🟡 Changes recommended**, after a fix round | `failure` | Changes recommended. A fix round didn't settle these. Read the review, add guidance where it helps, then add agent:fix. |
 | **🔵 Needs a closer look** | `failure` | Needs a closer look. A fix round can't settle this alone. Read the review, add guidance, then add agent:fix or close the PR. |
 
 The third column is the status description **verbatim** — what GitHub shows you is what is written
 here, and the same words open the review summary, so the two cannot tell you different things.
-Three headings and five rows: *Changes recommended* has three lines, because what you do about it
-differs while the assessment does not. A fix round that has already run and not settled the findings
-asks you to read the review first; one the workflow has just started for you asks you for nothing at
-all. Only the last two rows ask you to read anything.
+Three headings and four rows: *Changes recommended* has two lines, because what you do about it
+differs while the assessment does not. One the workflow has just started a fix round for asks you
+for nothing at all. Only the last row asks you to read anything.
+
+The plain *Changes recommended* line is replaced by a longer one where the loop has **stopped**
+without approval, saying why: the automatic fix rounds are spent, or the last fix round made **no
+progress** ("No progress (0 of 3 findings closed)" on the status). Either way it gives the three ways
+on: add `agent:fix` for another round, reply to a finding to decline it, or push a commit.
 
 The third row arrives only where you switched the automatic fix on; below is what it is.
 
@@ -465,8 +468,8 @@ branch that was already fixed; a clean `agent:update-branch` refresh copies the 
 merge commit it makes, and one that had to resolve conflicts asks for a review of what it wrote
 instead.
 
-**One workflow does add `agent:fix`, up to a budget.** A review whose verdict is the *first-round*
-*Changes recommended* adds the label itself while the pull request has automatic fix rounds left:
+**One workflow does add `agent:fix`, up to a budget.** A review whose verdict is *Changes
+recommended* adds the label itself while the pull request has automatic fix rounds left:
 **3 by default**, set with the repository variable `AGENT_MAX_FIX_ROUNDS` (`0` for none). The
 reusable workflow reads the variable from your repository, so it goes in *Settings → Secrets and
 variables → Actions → Variables*, and nothing goes in a caller. A value that is not a whole number
@@ -483,10 +486,14 @@ stands, and where adding it fails it says on the pull request that no fix round 
 request also stays a draft, because the loop is still working and it is not your turn yet. It is
 marked ready at the end of that round either way: by the re-review where the fix pushed, and by the
 fix run itself where it declined everything and so asked for no re-review. It cannot cycle: the
-budget bounds it per pull request, and the review a fix round asks for is a second round, which can
-never produce that first-round line. Once the budget is spent, a first-round verdict says so: the
-rounds used, what is still open, and the three ways on (add `agent:fix`, reply to a finding to
-decline it, or push a commit).
+budget bounds it per pull request, and the **early stop** ends it sooner. After a fix round that
+closed none of the findings it was given, no further automatic round starts, whatever budget is
+left; findings are matched by the ids the workflow wrote into them, so a finding that comes back
+reworded is not progress, and new findings the re-review raised neither count as progress nor reset
+anything. A later review may otherwise recommend changes and start another round, so a round that
+closed two findings and uncovered a third carries on while budget is left. Once the loop stops, the
+verdict says why (the budget is spent, or the last round made no progress), what is still open, and
+the three ways on (add `agent:fix`, reply to a finding to decline it, or push a commit).
 
 The `auto-fix` input this replaced is **deprecated** and goes in the next release. Where a caller
 still sets it, it wins over the variable (`true` is a budget of 1, `false` a budget of 0), and the
@@ -517,9 +524,8 @@ next slice. What the verdict means is unchanged; what differs is what happens af
 | Verdict on the slice PR | What the chain does | What is left to you |
 |---|---|---|
 | **🟢 Approval recommended** | review marks the slice PR ready, and its advance job re-adds `agent:implement` to the parent. The next run merges the slice PR into the PRD branch and builds the next slice | nothing |
-| **🟡 Changes recommended**, automatic fix off | advances, as on 🟢. The findings stay open on the slice PR and are linked from its row in the PRD PR's slices table | nothing, unless you want them fixed before the PRD lands — see below |
+| **🟡 Changes recommended**, no automatic fix starting (off, spent, or no progress) | advances, as on 🟢. The findings stay open on the slice PR and are linked from its row in the PRD PR's slices table | nothing, unless you want them fixed before the PRD lands — see below |
 | **🟡 Changes recommended**, with the fix round already started | **waits**. The fix run's re-review decides, and a fix that pushed nothing ends the round itself and advances the chain | nothing |
-| **🟡 Changes recommended**, after a fix round | advances. The findings the fix round did not settle are linked from the slice's row | nothing, unless you want them fixed before the PRD lands |
 | **🔵 Needs a closer look** | **parks**. Nothing is re-labelled, and the slice PR stays open | steer it, or accept it — below |
 | a failed run | parks, as on 🔵 | fix what the run names, then re-add `agent:review` to the slice PR |
 
@@ -589,8 +595,10 @@ Two collapsed sections follow the groups, and neither is a place a finding is ev
   traced, files it opened past the diff. It is how you weigh the review, and it is on every one.
 - **What changed in this PR** — one sentence and up to five lines describing the change. It appears
   on the first review of a pull request, and again when commits have landed that no verdict has
-  seen — your own push, or a conflict resolution. A verification pass after a fix round omits it,
-  because you were handed that description last round.
+  seen that no automatic fix round made: your own push, a conflict resolution, or a fix round you
+  started yourself by adding `agent:fix`, which posts no verdict to tell it apart from a push. The
+  review after an automatic fix round omits it, because you were handed that description last
+  round.
 
 A carried entry's title is a **link to the thread it was raised in**, which is what saves you
 scrolling back through an older review to find it. A finding this review is the first to raise has
@@ -640,8 +648,8 @@ moved and why. Nothing is dropped; what changes is that it no longer holds the m
 thread it was shown — `addressed` or `declined`, with its reason — and leaves all of them open. What
 closes one is a *later review* reading the code as it now stands, finding the fix landed and saying
 so in a reply on the way out; or you, resolving it yourself. So an open thread is not evidence that
-nothing has been done about it: read the last reply. This is the other half of why the second round
-exists — the pass that closes a finding is never the pass that wrote the fix.
+nothing has been done about it: read the last reply. This is the other half of why the review after a fix
+round exists — the pass that closes a finding is never the pass that wrote the fix.
 
 A thread an `agent:fix` run **declined** is the case to know: it stays open until you rule on it.
 The loop will not retire a finding on the strength of its own disagreement with it. Your own
@@ -691,17 +699,17 @@ Three consequences to weigh before switching it on rather than after:
   pull request's *own branch*, running on that pull request's events, can post `agent-review:
   success` on the head commit after the real review has spoken, and a status is replaced by the
   newest post under its context. The loop is safe against that on its own terms: a forged verdict
-  can only make the next review a second round, and a second round is stricter, not laxer. What it
+  can at most make the next review judge a fix round's progress, which can only stop the loop for
+  you, not pass anything. What it
   is not safe for is a merge gate, where the effect is the gate satisfying itself. So read the
   verdict alongside the diff that produced it — which on a branch that edits `.github/workflows/`
   you were going to do anyway.
-- **The second round is strict on purpose.** A fix round that pushed gets a verification review,
-  and that round cannot answer with the first-round *Changes recommended* line — a finding that
-  survived a fix round gets the second-round one instead, which asks you to read the review (adding
-  guidance where it helps) before labelling again, on the grounds that a second fix has no more reason to settle it than the
-  first did. That is the right default while you are the one deciding what happens next. As a merge
-  gate it means the second round sends you to the review rather than round the loop again, which is
-  a good deal more of your attention than the un-gated version asks for.
+- **The loop goes round until it stops, then waits for you.** A fix round that pushed gets a
+  verification review, and that review may start another round while the budget lasts and each
+  round closes at least one of the findings it was given. It stops on approval, on a spent budget,
+  or on a round that made no progress, and a verdict that stopped without approval tells you why
+  and the three ways on. As a merge gate that means the failing check is a parked loop, not a
+  review still in flight.
 
 ### Requiring conversation resolution — later than that
 

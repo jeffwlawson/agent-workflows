@@ -136,7 +136,7 @@ trade below records why that changed.
 | A **draft slice PR** per sub-issue, based on the PRD branch, carrying `Part of #<sub-issue>` | ❌ | ➕ | CVM opens one PR per PRD. `Part of`, not `Closes`: the sub-issue's own state is the chain's "built" marker, and must not wait on a merge. Found by its **base**, never its name, and more than one open refuses rather than guessing which to merge |
 | Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ✅ | when its slice PR opens, so "first open sub-issue" still means the next slice to build. The only record tying a closed sub-issue to its code once the slice branch is gone |
 | Adds `agent:review` to **every** slice PR | ❌ | ➕ | CVM adds it once, when no sub-issues remain — the trade below |
-| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance job** in `review` and `fix` does, when a slice PR's round ends on 🟢, on 🟡 with no fix round starting, or on 🟡 after a fix round (§10). It parks on 🔵 and on a failed run, and a human's re-label of the parent is then the acceptance. Without the PAT it warns, and comments on the slice PR naming the by-hand re-label |
+| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance job** in `review` and `fix` does, when a slice PR's round ends on 🟢, or on 🟡 with no fix round starting (§10). It parks on 🔵 and on a failed run, and a human's re-label of the parent is then the acceptance. Without the PAT it warns, and comments on the slice PR naming the by-hand re-label |
 | **Merges the waiting slice PR first**, as a step of its own | ❌ | ➕ | refuses into `agent:blocked`, naming the slice PR, while `agent:review`, `agent:fix` or `agent:in-progress` is on it, or while it is conflicted — pointing at `agent:update-branch` on it. Pinned with `--match-head-commit` to the head it inspected; squash, then rebase, then a merge commit, whichever the repository allows first. It never reads the verdict, so a human's re-label and the advance job's are one path |
 | A **draft PRD PR**, opened with the first slice merge and carrying `Closes #<parent>` | ✅ | ✅ | CVM's one PR, drafted until the chain finishes. Ours also carries the **slices table**: one row per slice, written by the run that merges it and never refreshed. Merged with `AGENT_PAT` so the PRD PR's CI and Follow-ups see each slice; the `GITHUB_TOKEN` fallback warns that neither ran |
 | A **finishing run** hands the PRD PR over | ❌ | ➕ | no model: merges the last slice PR, writes its row, then adds `agent:review` to the PRD PR for an **integration review** when more than one slice was merged, and marks it ready itself when one was |
@@ -216,7 +216,7 @@ reviewer as 2,000+ lines in one pass, one automatic fix round covered the whole 
 its findings anchored across work built at different times. So:
 
 - **The slice PR is the unit of review.** The same `review` workflow runs once per slice PR, with
-  its own round and its own once-per-PR automatic fix. There is still **no per-slice review
+  its own round and its own automatic fix rounds. There is still **no per-slice review
   workflow** — what changed is which pull request a slice is, not how review works. The stale-anchor
   objection does not return, because nothing moves under an open round: a slice PR's diff is its own
   three-dot diff against the PRD branch, and the next slice is not built until the round ends.
@@ -226,10 +226,11 @@ its findings anchored across work built at different times. So:
   it looks only for what spans slices — contracts between them, duplication, scaffolding one slice
   left dead for a later one — and never re-raises a slice's leftover findings. A one-slice PRD
   skips it, because its PRD PR diff is the lines its slice PR's review already read.
-- **The automatic-fix bound is unchanged.** Once per pull request (§10), which is now once per slice
-  PR plus once on the PRD PR. More fix rounds per slice would be the lever for fewer leftover 🟡
-  findings, and is out of scope for exactly that reason: it changes the bound for every pull
-  request, not just a slice's.
+- **The automatic-fix bound is per pull request.** It was once per pull request (§10), which made
+  it once per slice PR plus once on the PRD PR. Since PRD #200 it is the fix-round budget, with the
+  early stop under it (#201, #202), and it applies to a slice PR as to any other: more rounds per
+  slice are the lever for fewer leftover 🟡 findings, and the early stop is what keeps them from
+  being spent on a round that changes nothing.
 
 **The cost now is wall-clock**: each slice's review and fix time adds up, plus a no-model finishing
 run per PRD. Two gaps are accepted rather than closed. A slice's CI ran against the PRD branch as it
@@ -376,13 +377,13 @@ PRD.
 | Posts inline comments | ✅ | ✅ | as GraphQL `addPullRequestReview` threads since #110 — REST review-create cannot open a file-level thread (422) and its `comments` field is deprecated in favour of `threads` |
 | **Every finding carries an id the workflow wrote** | ❌ | ➕ | #110. A hidden marker in each thread, so a later round recognises a finding it has seen without matching its text. The model is told to write none: one it invented would be matched against a thread it never opened |
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query. Resolved threads are out of the rendered feedback, but no longer simply dropped: since #112 the query reads `resolvedBy`, and the ones a human closed come back as the *settled* list (below) |
-| **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review — round 1 included — is handed the open threads this loop opened (and, until they close, the body entries v0.4.0 left on PRs open at the #127 upgrade), each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
+| **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review, after a fix round or not, is handed the open threads this loop opened (and, until they close, the body entries v0.4.0 left on PRs open at the #127 upgrade), each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
 | **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
-| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the verdicts that announced them; the `auto-fix` input it replaced is a deprecated alias for one release. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; one of the two `AGENT_PAT` uses in the workflow, beside the advance job below. Bounded twice: the key it selects on can only come out of a round-1 derivation, and the budget stops it past N rounds on the same PR (§10) |
-| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance job**, in `review` and in `fix`: re-adds `agent:implement` to the slice PR's **parent** on 🟢, on 🟡 with no fix round starting, and on 🟡 after a fix round — and, in `fix`, when the fix run pushed nothing and so ended the round itself. The same shape as the auto-fix job: no checkout, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
+| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the verdicts that announced them; the `auto-fix` input it replaced is a deprecated alias for one release. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; one of the two `AGENT_PAT` uses in the workflow, beside the advance job below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
+| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance job**, in `review` and in `fix`: re-adds `agent:implement` to the slice PR's **parent** on 🟢 and on 🟡 with no fix round starting — and, in `fix`, when the fix run pushed nothing and so ended the round itself. The same shape as the auto-fix job: no checkout, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
@@ -600,8 +601,9 @@ write access sits below everything that does not, regardless of how useful it lo
 Rules that must hold as features are added, each recording a decision that is cheap now and
 expensive to rediscover.
 
-- **Auto-cascade review → fix only within a fix-round budget per pull request** (once, and only
-  where an adopter asked for it, until #201 made it a budget). This bullet read **never** until #102, and the amendment is below rather than in place
+- **Auto-cascade review → fix only within a fix-round budget per pull request, and never after a
+  fix round that made no progress** (once, and only where an adopter asked for it, until #201 made
+  it a budget; the early stop is #202's). This bullet read **never** until #102, and the amendment is below rather than in place
   of it, because the reasoning is what makes the new rule safe: `agent:fix` → `agent:review` was
   safe *only* because review added no trigger label, so every round still needed a human
   `agent:fix`. Automating the return leg with nothing bounding it closes a true cycle with no gate.
@@ -622,16 +624,26 @@ expensive to rediscover.
   threads all stay open — and that is the right cost, because the alternative is the fixer
   closing them.
 
-  A second bound now sits under the first, and it is what makes the leg safe to automate rather
-  than merely acyclic. The review a fix asks for is by construction a **round 2** (an earlier
+  **Until #202** a second bound sat under the first, and it is what made the leg safe to automate
+  rather than merely acyclic. The review a fix asks for was by construction a **round 2** (an earlier
   verdict stands, every commit since is the loop's own, and at least one of them is a non-merge
-  commit — `shared/review-round.ts`), and a round-2 review can never produce the **round-1**
-  *Changes recommended*: findings that survived a fix round get the round-2 row instead, whose line
+  commit — `shared/review-round.ts`), and a round-2 review could never produce the **round-1**
+  *Changes recommended*: findings that survived a fix round got the round-2 row instead, whose line
   drops the promise of an automatic re-review and asks the maintainer to read the review, adding
   guidance where it helps, before labelling again (#96 decision 5, enforced in `deriveVerdict`, not in the prompt). The two rows share a heading and
   differ in the next step and in the key `verdict.json` carries, which is what an automatic fix
-  would have to match on. So the leg cannot be walked twice off one human label — the second
-  round's only outcomes are *Approval recommended* and a human.
+  would have to match on. So the leg could not be walked twice off one human label — the second
+  round's only outcomes were *Approval recommended* and a human.
+
+  **#202 retired that round rule** (PRD #200 decision 6), with the round-2 row and the commit walk
+  that decided a round from commit authorship and merge parents. In 40 pull requests its stop asked
+  for guidance 9 times and got it 0 times: the human simply re-added the label. What bounds the leg
+  now is the budget and the **early stop** (#201 and #202, below). A later review may recommend
+  changes and, with budget left, start another round; and after a fix round that closed none of the
+  findings it was given, matched by id, none starts, whatever budget is left. Whether a review
+  follows a fix round is read from the **verdict history** (`shared/review-round.ts`): the latest
+  verdict announced a round, and commits have landed since. The review still verifies every earlier
+  finding, as it did in every round before.
 
   And a fix run that pushed *nothing* requests nothing. The threads it replied to already say why
   it declined, and the verdict standing on the head commit is still the right one: nothing has
@@ -645,18 +657,18 @@ expensive to rediscover.
   **Since #99 `update-branch` walks the same leg**, on the half of its work an agent wrote: a
   conflict resolution adds `agent:review` and a clean merge does not, because a clean merge carries
   the last verdict forward instead (#96, decision 6). The first bound is what holds it — one hop to
-  a review whose own return leg is bounded separately (#102, below) — and the second one does not
-  apply, because the review a resolution asks for is a **round 1**: round 2 needs a non-merge loop
-  commit since the verdict, and a resolution leaves only a merge commit. That is the reading rather
-  than a gap in it (#105). The findings of the verdict a conflict interrupted have never been
-  attempted, so counting the merge as a fix round would answer them with "a fix round didn't
-  settle these" — spending a human on a base branch moving, and on findings no fix round ever saw,
-  which is the one thing on this leg nobody chose.
+  a review whose own return leg is bounded separately (#102, below). The early stop does not judge
+  it: a resolution posts no verdict, so the review it asks for follows no fix round unless the
+  verdict before the conflict announced one. That is the reading rather than a gap in it (#105,
+  and #202 since the round rule went). The findings of the verdict a conflict interrupted have
+  never been attempted, so judging the merge as a fix round would stop the loop on them, spending a
+  human on a base branch moving and on findings no fix round ever saw, which is the one thing on
+  this leg nobody chose.
 
   **And since #102 the return leg is walked too — once per pull request, and only where an adopter
   asked for it** (PRD #101, decisions 1–3). `auto-fix` is an input on the review workflow, default
   **off**; with it on, a `review.yml` job of its own adds `agent:fix` when the verdict is the
-  round-1 *Changes recommended* — the line that already promises an automatic re-review, which
+  *Changes recommended* that promises an automatic re-review, which
   until now promised it after a label the loop was not allowed to add.
 
   **This is the invariant amended, not an exception carved out of it.** The rule it replaces said
@@ -664,24 +676,28 @@ expensive to rediscover.
   are now two gates and each closes it alone, which is what makes this a bounded arrow rather than
   a cycle:
 
-  - **The round rule.** The review a fix round asks for is a round 2, and a round-2 review can
-    never produce the round-1 row (above). The automatic fix selects on a verdict **key** that only
-    a round-1 derivation can emit, so the second time round there is nothing for it to match.
+  - **The early stop** (#202, which replaced the round rule above). After a fix round that closed
+    none of the findings it was given, matched by the ids the workflow wrote into them, no further
+    automatic round starts, whatever budget is left. New findings the re-review raised neither
+    count as progress nor reset anything. The automatic fix selects on a verdict **key** that such
+    a derivation cannot emit, and the verdict says why the loop stopped (for example "no progress:
+    the fix round closed none of the 3 findings it was given") with the same three ways on as a
+    spent budget. A pull request with one review round so far never stops here.
   - **The fix-round budget** (#201, which replaced the `agent:auto-fixed` marker that held it to
     one). `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the
     verdicts on the pull request that announced a round, so nothing but those verdicts records
     them. Until #201 this was one automatic fix per pull request, recorded by a marker label on the
-    pull request itself. A human's own commits make a later review a fresh round 1, which may recommend
-    changes again — and the fix is spent by then, so that verdict asks the maintainer for the
-    label. Without this, a pull request a human kept pushing to could be fixed automatically over
-    and over, each round legitimately a round 1.
+    pull request itself. A human's own commits start no count again, so a later review that
+    recommends changes once the budget is spent asks the maintainer for the label. Without this, a
+    pull request a human kept pushing to could be fixed automatically over and over, each round
+    making enough progress to pass the early stop.
 
-  The second gate is the one that carries the decision. The first alone bounds a *chain* and not a
-  *pull request*, and "the loop will fix this for you, as many times as you push" is a different
+  The budget is the gate that carries the decision. The early stop alone bounds a loop that changes
+  nothing and not a *pull request*, and "the loop will fix this for you, as many times as you push" is a different
   product from the one PRD #101 asked for.
 
   What holds the two halves together is that the sentence and the job are one decision. The verdict
-  key is derived where the round is known (`deriveVerdict`), from the budget step's answer the
+  key is derived where the fix round's progress is known (`deriveVerdict`), from the budget step's answer the
   workflow passes in, and the job's `if:` matches that key — so a line saying *a fix round has
   already started* cannot be posted over a pull request where none did, which is the only way this
   feature can be wrong without anything failing.
@@ -702,8 +718,7 @@ expensive to rediscover.
   **And since #176 review adds a second trigger label, on an issue rather than a pull request**
   (PRD #171). The **advance job** — in `review`, and in `fix` for the round a fix run ends itself by
   pushing nothing — re-adds `agent:implement` to a **slice PR's parent** when that slice's round
-  ends on a verdict the chain moves on from: 🟢, 🟡 with no fix round starting, or 🟡 after a fix
-  round. It is an arrow for the same reasons the return leg is one. It lands on the parent, never on
+  ends on a verdict the chain moves on from: 🟢, or 🟡 with no fix round starting. It is an arrow for the same reasons the return leg is one. It lands on the parent, never on
   a pull request, so no review round can be started by it. The run it starts either merges the slice
   PR — closing it, so no later round on that PR can fire the job again — or refuses into
   `agent:blocked`. And it is bounded by the number of sub-issues, since a finished PRD refuses the
@@ -902,7 +917,7 @@ expensive to rediscover.
   it was checking. #105 patched that with a checklist in the review body; moving the close to the
   reviewer is the cause rather than the symptom.
 
-  Every review does it, round 1 included: a human may have pushed the fix, and "is this still true
+  Every review does it, after a fix round or not: a human may have pushed the fix, and "is this still true
   of the code in front of me" has the same answer whoever wrote the commit. A finding the review
   says nothing about **stays open**, which is the direction this has to fail in — a finding nobody
   checked is not a finding anybody settled.
@@ -932,18 +947,18 @@ expensive to rediscover.
   as having taken a decision they did not take, and — where the last word reversed an earlier
   refusal — a finding retired on a reply asking for it to be fixed.
 - **A finding an earlier review missed counts against the merge, in every round.** A real problem a
-  later review finds in code an earlier review already read is labelled *previously missed*, is a
-  `fixBeforeMerge` finding like any other, and in round 2 therefore derives the round-2 *Changes
-  recommended* (#109, decision 4; `shared/review-findings.ts`).
+  later review finds in code an earlier review already read is labelled *previously missed*, and is a
+  `fixBeforeMerge` finding like any other (#109, decision 4; `shared/review-findings.ts`).
 
   **This changes #96's round-2 rule**, which sent everything a verification pass newly noticed to
   `followUps` — filed as an issue *after* the merge it should have stopped. The reasoning then was
   that round 2 is a verification pass and not a fresh review, which is right about its *job* and
   wrong about this case: a finding in code the record already covered says the record was wrong
   about this pull request, which is a stronger reason to stop the merge than an ordinary finding
-  rather than a weaker one. What is unchanged is the bound around it — a round-2 review still
-  cannot produce the round-1 row, so a previously-missed finding asks a maintainer to read and
-  reply rather than sending the loop round again. Genuinely out-of-scope findings still go to
+  rather than a weaker one. Until #202 the bound around it was the round rule, so a
+  previously-missed finding asked a maintainer to read and reply; since the round rule went it
+  derives the row any other finding would, and the budget and the early stop bound the round it may
+  start. Genuinely out-of-scope findings still go to
   `followUps`, on the bar stated with that list.
 - **A label on a finding is presentation, and one predicate decides what counts.** Every entry in
   `findings` is fix-before-merge by definition — #96's decision 1 leaves a finding two kinds and
@@ -1024,9 +1039,11 @@ expensive to rediscover.
   the schema).
 
   `whatChanged` is also the one part of the body that is **not** on every review: it appears on the
-  first review of a pull request and on a later round 1 with commits nothing has described — a
-  human's push, or a conflict resolution — and is omitted on a round-2 verification and on a
-  re-review with nothing pushed since the last verdict (`describesTheChange`). Describing the
+  first review of a pull request and on a later review with commits nothing has described that no
+  automatic fix round made (a human's push, a conflict resolution, or a fix round a human started
+  by adding `agent:fix`, which posts no verdict to tell it from a push), and is omitted on the
+  review after an automatic fix round and on a re-review with nothing pushed since the last verdict
+  (`describesTheChange`, read from the verdict history since #202). Describing the
   change again, at the top, to a reader handed that description last round is the body spending its
   opening on something already read.
 - **Every fix-before-merge finding is anchored at something the pull request changed, and there is
@@ -1263,7 +1280,7 @@ expensive to rediscover.
   the PR in draft: the pipeline has not finished, another agent run is next, and the re-review at
   the end of it marks the PR ready itself. The three verdicts that *are* the human's turn — both
   the ones asking them to read, and the one saying nothing is left to fix — mark it ready as
-  before, and so does the round-1 *Changes recommended* wherever no automatic round is starting. The condition
+  before, and so does *Changes recommended* wherever no automatic round is starting. The condition
   the step reads is the automatic fix's own verdict key, not a second reading of the three facts
   behind it, so the draft state and the job cannot disagree about whether a fix round is coming.
 

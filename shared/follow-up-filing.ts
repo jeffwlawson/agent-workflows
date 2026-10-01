@@ -69,7 +69,7 @@ const REVIEWS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!) {
   repository(owner:$owner,name:$repo) {
     pullRequest(number:$number) {
-      reviews(last:100) { nodes { body url lastEditedAt author { login } commit { oid } } }
+      reviews(last:100) { nodes { body url lastEditedAt submittedAt author { login } commit { oid } } }
     }
   }
 }`;
@@ -78,6 +78,7 @@ interface GqlReview {
   body?: string | null;
   url?: string;
   lastEditedAt?: string | null;
+  submittedAt?: string | null;
   author?: { login?: string } | null;
   commit?: { oid?: string } | null;
 }
@@ -133,6 +134,7 @@ export const fetchReviews = (prNumber: string): FilingReview[] => {
       lastEditedAt: review.lastEditedAt ?? null,
       url: review.url ?? "",
       ...(typeof review.commit?.oid === "string" ? { commit: review.commit.oid } : {}),
+      ...(typeof review.submittedAt === "string" ? { submittedAt: review.submittedAt } : {}),
     };
   });
 };

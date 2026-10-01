@@ -328,7 +328,7 @@ describe("the body's acceptance criteria section", () => {
     expect(body).toContain("- **Unmet:** The PR names the tests. · It does not.");
     expect(body).toContain("- **Not checked:** Docs updated.");
     expect(body).toContain("<details open>\n<summary><b>Acceptance criteria</b>");
-    expect(body.indexOf("Acceptance criteria")).toBeLessThan(body.indexOf("this workflow run"));
+    expect(body.indexOf("Acceptance criteria")).toBeLessThan(body.indexOf("Workflow run"));
   });
 
   it("starts folded where every criterion is met", () => {

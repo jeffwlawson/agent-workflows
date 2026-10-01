@@ -168,6 +168,15 @@ describe("filterTopLevelComments", () => {
     expect(kept.map((c) => unmarkedBody(c.body))).toEqual(["new"]);
   });
 
+  /** A posted comment carries its round's header (#298), and a later round's would carry another. */
+  it("drops a comment an earlier run already posted under its round's header", () => {
+    const kept = filterTopLevelComments(
+      [comment("already said"), comment("new")],
+      [`**Slice 2 of 5 · #232 · fix 1**\n\nalready said\n\n${TOP_LEVEL_COMMENT_MARKER}`],
+    );
+    expect(kept.map((c) => unmarkedBody(c.body))).toEqual(["new"]);
+  });
+
   it("collapses a comment repeated within one run", () => {
     const kept = filterTopLevelComments([comment("same"), comment("same")]);
     expect(kept).toHaveLength(1);

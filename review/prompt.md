@@ -359,6 +359,10 @@ record in it.
 Do not use em dashes in anything you write, in these fields or in a finding: use a comma, colon,
 semicolon, parentheses, or a new sentence instead.
 
+Refer to issues and pull requests by `#N` alone, without restating their titles: GitHub shows the
+title beside the reference already. A pull request's title is the one exception, since a title
+does not expand a reference.
+
 # THE TITLE AND THE SUMMARY
 
 The pull request's body carries a **summary block**, the one part of it the workflow lets a review

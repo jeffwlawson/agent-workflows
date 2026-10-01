@@ -139,7 +139,7 @@ jobs:
             echo "Longer-term fix: a GitHub App with per-run tokens (\`docs/parity.md\` §9.4) removes the"
             echo "expiry problem instead of monitoring it."
             echo
-            echo "_Raised automatically by [Token Expiry]($RUN_URL)._"
+            echo "_Raised automatically by Token Expiry · [Workflow run]($RUN_URL)_"
           } > "$body_file"
 
           existing=$(gh issue list --state open --search "$ISSUE_TITLE in:title" \

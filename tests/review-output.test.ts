@@ -1487,6 +1487,16 @@ describe("the posted review body", () => {
   });
 
   /**
+   * **The round's header goes above the heading** (#298): which slice and
+   * which review this is, the first line a reader of a long PRD PR scans for.
+   */
+  it("opens with the round's header, above the heading, where it is given one", () => {
+    const body = render({ header: "**Slice 2 of 5 · #232 · review 3**" });
+
+    expect(body.startsWith("**Slice 2 of 5 · #232 · review 3**\n\n## Agent review\n\n### ")).toBe(true);
+  });
+
+  /**
    * **A label name renders as code in the body and as plain text in the
    * status**, from one copy of the sentence. A status description renders no
    * Markdown at all, so a backtick shows up in it literally — which is why
@@ -2165,10 +2175,10 @@ describe("the posted review body", () => {
     });
 
     expect(body).toContain(
-      "---\n\n_Posted by [this workflow run](https://github.com/o/r/actions/runs/7)._",
+      "---\n\n_Posted by the review agent · [Workflow run](https://github.com/o/r/actions/runs/7)_",
     );
     expect(body.split("\n").filter((line) => line.trim() === "---")).toHaveLength(1);
-    expect(render()).not.toContain("workflow run");
+    expect(render()).not.toContain("Workflow run");
     expect(render().split("\n")).not.toContain("---");
   });
 });

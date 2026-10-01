@@ -1763,6 +1763,10 @@ jobs:
       # which marker is the real one is guessing where a maintainer's text ends.
       # The title is written either way.
       #
+      # A PRD PR's **final review** also drops the frame's draft-only note
+      # (#247), which the runner names in the same file: every slice is built,
+      # and a PRD PR marked ready carries nothing that says it is a draft.
+      #
       # After the review, and never fails the run: a posted review is worth
       # more than its description, and a warning says so where `|| true`
       # would not.
@@ -1795,6 +1799,20 @@ jobs:
                          $starts[0] + $block + ($starts[1] | split($e))[1]
                        else null end
                    end
+               end) as $body
+            # Draft-only text the final review removes (#247), markers and
+            # all, from the body as composed: only where it holds exactly one
+            # such block, by the same rule as the splice, and with the blank
+            # line after it. Anything else is left as it is, and so is a body
+            # whose summary could not be spliced, which is warned about below.
+            | (if $u.drop == null or ($u.summary != null and $body == null) then $body
+               else
+                 ($body // $b) as $d
+                 | ($d | split($u.drop.start)) as $starts
+                 | ($d | split($u.drop.end)) as $ends
+                 | if ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($u.drop.end) | length) == 2 then
+                     $starts[0] + (($starts[1] | split($u.drop.end))[1] | sub("^(\r?\n){1,2}"; ""))
+                   else $body end
                end) as $body
             | {}
               + (if $u.title == null then {} else {title: $u.title} end)

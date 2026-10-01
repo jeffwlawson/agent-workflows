@@ -15,6 +15,8 @@ import {
 } from "../shared/common.js";
 import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
+import { fetchReviews } from "../shared/follow-up-filing.js";
+import { earlierFollowUps } from "../shared/follow-up-plan.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import {
   firstLine,
@@ -23,11 +25,15 @@ import {
   readSliceRound,
   renderFinalReviewBrief,
   renderParkComment,
+  renderPrdSummary,
   renderSliceRoundBrief,
   REVIEW_URL_SLOT,
   roundName,
+  sliceCriteria,
   type ParkFinding,
+  type PrdBranch,
   type PrdRound,
+  type SliceCriteria,
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
 import { progressAtRoundEnd } from "../shared/progress-list.js";
@@ -42,8 +48,12 @@ import {
 } from "../shared/review-findings.js";
 import {
   countFixBeforeMerge,
+  dedupeFollowUps,
   deriveVerdict,
+  followUpsCap,
+  MAX_FOLLOW_UPS,
   recordFollowUps,
+  type EarlierFollowUps,
   renderFollowUpsBlock,
   renderReviewPost,
   reviewOutputSchema,
@@ -166,6 +176,27 @@ const fixRounds = (): FixRounds | undefined => {
   return spent === undefined || budget === undefined ? undefined : { spent, budget };
 };
 
+/** What the brief says of the summary's shape on every review but a PRD PR's final review. */
+const NOT_FINAL = "Leave `behaviourChanges` out.";
+
+/**
+ * The final review's summary shape (#247). The workflow lays the sections out;
+ * the review writes the outcome and the behaviour changes, and the rest comes
+ * from the slice rounds' records and this review's follow-ups.
+ */
+const FINAL_SUMMARY_SHAPE = [
+  "**This is the final review of a PRD PR, so the summary is the whole PRD's**, and the workflow lays it out in sections. Write:",
+  "",
+  "- **`summary`**: the **outcome**, what the PRD delivered as a whole, in a few sentences. Nothing about the review, and no list of slices: the body already shows them.",
+  "- **`behaviourChanges`**: one entry per behaviour the PRD changes, `{ \"change\": \"one line\", \"breaking\": true }` where a caller or a user has to act on it and `false` otherwise. The workflow marks the breaking ones; do not write the mark yourself.",
+  "",
+  "The criteria each slice changed or dropped are added from each slice round's record, and the known issues from the follow-ups this review records, so write neither. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
+].join("\n");
+
+/** Off a PRD PR, the brief's follow-ups section is the ordinary one. */
+const NOT_CARRIED =
+  "(None. `followUps` is a complete restatement every round on this pull request, so re-record the entries an earlier round listed that are still true.)";
+
 try {
   // On a PRD PR, which round this is, read while the token is still in hand.
   // A slice round reads its slice off the PRD branch's history, and is handed
@@ -214,10 +245,19 @@ try {
   // The head this review reads, and whether the title and the summary block
   // are rewritten by it (#218): only where anything was pushed since the
   // summary was last written, which the block records itself.
+  // The final review writes them however little was pushed (#247): the last
+  // slice round wrote them at this same head, about one slice.
   const headSha = sh("git rev-parse HEAD").trim();
-  const writesSummary = summaryDue(context.prBody, headSha);
+  const final = round?.kind === "final";
+  const writesSummary = summaryDue(context.prBody, headSha, final);
   console.log(
-    `Title and summary: ${writesSummary ? "rewritten, since something was pushed after the summary was last written" : "left as they are, since nothing was pushed after the summary was last written"}.`,
+    `Title and summary: ${
+      !writesSummary
+        ? "left as they are, since nothing was pushed after the summary was last written"
+        : final
+          ? "rewritten with the PRD's sections, since this is the final review"
+          : "rewritten, since something was pushed after the summary was last written"
+    }.`,
   );
 
   // The park comment for a round that does not finish (PRD #222), written now
@@ -239,23 +279,62 @@ try {
     );
   }
 
-  // The PRD PR's progress list for each way this round can end (#246), for
-  // the advance job, which knows how it ended and runs no toolchain, to write
-  // into the body. Read off the PRD branch now, while the token is in hand.
-  // A list that cannot be rendered is left as it stands, and says so: it is a
-  // view of the chain, and a review is worth more than it.
+  // The PRD branch, read once for what follows, while the token is in hand.
+  // Undefined off a PRD PR, or where it cannot be read, which each use below
+  // says in its own words.
+  let prdBranch: PrdBranch | undefined;
   if (round !== undefined) {
     try {
-      const { subIssues, ranges } = readPrdBranch(round.parent, BASE_REF);
+      prdBranch = readPrdBranch(round.parent, BASE_REF);
+    } catch (error) {
+      console.log(`::warning::The PRD branch's history could not be read: ${firstLine(error)}`);
+    }
+  }
+
+  // The PRD PR's progress list for each way this round can end (#246), for
+  // the advance job, which knows how it ended and runs no toolchain, to write
+  // into the body. A list that cannot be rendered is left as it stands, and
+  // says so: it is a view of the chain, and a review is worth more than it.
+  if (round !== undefined) {
+    if (prdBranch === undefined) {
+      console.log("::warning::The PRD PR's progress list could not be rendered, so it is left as it stands.");
+    } else {
       const lists = progressAtRoundEnd({
-        subIssues,
-        ranges,
+        subIssues: prdBranch.subIssues,
+        ranges: prdBranch.ranges,
         finalReview: round.kind === "final" ? "requested" : "not requested",
       });
       for (const [ending, list] of Object.entries(lists)) writeText(`progress_${ending}.md`, list);
-    } catch (error) {
-      console.log(`::warning::The PRD PR's progress list could not be rendered, so it is left as it stands: ${firstLine(error)}`);
     }
+  }
+
+  // On a PRD PR, the follow-ups (#247): what every earlier round on it
+  // recorded, carried forward into this review's record, since `follow-ups`
+  // files from the newest body alone and each round here is scoped to one
+  // slice; and the cap, three per landed slice. Off a PRD PR, neither: a
+  // regular pull request's review restates its list every round, and its cap
+  // stays three. The final review also reads each slice round's criteria
+  // record off the same reviews, by the commit each one reviewed.
+  let carried: EarlierFollowUps[] = [];
+  let cap = MAX_FOLLOW_UPS;
+  let slicesCriteria: SliceCriteria[] | undefined;
+  if (round !== undefined) {
+    const reviews = fetchReviews(PR_NUMBER);
+    const earlier = earlierFollowUps(reviews);
+    carried = earlier.carried;
+    for (const skipped of earlier.skipped) {
+      console.log(`::warning::Follow-ups not carried forward from ${skipped}.`);
+    }
+    if (prdBranch === undefined) {
+      console.log(`::warning::The landed slices could not be counted, so the follow-ups cap is ${cap}.`);
+    } else {
+      const landed = prdBranch.ranges.slices.filter((slice) => slice.range !== null).length;
+      cap = followUpsCap(landed);
+      if (round.kind === "final") slicesCriteria = sliceCriteria(reviews, prdBranch.ranges);
+    }
+    console.log(
+      `Follow-ups: ${carried.reduce((n, e) => n + e.moved.length + e.rest.length, 0)} recorded by earlier rounds, carried forward under a cap of ${cap}.`,
+    );
   }
 
   // All `gh`-based context fetching is done; the review agent must not hold the
@@ -286,9 +365,13 @@ try {
       FIX_NOTES: renderNotesForReview(context.fixNotes),
       PR_DIFF: context.diff,
       CURRENT_SUMMARY: currentSummary(context.prBody),
-      SUMMARY_RULE: writesSummary
-        ? "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours."
-        : "**This review leaves them as they are.** Nothing was pushed since the summary was last written, so the workflow writes neither; omit both fields.",
+      SUMMARY_RULE: !writesSummary
+        ? "**This review leaves them as they are.** Nothing was pushed since the summary was last written, so the workflow writes neither; omit both fields."
+        : final
+          ? "**This review writes them.** It is the final review, so the workflow replaces the title and the summary block with yours, laid out as the section below says."
+          : "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours.",
+      FINAL_SUMMARY: final ? FINAL_SUMMARY_SHAPE : NOT_FINAL,
+      CARRIED_FOLLOW_UPS: round === undefined ? NOT_CARRIED : renderCarriedFollowUps(carried),
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),
@@ -382,7 +465,8 @@ try {
     followUps,
     dropped: droppedFollowUps,
     moved: movedFollowUps,
-  } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable);
+    cap: followUpsCapUsed,
+  } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable, { cap, carried });
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
@@ -428,6 +512,7 @@ try {
     resolved,
     followUps,
     droppedFollowUps,
+    followUpsCap: followUpsCapUsed,
     droppedNotes: notes.dropped,
     criteria: criteriaRulings.results,
     runUrl: workflowRunUrl(),
@@ -482,7 +567,22 @@ try {
   // the whole condition, as `follow_ups.md`'s is. The posting job splices the
   // summary into the body as it stands then, not as it was read here, so an
   // edit made outside the block while this review ran survives it.
-  const summary = writesSummary ? summaryUpdate(output, headSha) : undefined;
+  //
+  // The final review's summary is the PRD's (#247): its outcome, then the
+  // behaviour changes, the criteria each slice changed or dropped, and the
+  // known issues this review records to be filed on merge, laid out here.
+  const written = final
+    ? {
+        ...output,
+        summary: renderPrdSummary({
+          outcome: output.summary,
+          behaviourChanges: output.behaviourChanges ?? [],
+          slices: slicesCriteria,
+          followUps,
+        }),
+      }
+    : output;
+  const summary = writesSummary ? summaryUpdate(written, headSha, final) : undefined;
   if (summary !== undefined) writeJson("pr_summary.json", summary);
 
   // What the workflow posts the commit status from — context, state and line.
@@ -562,7 +662,7 @@ try {
   if (followUps.length > 0) {
     writeText(
       "follow_ups.md",
-      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps),
+      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps, followUpsCapUsed),
     );
   }
 
@@ -595,7 +695,7 @@ try {
     `Earlier findings: ${context.carriedFindings.length} open before this review: ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${stillOpen.length} still open.`,
   );
   console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
-  console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
+  console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap of ${followUpsCapUsed}.`);
   const ruledAs = (status: string): number =>
     criteriaRulings.results.filter((r) => r.status === status).length;
   console.log(
@@ -606,6 +706,23 @@ try {
   );
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * The follow-ups the earlier rounds on a PRD PR recorded (#247), which the
+ * workflow carries into this review's record itself: so the review records
+ * only what is new, and a second copy of one of these would be filed twice.
+ */
+function renderCarriedFollowUps(carried: readonly EarlierFollowUps[]): string {
+  const lines = dedupeFollowUps(
+    carried.flatMap((earlier) => [...earlier.moved, ...earlier.rest]),
+    new Set(),
+  ).map((entry) => `- **${entry.title.replace(/\s+/g, " ").trim()}** · \`${entry.location}\``);
+  return [
+    lines.length === 0 ? "(None yet.)" : lines.join("\n"),
+    "",
+    "**These are carried forward by the workflow**, into this review's record, and filed when this pull request merges. Do not record any of them again in `followUps`: record only what is new in this round.",
+  ].join("\n");
 }
 
 /** An earlier finding still open, as a park comment lists it: linked to its thread. */

@@ -18,6 +18,7 @@ import {
 } from "../shared/review-verification.js";
 import {
   capFollowUps,
+  followUpsCap,
   countFixBeforeMerge,
   deriveVerdict,
   FOLLOW_UPS_MARKER,
@@ -286,6 +287,28 @@ describe("reviewOutputSchema: follow-ups", () => {
   });
 });
 
+/** The final review's behaviour changes (#247): its own field, the breaking ones flagged rather than formatted. */
+describe("behaviourChanges", () => {
+  it("reads each change and whether it breaks anything, and leaves the field out where there are none", () => {
+    expect(
+      parse({
+        summary: "s",
+        behaviourChanges: [
+          { change: "Slice PRs are gone.", breaking: true },
+          { change: "  A progress\n list.  " },
+          "A bare string.",
+          { change: "   " },
+        ],
+      }).behaviourChanges,
+    ).toEqual([
+      { change: "Slice PRs are gone.", breaking: true },
+      { change: "A progress list.", breaking: false },
+      { change: "A bare string.", breaking: false },
+    ]);
+    expect(parse({ summary: "s" })).not.toHaveProperty("behaviourChanges");
+  });
+});
+
 describe("capFollowUps", () => {
   it("keeps the first three and reports what it dropped", () => {
     const { kept, dropped } = capFollowUps(followUps(5));
@@ -397,12 +420,129 @@ describe("recordFollowUps", () => {
     expect(dropped).toBe(0);
   });
 
-  it("changes nothing where nothing was moved", () => {
-    expect(recordFollowUps([], followUps(2))).toEqual({
-      followUps: followUps(2),
+  it("changes nothing where nothing was moved, but the id each entry is given", () => {
+    const ids = ["fu-00000001", "fu-00000002"];
+    expect(recordFollowUps([], followUps(2), [], { nextId: () => ids.shift() ?? "" })).toEqual({
+      followUps: followUps(2).map((f, i) => ({ ...f, id: `fu-0000000${i + 1}` })),
       moved: 0,
       dropped: 0,
+      cap: 3,
     });
+  });
+
+  /** The id is the workflow's: one the model wrote cannot name an earlier round's entry. */
+  it("gives everything this round records a fresh id, whatever the model wrote", () => {
+    const { followUps: list } = recordFollowUps([moved()], [followUp({ id: "fu-forged00" })]);
+
+    expect(list.map((f) => f.id)).not.toContain("fu-forged00");
+    expect(list.every((f) => /^fu-[0-9a-f]{8}$/.test(f.id ?? ""))).toBe(true);
+  });
+});
+
+/**
+ * **A PRD PR's newest review carries forward every earlier round's follow-ups**
+ * (#247), de-duplicated by id, under a cap of three per landed slice: the body
+ * the filing end reads is the newest one alone, and each round there is scoped
+ * to one slice, so no round restates another's.
+ */
+describe("recordFollowUps on a PRD PR", () => {
+  const entry = (id: string, over: Partial<FollowUp> = {}): FollowUp =>
+    followUp({ id, title: id, location: `src/${id}.ts`, ...over });
+  const counter = (): (() => string) => {
+    let n = 0;
+    return () => `fu-new0000${(n += 1)}`;
+  };
+
+  it("carries forward what earlier rounds recorded, each once by id, ahead of this round's", () => {
+    const slice1 = { moved: [], rest: [entry("fu-aaaaaaa1"), entry("fu-aaaaaaa2")] };
+    // The same slice's next round, holding one of the same entries.
+    const slice1Again = { moved: [], rest: [entry("fu-aaaaaaa2"), entry("fu-aaaaaaa3")] };
+    const { followUps: list, dropped } = recordFollowUps([], [followUp({ title: "new" })], [], {
+      cap: followUpsCap(2),
+      carried: [slice1, slice1Again],
+      nextId: counter(),
+    });
+
+    expect(list.map((f) => f.title)).toEqual(["fu-aaaaaaa1", "fu-aaaaaaa2", "fu-aaaaaaa3", "new"]);
+    expect(list.map((f) => f.id)).toEqual(["fu-aaaaaaa1", "fu-aaaaaaa2", "fu-aaaaaaa3", "fu-new00001"]);
+    expect(dropped).toBe(0);
+  });
+
+  it("keeps an earlier round's moved findings in the exempt prefix", () => {
+    const earlier = { moved: [entry("fu-moved001")], rest: [entry("fu-rest0001")] };
+    const { followUps: list, moved: prefix } = recordFollowUps([], [followUp({ title: "new" })], [], {
+      carried: [earlier, earlier],
+      nextId: counter(),
+    });
+
+    expect(list.map((f) => f.title)).toEqual(["fu-moved001", "fu-rest0001", "new"]);
+    expect(prefix).toBe(1);
+  });
+
+  it("de-duplicates an entry from before ids only where it is the same entry byte for byte", () => {
+    const old = followUp({ title: "no id" });
+    const { followUps: list } = recordFollowUps([], [], [], {
+      carried: [{ moved: [], rest: [old] }, { moved: [], rest: [old, followUp({ title: "no id", body: "reworded" })] }],
+    });
+
+    expect(list.map((f) => f.body)).toEqual([old.body, "reworded"]);
+  });
+
+  it("caps at three per landed slice, dropping the newest", () => {
+    const earlier = { moved: [], rest: [1, 2, 3, 4, 5].map((n) => entry(`fu-0000000${n}`)) };
+    const { followUps: list, dropped, cap } = recordFollowUps([], followUps(3), [], {
+      cap: followUpsCap(2),
+      carried: [earlier],
+      nextId: counter(),
+    });
+
+    expect(cap).toBe(6);
+    expect(list).toHaveLength(6);
+    expect(list.map((f) => f.title)).toEqual([
+      "fu-00000001",
+      "fu-00000002",
+      "fu-00000003",
+      "fu-00000004",
+      "fu-00000005",
+      "t0",
+    ]);
+    expect(dropped).toBe(2);
+  });
+
+  it("records the cap in the payload, where the filing end reads it back", () => {
+    const recorded = recordFollowUps([], followUps(7), [], { cap: followUpsCap(3) });
+    const block = parseFollowUpsBlock(
+      renderFollowUpsBlock(recorded.followUps, recorded.dropped, recorded.moved, recorded.cap),
+    );
+
+    expect(block?.cap).toBe(9);
+    expect(block?.followUps).toHaveLength(7);
+    expect(block?.followUps.map((f) => f.id)).toEqual(recorded.followUps.map((f) => f.id));
+  });
+});
+
+describe("followUpsCap", () => {
+  it("is three per landed slice", () => {
+    expect(followUpsCap(1)).toBe(3);
+    expect(followUpsCap(2)).toBe(6);
+    expect(followUpsCap(6)).toBe(18);
+  });
+
+  /** A regular pull request is one slice, so its cap stays three. */
+  it("is three for a regular pull request, and for anything under one slice", () => {
+    expect(followUpsCap(1)).toBe(MAX_FOLLOW_UPS);
+    expect(followUpsCap(0)).toBe(MAX_FOLLOW_UPS);
+    expect(followUpsCap(Number.NaN)).toBe(MAX_FOLLOW_UPS);
+    expect(recordFollowUps([], followUps(5)).cap).toBe(MAX_FOLLOW_UPS);
+    expect(recordFollowUps([], followUps(5)).dropped).toBe(2);
+  });
+
+  /** The filing end reads a cap it cannot trust as three, never as more. */
+  it("reads an unreadable recorded cap as three", () => {
+    for (const cap of ['"9"', "2", "4.5", "-6", "null"]) {
+      const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"moved":0,"cap":${cap},"followUps":[]} -->`;
+      expect(parseFollowUpsBlock(body)?.cap).toBe(MAX_FOLLOW_UPS);
+    }
   });
 });
 
@@ -450,7 +590,7 @@ describe("renderFollowUpsBlock", () => {
 
     const payload = payloadOf(renderFollowUpsBlock(list, 1, 0));
 
-    expect(payload).toEqual({ version: 1, dropped: 1, moved: 0, followUps: list });
+    expect(payload).toEqual({ version: 1, dropped: 1, moved: 0, cap: 3, followUps: list });
   });
 
   /**
@@ -481,11 +621,11 @@ describe("renderFollowUpsBlock", () => {
     const block = renderFollowUpsBlock([], 0, 0);
 
     expect(block).toBe(
-      `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"moved":0,"followUps":[]} -->`,
+      `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"moved":0,"cap":3,"followUps":[]} -->`,
     );
     expect(block).not.toContain("<details>");
     expect(hasFollowUpsBlock(block)).toBe(true);
-    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
+    expect(parseFollowUpsBlock(block)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3 });
   });
 });
 
@@ -509,6 +649,7 @@ describe("parseFollowUpsBlock", () => {
       dropped: 2,
       moved: 0,
       cut: 0,
+      cap: 3,
     });
   });
 
@@ -581,7 +722,7 @@ describe("parseFollowUpsBlock", () => {
   it("reads a block with no exempt prefix as exempting nothing", () => {
     const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"followUps":[]} -->`;
 
-    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3 });
   });
 
   /**
@@ -2069,12 +2210,13 @@ describe("the posted review body", () => {
       dropped: 2,
       moved: 0,
       cut: 0,
+      cap: 3,
     });
 
     const empty = render();
     expect(empty).not.toContain("<summary><b>Follow-ups</b>");
     expect(hasFollowUpsBlock(empty)).toBe(true);
-    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0 });
+    expect(parseFollowUpsBlock(empty)).toEqual({ followUps: [], dropped: 0, moved: 0, cut: 0, cap: 3 });
   });
 
   /**
@@ -3227,7 +3369,7 @@ describe("the review body against GitHub's size limit", () => {
   it("reads a cut past the dropped count as no more than it", () => {
     const body = `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":1,"cut":4,"followUps":[]} -->`;
 
-    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 1, moved: 0, cut: 1 });
+    expect(parseFollowUpsBlock(body)).toEqual({ followUps: [], dropped: 1, moved: 0, cut: 1, cap: 3 });
   });
 
   it("refuses a body that cannot be made to fit, naming its size and the limit", () => {

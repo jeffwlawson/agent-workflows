@@ -1,5 +1,11 @@
-import { gh, git } from "./common.js";
+import { gh, git, isWorkflowBot } from "./common.js";
 import type { ProgressSubIssue } from "./progress-list.js";
+import {
+  readCriteriaChanges,
+  type BehaviourChange,
+  type CriterionChange,
+  type FollowUp,
+} from "./review-output.js";
 import { SLICE_TRAILER, sliceRanges, type BranchCommit, type SliceRanges } from "./slice-ranges.js";
 
 /**
@@ -163,10 +169,126 @@ export const renderFinalReviewBrief = (parent: string, branch: string, base: str
     "Review the whole change, as you would an ordinary pull request, and look in particular for what no " +
       "slice round could see because each saw one slice: slices that do not agree where one calls, reads or " +
       "configures what another wrote, two slices building the same thing their own way, and scaffolding one " +
-      "slice left for a later one that was never used. Every open finding listed below is carried and " +
-      "verified as on any round, whichever slice's round raised it, and nothing a maintainer declined is " +
-      "raised again.",
+      "slice left for a later one that was never used. Rule on **every** open finding listed below, " +
+      "whichever slice's round raised it: one you leave unruled stays open and counts against this review. " +
+      "Nothing a maintainer declined or resolved by hand is raised again, in any wording.",
   ].join("\n\n");
+
+/**
+ * What a slice round's record (#214) says of its sub-issue's acceptance
+ * criteria, as the final review collects it (#247): the changed and unmet ones
+ * from the round that approved the slice; no criteria checked, where every
+ * round of the slice was handed none; or no record, where no review of the
+ * slice could be read.
+ */
+export type SliceCriteriaRecord =
+  | { readonly kind: "recorded"; readonly changes: readonly CriterionChange[] }
+  | { readonly kind: "none checked" }
+  | { readonly kind: "no record" };
+
+export interface SliceCriteria {
+  readonly subIssue: number;
+  readonly record: SliceCriteriaRecord;
+}
+
+/** A review on the PRD PR, as the final review reads it: who posted it, its body, and the commit it reviewed. */
+export interface PostedReview {
+  readonly author: string;
+  readonly body: string;
+  readonly commit?: string;
+}
+
+/**
+ * Each landed slice's criteria record (#247), read off the reviews on the PRD
+ * PR, oldest first. A review belongs to the slice whose range holds the commit
+ * it reviewed, through `sliceRanges`, the one answer to "which slice"; the
+ * slice's record is the newest review of it that carries an *Acceptance
+ * criteria* group, which is the round that approved it, since a slice moves on
+ * only on an approval and the final review carries no such group. Only reviews
+ * this loop posted: anyone may post a review, and this text goes into the PRD
+ * PR's body.
+ */
+export const sliceCriteria = (reviews: readonly PostedReview[], ranges: SliceRanges): SliceCriteria[] =>
+  ranges.slices.flatMap(({ subIssue, range }): SliceCriteria[] => {
+    if (range === null) return [];
+    const commits = new Set(range.commits);
+    const ofSlice = reviews.filter(
+      (review) => isWorkflowBot(review.author) && review.commit !== undefined && commits.has(review.commit),
+    );
+    const recorded = ofSlice
+      .map((review) => readCriteriaChanges(review.body))
+      .filter((changes): changes is CriterionChange[] => changes !== undefined)
+      .pop();
+    if (recorded !== undefined) return [{ subIssue, record: { kind: "recorded", changes: recorded } }];
+    return [{ subIssue, record: { kind: ofSlice.length > 0 ? "none checked" : "no record" } }];
+  });
+
+export interface PrdSummaryInputs {
+  /** What the PRD delivered, as the final review wrote it: its `summary`. */
+  readonly outcome: string | undefined;
+  readonly behaviourChanges: readonly BehaviourChange[];
+  /** Every landed slice's criteria record, in slice order; undefined where the PRD branch could not be read. */
+  readonly slices: readonly SliceCriteria[] | undefined;
+  /** The follow-ups this review recorded, which `follow-ups` files when the PRD PR merges. */
+  readonly followUps: readonly FollowUp[];
+}
+
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+/**
+ * The PRD PR's summary as the final review writes it (#247), through #218's
+ * splice: the outcome, then the PRD sections. The behaviour changes with the
+ * breaking ones marked, the criteria each slice changed or dropped from that
+ * slice round's record, and the known issues, naming the follow-ups filed when
+ * it merges. The sections are the workflow's to lay out, so a breaking change
+ * is marked and a dropped criterion named with its slice whatever the model's
+ * formatting.
+ *
+ * A criterion its approving round left **unmet** is one a maintainer accepted
+ * as it stands, by declining the finding it raised: so it is *dropped* here.
+ */
+export const renderPrdSummary = (inputs: PrdSummaryInputs): string => {
+  const outcome = inputs.outcome?.trim() || "_The final review wrote no outcome._";
+  const changes =
+    inputs.behaviourChanges.length === 0
+      ? ["None recorded."]
+      : [
+          ...inputs.behaviourChanges.filter((c) => c.breaking).map((c) => `- **Breaking:** ${oneLine(c.change)}`),
+          ...inputs.behaviourChanges.filter((c) => !c.breaking).map((c) => `- ${oneLine(c.change)}`),
+        ];
+  const criteria = (inputs.slices ?? []).flatMap(({ subIssue, record }): string[] => {
+    if (record.kind === "no record") {
+      return [`- #${subIssue}: no review of this slice could be read, so its record is not listed here.`];
+    }
+    if (record.kind === "none checked" || record.changes.length === 0) return [];
+    return [
+      `- #${subIssue}:`,
+      ...record.changes.map((c) => `  - **${c.status === "changed" ? "Changed" : "Dropped"}:** ${oneLine(c.line)}`),
+    ];
+  });
+  const known =
+    inputs.followUps.length === 0
+      ? ["None recorded to be filed."]
+      : [
+          "Filed as issues when this pull request merges:",
+          "",
+          ...inputs.followUps.map((f) => `- ${oneLine(f.title)} (\`${oneLine(f.location)}\`)`),
+        ];
+  return [
+    "### Outcome",
+    outcome,
+    "### Behaviour changes",
+    changes.join("\n"),
+    "### Acceptance criteria changed or dropped",
+    inputs.slices === undefined
+      ? "The PRD branch's history could not be read, so the slices' records are not listed here; each slice round's review on this pull request has its own."
+      : criteria.length === 0
+        ? "None: every slice met its sub-issue's criteria as written."
+        : criteria.join("\n"),
+    "### Known issues",
+    known.join("\n"),
+  ].join("\n\n");
+};
 
 /**
  * Why a round ended without moving the chain on: #200's reasons for stopping,

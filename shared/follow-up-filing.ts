@@ -69,7 +69,7 @@ const REVIEWS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!) {
   repository(owner:$owner,name:$repo) {
     pullRequest(number:$number) {
-      reviews(last:100) { nodes { body url lastEditedAt author { login } } }
+      reviews(last:100) { nodes { body url lastEditedAt author { login } commit { oid } } }
     }
   }
 }`;
@@ -79,9 +79,17 @@ interface GqlReview {
   url?: string;
   lastEditedAt?: string | null;
   author?: { login?: string } | null;
+  commit?: { oid?: string } | null;
 }
 
-const fetchReviews = (prNumber: string): FilingReview[] => {
+/**
+ * Every review on the pull request, oldest first. Also read by a PRD PR's
+ * review (#247), which carries forward what the earlier rounds recorded and,
+ * on the final review, reads each slice round's record by the commit it
+ * reviewed: the same reviews through the same gate, rather than a second query
+ * that could disagree with the one the filing end reads.
+ */
+export const fetchReviews = (prNumber: string): FilingReview[] => {
   const [owner = "", repo = ""] = ghRepo().split("/");
   const raw = gh([
     "api",
@@ -124,6 +132,7 @@ const fetchReviews = (prNumber: string): FilingReview[] => {
       body: review.body ?? "",
       lastEditedAt: review.lastEditedAt ?? null,
       url: review.url ?? "",
+      ...(typeof review.commit?.oid === "string" ? { commit: review.commit.oid } : {}),
     };
   });
 };

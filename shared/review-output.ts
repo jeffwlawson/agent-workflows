@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
 import {
   findingMarker,
@@ -50,6 +51,17 @@ export interface FollowUp {
    * deciding an outcome, which is the thing severity exists not to be.
    */
   readonly severity: Severity;
+  /**
+   * The id the workflow gave it when it was first recorded (#247), carried
+   * verbatim in the payload from then on. What a later round on a PRD PR
+   * carries it forward by and de-duplicates on, never its text: a finding
+   * reworded between rounds is the case an id exists for.
+   *
+   * Never the model's: `recordFollowUps` gives everything the model recorded a
+   * fresh one, so an entry cannot name an earlier round's to displace it.
+   * Absent on a payload written before ids existed.
+   */
+  readonly id?: string;
 }
 
 /**
@@ -62,6 +74,23 @@ export interface FollowUp {
  * list runs past this by exactly their number — see `recordFollowUps`.
  */
 export const MAX_FOLLOW_UPS = 3;
+
+/**
+ * The cap for a pull request with `landedSlices` slices on it (#247):
+ * `MAX_FOLLOW_UPS` per slice. A PRD PR carries every slice of its PRD, and its
+ * newest review carries forward what every earlier round recorded, so a
+ * six-slice PRD is not held to one pull request's budget. A regular pull
+ * request is one slice, and anything under one is read as one, so its cap
+ * stays `MAX_FOLLOW_UPS`.
+ */
+export const followUpsCap = (landedSlices: number): number =>
+  MAX_FOLLOW_UPS * Math.max(1, Number.isFinite(landedSlices) ? Math.floor(landedSlices) : 1);
+
+/**
+ * A fresh follow-up id, random for the reason a finding's is (`newFindingId`):
+ * derived from the text, it would change when a round reworded the entry.
+ */
+export const newFollowUpId = (): string => `fu-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
 
 /**
  * The hard limit on the pull request's `title`, in characters (#218). A title
@@ -140,6 +169,13 @@ export interface CriterionResult {
   readonly reason?: string;
 }
 
+/** One behaviour a PRD changes, as its final review lists it (#247). */
+export interface BehaviourChange {
+  readonly change: string;
+  /** A caller or a user has to act on it. */
+  readonly breaking: boolean;
+}
+
 /** A note the review dropped, as the body lists it. */
 export interface DroppedNote {
   readonly title: string;
@@ -188,6 +224,14 @@ export interface ReviewOutput {
    * Capped at `MAX_SUMMARY_WORDS`.
    */
   readonly summary?: string;
+  /**
+   * On a PRD PR's **final review** only (#247): each behaviour the PRD as a
+   * whole changes, one line each, with the breaking ones flagged. The workflow
+   * renders them into the summary's *Behaviour changes* section and marks the
+   * breaking ones, so the mark is not left to the model's formatting. Absent
+   * on every other review.
+   */
+  readonly behaviourChanges?: BehaviourChange[];
   /**
    * Every problem the review found in this pull request, as the model produced
    * them. Where each one is posted — a line thread or a file-level thread — is
@@ -1291,6 +1335,12 @@ export interface ReviewBodyParts {
   readonly followUps: readonly FollowUp[];
   readonly droppedFollowUps: number;
   /**
+   * The cap `recordFollowUps` held the list to, written into the payload for
+   * the filing end to re-apply (#247). `MAX_FOLLOW_UPS` where absent, which is
+   * every regular pull request's.
+   */
+  readonly followUpsCap?: number | undefined;
+  /**
    * The fix run's out-of-scope notes this review chose not to file, each with
    * its reason (#213), from `applyNoteRulings`. The promoted ones are in
    * `followUps` above and are not repeated here.
@@ -1372,7 +1422,7 @@ const renderBody = (
         ? RESOLVED_SLOT
         : renderGroup(RESOLVED_GROUP.title, cut(record.resolved), RESOLVED_GROUP.open),
       renderCriteriaGroup(parts.criteria ?? [], shed.titles),
-      renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles),
+      renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap),
       renderDroppedNotesGroup(parts.droppedNotes ?? []),
       renderHowChecked(parts.output.howChecked),
       // The only rule in the body, and it is here rather than between the groups
@@ -1384,7 +1434,7 @@ const renderBody = (
       // Last, and invisible. The filing half reads the latest one off the body
       // (#47), so it goes out on every review including the one that recorded
       // nothing — which is how a round retracts an earlier round's list.
-      followUpsPayload(followUps, dropped, parts.movedToFollowUps, shed.cutFollowUps),
+      followUpsPayload(followUps, dropped, parts.movedToFollowUps, shed.cutFollowUps, parts.followUpsCap),
     ]
       .filter((part) => part !== undefined && part !== "")
       .join("\n\n");
@@ -1640,6 +1690,10 @@ const parseFollowUp = (value: unknown): FollowUp => {
     // of a block a previous release wrote as well as out of a model's answer,
     // and neither is worth losing a follow-up over.
     severity: parseSeverity(record["severity"]),
+    // Read back off a payload, where the workflow wrote it. A model's answer
+    // goes through this same door, and `recordFollowUps` replaces whatever it
+    // carries.
+    ...(typeof record["id"] === "string" && record["id"] !== "" ? { id: record["id"] } : {}),
   };
 };
 
@@ -1765,6 +1819,10 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     "noteRulings",
   ).map(parseNoteRuling);
   const criteria = asArray(record["criteria"] ?? [], "criteria").map(parseCriterionRuling);
+  const behaviourChanges = asArray(
+    record["behaviourChanges"] ?? record["behaviorChanges"] ?? record["behaviour_changes"] ?? [],
+    "behaviourChanges",
+  ).flatMap(parseBehaviourChange);
   return {
     ...(assessment === undefined ? {} : { assessment }),
     ...(howChecked === undefined ? {} : { howChecked: cappedWords(howChecked, MAX_HOW_CHECKED_WORDS) }),
@@ -1803,8 +1861,22 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     ...(noteRulings.length === 0 ? {} : { noteRulings }),
     // Absent where the review was handed no criteria, for the same reason.
     ...(criteria.length === 0 ? {} : { criteria }),
+    // Absent on every review but a PRD PR's final review.
+    ...(behaviourChanges.length === 0 ? {} : { behaviourChanges }),
   };
 });
+
+/**
+ * A behaviour change, from an object or from a bare string (not breaking).
+ * One that says nothing is dropped rather than failing the review: it is one
+ * line of a description, and the findings beside it are worth more.
+ */
+const parseBehaviourChange = (value: unknown): BehaviourChange[] => {
+  if (typeof value === "string") return value.trim() === "" ? [] : [{ change: oneLine(value), breaking: false }];
+  const record = asRecord(value, "behaviour change");
+  const change = typeof record["change"] === "string" ? oneLine(record["change"]) : "";
+  return change === "" ? [] : [{ change, breaking: record["breaking"] === true }];
+};
 
 /**
  * Apply the cap, and report what it cost.
@@ -1830,9 +1902,10 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
  */
 export const capFollowUps = (
   followUps: readonly FollowUp[],
+  cap: number = MAX_FOLLOW_UPS,
 ): { kept: FollowUp[]; dropped: number } => ({
-  kept: followUps.slice(0, MAX_FOLLOW_UPS),
-  dropped: Math.max(0, followUps.length - MAX_FOLLOW_UPS),
+  kept: followUps.slice(0, cap),
+  dropped: Math.max(0, followUps.length - cap),
 });
 
 /**
@@ -1900,7 +1973,45 @@ export interface RecordedFollowUps {
   readonly moved: number;
   /** What the cap cost — out-of-scope entries only, by the rule above. */
   readonly dropped: number;
+  /** The cap it was held to, written into the payload for the filing end to re-apply (#247). */
+  readonly cap: number;
 }
+
+/**
+ * One earlier round's recorded follow-ups, split where its payload's `moved`
+ * splits them: the exempt prefix, and the out-of-scope rest.
+ */
+export interface EarlierFollowUps {
+  readonly moved: readonly FollowUp[];
+  readonly rest: readonly FollowUp[];
+}
+
+export interface RecordOptions {
+  /** `followUpsCap` of the slices landed; `MAX_FOLLOW_UPS` where absent. */
+  readonly cap?: number;
+  /**
+   * What every earlier round on the pull request recorded, oldest first, to
+   * carry forward (#247). Only a PRD PR's review is handed any: there each
+   * round is scoped to one slice, so no round restates another's, and the
+   * newest review body is the one `follow-ups` files from.
+   */
+  readonly carried?: readonly EarlierFollowUps[];
+  /** The id each new entry is given. A parameter so a test can name them. */
+  readonly nextId?: () => string;
+}
+
+/**
+ * Entries in order, each once: by id, or where an entry from before ids has
+ * none, by being the same entry byte for byte, which is a copy and not a
+ * rewording.
+ */
+export const dedupeFollowUps = (entries: readonly FollowUp[], seen: Set<string>): FollowUp[] =>
+  entries.filter((entry) => {
+    const key = entry.id ?? JSON.stringify(entry);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
 /**
  * The review's follow-ups: the moved findings first, then the ones the model
@@ -1916,8 +2027,15 @@ export interface RecordedFollowUps {
  * *"4 findings were moved to follow-ups"* over three, and no stub would ever be
  * filed for the fourth.
  *
- * So the list can run past `MAX_FOLLOW_UPS`, and only ever by the number of
- * findings the diff gave no anchor to.
+ * So the list can run past the cap, and only ever by the number of findings
+ * the diff gave no anchor to.
+ *
+ * **On a PRD PR, every earlier round's entries lead their half** (#247),
+ * de-duplicated by id: the moved ones an earlier round kept stay exempt, and
+ * its out-of-scope ones join this round's under the one cap, ahead of them, so
+ * what the cap drops is the newest. The cap there is `followUpsCap` of the
+ * slices landed, three per slice. Everything this round records gets a fresh
+ * id, whatever the model wrote.
  *
  * `pathErrors` is the subset of `unanchored` whose path names no file — by
  * identity, as `pathErrors` returns them — and those carry `PATH_ERROR_NOTE`
@@ -1927,10 +2045,20 @@ export const recordFollowUps = (
   unanchored: readonly Finding[],
   followUps: readonly FollowUp[],
   pathErrors: readonly Finding[] = [],
+  options: RecordOptions = {},
 ): RecordedFollowUps => {
-  const moved = unanchored.map((finding) => movedFollowUp(finding, pathErrors.includes(finding)));
-  const { kept, dropped } = capFollowUps(followUps);
-  return { followUps: [...moved, ...kept], moved: moved.length, dropped };
+  const { cap = MAX_FOLLOW_UPS, carried = [], nextId = newFollowUpId } = options;
+  const seen = new Set<string>();
+  const moved = [
+    ...dedupeFollowUps(carried.flatMap((earlier) => earlier.moved), seen),
+    ...unanchored.map((finding) => ({ ...movedFollowUp(finding, pathErrors.includes(finding)), id: nextId() })),
+  ];
+  const rest = [
+    ...dedupeFollowUps(carried.flatMap((earlier) => earlier.rest), seen),
+    ...followUps.map((followUp) => ({ ...followUp, id: nextId() })),
+  ];
+  const { kept, dropped } = capFollowUps(rest, cap);
+  return { followUps: [...moved, ...kept], moved: moved.length, dropped, cap };
 };
 
 /**
@@ -2009,7 +2137,7 @@ export const hasFollowUpsBlock = (body: string): boolean =>
  */
 export const parseFollowUpsBlock = (
   body: string,
-): { followUps: FollowUp[]; dropped: number; moved: number; cut: number } | undefined => {
+): { followUps: FollowUp[]; dropped: number; moved: number; cut: number; cap: number } | undefined => {
   const matches = [...body.matchAll(BLOCK)];
   const raw = matches[matches.length - 1]?.[1];
   if (raw === undefined) return undefined;
@@ -2042,8 +2170,14 @@ export const parseFollowUpsBlock = (
   // Clamped to `dropped` because it is a part of it.
   const count = typeof dropped === "number" && dropped > 0 ? Math.floor(dropped) : 0;
   const cut = record["cut"];
+  // The cap the review held the list to (#247), which the filing end re-applies:
+  // three per landed slice on a PRD PR. Absent on a payload written before it
+  // was recorded, which is one capped at `MAX_FOLLOW_UPS`, and anything that is
+  // not a whole number of at least that reads the same.
+  const cap = record["cap"];
   return {
     followUps,
+    cap: typeof cap === "number" && Number.isInteger(cap) && cap >= MAX_FOLLOW_UPS ? cap : MAX_FOLLOW_UPS,
     dropped: count,
     moved:
       typeof moved === "number" && moved > 0 ? Math.min(Math.floor(moved), followUps.length) : 0,
@@ -2082,17 +2216,24 @@ export const parseFollowUpsBlock = (
  * fits carries the payload it always did. `dropped` stays the sum: a reader
  * that has never heard of `cut` still accounts for every entry, if under the
  * cap's name.
+ *
+ * `cap` is the cap the list was held to (#247), three per landed slice, so
+ * the filing end re-applies the one this end applied rather than its own.
+ * Additive on the same terms: a reader that has never heard of it caps at
+ * three, which is every regular pull request's cap anyway.
  */
 export const followUpsPayload = (
   kept: readonly FollowUp[],
   dropped: number,
   moved: number,
   cut = 0,
+  cap: number = MAX_FOLLOW_UPS,
 ): string =>
   `<!-- ${FOLLOW_UPS_MARKER} ${embeddableJson({
     version: FOLLOW_UPS_VERSION,
     dropped,
     moved,
+    cap,
     ...(cut > 0 ? { cut } : {}),
     followUps: kept,
   })} -->`;
@@ -2119,6 +2260,7 @@ export const renderFollowUpsGroup = (
   kept: readonly FollowUp[],
   dropped: number,
   titles = true,
+  cap: number = MAX_FOLLOW_UPS,
 ): string | undefined => {
   if (kept.length === 0) return undefined;
 
@@ -2152,8 +2294,8 @@ export const renderFollowUpsGroup = (
       : [
           "",
           titles
-            ? `Only the ${MAX_FOLLOW_UPS} most serious out-of-scope findings are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`
-            : `The cap keeps the ${MAX_FOLLOW_UPS} most serious out-of-scope findings; ${dropped} more were dropped by it. Raise them here if they matter.`,
+            ? `Only the ${cap} most serious out-of-scope findings are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`
+            : `The cap keeps the ${cap} most serious out-of-scope findings; ${dropped} more were dropped by it. Raise them here if they matter.`,
         ];
 
   return [
@@ -2219,6 +2361,36 @@ export const renderCriteriaGroup = (
   ].join("\n");
 };
 
+/** A criterion a round's record says was not met as written: changed on purpose, or unmet. */
+export interface CriterionChange {
+  readonly status: "changed" | "unmet";
+  /** The criterion and its reason, as the record's line gives them. */
+  readonly line: string;
+}
+
+/**
+ * The criteria a review body's *Acceptance criteria* group lists as changed or
+ * unmet, read back out of what `renderCriteriaGroup` wrote (#247): the final
+ * review collects each slice round's record from it. `undefined` where the body
+ * has no such group, which is a round that was handed no criteria.
+ *
+ * Beside the renderer because the two are one format.
+ */
+export const readCriteriaChanges = (body: string): CriterionChange[] | undefined => {
+  const lines = body.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.startsWith("<summary><b>Acceptance criteria</b>"));
+  if (start < 0) return undefined;
+  const changes: CriterionChange[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.startsWith("</details>")) break;
+    const match = /^- \*\*(Changed|Unmet):\*\* (.*)$/.exec(line);
+    if (match !== null) {
+      changes.push({ status: match[1] === "Changed" ? "changed" : "unmet", line: match[2] ?? "" });
+    }
+  }
+  return changes;
+};
+
 /**
  * The fix run's out-of-scope notes this review decided not to file, each with
  * the reason (#213). A note the loop posted ends as a filed issue or as a
@@ -2258,8 +2430,9 @@ export const renderFollowUpsBlock = (
   kept: readonly FollowUp[],
   dropped: number,
   moved: number,
+  cap: number = MAX_FOLLOW_UPS,
 ): string => {
-  const group = renderFollowUpsGroup(kept, dropped);
-  const payload = followUpsPayload(kept, dropped, moved);
+  const group = renderFollowUpsGroup(kept, dropped, true, cap);
+  const payload = followUpsPayload(kept, dropped, moved, 0, cap);
   return group === undefined ? payload : `${group}\n\n${payload}`;
 };

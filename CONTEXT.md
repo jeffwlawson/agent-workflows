@@ -278,12 +278,26 @@ kept where it is still true. The agent produces `title` and `summary`; the posti
 splicing into the body as it stands then rather than as the review read it. So the review comment
 carries no description of the change, and the description exists in one place.
 
+A PRD PR's **final review** writes both however little was pushed, since the last slice round wrote
+them at the same head (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
+the behaviour changes with the breaking ones marked, the acceptance criteria each slice changed or
+dropped (read off each slice round's record, by the commit it reviewed, through the slice ranges),
+and the known issues, naming the follow-ups filed at merge. The same write removes the frame's
+**draft-only** note, between its own markers, so a PRD PR marked ready says nothing about being a
+draft.
+
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather
 than the normal path — and it is the one workflow an adopter can decline by not copying its caller
 (`docs/ADOPTING.md` §4). It is also the only one that runs **no model**: the review agent records
 the findings and cannot file them, and the workflow holding `issues: write` decides what to file
-with a pure function (`docs/parity.md` §10).
+with a pure function (`docs/parity.md` §10). On a PRD chain it fires once, at the PRD PR's merge, since nothing
+merges into the PRD branch through a pull request any more (#247). That PR's newest review carries
+forward, de-duplicated by the id the workflow gave each entry, every follow-up an earlier round on
+it recorded, because each round there is scoped to one slice and none restates another's; and the
+cap is **three per landed slice**, recorded in the payload and re-applied by the filing end. A
+regular pull request is one slice, so its cap stays three and its review still restates its list
+every round.
 
 ## The three parts, and what belongs in each
 

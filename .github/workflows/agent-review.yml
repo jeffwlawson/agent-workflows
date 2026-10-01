@@ -81,14 +81,11 @@ jobs:
       # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci` —
       # so there is nothing to say about them here.
       self-check: review / review
-      # One automatic fix per pull request (#102): where the verdict is
-      # *Changes recommended*, the review workflow adds `agent:fix`
-      # itself and a re-review follows. Deprecated from the release that
-      # replaces it with the fix-round budget (`AGENT_MAX_FIX_ROUNDS`, #201),
-      # where it still wins as a budget of 1 and warns. Kept while the pin
-      # above predates that release, which reads it as the boolean it was;
-      # remove it once the pin has moved past it.
-      auto-fix: true
+      # The review starts up to 3 fix rounds per pull request itself, adding
+      # `agent:fix` when it recommends changes. Set the repository variable
+      # `AGENT_MAX_FIX_ROUNDS` to change that (`0` for none): the reusable
+      # workflow reads it from this repository, so nothing goes here. Needs
+      # `AGENT_PAT` (docs/ADOPTING.md §3b).
       # The red check (#231): runs the tests a pull request adds or changes
       # against the code as it was before the change, in a job holding no
       # secrets, and reports to the review which of them fail there on an

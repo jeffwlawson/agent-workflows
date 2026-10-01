@@ -90,9 +90,11 @@ on:
           User PAT, used to mark the PR ready for review — `GITHUB_TOKEN`
           cannot do that whatever permissions it is granted (docs/ADOPTING.md
           §1) — and to add the labels this workflow adds for another to fire
-          on: `agent:fix` for an automatic fix round, and `agent:implement` on a slice
-          PR's parent when its round ends. Optional: without it each of those
-          warns, the run stays green, and a human does it by hand.
+          on: `agent:fix` for an automatic fix round, and `agent:implement` on a PRD
+          PR's parent when a slice round ends on an approval; and to post the
+          park comment on that parent when a round ends without one. Optional:
+          without it each of those warns, the run stays green, and a human does
+          it by hand.
         required: false
 
 jobs:
@@ -183,6 +185,9 @@ jobs:
       # The verdict's machine-readable key, out of the file the runner wrote,
       # which the hand-off selects on. See *Hand the verdict to what reads it*.
       verdict: ${{ steps.verdict.outputs.verdict }}
+      # On a PRD PR, `slice` or `final`, which the ready step and the advance
+      # job select on. See *Tell a slice round from the final review*.
+      round: ${{ steps.round.outputs.round }}
       # How the run ended, for the posting job's failure comment: the reason a
       # failed runner wrote, the refusal a variable met, and whether a cancel
       # was the time limit. See *Hand the outcome to the posting job*.
@@ -519,6 +524,37 @@ jobs:
             echo "start=${start}"
           } >> "$GITHUB_OUTPUT"
 
+      # Which round of a PRD PR this is (PRD #222): a **slice round**, scoped to
+      # the slice the PRD branch last built, or the **final review** of the
+      # whole PRD PR. The finishing run in `implement-prd` asks for the final
+      # review by writing its mark into the PRD PR's body, and every review of
+      # a PRD PR whose body carries it, the re-reviews of its fix rounds
+      # included, is the final review.
+      #
+      # Decided here, before anything can fail, rather than by the runner: the
+      # advance job reads it whichever way this run ends, and the posting job's
+      # ready step marks a PRD PR ready only on the final review's approval.
+      # The runner is handed this answer rather than reading the mark again.
+      # Only on a PRD PR, recognised by its head as `implement-prd` names it;
+      # anywhere else `round` is unset. A body that cannot be read fails the
+      # run, which parks the chain, rather than guessing which round it is.
+      - name: Tell a slice round from the final review
+        id: round
+        if: >-
+          steps.state.outputs.proceed == 'true' &&
+          startsWith(github.event.pull_request.head.ref, 'agent/prd-')
+        env:
+          FINAL_REVIEW_MARK: "<!-- agent:final-review requested -->"
+        run: |
+          set -euo pipefail
+          body=$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')
+          round=slice
+          if [[ "$body" == *"$FINAL_REVIEW_MARK"* ]]; then
+            round=final
+          fi
+          echo "round=${round}" >> "$GITHUB_OUTPUT"
+          echo "This review of PRD PR #${PR_NUMBER} is a ${round} round."
+
       # The commit the pre-flight settled on, not the payload's (#229). Still an
       # explicit `ref:`, which is what keeps `actions/checkout`'s own fork check
       # on; the job's `if:` is the other half.
@@ -646,18 +682,17 @@ jobs:
           # either way. Named `post-review` rather than `post` so the pattern
           # cannot swallow a repository's own CI job called `post`.
           #
-          # `advance` is `fix`'s job (#176) that runs after a fix run ends a
-          # slice PR's round. A later round on the same head would otherwise
-          # read `fix / advance` as CI. `advance-merged` (#209) is this
-          # workflow's hand-merge twin, named in its own right: the alternation
-          # is anchored on `( / |$)`, so `advance` does not match a name that
-          # goes on past it.
+          # `advance` is this workflow's job (PRD #222) that runs after the
+          # posting job on a PRD PR, to move the chain on or park it. A later
+          # round on the same head would otherwise read `review / advance` as
+          # CI. The alternation is anchored on `( / |$)`, so `advance` does not
+          # match a name that goes on past it.
           #
           # `time-limit` (#220) runs *before* this job, so it has finished by the
           # time this wait reads anything. Named all the same, for the reason
           # `post-review` is: under a renamed caller job it is `agent-review /
           # time-limit`, and a job that sums two numbers is not CI.
-          AGENT_CHECKS: '(^|/ )(review|time-limit|post-review|advance|advance-merged|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
+          AGENT_CHECKS: '(^|/ )(review|time-limit|post-review|advance|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller
@@ -960,10 +995,9 @@ jobs:
           # ceiling above) is `unknown`, so the evidence and the word both say
           # it was still running. A failure seen beside it still reads `red`.
           # A commit with no other checks at all is `none`,
-          # which the arm below the statuses turns into a word: green on an
-          # ordinary pull request — there is nothing failing, which is the
-          # honest reading for an adopter whose repository runs none — and not
-          # on a slice PR (#175).
+          # which the arm below the statuses turns into a word: green, since there
+          # is nothing failing, which is the honest reading for an adopter
+          # whose repository runs none.
           #
           # `if !` rather than `|| { … }` on the same grounds as the arms above:
           # under `bash -e` a test as the last command of the arm ends the step.
@@ -1060,36 +1094,18 @@ jobs:
             fi
           fi
 
-          # **No CI at all** (`none` from every surface) is green everywhere
-          # but a slice PR (#175). A slice PR's base is a PRD branch, not the
-          # default branch, so an adopter's CI that filters `pull_request` to
-          # the default branch never runs on one. Green there would let a clean
-          # review recommend approving code no CI ran on, and on a slice PR that
-          # verdict is what moves the chain onto the next slice. `unknown`
-          # sends the review to a human instead, and the evidence says why and
-          # where the one-line fix is.
-          #
-          # Every surface, not check runs alone: a slice PR whose CI reports only
-          # through commit statuses had CI run on it. A slice branch is named
-          # by `implement-prd`'s *Prepare the slice branch* step.
-          #
-          # On an ordinary pull request the word stays green (PRD #171, story
-          # 58), so an adopter with no CI anywhere is unchanged, but the
+          # **No CI at all** (`none` from every surface) stays green (PRD #171,
+          # story 58), so an adopter with no CI anywhere is unchanged, but the
           # evidence says plainly that nothing ran (#221): "no failures" is not
-          # "CI passed", and the agent is told which one it is reading.
+          # "CI passed", and the agent is told which one it is reading. Every
+          # surface, not check runs alone: CI that reports only through commit
+          # statuses ran.
+          #
+          # A PRD PR is no exception (PRD #222): its base is the default
+          # branch, so CI configured for the default branch runs on every
+          # slice round there.
           if [ "${checks}/${commit_statuses}/${workflow_runs}" = "none/none/none" ]; then
-            case "$BRANCH" in
-              agent/slice-*)
-                checks=unknown
-                commit_statuses=unknown
-                no_ci="No CI ran on this slice PR: nothing but the loop's own jobs reported on this commit. A slice PR's base is its PRD branch, so a CI workflow that filters \`pull_request\` to the default branch does not run on it. Add \`agent/prd-**\` to that filter's \`branches:\` (jeffwlawson/agent-workflows docs/ADOPTING.md §5, *Slice PRs and your CI*). Until then CI is unknown here, not green, so a clean review asks for a human rather than advancing the chain."
-                echo "::warning::${no_ci}"
-                echo "_${no_ci}_" >> "$out"
-                ;;
-              *)
-                echo "_No CI ran on this commit: nothing but the loop's own jobs reported on it, so there are no CI results to read here, passing or failing._" >> "$out"
-                ;;
-            esac
+            echo "_No CI ran on this commit: nothing but the loop's own jobs reported on it, so there are no CI results to read here, passing or failing._" >> "$out"
           fi
           if [ "$checks" = none ]; then
             checks=green
@@ -1233,6 +1249,9 @@ jobs:
           AUTO_FIX: ${{ steps.budget.outputs.start }}
           FIX_ROUNDS_SPENT: ${{ steps.budget.outputs.spent }}
           FIX_ROUND_BUDGET: ${{ steps.budget.outputs.budget }}
+          # Which round of a PRD PR this is, from *Tell a slice round from the
+          # final review*: `final`, `slice`, or empty off a PRD PR.
+          ROUND: ${{ steps.round.outputs.round }}
         # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
         # whole point. `npx pkg@version` reuses a package already present in the
         # working directory when it satisfies the spec — and in the repository
@@ -1295,6 +1314,25 @@ jobs:
           retention-days: 7
           overwrite: true
 
+      # On a PRD PR, the park comments the runner wrote, handed to the `advance`
+      # job (PRD #222): `park.md` where the round ended without approval and
+      # with no fix round starting, and `park_failed.md`, written before the
+      # agent ran, for a round that does not finish. Its own artifact and
+      # `always()`, because a failed run is one of the endings it is for, and
+      # the review's own artifact is uploaded only on success. Either file may
+      # be missing; the advance job says so where it needs one.
+      - name: Hand the park comment to the advance job
+        if: always() && steps.round.outputs.round != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-review-park
+          path: |
+            ${{ runner.temp }}/park.md
+            ${{ runner.temp }}/park_failed.md
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
       # How this run ended, for the posting job's failure comment (#257), which
       # is where the comment is posted now that this job writes nothing.
       # `always()`, so a failed, refused, cancelled or timed-out run hands it
@@ -1348,11 +1386,14 @@ jobs:
   #  3. the pull request's title and the summary block in its body, where
   #     anything was pushed since the summary was last written (#218);
   #  4. the `agent:follow-ups` marker and the `agent-review` verdict status;
-  #  5. mark the pull request ready, unless a fix round is about to start;
+  #  5. mark the pull request ready, unless a fix round is about to start,
+  #     and on a PRD PR only on the final review's approval;
   #  6. take `agent:review` off;
   #  7. hand off: `agent:review` again where the head moved during the run,
-  #     else `agent:fix` where the verdict announced a round, else the PRD
-  #     chain's advance on a slice PR.
+  #     else `agent:fix` where the verdict announced a round.
+  #
+  # On a PRD PR the `advance` job below follows this one, and moves the chain
+  # on or parks it.
   #
   # And on a failure, or a refusal that needs a maintainer: the comment, then
   # `agent:review` off, then `agent:blocked`.
@@ -1421,6 +1462,12 @@ jobs:
       needs.review.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # What the `advance` job reads: whether the head moved while the review ran,
+    # in which case the round has not ended, and the posted review's URL, which
+    # the park comment links this round's findings to.
+    outputs:
+      moved: ${{ steps.trigger.outputs.moved }}
+      review-url: ${{ steps.review.outputs.url }}
     # **No concurrency group**, on purpose. `agent-pr-*` holds one waiting run,
     # and a newer arrival evicts it silently (docs/parity.md §10). In the group,
     # this job would queue behind a fix a human labelled while the review ran,
@@ -1702,7 +1749,7 @@ jobs:
       # minutes waiting on CI, and a maintainer's edit outside the block in that
       # window has to survive. So the splice is against the body as it stands
       # now: every byte outside the markers is kept as it is, `Closes #N` and
-      # the slices table included, and the review's text goes between them. The
+      # a PRD PR's own blocks included, and the review's text goes between them. The
       # markers come from the runner's file rather than being spelled here, so
       # there is one copy of them. A body with no block gets one appended; a
       # body with half of one, or two, is not written at all, since guessing
@@ -1881,10 +1928,18 @@ jobs:
       # not the human's yet: a newer verdict marks it ready itself, and a fix
       # round is starting on the other. Where the hand-off does not start the
       # round it should have, it marks the pull request ready itself.
+      #
+      # **A PRD PR stays a draft through every slice round** (PRD #222):
+      # "ready" there means the whole PRD is ready, so only the final review's
+      # approval marks it. The chain's other way to ready, a one-slice PRD, is
+      # the finishing run's. `round` is set only on a PRD PR, so the head is
+      # what tells one apart, and an unreadable round is not the final review.
       - name: Mark PR ready for review
         if: >-
           steps.review.outcome == 'success' &&
-          needs.review.outputs.verdict != 'changes recommended, fix round started'
+          needs.review.outputs.verdict != 'changes recommended, fix round started' &&
+          (!startsWith(github.event.pull_request.head.ref, 'agent/prd-') ||
+           (needs.review.outputs.round == 'final' && needs.review.outputs.verdict == 'approval recommended'))
         env:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
@@ -2005,7 +2060,7 @@ jobs:
       # in this pull request's concurrency group, whose waiting slot holds one
       # run: a request now would cancel it, and a run cancelled while pending
       # never reaches its own last step, so its label would stay on with
-      # nothing behind it, and the PRD merge would refuse the PR as busy. The
+      # nothing behind it, and the PRD chain's gate would refuse it as busy. The
       # queued run sees the new head anyway, and a fix or a refresh asks for
       # the review of what it pushed.
       #
@@ -2014,10 +2069,9 @@ jobs:
       # verdict is about a commit the pull request has left: a fix round
       # started off it would read a branch somebody else has pushed to, and
       # finding no verdict on the head it would post a false "no fix round"
-      # failure; an advance would re-add `agent:implement` and the chain's
-      # merge would refuse the slice PR as busy, or merge a head nobody
-      # reviewed. The review of the new head, re-requested here or queued or
-      # added by hand, decides both.
+      # failure; and on a PRD PR the `advance` job would move the chain on, or
+      # park it, over a head nobody reviewed. The review of the new head,
+      # re-requested here or queued or added by hand, decides all of them.
       - name: Always remove the trigger label
         id: trigger
         if: always()
@@ -2113,17 +2167,23 @@ jobs:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
           REVIEWED_SHA: ${{ needs.review.outputs.sha }}
           REVIEW_URL: ${{ steps.review.outputs.url }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           VERDICT_CONTEXT: agent-review
           LOOP_ACCOUNT: github-actions[bot]
         run: |
           set -euo pipefail
           # The review left the pull request a draft for the round it
           # announced, so a round that is not coming hands it back as well.
+          # Not a PRD PR, which stays a draft until its final review approves
+          # it (PRD #222): this step ending red parks its chain instead, and
+          # the `advance` job says so on the parent.
           no_round() {
             gh pr comment "$PR_NUMBER" --body "No fix round started, although this PR's review said one had: $1. Add \`agent:fix\` to start one by hand." \
               || echo "::warning::…and that could not be said on the pull request either."
-            gh pr ready "$PR_NUMBER" \
-              || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review either. Mark it ready by hand."
+            if [[ "$HEAD_REF" != agent/prd-* ]]; then
+              gh pr ready "$PR_NUMBER" \
+                || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review either. Mark it ready by hand."
+            fi
             echo "::error::No fix round started on PR #${PR_NUMBER}: $1."
             exit 1
           }
@@ -2165,51 +2225,78 @@ jobs:
           fi
           echo "Added agent:fix to PR #${PR_NUMBER}: an automatic fix round starts."
 
-      # Step 7, the other hand-off: the PRD chain's advance (#176, PRD #171). A
-      # slice PR is one sub-issue of a PRD, opened by `implement-prd` against
-      # the PRD branch, and the chain waits for that slice's review round to end
-      # before it builds the next one. When the round ends on a verdict the
-      # chain moves on from, this re-adds `agent:implement` to the parent; the
-      # `implement-prd` run that starts merges the slice PR into the PRD branch
-      # and builds the next slice, or, after the last slice, is the finishing
-      # run that hands the PRD PR over.
-      #
-      # **Which verdicts advance.** The two a slice round ends on without a
-      # human: *approval recommended*; and *changes recommended* where no
-      # automatic fix is starting (a budget of 0 or spent, a fix round that made
-      # no progress, or no `AGENT_PAT`). Not the key the fix round above selects
-      # on: a fix and its re-review are still in flight, and the round ends at
-      # their end, here or in `fix.yml`'s `advance` job. And not *needs a
-      # closer look*, which is a reviewer asking for a human: the chain parks on
-      # that slice PR until one re-adds `agent:implement` to the parent, which
-      # is itself the acceptance. A failed review or a failed post never gets
-      # here, so the chain parks there too.
-      #
-      # Keys, matched exactly, for the reason the fix round matches one: two
-      # rows share a heading, and it is the key that tells them apart.
-      #
-      # **Only on a slice PR**, recognised by its head: `agent/slice-<parent>-…`,
-      # the name `implement-prd` gives it, which is also where the parent comes
-      # from. An ordinary pull request has no chain to advance, and a PRD PR's
-      # head is `agent/prd-…`, which this does not match: its own review ends
-      # the chain rather than advancing it.
-      #
-      # **After the threads are resolved**, which is now the order of this job's
-      # steps rather than a `needs:` between two jobs. The `implement-prd` run
-      # this starts reads the slice PR's unresolved threads for its row of the
-      # slices table, and rows are never refreshed, so a row written before the
-      # resolve would link fixed findings as open for good.
-      #
-      # What advancing *is* lives in `.github/actions/advance-prd`, the one copy
-      # this and `fix.yml`'s `advance` job both run (#257): no checkout, no
-      # model, `AGENT_PAT` or nothing.
+  # The PRD chain's **advance job** (PRD #222), and the one place the chain
+  # moves on from or parks at. A PRD is built as slices on one PRD branch and
+  # reviewed on one PRD PR, a **slice round** per slice, and the next slice is
+  # built only after an approval. Every way a round can end lands here, since
+  # on a PRD PR every fix run ends by asking for a review (`fix.yml`'s *Request
+  # re-review*): so this job is the whole of it, and `fix` carries no copy.
+  #
+  # **What it does, by how the round ended:**
+  #
+  #  - a slice round's **approval**: re-adds `agent:implement` to the parent,
+  #    parsed from the head, `agent/prd-<parent>-…`, and the `implement-prd` run
+  #    that starts builds the next slice, or finishes. That run's preflight
+  #    reads the head's verdict again, so the label is never the gate;
+  #  - the **final review's approval**: nothing. The ready step above marks the
+  #    PRD PR ready, and the PRD is the maintainer's to merge. It never
+  #    advances from a final review;
+  #  - **a fix round started**: nothing. The round has not ended; the fix run's
+  #    re-review ends it, and comes back here;
+  #  - **the head moved** while the review ran: nothing. The review of the new
+  #    head decides;
+  #  - **any other ending**, a slice round's or the final review's: the park
+  #    comment on the parent, naming the round, why it stopped (#200's budget
+  #    spent or no progress, a review that needs a closer look, a run that did
+  #    not finish), the open findings with links, and the ways on. A parked
+  #    chain says so where a maintainer watching it looks, rather than nowhere.
+  #
+  # The comment is the runner's, rendered by `shared/prd-round.ts` and handed
+  # over as an artifact, so its wording is tested and not restated here.
+  #
+  # **Only on a PRD PR**, recognised by its head, from this repository, on the
+  # review's own label: the review job's two guards, restated, because
+  # `always()` drops them with the rest of "every need succeeded". And only
+  # where the review proceeded: a refusal ended no round.
+  #
+  # **Its shape**: no checkout, no toolchain, no model, `pull-requests: write`
+  # alone for the no-PAT arm's comment on the PRD PR, and `AGENT_PAT` for
+  # everything on the parent, or nothing there. `issues: write` stays out of
+  # this job and every caller's grant (docs/parity.md §10). **No concurrency
+  # group**, for the reason the posting job is in none. It cannot cycle: it
+  # labels and comments on an issue, never a pull request.
+  advance:
+    needs: [review, post-review]
+    if: >-
+      always() &&
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'agent/prd-') &&
+      needs.review.outputs.proceed == 'true' &&
+      needs.post-review.outputs.moved != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # The no-PAT arm's comment on the PRD PR, and nothing else.
+      pull-requests: write
+    steps:
+      # What the runner wrote. Missing where the run failed before it got that
+      # far, which the park step says in its own words.
+      - name: Fetch the park comment
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-review-park
+          path: ${{ runner.temp }}
+
+      # A slice round's approval, and nothing else. The verdict key, matched
+      # exactly, and only where the review and its posting both finished: a
+      # verdict that was never posted approves nothing.
       - name: Advance the PRD chain
         if: >-
-          success() && needs.review.result == 'success' &&
-          startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
-          steps.trigger.outputs.moved != 'true' &&
-          (needs.review.outputs.verdict == 'approval recommended' ||
-           needs.review.outputs.verdict == 'changes recommended')
+          needs.review.result == 'success' && needs.post-review.result == 'success' &&
+          needs.review.outputs.round == 'slice' &&
+          needs.review.outputs.verdict == 'approval recommended'
         uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.5
         with:
           pr-number: ${{ github.event.pull_request.number }}
@@ -2217,85 +2304,60 @@ jobs:
           has-pat: ${{ secrets.AGENT_PAT != '' }}
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
-  # A slice PR merged **by hand** advances the chain too (#209). Merging a
-  # slice PR whose round parked is the obvious move for a maintainer, and until
-  # this job it was a dead end: the chain moved only on `agent:implement`
-  # re-added to the parent, and nothing on the slice PR said so. This re-adds
-  # it, and the `implement-prd` run that starts finds the slice PR merged,
-  # writes its row of the slices table and builds the next slice (#207).
-  #
-  # **Not on the chain's own merge.** `implement-prd` merges each slice PR
-  # itself, and that run already builds the next slice: a second label would
-  # queue a second run behind it. Who merged cannot tell the two apart, since
-  # the chain merges under `AGENT_PAT`, which is the maintainer's own login. So
-  # the chain leaves a mark instead: just before it merges, it writes
-  # `<!-- agent-chain-merge <head sha> -->` into the slice PR's body, and the
-  # `closed` payload carries the body as it was at the merge. Pinned to the
-  # head, so a mark left by a chain merge that failed does not hide a later
-  # hand merge of a head pushed since. Read in the `if:`, so the chain's own
-  # merge starts no job at all, and there is no race with the run that made it.
-  #
-  # **Not while the chain is already moving.** A human merge can land while
-  # the run an advance started is queued or building (the parent carries
-  # `agent:implement`, which is on from the advance until that run ends); that
-  # run finds the slice PR merged and goes on, and a second label would only
-  # queue a second run.
-  #
-  # **Only on a slice PR**, for the advance's reason and by the same head, and
-  # only into a PRD branch. `closed` with `merged`, and the action named:
-  # a label added to a pull request that is already merged is a `labeled`
-  # event carrying `merged: true` too.
-  #
-  # In the advance's shape (`.github/actions/advance-prd`): no checkout, no
-  # toolchain, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. It cannot cycle: it labels an issue,
-  # never a pull request, and a merged slice PR closes once.
-  advance-merged:
-    if: >-
-      github.event.action == 'closed' &&
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.base.ref, 'agent/prd-') &&
-      startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
-      !contains(github.event.pull_request.body, format('<!-- agent-chain-merge {0} -->', github.event.pull_request.head.sha))
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # **No concurrency group**, for the reason the posting job is in none.
-    permissions:
-      # The comment the no-PAT arm leaves on the slice PR, and nothing else.
-      # The label on the parent goes on with `AGENT_PAT` or not at all, so
-      # `issues: write` stays out of this job (docs/parity.md §10).
-      pull-requests: write
-    env:
-      GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
-    steps:
-      # MUST use AGENT_PAT, for the advance's reason. `bash -e` and no `|| true`
-      # on the add or the read before it: a hand merge that did not move the
-      # chain is the dead end this job exists to remove, and a red job is the
-      # only thing that says so.
-      - name: Advance the PRD chain past a hand-merged slice
+      # Every other ending but a fix round starting. A run that finished posts
+      # `park.md`, the comment for its verdict; one that did not posts
+      # `park_failed.md`, which the runner wrote before the agent ran. The
+      # findings this round raised link the posted review, whose URL exists only
+      # now, so it goes into the slot the runner left for it.
+      #
+      # MUST use AGENT_PAT for the comment on the parent, which is an issue:
+      # the workflow token holds no issue scope here. Without it the comment
+      # goes on the PRD PR instead, saying where it was meant for. `bash -e`
+      # and no `|| true` on the post: a chain that parked without saying so is
+      # the silence this job exists to end, and a red job is the only thing
+      # left that says it.
+      - name: Park the PRD chain
+        if: >-
+          !(needs.review.result == 'success' && needs.post-review.result == 'success' &&
+            (needs.review.outputs.verdict == 'approval recommended' ||
+             needs.review.outputs.verdict == 'changes recommended, fix round started'))
         env:
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          ENDED: ${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}
+          REVIEW_URL: ${{ needs.post-review.outputs.review-url }}
+          # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
+          REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          PAT_TOKEN: ${{ secrets.AGENT_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ ! "$HEAD_REF" =~ ^agent/slice-([0-9]+)-[0-9]+- ]]; then
-            echo "::error::Slice PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/slice-<parent>-<sub-issue>-…\`, so its PRD cannot be told. Re-add \`agent:implement\` to the PRD by hand to advance its chain."
+          if [[ ! "$HEAD_REF" =~ ^agent/prd-([0-9]+)- ]]; then
+            echo "::error::PRD PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/prd-<parent>-…\`, so its PRD cannot be told, and the park comment was not posted."
             exit 1
           fi
           parent="${BASH_REMATCH[1]}"
+          file="${RUNNER_TEMP}/park_failed.md"
+          if [ "$ENDED" = "true" ]; then
+            file="${RUNNER_TEMP}/park.md"
+          fi
+          if [ -f "$file" ]; then
+            body=$(cat "$file")
+            body="${body//"$REVIEW_URL_SLOT"/"$REVIEW_URL"}"
+          else
+            # The run stopped before the runner could write either file, so
+            # nothing is known of the round but where it ran.
+            body="**The PRD chain parked** on PRD PR #${PR_NUMBER}: its review didn't finish, so there is no verdict. [Workflow run](${RUN_URL})
+
+          To move on, add \`agent:review\` to PRD PR #${PR_NUMBER} to run the review again. The chain moves on once a review of the PRD PR's latest commit recommends approval."
+          fi
           if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::AGENT_PAT is not set, so the PRD chain was not advanced past this hand merge: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
-            gh pr comment "$PR_NUMBER" --body "This slice PR was merged by hand, but the PRD chain will not move on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to record this slice in the PRD PR and build the next one." \
-              || echo "::warning::…and that could not be said on the pull request either."
+            echo "::warning::AGENT_PAT is not set, so the park comment goes on PRD PR #${PR_NUMBER} rather than on #${parent}: the workflow token cannot comment on an issue here."
+            gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s' "$body" "_This was meant for #${parent}, but \`AGENT_PAT\` is not set._")"
             exit 0
           fi
-          busy=$(gh issue view "$parent" --json labels --jq '[.labels[].name | select(. == "agent:implement")] | join(", ")')
-          if [ -n "$busy" ]; then
-            echo "#${parent} carries ${busy}: the PRD chain is already moving, and its run finds slice PR #${PR_NUMBER} merged. Nothing to add."
-            exit 0
-          fi
-          gh issue edit "$parent" --remove-label "agent:implement" || true
-          gh issue edit "$parent" --add-label "agent:implement"
-          echo "Re-added agent:implement to #${parent}: slice PR #${PR_NUMBER} was merged by hand, and the PRD chain moves on from it."
+          GH_TOKEN="$PAT_TOKEN" gh issue comment "$parent" --body "$body"
+          echo "Posted the park comment on #${parent}."

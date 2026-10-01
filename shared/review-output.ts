@@ -332,6 +332,15 @@ export interface VerdictRow {
    * there (see `label`).
    */
   readonly description: string;
+  /**
+   * Which of #200's stops a *changes recommended* row is, where it is one: the
+   * automatic fix rounds are spent, or the last one made no progress. Absent on
+   * every row of the table itself. Read by the PRD chain's park comment
+   * (`shared/prd-round.ts`), which names the reason a round stopped; the key
+   * cannot, since both stops keep the plain row's key so that nothing selects
+   * on them as a round starting.
+   */
+  readonly stop?: "budget spent" | "no progress";
 }
 
 /**
@@ -477,13 +486,6 @@ export interface VerdictInputs {
    * most likely to skip.
    */
   readonly base: string;
-  /**
-   * The PRD parent, where this is a slice PR (head `agent/slice-<parent>-…`).
-   * Every *needs a closer look* step on one adds the way to accept the slice as
-   * it stands (#209): the chain parks on that verdict, and nothing else on the
-   * pull request says what moves it on.
-   */
-  readonly sliceParent?: string;
 }
 
 /** A pull request's fix-round budget, and the automatic rounds spent against it. */
@@ -1503,6 +1505,7 @@ const budgetSpent = (rounds: FixRounds, open: number): VerdictRow => {
   const findings = open === 1 ? "1 finding is" : `${open} findings are`;
   return {
     ...row,
+    stop: "budget spent",
     nextStep:
       `The automatic fix rounds are spent (${used} used), and ${findings} still open. ` +
       "To go on, add agent:fix for another round, reply to a finding to decline it, or push a commit.",
@@ -1526,6 +1529,7 @@ const noProgress = (progress: FixRoundProgress, open: number): VerdictRow => {
   const closed = `0 of ${progress.given} ${progress.given === 1 ? "finding" : "findings"} closed`;
   return {
     ...row,
+    stop: "no progress",
     nextStep:
       `No progress: the fix round ${given}, so no further round starts on its own, and ${findings} still open. ` +
       "To go on, add agent:fix for another round, reply to a finding to decline it, or push a commit.",
@@ -1544,19 +1548,15 @@ const noProgress = (progress: FixRoundProgress, open: number): VerdictRow => {
 type CloserLookCause = "needs you" | Exclude<CiResult, "green">;
 
 /**
- * The *needs a closer look* row for one cause, and for a slice PR the way on.
+ * The *needs a closer look* row for one cause.
  *
  * The key, heading, label and state are the table's, so everything that
- * selects on the verdict (the advance job parks on it, the slices table marks
- * a slice merged over it as accepted by hand) reads all three causes as one.
- * Only the step and the status line differ. The status line is the short form
- * of the cause and carries neither the base nor the slice line: it has 140
+ * selects on the verdict (the PRD chain's advance job parks on it) reads all
+ * three causes as one. Only the step and the status line differ. The status
+ * line is the short form of the cause and does not carry the base: it has 140
  * characters, and the body under it has the rest.
  */
-const closerLook = (
-  cause: CloserLookCause,
-  inputs: Pick<VerdictInputs, "base" | "sliceParent">,
-): VerdictRow => {
+const closerLook = (cause: CloserLookCause, inputs: Pick<VerdictInputs, "base">): VerdictRow => {
   const row = VERDICTS["needs a closer look"];
   const [step, short] =
     cause === "needs you"
@@ -1570,11 +1570,7 @@ const closerLook = (
             `CI had not finished, did not run, or could not be read, so a fix round cannot help. Read the CI the review's evidence names: approve a run waiting for approval or let it finish, or make CI run on pull requests into \`${inputs.base}\`. Then re-add agent:review.`,
             "CI unfinished, absent or unreadable. Approve it, let it finish or make it run, then re-add agent:review.",
           ];
-  const nextStep =
-    inputs.sliceParent === undefined
-      ? step
-      : `${step} Or re-add agent:implement to #${inputs.sliceParent} to accept this slice as it stands and move the chain on.`;
-  return { ...row, nextStep, description: `${row.label}. ${short}` };
+  return { ...row, nextStep: step, description: `${row.label}. ${short}` };
 };
 
 /**

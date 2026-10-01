@@ -759,27 +759,11 @@ describe("deriveVerdict", () => {
       );
     });
 
-    it.each([
-      ["the reviewer asked", { needsYou: "the wrong thing was built" }, "green"],
-      ["a check failed", {}, "red"],
-      ["no CI result", {}, "unknown"],
-    ] as const)("adds the way to accept a slice where %s", (_case, over, ci) => {
-      const plain = deriveVerdict(output(over), { ...inputs, ci });
-      const slice = deriveVerdict(output(over), { ...inputs, ci, sliceParent: "14" });
-      const acceptance =
-        "Or re-add agent:implement to #14 to accept this slice as it stands and move the chain on.";
-
-      expect(plain.nextStep).not.toContain("agent:implement");
-      expect(slice.nextStep).toBe(`${plain.nextStep} ${acceptance}`);
-      // The status keeps the short form: the slice line would not fit in 140.
-      expect(slice.description).toBe(plain.description);
-    });
-
     it.each(["green", "red", "unknown"] as const)(
       "keeps the status line on %s checks inside GitHub's limit, plain, and in the BMP",
       (ci) => {
         const over = ci === "green" ? { needsYou: "x" } : {};
-        const row = deriveVerdict(output(over), { ...inputs, ci, sliceParent: "14" });
+        const row = deriveVerdict(output(over), { ...inputs, ci });
 
         expect(row.description.length).toBeLessThanOrEqual(140);
         expect(row.description.startsWith(`${row.label}. `)).toBe(true);
@@ -788,12 +772,6 @@ describe("deriveVerdict", () => {
         expect(row.nextStep).not.toContain("—");
       },
     );
-
-    it("leaves every other verdict's step alone on a slice PR", () => {
-      const approved = deriveVerdict(output(), { ...inputs, ci: "green", sliceParent: "14" });
-
-      expect(approved).toEqual(VERDICTS["approval recommended"]);
-    });
   });
 
   /**

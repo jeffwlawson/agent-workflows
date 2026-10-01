@@ -87,7 +87,7 @@ export interface PullRequestContext {
  * the diff. It deliberately omits the review-thread GraphQL that the full
  * workflow uses to reply to human comments.
  */
-export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequestContext => {
+export const fetchPullRequestContext = (prNumber: string, issue?: string): PullRequestContext => {
   const prView = JSON.parse(gh(["pr", "view", prNumber, "--json", "id,title,body"])) as {
     id: string;
     title: string;
@@ -95,10 +95,11 @@ export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequ
   };
 
   const issueMatch = (prView.body ?? "").match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
-  // `partOf` is the issue a pull request works on without closing it — a slice
-  // PR's sub-issue, which its body names with `Part of` (#175). Only where the
-  // body closes nothing: a closing keyword is the author's own statement.
-  const issueNumber = issueMatch?.[1] ?? partOf;
+  // `issue` is the one issue this review is about, where the body cannot say:
+  // a PRD PR's slice round, whose body closes the parent and every sub-issue,
+  // and which reviews one of them (PRD #222). It wins over the body's first
+  // closing keyword, which there names the parent.
+  const issueNumber = issue ?? issueMatch?.[1] ?? "";
 
   // SECURITY: `fetchTrustedIssue` returns the title/body only when the issue's
   // author is trusted by `isTrustedAuthor` — org-adjacent or better, which is

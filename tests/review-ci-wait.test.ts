@@ -245,8 +245,8 @@ const runWaitStep = (options: {
   readonly runsUnreadable?: "403" | "unreachable";
   readonly gh?: string;
   /**
-   * The pull request's head branch — the job's `BRANCH`, which the step reads
-   * to tell a slice PR from an ordinary one. Default: an ordinary branch.
+   * The pull request's head branch, the job's `BRANCH`. Default: an ordinary
+   * branch.
    */
   readonly branch?: string;
   readonly extraEnv?: Record<string, string>;
@@ -602,28 +602,24 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   });
 
   /**
-   * **No CI at all is green on an ordinary pull request, and `unknown` on a
-   * slice PR** (#175). A slice PR's base is a PRD branch, so a CI workflow that
-   * filters `pull_request` to the base branch never runs on it — and a clean
-   * review of code no CI ran on would recommend approving it, which on a slice
-   * PR advances the chain onto it. `unknown` sends that review to a human
-   * instead, and the evidence line says why and where the fix is.
-   *
    * The only check runs here are this job's and a sibling agent's, which is
    * what a commit no CI ran on looks like from inside the review.
    */
   const NO_CI = [page([running(SELF_CHECK, "in_progress"), running("fix / fix", "queued")])];
-  const SLICE_BRANCH = "agent/slice-171-175-review-knows-it-is-reading-a-slice-pr";
+  const PRD_BRANCH = "agent/prd-222-build-each-slice-on-the-prd-branch";
 
-  it("does not know on a slice PR that no CI ran on", () => {
-    const outcome = runWaitStep({ pages: NO_CI, waitSeconds: "0", branch: SLICE_BRANCH });
+  /**
+   * **A PRD PR is no exception** (PRD #222). Its base is the default branch,
+   * so CI configured for the default branch runs on it, and no CI at all
+   * reads the same there as anywhere.
+   */
+  it("is green on a PRD PR that no CI ran on, as on any other", () => {
+    const outcome = runWaitStep({ pages: NO_CI, waitSeconds: "0", branch: PRD_BRANCH });
 
     expect(outcome.status).toBe(0);
-    expect(outcome.ciResult).toBe("unknown");
-    expect(outcome.evidence).toContain("No CI ran on this slice PR");
-    expect(outcome.evidence).toContain("docs/ADOPTING.md");
-    expect(outcome.evidence).toContain("agent/prd-**");
-    expect(outcome.stdout).toContain("::warning::No CI ran on this slice PR");
+    expect(outcome.ciResult).toBe("green");
+    expect(outcome.evidence).toContain("No CI ran on this commit");
+    expect(outcome.stdout).not.toContain("::warning::");
   });
 
   /**
@@ -637,7 +633,6 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(outcome.status).toBe(0);
     expect(outcome.ciResult).toBe("green");
     expect(outcome.evidence).toContain("No CI ran on this commit");
-    expect(outcome.evidence).not.toContain("No CI ran on this slice PR");
     expect(outcome.stdout).not.toContain("::warning::");
   });
 
@@ -802,18 +797,17 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   });
 
   /**
-   * "No CI ran" is both surfaces empty, not check runs alone: a slice PR whose
-   * CI reports through the commit-status API had CI run on it, and a slice PR
-   * whose checks ran is an ordinary one as far as this word goes.
+   * "No CI ran" is both surfaces empty, not check runs alone: CI that reports
+   * through the commit-status API ran.
    */
   it.each([
     ["CI that reports only a commit status", NO_CI, [status("ci/build", "success")]],
     ["CI that reports check runs", undefined, []],
-  ])("is green on a slice PR with %s", (_case, pages, statuses) => {
+  ])("is green on a PRD PR with %s", (_case, pages, statuses) => {
     const outcome = runWaitStep({
       ...(pages === undefined ? {} : { pages }),
       waitSeconds: "0",
-      branch: SLICE_BRANCH,
+      branch: PRD_BRANCH,
       statuses,
     });
 

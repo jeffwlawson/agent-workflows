@@ -4886,9 +4886,9 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * (#245), which is a **merge**, never a rebase, for the same reason.
    */
   it("pushes the PRD branch without force, and never rebases it", () => {
-    const pushes = code().filter((l) => /^\s*git push\b/.test(l));
+    const pushes = code().filter((l) => /^\s*(if ! )?git push\b/.test(l));
 
-    expect(pushes.map((l) => l.trim())).toEqual(['git push origin "$PRD_BRANCH" \\', 'git push origin "$PRD_BRANCH"']);
+    expect(pushes.map((l) => l.trim())).toEqual(['if ! git push origin "$PRD_BRANCH"; then', 'git push origin "$PRD_BRANCH"']);
     expect(fs.readFileSync(PRD, "utf8")).not.toMatch(/--force|\bpush -f\b|\+refs\/heads\/[^:]*:refs\/heads/);
     expect(code().filter((l) => /\brebase\b|\breset --hard\b|\bpull --rebase\b/.test(l))).toEqual([]);
     expect(runOf(PRD, "catch_up")).toContain('git merge --no-ff --no-edit');

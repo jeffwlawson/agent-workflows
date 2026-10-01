@@ -71,7 +71,7 @@ const commit = (cwd: string, message: string, files: Readonly<Record<string, str
 };
 
 /** What the default branch does next, on the remote, while the chain waits. */
-type MainMoves = "nothing" | "ci" | "conflict";
+type MainMoves = "nothing" | "ci" | "docs" | "conflict";
 
 interface Checkout {
   readonly temp: string;
@@ -104,6 +104,7 @@ const checkout = (moves: MainMoves): Checkout => {
   git(temp, "clone", "-q", remote, work);
 
   if (moves === "ci") commit(seed, "ci: run on pull requests too", { [CI]: "on: [push, pull_request]\n" });
+  if (moves === "docs") commit(seed, "docs: a second note", { "more.md": "two\n" });
   if (moves === "conflict") commit(seed, "docs: a different note", { "notes.md": "one, from main\n" });
   if (moves !== "nothing") git(seed, "push", "-q", remote, "main");
   const main = git(seed, "rev-parse", "main");
@@ -280,6 +281,43 @@ describe.skipIf(!CAN_RUN)("implement-prd's Merge the default branch into the PRD
     expect(body).toContain("nothing was built or pushed");
     expect(body).toContain(`Add \`agent:update-branch\` to PRD PR #${PRD_PR}`);
     expect(rest).toEqual([["issue", "edit", PARENT, "--remove-label", "agent:implement"]]);
+  }, ceiling(SPAWNS));
+
+  /**
+   * A rejected push of the merge is a failure. Where the merge brings in a
+   * workflow file, the likeliest cause is a token without Workflows: write,
+   * the `GITHUB_TOKEN` fallback included, which every retry hits again: the
+   * reason names it and `AGENT_PAT`. A remote whose `pre-receive` refuses
+   * every push stands in for GitHub's refusal.
+   */
+  const rejecting = (moves: MainMoves): Checkout => {
+    const built = checkout(moves);
+    const hook = path.join(built.remote, "hooks", "pre-receive");
+    fs.writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+    fs.chmodSync(hook, 0o755);
+    return built;
+  };
+
+  it("names Workflows: write and AGENT_PAT when a push of a merge changing a workflow file is rejected", () => {
+    const built = rejecting("ci");
+    const outcome = runStep(built);
+
+    expect(outcome.status).not.toBe(0);
+    expect(remoteTip(built)).toBe(built.tip);
+    expect(outputOf(outcome, "merged")).toBe("");
+    expect(outcome.reason).toContain(`Couldn't push the merge of \`main\` into \`${PRD_BRANCH}\`, so nothing was built.`);
+    expect(outcome.reason).toContain(`The merge changes \`${CI.split(path.sep).join("/")}\``);
+    expect(outcome.reason).toContain("until `AGENT_PAT` is set with Workflows: write");
+  }, ceiling(SPAWNS));
+
+  it("names only the moved PRD branch when a push of a merge changing no workflow file is rejected", () => {
+    const built = rejecting("docs");
+    const outcome = runStep(built);
+
+    expect(outcome.status).not.toBe(0);
+    expect(remoteTip(built)).toBe(built.tip);
+    expect(outcome.reason).toContain("Something else may have moved the PRD branch; trying again merges on top of it.");
+    expect(outcome.reason).not.toMatch(/Workflows: write|AGENT_PAT/);
   }, ceiling(SPAWNS));
 
   /**

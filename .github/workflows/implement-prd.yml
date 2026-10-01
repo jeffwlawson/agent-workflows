@@ -688,8 +688,18 @@ jobs:
             exit 0
           fi
 
-          git push origin "$PRD_BRANCH" \
-            || block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. Something else may have moved the PRD branch; trying again merges on top of it."
+          # A merge that brings in a change to a workflow file is a push
+          # GitHub rejects from a token without Workflows: write, the
+          # `GITHUB_TOKEN` fallback included, and a retry fails the same way.
+          # So that cause is named wherever the merge carries one: telling the
+          # human only to retry is a loop that cannot end.
+          if ! git push origin "$PRD_BRANCH"; then
+            workflows=$(git diff --name-only HEAD^1 HEAD -- .github/workflows | sed 's/.*/`&`/' | paste -sd ',' - | sed 's/,/, /g')
+            if [ -n "$workflows" ]; then
+              block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. The merge changes ${workflows}, and GitHub refuses a push that changes a workflow file from a token without Workflows: write, so trying again fails the same way until \`AGENT_PAT\` is set with Workflows: write. If it is, something else may have moved the PRD branch; trying again merges on top of it."
+            fi
+            block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. Something else may have moved the PRD branch; trying again merges on top of it."
+          fi
           # The remote-tracking ref is what `Mark the slice's commits` reads
           # "already published" off, so it is moved to the merge explicitly
           # rather than trusted to the push's refspec.

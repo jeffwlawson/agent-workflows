@@ -611,12 +611,51 @@ describe("the review reads the red check's report as evidence", () => {
     }
   });
 
+  /**
+   * Only a run that reached the test command says it ran it. Every status the
+   * classify step writes, by how far the job got: stopped before placing
+   * anything, placed but never ran the command, and ran it with no readable
+   * report.
+   */
+  it.skipIf(!CAN_RUN)("says the test command ran only where it did", () => {
+    const before = [
+      { "${{ steps.place.outputs.status }}": "misconfigured", "${{ steps.place.outputs.reason }}": "Set them." },
+      { "${{ steps.place.outputs.status }}": "no-merge-base", "${{ steps.place.outputs.reason }}": "No base." },
+      { "${{ steps.place.outputs.status }}": "no-test-files" },
+      { "${{ steps.place.outputs.status }}": "" },
+      { "${{ steps.setup.outcome }}": "failure" },
+      { "${{ steps.run.outputs.exit-code }}": "" },
+    ];
+    for (const values of before) {
+      const report = classify("pytest.xml", values, "src/recipes.py\n");
+      const seen = reviewSees(report);
+
+      expect(seen, report.status).toMatch(/^The red check is configured, and stopped before running its test command/);
+      expect(seen, report.status).not.toContain("The red check ran.");
+      expect(seen, report.status).not.toMatch(/, and ran the test command/);
+    }
+    for (const report of [classify("pytest.xml", { "${{ steps.setup.outcome }}": "failure" }), classify("pytest.xml", { "${{ steps.run.outputs.exit-code }}": "" })]) {
+      expect(reviewSees(report), report.status).toContain("never ran the test command");
+    }
+    for (const fixture of ["missing.xml", "../../red-check.test.ts"]) {
+      const report = classify(fixture);
+      const seen = reviewSees(report);
+
+      expect(seen, report.status).toMatch(/^The red check is configured, and stopped after running its test command/);
+      expect(seen, report.status).not.toContain("The red check ran.");
+    }
+    expect(reviewSees({ ...classify("pytest.xml"), status: "something-new" })).toMatch(
+      /^The red check is configured, and stopped before running its test command: it placed no test file and ran nothing\./,
+    );
+    expect(reviewSees(classify("pytest.xml"))).toMatch(/^The red check ran\. It took the test files/);
+  });
+
   /** The job ran on the labelled commit; the review may read a later one (#229). */
   it.skipIf(!CAN_RUN)("says where the check ran on a commit other than the one reviewed", () => {
     const report = classify("pytest.xml", {}, "src/recipes.py\n");
 
     expect(reviewSees(report, HEAD)).not.toContain("this review reads");
-    expect(reviewSees(report, "n".repeat(40))).toContain(`**It ran on \`${HEAD}\`, and this review reads \`${"n".repeat(40)}\`.**`);
+    expect(reviewSees(report, "n".repeat(40))).toContain(`**It read the pull request at \`${HEAD}\`, and this review reads \`${"n".repeat(40)}\`.**`);
   });
 
   /** A test's message is the pull request's to write, so no fence it holds closes the one around it. */

@@ -189,15 +189,37 @@ const renderSource = (report: RedCheckReport, red: number): string => {
   return `${heading}\n\n${list(report.source)}`;
 };
 
-const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
-  const parts: string[] = [];
+/**
+ * How far the job got, which is the report's `status` and nothing else: only
+ * a run that reached the test command may say it did. A status the job adds
+ * later is not assumed to have got anywhere.
+ */
+const PLACED_AND_RAN: readonly string[] = ["ran", "no-report", "unreadable-report"];
+const PLACED_ONLY: readonly string[] = ["setup-failed", "not-run"];
+
+const opening = (report: RedCheckReport): string => {
   const at = report.base === null ? "the merge-base" : `the merge-base, ${code(report.base)}`;
-  parts.push(
-    `The red check ran. It took the test files this pull request adds or changes, put them over ${at}, with every other file as it was there, and ran the test command the repository configures for it.`,
-  );
+  const placed = `took the test files this pull request adds or changes and put them over ${at}, with every other file as it was there`;
+  if (report.status === "ran") {
+    return `The red check ran. It ${placed}, and ran the test command the repository configures for it.`;
+  }
+  if (PLACED_AND_RAN.includes(report.status)) {
+    return `The red check is configured, and stopped after running its test command. It ${placed}, and ran the test command the repository configures for it.`;
+  }
+  if (PLACED_ONLY.includes(report.status)) {
+    return `The red check is configured, and stopped before running its test command. It ${placed}, and never ran the test command.`;
+  }
+  if (report.status === "no-test-files") {
+    return `The red check is configured, and stopped before running its test command: it looked for the test files this pull request adds or changes against ${at}, and placed and ran nothing.`;
+  }
+  return "The red check is configured, and stopped before running its test command: it placed no test file and ran nothing.";
+};
+
+const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
+  const parts: string[] = [opening(report)];
   if (report.head !== null && report.head !== reviewedHead) {
     parts.push(
-      `**It ran on ${code(report.head)}, and this review reads ${code(reviewedHead)}.** Anything pushed between the two is not in it, so whether a red test covers what those commits change is unknown, as for a report that could not be read.`,
+      `**It read the pull request at ${code(report.head)}, and this review reads ${code(reviewedHead)}.** Anything pushed between the two is not in it, so whether a red test covers what those commits change is unknown, as for a report that could not be read.`,
     );
   }
 

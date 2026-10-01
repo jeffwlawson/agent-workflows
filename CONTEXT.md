@@ -66,7 +66,8 @@ model and writes nothing at all: no comment, label, status or review, and no wri
 one with. One **posting job** that runs no model then writes everything, in the order above:
 it answers and resolves the earlier findings the review ruled on, then posts the overview and the
 new findings in one call, whose *Resolved since last review* lists only the threads that actually
-resolved (one whose resolve failed is listed as still open, with a note), then the verdict status
+resolved (one whose resolve failed is listed as still open, with a note), then the pull request's
+title and summary block where anything was pushed since the summary was written, then the verdict status
 and the ready state, then takes `agent:review` off, then hands off. A refusal or a failure in the
 review job is said by the posting job too, since nothing else can write it.
 
@@ -217,8 +218,8 @@ writers of it would break "the newest record wins".
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the
 review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,
-*Resolved since last review* and *Follow-ups*, then *How this was checked* and *What changed in
-this PR*, then a rule and the run. A group with nothing in it is omitted and that rule is the only
+*Resolved since last review* and *Follow-ups*, then *How this was checked*, then a rule and the
+run. A group with nothing in it is omitted and that rule is the only
 divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
 and decides nothing else; a test permutes it across a review and holds the verdict identical. It is
 rendered as a **chip this repository hosts**, pinned to the release that posted it, and the thread
@@ -249,11 +250,21 @@ the only record such a finding exists.
 The prose beside the record is capped by the schema rather than asked for in the brief, and
 **restates no finding**: the findings are above it with their severities, and the one 250-word
 paragraph that mixed *what the change is* with *what the reviewer verified* is what made a body
-long enough to bury the record in it. *What changed in this PR* is also omitted on the reviews where
-the reader has already been handed it: the review after an automatic fix round, and a re-review with
-nothing pushed since the last verdict (`shared/review-round.ts`'s `describesTheChange`). A fix round
-a human started by adding `agent:fix` posts no verdict, so the review after it cannot tell it from a
-human's push and describes the change again.
+long enough to bury the record in it.
+
+**What the change is lives in the pull request's body, not the review** (#218). The run that opens
+a pull request writes its **frame** once and never again: `Closes #N` first, a note saying what the
+loop does with it and how to steer it (linking the opening run), on a PRD PR the slices table's
+markers under *Progress*, and a **summary block** between `<!-- agent:summary -->` markers. The
+review writes the block and the title, and nothing else in the body: a maintainer's notes outside
+the markers survive every round byte for byte. The rule is **anything pushed since the summary was
+last written rewrites both** (the first build, a maintainer's push, a conflict resolution and a fix
+round alike), and nothing pushed leaves both alone. The block carries the head it was written at,
+which is how the rule is read: not from the verdict history, which says what a verdict has seen
+rather than what a summary has. A maintainer's edit inside the block is input to the next rewrite,
+kept where it is still true. The agent produces `title` and `summary`; the posting job writes them,
+splicing into the body as it stands then rather than as the review read it. So the review comment
+carries no description of the change, and the description exists in one place.
 
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather

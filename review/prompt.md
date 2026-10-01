@@ -268,7 +268,8 @@ reader meets. Rate honestly: inflating one buys nothing and costs the reader the
 
 # WHAT YOU WRITE BESIDE THE FINDINGS
 
-Three prose fields, and **none of them restates a finding.** Every finding is already in the
+Two prose fields for the review, two for the pull request itself, and **none of them restates a
+finding.** Every finding is already in the
 posted body above them, with its severity and a link to where it was raised, so a second telling
 is the same problem read twice, which is exactly what made the body long enough to bury the
 record in it.
@@ -281,11 +282,45 @@ record in it.
 - **`howChecked`**: under 100 words on what you actually verified: the checks you ran or read,
   the behaviour you traced, the files you opened past the diff. It is how a reader weighs this
   review. Every review carries one.
-- **`whatChanged`**: one sentence on what this pull request is, and at most five lines on what it
-  changes. Description only: what it *does*, never how well. Not every review posts this one.
+- **`title`** and **`summary`**: the pull request's title, and the summary in its body. The
+  section below says what goes in each.
 
 Do not use em dashes in anything you write, in these fields or in a finding: use a comma, colon,
 semicolon, parentheses, or a new sentence instead.
+
+# THE TITLE AND THE SUMMARY
+
+The pull request's body carries a **summary block**, the one part of it the workflow lets a review
+write. Everything else in the body (the line that closes the issue, the note on what the loop does,
+a maintainer's own notes) is never touched. The block says, now:
+
+{{CURRENT_SUMMARY}}
+
+The title, now, is the one at the top of this brief.
+
+{{SUMMARY_RULE}}
+
+**`summary`** is short, and about **what was built, not what was asked**. It does not retell the
+linked issue. It covers:
+
+- what the change does;
+- behaviour changes, with any breaking one marked **Breaking:**;
+- anything the change does differently from what the linked issue asked, with the reason. Say it
+  plainly even where the reason is good: a reader deciding whether to merge needs to know the
+  change is not the one the issue describes.
+
+A sentence, then a few bullets, in Markdown, under about 150 words. Describe the pull request as it
+stands now, all of it, and not only the commits since the last summary. Where the block already
+says something (an earlier review's summary, or a maintainer's edit to it), treat it as **input**:
+keep what is still true, in its words where they still fit, and correct whatever the code now
+contradicts. A maintainer's edit is not a lock, and it is not to be thrown away either.
+
+**`title`** is one line, true of the change as it now stands. Use the commit convention `CLAUDE.md`
+names, if it names one; otherwise conventional-commit style, `type(scope): subject`, with the scope
+optional. The **type comes from what the diff does**, not from the issue's title: a change the issue
+called a fix that adds a capability is `feat`. It is not the issue's title copied, and a title a
+maintainer edited is input in the same way the block is. A squash merge may land this line as the
+commit subject, so write it as one.
 
 # WHEN ANOTHER PASS WILL NOT SETTLE IT
 

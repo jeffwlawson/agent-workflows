@@ -638,7 +638,7 @@ The verdict is the one-line answer; the review body is the record it was derived
 as `github-actions[bot]`, and is then laid out like Copilot code review's overview, in one fixed
 order: the assessment heading from the table above, one sentence naming what is unresolved, the next
 step in italics, `**Findings:** N` with the severities behind it, then the findings in collapsible
-groups, then two collapsed sections on the review itself, then a rule and a link to the run. There
+groups, then a collapsed section on how the review was checked, then a rule and a link to the run. There
 is no other divider in it.
 
 The groups are the part worth learning, because they are what the body remembers from one round to
@@ -665,16 +665,12 @@ empty:
   the count: *"1 finding was moved to follow-ups"*. That is a finding whose anchor was in no file
   the pull request changes — see below.
 
-Two collapsed sections follow the groups, and neither is a place a finding is ever restated:
+One collapsed section follows the groups, and it is not a place a finding is ever restated:
 
-- **How this was checked** — what the reviewer verified: checks it ran or read, behaviour it
+- **How this was checked**: what the reviewer verified, the checks it ran or read, behaviour it
   traced, files it opened past the diff. It is how you weigh the review, and it is on every one.
-- **What changed in this PR** — one sentence and up to five lines describing the change. It appears
-  on the first review of a pull request, and again when commits have landed that no verdict has
-  seen that no automatic fix round made: your own push, a conflict resolution, or a fix round you
-  started yourself by adding `agent:fix`, which posts no verdict to tell it apart from a push. The
-  review after an automatic fix round omits it, because you were handed that description last
-  round.
+
+What the change *is* is not in the review at all: it is in the pull request's body, below.
 
 A carried entry's title is a **link to the thread it was raised in**, which is what saves you
 scrolling back through an older review to find it. A finding this review is the first to raise has
@@ -732,6 +728,33 @@ The loop will not retire a finding on the strength of its own disagreement with 
 decline, replied on the thread, is a different thing — the next review closes that one as
 `WONT_FIX`, quoting you, and stops counting it. If it misreads you it leaves the thread open, which
 is the direction that costs a round rather than a decision.
+
+### The pull request's title and body
+
+The run that opens a pull request writes its body once, and nothing rewrites it: `Closes #N` first,
+then a note saying what the loop does with the pull request and how to steer it, with a link to the
+run that opened it, and a **summary block** under that. A PRD PR's note says not to merge it before
+every slice is done, and its body carries the slices table under *Progress* as well.
+
+The review writes the summary block and the title. The summary says what the change does, what
+behaviour it changes (breaking changes marked), and where it departs from the linked issue and why.
+It does not retell the issue. The title is one line, in the commit convention your `CLAUDE.md`
+names, or conventional-commit style if it names none. Both are rewritten by any review that follows
+a push (the first build, a fix round, your own push, a conflict resolution) and left alone by a
+review with nothing pushed since.
+
+**Your own notes go outside the block**, and the loop never touches them. Text inside the block is
+yours to edit too, and an edit there is not lost: the next rewrite starts from it, keeps what is
+still true, and corrects what the code has since contradicted. A title you edit is treated the same
+way. The block's markers are HTML comments, so they show only in the edit box; delete one and the
+review stops writing the summary, with a warning in its run, until the pair is whole again.
+
+**Set the squash commit message to the pull request title.** In the repository's *Settings →
+General → Pull Requests*, under *Allow squash merging*, choose *Default commit message → Pull
+request title*. The default, *Default message*, takes the single commit's subject on a pull request
+with one commit and the title on one with more, so what lands on your default branch depends on how
+many commits the loop happened to make. With the title, it is always the line the review wrote for
+the change as it stands.
 
 ### The pull request list as an inbox
 

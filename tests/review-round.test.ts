@@ -12,7 +12,6 @@ vi.mock("node:child_process", async (importOriginal) => ({
 import { execFileSync } from "node:child_process";
 import {
   describeHistory,
-  describesTheChange,
   fixRoundProgress,
   readReviewHistory,
   unreadableHistoryNote,
@@ -419,25 +418,6 @@ describe("fixRoundProgress", () => {
     expect(
       fixRoundProgress({ afterFixRound: false, unreviewedCommits: true }, [finding("f-1")], []),
     ).toBeUndefined();
-  });
-});
-
-/**
- * The join the body reads: whether this review describes the change at all
- * (#109, decision 8 as the maintainer settled it).
- */
-describe("describesTheChange", () => {
-  it.each([
-    ["a first review, or a push after a verdict that started no round", { afterFixRound: false, unreviewedCommits: true }, true],
-    ["a re-review with nothing pushed", { afterFixRound: false, unreviewedCommits: false }, false],
-    ["the review after a fix round", { afterFixRound: true, unreviewedCommits: true }, false],
-    [
-      "an unreadable history",
-      { afterFixRound: true, unreviewedCommits: false, unreadable: "the commits could not be listed" },
-      false,
-    ],
-  ] as const)("is %s: %o", (_case, history, expected) => {
-    expect(describesTheChange(history)).toBe(expected);
   });
 });
 

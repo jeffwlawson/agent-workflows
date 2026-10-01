@@ -194,6 +194,28 @@ describe("addMergedSlice", () => {
     ]);
   });
 
+  /**
+   * The PRD PR's frame (#218) opens with the markers and nothing between them,
+   * or a maintainer may have left the header alone. Either is a table with no
+   * row yet, so the first merge into it is still the table's first write.
+   */
+  it.each([
+    ["the frame's empty markers", `Closes #171\n\n## Progress\n${SLICES_START}\n${SLICES_END}\n\nAfter.`],
+    ["markers on one line", `Closes #171\n${SLICES_START}${SLICES_END}\n`],
+    ["a header with no rows", `Closes #171\n${SLICES_START}\n| Slice | PR | Verdict | Open findings |\n|---|---|---|---|\n${SLICES_END}\n`],
+  ])("writes the pre-upgrade slices into %s", (_case, body) => {
+    const out = addMergedSlice(body, { backfill: [], merged: slice({ subIssue: 204 }), preUpgrade });
+    const rows = out.split("\n").filter((line) => /\(#\d+\)/.test(line));
+
+    expect(rows).toEqual([
+      renderPreUpgradeRow(preUpgrade[0]!),
+      renderPreUpgradeRow(preUpgrade[1]!),
+      renderSliceRow(slice({ subIssue: 204 })),
+    ]);
+    expect(out.split(SLICES_START)).toHaveLength(2);
+    expect(out.slice(0, out.indexOf(SLICES_START))).toBe(body.slice(0, body.indexOf(SLICES_START)));
+  });
+
   it("adds no pre-upgrade row once the table exists", () => {
     const existing = addMergedSlice("Closes #171\n", { backfill: [], merged: slice({ subIssue: 204 }), preUpgrade: [] });
     const out = addMergedSlice(existing, { backfill: [], merged: slice({ subIssue: 205, slicePr: 212 }), preUpgrade });

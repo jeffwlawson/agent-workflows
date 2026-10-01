@@ -102,7 +102,7 @@ claims in primary sources at authoring time is what actually closed it before
 | Refuses a **sub-issue** / PRD-shaped issue | ✅ | ✅ | added jeffwlawson/winget-manifest-lint#90, narrowed in jeffwlawson/winget-manifest-lint#92. One GraphQL query settles the shape; a sub-issue is refused outright — its parent drives it — while a PRD-shaped parent is now **deferred** to `agent-implement-prd` rather than refused. §2a says why a deferral has to touch nothing at all |
 | Refuses a `wayfinder:*` **planning artifact** | ❌ | ➕ | maps and decision tickets describe work rather than being it. CVM has no equivalent because its PRDs *are* issues on the tracker; ours are planned in a skill (§1) and land labelled |
 | Issue body passed in by the runner (agent never calls `gh`) | ✅ | ✅ | |
-| **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ❌ | ours is a fixed heredoc in the workflow. Re-rated 2026-08-01: this is the only channel an agent has for reporting a **non-code** finding, and jeffwlawson/winget-manifest-lint#63 hit that limit — see §9.2 |
+| **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ✅ | since #218, and by the **review** rather than by `implement`: the opening run writes a fixed frame (`Closes #N`, a note on what the loop does, the run link) around a summary block, and every review that meets a push rewrites the block and the title, so a fix round that changes the approach changes the description too. The workflow writes both from the review's validated output; the agent writes neither. See §9.2 |
 | **Auto-cascade: adds `agent:review` to the new PR** | ✅ | ✅ | needs `AGENT_PAT`; warns loudly if absent, since a `GITHUB_TOKEN` label add is a silent no-op |
 | `failure_reason.txt` → issue comment on failure | ✅ | ✅ | |
 | Opens the PR as a draft | ✅ | ✅ | |
@@ -556,14 +556,15 @@ write access sits below everything that does not, regardless of how useful it lo
 1. **Composite action for setup** (📋) — pure cleanup, now that five workflows duplicate
    checkout → node → ci → claude. jeffwlawson/winget-manifest-lint#92 added the fifth copy without
    changing a line of it, which is the argument.
-2. **Agent-authored PR body** (❌, `write-pr`) — promoted from "cosmetic" on 2026-08-01. The body is
-   a hardcoded heredoc in the implement workflow, so it is the one thing an agent **cannot** write.
-   Issue jeffwlawson/winget-manifest-lint#63 asked the agent to report a bug it was told not to fix;
-   it had nowhere to put it but a comment inside a test file. Top-level comments
-   (jeffwlawson/winget-manifest-lint#78) now give `agent:fix` somewhere to put such a finding, so
-   this is no longer the *only* non-code channel — but `agent:implement` still has none, and the
-   body is still the first thing a human reads. Widens no write access: the workflow already authors
-   the PR.
+2. **Agent-authored PR body** (✅ since #218, `write-pr`). Promoted from "cosmetic" on 2026-08-01,
+   when the body was a hardcoded heredoc and the one thing an agent **could not** write (issue
+   jeffwlawson/winget-manifest-lint#63 had nowhere to report a bug it was told not to fix but a
+   comment inside a test file). Closed by the review rather than by `implement`: the opening run
+   writes a fixed frame around a **summary block**, and the review writes the block and the title,
+   rewriting both whenever anything was pushed since the block was last written. That is where an
+   approach change happens, in a fix round as often as in the first build, and a description only
+   the implementing agent wrote would be the first build's. Widens no write access: the review's
+   posting job already held `pull-requests: write`, and the agent holds no token.
 3. **Auto-cascade fix → review** (📋) — deliberately still manual. implement → review is safe to
    automate because it fires *once per PR*; fix → review fires *every iteration*, and keeping a
    human on that leg is what makes "should we act on this feedback?" a decision rather than a
@@ -1042,8 +1043,8 @@ expensive to rediscover.
   decision 8) it is Copilot's overview in order — `## Agent review`, the assessment, one sentence
   naming what is unresolved, the step in italics, `**Findings:** N` with its severities, then
   collapsible *Open* (this round's entries marked *new*), *Previously missed*, *Resolved since last
-  review* and *Follow-ups*, then *How this was checked* and *What changed in this PR*, then a rule
-  and the run. `shared/review-output.ts` is the one place that order is written down.
+  review* and *Follow-ups*, then *How this was checked*, then a rule and the run. *What changed in
+  this PR* was the last section until #218 moved the description into the pull request's body. `shared/review-output.ts` is the one place that order is written down.
 
   The heading is there because **every agent in the loop posts as `github-actions[bot]`**, so in a
   timeline the overview and a fix run's thread replies are one author saying more things. The rule
@@ -1064,18 +1065,18 @@ expensive to rediscover.
   where it is asked for.** One 250-word `summary` mixed what the change is with what the reviewer
   verified, and a prompt-only limit is one a model can talk its way past — #122's body was a
   checklist and then every finding again as a paragraph. It is now `assessment` (one sentence
-  naming what is unresolved, under the heading, with a code-built fallback), `howChecked` (capped
-  in the schema, on every review) and `whatChanged` (a sentence and at most five lines, capped in
-  the schema).
+  naming what is unresolved, under the heading, with a code-built fallback) and `howChecked`
+  (capped in the schema, on every review).
 
-  `whatChanged` is also the one part of the body that is **not** on every review: it appears on the
-  first review of a pull request and on a later review with commits nothing has described that no
-  automatic fix round made (a human's push, a conflict resolution, or a fix round a human started
-  by adding `agent:fix`, which posts no verdict to tell it from a push), and is omitted on the
-  review after an automatic fix round and on a re-review with nothing pushed since the last verdict
-  (`describesTheChange`, read from the verdict history since #202). Describing the
-  change again, at the top, to a reader handed that description last round is the body spending its
-  opening on something already read.
+  What the change *is* left the review body altogether in #218. It is the **summary block** in the
+  pull request's body, beside the title, both capped in the schema (`summary` by words, `title` by
+  characters) and written by the posting job, never by the agent. The update rule is read from the
+  block rather than from the verdict history: the block carries the head it was written at, and a
+  review rewrites block and title where anything was pushed since, a fix round included, and leaves
+  both where nothing was. The review owns the text between the markers and nothing outside them,
+  and the splice is made against the body as it stands when the review is posted, so a
+  maintainer's notes survive byte for byte. A maintainer's edit **inside** the block is input to
+  the next rewrite, not a lock on it.
 - **Every fix-before-merge finding is anchored at something the pull request changed, and there is
   no body placement.** Since #127 (superseding #109, decision 3) `placeFindings` returns two
   placements, both of them threads: a line the diff covers, or the changed file the anchor has

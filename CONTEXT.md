@@ -21,7 +21,7 @@ the middle. One workflow per label transition, near enough:
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
 sub-issue per run, each as a pull request of its own, and waits for that pull request's review
-round to end before it builds the next; review's advance job (below) re-adds the label that moves
+round to end before it builds the next; review's advance (below) re-adds the label that moves
 it on.
 
 That branch is the **PRD branch** (the code's "accumulating branch"), and the one pull request
@@ -40,7 +40,7 @@ refreshed (#164).
 it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
 label on an issue or a pull request is the run working on it now, or the one queued behind it, and
 `agent:in-progress`, which said the same thing in a second write, is retired. On a PRD parent that
-makes `agent:implement` on only during each build run; the advance job puts it back. Two rules
+makes `agent:implement` on only during each build run; the advance puts it back. Two rules
 follow from GitHub firing no event for a label already there. The loop adds a trigger label by
 **removing it first**, so a stale one cannot swallow the request. And a request made **while a run
 works** is not lost: a review or a branch refresh that ends to find the head moved since it
@@ -57,9 +57,18 @@ finished PRD, a deleted branch, a fix with nothing to do) comments and removes i
 (#253). Every such comment is in one of two patterns: `**`agent:X` stopped:**` and the reason, the
 run and what to do, for a run that started; `**`agent:X` didn't run:**` and a sentence saying why
 and what to do, for one refused before it did anything. So nothing ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
-review that found the head moved hands off one way only, and says so as `moved`: its `auto-fix` and
-`advance` jobs stand down, since its verdict is about a commit the pull request has left, and
+review that found the head moved hands off one way only, and says so as `moved`: its fix-round and
+advance hand-offs stand down, since its verdict is about a commit the pull request has left, and
 `update-branch` asks for itself again only where it did not just ask for a review.
+
+**Review is the one run whose work and whose posting are two jobs** (#257). The review job runs the
+model and writes nothing at all: no comment, label, status or review, and no write scope to make
+one with. One **posting job** that runs no model then writes everything, in the order above:
+it answers and resolves the earlier findings the review ruled on, then posts the overview and the
+new findings in one call, whose *Resolved since last review* lists only the threads that actually
+resolved (one whose resolve failed is listed as still open, with a note), then the verdict status
+and the ready state, then takes `agent:review` off, then hands off. A refusal or a failure in the
+review job is said by the posting job too, since nothing else can write it.
 
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
@@ -91,14 +100,14 @@ if it never does. And the review does not trust its payload: it reads the branch
 reviews the tip where it descends from the labelled commit, refuses by name where it does not,
 and checks out, waits on CI for and posts every status on that one commit.
 
-Review adds a trigger label in two cases. The first is on the pull request (#102): a job of its
-own adds `agent:fix` when the verdict is *Changes recommended* and the pull request has
+Review adds a trigger label in two cases. The first is on the pull request (#102): the posting
+job's last step adds `agent:fix` when the verdict is *Changes recommended* and the pull request has
 automatic fix rounds left in its **fix-round budget** (#201): the repository variable
 `AGENT_MAX_FIX_ROUNDS`, default 3, `0` for none. **Rounds spent** are counted from the pull request
 itself: the verdicts the loop posted there that announced a round. There is no marker label, so the
 count survives re-runs and hand edits, only automatic rounds count, and a push resets nothing. The
 budget is settled before the review runs, so the verdict announces a round only where one will
-start, and the job decides from live state rather than the event payload: it adds nothing where
+start, and the step decides from live state rather than the event payload: it adds nothing where
 `agent:fix` is already on the pull request or a newer verdict stands, and says on the pull request
 when a round it should have started did not. It is the return leg `docs/parity.md` §10 used to
 forbid outright, and what makes it an arrow rather than a cycle is two bounds, both ruled on before
@@ -108,9 +117,9 @@ the ids the workflow wrote into them, no further automatic round starts, whateve
 New findings the re-review raised neither count as progress nor reset anything. The verdict then
 says why the loop stopped, and gives the same three ways on as a spent budget: add `agent:fix`,
 decline a finding in a reply, or push a commit. The **round rule** it replaced, which barred a
-second-round review from recommending another round, is retired (PRD #200 decision 6). The job
-holds `pull-requests: write` and nothing else, checks nothing out and runs no model, which is what
-keeps `AGENT_PAT` away from the job that reads the pull request. The `auto-fix` input it replaced is
+second-round review from recommending another round, is retired (PRD #200 decision 6). The step
+is in the posting job, which checks nothing out and runs no model, which is what keeps
+`AGENT_PAT` away from the job that reads the pull request. The `auto-fix` input it replaced is
 a deprecated alias for one release (`true` a budget of 1, `false` of 0). Waiting has no label
 either: `agent:queued` is retired with the marker (#204), because a native "blocked by" link says an
 issue waits, and `implement` refuses while one is open. A pull request whose
@@ -118,19 +127,20 @@ automatic fix is about to start also stays a **draft**: draft means the loop is 
 working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
 pushed or left a note, and the fix run itself where it did neither and so asked for none.
 
-The second is the **advance job**, a second arrow, and it lands on an issue rather than a pull
+The second is the **advance**, a second arrow, and it lands on an issue rather than a pull
 request (#176). When a **slice PR**'s round ends on a verdict the chain moves on from (🟢, or 🟡 with
 no fix round starting), it re-adds `agent:implement` to the slice PR's
 **parent**, and the `implement-prd` run that starts merges the slice PR and builds the next slice.
-`fix` carries the same job for the round a fix run ends itself, by pushing nothing. It parks on 🔵
+`fix` carries the same advance, as a job of its own, for the round a fix run ends itself, by
+pushing nothing. It parks on 🔵
 and on a failed run, and a human re-adding the label there is the acceptance. It cannot cycle: it
 never labels a pull request, the run it starts either merges the slice PR — so no later round on
-it can fire the job again — or refuses, and it is **bounded by the number of sub-issues**, because
-a finished PRD refuses the label. It has `auto-fix`'s shape — no checkout, no model,
-`pull-requests: write` alone, `AGENT_PAT` or nothing — and is on by default, since only the PRD
-chain opens a slice PR.
+it can fire the advance again, or refuses, and it is **bounded by the number of sub-issues**,
+because a finished PRD refuses the label. Both workflows run it from one composite action,
+`.github/actions/advance-prd`, pinned to the release like the runner (no checkout, no model,
+`AGENT_PAT` or nothing), and it is on by default, since only the PRD chain opens a slice PR.
 
-So is merging the slice PR by hand (#209). `review` carries a twin of the advance job on the
+So is merging the slice PR by hand (#209). `review` carries a twin of the advance, as a job, on the
 `closed` event its caller also listens for: a slice PR merged into its PRD branch by anyone but the
 chain re-adds `agent:implement` to the parent, and the run that starts finds the slice PR merged,
 writes its row and builds the next slice. The chain's own merge is told apart by a mark, not by

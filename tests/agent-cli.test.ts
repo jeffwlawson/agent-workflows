@@ -1788,9 +1788,9 @@ describe("doctor names the failures that otherwise look like something else", ()
       // that makes it a workflow somebody's caller hands a token to.
       if (document?.on?.workflow_call === undefined) continue;
       // The widest grant across its jobs, scope by scope, because the caller's
-      // grant is the ceiling for all of them. `review.yml` has two jobs, and
-      // its `resolve` job holds the `contents: write` the review job narrows
-      // back to `read` (#133).
+      // grant is the ceiling for all of them. `review.yml` has several jobs,
+      // and its `post-review` job holds the `contents: write` the review job
+      // narrows back to `read` (#133, #257).
       const RANK: Readonly<Record<string, number>> = { none: 0, read: 1, write: 2 };
       const widest: Record<string, string> = {};
       for (const job of Object.values(document.jobs ?? {})) {
@@ -2011,7 +2011,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * The upgrade that leaves the review caller's grant behind (#133). A caller
-   * installed before the `resolve` job grants `contents: read`, which was every
+   * installed before the thread resolve grants `contents: read`, which was every
    * scope the review job itself used — so nothing about the caller looks wrong,
    * and what it costs is the whole workflow: a called job cannot hold more than
    * its caller granted, and GitHub refuses the elevation by failing the run

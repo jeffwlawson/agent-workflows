@@ -326,8 +326,9 @@ way the model ones are:
 | `AGENT_REVIEW_TIMEOUT_MINUTES` | 5 | a review's own time, **after** its CI wait of up to 15 minutes |
 
 The review's limit is the two added: 20 minutes with neither set, and a slow CI no longer eats into
-the time the review itself gets. The small jobs (`follow-ups` at 10 minutes, the jobs that resolve
-threads, start a fix round or advance a PRD at 5) are fixed.
+the time the review itself gets. The small jobs (`follow-ups` and the review's posting job, which
+resolves threads, posts the review and hands off, at 10 minutes, and the ones that advance a PRD
+at 5) are fixed.
 
 A value must be a positive integer, written without a leading zero. `AGENT_TIMEOUT_MINUTES` is read
 straight into `timeout-minutes`, so a value that is not a number fails those jobs before their first
@@ -373,7 +374,7 @@ a rule with exceptions, though. It is a three-valued property, and which value a
 |---|---|---|
 | `agent:review`, `agent:fix`, `agent:update-branch` | **on while its run works** | the run, as it ends |
 | `agent:implement` on an ordinary issue | **on while its run works** | the run, as it ends |
-| `agent:implement` on a PRD parent | **cursor** | each run, as it ends, and put back by review's advance job when a slice PR's round ends, which never happens after the last one |
+| `agent:implement` on a PRD parent | **cursor** | each run, as it ends, and put back by review's advance when a slice PR's round ends, which never happens after the last one |
 | `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, on any run that reached a verdict — or you, to opt out |
 
 **Fill the column in when you add a label.** Written as prose this said "consumed on entry, except
@@ -395,7 +396,7 @@ the trigger label comes off, then the next step's label goes on: `agent:review` 
 moved while it worked does not start a fix round or advance a PRD chain off its verdict.
 
 **The cursor.** Each `implement-prd` run holds `agent:implement` on the parent while it builds and
-takes it off as it ends, and the chain moves on only when it comes back: review's **advance job** re-adds it when a slice PR's
+takes it off as it ends, and the chain moves on only when it comes back: review's **advance** re-adds it when a slice PR's
 round ends on a verdict the chain moves on from (§3b, *The verdict on a slice PR*), and you re-add
 it to accept a slice the chain parked on. Nothing re-adds it after the PRD PR's own review, so the
 chain stops by itself. So on a parent issue the label is a cursor rather than a one-shot: seeing it
@@ -598,7 +599,7 @@ next slice. What the verdict means is unchanged; what differs is what happens af
 
 | Verdict on the slice PR | What the chain does | What is left to you |
 |---|---|---|
-| **🟢 Approval recommended** | review marks the slice PR ready, and its advance job re-adds `agent:implement` to the parent. The next run merges the slice PR into the PRD branch and builds the next slice | nothing |
+| **🟢 Approval recommended** | review marks the slice PR ready, and its advance re-adds `agent:implement` to the parent. The next run merges the slice PR into the PRD branch and builds the next slice | nothing |
 | **🟡 Changes recommended**, no automatic fix starting (off, spent, or no progress) | advances, as on 🟢. The findings stay open on the slice PR and are linked from its row in the PRD PR's slices table | nothing, unless you want them fixed before the PRD lands — see below |
 | **🟡 Changes recommended**, with the fix round already started | **waits**. The fix run's re-review decides, and a fix that pushed nothing and posted no out-of-scope note ends the round itself and advances the chain | nothing |
 | **🔵 Needs a closer look** | **parks**. Nothing is re-labelled, and the slice PR stays open | steer it, or accept it — below |
@@ -981,12 +982,12 @@ issue*, naming neither the scope nor the file. The run's page in the browser car
 that names both:
 
 > **Invalid workflow file:** .github/workflows/agent-review.yml#L*n* — Error calling workflow
-> 'jeffwlawson/agent-workflows/.github/workflows/review.yml@\<sha>'. The nested job 'resolve' is
+> 'jeffwlawson/agent-workflows/.github/workflows/review.yml@\<sha>'. The nested job 'post-review' is
 > requesting 'contents: write', but is only allowed 'contents: read'.
 
 Two things in it are worth knowing before you go looking. The line it points at is your caller's
 `uses:`, not the `permissions:` line that is short. And the job it names is the **called** one —
-`resolve` here, the job that holds the grant — not the job in your file. That is the whole diagnosis,
+`post-review` here, the job that holds the grant, not the job in your file. That is the whole diagnosis,
 and it is one `doctor` gives you before a label rather than after one.
 
 Probed on a real token (2026-09-27), because this had been asserted twice and observed never: four
@@ -1015,13 +1016,14 @@ scope write.
 > earlier release is one to move rather than to leave. What the verdict says, and what you do with
 > each one, is §3b.
 
-> **`contents: write` on review is the `resolve` job's, and only that job's — and it is the one row
+> **`contents: write` on review is the posting job's, and only that job's, and it is the one row
 > here that is newer than your caller.** GitHub refuses `resolveReviewThread`, which closes the
 > threads a review verified, to a token without it; replying into those threads needs nothing extra,
 > which is why v0.4.0 — which ran the resolve inside the review job — replied on every verified
-> thread and closed none of them. The `resolve` job checks nothing out, installs nothing and runs no
-> agent: it runs the two mutations over the list the review wrote, and nothing else. The review job
-> narrows the grant back to `contents: read`, so a review still cannot touch your branch.
+> thread and closed none of them. The posting job (`post-review`, a `resolve` job until #257)
+> checks nothing out, installs nothing and runs no agent: it resolves the threads over the list the
+> review wrote, then posts the review, and nothing else. The review job narrows every grant back to
+> `read`, so a review still cannot touch your branch, or write anything else.
 >
 > **Move the grant when you move the pin.** This is not a scope you lose the resolve without: a
 > caller left on `contents: read` does not review at all, and the annotation quoted at the head of
@@ -1088,7 +1090,7 @@ Four things about that shape are worth knowing before you paste it:
   default token is the ceiling like any other — probed, and it is the case this file used to give as
   the exception. The two blocks say the same thing for opposite reasons — yours grants, ours
   bounds — which is why `contents: read` on the review job stays an invariant no caller can widen,
-  even though your review caller grants `write` for the `resolve` job beside it.
+  even though your review caller grants `write` for the posting job beside it.
 - **Pin the `@ref`.** Same reasoning as the runner version above, and the same trap: a floating
   `@main` is a workflow that changes under a pull request nobody touched. An exact pin is a pin
   that goes stale, which nothing in this repository can see from here — *Keeping the pins fresh*,
@@ -1113,7 +1115,7 @@ jobs:
     uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-review-reusable.yml@<commit sha>
     # This workflow's whole row of the table above, and a subset is not a
     # smaller feature: a caller granting less than a job it calls declares
-    # fails the run before any job starts. `contents: write` is the `resolve`
+    # fails the run before any job starts. `contents: write` is the posting
     # job's alone — the review job narrows it back to `read`.
     permissions:
       actions: read
@@ -1283,7 +1285,7 @@ Three things it does **not** do.
   a later release made to a caller *body*. A scope added to your `permissions:` block is the case
   where that costs you something, because a caller granting less than a job it calls declares fails
   the **whole run** before any job starts, with no job log (§4). **This release is one**: the review
-  caller now grants `contents: write`, which only the `resolve` job spends. Merge its `agent-loop`
+  caller now grants `contents: write`, which only the review's posting job spends. Merge its `agent-loop`
   pull request on its own and every `agent:review` after it does nothing at all.
 
   So the rule is **`doctor` after a pin bump, not before the next label** (§0). It reads the callers
@@ -1447,7 +1449,7 @@ you cannot reason about, and the paragraph after the table is a decision only yo
 | **Author-association gate** on every issue/PR/comment/review-thread body | all world-writable. Anyone can *open* an issue or comment on a PR; `agent:fix` acts on that text and pushes code. Trusts `OWNER` / `MEMBER` / `COLLABORATOR` — org-adjacent or better, *not* write access; see the paragraph below |
 | **Trust your own bot by login** — `github-actions[bot]` **and** `github-actions` | REST and GraphQL spell the same account differently. List one and the review→fix handoff silently drops its own agent's comments |
 | **Scrub the GitHub token** from the agent's environment after fetching context | the agent runs unsandboxed; it has no legitimate `gh` use once context is read |
-| **`contents: read`** on the review job | the one agent structurally unable to mutate the branch. The `resolve` job beside it holds `contents: write`, because closing a thread needs it, and so it runs no agent and checks nothing out |
+| **`contents: read`** on the review job | the one agent structurally unable to mutate the branch. The posting job beside it holds `contents: write`, because closing a thread needs it, and so it runs no agent and checks nothing out |
 | **No model in the job that files** | `agent-follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the runner |
 
 **Neither the trigger nor the input gate is the write boundary, and it is the same role on both

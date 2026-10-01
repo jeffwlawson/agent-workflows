@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PinForm, Pinning } from "../shared/pins.ts";
-import { assertPinnable, rewritePins, WORKFLOW_DIR } from "../shared/pins.ts";
+import { ACTION_DIR, assertPinnable, escapeRe, rewritePins, WORKFLOW_DIR } from "../shared/pins.ts";
 
 /**
  * The half of `npm version` npm will not do.
@@ -76,23 +76,26 @@ const sameSet = (a: readonly string[], b: readonly string[]): boolean => {
 };
 
 /**
- * One site, with the count as the assertion.
+ * One file's sites, with the count as the assertion.
  *
  * Every site of a release holds **exactly one** pin, of one known form, and that
  * is the property that makes a silent partial success impossible: a file whose
  * pin has been reworded, moved or written in a form the core does not know
- * matches zero times, and zero is an error rather than a no-op. Returns the new
+ * matches zero times, and zero is an error rather than a no-op. A file can hold
+ * more than one site (#257): a reusable workflow's `npm exec` pin, and one
+ * `action` pin per step naming a composite action in this repository. So the
+ * forms found are compared with the forms expected, as a list. Returns the new
  * text; nothing is written from here, so a refusal later in the run leaves the
  * tree untouched.
  */
-const pinnedOnce = (rel: string, text: string, form: PinForm, pinning: Pinning): string => {
+const pinned = (rel: string, text: string, forms: readonly PinForm[], pinning: Pinning): string => {
   const { text: rewritten, found } = rewritePins(text, pinning);
-  if (found.length !== 1 || found[0] !== form) {
+  if (found.length !== forms.length || [...found].sort().some((form, i) => form !== [...forms].sort()[i])) {
     throw new Error(
-      `${rel}: expected exactly 1 version pin of the ${form} form, found ${found.length} ` +
-        `[${found.join(", ")}]. A site carries one pin, of one form: none means a pin this does ` +
-        `not recognise and the release would leave behind, and any other set means a file whose ` +
-        `shape the release does not know how to pin.`,
+      `${rel}: expected ${forms.length === 1 ? "exactly 1 version pin" : `${forms.length} version pins`} ` +
+        `[${forms.join(", ")}], found ${found.length} [${found.join(", ")}]. A site carries one pin, ` +
+        `of one form: none means a pin this does not recognise and the release would leave behind, ` +
+        `and any other set means a file whose shape the release does not know how to pin.`,
     );
   }
   return rewritten;
@@ -160,11 +163,22 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
     );
   }
 
+  /**
+   * The composite actions a reusable names (#257), counted by the path rather
+   * than by the pin: a `uses:` that names one under any ref but a pin is a
+   * site this would otherwise skip, and is refused instead.
+   */
+  const actionUse = new RegExp(`${escapeRe(packageName.replace(/^@/, ""))}/${escapeRe(ACTION_DIR)}/`, "g");
+  const actionsIn = (name: string): readonly PinForm[] =>
+    (readFile(packageDir, `${WORKFLOW_DIR}/${name}.yml`).match(actionUse) ?? []).map(() => "action" as const);
+
   const sites: readonly VersionSite[] = [
-    ...expectedNames.map((name) => ({
-      file: `${WORKFLOW_DIR}/${name}.yml`,
-      form: "package" as const,
-    })),
+    ...expectedNames.flatMap((name) =>
+      (["package", ...actionsIn(name)] as const).map((form) => ({
+        file: `${WORKFLOW_DIR}/${name}.yml`,
+        form,
+      })),
+    ),
     ...expectedNames.flatMap((name) =>
       [`${WORKFLOW_DIR}/${CALLER_PREFIX}${name}.yml`, `${CALLER_DIR}/${name}.yml`].map((file) => ({
         file,
@@ -175,19 +189,25 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
 
   // Every refusal is raised before the first write, so a run that throws leaves
   // every file as it was rather than some prefix of them rewritten.
-  const pending = sites.map((site) => ({
-    ...site,
-    text: pinnedOnce(site.file, readFile(packageDir, site.file), site.form, { packageName, version }),
+  const files = [...new Set(sites.map((site) => site.file))];
+  const pending = files.map((file) => ({
+    file,
+    text: pinned(
+      file,
+      readFile(packageDir, file),
+      sites.filter((site) => site.file === file).map((site) => site.form),
+      { packageName, version },
+    ),
   }));
 
-  for (const site of pending) {
-    const full = path.join(packageDir, ...site.file.split("/"));
+  for (const { file, text } of pending) {
+    const full = path.join(packageDir, ...file.split("/"));
     // Write only on a real change: the rewrite is a fixed point, so re-running
     // over an already-pinned tree is how a release checks itself.
-    if (fs.readFileSync(full, "utf8") !== site.text) fs.writeFileSync(full, site.text);
+    if (fs.readFileSync(full, "utf8") !== text) fs.writeFileSync(full, text);
   }
 
-  return pending.map(({ file, form }) => ({ file, form }));
+  return sites;
 };
 
 /**

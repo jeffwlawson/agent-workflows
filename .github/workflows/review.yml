@@ -166,51 +166,49 @@ jobs:
     concurrency:
       group: agent-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
-    # What the `resolve` job below reads. See *Hand the verified threads to the
-    # resolve job*.
+    # What the `post-review` job below reads (#257). This job runs the model and
+    # posts nothing: every write the run makes is that job's, after this one
+    # has ended. So everything it decides crosses as an output, or, for the
+    # files the runner wrote, as the `review` artifact (*Hand the review to the
+    # posting job*).
     outputs:
-      resolutions: ${{ steps.resolutions.outputs.resolutions }}
-      # …and what `auto-fix` reads: the verdict's machine-readable key, out of
-      # the file the runner wrote. A job cannot read another job's
-      # `RUNNER_TEMP`, so the only way across is an output. See *Hand the
-      # verdict to what reads it*.
-      verdict: ${{ steps.verdict.outputs.verdict }}
-      # …and which verdict it was, for the live-state guard in `auto-fix`: the
-      # commit it was posted on and the review its status links to, which is
-      # how that job tells this verdict from a newer one (#201).
+      # Whether the pre-flight let the run go ahead, and if not, what to say.
+      # `blocked` is whether the refusal also adds `agent:blocked`.
+      proceed: ${{ steps.state.outputs.proceed }}
+      refusal: ${{ steps.state.outputs.refusal }}
+      blocked: ${{ steps.state.outputs.blocked }}
+      # The commit this run reviewed, which every status and the moved check
+      # are about (#229).
       sha: ${{ steps.state.outputs.sha }}
-      url: ${{ steps.review.outputs.url }}
-      # …and whether the pull request moved on from that commit while this
-      # run reviewed it (#236), which `auto-fix` and `advance` both skip on:
-      # their verdict is about a head that is no longer the pull request's,
-      # and the review of the new one is asked for, queued, or left to a
-      # human. See *Always remove the trigger label*.
-      moved: ${{ steps.trigger.outputs.moved }}
-    # `contents: read` is the invariant that bounds what a wrong review can do
-    # (docs/parity.md §10). No `issues: write`: review files nothing, and the
-    # `gh pr edit --add-label` steps below need only `pull-requests: write` —
-    # that scope covers labels on a PR, which is why agent-fix and
-    # agent-update-branch already label unguarded without it.
+      # The verdict's machine-readable key, out of the file the runner wrote,
+      # which the hand-off selects on. See *Hand the verdict to what reads it*.
+      verdict: ${{ steps.verdict.outputs.verdict }}
+      # How the run ended, for the posting job's failure comment: the reason a
+      # failed runner wrote, the refusal a variable met, and whether a cancel
+      # was the time limit. See *Hand the outcome to the posting job*.
+      failure-reason: ${{ steps.outcome.outputs.failure-reason }}
+      refusal-reason: ${{ steps.outcome.outputs.refusal-reason }}
+      timed-out: ${{ steps.outcome.outputs.timed-out }}
+    # **Read-only, every scope** (#257). This job reads untrusted pull-request
+    # content and runs a model over it, so it holds no write at all: not
+    # `contents: write`, which is what stops a wrong review touching the branch
+    # (docs/parity.md §10), and not the pull-request, status and label writes
+    # it held until the posting job took them. A model that could be talked
+    # into a call has nothing here to make it with.
     #
-    # The caller declares the same scopes, and that is not the duplication it
-    # looks like — the two blocks do opposite jobs. A called workflow can only
-    # *downgrade* the token it is handed, so this block is the bound and cannot
-    # be widened from the caller's side. That is why the caller can grant
-    # `contents: write` for the `resolve` job below (#133) while this job
-    # still holds `read`. The caller's block is the grant, and a scope declared
-    # only here grants nothing — but what that costs is the run rather than the
-    # step: GitHub refuses the elevation instead of trimming the job to fit, so
-    # a caller short of any scope in this block fails the **whole run** before
-    # any job starts, with no job log in it (probed, #146). Not a review that
-    # half works; no review at all, which is what `setup/doctor.ts` tells an
-    # adopter before a label rather than after one.
-    #
-    # Where a token is short for some other reason, the first label write to
-    # feel it is the probe opening `Transition labels`, which is deliberately
-    # not written `|| true`: Actions' default `bash -e` fails the run there,
-    # before the checkout, so before the diff is fetched and before an agent
-    # pass is spent. That is why that one line carries no tolerance while the
-    # removal beside it does.
+    # The caller declares the union of every job's scopes, and that is not the
+    # duplication it looks like: the two blocks do opposite jobs. A called
+    # workflow can only *downgrade* the token it is handed, so this block is the
+    # bound and cannot be widened from the caller's side. That is why the
+    # caller can grant `contents: write` and `pull-requests: write` for the
+    # posting job while this job still holds `read`. The caller's block is the
+    # grant, and a scope declared only here grants nothing, but what that costs
+    # is the run rather than the step: GitHub refuses the elevation instead of
+    # trimming the job to fit, so a caller short of any scope in this block
+    # fails the **whole run** before any job starts, with no job log in it
+    # (probed, #146). Not a review that half works; no review at all, which is
+    # what `setup/doctor.ts` tells an adopter before a label rather than after
+    # one.
     permissions:
       # Reading the check runs the CI wait below polls. On a **public**
       # repository they are readable without this scope, which is why every
@@ -235,19 +233,12 @@ jobs:
       # so this is needed even though the package is public — and, being a
       # bound, it grants nothing without the caller's own `packages: read`.
       packages: read
-      pull-requests: write
-      # The verdict, posted as a commit status on the reviewed head (#96). A
-      # status is not a pull-request write — it is its own scope — so nothing
-      # already here covers it, and the caller has to grant it too. Omitting it
-      # there does not buy a review with no verdict on it: a caller granting
-      # less than this block declares fails the whole run before any job starts
-      # (probed, #146), which is what `setup/doctor.ts` reports as an error,
-      # before a label rather than after one. The step that posts the status
-      # warns rather than failing all the same — a posted review is worth more
-      # than the line summarising it — so where the token is short for some
-      # other reason this is the one failure in this job that looks like the
-      # feature simply being switched off.
-      statuses: write
+      # The pre-flight's read of the head, and the runner's of the threads,
+      # reviews and comments it hands the agent.
+      pull-requests: read
+      # The budget step's count of the verdicts already posted, which are
+      # commit statuses, and the CI wait's read of the statuses CI posts.
+      statuses: read
 
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -284,12 +275,14 @@ jobs:
       # A refusal on a moved branch also adds `agent:blocked`: it is a run a
       # human asked for and did not get, and the comment alone scrolls away. A
       # closed PR does not (#253): there is nothing left for anyone to act on,
-      # so it gets the note alone, as in fix and update-branch.
+      # so it gets the note alone, as in fix and update-branch. This step only
+      # decides both; the posting job says them (#257).
       #
       # The rest is settling **which commit this run reviews**, and everything
       # after this step reads that one answer, `steps.state.outputs.sha`: the
-      # checkout, the CI wait's check and status reads, and every status this
-      # job posts. The payload's `head.sha` is not read again past this step.
+      # checkout, the CI wait's check and status reads, and, handed over as the
+      # job's `sha`, every status the posting job posts. The payload's
+      # `head.sha` is not read again past this step.
       #
       # The payload is not enough on its own, for two reasons. It is snapshotted
       # at label time, and joining `agent-pr-*` means the run can start long
@@ -330,20 +323,17 @@ jobs:
           HEAD_POLL_SECONDS: "5"
         run: |
           set -uo pipefail
-          # In the loop's one order (#236): the comment first, then this run's
-          # own label off, then `agent:blocked`, so the label that names the
-          # next step goes on last.
-          # The comment is tolerated: under `-e` a failed one would end the step
-          # before the removal, and leave the label on with nothing behind it.
-          # One pattern for every refusal (#253): the label that did not run,
-          # then a sentence saying why and what to do, starting with a capital.
+          # A refusal is said by the posting job, which holds the writes this
+          # job does not (#257): the sentence, and whether `agent:blocked` goes
+          # on after it. One pattern for every refusal (#253): the label that
+          # did not run, then a sentence saying why and what to do, starting
+          # with a capital. The posting job writes the label's half.
           refuse() {
-            gh pr comment "$PR_NUMBER" --body "**\`agent:review\` didn't run:** $1" || echo "::warning::Could not post the refusal comment on PR #${PR_NUMBER}."
-            gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
-            if [ "${2:-}" = "blocked" ]; then
-              gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
-            fi
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "proceed=false"
+              echo "refusal=$1"
+              if [ "${2:-}" = "blocked" ]; then echo "blocked=true"; else echo "blocked=false"; fi
+            } >> "$GITHUB_OUTPUT"
           }
           # One explanation for every way the PR can have moved since the
           # label (#253): the reader's remedy is the same for all of them.
@@ -401,22 +391,6 @@ jobs:
           echo "sha=${tip}" >> "$GITHUB_OUTPUT"
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
-      # The trigger label stays on while this run works and comes off in the
-      # last step, however the run ends (#236), so the one label to take off
-      # here is a block an earlier run left.
-      #
-      # The line before it is the permission probe, the label write a short
-      # token feels first (see the `permissions:` comment above). It adds the
-      # label this run already holds, the one trigger-label add not preceded
-      # by a removal, on purpose: the label is on, so it changes nothing, fires
-      # no event and leaves no timeline entry, while still being a label write
-      # under the scope every other one here needs.
-      - name: Transition labels
-        if: steps.state.outputs.proceed == 'true'
-        run: |
-          gh pr edit "$PR_NUMBER" --add-label "agent:review"
-          gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
-
       # The review's own time, refused the way the fix-round budget below is:
       # a limit nobody wrote down is not one to guess (#220). `time-limit` summed
       # the default in its place so that this run could start and say so.
@@ -433,7 +407,7 @@ jobs:
       # The fix-round budget (#201, PRD #200): whether this review, if it
       # recommends changes, starts a fix round itself. Settled **before** the
       # review, so the verdict announces a round only where one will start, and
-      # the `auto-fix` job below starts exactly the rounds announced (the key the
+      # the posting job's hand-off starts exactly the rounds announced (the key the
       # runner derives from `start` is the one it selects on). `start` is a
       # ceiling, not a promise: the runner still stops the loop where the fix
       # round this review follows closed none of its findings (#202), and then
@@ -665,27 +639,25 @@ jobs:
           # one string; carving it out would cost a comment justifying a timing
           # argument that could stop being true.
           #
-          # `resolve` is this workflow's second job (#133) and `auto-fix` its
-          # third (#102). Both run after this one, so a review never waits on
-          # its own. But an adopter who renamed the caller job gets
-          # `agent-review / resolve` and `agent-review / auto-fix`, which
-          # nothing else here matches, and neither is evidence about the diff
-          # either way. `auto-fix` needs naming in its own right: the
-          # alternation is anchored on `/ `, so `fix` does not match a name
-          # beginning `auto-`.
+          # `post-review` is this workflow's posting job (#257), which runs after
+          # this one, so a review never waits on its own. But an adopter who
+          # renamed the caller job gets `agent-review / post-review`, which
+          # nothing else here matches, and it is not evidence about the diff
+          # either way. Named `post-review` rather than `post` so the pattern
+          # cannot swallow a repository's own CI job called `post`.
           #
-          # `advance` is the fourth (#176), in `fix` as well as here, and runs
-          # after a round ends on a slice PR. A later round on the same head —
-          # a human's re-label — would otherwise read `review / advance` as CI.
-          # `advance-merged` (#209) is its hand-merge twin, named in its own
-          # right for the reason `auto-fix` is: `advance` does not match a name
-          # that goes on past it.
+          # `advance` is `fix`'s job (#176) that runs after a fix run ends a
+          # slice PR's round. A later round on the same head would otherwise
+          # read `fix / advance` as CI. `advance-merged` (#209) is this
+          # workflow's hand-merge twin, named in its own right: the alternation
+          # is anchored on `( / |$)`, so `advance` does not match a name that
+          # goes on past it.
           #
           # `time-limit` (#220) runs *before* this job, so it has finished by the
           # time this wait reads anything. Named all the same, for the reason
-          # `resolve` is: under a renamed caller job it is `agent-review /
+          # `post-review` is: under a renamed caller job it is `agent-review /
           # time-limit`, and a job that sums two numbers is not CI.
-          AGENT_CHECKS: '(^|/ )(review|time-limit|resolve|auto-fix|advance|advance-merged|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
+          AGENT_CHECKS: '(^|/ )(review|time-limit|post-review|advance|advance-merged|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller
@@ -1254,8 +1226,9 @@ jobs:
           # the budget and rounds spent it decided from. The derivation adds
           # whether the fix round this review follows made progress (#202),
           # judged from the verdict history and the findings' ids, and picks the
-          # verdict row whose key the `auto-fix` job below selects on, so the line a maintainer reads and the job that makes it
-          # true come from one decision. The two numbers are for the line alone:
+          # verdict row whose key the posting job's hand-off selects on, so the
+          # line a maintainer reads and the step that makes it true come from
+          # one decision. The two numbers are for the line alone:
           # where the budget is spent, the verdict says how much of it was used.
           AUTO_FIX: ${{ steps.budget.outputs.start }}
           FIX_ROUNDS_SPENT: ${{ steps.budget.outputs.spent }}
@@ -1274,6 +1247,385 @@ jobs:
         # process `cwd`: the runner still does its git work in the checkout.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.4 -- agent-workflows review
 
+      # The verdict as something the posting job can select on (#102). The
+      # **key**, not the heading: two rows share a heading and the automatic fix
+      # fires on exactly one of them, so a selector on anything but the key
+      # would fire on both.
+      #
+      # An output as well as a file in the artifact, because the posting job's
+      # step `if:`s read it, and a step `if:` can read `needs` but not a file.
+      # A run that wrote no file hands over nothing, and nothing is handed off,
+      # which is the same direction every arm here fails in.
+      - name: Hand the verdict to what reads it
+        id: verdict
+        if: steps.state.outputs.proceed == 'true' && success()
+        run: |
+          file="${RUNNER_TEMP}/verdict.json"
+          [ -f "$file" ] || { echo "No verdict file; nothing to hand over."; exit 0; }
+          jq -r '"verdict=\(.verdict)"' "$file" >> "$GITHUB_OUTPUT"
+
+      # Everything the runner wrote for posting, handed to the posting job
+      # (#257): the review payload and the body's parts, the verdict, the
+      # threads this review closed, and the follow-ups marker's file. A job
+      # cannot read another job's `RUNNER_TEMP`.
+      #
+      # **An artifact rather than an output**, for size. The payload is the
+      # body, up to GitHub's 64 KB, plus a thread per finding, and an output
+      # reaches the posting job's script as an environment variable, which
+      # Linux caps at 128 KB a string: a long review would fail at `exec`, and
+      # a short one would not show it. The small decisions stay outputs above.
+      #
+      # `overwrite`, so a re-run of every job replaces this attempt's copy
+      # rather than failing on the name. Uploading needs no scope: the artifact
+      # service takes the runner's own token, so this job stays read-only.
+      - name: Hand the review to the posting job
+        if: steps.state.outputs.proceed == 'true' && success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-review
+          path: |
+            ${{ runner.temp }}/review_payload.json
+            ${{ runner.temp }}/review_body.json
+            ${{ runner.temp }}/verdict.json
+            ${{ runner.temp }}/thread_resolutions.json
+            ${{ runner.temp }}/follow_ups.md
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+      # How this run ended, for the posting job's failure comment (#257), which
+      # is where the comment is posted now that this job writes nothing.
+      # `always()`, so a failed, refused, cancelled or timed-out run hands it
+      # over too: those are the runs it is for.
+      #
+      # Cancelled is not failed (#220), and a job that reached its limit is
+      # cancelled too. What tells the two apart is the clock the first step
+      # started: a timed-out job ran its whole limit, less the moment the runner
+      # took to reach that step, hence a minute's slack. Measured here because
+      # only this job's clock knows. The limit is compared only where it is a
+      # positive integer: `fromJSON` accepts `1.5` and `1e1`, which bash
+      # arithmetic refuses, and a limit this cannot compare reads as a cancel,
+      # which is still said.
+      #
+      # The two reasons cross as multi-line outputs, under a delimiter nothing
+      # in a reason can contain.
+      - name: Hand the outcome to the posting job
+        id: outcome
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          TIMEOUT_MINUTES: ${{ needs.time-limit.outputs.minutes }}
+        run: |
+          timed_out=false
+          if [ "$JOB_STATUS" = "cancelled" ] && [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+            timed_out=true
+          fi
+          echo "timed-out=${timed_out}" >> "$GITHUB_OUTPUT"
+          for name in failure_reason refusal_reason; do
+            file="${RUNNER_TEMP}/${name}.txt"
+            [ -f "$file" ] || continue
+            delimiter="REASON_$(date +%s%N)_${RANDOM}"
+            {
+              echo "${name//_/-}<<${delimiter}"
+              printf '%s\n' "$(cat "$file")"
+              echo "$delimiter"
+            } >> "$GITHUB_OUTPUT"
+          done
+
+  # Everything this run writes, in one job that runs no model (#257). The review
+  # job above reads and decides; this job posts, in the loop's one order for
+  # every workflow, settled with the maintainer 2026-09-30: **label on, do the
+  # work, post every result, take your own label off, add the next step's
+  # label.** So the timeline reads in order, and a hand-off never appears
+  # before the step it follows has finished:
+  #
+  #  1. reply to and resolve the earlier findings the review ruled on;
+  #  2. post the review, the overview and the new findings in one call, its
+  #     *Resolved since last review* listing only the threads step 1 actually
+  #     resolved;
+  #  3. the `agent:follow-ups` marker and the `agent-review` verdict status;
+  #  4. mark the pull request ready, unless a fix round is about to start;
+  #  5. take `agent:review` off;
+  #  6. hand off: `agent:review` again where the head moved during the run,
+  #     else `agent:fix` where the verdict announced a round, else the PRD
+  #     chain's advance on a slice PR.
+  #
+  # And on a failure, or a refusal that needs a maintainer: the comment, then
+  # `agent:review` off, then `agent:blocked`.
+  #
+  # Until #257 these were four jobs. The review job posted the overview, and a
+  # `resolve` job resolved the threads afterwards (on #228 the overview landed
+  # at 00:18:39 and the replies from 00:18:53), so the overview's *Resolved*
+  # section was posted before anything was resolved, and claimed closures that
+  # never happened wherever the resolve failed, as on #133. `auto-fix` and
+  # `advance` each repeated the guards and waited on the others' results.
+  #
+  # **The scopes are the union the three jobs held**, plus the status write
+  # the review job held, which is why no caller changed: `contents: write`,
+  # because `resolveReviewThread` is refused on an installation token without
+  # it, and `addPullRequestReviewThreadReply` beside it is not (confirmed
+  # 2026-09-24 on a scratch pull request, run 36057777753: the job with
+  # `contents: read` was refused FORBIDDEN, the job with `contents: write`
+  # resolved); `pull-requests: write` for the review, the comments and the
+  # labels; `statuses: write` for the verdict.
+  #
+  # **Why the write scopes are safe here.** This job checks nothing out,
+  # installs nothing and runs no model. What it posts is what the review job
+  # wrote, through fixed `gh` calls and one fixed GraphQL request whose body is
+  # a file: the review payload, the thread ids the runner handed over
+  # (`verifyCarried` dropped every id it had not), and the replies it
+  # composed. So `contents: write` reaches a job that has nothing to write
+  # with, and `AGENT_PAT`, spent only on the labels something fires on and on
+  # marking the pull request ready, stays out of the job that reads untrusted
+  # pull-request content.
+  #
+  # **The cost of a short grant is the whole run**, not this job. A caller's
+  # `permissions:` is the ceiling for every job it calls, and GitHub refuses an
+  # elevation rather than trimming it: a called job asking for more than its
+  # caller granted fails the **whole run** before any job starts, as a
+  # `startup_failure` with no job log in it. Probed on a real token (#146).
+  # What GitHub calls it is an *invalid workflow file*, annotated on the run
+  # page as:
+  #
+  #   Invalid workflow file: .github/workflows/agent-review.yml#L<the caller's
+  #   `uses:` line> — Error calling workflow
+  #   '<owner>/<repo>/.github/workflows/review.yml@<sha>'. The nested job
+  #   'post-review' is requesting 'contents: write', but is only allowed
+  #   'contents: read'.
+  #
+  # `gh run view` reports it only as "a workflow file issue" and names neither
+  # the scope nor the file, so the annotation is the one place it is legible.
+  # The line it points at is the caller's `uses:`, not the `permissions:` line
+  # that is short, and the job it names is the **called** one; docs/ADOPTING.md
+  # §4 writes the same annotation and says the same two things about reading it.
+  post-review:
+    needs: [time-limit, review]
+    # `always()`, so a failed, cancelled or refused review still has its
+    # comment, its error status and its label written: this is the only job
+    # that can write them. A run cancelled before the review started at all
+    # takes the trigger label off too, as the review job's own `always()` step
+    # used to. Only a review that never ran, because a guard skipped it, skips
+    # this.
+    #
+    # Both of the review job's guards, restated: `always()` drops the implicit
+    # "every need succeeded", and with it the guards a skipped review would
+    # otherwise have carried here.
+    if: >-
+      always() &&
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.review.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # **No concurrency group**, on purpose. `agent-pr-*` holds one waiting run,
+    # and a newer arrival evicts it silently (docs/parity.md §10). In the group,
+    # this job would queue behind a fix a human labelled while the review ran,
+    # could evict that fix, or be evicted itself, and an evicted posting job
+    # posts nothing at all. Joining would not even serialise it: a run waiting
+    # in the group starts the moment the review job ends, before this job is
+    # queued at all.
+    #
+    # **So the runs that read what this job writes wait for it instead.** The
+    # group is released when the review job ends, before anything is posted,
+    # and a fix or a branch refresh labelled while the review ran starts then.
+    # Unchecked, the fix would read only the previous round's feedback, and the
+    # refresh would copy the verdict on the old head before this round's
+    # exists. Both wait, as their first step past the pre-flight, while
+    # `agent:review` is on the pull request (*Wait for a review's posting to
+    # finish*, in `fix.yml` and `update-branch.yml`), and this job takes it off
+    # only after every result is posted. The wait is bounded by this job's
+    # `timeout-minutes`, so a label nobody will take off costs time and not
+    # the run.
+    #
+    # A fix run shown a thread that already carries its closing reply is told
+    # the close is the only thing outstanding on it (`shared/pr-feedback.ts`),
+    # and a review that races this job re-verifies such a thread and resolves
+    # it without a second reply. The hand-off labels it adds fire runs that do
+    # join the group, so the serialisation this loop depends on still happens
+    # where the work is.
+    permissions:
+      # `resolveReviewThread`, and nothing else here: it is refused on an
+      # installation token without this scope (#133). No checkout, so there is
+      # no branch to write to.
+      contents: write
+      # The review and its threads, the replies, the comments and the labels.
+      pull-requests: write
+      # The verdict, posted as a commit status on the reviewed head (#96). A
+      # status is not a pull-request write (it is its own scope), so nothing
+      # already here covers it, and the caller has to grant it too. Omitting it
+      # there does not buy a review with no verdict on it: a caller granting
+      # less than this block declares fails the whole run before any job starts
+      # (probed, #146), which is what `setup/doctor.ts` reports as an error,
+      # before a label rather than after one. The step that posts the status
+      # warns rather than failing all the same, a posted review is worth more
+      # than the line summarising it, so where the token is short for some
+      # other reason this is the one failure in this job that looks like the
+      # feature simply being switched off.
+      statuses: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # The pre-flight's refusal, which that job could decide and not say
+      # (#257). In the loop's one order (#236): the comment first, then this
+      # run's own label off, then `agent:blocked` where a maintainer has to
+      # act, so the label that names the next step goes on last. A closed PR
+      # gets the note alone (#253): there is nothing left for anyone to act on.
+      #
+      # The comment is tolerated: a failed one would end the step before the
+      # removal, and leave the label on with nothing behind it.
+      - name: Say why the review didn't run
+        if: needs.review.outputs.proceed == 'false'
+        env:
+          REFUSAL: ${{ needs.review.outputs.refusal }}
+          BLOCKED: ${{ needs.review.outputs.blocked }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body "**\`agent:review\` didn't run:** ${REFUSAL}" || echo "::warning::Could not post the refusal comment on PR #${PR_NUMBER}."
+          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
+          if [ "$BLOCKED" = "true" ]; then
+            gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
+          fi
+
+      # The trigger label stays on while the run works and comes off in step 5,
+      # however the run ends (#236), so the one label to take off here is a
+      # block an earlier run left. Here rather than as the run starts, because
+      # the review job writes nothing; and only on a review that finished, since
+      # a failed one adds the block straight back.
+      #
+      # No permission probe: the probe was a label write ahead of the agent
+      # pass, so a short token failed the run before the pass was spent, and
+      # the job that spends the pass now holds no write to probe with. A caller
+      # short of a scope is still refused before any job starts (#146).
+      - name: Transition labels
+        if: needs.review.outputs.proceed == 'true' && needs.review.result == 'success'
+        run: gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
+
+      - name: Fetch what the review wrote
+        id: fetch
+        if: needs.review.outputs.proceed == 'true' && needs.review.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-review
+          path: ${{ runner.temp }}
+
+      # Step 1: the earlier findings this review ruled on (#111, and #109
+      # decision 1). The **reviewer** closes a finding and the fixer never does:
+      # a fix run replies and resolves nothing, so nothing is marked done by the
+      # run that claims to have done it. First, so the overview posted next can
+      # say what actually closed (#257).
+      #
+      # **The reply is posted first and the resolve is gated on it.**
+      # `resolutionReason` is recorded by GitHub and exposed nowhere afterwards,
+      # because no field on `PullRequestReviewThread` reads it back. So the
+      # reply is the only record of why a thread closed. A thread that closes
+      # with no reply loses that statement. On the `WONT_FIX` arm the lost part
+      # is the maintainer's quoted words, which are what make a misreading
+      # visible. Ordering alone does not prevent that; only the `continue`
+      # does. A reply that would not post leaves its thread open, which is the
+      # direction this loop fails in everywhere else.
+      #
+      # **Unless the thread already carries that reply** (`alreadyReplied`,
+      # #133). A resolve that did not go through leaves the thread open, and the
+      # next review verifies it again. Without this guard every round adds
+      # another `**Verified fixed.**`, which is how #130 collected nine on one
+      # thread. Only the literal `true` skips the reply. Any other value posts
+      # it, because a duplicate reply is the cheaper mistake than a thread that
+      # closes with no reply at all.
+      #
+      # What says a thread already carries the reply is a hidden marker on it
+      # and never the words it opens with. Those words are shown to the fix
+      # agent, whose own replies land in the same thread as this same bot, and a
+      # reply matched on prose is one the fixer can make: a thread closing
+      # under the fixer's claim with no review's record on it at all
+      # (`shared/review-verification.ts`).
+      #
+      # Two reasons, and which one a thread closes on is decided by
+      # `verifyCarried` and read out of the list, never derived here: a finding
+      # the review verified fixed closes as `ADDRESSED`, and one a maintainer
+      # declined closes as `WONT_FIX` with their words quoted back (#109,
+      # decision 10). The enum is spelled out on both arms because it is a
+      # literal in the document rather than a variable GitHub would coerce, and
+      # the branch is on a fixed list, so a value this step does not recognise
+      # closes as addressed instead of putting an unknown string into a
+      # mutation.
+      #
+      # **Every thread that did resolve is written down**, one id a line, and
+      # that list is what the overview's *Resolved since last review* is made
+      # of. A thread whose reply or resolve failed is not on it, so the
+      # overview lists it as still open, with a note, rather than claiming a
+      # closure that never happened.
+      #
+      # Never fails the job. A thread that would not close is a thread the next
+      # review retries, and a human can close it. So each failure is a
+      # `::warning::`, and the per-mutation `||` keeps one bad id from taking the
+      # rest of the list with it.
+      - name: Resolve the threads this review closed
+        id: resolve
+        if: steps.fetch.outcome == 'success'
+        env:
+          RESOLUTIONS: ${{ runner.temp }}/thread_resolutions.json
+          RESOLVED: ${{ runner.temp }}/resolved_threads.txt
+        run: |
+          set -uo pipefail
+          : > "$RESOLVED"
+          [ -f "$RESOLUTIONS" ] || { echo "No resolutions file; nothing to resolve."; exit 0; }
+          count=$(jq 'length' "$RESOLUTIONS")
+          echo "Resolving ${count} thread(s) this review closed."
+
+          for i in $(seq 0 $((count - 1))); do
+            tid=$(jq -r ".[$i].threadId" "$RESOLUTIONS")
+            body=$(jq -r ".[$i].reply" "$RESOLUTIONS")
+            reason=$(jq -r ".[$i].reason" "$RESOLUTIONS")
+            already=$(jq -r ".[$i].alreadyReplied" "$RESOLUTIONS")
+
+            if [ "$already" = "true" ]; then
+              echo "  ${tid} already carries this reply; retrying only the resolve."
+            else
+              gh api graphql -f threadId="$tid" -f body="$body" -f query='
+                mutation($threadId:ID!,$body:String!) {
+                  addPullRequestReviewThreadReply(
+                    input:{pullRequestReviewThreadId:$threadId, body:$body}
+                  ) { clientMutationId }
+                }' >/dev/null \
+                && echo "  replied to ${tid}" \
+                || { echo "::warning::Could not reply to review thread ${tid}, so it is left open: a thread that closes with no reply loses the only record of why. The overview lists it as still open."; continue; }
+            fi
+
+            if [ "$reason" = "WONT_FIX" ]; then
+              mutation='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(
+                    input:{threadId:$threadId, resolutionReason:WONT_FIX}
+                  ) { clientMutationId }
+                }'
+            else
+              mutation='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(
+                    input:{threadId:$threadId, resolutionReason:ADDRESSED}
+                  ) { clientMutationId }
+                }'
+            fi
+
+            if gh api graphql -f threadId="$tid" -f query="$mutation" >/dev/null; then
+              echo "  resolved ${tid} (${reason})"
+              echo "$tid" >> "$RESOLVED"
+            else
+              echo "::warning::Could not resolve review thread ${tid} (${reason}). Its reply is posted, the overview lists it as still open, and the thread stays open until the next review retries it, which it does without replying again. GitHub's reply is printed above. It is not the caller's \`contents:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4)."
+            fi
+          done
+
+      # Step 2: the overview and the new findings, in one call, after the
+      # threads (#257). The body's *Resolved since last review* is put back
+      # together here from what step 1 resolved: the runner rendered every line
+      # and left a slot where the group goes (`renderReviewPost`), and this
+      # writes no entry, only the two group wrappers, from the words the runner
+      # handed over. A line whose thread is on the resolved list stays under
+      # *Resolved*; one whose thread is not moves to the *Still open* group, with
+      # its note. A legacy body entry has no thread, closes by not being listed
+      # again, and always stays.
+      #
       # GraphQL `addPullRequestReview`, not REST `POST /pulls/{n}/reviews`, for
       # the one thing REST cannot do: open a **file-level** thread in the same
       # call as the review — it answers one with a 422 — which is where a
@@ -1281,11 +1633,12 @@ jobs:
       # REST's `comments` field is deprecated in favour of `threads` besides.
       #
       # The whole request body is `review_payload.json`, written by the runner
-      # from a unit-tested function: `--input` sends a file verbatim, so nothing
-      # here composes a query or names a field. The endpoint is `graphql` rather
-      # than `/graphql` deliberately — that is what makes `gh` fail the step on
-      # an `errors` array, which GraphQL returns with HTTP 200 and which a raw
-      # path would read as success and post nothing.
+      # from a unit-tested function, with its body replaced: `--input` sends a
+      # file verbatim, so nothing here composes a query or names a field beyond
+      # the body. The endpoint is `graphql` rather than `/graphql` deliberately:
+      # that is what makes `gh` fail the step on an `errors` array, which
+      # GraphQL returns with HTTP 200 and which a raw path would read as success
+      # and post nothing.
       #
       # The `id:` and the captured URL are the verdict's (#96): a commit status
       # carries one link, and the only place the posted review's own URL exists
@@ -1293,14 +1646,83 @@ jobs:
       # newest review on the pull request is not reliably this one.
       - name: Post PR review
         id: review
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: steps.fetch.outcome == 'success'
         env:
           PAYLOAD: ${{ runner.temp }}/review_payload.json
+          BODY: ${{ runner.temp }}/review_body.json
+          RESOLVED: ${{ runner.temp }}/resolved_threads.txt
         run: |
-          url=$(gh api graphql --input "$PAYLOAD" --jq .data.addPullRequestReview.pullRequestReview.url)
+          set -euo pipefail
+          posted="${RUNNER_TEMP}/review_posted.json"
+          [ -f "$RESOLVED" ] || : > "$RESOLVED"
+          # One group, as the runner's `renderGroup` writes it, or nothing
+          # where it is empty.
+          jq --slurpfile parts "$BODY" --rawfile resolved "$RESOLVED" '
+            def group($head; $lines):
+              if ($lines | length) == 0 then empty
+              else [
+                "<details\(if $head.open then " open" else "" end)>",
+                "<summary><b>\($head.title)</b> (\($lines | length))</summary>",
+                (if $head.subtitle then "", "_\($head.subtitle)_" else empty end),
+                "",
+                $lines[],
+                "",
+                "</details>"
+              ] | join("\n") end;
+            ($resolved | split("\n") | map(select(. != ""))) as $ok
+            | $parts[0] as $p
+            | ($p.resolved | map(select(.threadId != null and (.threadId as $t | $ok | index($t) | not)))) as $unclosed
+            | ($p.resolved | map(select(.threadId == null or (.threadId as $t | $ok | index($t))))) as $closed
+            | ($p.slotted | split("\n\n" + $p.slot)) as $halves
+            | if ($halves | length) != 2 then error("the review body carries its slot \($halves | length - 1) times") else . end
+            | .variables.input.body = $halves[0]
+                + ([group($p.groups.unclosed; $unclosed | map(.line)), group($p.groups.resolved; $closed | map(.line))] | map("\n\n" + .) | join(""))
+                + $halves[1]
+          ' "$PAYLOAD" > "$posted"
+          unclosed=$(jq --slurpfile parts "$BODY" --rawfile resolved "$RESOLVED" -n '($resolved | split("\n") | map(select(. != ""))) as $ok | [$parts[0].resolved[] | select(.threadId != null and (.threadId as $t | $ok | index($t) | not))] | length')
+          if [ "$unclosed" -gt 0 ]; then
+            echo "::warning::${unclosed} thread(s) this review closed could not be resolved, so the overview lists them as still open."
+          fi
+          if ! url=$(gh api graphql --input "$posted" --jq .data.addPullRequestReview.pullRequestReview.url); then
+            echo "GitHub refused the review, so it was not posted. Its threads are not on the pull request and there is no verdict; the earlier threads this review closed were resolved where GitHub allowed it, and the log names any that were not." > "${RUNNER_TEMP}/failure_reason.txt"
+            exit 1
+          fi
           echo "url=${url}" >> "$GITHUB_OUTPUT"
 
-      # The verdict: what a maintainer does next, on the commit it is about.
+      # The marker for the filing half (#47): this PR's review recorded
+      # out-of-scope findings, and a human still has a say before they become
+      # issues. Removing the label is that say.
+      #
+      # **Added when, and only when, the run recorded at least one.** The runner
+      # writes `follow_ups.md` in no other case, so the file's existence is the
+      # whole condition: no parsing, and nothing here that can decide
+      # differently from what went into the body.
+      #
+      # **Never removed here**, which is the other half of the rule and is not
+      # symmetry. Removal is the human's opt-out gesture; a step that cleared a
+      # stale marker would be racing the person it exists to serve. A marker
+      # left behind by a later empty run costs nothing either: that run posts an
+      # *empty* findings block, which is what the filing half reads as the
+      # latest list, so the merge files nothing and clears the marker itself.
+      #
+      # After the review is posted, on purpose. The label points at a record
+      # that lives in the review body, so marking a PR whose review failed to
+      # post would point at nothing.
+      #
+      # Never fails the run. This label is not one `docs/ADOPTING.md` §3
+      # mandates, so an adopter can be up to date on the pin and not have it,
+      # and a posted review is worth more than a marker. A warning says so
+      # where `|| true` would not, the same call `Mark PR ready for review`
+      # makes below.
+      - name: Mark the PR as carrying follow-ups
+        if: steps.review.outcome == 'success'
+        run: |
+          [ -f "${RUNNER_TEMP}/follow_ups.md" ] || exit 0
+          gh pr edit "$PR_NUMBER" --add-label "agent:follow-ups" \
+            || echo "::warning::Could not add \`agent:follow-ups\` to PR #${PR_NUMBER}. Its out-of-scope findings stay in the review body and nothing will file them. If the label does not exist in this repository, create it."
+
+      # Step 3: the verdict, what a maintainer does next, on the commit it is
+      # about.
       #
       # A commit status rather than a comment or a label, for the one property
       # neither of those has — it is attached to a **commit**. A new commit
@@ -1323,9 +1745,9 @@ jobs:
       # warning says so where `|| true` would leave a loop posting no verdicts
       # and looking healthy.
       - name: Post the verdict as a commit status
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: steps.review.outcome == 'success'
         env:
-          HEAD_SHA: ${{ steps.state.outputs.sha }}
+          HEAD_SHA: ${{ needs.review.outputs.sha }}
           REVIEW_URL: ${{ steps.review.outputs.url }}
         run: |
           context=$(jq -r .context "${RUNNER_TEMP}/verdict.json")
@@ -1342,100 +1764,15 @@ jobs:
           gh api "${args[@]}" \
             || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
 
-      # The verdict again, this time as something a later step and a later job
-      # can read (#102). `verdict.json` is a file in this job's `RUNNER_TEMP`;
-      # the `auto-fix` job below has its own runner and its own temp, so the
-      # only way across is an output.
+      # Step 4. Draft means "the automated pipeline has not finished", not "the
+      # agent is still writing code", so this belongs here rather than at the
+      # end of implement. The human's first real decision (act on the review, or
+      # merge) only exists once the review is posted; marking ready any earlier
+      # fires the signal during a window when there is nothing to decide.
       #
-      # The **key**, not the heading: two rows share a heading and the
-      # automatic fix fires on exactly one of them, so a selector on anything
-      # but the key would fire on both.
-      #
-      # A step of its own rather than a line added to the status post above,
-      # for the reason `Hand the verified threads to the resolve job` is one: a
-      # step that posts and a step that hands over fail for different reasons,
-      # and the status post is the one that is deliberately allowed to fail.
-      # A run that wrote no file hands over nothing, and `auto-fix` does not
-      # run — which is the same direction every arm here fails in.
-      - name: Hand the verdict to what reads it
-        id: verdict
-        if: steps.state.outputs.proceed == 'true' && success()
-        run: |
-          file="${RUNNER_TEMP}/verdict.json"
-          [ -f "$file" ] || { echo "No verdict file; nothing to hand over."; exit 0; }
-          jq -r '"verdict=\(.verdict)"' "$file" >> "$GITHUB_OUTPUT"
-
-      # The threads this review checked and found fixed (#111, and #109 decision
-      # 1), handed to the `resolve` job below, which closes them. The
-      # **reviewer** closes a finding and the fixer never does: a fix run replies
-      # and resolves nothing, so nothing is marked done by the run that claims to
-      # have done it.
-      #
-      # Handed over rather than acted on here, because this job cannot close a
-      # thread. `resolveReviewThread` is refused on an installation token without
-      # `contents: write` (#133), and this job holds `contents: read` on purpose
-      # (docs/parity.md §10). The reply was always accepted and the resolve never
-      # was, so every verified thread in every repo on v0.4.0 stayed open under a
-      # reply claiming it had closed.
-      #
-      # A job output rather than an artifact. The list is a few KB against a
-      # 1 MB ceiling, and an artifact would add two more action pins to track.
-      # `jq -c` puts it on one line, which is what a `name=value` output takes.
-      # A run that wrote no file hands over nothing, and `resolve` does not run.
-      #
-      # After the verdict and gated on `success()`, as the step it replaces was:
-      # a review that failed to post closes nothing.
-      - name: Hand the verified threads to the resolve job
-        id: resolutions
-        if: steps.state.outputs.proceed == 'true' && success()
-        env:
-          RESOLUTIONS: ${{ runner.temp }}/thread_resolutions.json
-        run: |
-          [ -f "$RESOLUTIONS" ] || { echo "No resolutions file; nothing to resolve."; exit 0; }
-          echo "resolutions=$(jq -c . "$RESOLUTIONS")" >> "$GITHUB_OUTPUT"
-          echo "Handing $(jq length "$RESOLUTIONS") verified thread(s) to the resolve job."
-
-      # The marker for the filing half (#47): this PR's review recorded
-      # out-of-scope findings, and a human still has a say before they become
-      # issues. Removing the label is that say.
-      #
-      # **Added when, and only when, the run recorded at least one.** The runner
-      # writes `follow_ups.md` in no other case, so the file's existence is the
-      # whole condition — no parsing, and nothing here that can decide
-      # differently from what went into the body.
-      #
-      # **Never removed here**, which is the other half of the rule and is not
-      # symmetry. Removal is the human's opt-out gesture; a step that cleared a
-      # stale marker would be racing the person it exists to serve. A marker
-      # left behind by a later empty run costs nothing either: that run posts an
-      # *empty* findings block, which is what the filing half reads as the
-      # latest list, so the merge files nothing and clears the marker itself.
-      #
-      # After the review is posted, on purpose. The label points at a record
-      # that lives in the review body, so marking a PR whose review failed to
-      # post would point at nothing.
-      #
-      # Never fails the run. This label is not one `docs/ADOPTING.md` §3
-      # mandates, so an adopter can be up to date on the pin and not have it,
-      # and a posted review is worth more than a marker. A warning says so
-      # where `|| true` would not, the same call `Mark PR ready for review`
-      # makes below.
-      - name: Mark the PR as carrying follow-ups
-        if: steps.state.outputs.proceed == 'true' && success()
-        run: |
-          [ -f "${RUNNER_TEMP}/follow_ups.md" ] || exit 0
-          gh pr edit "$PR_NUMBER" --add-label "agent:follow-ups" \
-            || echo "::warning::Could not add \`agent:follow-ups\` to PR #${PR_NUMBER}. Its out-of-scope findings stay in the review body and nothing will file them. If the label does not exist in this repository, create it."
-
-      # Draft means "the automated pipeline has not finished", not "the agent is
-      # still writing code" — so this belongs here rather than at the end of
-      # implement. The human's first real decision (act on the review, or merge)
-      # only exists once the review is posted; marking ready any earlier fires
-      # the signal during a window when there is nothing to decide.
-      #
-      # `success()` on purpose: a failed review should leave the PR in draft, so
-      # the draft state agrees with the `agent:blocked` label rather than
-      # presenting an unreviewed PR as finished.
+      # Only on a posted review, on purpose: a failed review should leave the
+      # PR in draft, so the draft state agrees with the `agent:blocked` label
+      # rather than presenting an unreviewed PR as finished.
       #
       # Does not cascade: `ready_for_review` is not in the default
       # `pull_request` types (opened/synchronize/reopened), so neither ci.yml nor
@@ -1462,49 +1799,55 @@ jobs:
       # decision 4). Draft means "the loop is still working", and it is the human's turn
       # on *approval recommended*, on *needs a closer look*, and on changes
       # recommended only where nobody is going to act on them but them. The
-      # `auto-fix` job below is about to add `agent:fix`, so the next thing to
-      # happen on this pull request is another agent run: marking it ready here
-      # would fire "your turn" during exactly the window the draft state exists
-      # to describe, and the fix round's own review would have to mark it ready
-      # all over again.
+      # hand-off at the end of this job is about to add `agent:fix`, so the next
+      # thing to happen on this pull request is another agent run: marking it
+      # ready here would fire "your turn" during exactly the window the draft
+      # state exists to describe, and the fix round's own review would have to
+      # mark it ready all over again.
       #
-      # The key alone, and deliberately the job's own selector: it is derived
-      # only where the budget said a round would start, so a step reading it
-      # cannot decide differently from the job it is predicting. The job's
-      # live-state guard can still add nothing (a newer verdict, or a label a
-      # human already added), and either way the pull request is not the
-      # human's yet: a newer verdict marks it ready itself, and a fix round is
-      # starting on the other.
+      # The key alone, and deliberately the hand-off's own selector: it is
+      # derived only where the budget said a round would start, so a step
+      # reading it cannot decide differently from the step it is predicting.
+      # The hand-off's live-state guard can still add nothing (a newer verdict,
+      # or a label a human already added), and either way the pull request is
+      # not the human's yet: a newer verdict marks it ready itself, and a fix
+      # round is starting on the other. Where the hand-off does not start the
+      # round it should have, it marks the pull request ready itself.
       - name: Mark PR ready for review
         if: >-
-          steps.state.outputs.proceed == 'true' && success() &&
-          steps.verdict.outputs.verdict != 'changes recommended, fix round started'
+          steps.review.outcome == 'success' &&
+          needs.review.outputs.verdict != 'changes recommended, fix round started'
         env:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           gh pr ready "$PR_NUMBER" \
             || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
 
-      # And a run that failed says so where the verdict goes, rather than leaving the
-      # last verdict standing. So does one that was cancelled or timed out
-      # (#220), which leaves it standing just the same. Silence is the dangerous answer here: a status is
-      # per commit and per context, so a review that died half way reads from
-      # the outside exactly like one that recommended approval — right up until
-      # someone merges on it.
+      # And a run that failed says so where the verdict goes, rather than leaving
+      # the last verdict standing. So does one that was cancelled or timed out
+      # (#220), which leaves it standing just the same. Silence is the dangerous
+      # answer here: a status is per commit and per context, so a review that
+      # died half way reads from the outside exactly like one that recommended
+      # approval, right up until someone merges on it.
       #
-      # Below every step it is the arm for, so every step above it is covered,
-      # including the one that posts the verdict itself, whose own failure
-      # would otherwise be the one that leaves no status at all. And above the
-      # failure comment, which is where the labels move (#236): every result is
-      # posted before this run takes its own label off.
+      # Two ways to get here (#257): the review job failed, or it finished and
+      # posting failed in this job. Below every step it is the arm for, so
+      # every posting step above it is covered, including the one that posts
+      # the verdict itself, whose own failure would otherwise be the one that
+      # leaves no status at all. Above the hand-off, so a hand-off that fails
+      # after the review was posted is not reported as a review that did not
+      # finish. And above the failure comment, which is where the labels move
+      # (#236): every result is posted before this run takes its own label off.
       #
       # The one step that spells the context out. A run that failed wrote no
       # `verdict.json` to read it from, so this literal is held to
       # `VERDICT_CONTEXT` by a test instead.
       - name: Post an error verdict
-        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
+        if: >-
+          needs.review.outputs.proceed == 'true' &&
+          (failure() || cancelled() || needs.review.result != 'success')
         env:
-          HEAD_SHA: ${{ steps.state.outputs.sha }}
+          HEAD_SHA: ${{ needs.review.outputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh api --method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}" \
@@ -1515,32 +1858,46 @@ jobs:
       # In the loop's one order (#236): the comment, then this run's own label
       # off, then `agent:blocked`. After the error verdict, so it is the last
       # result this run posts.
+      #
+      # The reason is the review job's where that job failed, handed over by
+      # *Hand the outcome to the posting job*, and this job's own where posting
+      # failed. Cancelled is not failed (#220): a job that reached its limit is
+      # cancelled too, and the review job measured which it was. A reason file
+      # is not read on a cancel; what wrote one was stopped, not failing. The
+      # labels and the retry are a failure's, word for word.
       - name: Mark blocked on failure
-        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
+        if: >-
+          needs.review.outputs.proceed == 'true' &&
+          (failure() || cancelled() || needs.review.result != 'success')
         env:
           JOB_STATUS: ${{ job.status }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          REVIEW_REASON: ${{ needs.review.outputs.failure-reason }}
+          REVIEW_REFUSAL: ${{ needs.review.outputs.refusal-reason }}
+          TIMED_OUT: ${{ needs.review.outputs.timed-out }}
           TIMEOUT_MINUTES: ${{ needs.time-limit.outputs.minutes }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           reason="It stopped without giving a reason. The workflow run's log has the details."
-          if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
-            reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
-          fi
-          # Cancelled is not failed (#220), and a job that reached its limit
-          # is cancelled too. What tells the two apart is the clock the first
-          # step started: a timed-out job ran its whole limit, less the moment
-          # the runner took to reach that step, hence a minute's slack. A
-          # reason file is not read on either; what wrote one was stopped, not
-          # failing. The labels and the retry are a failure's, word for word.
-          # The limit is compared only where it is a positive integer: `fromJSON`
-          # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
-          # `bash -e` that would end this step before its comment. A limit the
-          # step cannot compare reads as a cancel, which is still said.
-          if [ "$JOB_STATUS" = "cancelled" ]; then
+          refusal=""
+          if [ "$REVIEW_RESULT" = "success" ]; then
+            # The review finished; posting it is what stopped.
+            if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
+              reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+            fi
+            if [ "$JOB_STATUS" = "cancelled" ]; then
+              reason="It was cancelled before it finished, by hand or by GitHub."
+            fi
+          elif [ "$REVIEW_RESULT" = "cancelled" ]; then
             reason="It was cancelled before it finished, by hand or by GitHub."
-            if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
+            if [ "$TIMED_OUT" = "true" ]; then
               reason="It timed out after ${TIMEOUT_MINUTES} minutes. The repository variable \`AGENT_REVIEW_TIMEOUT_MINUTES\` raises the review's own time, which its CI wait is added to."
             fi
+          else
+            if [ -n "$REVIEW_REASON" ]; then
+              reason="$REVIEW_REASON"
+            fi
+            refusal="$REVIEW_REFUSAL"
           fi
           # One pattern for every run that stopped (#253): the reason as a
           # sentence, starting with a capital and ending in a full stop, then
@@ -1552,18 +1909,19 @@ jobs:
           # A variable the review refused before it reviewed anything is the
           # other pattern (#253): it didn't run, and the sentence says what to
           # do. Still `agent:blocked`, since the maintainer has to fix it.
-          if [ "$JOB_STATUS" != "cancelled" ] && [ -f "${RUNNER_TEMP}/refusal_reason.txt" ]; then
-            printf "**\`agent:review\` didn't run:** %s\n" "$(cat "${RUNNER_TEMP}/refusal_reason.txt")" > "$body_file"
+          if [ -n "$refusal" ]; then
+            printf "**\`agent:review\` didn't run:** %s\n" "$refusal" > "$body_file"
           fi
           gh pr comment "$PR_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on PR #${PR_NUMBER}."
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
 
-      # The trigger label comes off however the run ends (#236): success,
-      # failure, refusal, timeout or cancel, so it never outlives the run.
-      # `always()` alone, so a pre-flight that died before deciding is covered
-      # too; a refusal took it off already, and removing an absent label leaves
-      # nothing on the timeline.
+      # Step 5. The trigger label comes off however the run ends (#236):
+      # success, failure, refusal, timeout or cancel, so it never outlives the
+      # run. `always()` alone, so a pre-flight that died before deciding is
+      # covered too; a refusal or a failure took it off already, and removing an
+      # absent label leaves nothing on the timeline. After every result above,
+      # and before every hand-off below (#257).
       #
       # **A request made while this run worked is not lost.** Adding the label
       # then fired nothing, since it was already on. So where the run finished
@@ -1573,7 +1931,7 @@ jobs:
       # `GITHUB_TOKEN` starts nothing. Not on a failure, which is
       # `agent:blocked` and a human's retry, and never a cycle: nothing in the
       # loop pushes to a pull request while its review runs, since every run
-      # that pushes shares this job's concurrency group.
+      # that pushes shares the review job's concurrency group.
       #
       # **Not while another trigger label is on.** That label is a run queued
       # in this pull request's concurrency group, whose waiting slot holds one
@@ -1584,26 +1942,27 @@ jobs:
       # the review of what it pushed.
       #
       # **Whichever of the three it does, it says the head moved**, as
-      # `moved=true`, and `auto-fix` and `advance` stand down on it. This
-      # run's verdict is about a commit the pull request has left: a fix
-      # round started off it would read a branch somebody else has pushed to,
-      # and finding no verdict on the head it would post a false "no fix
-      # round" failure; an advance would re-add `agent:implement` and the
-      # chain's merge would refuse the slice PR as busy, or merge a head
-      # nobody reviewed. The review of the new head, re-requested here or
-      # queued or added by hand, decides both.
+      # `moved=true`, and the two hand-offs below stand down on it. This run's
+      # verdict is about a commit the pull request has left: a fix round
+      # started off it would read a branch somebody else has pushed to, and
+      # finding no verdict on the head it would post a false "no fix round"
+      # failure; an advance would re-add `agent:implement` and the chain's
+      # merge would refuse the slice PR as busy, or merge a head nobody
+      # reviewed. The review of the new head, re-requested here or queued or
+      # added by hand, decides both.
       - name: Always remove the trigger label
         id: trigger
         if: always()
         env:
-          PROCEEDED: ${{ steps.state.outputs.proceed }}
+          PROCEEDED: ${{ needs.review.outputs.proceed }}
+          REVIEW_RESULT: ${{ needs.review.result }}
           JOB_STATUS: ${{ job.status }}
-          LEFT_SHA: ${{ steps.state.outputs.sha }}
+          LEFT_SHA: ${{ needs.review.outputs.sha }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           REQUEST_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
-          if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
+          if [ "$PROCEEDED" != "true" ] || [ "$REVIEW_RESULT" != "success" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
             exit 0
           fi
           live=$(gh pr view "$PR_NUMBER" --json state,headRefOid,labels --jq '"\(.state) \(.headRefOid) \([.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")] | join(","))"' 2>/dev/null || echo "")
@@ -1625,250 +1984,38 @@ jobs:
           GH_TOKEN="$REQUEST_TOKEN" gh pr edit "$PR_NUMBER" --add-label "agent:review" \
             || echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, and agent:review could not be added again. Add it by hand to review the new head."
 
-  # Closes the threads the review verified (#133). It is the only job in this
-  # workflow holding `contents: write`, and it is shaped so that it cannot
-  # spend it on anything but that.
-  #
-  # **Why the scope.** `resolveReviewThread` is refused on an installation
-  # token without `contents: write`. `addPullRequestReviewThreadReply` beside
-  # it is not refused, which is why the step this replaced replied into every
-  # thread and then logged `Resource not accessible by integration` for every
-  # resolve. Confirmed 2026-09-24 on a scratch pull request (run 36057777753):
-  # same token, same thread, and `pull-requests: write` in both jobs. The job
-  # with `contents: read` was refused FORBIDDEN, and the job with
-  # `contents: write` resolved.
-  #
-  # **Why not the review job.** That job reads untrusted pull-request content
-  # and runs an agent over it, and `contents: read` is what stops it touching
-  # the branch (docs/parity.md §10). This job has no checkout, no toolchain and
-  # no agent. It runs two fixed GraphQL mutations whose only variables are a
-  # thread id and a reply, read out of what the review runner wrote. The runner
-  # dropped every id it had not handed over (`verifyCarried`). So the write
-  # scope reaches a job that has nothing to write with.
-  #
-  # Not `AGENT_PAT`: resolving would then depend on an adopter having set it,
-  # and every repository without it would keep the bug silently.
-  #
-  # **The cost is the caller's grant, and it is not a degradation.** A caller's
-  # `permissions:` is the ceiling for every job it calls, and GitHub refuses an
-  # elevation rather than trimming it: a called job asking for more than its
-  # caller granted fails the **whole run** before any job starts, as a
-  # `startup_failure` with no job log in it. So a caller left on `contents: read`
-  # does not get a review without the resolve; it gets no review. Both reference
-  # callers move in the same release as this job, and `doctor` reports a caller
-  # that did not as an error.
-  #
-  # Probed on a real token (#146), unlike the first two releases of this comment,
-  # which paraphrased the message and got it wrong. What GitHub calls it is an
-  # *invalid workflow file*, annotated on the run page as:
-  #
-  #   Invalid workflow file: .github/workflows/agent-review.yml#L<the caller's
-  #   `uses:` line> — Error calling workflow
-  #   '<owner>/<repo>/.github/workflows/review.yml@<sha>'. The nested job
-  #   'resolve' is requesting 'contents: write', but is only allowed
-  #   'contents: read'.
-  #
-  # `gh run view` reports it only as "a workflow file issue" and names neither
-  # the scope nor the file, so the annotation is the one place it is legible.
-  # The line it points at is the caller's `uses:`, not the `permissions:` line
-  # that is short, and the job it names is the **called** one — so an adopter
-  # reading it is sent to a file whose short line it does not name. A literal
-  # number here would be this repo's caller today and wrong by the next comment
-  # added above it; docs/ADOPTING.md §4 writes the same annotation and says the
-  # same two things about reading it.
-  #
-  # Not new with this job either: every job in this loop declares its
-  # permissions, so any caller granting less than one of them has always failed
-  # this way.
-  resolve:
-    needs: review
-    # Both of the review job's guards, restated rather than inherited through
-    # `needs`. Today `needs` implies them, because a skipped review skips this
-    # job too. But that holds only while this `if:` carries no status function,
-    # and a later `always()` added for another reason would drop both guards.
-    # Then the list the review wrote decides whether anything runs.
-    if: >-
-      github.event.label.name == 'agent:review' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.review.outputs.resolutions != '' &&
-      needs.review.outputs.resolutions != '[]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # **No concurrency group**, on purpose. `agent-pr-*` holds one waiting run,
-    # and a newer arrival evicts it silently (docs/parity.md §10). If this job
-    # joined the group, it would queue behind a fix a human labelled while the
-    # review ran, and could evict that fix. Overlap is harmless instead. A fix
-    # run shown a thread that already carries its closing reply is told the
-    # close is the only thing outstanding on it, and is not asked to answer it
-    # at all (`shared/pr-feedback.ts`). A review that races this job carries
-    # such a thread again, re-verifies it and resolves it without a second
-    # reply.
-    permissions:
-      contents: write
-      pull-requests: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Through `env:`, never interpolated into the script. A reply quotes a
-      # maintainer's words (`declineReply`), and quoted text spliced into shell
-      # source would run as a script.
-      RESOLUTIONS: ${{ needs.review.outputs.resolutions }}
-    steps:
-      # **The reply is posted first and the resolve is gated on it.**
-      # `resolutionReason` is recorded by GitHub and exposed nowhere afterwards,
-      # because no field on `PullRequestReviewThread` reads it back. So the
-      # reply is the only record of why a thread closed. A thread that closes
-      # with no reply loses that statement. On the `WONT_FIX` arm the lost part
-      # is the maintainer's quoted words, which are what make a misreading
-      # visible. Ordering alone does not prevent that; only the `continue`
-      # does. A reply that would not post leaves its thread open, which is the
-      # direction this loop fails in everywhere else.
+      # Step 6, the first hand-off: the automatic fix round (#102, and the
+      # budget of #201, PRD #200). Where the verdict is *changes recommended,
+      # fix round started*, this adds `agent:fix` itself, so a pull request whose
+      # fixes the review says are clear reaches a maintainer already fixed and
+      # re-reviewed rather than waiting on a label nobody was asked to think
+      # about. After `agent:review` came off (#257), so the timeline never shows
+      # the next step's label beside this run's.
       #
-      # **Unless the thread already carries that reply** (`alreadyReplied`,
-      # #133). A resolve that did not go through leaves the thread open, and the
-      # next review verifies it again. Without this guard every round adds
-      # another `**Verified fixed.**`, which is how #130 collected nine on one
-      # thread. Only the literal `true` skips the reply. Any other value posts
-      # it, because a duplicate reply is the cheaper mistake than a thread that
-      # closes with no reply at all.
+      # **Whether a round starts is settled before the review**, by *Settle the
+      # fix-round budget*: the rounds this loop already started on the pull
+      # request, counted from its verdicts, against `AGENT_MAX_FIX_ROUNDS`. The
+      # runner derives this key only where that step said a round would start,
+      # so the verdict announces exactly the rounds this step starts, and the
+      # budget is restated nowhere here: a second copy of the comparison could
+      # only disagree with the first.
       #
-      # What says a thread already carries the reply is a hidden marker on it
-      # and never the words it opens with. Those words are shown to the fix
-      # agent, whose own replies land in the same thread as this same bot, and a
-      # reply matched on prose is one the fixer can make — a thread closing
-      # under the fixer's claim with no review's record on it at all
-      # (`shared/review-verification.ts`).
+      # **Why it cannot loop.** Two bounds, both ruled on before the key below
+      # is derived. The budget bounds it per pull request, and the count it is
+      # checked against is the verdicts that announced a round, so nothing here
+      # has to be written down for the bound to hold. And the early stop (#202):
+      # a review after a fix round that closed none of the findings it was given
+      # cannot produce the key below, whatever budget is left (`deriveVerdict`,
+      # docs/parity.md §10).
       #
-      # Two reasons, and which one a thread closes on is decided by
-      # `verifyCarried` and read out of the list, never derived here: a finding
-      # the review verified fixed closes as `ADDRESSED`, and one a maintainer
-      # declined closes as `WONT_FIX` with their words quoted back (#109,
-      # decision 10). The enum is spelled out on both arms because it is a
-      # literal in the document rather than a variable GitHub would coerce, and
-      # the branch is on a fixed list, so a value this step does not recognise
-      # closes as addressed instead of putting an unknown string into a
-      # mutation.
-      #
-      # Never fails the job. A thread that would not close is a thread a human
-      # closes, and the review and its verdict are already posted. So each
-      # failure is a `::warning::` rather than the `echo` that hid this for a
-      # release, and the per-mutation `||` keeps one bad id from taking the
-      # rest of the list with it.
-      - name: Resolve the threads this review verified
-        run: |
-          set -uo pipefail
-          count=$(jq 'length' <<<"$RESOLUTIONS")
-          echo "Resolving ${count} verified thread(s)."
-
-          for i in $(seq 0 $((count - 1))); do
-            tid=$(jq -r ".[$i].threadId" <<<"$RESOLUTIONS")
-            body=$(jq -r ".[$i].reply" <<<"$RESOLUTIONS")
-            reason=$(jq -r ".[$i].reason" <<<"$RESOLUTIONS")
-            already=$(jq -r ".[$i].alreadyReplied" <<<"$RESOLUTIONS")
-
-            if [ "$already" = "true" ]; then
-              echo "  ${tid} already carries this reply; retrying only the resolve."
-            else
-              gh api graphql -f threadId="$tid" -f body="$body" -f query='
-                mutation($threadId:ID!,$body:String!) {
-                  addPullRequestReviewThreadReply(
-                    input:{pullRequestReviewThreadId:$threadId, body:$body}
-                  ) { clientMutationId }
-                }' >/dev/null \
-                && echo "  replied to ${tid}" \
-                || { echo "::warning::Could not reply to review thread ${tid}, so it is left open: a thread that closes with no reply loses the only record of why."; continue; }
-            fi
-
-            if [ "$reason" = "WONT_FIX" ]; then
-              mutation='
-                mutation($threadId:ID!) {
-                  resolveReviewThread(
-                    input:{threadId:$threadId, resolutionReason:WONT_FIX}
-                  ) { clientMutationId }
-                }'
-            else
-              mutation='
-                mutation($threadId:ID!) {
-                  resolveReviewThread(
-                    input:{threadId:$threadId, resolutionReason:ADDRESSED}
-                  ) { clientMutationId }
-                }'
-            fi
-
-            gh api graphql -f threadId="$tid" -f query="$mutation" >/dev/null \
-              && echo "  resolved ${tid} (${reason})" \
-              || echo "::warning::Could not resolve review thread ${tid} (${reason}). Its reply is posted, and the thread stays open until the next review retries it, which it does without replying again. GitHub's reply is printed above. It is not the caller's \`contents:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4)."
-          done
-
-  # The automatic fix round (#102, and the budget of #201, PRD #200). Where the
-  # verdict is *changes recommended, fix round started*, this adds `agent:fix`
-  # itself, so a pull request whose fixes the review says are clear reaches a
-  # maintainer already fixed and re-reviewed rather than waiting on a label
-  # nobody was asked to think about.
-  #
-  # **Whether a round starts is settled before the review**, by *Settle the
-  # fix-round budget*: the rounds this loop already started on the pull
-  # request, counted from its verdicts, against `AGENT_MAX_FIX_ROUNDS`. The
-  # runner derives this key only where that step said a round would start, so
-  # the verdict announces exactly the rounds this job starts, and the budget is
-  # restated nowhere here: a second copy of the comparison, in a job that
-  # cannot see the count, could only disagree with the first.
-  #
-  # **Why a separate job.** It spends `AGENT_PAT` on a label something fires
-  # on — as `advance` below does, for the same reason in the same shape — and
-  # it must not be the job that reads untrusted pull-request
-  # content and runs a model over it. So: no checkout, no toolchain, no agent,
-  # and `pull-requests: write` alone — narrower than the review job beside it,
-  # which holds four scopes. Its whole input is two literals, the verdict the
-  # review job derived and where that verdict was posted.
-  #
-  # **Why it cannot loop.** Two bounds, both ruled on before the key below is
-  # derived. The budget bounds it per pull request, and the count it is
-  # checked against is the verdicts that announced a round, so nothing here has
-  # to be written down for the bound to hold. And the early stop (#202): a
-  # review after a fix round that closed none of the findings it was given
-  # cannot produce the key below, whatever budget is left (`deriveVerdict`,
-  # docs/parity.md §10). The round rule that bounded it before, a second round
-  # barred from recommending another, is retired (PRD #200 decision 6).
-  #
-  # **Why the guards are restated.** Same reason `resolve` restates them: today
-  # `needs:` implies the two standing ones, but only while this `if:` carries
-  # no status function, and a later `always()` added for some other reason
-  # would drop both.
-  auto-fix:
-    needs: review
-    if: >-
-      github.event.label.name == 'agent:review' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.review.outputs.verdict == 'changes recommended, fix round started' &&
-      needs.review.outputs.moved != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # **No concurrency group**, for the reason `resolve` is in none: the
-    # `agent-pr-*` waiter slot has depth 1 and holds the newest arrival, so
-    # joining would let this job evict a fix a human queued while the review
-    # ran — and a label add is not a thing another job can tear.
-    #
-    # It does queue behind nothing and start immediately, which is the point:
-    # the `agent:fix` it adds fires a run that *does* join the group, so the
-    # serialisation this loop depends on still happens where the work is.
-    permissions:
-      # Labels on a pull request, which is the whole of what this job does.
-      # Not `issues: write`: that scope covers labels on an issue, and the one
-      # thing this must never be able to do is file work (docs/parity.md §10).
-      pull-requests: write
-    env:
-      GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-    steps:
       # MUST use AGENT_PAT. A label added with `GITHUB_TOKEN` fires no
       # `labeled` event, so `agent:fix` added with it sits on the pull request
       # triggering nothing. The budget step already declined to start a round
-      # without the PAT, so this job does not run without one; the fallback is
+      # without the PAT, so this step does not run without one; the fallback is
       # for the comment, which is the one thing here `GITHUB_TOKEN` can do.
       #
-      # **Decided from live state, not the event payload** (#201). The job can
-      # start minutes after the review (on #210 it ran after a later approval),
-      # so before adding anything it re-reads the pull request:
+      # **Decided from live state, not the event payload** (#201). Before adding
+      # anything it re-reads the pull request:
       #
       #  - `agent:fix` is already on it: a round is starting anyway, whoever
       #    added it. Adding nothing.
@@ -1890,10 +2037,14 @@ jobs:
       # failed after the verdict had announced a round, and the only record was
       # a red job nobody opened.
       - name: Start the automatic fix round
+        if: >-
+          success() && needs.review.result == 'success' &&
+          needs.review.outputs.verdict == 'changes recommended, fix round started' &&
+          steps.trigger.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
           REVIEWED_SHA: ${{ needs.review.outputs.sha }}
-          REVIEW_URL: ${{ needs.review.outputs.url }}
+          REVIEW_URL: ${{ steps.review.outputs.url }}
           VERDICT_CONTEXT: agent-review
           LOOP_ACCOUNT: github-actions[bot]
         run: |
@@ -1946,119 +2097,57 @@ jobs:
           fi
           echo "Added agent:fix to PR #${PR_NUMBER}: an automatic fix round starts."
 
-  # The PRD chain's advance (#176, PRD #171). A slice PR is one sub-issue of a
-  # PRD, opened by `implement-prd` against the PRD branch, and the chain waits
-  # for that slice's review round to end before it builds the next one. When
-  # the round ends on a verdict the chain moves on from, this re-adds
-  # `agent:implement` to the parent; the `implement-prd` run that starts merges
-  # the slice PR into the PRD branch and builds the next slice — or, after the
-  # last slice, is the finishing run that hands the PRD PR over.
-  #
-  # **Which verdicts advance.** The two a slice round ends on without a
-  # human: *approval recommended*; and *changes recommended* where no automatic
-  # fix is starting (a budget of 0 or spent, a fix round that made no progress,
-  # or no `AGENT_PAT`). Not the key the `auto-fix` job selects on — a fix and
-  # its re-review are still in
-  # flight, and the round ends at their end, here or in `fix.yml`'s copy of
-  # this job — and not *needs a closer look*, which is a reviewer asking for a
-  # human: the chain parks on that slice PR until one re-adds `agent:implement`
-  # to the parent, which is itself the acceptance. A failed review skips this
-  # job — `needs.review.result` below — so the chain parks there too.
-  #
-  # Keys, matched exactly, for the reason `auto-fix` matches one: two rows
-  # share a heading, and it is the key that tells them apart.
-  #
-  # **Why a separate job**, and in `auto-fix`'s shape: it spends `AGENT_PAT`,
-  # and it must not be the job that reads untrusted pull-request content and
-  # runs a model over it. No checkout, no toolchain, no agent. Its whole input
-  # is the head ref, the pull request's number and a key the review job derived.
-  #
-  # **Only on a slice PR**, recognised by its head: `agent/slice-<parent>-…`,
-  # the name `implement-prd` gives it, which is also where the parent comes
-  # from. An ordinary pull request has no chain to advance, and a PRD PR's head
-  # is `agent/prd-…`, which this does not match — its own review ends the chain
-  # rather than advancing it.
-  #
-  # **Why it cannot cycle.** It adds a label to the parent **issue**, never to
-  # a pull request, and the `implement-prd` run it starts either merges this
-  # slice PR — closing it, so no later round on it can fire this again — or
-  # refuses into `agent:blocked`. What it starts is bounded by the number of
-  # sub-issues, and a finished PRD refuses the label.
-  #
-  # **After `resolve`, not beside it.** The `implement-prd` run this starts
-  # reads the slice PR's unresolved threads for its row of the slices table,
-  # and rows are never refreshed. Run in parallel, that read can land before
-  # `resolve` has closed the threads this round verified fixed (likeliest on
-  # the review that follows a fix round), and the PRD PR would link fixed
-  # findings as open for good. So this waits
-  # for `resolve`, runs when `resolve` was skipped (a round with nothing to
-  # close), and parks when `resolve` failed: the threads it would have closed
-  # are still open, and a row written now would say so. That takes a status
-  # function, which is what the restated guards below exist for.
-  #
-  # `!cancelled()` rather than `always()`: a cancelled run advances nothing.
-  # The review's own result is checked by name, since a status function drops
-  # the implicit "every need succeeded".
-  #
-  # The guards are restated for the reason `resolve` restates them.
-  advance:
-    needs: [review, resolve]
-    if: >-
-      !cancelled() &&
-      needs.review.result == 'success' &&
-      (needs.resolve.result == 'success' || needs.resolve.result == 'skipped') &&
-      github.event.label.name == 'agent:review' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
-      needs.review.outputs.moved != 'true' &&
-      (needs.review.outputs.verdict == 'approval recommended' ||
-       needs.review.outputs.verdict == 'changes recommended')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # **No concurrency group**, for the reason `auto-fix` is in none. The
-    # `implement-prd` run its label starts serialises on the parent instead.
-    permissions:
-      # The comment the no-PAT arm leaves on the slice PR, and nothing else.
-      # The label on the parent is added with `AGENT_PAT` or not at all — a
-      # label added with `GITHUB_TOKEN` fires no event — so the workflow token
-      # is never asked to write an issue, and `issues: write` stays out of this
-      # job (docs/parity.md §10) and out of every caller's grant.
-      pull-requests: write
-    env:
-      GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
-    steps:
-      # MUST use AGENT_PAT, for `auto-fix`'s reason: `agent:implement` added with
-      # `GITHUB_TOKEN` sits on the parent and starts nothing. So without the PAT
-      # nothing is added at all, and the one place a maintainer is already
-      # looking — this slice PR — says which re-label advances the chain by hand.
+      # Step 6, the other hand-off: the PRD chain's advance (#176, PRD #171). A
+      # slice PR is one sub-issue of a PRD, opened by `implement-prd` against
+      # the PRD branch, and the chain waits for that slice's review round to end
+      # before it builds the next one. When the round ends on a verdict the
+      # chain moves on from, this re-adds `agent:implement` to the parent; the
+      # `implement-prd` run that starts merges the slice PR into the PRD branch
+      # and builds the next slice, or, after the last slice, is the finishing
+      # run that hands the PRD PR over.
       #
-      # `bash -e` and no `|| true` on the add, for `auto-fix`'s reason: a chain
-      # that did not advance under a round that ended is a stall with no other
-      # symptom, and a red job is the only thing that says so.
+      # **Which verdicts advance.** The two a slice round ends on without a
+      # human: *approval recommended*; and *changes recommended* where no
+      # automatic fix is starting (a budget of 0 or spent, a fix round that made
+      # no progress, or no `AGENT_PAT`). Not the key the fix round above selects
+      # on: a fix and its re-review are still in flight, and the round ends at
+      # their end, here or in `fix.yml`'s `advance` job. And not *needs a
+      # closer look*, which is a reviewer asking for a human: the chain parks on
+      # that slice PR until one re-adds `agent:implement` to the parent, which
+      # is itself the acceptance. A failed review or a failed post never gets
+      # here, so the chain parks there too.
+      #
+      # Keys, matched exactly, for the reason the fix round matches one: two
+      # rows share a heading, and it is the key that tells them apart.
+      #
+      # **Only on a slice PR**, recognised by its head: `agent/slice-<parent>-…`,
+      # the name `implement-prd` gives it, which is also where the parent comes
+      # from. An ordinary pull request has no chain to advance, and a PRD PR's
+      # head is `agent/prd-…`, which this does not match: its own review ends
+      # the chain rather than advancing it.
+      #
+      # **After the threads are resolved**, which is now the order of this job's
+      # steps rather than a `needs:` between two jobs. The `implement-prd` run
+      # this starts reads the slice PR's unresolved threads for its row of the
+      # slices table, and rows are never refreshed, so a row written before the
+      # resolve would link fixed findings as open for good.
+      #
+      # What advancing *is* lives in `.github/actions/advance-prd`, the one copy
+      # this and `fix.yml`'s `advance` job both run (#257): no checkout, no
+      # model, `AGENT_PAT` or nothing.
       - name: Advance the PRD chain
-        env:
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$HEAD_REF" =~ ^agent/slice-([0-9]+)-[0-9]+- ]]; then
-            echo "::error::Slice PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/slice-<parent>-<sub-issue>-…\`, so its PRD cannot be told. Re-add \`agent:implement\` to the PRD by hand to advance its chain."
-            exit 1
-          fi
-          parent="${BASH_REMATCH[1]}"
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::AGENT_PAT is not set, so the PRD chain was not advanced: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
-            gh pr comment "$PR_NUMBER" --body "This slice's review round has ended, but the PRD chain will not advance on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to merge this slice PR into the PRD branch and move the chain on." \
-              || echo "::warning::…and that could not be said on the pull request either."
-            exit 0
-          fi
-          # Removed first, as every trigger label the loop adds (#236): an add
-          # on a label still there fires nothing, and the chain would stall.
-          gh issue edit "$parent" --remove-label "agent:implement" || true
-          gh issue edit "$parent" --add-label "agent:implement"
-          echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."
+        if: >-
+          success() && needs.review.result == 'success' &&
+          startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
+          steps.trigger.outputs.moved != 'true' &&
+          (needs.review.outputs.verdict == 'approval recommended' ||
+           needs.review.outputs.verdict == 'changes recommended')
+        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.4
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          head-ref: ${{ github.event.pull_request.head.ref }}
+          has-pat: ${{ secrets.AGENT_PAT != '' }}
+          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
   # A slice PR merged **by hand** advances the chain too (#209). Merging a
   # slice PR whose round parked is the obvious move for a maintainer, and until
@@ -2079,18 +2168,18 @@ jobs:
   # merge starts no job at all, and there is no race with the run that made it.
   #
   # **Not while the chain is already moving.** A human merge can land while
-  # the run `advance` started is queued or building (the parent carries
+  # the run an advance started is queued or building (the parent carries
   # `agent:implement`, which is on from the advance until that run ends); that
   # run finds the slice PR merged and goes on, and a second label would only
   # queue a second run.
   #
-  # **Only on a slice PR**, for `advance`'s reason and by the same head, and
+  # **Only on a slice PR**, for the advance's reason and by the same head, and
   # only into a PRD branch. `closed` with `merged`, and the action named:
   # a label added to a pull request that is already merged is a `labeled`
   # event carrying `merged: true` too.
   #
-  # In `advance`'s shape: no checkout, no toolchain, no model, `pull-requests:
-  # write` alone, `AGENT_PAT` or nothing. It cannot cycle: it labels an issue,
+  # In the advance's shape (`.github/actions/advance-prd`): no checkout, no
+  # toolchain, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. It cannot cycle: it labels an issue,
   # never a pull request, and a merged slice PR closes once.
   advance-merged:
     if: >-
@@ -2102,17 +2191,18 @@ jobs:
       !contains(github.event.pull_request.body, format('<!-- agent-chain-merge {0} -->', github.event.pull_request.head.sha))
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # **No concurrency group**, for the reason `advance` is in none.
+    # **No concurrency group**, for the reason the posting job is in none.
     permissions:
-      # The comment the no-PAT arm leaves on the slice PR, and nothing else,
-      # for `advance`'s reason.
+      # The comment the no-PAT arm leaves on the slice PR, and nothing else.
+      # The label on the parent goes on with `AGENT_PAT` or not at all, so
+      # `issues: write` stays out of this job (docs/parity.md §10).
       pull-requests: write
     env:
       GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
     steps:
-      # MUST use AGENT_PAT, for `advance`'s reason. `bash -e` and no `|| true`
+      # MUST use AGENT_PAT, for the advance's reason. `bash -e` and no `|| true`
       # on the add or the read before it: a hand merge that did not move the
       # chain is the dead end this job exists to remove, and a red job is the
       # only thing that says so.

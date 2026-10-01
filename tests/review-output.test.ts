@@ -29,6 +29,9 @@ import {
   recordFollowUps,
   renderFollowUpsBlock,
   renderReviewBody,
+  renderReviewPost,
+  RESOLVED_GROUP,
+  RESOLVED_SLOT,
   REVIEW_BODY_LIMIT,
   reviewBodySize,
   PREVIOUSLY_MISSED_SUBTITLE,
@@ -1522,6 +1525,57 @@ describe("the posted review body", () => {
 
     expect(body).toContain("1 finding an earlier review raised was closed this round.");
     expect(body).toContain("<summary><b>Resolved since last review</b> (1)</summary>");
+  });
+
+  /**
+   * **The body and the slot the posting job fills** (#257). The posting job
+   * resolves the threads before it posts, so the body is handed over twice:
+   * as it reads where every closure held, and with a slot where *Resolved
+   * since last review* goes, beside that group's lines and the thread each one
+   * needs to have resolved. Put back with every line, the slot is the group.
+   */
+  describe("the body the posting job puts back together", () => {
+    const resolved = [
+      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", severity: "low" as const },
+      { id: "f-2", threadId: "PRRT_two", text: "the cache key omits the tenant", severity: "high" as const },
+      { id: "f-3", text: "a legacy body entry" },
+    ];
+    const post = () => renderReviewPost({ ...parts, resolved });
+
+    it("hands over the same body renderReviewBody posts", () => {
+      expect(post().body).toBe(render({ resolved }));
+    });
+
+    it("leaves the slot exactly where the resolved group was, and nowhere else", () => {
+      const { body, slotted, slot } = post();
+      const group = body.slice(body.indexOf("<details>\n<summary><b>Resolved"), body.indexOf("</details>", body.indexOf("<summary><b>Resolved")) + "</details>".length);
+
+      expect(slot).toBe(RESOLVED_SLOT);
+      expect(slotted.split(slot)).toHaveLength(2);
+      expect(slotted.replace(slot, group)).toBe(body);
+    });
+
+    it("lists the group's lines worst first, each with the thread it needs resolved", () => {
+      const { resolved: lines, groups } = post();
+
+      expect(lines.map((line) => line.threadId)).toEqual(["PRRT_two", "PRRT_one", undefined]);
+      expect(lines.map((line) => line.line).join("\n")).toBe(
+        post()
+          .body.split("\n")
+          .filter((line) => line.startsWith("- "))
+          .join("\n"),
+      );
+      expect(groups.resolved).toBe(RESOLVED_GROUP);
+      expect(groups.unclosed.open).toBe(true);
+      expect(groups.unclosed.subtitle ?? "").not.toBe("");
+    });
+
+    it("still carries a slot where nothing was resolved, which fills with nothing", () => {
+      const empty = renderReviewPost(parts);
+
+      expect(empty.resolved).toEqual([]);
+      expect(empty.slotted.replace(`\n\n${empty.slot}`, "")).toBe(empty.body);
+    });
   });
 
   /**

@@ -53,12 +53,83 @@ const CASES = [
 
 type Case = (typeof CASES)[number];
 
-const runOf = (c: Case): string => {
-  const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${c.command}.yml`), "utf8")) as Workflow;
-  const step = (workflow.jobs[c.command]?.steps ?? []).find((s) => s.name === c.step);
+/**
+ * The job each failure step is in: its workflow's own, except the review's,
+ * which is its posting job (#257). The review job runs the model and writes
+ * nothing, so it measures how it ended and hands that over.
+ */
+const JOB: Readonly<Record<string, string>> = { review: "post-review" };
 
-  expect(step?.run, `${c.command} has no \`${c.step}\` step`).toBeDefined();
+const stepOf = (command: string, job: string, name: string): string => {
+  const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
+  const step = (workflow.jobs[job]?.steps ?? []).find((s) => s.name === name);
+
+  expect(step?.run, `${command} has no \`${name}\` step in \`${job}\``).toBeDefined();
   return step?.run ?? "";
+};
+
+const runOf = (c: Case): string => stepOf(c.command, JOB[c.command] ?? c.command, c.step);
+
+/** `name=value` and `name<<DELIMITER … DELIMITER` lines, as GitHub reads an output file. */
+const outputsOf = (text: string): Record<string, string> => {
+  const outputs: Record<string, string> = {};
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
+    const heredoc = /^([\w-]+)<<(.+)$/.exec(line);
+    if (heredoc !== null) {
+      const end = lines.indexOf(heredoc[2] ?? "", i + 1);
+      outputs[heredoc[1] ?? ""] = lines.slice(i + 1, end).join("\n");
+      i = end;
+      continue;
+    }
+    const pair = /^([\w-]+)=(.*)$/.exec(line);
+    if (pair !== null) outputs[pair[1] ?? ""] = pair[2] ?? "";
+  }
+  return outputs;
+};
+
+/**
+ * The review job's half (#257): *Hand the outcome to the posting job*, run as
+ * the job ended, which is where the clock and the reason files are. What it
+ * hands over is what the posting job's failure step reads, as the posting job
+ * sees it: the review job's result, and its outputs.
+ */
+const reviewOutcome = (
+  temp: string,
+  bin: string,
+  status: "failure" | "cancelled",
+  elapsed: number,
+  minutes: string,
+): Record<string, string> => {
+  const script = path.join(temp, "outcome.sh");
+  const output = path.join(temp, "outcome.out");
+  fs.writeFileSync(script, stepOf("review", "review", "Hand the outcome to the posting job"));
+  fs.writeFileSync(output, "");
+  const result = spawnSync("bash", ["-e", script], {
+    encoding: "utf8",
+    timeout: SUBPROCESS_TIMEOUT,
+    env: {
+      ...process.env,
+      PATH: `${bin}${path.delimiter}${process.env["PATH"] ?? ""}`,
+      RUNNER_TEMP: temp,
+      GITHUB_OUTPUT: output,
+      JOB_STATUS: status,
+      JOB_STARTED: String(Math.floor(Date.now() / 1000) - elapsed),
+      TIMEOUT_MINUTES: minutes,
+    },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  const outputs = outputsOf(fs.readFileSync(output, "utf8"));
+  // The posting job has a temp of its own: nothing the review job wrote is in it.
+  for (const name of ["failure_reason.txt", "refusal_reason.txt"]) fs.rmSync(path.join(temp, name), { force: true });
+  return {
+    REVIEW_RESULT: status,
+    JOB_STATUS: "success",
+    REVIEW_REASON: outputs["failure-reason"] ?? "",
+    REVIEW_REFUSAL: outputs["refusal-reason"] ?? "",
+    TIMED_OUT: outputs["timed-out"] ?? "",
+  };
 };
 
 interface Outcome {
@@ -91,6 +162,11 @@ const run = (
   fs.writeFileSync(path.join(bin, "gh"), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n', { mode: 0o755 });
   for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(temp, name), text);
   fs.writeFileSync(script, runOf(c));
+  // Unless the case names what was handed over itself, as a failed post does.
+  const handed =
+    c.command === "review" && extra["REVIEW_RESULT"] === undefined
+      ? reviewOutcome(temp, bin, status, elapsed, minutes)
+      : {};
 
   const result = spawnSync("bash", ["-e", script], {
     encoding: "utf8",
@@ -107,6 +183,7 @@ const run = (
       JOB_STARTED: String(Math.floor(Date.now() / 1000) - elapsed),
       TIMEOUT_MINUTES: minutes,
       REFUSED: refused,
+      ...handed,
       ...extra,
     },
   });
@@ -167,8 +244,9 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
     const none = run(c, "failure", 120, String(c.minutes), "false", {});
     expect(none.comment).toMatch(pattern);
     expect(none.comment).toContain("It stopped without giving a reason.");
-    // Five spawns, so five spawns' worth of ceiling (`vitest.config.ts`).
-  }, 5 * SUBPROCESS_TIMEOUT);
+    // Five runs, so five spawns' worth of ceiling (`vitest.config.ts`), and
+    // twice that for the review, whose run is two steps in two jobs (#257).
+  }, 10 * SUBPROCESS_TIMEOUT);
 
   /**
    * The other pattern (#253): a review that refused a repository variable
@@ -183,6 +261,25 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
     const outcome = run(review, "failure", 120, "20", "false", { "refusal_reason.txt": `${refusal}\n` });
 
     expect(outcome.comment).toBe(`**\`agent:review\` didn't run:** ${refusal}\n`);
+    expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
+  });
+
+  /**
+   * And a review that finished whose posting failed (#257): the reason is the
+   * posting job's own, from the file its post step wrote, and the review job's
+   * clock has nothing to say about it.
+   */
+  it("review: a review that finished and could not be posted says why, and blocks", () => {
+    const review = CASES.find((c) => c.command === "review") as Case;
+    const outcome = run(review, "failure", 120, "20", "false", { "failure_reason.txt": "GitHub refused the review.\n" }, {
+      REVIEW_RESULT: "success",
+      JOB_STATUS: "failure",
+      REVIEW_REASON: "",
+      REVIEW_REFUSAL: "",
+      TIMED_OUT: "false",
+    });
+
+    expect(outcome.comment).toContain("stopped:** GitHub refused the review.\n");
     expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
   });
 

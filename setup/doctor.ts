@@ -388,12 +388,12 @@ export const REQUIRED_PERMISSIONS: readonly {
     value: "write",
     workflows: ["review"],
     why:
-      "the review's `resolve` job closes the threads the review verified, and GitHub refuses " +
-      "`resolveReviewThread` to a token without it (#133). Only that job spends the write: it " +
-      "checks nothing out and runs no agent, and the review job narrows the grant back to " +
-      "`read`, so a review still cannot touch the branch. Newer than every other grant on this " +
-      "caller, so a caller installed before that release holds `contents: read` and looks " +
-      "complete",
+      "the review's posting job resolves the threads the review closed before it posts the " +
+      "review, and GitHub refuses `resolveReviewThread` to a token without it (#133). Only that " +
+      "job spends the write: it checks nothing out and runs no agent, and the review job narrows " +
+      "every grant back to `read`, so a review still cannot touch the branch. Newer than every " +
+      "other grant on this caller, so a caller installed before that release holds " +
+      "`contents: read` and looks complete",
   },
   {
     permission: "contents",

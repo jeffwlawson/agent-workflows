@@ -69,8 +69,8 @@ interface Workflow {
 }
 
 /**
- * The `review` job by id. Since #133 the file has a second job, `resolve`,
- * which runs no wait.
+ * The `review` job by id. The file has other jobs, the posting job among them
+ * (#257), and none of them runs the wait.
  */
 const reviewJob = (): { readonly env?: Record<string, string>; readonly steps?: readonly Step[] } => {
   const job = (parse(fs.readFileSync(REVIEW, "utf8")) as Workflow).jobs["review"];

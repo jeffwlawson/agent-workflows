@@ -1,0 +1,79 @@
+name: Advance the PRD chain
+description: >-
+  Re-add `agent:implement` to a slice PR's parent, so the `implement-prd` run
+  that starts merges the slice PR into the PRD branch and builds the next slice.
+  With no `AGENT_PAT`, say on the slice PR which re-label does it by hand.
+
+# The PRD chain's advance (#176, PRD #171), in the one copy `review.yml`'s
+# posting job and `fix.yml`'s `advance` job both run (#257). Which rounds advance
+# is each caller's to decide, in its own `if:`: this is what advancing *is*.
+#
+# **A composite action, because it is the one way to share steps across two
+# reusable workflows without a toolchain.** A reusable workflow is called as a
+# job, and the review's advance is a step of its posting job, after the trigger
+# label comes off. The runner package would mean an install in a job that has
+# no checkout and runs no model. A composite is fetched by GitHub from the same
+# tag as the workflow that names it, so it is pinned like one:
+# `jeffwlawson/agent-workflows/.github/actions/advance-prd@v<version>`, written
+# by `scripts/sync-version.ts` on release (`shared/pins.ts`, the `action` form).
+#
+# **Why it cannot cycle.** It adds a label to the parent **issue**, never to a
+# pull request, and the `implement-prd` run it starts either merges this slice
+# PR, closing it so no later round on it can fire this again, or refuses into
+# `agent:blocked`. What it starts is bounded by the number of sub-issues, and a
+# finished PRD refuses the label.
+#
+# **The token is the caller's.** A composite cannot read `secrets`, so it is
+# handed `AGENT_PAT`, or `GITHUB_TOKEN` where there is none, together with which
+# one it got.
+inputs:
+  pr-number:
+    description: The slice PR whose round ended.
+    required: true
+  head-ref:
+    description: The slice PR's head, `agent/slice-<parent>-<sub-issue>-…`, which names its parent.
+    required: true
+  has-pat:
+    description: "`true` where `token` is `AGENT_PAT`."
+    required: true
+  token:
+    description: "`AGENT_PAT`, or `GITHUB_TOKEN` where it is not set."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # MUST use AGENT_PAT: `agent:implement` added with `GITHUB_TOKEN` sits on
+    # the parent and starts nothing. So without the PAT nothing is added at all,
+    # and the one place a maintainer is already looking, this slice PR, says
+    # which re-label advances the chain by hand.
+    #
+    # `bash -e` and no `|| true` on the add: a chain that did not advance under
+    # a round that ended is a stall with no other symptom, and a red job is the
+    # only thing that says so.
+    - name: Advance the PRD chain
+      shell: bash
+      env:
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        HAS_PAT: ${{ inputs.has-pat }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        if [[ ! "$HEAD_REF" =~ ^agent/slice-([0-9]+)-[0-9]+- ]]; then
+          echo "::error::Slice PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/slice-<parent>-<sub-issue>-…\`, so its PRD cannot be told. Re-add \`agent:implement\` to the PRD by hand to advance its chain."
+          exit 1
+        fi
+        parent="${BASH_REMATCH[1]}"
+        if [ "$HAS_PAT" != "true" ]; then
+          echo "::warning::AGENT_PAT is not set, so the PRD chain was not advanced: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
+          gh pr comment "$PR_NUMBER" --body "This slice's review round has ended, but the PRD chain will not advance on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to merge this slice PR into the PRD branch and move the chain on." \
+            || echo "::warning::…and that could not be said on the pull request either."
+          exit 0
+        fi
+        # Removed first, as every trigger label the loop adds (#236): an add
+        # on a label still there fires nothing, and the chain would stall.
+        gh issue edit "$parent" --remove-label "agent:implement" || true
+        gh issue edit "$parent" --add-label "agent:implement"
+        echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."

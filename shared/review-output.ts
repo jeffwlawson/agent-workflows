@@ -800,6 +800,36 @@ const entryLine = (entry: RecordEntry): string =>
 export const PREVIOUSLY_MISSED_SUBTITLE = "In code that hasn't changed since last review";
 
 /**
+ * How a group the posting job renders opens: its title, whether it starts
+ * expanded, and the line under its summary where it has one (#257).
+ */
+export interface GroupHead {
+  readonly title: string;
+  readonly open: boolean;
+  readonly subtitle?: string;
+}
+
+/** *Resolved since last review*, as `renderReviewBody` renders it and the posting job does. */
+export const RESOLVED_GROUP: GroupHead = { title: "Resolved since last review", open: false };
+
+/**
+ * The group a closure the posting job could not make lands in (#257): this
+ * review closed the finding, and GitHub refused to resolve its thread or take
+ * the reply before it. The thread is still open, so the record says so rather
+ * than listing it under *Resolved*, and the next review retries it.
+ *
+ * Expanded, as *Open* is: an open thread is something a reader may have to act
+ * on. Rendered by nothing here, since the runner cannot know which resolves will
+ * fail; the posting job renders it, from these words, where one did.
+ */
+export const UNCLOSED_GROUP: GroupHead = {
+  title: "Still open",
+  open: true,
+  subtitle:
+    "This review closed these, but their threads could not be resolved, so they stay open until the next review retries",
+};
+
+/**
  * One group, or `undefined` where it is empty — so the body drops the heading
  * rather than leaving a disclosure widget over nothing, which is how a channel
  * teaches people to stop opening it.
@@ -1087,7 +1117,77 @@ const shedSentence = (shed: Shed): string | undefined => {
  * part of the review a human acts on and the runner is a script with no test
  * around it.
  */
-export const renderReviewBody = (parts: {
+export const renderReviewBody = (parts: ReviewBodyParts): string => renderReviewPost(parts).body;
+
+/**
+ * The body, and what the posting job needs to put *Resolved since last review*
+ * right after it has tried to resolve the threads (#257).
+ *
+ * The review job runs the model and posts nothing; a job that runs no model
+ * resolves the threads this review closed and then posts the body. So the body
+ * cannot know, when it is rendered, which of those closures will hold. `body` is
+ * the body as it reads where every one did, and is what the run log and the
+ * payload carry. `slotted` is the same body with `slot` where the resolved group
+ * goes, and `resolved` is that group's lines, worst first, each with the thread
+ * the posting job has to have resolved for the line to stay there. A line whose
+ * thread it could not resolve moves to `UNCLOSED_GROUP` instead, in the same
+ * place in the body.
+ *
+ * The lines are rendered here, shed as the rest of the body was, so the posting
+ * job writes no entry and composes only the two group wrappers, from `groups`.
+ * A legacy body entry has no thread and closes by not being listed again, so it
+ * carries no `threadId` and always stays.
+ *
+ * Measured with the resolved group in place. A closure that fails costs the
+ * unclosed group's summary and subtitle on top, a few hundred bytes inside the
+ * margin `REVIEW_BODY_BUDGET` keeps under GitHub's limit.
+ */
+export interface ReviewPost {
+  readonly body: string;
+  readonly slotted: string;
+  readonly slot: string;
+  readonly resolved: readonly { readonly threadId?: string; readonly line: string }[];
+  readonly groups: { readonly resolved: GroupHead; readonly unclosed: GroupHead };
+}
+
+/**
+ * Where the resolved groups go in `ReviewPost.slotted`: an HTML comment, so a
+ * slot nothing replaced renders as nothing.
+ */
+export const RESOLVED_SLOT = "<!-- agent-review:resolved-groups -->";
+
+export const renderReviewPost = (parts: ReviewBodyParts): ReviewPost => {
+  const record = reviewRecord(parts);
+  // The resolved entries with their threads, in the record's order: the same
+  // comparator over the same list, and `Array#sort` is stable.
+  const closures = parts.resolved
+    .map((finding) => ({ threadId: finding.threadId, entry: carriedEntry(finding, false) }))
+    .sort((a, b) => severityRank(a.entry.severity) - severityRank(b.entry.severity));
+  const body = renderBody(parts, record);
+  const cut = cutFor(body.shed);
+
+  return {
+    body: body.text,
+    slotted: body.compose(body.shed, true),
+    slot: RESOLVED_SLOT,
+    resolved: closures.map(({ threadId, entry }) => ({
+      ...(threadId === undefined ? {} : { threadId }),
+      line: entryLine(cut([entry])[0] as RecordEntry),
+    })),
+    groups: { resolved: RESOLVED_GROUP, unclosed: UNCLOSED_GROUP },
+  };
+};
+
+/** The record's entries as a shed renders them: titles cut where it cut them. */
+const cutFor =
+  (shed: Shed) =>
+  (entries: readonly RecordEntry[]): RecordEntry[] =>
+    shed.titles
+      ? entries.map((entry) => ({ ...entry, title: shortened(entry.title, SHED_TITLE_LENGTH) }))
+      : [...entries];
+
+/** What `renderReviewBody` is handed. */
+export interface ReviewBodyParts {
   /**
    * The row the derivation chose. The body opens with its heading and then its
    * next step — the same two halves the commit status carries, except that the
@@ -1201,8 +1301,21 @@ export const renderReviewBody = (parts: {
    * opens the run rather than the review.
    */
   readonly log?: ((line: string) => void) | undefined;
-}): string => {
-  const record = reviewRecord(parts);
+}
+
+/**
+ * The body, measured and shed until it fits, and how to compose it again: the
+ * slotted copy `renderReviewPost` needs is the same composition, with the same
+ * shed.
+ */
+const renderBody = (
+  parts: ReviewBodyParts,
+  record: ReviewRecord,
+): {
+  readonly text: string;
+  readonly shed: Shed;
+  readonly compose: (shed: Shed, slotted?: boolean) => string;
+} => {
 
   // The review's own sentence, and a sentence built from the record where it
   // wrote none. The fallback is not a lesser version of the same thing: it says
@@ -1217,11 +1330,8 @@ export const renderReviewBody = (parts: {
   const written = parts.output.assessment?.trim();
   const assessment = written === undefined || written === "" ? unresolvedSentence(record) : written;
 
-  const compose = (shed: Shed): string => {
-    const cut = (entries: readonly RecordEntry[]): RecordEntry[] =>
-      shed.titles
-        ? entries.map((entry) => ({ ...entry, title: shortened(entry.title, SHED_TITLE_LENGTH) }))
-        : [...entries];
+  const compose = (shed: Shed, slotted = false): string => {
+    const cut = cutFor(shed);
     const followUps = parts.followUps.slice(0, parts.followUps.length - shed.cutFollowUps);
     // The payload accounts for every entry it does not carry, so `dropped` is
     // the sum and `cut` names the part of it the size took. The visible group
@@ -1241,7 +1351,9 @@ export const renderReviewBody = (parts: {
       shedSentence(shed),
       renderGroup("Open", cut(record.open), true),
       renderGroup("Previously missed", cut(record.missed), true, PREVIOUSLY_MISSED_SUBTITLE),
-      renderGroup("Resolved since last review", cut(record.resolved), false),
+      slotted
+        ? RESOLVED_SLOT
+        : renderGroup(RESOLVED_GROUP.title, cut(record.resolved), RESOLVED_GROUP.open),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles),
       renderDroppedNotesGroup(parts.droppedNotes ?? []),
       renderHowChecked(parts.output.howChecked),
@@ -1273,7 +1385,7 @@ export const renderReviewBody = (parts: {
   // the body it was before the measurement existed.
   let shed = NOTHING_SHED;
   let body = compose(shed);
-  if (reviewBodySize(body) <= REVIEW_BODY_BUDGET) return body;
+  if (reviewBodySize(body) <= REVIEW_BODY_BUDGET) return { text: body, shed, compose };
 
   const unexempt = parts.followUps.length - parts.movedToFollowUps;
   const steps: Shed[] = [
@@ -1304,7 +1416,7 @@ export const renderReviewBody = (parts: {
   parts.log?.(
     `Review body: ${shedSentence(shed)?.replace(/^_|_$/g, "")} It is now ${size} bytes.`,
   );
-  return body;
+  return { text: body, shed, compose };
 };
 
 /**

@@ -30,7 +30,7 @@ import {
   deriveVerdict,
   recordFollowUps,
   renderFollowUpsBlock,
-  renderReviewBody,
+  renderReviewPost,
   reviewOutputSchema,
   VERDICT_CONTEXT,
   type CiResult,
@@ -411,7 +411,7 @@ try {
   // (#109, decision 8 as the maintainer settled it), and the payload the filing
   // half reads on merge goes out last and invisibly — so the posted body is
   // what this returns, with nothing concatenated on afterwards.
-  const reviewBody = renderReviewBody({
+  const post = renderReviewPost({
     verdict,
     output,
     roundNote: unreadableHistoryNote(history),
@@ -434,6 +434,7 @@ try {
     // reason rather than letting the post meet the limit as a 422.
     log: (line) => console.log(line),
   });
+  const reviewBody = post.body;
 
   // A GraphQL request body, posted by the workflow with `gh api graphql
   // --input`. REST `POST /pulls/{n}/reviews` cannot open a **file-level**
@@ -449,6 +450,19 @@ try {
     reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body: reviewBody, placed }),
   );
   writeText("summary.md", reviewBody);
+
+  // What the posting job puts *Resolved since last review* back together from
+  // (#257), once it knows which of this review's closures held: this job runs
+  // the model and posts nothing, and the job that resolves the threads posts
+  // the body afterwards. A thread it could not resolve is listed as still open
+  // rather than resolved. The payload above carries the body as it reads where
+  // every closure held, which is also the body a human debugging the run reads.
+  writeJson("review_body.json", {
+    slotted: post.slotted,
+    slot: post.slot,
+    resolved: post.resolved,
+    groups: post.groups,
+  });
 
   // The threads this review verified, for the workflow step that closes them.
   // Written on every run, empty list included: the step reads the file rather

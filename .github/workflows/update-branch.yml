@@ -149,15 +149,54 @@ jobs:
 
       # The trigger label stays on while this run works and comes off in the
       # last step (#236), so the one label to take off here is a block an
-      # earlier run left. The line before it is the permission probe, as in
-      # review's `Transition labels`, where the reason is spelled out: it adds
-      # the label this run already holds, which changes nothing, and is not
+      # earlier run left. The line before it is the permission probe, the label write a short
+      # token feels first, ahead of the agent pass it would otherwise spend: it
+      # adds the label this run already holds, which changes nothing, and is not
       # `|| true`, so a short token fails the run before the checkout.
       - name: Transition labels
         if: steps.state.outputs.proceed == 'true'
         run: |
           gh pr edit "$PR_NUMBER" --add-label "agent:update-branch"
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
+
+      # A review's posting job runs outside this group (#257): the group is
+      # released when the review job ends, before the review, its threads and
+      # its verdict are posted, so a run that waited in the group behind a
+      # review starts while they are still being written. This run reads
+      # them: the verdict it carries on to the merge commit. So it waits while `agent:review` is on the pull
+      # request, which the posting job takes off only after every result is
+      # posted (`review.yml`'s *No concurrency group* on `post-review`).
+      #
+      # Bounded by the posting job's own `timeout-minutes`, ten, and then it
+      # goes on with a warning: a label nobody will take off (a review run that
+      # never started, or one labelled behind this run in the group) is no
+      # reason to fail, and is what the bound is for. An unreadable label keeps
+      # waiting, since "could not tell" must not read as "nothing is posting".
+      # Writes nothing, so it needs no tolerance.
+      #
+      # Held equal in `fix.yml` and `update-branch.yml` by a test.
+      - name: Wait for a review's posting to finish
+        if: steps.state.outputs.proceed == 'true'
+        env:
+          POST_WAIT_SECONDS: "600"
+          POST_POLL_SECONDS: "10"
+        run: |
+          set -uo pipefail
+          deadline=$(( $(date +%s) + POST_WAIT_SECONDS ))
+          while :; do
+            if labels=$(gh pr view "$PR_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
+              case ",${labels}," in
+                *,agent:review,*) ;;
+                *) echo "No review is posting on PR #${PR_NUMBER}."; exit 0 ;;
+              esac
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::warning::\`agent:review\` is still on PR #${PR_NUMBER} (or its labels could not be read) after ${POST_WAIT_SECONDS} seconds, so this run goes on without waiting for a review to finish posting. If a review was posting, this run may not see its findings or its verdict."
+              exit 0
+            fi
+            echo "agent:review is on PR #${PR_NUMBER}: waiting for the review's posting job to finish."
+            sleep "$POST_POLL_SECONDS"
+          done
 
       - name: Checkout PR head
         if: steps.state.outputs.proceed == 'true'

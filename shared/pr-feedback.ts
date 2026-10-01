@@ -675,54 +675,67 @@ export const surfaceText = (feedback: PullRequestFeedback, surface: FeedbackSurf
  * Why a run that **acts** on this feedback must not proceed, or `undefined` when
  * it may.
  *
- * The doctrine #76 settled, in one place because the four answers are only
+ * The doctrine #76 settled, in one place because the three answers are only
  * useful apart: *fail-closed is correct when the gate itself failed, not merely
- * when data was missing*. An empty feedback set is a fine degradation for a
- * re-review; it is not a licence to push commits. So the review context does not
- * call this at all — it degrades and says so — and the fix runner, which holds
- * `contents: write`, refuses with whichever of these applies.
+ * when data was missing*. So the review context does not call this at all (it
+ * degrades and says so), and the fix runner, which holds `contents: write`,
+ * refuses with whichever of these applies.
  *
  * Each answer names what a human would have to do about it, because the failure
  * class here is one signature with several causes: "nothing trusted was found"
  * and "one field was forbidden" used to be the same sentence, and only one of
- * them is actionable.
+ * them is actionable. They are posted on the pull request, so they are written
+ * for its reader (#253): what happened and what to do, with the query paths as
+ * evidence in brackets rather than as the sentence.
+ *
+ * An empty feedback set read in full is **not** one of them since #253: that is
+ * a fix with nothing to do, which `nothingToActOn` names and the runner ends
+ * green on, rather than a failure that blocks the pull request.
  */
 export const refusalReason = (feedback: PullRequestFeedback): string | undefined => {
   if (feedback.status === "failed") {
     return (
-      `The pull request's feedback could not be read at all: ${describeUnreadable(feedback.unreadable)}. ` +
-      "That is not an empty feedback set, it is no answer. This refuses rather than pushing commits " +
-      "without knowing what was asked for."
+      `Couldn't read this PR's review comments at all (${describeUnreadable(feedback.unreadable)}). ` +
+      "That is not the same as there being none, so it stopped rather than push changes without " +
+      "knowing what was asked for. Check the token's access to this repository."
     );
   }
 
   const gating = feedback.unreadable.filter((selection) => selection.trustBearing);
   if (gating.length > 0) {
     return (
-      `A selection the author gate depends on could not be read: ${describeUnreadable(gating)}. ` +
-      "The feedback that did return cannot be placed behind the trust boundary, and this run " +
-      "pushes commits, so it refuses rather than acting on feedback whose author it cannot establish."
+      `Couldn't check who wrote some of this PR's comments (${describeUnreadable(gating)}). ` +
+      "It only acts on comments from people with access to this repository, so it stopped rather " +
+      "than act on comments it can't vouch for. Check the token's access to this repository."
     );
   }
 
   if (!feedback.hasFeedback && feedback.unreadable.length > 0) {
     return (
-      `Nothing trusted to act on was rendered, and part of the feedback query was refused: ${describeUnreadable(feedback.unreadable)}. ` +
-      '"Nothing to act on" and "a selection was refused" are not the same answer, so this refuses as the second.'
-    );
-  }
-
-  if (!feedback.hasFeedback) {
-    return (
-      "Nothing from a repo collaborator (or our review agent) that a fix run owes an answer on. " +
-      "Deliberately not counted: resolved threads, comments from non-collaborators, a thread " +
-      "already carrying this workflow's closing reply (it waits on the review to close it), and " +
-      "this loop's own status notes. The last two are shown to a fix run as evidence, not as asks."
+      `Couldn't read part of this PR's review comments (${describeUnreadable(feedback.unreadable)}), ` +
+      "and found nothing to act on in the rest. Nothing to act on and not being able to look are " +
+      "different answers, so it stopped as the second."
     );
   }
 
   return undefined;
 };
+
+/**
+ * Whether a fix run has nothing to act on: every surface was read, and none of
+ * it is a comment it owes an answer on (#253).
+ *
+ * Not counted: resolved threads, comments from outside the repository's
+ * collaborators, a thread already carrying this workflow's closing reply (it
+ * waits on the review to close it), and this loop's own status notes. The last
+ * two are shown to a fix run as evidence, not as asks.
+ *
+ * Asked only after `refusalReason` came back empty, so a feedback set that is
+ * empty because something could not be read never reaches it: that is a
+ * refusal, and this is a run ending green with a note.
+ */
+export const nothingToActOn = (feedback: PullRequestFeedback): boolean =>
+  feedback.status !== "failed" && feedback.unreadable.length === 0 && !feedback.hasFeedback;
 
 /**
  * The `git diff` that defines the PR, as GitHub sees it. GitHub computes a PR's
@@ -795,7 +808,7 @@ const threeDotRange = (baseRef: string | undefined): string => {
   const base = (baseRef ?? "").trim();
   if (!base) {
     throw new Error(
-      "BASE_REF is empty. The workflow sets it from the pull request's base ref, falling back to its `default-branch` input; without it this diff would have to guess a branch, and a wrong guess is a review that silently comments on the wrong lines.",
+      "The workflow didn't say which branch this PR merges into, so there was nothing to compare it against. Set the `default-branch` input in the caller workflow.",
     );
   }
   return `${base}...HEAD`;

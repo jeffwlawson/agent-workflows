@@ -347,10 +347,10 @@ export const renderConversationOutcomes = (
     ...outcomes.filter((outcome) => outcome.status !== "declined"),
   ];
 
+  // Says what the run did with the comments, not why it says it here (#253).
   const heading =
-    "**What this run did with the comments on this conversation.** These are not review " +
-    "threads, so there is nowhere to reply into and this is the record. Nothing here closes " +
-    "anything.";
+    "**What `agent:fix` did with the comments on this PR.** Each one it acted on or " +
+    "declined is listed below, declined first, with the reason.";
 
   const body = [heading, ...ordered.map(entry)].join("\n\n---\n\n");
 

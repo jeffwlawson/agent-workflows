@@ -22,6 +22,7 @@ import {
 import {
   describeUnreadable,
   fetchPullRequestFeedback,
+  nothingToActOn,
   refusalReason,
   surfaceText,
 } from "../shared/pr-feedback.js";
@@ -42,12 +43,21 @@ try {
   }
 
   // This is the run that pushes, so it refuses where a review degrades. The
-  // four-way decision lives with the fetch — an empty result, a refused
-  // selection, a refused selection the author gate reads, and no answer at all
-  // are different reasons, and a human can only act on one of them if it is
-  // named (#76). `fail()` puts whichever it is on the PR.
+  // decision lives with the fetch: a refused selection, a refused selection
+  // the author gate reads, and no answer at all are different reasons, and a
+  // human can only act on one of them if it is named (#76). `fail()` puts
+  // whichever it is on the PR.
   const refusal = refusalReason(feedback);
   if (refusal) fail(refusal);
+
+  // Not a failure (#253): every surface was read and none of it is owed an
+  // answer, so there is nothing to do. The workflow posts a note rather than a
+  // failure, and adds no `agent:blocked`; this file is how it tells.
+  if (nothingToActOn(feedback)) {
+    writeText("nothing_to_do.txt", "");
+    console.log("Nothing to act on: no open review findings or comments are owed an answer.");
+    process.exit(0);
+  }
 
   // Context is gathered; the agent must not hold the GitHub token. This matters
   // more here than anywhere else — this workflow can push.

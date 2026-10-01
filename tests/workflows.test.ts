@@ -1168,8 +1168,8 @@ describe("agent-review settles on one commit and reads nothing else", () => {
     expect(run()).toContain('[ "$tip" != "$HEAD_SHA" ]');
     // Distinct from the not-open refusal: same step, two states, and a human
     // reading only the comment has to be able to tell them apart.
-    expect(run()).toContain("this PR is not open");
-    expect(run()).toContain("moved while this run was queued");
+    expect(run()).toContain('refuse "This PR is closed."');
+    expect(run()).toContain("The PR changed after \\`agent:review\\` was added.");
   });
 
   it("follows the tip only where it descends from the labelled commit, and waits for the PR to show it", () => {
@@ -1239,16 +1239,20 @@ describe("agent-fix refuses an event head behind the live branch", () => {
     expect(run()).toContain(`awk -v ref="refs/heads/\${BRANCH}" '$2 == ref { print $1 }'`);
   });
 
-  it("says why, as a warning and as one comment naming both SHAs and the way out", () => {
+  /**
+   * The SHAs go to the log, and the comment says what the review's says for
+   * the same situation (#253): the PR changed, add the label again, and how
+   * to make GitHub catch up where it has not.
+   */
+  it("says why, as a warning naming both SHAs and as one comment giving the way out", () => {
     const arm = run().slice(run().indexOf('[ "$live" != "$BRANCH_HEAD_SHA" ]'));
     const stale = arm.slice(0, arm.indexOf("exit 0"));
 
-    expect(stale).toContain("::warning::");
+    expect(stale).toMatch(/::warning::[^\n]*\$\{BRANCH_HEAD_SHA\}[^\n]*\$\{live\}/);
     expect(stale.match(/refuse "/g)).toHaveLength(1);
-    expect(stale).toContain("\\`${BRANCH_HEAD_SHA}\\`");
-    expect(stale).toContain("\\`${live}\\`");
-    expect(stale).toContain("close and reopen the PR");
-    expect(stale).toContain("re-add \\`agent:fix\\`");
+    expect(stale).toContain(
+      'refuse "The PR changed after \\`agent:fix\\` was added. Add \\`agent:fix\\` again to work on the latest version. If the PR still shows the old commit, close and reopen it so GitHub catches up." blocked',
+    );
   });
 
   /**
@@ -1275,10 +1279,16 @@ describe("agent-fix refuses an event head behind the live branch", () => {
     expect(run()).toContain("if ! remote=$(git");
     expect(run()).toContain('if [ -z "$live" ]; then');
     expect(run()).not.toContain('[ -n "$live" ] &&');
-    for (const arm of ["if ! remote=$(git", 'if [ -z "$live" ]; then']) {
+    const armOf = (arm: string): string => {
       const body = run().slice(run().indexOf(arm));
-      expect(body.slice(0, body.indexOf("exit 0"))).toMatch(/refuse ".*" blocked/);
-    }
+      return body.slice(0, body.indexOf("exit 0"));
+    };
+    // Blocked where the maintainer has to act, and not on a deleted branch,
+    // which leaves nothing to act on (#253).
+    expect(armOf("if ! remote=$(git")).toMatch(/refuse ".*" blocked/);
+    expect(armOf('if [ -z "$live" ]; then')).toContain(
+      `refuse "This PR's branch no longer exists, so there's nothing to fix."\n`,
+    );
     expect(fs.readFileSync(FIX, "utf8")).toContain("**An unreadable head refuses, deliberately**");
   });
 
@@ -1766,7 +1776,8 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
    * reusable half: `vars.*` resolves against the caller's repository, so no
    * caller carries it. Settled before the agent runs, so a value that is not a
    * non-negative integer fails the run before an agent pass is spent, into the
-   * reason file the failure comment posts, naming the variable and the value.
+   * refusal file the failure comment posts as "didn't run" (#253), naming the
+   * variable and the value.
    */
   it("reads the budget from AGENT_MAX_FIX_ROUNDS, default 3, and refuses a value that is not a count", () => {
     const step = budgetStep();
@@ -1776,9 +1787,11 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     expect(step?.env?.["MAX_FIX_ROUNDS"]).toBe("${{ vars.AGENT_MAX_FIX_ROUNDS }}");
     expect(run).toContain('budget="${MAX_FIX_ROUNDS:-3}"');
     expect(run).toContain('[[ ! "$budget" =~ ^[0-9]+$ ]]');
-    expect(run).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
+    expect(run).toContain('> "${RUNNER_TEMP}/refusal_reason.txt"');
     const refusal = run.slice(run.indexOf('[[ ! "$budget"'));
-    expect(refusal).toMatch(/refuse "The repository variable \\`AGENT_MAX_FIX_ROUNDS\\` is \\`\$\{MAX_FIX_ROUNDS\}\\`/);
+    expect(refusal).toContain(
+      'refuse "The repository variable \\`AGENT_MAX_FIX_ROUNDS\\` is \\`${MAX_FIX_ROUNDS}\\`. It must be a whole number (0 or more), or delete it to use the default of 3. Then add \\`agent:review\\` again."',
+    );
 
     // After the labels transition, so a refusal is the ordinary failure path,
     // and before the runner, which reads the answer.
@@ -4179,10 +4192,10 @@ describe("agent-implement refuses a closed issue", () => {
     // can be skipped into the work it exists to prevent.
     expect(preflight?.if).toBeUndefined();
     expect(run).toContain('"$ISSUE_STATE" != "open"');
-    expect(run).toContain("this issue is not open");
+    expect(run).toContain('refuse "This issue is closed. Reopen it, then add \\`agent:implement\\` again."');
     // Distinct from the refusal that was already there — two refusals reading
     // the same is two states a human cannot tell apart from the comment alone.
-    expect(run).toContain("already targets this issue");
+    expect(run).toContain("already exists for this issue");
     expect(run.indexOf("$ISSUE_STATE")).toBeLessThan(run.indexOf("gh pr list"));
   });
 
@@ -4247,9 +4260,19 @@ describe("agent-implement refuses issue shapes it cannot handle", () => {
    * alone sends them to the run log.
    */
   it.each([
-    ["a sub-issue", "sub-issue of"],
-    ["a wayfinder ticket", "planning artifact"],
-    ["an issue with open blockers", "blocked by"],
+    [
+      "a sub-issue",
+      'refuse_shape "This is a sub-issue of #${parent}. Add \\`agent:implement\\` to #${parent} instead; it builds its sub-issues in order."',
+    ],
+    [
+      "a wayfinder ticket",
+      'refuse_shape "This is a planning issue (\\`wayfinder:*\\`), not buildable work. Add \\`agent:implement\\` to the issues it produces instead."',
+    ],
+    ["an issue with open blockers", 'refuse_shape "It\'s blocked by ${blockers}, which is still open.'],
+    [
+      "an issue with an open PR",
+      'refuse "PR #${existing} already exists for this issue. Keep working on that PR, or close it and add \\`agent:implement\\` again."',
+    ],
   ])("refuses %s with its own message", (_shape: string, phrase: string) => {
     expect(preflightRun()).toContain(phrase);
   });
@@ -4283,11 +4306,13 @@ describe("agent-implement refuses issue shapes it cannot handle", () => {
    * *can* proceed needs to be told the edge is the thing to remove, not the
    * label, or they will fight the preflight in a loop.
    */
-  it("tells the reader to remove and re-add, and that the edge is the source of truth", () => {
+  it("tells the reader to add the label again once the blocker closes, or to remove the link", () => {
     const run = preflightRun();
 
-    expect(run).toMatch(/remove and re-add/i);
-    expect(run).toMatch(/blocking relation is the thing to remove/i);
+    expect(run).toContain(
+      "Add \\`agent:implement\\` again once ${blockers} is closed, or remove the \\\"blocked by\\\" link if it no longer applies.",
+    );
+    expect(run).toContain("which are still open. Add \\`agent:implement\\` again once they are closed");
   });
 
   /**
@@ -4539,10 +4564,23 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * blocked leaves exactly the stale label docs/parity.md §10 warns about.
    */
   it.each([
-    ["a nested PRD", "nested"],
-    ["a wayfinder ticket", "planning artifact"],
-    ["a PRD with nothing left to do", "closed"],
-    ["a parent with open blockers", "blocked by"],
+    [
+      "a nested PRD",
+      'refuse_shape "This PRD is itself a sub-issue of #${parent}. Remove it from #${parent}, or move its sub-issues up to #${parent}, then label the top-level issue."',
+    ],
+    [
+      "a wayfinder ticket",
+      'refuse_shape "This is a planning issue (\\`wayfinder:*\\`), not buildable work. Add \\`agent:implement\\` to the issues it produces instead."',
+    ],
+    [
+      "a PRD with nothing left to do",
+      'refuse "Every sub-issue of this PRD is built and its PRD PR is ready for you. To build more, add a sub-issue first."',
+    ],
+    [
+      "a PRD with too many sub-issues",
+      'refuse_shape "This PRD has ${subs} sub-issues, and the loop handles at most 100. Split it into smaller PRDs."',
+    ],
+    ["a parent with open blockers", 'refuse_shape "It\'s blocked by ${blockers}, which is still open.'],
   ])("refuses %s with its own message", (_case: string, phrase: string) => {
     expect(runOf(PRD, "preflight")).toContain(phrase);
   });
@@ -4624,11 +4662,12 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * believes the work *can* proceed has to be told the edge is the thing to
    * remove, or they fight the preflight in a loop.
    */
-  it("tells the reader to remove and re-add, and that the edge is the source of truth", () => {
+  it("tells the reader to add the label again once the blocker closes, or to remove the link", () => {
     const run = runOf(PRD, "preflight");
 
-    expect(run).toMatch(/remove and re-add/i);
-    expect(run).toMatch(/blocking relation is the thing to remove/i);
+    expect(run).toContain(
+      "Add \\`agent:implement\\` again once ${blockers} is closed, or remove the \\\"blocked by\\\" link if it no longer applies.",
+    );
   });
 
   /**
@@ -4642,7 +4681,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
 
     expect(run).toContain("subIssues(first: 100)");
     expect(armOf(run, '"$subs" -gt 100')).toContain("refuse_shape");
-    expect(run.indexOf('"$subs" -gt 100')).toBeLessThan(run.indexOf("no open sub-issues"));
+    expect(run.indexOf('"$subs" -gt 100')).toBeLessThan(run.indexOf("Every sub-issue of this PRD is built"));
   });
 
   it("marks the durable shape refusals blocked, and the finished PRD not", () => {
@@ -4650,8 +4689,8 @@ describe("agent-implement-prd works one sub-issue per run", () => {
 
     expect(bashFunctionBody(run, "refuse_shape")).toContain('refuse "$1" blocked');
     expect(bashFunctionBody(run, "refuse")).toContain('--add-label "agent:blocked"');
-    expect(armOf(run, "no open sub-issues")).not.toContain("refuse_shape");
-    expect(armOf(run, "no open sub-issues")).not.toContain("blocked");
+    expect(armOf(run, "Every sub-issue of this PRD is built")).not.toContain("refuse_shape");
+    expect(armOf(run, "Every sub-issue of this PRD is built")).not.toContain("blocked");
   });
 
   /**
@@ -4882,9 +4921,9 @@ describe("agent-implement-prd works one sub-issue per run", () => {
 
     expect(failed?.env?.["SLICE_PR"]).toBe("${{ steps.slice_pr.outputs.number }}");
     expect(failed?.run ?? "").toContain("agent:review");
-    expect(failed?.run ?? "").toMatch(/close that sub-issue by hand/);
-    expect(failed?.run ?? "").toMatch(/would merge it into the PRD branch as it stands/);
-    expect(failed?.run ?? "").toMatch(/only once that round has ended/);
+    expect(failed?.run ?? "").toMatch(/Close sub-issue #\$\{SUB\} if it is still open/);
+    expect(failed?.run ?? "").toMatch(/would merge it as it stands/);
+    expect(failed?.run ?? "").toMatch(/once that review has finished/);
   });
 
   /**
@@ -5060,8 +5099,8 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(run).toContain("gh pr list --state open");
     expect(lookup).toContain('select(.baseRefName | startswith(\\"agent/prd-${ISSUE_NUMBER}-\\"))');
     expect(lookup).not.toContain("headRefName");
-    expect(run.indexOf('"$open_slices" -gt 1')).toBeLessThan(run.indexOf("no open sub-issues"));
-    expect(run.indexOf('"$open_slices" -eq 1')).toBeLessThan(run.indexOf("no open sub-issues"));
+    expect(run.indexOf('"$open_slices" -gt 1')).toBeLessThan(run.indexOf("Every sub-issue of this PRD is built"));
+    expect(run.indexOf('"$open_slices" -eq 1')).toBeLessThan(run.indexOf("Every sub-issue of this PRD is built"));
     expect(armOf(run, '"$open_slices" -gt 1')).toContain("block ");
   });
 
@@ -5082,7 +5121,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(run).toContain('prd_prs=$(jq -c "[.[] | select(.headRefName | startswith(\\"agent/prd-${ISSUE_NUMBER}-\\"))]" <<< "$pulls")');
     expect(finishing).toContain('"$prd_prs"');
     expect(finishing).toContain(".isDraft");
-    expect(finishing).toContain("the PRD is finished");
+    expect(finishing).toContain("Every sub-issue of this PRD is built");
     expect(finishing).toContain('echo "finishing=true"');
     expect(finishing).toContain("exit 0");
     expect(run.indexOf('if [ -z "$next" ]')).toBeLessThan(run.indexOf("/dependencies/blocked_by"));
@@ -6897,7 +6936,7 @@ describe("what the loop posts carries no em dash", () => {
    * variables a message is built in before it is posted.
    */
   const POSTS =
-    /(^|[\s|&(])(echo|printf|refuse|refuse_shape|block|fail)\s|\b(body|headline|no_ci|pr_note|reason)=/;
+    /(^|[\s|&(])(echo|printf|refuse|refuse_shape|block|fail)\s|\b(body|headline|no_ci|pr_note|reason|retry|what)=/;
 
   it.each(workflowFiles)("%s: posts nothing with one", (file: string) => {
     const offenders = fs
@@ -7039,7 +7078,8 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
 
       expect(sum().run ?? "").toContain("^[1-9][0-9]*$");
       expect(refusal?.if).toBe("steps.state.outputs.proceed == 'true' && needs.time-limit.outputs.refused == 'true'");
-      expect(refusal?.run ?? "").toContain("failure_reason.txt");
+      // Into the refusal file, so the comment says it didn't run (#253).
+      expect(refusal?.run ?? "").toContain("refusal_reason.txt");
       expect(refusal?.run ?? "").toContain("AGENT_REVIEW_TIMEOUT_MINUTES");
     });
   });
@@ -7125,8 +7165,9 @@ describe("an implement run links itself on the issue when it starts", () => {
     expect(step.env?.["SLICE_PR"]).toBe("${{ steps.preflight.outputs.slice_pr }}");
     expect(step.env?.["FINISHING"]).toBe("${{ steps.preflight.outputs.finishing }}");
     expect(run).toContain('if [ "$FINISHING" = "true" ]; then');
-    expect(run).toContain("finishing run started");
-    expect(run).toContain("building sub-issue #${SUB}");
+    expect(run).toContain('what="Every sub-issue is built, so this run hands the PRD PR over"');
+    expect(run).toContain('what="Building sub-issue #${SUB} (${SUB_TITLE})"');
+    expect(commentLines(run)[0]).toContain("**\\`agent:implement\\` started:** ${what}. [Workflow run](${RUN_URL})");
     expect(run).toContain("slice PR #${SLICE_PR}");
   });
 
@@ -7397,5 +7438,214 @@ describe("a trigger label is on while its run works, and off when it ends", () =
 
     expect(merge).toContain('select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")');
     expect(advanceMerged).toContain('select(. == "agent:implement")');
+  });
+});
+
+/**
+ * One plain pattern for every failure and refusal (#253). Before, a message
+ * opened three ways ("`agent:X` run failed.", "Refused to run `agent:fix`:",
+ * "Refused to run:"), and `agent:blocked` went on in some workflows and not in
+ * others for the same situation. Now there are two:
+ *
+ * - **Stopped**, the run started and then failed:
+ *   `**`agent:X` stopped:** <Reason>.` then `[Workflow run](<url>) · <what to do>`.
+ * - **Didn't run**, refused before doing anything:
+ *   `**`agent:X` didn't run:** <Reason>. <What to do>.`
+ *
+ * and `agent:blocked` goes on only where the maintainer has to act. The
+ * failure steps are executed in `tests/failure-step.test.ts`; what is pinned
+ * here is that each workflow writes the pattern, and every refusal fills it
+ * with a sentence.
+ */
+describe("every failure and refusal says so in one of two patterns", () => {
+  const FIX = path.join(WORKFLOW_DIR, "fix.yml");
+  const UPDATE = path.join(WORKFLOW_DIR, "update-branch.yml");
+  const STOPPED = [
+    { file: IMPLEMENT, label: "agent:implement", step: "Mark blocked on failure" },
+    { file: PRD, label: "agent:implement", step: "Mark blocked on failure" },
+    { file: FIX, label: "agent:fix", step: "Mark blocked on failure" },
+    { file: REVIEW, label: "agent:review", step: "Mark blocked on failure" },
+    { file: UPDATE, label: "agent:update-branch", step: "Mark blocked on failure" },
+    { file: FOLLOW_UPS, label: "agent:follow-ups", step: "Report the failure on the PR" },
+  ] as const;
+  const REFUSING = [
+    { file: IMPLEMENT, label: "agent:implement", guard: "preflight" },
+    { file: PRD, label: "agent:implement", guard: "preflight" },
+    { file: FIX, label: "agent:fix", guard: "state" },
+    { file: REVIEW, label: "agent:review", guard: "state" },
+  ] as const;
+
+  it.each(STOPPED)("$file: a run that stopped says `$label stopped:`, the reason, the run and what to do", (c) => {
+    const run = stepsOf(c.file).find((s) => s.name === c.step)?.run ?? "";
+
+    expect(run).toMatch(
+      new RegExp(
+        `printf '\\*\\*\`${c.label}\` stopped:\\*\\* %s\\\\n\\\\n\\[Workflow run\\]\\(%s\\) · %s\\\\n' "\\$reason" "\\$RUN_URL" `,
+      ),
+    );
+    // The reason is made a sentence whoever wrote it.
+    expect(run).toContain('reason="${reason^}"');
+    expect(run).toContain('case "$reason" in *[.!?]) ;; *) reason="${reason}." ;; esac');
+    // And none of the old openings survives.
+    expect(run).not.toMatch(/run %s\.|\*\*Reason:\*\*|\*\*Workflow run:\*\*|Re-apply/);
+  });
+
+  it.each(REFUSING)("$file: every refusal says `$label didn't run:` and then a sentence", (c) => {
+    const run = runOf(c.file, c.guard);
+    const calls = run
+      .split("\n")
+      .map((line) => line.trim())
+      // Less `refuse_shape`'s own forwarding of its argument.
+      .filter((line) => /^(refuse|refuse_shape) "/.test(line) && !line.startsWith('refuse "$1"'));
+
+    expect(bashFunctionBody(run, "refuse")).toContain(`--body "**\\\`${c.label}\\\` didn't run:** $1"`);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      // A capital, or the one shared sentence review keeps in a variable.
+      expect(call, call).toMatch(/^(refuse|refuse_shape) "([A-Z]|\$\{?changed\b)/);
+      expect(call, call).not.toMatch(/Refused|re-add/i);
+    }
+    expect(run).not.toContain("Refused to run");
+  });
+
+  it("update-branch: refuses a closed PR in the same pattern, with no block", () => {
+    const run = runOf(UPDATE, "state");
+
+    expect(run).toContain('gh pr comment "$PR_NUMBER" --body "**\\`agent:update-branch\\` didn\'t run:** This PR is closed."');
+    expect(run).not.toContain("agent:blocked");
+  });
+
+  /**
+   * `agent:blocked` only where the maintainer has to act. A closed issue or
+   * PR, a finished PRD, a deleted branch and a fix with nothing to do get a
+   * note and no label: there is nothing for anyone to unblock.
+   */
+  it("blocks nothing that is closed, finished or has nothing to do", () => {
+    const implement = runOf(IMPLEMENT, "preflight");
+    const prd = runOf(PRD, "preflight");
+    const fix = runOf(FIX, "state");
+    const review = runOf(REVIEW, "state");
+
+    for (const run of [implement, prd]) {
+      expect(armOf(run, '"$ISSUE_STATE" != "open"')).toContain(
+        'refuse "This issue is closed. Reopen it, then add \\`agent:implement\\` again."',
+      );
+      expect(armOf(run, '"$ISSUE_STATE" != "open"')).not.toContain("refuse_shape");
+    }
+    expect(armOf(implement, '-n "$existing"')).not.toContain("refuse_shape");
+    expect(fix).toContain('refuse "This PR is closed."\n');
+    expect(review).toContain('refuse "This PR is closed."\n');
+    // Review's refusal adds the block only where it is asked to, as fix's does.
+    expect(bashFunctionBody(review, "refuse")).toContain('if [ "${2:-}" = "blocked" ]; then');
+    // And the PR-changed refusals, which do need a human, are blocked.
+    for (const line of review.split("\n").filter((l) => l.includes('refuse "$changed') || l.includes('refuse "${changed}'))) {
+      expect(line.trim()).toMatch(/ blocked$/);
+    }
+  });
+
+  /**
+   * A fix with nothing to act on used to fail through the runner and add
+   * `agent:blocked`. Now the runner exits 0 with a file saying so, and the
+   * workflow posts a note and goes on to end green.
+   */
+  it("fix: a run with nothing to act on posts a note, blocks nothing and ends green", () => {
+    const steps = stepsOf(FIX);
+    const index = steps.findIndex((s) => s.name === "Say there was nothing to do");
+    const step = steps[index];
+    const run = step?.run ?? "";
+
+    expect(step?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+    expect(index).toBeGreaterThan(steps.findIndex((s) => s.name === "Run fix agent"));
+    expect(index).toBeLessThan(steps.findIndex((s) => s.name === "Push branch"));
+    expect(run).toContain('[ -f "${RUNNER_TEMP}/nothing_to_do.txt" ] || exit 0');
+    expect(run).toContain(
+      '--body "**\\`agent:fix\\` had nothing to do:** There are no open review findings or comments for it to act on."',
+    );
+    expect(run).not.toContain("agent:blocked");
+    expect(run).not.toContain("exit 1");
+    expect(run).toMatch(/\|\| echo "::warning::[^"]+"$/m);
+  });
+
+  /** The start and success comments #205 added, in the same pattern. */
+  it("implement: says it started and what it opened in the same pattern", () => {
+    const run = stepsOf(IMPLEMENT)
+      .map((s) => s.run ?? "")
+      .join("\n");
+
+    expect(run).toContain('--body "**\\`agent:implement\\` started:** [Workflow run](${RUN_URL})"');
+    expect(run).toContain('--body "**\\`agent:implement\\` opened PR #${NEW_PR}:** [Workflow run](${RUN_URL})"');
+    for (const file of [IMPLEMENT, PRD]) expect(fs.readFileSync(file, "utf8")).not.toContain("[workflow run]");
+  });
+});
+
+/**
+ * And what those comments say is written for whoever reads the issue or the
+ * pull request (#253): plain words, what happened and then what to do, with
+ * no internal file name, variable or mechanism term. Held over the workflow
+ * lines that post, and over the TypeScript that writes a reason, a reply, a
+ * record or an issue body, as string literals so the code around them may
+ * still use the words.
+ */
+describe("what the loop posts names no internal mechanism", () => {
+  const INTERNAL =
+    /\b(arms?|cursors?|anchor\w*|round 2|markers?|selections?|author gate|trust boundary|reason file|should not have been invoked|finished with status)\b|\.ts\b|failure_reason/i;
+
+  /** A line that posts, as the em-dash check reads them, less the API calls. */
+  const POSTS =
+    /(^|[\s|&(])(printf|refuse|refuse_shape|block)\s|gh (?:issue|pr) comment|\b(body|headline|no_ci|pr_note|reason|retry|what)=/;
+
+  it.each(workflowFiles)("%s: posts nothing naming one", (file: string) => {
+    const offenders = fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => !line.trimStart().startsWith("#") && !line.includes("gh api"))
+      .filter(({ line }) => POSTS.test(line))
+      // What a line writes, not where: the reason file's path is not a message.
+      .map(({ line, n }) => ({ line: line.replace(/"\$\{RUNNER_TEMP\}\/[\w.-]+"/g, ""), n }))
+      .filter(({ line }) => INTERNAL.test(line))
+      .map(({ line, n }) => `${file}:${n} ${line.trim()}`);
+
+    expect(offenders).toEqual([]);
+  });
+
+  /** Each source and the stretch of it that writes something a human reads. */
+  const SOURCES: readonly (readonly [string, string, string])[] = [
+    ["shared/pr-feedback.ts", "export const refusalReason", "export const nothingToActOn"],
+    ["shared/pr-feedback.ts", "const threeDotRange", "return `${base}...HEAD`"],
+    ["shared/fix-output.ts", "export const renderConversationOutcomes", "CONVERSATION_OUTCOME_MARKER}`;"],
+    ["shared/review-output.ts", "const movedSentence", "._`;"],
+    ["shared/review-output.ts", "const MOVED_NOTE", '._";'],
+    ["shared/review-verification.ts", "export const declineReply", '].join("\\n");'],
+    ["shared/follow-up-plan.ts", "const stubBody", "dedupPayload("],
+    ["implement/implement.ts", "fail(", "\n"],
+    ["implement-prd/implement-prd.ts", "fail(", "\n"],
+    ["update-branch/update-branch.ts", "fail(", "\n"],
+  ];
+
+  /** The string literals on a line, with any `${…}` taken out of a template. */
+  const literals = (line: string): string[] =>
+    [...line.matchAll(/"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`|'(?:[^'\\]|\\.)*'/g)].map((m) =>
+      m[0].replace(/\$\{[^}]*\}/g, ""),
+    );
+
+  it.each(SOURCES)("%s, from `%s`: writes nothing naming one", (file, start, end) => {
+    const source = fs.readFileSync(file, "utf8");
+    const offenders: string[] = [];
+    let from = source.indexOf(start);
+
+    expect(from, `${file} has no \`${start}\``).toBeGreaterThanOrEqual(0);
+    // Every occurrence, so each `fail(` in a runner is read.
+    while (from >= 0) {
+      const to = source.indexOf(end, from + start.length);
+      const region = source.slice(from, to < 0 ? undefined : to + end.length);
+      for (const line of region.split("\n")) {
+        if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+        for (const text of literals(line)) if (INTERNAL.test(text)) offenders.push(`${file}: ${text}`);
+      }
+      from = source.indexOf(start, from + start.length);
+    }
+
+    expect(offenders).toEqual([]);
   });
 });

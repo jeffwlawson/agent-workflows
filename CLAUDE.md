@@ -185,9 +185,10 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
   are typed by a human, so `--dir <path>` is the interface rather than a misunderstanding of it. An
   option they do not know is still refused.
 - **A failure must write `OUTPUT_DIR/failure_reason.txt`** before the process ends, so the workflow
-  can post something a human can act on. A bare `exit 1` produces `(no reason file written)`, which
-  is indistinguishable from the module-resolution failure a stale branch gives — one signature, two
-  causes, and the signature is the *absence* of information.
+  can post something a human can act on. A bare `exit 1` produces "It stopped without giving a
+  reason." (`(no reason file written)` before #253), which is indistinguishable from the
+  module-resolution failure a stale branch gives: one signature, two causes, and the signature is
+  the *absence* of information.
 
   `shared/common.ts`'s `required()` was the known exception and is no longer one (#88): a missing
   env var now exits through `fail()`, so the run that dies at module scope — before any of a

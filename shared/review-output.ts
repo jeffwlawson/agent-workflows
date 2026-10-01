@@ -852,7 +852,7 @@ const findingsLine = (record: ReviewRecord): string => {
 const movedSentence = (moved: number): string | undefined =>
   moved === 0
     ? undefined
-    : `_${moved} ${plural(moved, "finding was", "findings were")} moved to follow-ups: ${plural(moved, "its anchor is", "their anchors are")} in no file this pull request changes, so there was nowhere in the diff to open a thread on ${plural(moved, "it", "them")}._`;
+    : `_${moved} ${plural(moved, "finding was", "findings were")} moved to follow-ups: ${plural(moved, "it points", "they point")} at no file this pull request changes, so there was nowhere in the diff to comment on ${plural(moved, "it", "them")}._`;
 
 /**
  * A label name the body mentions, rendered as code.
@@ -1578,7 +1578,7 @@ export const capFollowUps = (
  * cannot resolve is worse than none.
  */
 const MOVED_NOTE =
-  "_Raised by the review as a problem to fix before merge, then moved: its anchor was in no file that pull request changed, so nothing in the change caused it and there was nowhere in the diff to open a thread on it._";
+  "_Raised by the review as a problem to fix before merge, then moved here: it points at no file that pull request changed, so nothing in the change caused it and there was nowhere in the diff to comment on it._";
 
 /**
  * The same sentence for a finding whose path is **no file in the repository**

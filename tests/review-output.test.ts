@@ -2625,10 +2625,10 @@ index 0ff3bbb..c6ca7ae 100644
     const posted = render();
 
     expect(posted).toContain("1 finding was moved to follow-ups");
-    expect(posted).toContain("in no file this pull request changes");
+    expect(posted).toContain("it points at no file this pull request changes");
     // Where it could not go, not why: the causal claim is false for a path
     // error, and the body would contradict its own needs-you warning.
-    expect(posted).toContain("nowhere in the diff to open a thread on it");
+    expect(posted).toContain("nowhere in the diff to comment on it");
     expect(posted).not.toMatch(/causes? (it|them)/);
     // Under the count, which is the line it qualifies.
     expect(posted.indexOf("**Findings:** 2")).toBeLessThan(

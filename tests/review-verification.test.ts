@@ -423,12 +423,10 @@ describe("a maintainer's decision settles a finding", () => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
       const reply = declineReply(REPLY);
 
-      expect(reply).toContain("This review read a maintainer's refusal on this thread.");
-      expect(reply).toContain("The latest maintainer reply on it, from @maintainer:");
+      expect(reply).toContain("The review read @maintainer's latest reply as declining this finding.");
       expect(reply).not.toContain("@maintainer declined this");
-      // And it says whose judgement did *not* close it, which is the reading
-      // that must not collapse into the other one.
-      expect(reply).toContain("never on the review's own judgement");
+      // And it says how to undo a misreading, in the reply's second sentence.
+      expect(reply).toContain("If it wasn't, reopen this thread.");
     });
 
     /** A reply carrying its own blank lines, list or fence stays inside the quote. */

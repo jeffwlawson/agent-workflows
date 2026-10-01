@@ -363,7 +363,9 @@ grey a marker, red a run that needs you.
 **A trigger label is on while its run works.** The run leaves it on as it starts and takes it off
 when it ends, whether it succeeded, failed, was refused, timed out or was cancelled, so the label on
 an issue or pull request is the run working on it now. A failure or a refusal also adds
-`agent:blocked` and says why in a comment, and a human re-adds the trigger label to retry. It is not
+`agent:blocked` and says why in a comment, and a human re-adds the trigger label to retry. A refusal
+that leaves you nothing to act on (a closed issue or pull request, a finished PRD, a deleted branch,
+a fix with nothing to do) says so and adds no label. It is not
 a rule with exceptions, though. It is a three-valued property, and which value a label has is a
 **column**:
 
@@ -411,9 +413,11 @@ the gesture
 in §1 is about: you will reach for it on a pull request that already carries the label, where it
 does nothing at all.
 
-`agent:blocked` is applied on failure alongside a comment carrying the reason, and by either
-`implement` workflow when it refuses an issue's *shape* (a sub-issue, a nested PRD, or a
-`wayfinder:*` planning ticket), since re-labelling would only reproduce the same refusal.
+`agent:blocked` is applied on failure alongside a comment carrying the reason, on a refusal you have
+to act on (a pull request that changed after its label, a repository variable the review cannot
+read), and by either `implement` workflow when it refuses an issue's *shape* (a sub-issue, a
+nested PRD, or a `wayfinder:*` planning ticket), since re-labelling would only reproduce the same
+refusal.
 
 **Retired labels.** `agent:in-progress` went when the trigger labels began staying on while their
 run works, and two others before it. Nothing writes or reads any of them.

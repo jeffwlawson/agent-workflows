@@ -72,7 +72,7 @@ try {
   // literal, where the question could not arise.
   const commitsAhead = Number(git(["rev-list", "--count", `${BASE_REF}..HEAD`]).trim());
   if (!Number.isFinite(commitsAhead) || commitsAhead === 0) {
-    fail("Agent finished but no commits were made on the branch.");
+    fail("The agent finished without making any changes.");
   }
 
   console.log(`Implementation produced ${commitsAhead} commit(s) on ${BRANCH}.`);

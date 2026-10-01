@@ -221,34 +221,47 @@ describe.skipIf(!CAN_RUN)("agent-review's pre-flight settles on one commit, exec
     expect(outcome.writes).toHaveLength(0);
   });
 
-  it.each(["diverged", "behind"])("refuses by name a tip that does not descend from the labelled commit (%s)", (relation) => {
+  /**
+   * Every way the PR can have moved since the label gets one explanation on
+   * the pull request (#253), since the reader's remedy is the same for all of
+   * them. The commits are named in the log, where whoever debugs it looks.
+   */
+  const CHANGED =
+    "**`agent:review` didn't run:** The PR changed after `agent:review` was added. Add `agent:review` again to review the latest version.";
+
+  it.each(["diverged", "behind"])("refuses, naming both commits in the log, a tip that does not descend from the labelled commit (%s)", (relation) => {
     const stale = "0123456789abcdef0123456789abcdef01234567";
     const outcome = runGuard({ payload: stale, compare: relation });
 
     expect(outcome.outputs["proceed"]).toBe("false");
     expect(outcome.outputs["sha"]).toBeUndefined();
-    expect(comment(outcome)).toContain("moved while this run was queued");
-    expect(comment(outcome)).toContain(stale);
-    expect(comment(outcome)).toContain(outcome.after);
+    expect(comment(outcome)).toBe(`pr comment ${PR} --body ${CHANGED}`);
+    expect(outcome.stdout).toContain("moved while this run was queued");
+    expect(outcome.stdout).toContain(stale);
+    expect(outcome.stdout).toContain(outcome.after);
     expect(outcome.writes.map((argv) => argv.join(" "))).toContain(`pr edit ${PR} --add-label agent:blocked`);
   });
 
-  it("refuses by name when whether the tip descends cannot be read", () => {
+  it("refuses, naming both commits in the log, when whether the tip descends cannot be read", () => {
     const outcome = runGuard({ payload: "before", compareUnreadable: true });
 
     expect(outcome.outputs["proceed"]).toBe("false");
-    expect(comment(outcome)).toContain(outcome.before);
-    expect(comment(outcome)).toContain(outcome.after);
-    expect(comment(outcome)).toContain("could not be read");
+    expect(comment(outcome)).toBe(`pr comment ${PR} --body ${CHANGED}`);
+    expect(outcome.stdout).toContain(outcome.before);
+    expect(outcome.stdout).toContain(outcome.after);
+    expect(outcome.stdout).toContain("could not be read");
   });
 
-  it("refuses by name when the PR never shows the tip as its head", () => {
+  it("refuses, and says how to make GitHub catch up, when the PR never shows the tip as its head", () => {
     const outcome = runGuard({ payload: "before", headRefOids: ["before"], compare: "ahead", waitSeconds: "0" });
 
     expect(outcome.outputs["proceed"]).toBe("false");
     expect(outcome.outputs["sha"]).toBeUndefined();
-    expect(comment(outcome)).toContain(`still shows \`${outcome.before}\``);
-    expect(comment(outcome)).toContain(outcome.after);
+    expect(comment(outcome)).toBe(
+      `pr comment ${PR} --body ${CHANGED} If the PR still shows the old commit, close and reopen it so GitHub catches up.`,
+    );
+    expect(outcome.stdout).toContain(`still shows ${outcome.before}`);
+    expect(outcome.stdout).toContain(outcome.after);
   });
 
   /** An unreadable tip is not evidence the branch moved, and this run only reads. */

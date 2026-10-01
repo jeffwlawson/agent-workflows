@@ -51,8 +51,12 @@ an open issue with a linked pull request, a draft, and `agent:blocked` already g
 
 Every run ends in **one order**: post every result, take its own label off, then add the label
 naming the next step. A hand-off removes its trigger label just before it adds `agent:review`; a
-failure comments, then removes it, then adds `agent:blocked`; a refusal does the same. So nothing
-ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
+failure comments, then removes it, then adds `agent:blocked`; a refusal does the same where the
+maintainer has to act, and one that leaves nothing to act on (a closed issue or pull request, a
+finished PRD, a deleted branch, a fix with nothing to do) comments and removes it, and adds nothing
+(#253). Every such comment is in one of two patterns: `**`agent:X` stopped:**` and the reason, the
+run and what to do, for a run that started; `**`agent:X` didn't run:**` and a sentence saying why
+and what to do, for one refused before it did anything. So nothing ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
 review that found the head moved hands off one way only, and says so as `moved`: its `auto-fix` and
 `advance` jobs stand down, since its verdict is about a commit the pull request has left, and
 `update-branch` asks for itself again only where it did not just ask for a review.

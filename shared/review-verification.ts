@@ -501,11 +501,9 @@ export const declineReply = (reply: MaintainerReply): string => {
     .join("\n");
 
   return [
-    `${CLOSED_AS_WONT_FIX} This review read a maintainer's refusal on this thread. The latest maintainer reply on it, from @${reply.login}:`,
+    `${CLOSED_AS_WONT_FIX} The review read @${reply.login}'s latest reply as declining this finding. If it wasn't, reopen this thread.`,
     "",
     quoted,
-    "",
-    "_Closed on a maintainer's reply, never on the review's own judgement: a review cannot decline a finding itself. If that reply was not a refusal, reopen this thread._",
     "",
     resolutionMarker("WONT_FIX"),
   ].join("\n");

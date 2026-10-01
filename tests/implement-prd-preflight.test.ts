@@ -273,7 +273,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.reason).toContain("2 slice PRs are open");
     expect(outcome.reason).toContain("#210 (`agent/slice-171-173-slice-2`");
     expect(outcome.reason).toContain("#211 (`agent/slice-171-174-slice-3`");
-    expect(outcome.reason).toMatch(/will not guess/);
+    expect(outcome.reason).toMatch(/can't tell which of these lands next/);
     expect(outcome.output).not.toContain("refused=");
     expect(outcome.writes).toEqual([]);
   });
@@ -332,7 +332,17 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.output).toContain("refused=true\n");
     expect(outcome.output).not.toContain("finishing=");
     expect(outcome.reason).toBe("");
-    expect(outcome.writes.some((w) => w.includes('"comment"') && w.includes("the PRD is finished"))).toBe(true);
+    expect(
+      outcome.writes.some(
+        (w) =>
+          w.includes('"comment"') &&
+          w.includes(
+            "**`agent:implement` didn't run:** Every sub-issue of this PRD is built and its PRD PR is ready for you. To build more, add a sub-issue first.",
+          ),
+      ),
+    ).toBe(true);
+    // A finished PRD is not blocked (#253): nobody has anything to act on.
+    expect(outcome.writes.some((w) => w.includes("agent:blocked"))).toBe(false);
   });
 
   /**
@@ -347,7 +357,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     });
 
     expect(outcome.output).toContain("refused=true\n");
-    expect(outcome.writes.some((w) => w.includes("the PRD is finished"))).toBe(true);
+    expect(outcome.writes.some((w) => w.includes("Every sub-issue of this PRD is built"))).toBe(true);
   });
 
   /**

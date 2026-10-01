@@ -697,8 +697,8 @@ describe("planFollowUps: the stub it plans", () => {
     const body = filed().body;
 
     expect(body).toContain(REVIEW_URL);
-    expect(body).toMatch(/read/i);
-    expect(body).toMatch(/not necessarily/i);
+    expect(body).toContain("Found in [a review]");
+    expect(body).toMatch(/an earlier review on that PR may have raised it first/i);
   });
 
   /**

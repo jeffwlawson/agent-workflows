@@ -168,7 +168,7 @@ try {
 
   const commitsAhead = Number(git(["rev-list", "--count", `${before}..HEAD`]).trim());
   if (!Number.isFinite(commitsAhead) || commitsAhead === 0) {
-    fail(`Agent finished but made no commits for sub-issue #${SUB_NUMBER}.`);
+    fail(`The agent finished without making any changes for sub-issue #${SUB_NUMBER}.`);
   }
 
   console.log(`Sub-issue #${SUB_NUMBER} produced ${commitsAhead} commit(s) on ${BRANCH}.`);

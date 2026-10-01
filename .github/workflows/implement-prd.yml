@@ -1109,6 +1109,56 @@ jobs:
         # process `cwd`: the runner still does its git work in the checkout.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.5 -- agent-workflows implement-prd
 
+      # Every commit this run made gets exactly one `Agent-Slice: #<sub>`
+      # trailer naming the sub-issue it built (#242): the mark
+      # `shared/slice-ranges.ts` reads a slice's commits off the PRD branch by,
+      # whatever their subject lines say. The agent is not told to write it,
+      # so it is written here, and one the agent did write is replaced.
+      #
+      # Here, after the runner and before the push, because the commits are
+      # still local: rewriting them rewrites nothing published. "This run's" is
+      # every commit reachable from HEAD and from nothing on the remote or the
+      # PRD branch, so a default-branch commit the agent merged in keeps its
+      # identity. Trees, authors and dates are kept, and the branch is moved
+      # without touching the working tree, since only messages change.
+      - name: Mark the slice's commits
+        id: trailer
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && success()
+        env:
+          PRD_BRANCH: ${{ steps.branch.outputs.name }}
+          SUB: ${{ steps.preflight.outputs.sub }}
+        run: |
+          set -euo pipefail
+
+          declare -A rewritten=()
+          mapped() { printf '%s' "${rewritten[$1]:-$1}"; }
+
+          old=$(git rev-parse HEAD)
+          count=0
+          for commit in $(git rev-list --reverse --topo-order HEAD --not "refs/heads/${PRD_BRANCH}" --remotes); do
+            parents=()
+            for parent in $(git rev-list --parents -n 1 "$commit" | cut -d' ' -f2-); do
+              parents+=(-p "$(mapped "$parent")")
+            done
+            message=$(git log -1 --format=%B "$commit" \
+              | { grep -iv '^Agent-Slice:' || true; } \
+              | git interpret-trailers --trailer "Agent-Slice: #${SUB}")
+            rewritten[$commit]=$(
+              export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+              GIT_AUTHOR_NAME=$(git log -1 --format=%an "$commit")
+              GIT_AUTHOR_EMAIL=$(git log -1 --format=%ae "$commit")
+              GIT_AUTHOR_DATE=$(git log -1 --format=%ad --date=raw "$commit")
+              GIT_COMMITTER_NAME=$(git log -1 --format=%cn "$commit")
+              GIT_COMMITTER_EMAIL=$(git log -1 --format=%ce "$commit")
+              GIT_COMMITTER_DATE=$(git log -1 --format=%cd --date=raw "$commit")
+              git commit-tree "${commit}^{tree}" "${parents[@]}" <<< "$message"
+            )
+            count=$((count + 1))
+          done
+
+          git update-ref -m "Agent-Slice: #${SUB}" HEAD "$(mapped "$old")" "$old"
+          echo "Marked ${count} commit(s) with Agent-Slice: #${SUB}."
+
       # Two pushes, and only one of them may be forced.
       #
       # The PRD branch is pushed **plain**, and only on the run that created

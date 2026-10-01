@@ -1,5 +1,10 @@
 import { isWorkflowBot, safeGh } from "./common.js";
-import { VERDICT_CONTEXT, VERDICTS, type FixRoundProgress } from "./review-output.js";
+import {
+  FIX_ROUND_STATUS,
+  LEGACY_FIX_ROUND_STARTED,
+  VERDICT_CONTEXT,
+  type FixRoundProgress,
+} from "./review-output.js";
 import type { CarriedFinding } from "./review-verification.js";
 
 /**
@@ -16,9 +21,10 @@ import type { CarriedFinding } from "./review-verification.js";
 export interface ReviewHistory {
   /**
    * Whether this review **follows a fix round**: the latest verdict this loop
-   * posted on the pull request is the *fix round started* row, and commits have
+   * posted on the pull request asked for an automatic fix round (its commit
+   * carries `FIX_ROUND_STATUS` linking the same review), and commits have
    * landed since it. That is the shape an automatic round leaves behind: the
-   * review announced it, `agent:fix` pushed, and the push asked for this
+   * review asked for it, `agent:fix` pushed, and the push asked for this
    * review. It is what the early stop judges (`fixRoundProgress`).
    *
    * **Or the round pushed nothing but posted an out-of-scope note** (#213),
@@ -62,13 +68,6 @@ export interface ReviewHistory {
   readonly unreadable?: string;
 }
 
-/**
- * The status description a *fix round started* verdict carries, word for word:
- * the one thing that tells it from every other verdict on a commit. The same
- * string *Settle the fix-round budget* counts rounds by.
- */
-const FIX_ROUND_STARTED = VERDICTS["changes recommended, fix round started"].description;
-
 const readJson = (text: string): unknown => {
   try {
     return JSON.parse(text) as unknown;
@@ -107,8 +106,9 @@ const readCommits = (repo: string, prNumber: string): readonly string[] | undefi
 };
 
 /**
- * The description of the latest verdict this loop posted on a commit, `null`
- * where there is none, or `undefined` when its statuses could not be read.
+ * Whether the latest verdict this loop posted on a commit asked for an
+ * automatic fix round, `null` where the commit carries no verdict, or
+ * `undefined` when its statuses could not be read.
  *
  * Two conditions beyond the context, and each is load-bearing.
  *
@@ -129,31 +129,44 @@ const readCommits = (repo: string, prNumber: string): readonly string[] | undefi
  * and flattened the way `readCommits` is: the page is thirty statuses and an
  * adopter's external CI spends two on every `pending → success`, so the verdict
  * falls off page 1 on an ordinary repository.
+ *
+ * The round is the `FIX_ROUND_STATUS` record (#297), matched to the verdict by
+ * the review both link, so a record an earlier review of the same commit left
+ * is not read as this verdict's. Or, for one release, the verdict's own line
+ * is 0.7.6's *fix round started* one (`LEGACY_FIX_ROUND_STARTED`), which is all
+ * a round in flight at the upgrade carries.
  */
-const verdictOn = (repo: string, sha: string): string | null | undefined => {
+const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | undefined => {
   const pages = readJson(
     safeGh(["api", `repos/${repo}/commits/${sha}/statuses`, "--paginate", "--slurp"]),
   );
   if (!Array.isArray(pages)) return undefined;
 
-  const statuses = pages.flatMap((page) => (Array.isArray(page) ? (page as unknown[]) : [page]));
-  for (const raw of statuses) {
-    const status = raw as {
+  const statuses = (
+    pages.flatMap((page) => (Array.isArray(page) ? (page as unknown[]) : [page])) as {
       context?: unknown;
       state?: unknown;
       description?: unknown;
+      target_url?: unknown;
       creator?: { login?: unknown };
-    };
+    }[]
+  ).filter((status) => {
     const login = status.creator?.login;
-    if (
-      status.context === VERDICT_CONTEXT &&
-      status.state !== "error" &&
-      isWorkflowBot(typeof login === "string" ? login : undefined)
-    ) {
-      return typeof status.description === "string" ? status.description : "";
-    }
-  }
-  return null;
+    return isWorkflowBot(typeof login === "string" ? login : undefined);
+  });
+  const verdict = statuses.find(
+    (status) => status.context === VERDICT_CONTEXT && status.state !== "error",
+  );
+  if (verdict === undefined) return null;
+
+  const url = verdict.target_url;
+  return {
+    fixRound:
+      verdict.description === LEGACY_FIX_ROUND_STARTED ||
+      (typeof url === "string" &&
+      url !== "" &&
+      statuses.some((status) => status.context === FIX_ROUND_STATUS.context && status.target_url === url)),
+  };
 };
 
 /**
@@ -195,7 +208,7 @@ export const readReviewHistory = (prNumber: string, noted = false): ReviewHistor
 
     const since = commits.length - 1 - i;
     return {
-      afterFixRound: (since > 0 || noted) && verdict === FIX_ROUND_STARTED,
+      afterFixRound: (since > 0 || noted) && verdict.fixRound,
       unreviewedCommits: since > 0,
     };
   }

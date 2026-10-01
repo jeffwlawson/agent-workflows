@@ -15,8 +15,11 @@ import {
   severityWord,
 } from "../shared/review-findings.js";
 import {
+  CLOSER_LOOK,
   deriveVerdict,
+  FIX_ROUND_STATUS,
   FOLLOW_UPS_LABEL,
+  LEGACY_FIX_ROUND_STARTED,
   renderReviewBody,
   type Verdict,
   VERDICT_CONTEXT,
@@ -1751,7 +1754,7 @@ describe("agent-review posts its verdict as a commit status", () => {
  * verdict telling a maintainer a fix round started.
  */
 describe("agent-review starts fix rounds itself, within the fix-round budget", () => {
-  const AUTO_FIX_VERDICT = "changes recommended, fix round started";
+  const AUTO_FIX_VERDICT = "changes recommended";
   /** The posting job (#257), whose hand-off step starts the round. */
   const job = (): Job => jobNamed(REVIEW, "post-review");
   const startStep = (): Step | undefined =>
@@ -1761,16 +1764,29 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent");
 
   /**
-   * The key the job selects on is the one the derivation emits, held to the
-   * constant rather than to a string that happens to match today. The three
-   * *changes recommended* rows share a heading, a label and a state, so the
-   * key is the only field that can tell the one this fires on from the two it
-   * must not.
+   * **It selects on 🟡 plus the budget, not on a verdict key** (#297). The
+   * *fix round started* key is retired, and 🟡 is one row with one line, so
+   * what tells the round apart is `fix-round`: the runner's `startsFixRound`,
+   * set only where the budget step said a round would start and the early
+   * stop did not fire, handed over from the file the runner wrote.
    */
-  it("selects on the verdict key only a round-1 derivation can produce", () => {
+  it("selects on changes recommended plus the round the review asked for", () => {
+    const handOff = stepsOf(REVIEW).find((s) => s.id === "verdict");
+
     expect(VERDICTS[AUTO_FIX_VERDICT].verdict).toBe(AUTO_FIX_VERDICT);
+    expect(Object.keys(VERDICTS)).not.toContain("changes recommended, fix round started");
     expect(startStep()?.name).toBe("Start the automatic fix round");
     expect(startStep()?.if ?? "").toContain(`needs.review.outputs.verdict == '${AUTO_FIX_VERDICT}'`);
+    expect(startStep()?.if ?? "").toContain("needs.review.outputs.fix-round == 'true'");
+    expect(jobNamed(REVIEW, "review").outputs?.["fix-round"]).toBe("${{ steps.verdict.outputs.fix-round }}");
+    expect(handOff?.run ?? "").toContain('"fix-round=\\(.fixRound != null)"');
+    expect(fs.readFileSync(path.join("review", "review.ts"), "utf8")).toContain(
+      "...(verdict.startsFixRound === true ? { fixRound: FIX_ROUND_STATUS } : {}),",
+    );
+    // No step anywhere selects on the retired key.
+    for (const file of fs.readdirSync(WORKFLOW_DIR)) {
+      expect(fs.readFileSync(path.join(WORKFLOW_DIR, file), "utf8"), file).not.toContain("fix round started'");
+    }
   });
 
   /**
@@ -1811,11 +1827,11 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   /**
    * **The comparison.** A round starts where the rounds already spent are fewer
    * than the budget, and only with `AGENT_PAT`, since a label added without it
-   * starts nothing. Rounds spent are the verdicts this loop posted that
-   * started one, matched on the row's own status line (held to the table
-   * here, so rewording the row cannot silently zero the count) and counted
-   * once per review, because `update-branch` copies a verdict on to its merge
-   * commit.
+   * starts nothing. Rounds spent are the `agent-fix-round` statuses this loop
+   * posted beside the verdicts that asked for a round (#297), matched on the
+   * context (held to `FIX_ROUND_STATUS` here, so renaming it cannot silently
+   * zero the count) and counted once per review, because `update-branch`
+   * copies a commit's statuses on to its merge commit.
    */
   it("starts a round only while the rounds spent are fewer than the budget", () => {
     const step = budgetStep();
@@ -1823,9 +1839,16 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
 
     expect(run).toContain('[ "$spent" -lt "$budget" ] && [ "$HAS_PAT" = "true" ]');
     expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
-    expect(step?.env?.["STARTED"]).toBe(VERDICTS[AUTO_FIX_VERDICT].description);
+    expect(step?.env?.["FIX_ROUND_CONTEXT"]).toBe(FIX_ROUND_STATUS.context);
+    expect(step?.env?.["STARTED"]).toBeUndefined();
+    expect(run).toContain(".context == env.FIX_ROUND_CONTEXT");
+    // And, for one release, a 0.7.6 verdict that started a round, which has
+    // no `agent-fix-round` status to count (#297).
     expect(step?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
-    expect(run).toContain(".description == env.STARTED");
+    expect(step?.env?.["LEGACY_STARTED"]).toBe(LEGACY_FIX_ROUND_STARTED);
+    expect(run).toContain(
+      "(.context == env.FIX_ROUND_CONTEXT or (.context == env.VERDICT_CONTEXT and .description == env.LEGACY_STARTED))",
+    );
     expect(run).toContain(".creator.login == env.LOOP_ACCOUNT");
     expect(run).toContain("sort -u");
     // An unreadable count starts nothing.
@@ -1875,20 +1898,21 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
    */
   it("cannot fire after a fix round that closed nothing, and reads no round", () => {
     const findings = { findings: [], followUps: [], fixBeforeMerge: ["the guard runs after the return"], verified: [] };
-    const inputs = { ci: "green", stillOpen: 0, movedToFollowUps: 0, autoFix: true, base: "main" } as const;
+    const inputs = { ci: "green", stillOpen: 0, movedToFollowUps: 0, autoFix: true } as const;
     expect(
-      deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 0 } }).verdict,
-      "a fix round that made no progress must not be able to produce the key this job fires on",
-    ).not.toBe(AUTO_FIX_VERDICT);
-    expect(deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 2 } }).verdict).toBe(
-      AUTO_FIX_VERDICT,
-    );
+      deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 0 } }).startsFixRound,
+      "a fix round that made no progress must not be able to ask for the round this job starts",
+    ).toBeUndefined();
+    expect(deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 2 } })).toMatchObject({
+      verdict: AUTO_FIX_VERDICT,
+      startsFixRound: true,
+    });
 
     expect(startStep()?.if ?? "").not.toContain("outputs.round");
     // The one `round` the review hands across is which round of a PRD PR it
     // was, a slice round or the final review (PRD #222), and it is no count.
     expect(jobOf(REVIEW).outputs?.["round"]).toBe("${{ steps.round.outputs.round }}");
-    expect(stepsOf(REVIEW).find((s) => s.name === "Hand the verdict to what reads it")?.run ?? "").not.toContain("round");
+    expect(stepsOf(REVIEW).find((s) => s.name === "Hand the verdict to what reads it")?.run ?? "").not.toMatch(/"round=|spent|budget/);
     expect(jobOf(REVIEW).outputs?.["verdict"]).toBe("${{ steps.verdict.outputs.verdict }}");
   });
 
@@ -1971,7 +1995,10 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
       /if ! gh pr edit "\$PR_NUMBER" --add-label "agent:fix"; then\n\s*no_round "adding \\`agent:fix\\` failed/,
     );
     const noRound = run.slice(run.indexOf("no_round() {"), run.indexOf("\n}", run.indexOf("no_round() {")));
-    expect(noRound).toContain('gh pr comment "$PR_NUMBER" --body "No fix round started');
+    expect(noRound).toContain('gh pr comment "$PR_NUMBER" --body "No automatic fix round started: $1.');
+    // The verdict's line no longer announces a round (#297), so the comment
+    // does not say it did.
+    expect(noRound).not.toContain("said one had");
     expect(noRound).toContain("exit 1");
   });
 
@@ -2101,7 +2128,7 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     const condition = (ready?.if ?? "").replace(/\s+/g, " ").trim();
 
     expect(condition.startsWith(
-      `steps.review.outcome == 'success' && ` + `needs.review.outputs.verdict != '${AUTO_FIX_VERDICT}' && `,
+      `steps.review.outcome == 'success' && ` + `needs.review.outputs.fix-round != 'true' && `,
     )).toBe(true);
   });
 
@@ -2118,9 +2145,36 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     expect(hand?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
     expect(hand?.run ?? "").toContain("${RUNNER_TEMP}/verdict.json");
     expect(hand?.run ?? "").toContain("verdict=");
-    expect(hand?.run ?? "").not.toContain("round=");
+    expect(hand?.run ?? "").toContain("fix-round=");
+    expect(hand?.run ?? "").not.toMatch(/(^|[^-])round=/);
     // A run that wrote no file hands over nothing, and this job does not run.
     expect(hand?.run ?? "").toContain('[ -f "$file" ]');
+  });
+
+  /**
+   * **The record a round is counted by** (#297). The verdict's line is the
+   * same whether or not a round starts, so the posting step writes the
+   * `agent-fix-round` status beside it, out of the same file and linking the
+   * same review, and the hand-off starts no round whose record is missing:
+   * a round the budget cannot see is one nothing bounds.
+   */
+  it("posts the fix-round record beside the verdict, and starts no round without it", () => {
+    const post = (job().steps ?? []).find((s) => (s.name ?? "") === "Post the verdict as a commit status");
+    const run = post?.run ?? "";
+
+    expect(run).toContain(`jq -e '.fixRound != null' "\${RUNNER_TEMP}/verdict.json"`);
+    expect(run).toContain('-f "context=$(jq -r .fixRound.context "${RUNNER_TEMP}/verdict.json")"');
+    expect(run).toContain('record+=(-f "target_url=${REVIEW_URL}")');
+    expect(run).not.toContain("agent-fix-round\"");
+
+    const start = startStep();
+    expect(start?.env?.["FIX_ROUND_CONTEXT"]).toBe(FIX_ROUND_STATUS.context);
+    expect(start?.run ?? "").toContain(
+      ".context == env.FIX_ROUND_CONTEXT and .creator.login == env.LOOP_ACCOUNT and .target_url == env.REVIEW_URL",
+    );
+    const run2 = start?.run ?? "";
+    expect(run2.indexOf("env.FIX_ROUND_CONTEXT")).toBeLessThan(run2.indexOf('--add-label "agent:fix"'));
+    expect(FIX_ROUND_STATUS.description.length).toBeLessThanOrEqual(140);
   });
 
   /**
@@ -2490,16 +2544,20 @@ describe("a PRD PR's round ends in one advance job", () => {
   /**
    * **Every other ending parks**, but a fix round starting: the round has not
    * ended, and the fix run's re-review comes back here. Every verdict key is
-   * one of the three, so a fifth row added to the table arrives here as a
+   * one of the three, so a fourth row added to the table arrives here as a
    * decision rather than as a gap.
    */
   it("parks on every other ending, but does nothing on a fix round starting", () => {
     expect(flat(parkStep()?.if)).toBe(
       "!(needs.review.result == 'success' && needs.post-review.result == 'success' && " +
         "(needs.review.outputs.verdict == 'approval recommended' || " +
-        "needs.review.outputs.verdict == 'changes recommended, fix round started'))",
+        "(needs.review.outputs.verdict == 'changes recommended' && needs.review.outputs.fix-round == 'true')))",
     );
-    const spared = [...flat(parkStep()?.if).matchAll(/verdict == '([^']+)'/g)].map(([, key]) => key ?? "");
+    // Spared whatever else holds: a key the condition does not also tie to
+    // `fix-round`. 🟡 is spared only where a round starts (#297).
+    const spared = [...flat(parkStep()?.if).matchAll(/verdict == '([^']+)'(?! && needs\.review\.outputs\.fix-round)/g)].map(
+      ([, key]) => key ?? "",
+    );
     const parked = Object.keys(VERDICTS).filter((key) => !spared.includes(key));
     expect(parked.sort()).toEqual(["changes recommended", "needs a closer look"]);
   });
@@ -6036,11 +6094,12 @@ describe("the adoption doc says what to do with each verdict", () => {
     );
     expect(section()).toContain(`\`${VERDICT_CONTEXT}\``);
 
-    for (const row of Object.values(VERDICTS)) {
+    const causes = Object.values(CLOSER_LOOK).map((lines) => ({ ...VERDICTS["needs a closer look"], ...lines }));
+    for (const row of [...Object.values(VERDICTS), ...causes]) {
       // The heading rather than the key: the heading is what an adopter sees on
       // their own pull requests, and the key is the machine-readable half only
-      // `verdict.json` carries. Four rows share three headings, and the
-      // descriptions below are what tell the two that share one apart here.
+      // `verdict.json` carries. *Needs a closer look*'s three causes share a
+      // heading, and the descriptions below are what tell them apart here.
       expect(section()).toContain(row.heading);
       // The description verbatim, because it is what GitHub shows beside the
       // status: a paraphrase here is an adopter told to do something other

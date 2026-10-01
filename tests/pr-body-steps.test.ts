@@ -507,7 +507,7 @@ describe.skipIf(!CAN_RUN)("the progress list is spliced into the PRD PR's body",
         "progress_running.md": list,
       },
     );
-  const RUNNING = { ENDED: "true", VERDICT: "changes recommended, fix round started" };
+  const RUNNING = { ENDED: "true", VERDICT: "changes recommended", FIX_ROUND: "true" };
 
   it.each(bodies)("the advance job over %s keeps spliceProgressList's rule", (_case, body) => {
     const outcome = advance(body, RUNNING);
@@ -525,7 +525,8 @@ describe.skipIf(!CAN_RUN)("the progress list is spliced into the PRD PR's body",
   it.each([
     ["an approval", { ENDED: "true", VERDICT: "approval recommended" }, "approved list"],
     ["a fix round started", RUNNING, list],
-    ["changes recommended", { ENDED: "true", VERDICT: "changes recommended" }, "parked list"],
+    ["changes recommended", { ENDED: "true", VERDICT: "changes recommended", FIX_ROUND: "false" }, "parked list"],
+    ["changes recommended, with no fix-round output", { ENDED: "true", VERDICT: "changes recommended" }, "parked list"],
     ["needs a closer look", { ENDED: "true", VERDICT: "needs a closer look" }, "parked list"],
     ["a run that did not finish", { ENDED: "false", VERDICT: "approval recommended" }, "parked list"],
   ])("the advance job writes the list for %s", (_case, env, written) => {

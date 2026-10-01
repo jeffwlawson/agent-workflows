@@ -118,10 +118,10 @@ pull request is bounded twice over (below), by the fix-round budget and by the *
 review a **fix** asks for may recommend changes and, with budget left, start another round, unless
 the fix round it follows closed none of the findings it was given (`docs/parity.md` §10). Whether a
 review follows a fix round is read from the **verdict history**, never from who authored the
-commits: the latest verdict announced a round, and commits have landed since, or the fix run
+commits: the latest verdict asked for a round, and commits have landed since, or the fix run
 posted an out-of-scope note since without pushing (#213). The review a
 **conflict resolution** asks for follows no fix round, because a resolution posts no verdict and
-the one before it announced none. A fix run that pushed nothing and left no out-of-scope note asks
+the one before it asked for none. A fix run that pushed nothing and left no out-of-scope note asks
 for nothing, and leaves every thread it answered open, so a round it declined its way through ends
 on a human rather than on another pass. It is also the run that marks such a pull request
 **ready**, because there is no re-review coming to do it (#159): a run that pushed hands the pull
@@ -144,10 +144,11 @@ Review adds a trigger label in two cases. The first is on the pull request (#102
 job's last step adds `agent:fix` when the verdict is *Changes recommended* and the pull request has
 automatic fix rounds left in its **fix-round budget** (#201): the repository variable
 `AGENT_MAX_FIX_ROUNDS`, default 3, `0` for none. **Rounds spent** are counted from the pull request
-itself: the verdicts the loop posted there that announced a round. There is no marker label, so the
-count survives re-runs and hand edits, only automatic rounds count, and a push resets nothing. The
-budget is settled before the review runs, so the verdict announces a round only where one will
-start, and the step decides from live state rather than the event payload: it adds nothing where
+itself: the `agent-fix-round` statuses the loop posted there, one beside each verdict that asked
+for a round (#297; the verdict's own line is fixed, so it cannot be the record). There is no marker
+label, so the count survives re-runs and hand edits, only automatic rounds count, and a push resets
+nothing. The budget is settled before the review runs, so a review asks for a round only where one
+will start, and the step decides from live state rather than the event payload: it adds nothing where
 `agent:fix` is already on the pull request or a newer verdict stands, and says on the pull request
 when a round it should have started did not. It is the return leg `docs/parity.md` §10 used to
 forbid outright, and what makes it an arrow rather than a cycle is two bounds, both ruled on before

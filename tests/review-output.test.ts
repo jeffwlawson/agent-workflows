@@ -18,6 +18,7 @@ import {
 } from "../shared/review-verification.js";
 import {
   capFollowUps,
+  CLOSER_LOOK,
   followUpsCap,
   countFixBeforeMerge,
   deriveVerdict,
@@ -45,7 +46,14 @@ import {
   type CiResult,
   type FollowUp,
   type ReviewOutput,
+  type VerdictRow,
 } from "../shared/review-output.js";
+
+/** Every row a verdict can post: the table's three, and each cause of a closer look. */
+const EVERY_ROW: readonly VerdictRow[] = [
+  ...Object.values(VERDICTS),
+  ...Object.values(CLOSER_LOOK).map((lines) => ({ ...VERDICTS["needs a closer look"], ...lines })),
+];
 
 /**
  * These guard the review's posting path rather than the linter. GitHub rejects
@@ -852,7 +860,7 @@ describe("deriveVerdict", () => {
   });
 
   it("recommends approval when nothing is wrong and the checks are green", () => {
-    expect(deriveVerdict(output(), { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe("approval recommended");
+    expect(deriveVerdict(output(), { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe("approval recommended");
   });
 
   it("recommends changes when the findings are the only thing wrong", () => {
@@ -860,7 +868,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), { autoFix: false,
         ci: "green",
         fixRoundProgress: undefined,
-        stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
+        stillOpen: 0, movedToFollowUps: 0 }).verdict,
     ).toBe("changes recommended");
   });
 
@@ -869,7 +877,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), { autoFix: false,
         ci: "green",
         fixRoundProgress: undefined,
-        stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
+        stillOpen: 0, movedToFollowUps: 0 }).verdict,
     ).toBe("needs a closer look");
   });
 
@@ -883,55 +891,56 @@ describe("deriveVerdict", () => {
     ["red", "red"],
     ["unreadable", "unknown"],
   ])("needs a closer look when the checks are %s and the review found nothing", (_case, ci) => {
-    expect(deriveVerdict(output(), { autoFix: false, ci: ci as CiResult, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
+    expect(deriveVerdict(output(), { autoFix: false, ci: ci as CiResult, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe(
       "needs a closer look",
     );
   });
 
   /**
    * Three ways into *needs a closer look*, and one step for each (#209). The
-   * table's line fits only the reviewer asking for a human: a red check with
-   * nothing found is a check to read, and CI that never reported is one no fix
-   * round can repair. The key stays the one row's, so everything selecting on
-   * it reads all three alike.
+   * action differs by cause and the review knows the cause, so the lines
+   * differ; none depends on PRD, auto-fix or round (#297). The key stays the
+   * one row's, so everything selecting on it reads all three alike.
    */
   describe("the step a closer look gives, by cause", () => {
-    const inputs = { autoFix: false, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "agent/prd-14-search" } as const;
+    const inputs = { autoFix: false, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 } as const;
 
-    it("keeps the table's line where the reviewer asked for a human", () => {
-      const row = deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), { ...inputs, ci: "red" });
-
-      expect(row).toEqual(VERDICTS["needs a closer look"]);
-    });
-
-    it("sends a red check with nothing found to the failing check", () => {
-      const row = deriveVerdict(output(), { ...inputs, ci: "red" });
+    /**
+     * #201's *Verdict lines*, quoted rather than read back out of
+     * `CLOSER_LOOK`, for the reason the commit-status table below is: an
+     * expectation derived from the thing it tests moves when that thing is
+     * wrong. Each offers merging as is among its ways on (#297).
+     */
+    it.each([
+      [
+        "the reviewer asked for a human",
+        { needsYou: "the issue asked for the opposite" },
+        "green",
+        "This needs your judgement before anything is changed. Read the review, then do one of these: (1) comment with what to change and add the `agent:fix` label, (2) push a fix yourself, (3) merge as is if you're satisfied, or (4) close the PR.",
+        "Needs a closer look. Read the review, then tell the agent what to fix, fix it yourself, merge as is, or close the PR.",
+      ],
+      [
+        "a check failed with nothing found",
+        {},
+        "red",
+        "A CI check failed, and the review couldn't trace it to the code. Read the failing check named in the review, then do one of these: (1) comment with what to change and add the `agent:fix` label, (2) push a fix yourself, (3) merge as is if the failure doesn't matter here, or (4) close the PR.",
+        "Needs a closer look. A CI check failed and the review couldn't trace it to the code. Read the failing check, then fix it or merge as is.",
+      ],
+      [
+        "CI had not finished or could not be read",
+        {},
+        "unknown",
+        "CI hadn't finished, or couldn't be read, when the review ran. Approve any run that's waiting for approval, and once CI is done, add the `agent:review` label to review again. If this change doesn't need CI, you can merge it as is.",
+        "Needs a closer look. CI hadn't finished or couldn't be read. Once it's done, add agent:review, or merge as is if CI isn't needed.",
+      ],
+    ] as const)("gives the table's lines where %s", (_case, over, ci, nextStep, description) => {
+      const row = deriveVerdict(output(over), { ...inputs, ci });
 
       expect(row.verdict).toBe("needs a closer look");
       expect(row.heading).toBe(VERDICTS["needs a closer look"].heading);
-      expect(row.nextStep).toContain("A check failed and the review found nothing to aim a fix at.");
-      expect(row.nextStep).toContain("Read the failing check");
-      expect(row.description).toBe(
-        "Needs a closer look. A check failed and the review found nothing to fix. Read the failing check the review names.",
-      );
-    });
-
-    /**
-     * `unknown` is also CI that had not finished: a run waiting for approval,
-     * or one still going at the wait's ceiling (#221). For those the way on is
-     * to approve it or let it finish, not to change the CI setup.
-     */
-    it("says a fix round cannot help where no CI result could be read, and names every way on", () => {
-      const row = deriveVerdict(output(), { ...inputs, ci: "unknown" });
-
-      expect(row.verdict).toBe("needs a closer look");
-      expect(row.nextStep).toContain("a fix round cannot help");
-      expect(row.nextStep).toContain("CI had not finished");
-      expect(row.nextStep).toContain("approve a run waiting for approval or let it finish");
-      expect(row.nextStep).toContain("make CI run on pull requests into `agent/prd-14-search`. Then re-add agent:review.");
-      expect(row.description).toBe(
-        "Needs a closer look. CI unfinished, absent or unreadable. Approve it, let it finish or make it run, then re-add agent:review.",
-      );
+      expect(row.state).toBe("failure");
+      expect(row.nextStep).toBe(nextStep);
+      expect(row.description).toBe(description);
     });
 
     it.each(["green", "red", "unknown"] as const)(
@@ -959,7 +968,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["the new test asserts the old behaviour"] }), { autoFix: false,
         ci: "red",
         fixRoundProgress: undefined,
-        stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
+        stillOpen: 0, movedToFollowUps: 0 }).verdict,
     ).toBe("changes recommended");
   });
 
@@ -975,7 +984,7 @@ describe("deriveVerdict", () => {
       findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
     });
 
-    expect(deriveVerdict(listless, { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(listless, { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe("changes recommended");
   });
 
   /**
@@ -1002,7 +1011,7 @@ describe("deriveVerdict", () => {
     "the guard runs after the return",
   ])("counts a finding whatever its body opens with: %s", (body: string) => {
     expect(
-      deriveVerdict(output({ findings: [finding({ body })] }), { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" })
+      deriveVerdict(output({ findings: [finding({ body })] }), { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 })
         .verdict,
       body,
     ).toBe("changes recommended");
@@ -1017,7 +1026,7 @@ describe("deriveVerdict", () => {
     // One set, not the sum of two: a restatement counts only where the list is
     // longer than the findings it restates. Either way a fix is a fix, so what
     // this pins is the arithmetic rather than the verdict.
-    expect(deriveVerdict(both, { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe("changes recommended");
+    expect(deriveVerdict(both, { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe("changes recommended");
     expect(countFixBeforeMerge(both, 0)).toBe(1);
   });
 
@@ -1026,7 +1035,7 @@ describe("deriveVerdict", () => {
       deriveVerdict(output({ fixBeforeMerge: ["a"], needsYou: "the wrong thing was built" }), { autoFix: false,
         ci: "green",
         fixRoundProgress: undefined,
-        stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
+        stillOpen: 0, movedToFollowUps: 0 }).verdict,
     ).toBe("needs a closer look");
   });
 
@@ -1043,77 +1052,50 @@ describe("deriveVerdict", () => {
       ci: "green",
       fixRoundProgress: { given: 3, closed: 2 },
       stillOpen: 1,
-      movedToFollowUps: 0, base: "main",
+      movedToFollowUps: 0,
       autoFix: true,
     });
 
-    expect(row).toEqual(VERDICTS["changes recommended, fix round started"]);
+    expect(row).toEqual({ ...VERDICTS["changes recommended"], startsFixRound: true });
     // And no row of the retired rule is left to reach.
     expect(Object.keys(VERDICTS)).not.toContain("changes recommended after a fix round");
   });
 
   /**
-   * **The early stop** (#202, PRD #200 decision 5). A fix round that closed
-   * none of the findings it was given starts no further automatic round,
-   * whatever budget is left, and the line says why and gives the same three
-   * ways on as a spent budget. The key is the plain one: nothing is starting,
-   * and the automatic fix selects on the other.
+   * **🟡 is one row** (#297, #201's *Verdict lines*). Whether a round starts,
+   * the budget is spent, or the last round made no progress, a maintainer
+   * reads the same line, and only the fields no line is made of differ: the
+   * `startsFixRound` the automatic fix selects on and the `stop` the park
+   * comment names. The *fix round started* key is retired with its line.
    */
-  it("stops after a fix round that closed none of its findings, and says why", () => {
-    const row = deriveVerdict(output({ fixBeforeMerge: ["a new finding the re-review raised"] }), {
+  it.each([
+    ["no round is starting", {}, {}],
+    ["a round is starting", { autoFix: true }, { startsFixRound: true }],
+    ["the budget is spent", { fixRounds: { spent: 3, budget: 3 } }, { stop: "budget spent" }],
+    ["rounds are left and none starts", { fixRounds: { spent: 1, budget: 3 } }, {}],
+    ["the budget is 0", { fixRounds: { spent: 0, budget: 0 } }, {}],
+    [
+      "the last round made no progress",
+      { autoFix: true, fixRoundProgress: { given: 3, closed: 0 }, fixRounds: { spent: 1, budget: 3 } },
+      { stop: "no progress" },
+    ],
+    [
+      "both stops hold",
+      { fixRoundProgress: { given: 2, closed: 0 }, fixRounds: { spent: 3, budget: 3 } },
+      { stop: "no progress" },
+    ],
+  ] as const)("gives the one changes-recommended line where %s", (_case, over, fields) => {
+    const row = deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
       ci: "green",
-      fixRoundProgress: { given: 3, closed: 0 },
-      stillOpen: 3,
-      movedToFollowUps: 0, base: "main",
-      autoFix: true,
-      fixRounds: { spent: 1, budget: 3 },
+      fixRoundProgress: undefined,
+      stillOpen: 0,
+      movedToFollowUps: 0,
+      autoFix: false,
+      ...over,
     });
 
-    expect(row.verdict).toBe("changes recommended");
-    expect(row.heading).toBe(VERDICTS["changes recommended"].heading);
-    expect(row.state).toBe("failure");
-    expect(row.nextStep).toContain("No progress: the fix round closed none of the 3 findings it was given");
-    expect(row.nextStep).toContain("4 findings are still open");
-    expect(row.nextStep).toContain("add agent:fix");
-    expect(row.nextStep).toContain("reply to a finding to decline it");
-    expect(row.nextStep).toContain("push a commit");
-    expect(row.nextStep).not.toContain("automatically");
-    expect(row.description).toBe(
-      "Changes recommended. No progress (0 of 3 findings closed). Add agent:fix, decline a finding in a reply, or push a commit.",
-    );
-  });
-
-  it("says a single finding the fix round did not close in the singular", () => {
-    const row = deriveVerdict(output(), {
-      ci: "green", fixRoundProgress: { given: 1, closed: 0 }, stillOpen: 1, movedToFollowUps: 0, base: "main",
-      autoFix: true,
-    });
-
-    expect(row.nextStep).toContain("the fix round did not close the 1 finding it was given");
-    expect(row.nextStep).toContain("1 finding is still open");
-    expect(row.description).toContain("(0 of 1 finding closed)");
-    // The status line's own limits, at a count far past any real one.
-    const wide = deriveVerdict(output(), {
-      ci: "green", fixRoundProgress: { given: 999999999, closed: 0 }, stillOpen: 999999999,
-      movedToFollowUps: 0, base: "main", autoFix: true,
-    });
-    expect(wide.description.length).toBeLessThanOrEqual(140);
-    expect(wide.description.startsWith(`${wide.label}. `)).toBe(true);
-    expect(wide.description).not.toMatch(/[`—]/);
-  });
-
-  /**
-   * It names no progress ahead of a spent budget: both are true, and the one a
-   * maintainer can act on is that the last round changed nothing.
-   */
-  it("says no progress rather than a spent budget where both hold", () => {
-    const row = deriveVerdict(output(), {
-      ci: "green", fixRoundProgress: { given: 2, closed: 0 }, stillOpen: 2, movedToFollowUps: 0, base: "main",
-      autoFix: false, fixRounds: { spent: 3, budget: 3 },
-    });
-
-    expect(row.nextStep).toContain("No progress");
-    expect(row.nextStep).not.toContain("spent");
+    expect(row).toEqual({ ...VERDICTS["changes recommended"], ...fields });
+    expect(Object.keys(VERDICTS)).not.toContain("changes recommended, fix round started");
   });
 
   /**
@@ -1127,167 +1109,56 @@ describe("deriveVerdict", () => {
   ])("never early-stops after %s", (_case, fixRoundProgress) => {
     expect(
       deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
-        ci: "green", fixRoundProgress, stillOpen: 0, movedToFollowUps: 0, base: "main", autoFix: true,
-      }).verdict,
-    ).toBe("changes recommended, fix round started");
+        ci: "green", fixRoundProgress, stillOpen: 0, movedToFollowUps: 0, autoFix: true,
+      }).startsFixRound,
+    ).toBe(true);
   });
 
   /**
-   * The second *changes recommended* row (#102): the workflow is about to add
-   * `agent:fix` itself, so the line stops asking a maintainer for the label
-   * and says the round has started.
-   *
-   * The key is the whole point of the row existing. The automatic-fix job
-   * selects on it, so this is the one derivation whose output starts a job —
-   * and a heading, a state or a next step would each be shared with a row it
-   * must not fire on.
-   */
-  it("says the fix round has started where the workflow is about to start it", () => {
-    const started = deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
-      ci: "green",
-      fixRoundProgress: undefined,
-      stillOpen: 0,
-      movedToFollowUps: 0, base: "main",
-      autoFix: true,
-    });
-
-    expect(started.verdict).toBe("changes recommended, fix round started");
-    expect(started.heading).toBe(VERDICTS["changes recommended"].heading);
-    expect(started.state).toBe("failure");
-    // The promise of an automatic re-review stays; the instruction goes. A
-    // maintainer asked to add a label that is being added reads as a loop that
-    // did not notice what it just did.
-    expect(started.nextStep).toContain("A fix round has already started");
-    expect(started.nextStep).toContain("automatically");
-    expect(started.nextStep).not.toContain("Add agent:fix");
-  });
-
-  /**
-   * And the same review with the input off is the row it has always been. This
-   * is the pair that says the new row is a fact about the *workflow* rather
-   * than about the review: one output, two lines, and nothing about the
-   * findings differs.
-   */
-  it("asks for the label where nothing is about to add it", () => {
-    const findings = output({ fixBeforeMerge: ["the guard runs after the return"] });
-    const inputs = { ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" } as const;
-
-    expect(deriveVerdict(findings, { ...inputs, autoFix: false }).verdict).toBe(
-      "changes recommended",
-    );
-    expect(deriveVerdict(findings, { ...inputs, autoFix: true }).verdict).toBe(
-      "changes recommended, fix round started",
-    );
-  });
-
-  /**
-   * **A spent budget says so** (#201). Where no round starts because the pull
-   * request has used every automatic round it was given, the line names the
-   * rounds used, what is still open and the three ways on, rather than asking
-   * for the label as though nothing had been tried.
-   *
-   * The key stays the plain one: nothing is starting, which is what the
-   * advance job and the draft step select on, and only the words differ.
-   */
-  it("says the fix rounds are spent, how many were used and the three ways on", () => {
-    const row = deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
-      ci: "green",
-      fixRoundProgress: undefined,
-      stillOpen: 1,
-      movedToFollowUps: 0, base: "main",
-      autoFix: false,
-      fixRounds: { spent: 3, budget: 3 },
-    });
-
-    expect(row.verdict).toBe("changes recommended");
-    expect(row.heading).toBe(VERDICTS["changes recommended"].heading);
-    expect(row.nextStep).toContain("3 of 3 used");
-    expect(row.nextStep).toContain("2 findings are still open");
-    expect(row.nextStep).toContain("add agent:fix");
-    expect(row.nextStep).toContain("reply to a finding to decline it");
-    expect(row.nextStep).toContain("push a commit");
-    expect(row.description).toContain("(3 of 3)");
-    // The status line's own limits, at a budget far past any real one.
-    const wide = deriveVerdict(output(), {
-      ci: "green", fixRoundProgress: undefined, stillOpen: 1, movedToFollowUps: 0, base: "main",
-      autoFix: false, fixRounds: { spent: 999999999, budget: 999999999 },
-    });
-    expect(wide.description.length).toBeLessThanOrEqual(140);
-    expect(wide.description.startsWith(`${wide.label}. `)).toBe(true);
-    expect(wide.description).not.toMatch(/[`—]/);
-  });
-
-  /**
-   * …and only a spent one. Rounds still left with no round starting (no PAT)
-   * and a budget of 0 both ask for the label: nothing was spent, and saying a
-   * budget ran out would be a reason the loop never had.
-   */
-  it.each([
-    ["rounds left", { spent: 1, budget: 3 }],
-    ["a budget of 0", { spent: 0, budget: 0 }],
-    ["no count", undefined],
-  ])("asks for the label with %s", (_case, fixRounds) => {
-    const row = deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
-      ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main",
-      autoFix: false,
-      ...(fixRounds === undefined ? {} : { fixRounds }),
-    });
-    expect(row).toEqual(VERDICTS["changes recommended"]);
-  });
-
-  /**
-   * **A fix round that made no progress can never reach it**, whatever the
-   * workflow passes in: the early stop is one of the two bounds on the
-   * automatic fix now (#202), beside the budget. The job selects on the key
-   * alone, so a review that produced it after a round that changed nothing
-   * would spend the rest of the budget on the same findings.
+   * **A fix round that made no progress can never start another**, whatever
+   * the workflow passes in: the early stop is one of the two bounds on the
+   * automatic fix now (#202), beside the budget. The job selects on
+   * `startsFixRound`, so a review that set it after a round that changed
+   * nothing would spend the rest of the budget on the same findings.
    *
    * Enforced by the arm order here rather than by the caller: `review.ts`
    * passes `autoFix` from the budget step's answer and never from the
    * progress, so this file is the only place the two facts meet.
    */
-  it("never says a fix round started after one that closed nothing", () => {
-    expect(
-      deriveVerdict(output({ fixBeforeMerge: ["the guard still runs after the return"] }), {
+  it("never starts a fix round after one that closed nothing", () => {
+    const after = (over: Partial<ReviewOutput>, stillOpen: number): VerdictRow =>
+      deriveVerdict(output(over), {
         ci: "green",
         fixRoundProgress: { given: 1, closed: 0 },
-        stillOpen: 0,
-        movedToFollowUps: 0, base: "main",
+        stillOpen,
+        movedToFollowUps: 0,
         autoFix: true,
-      }).verdict,
-    ).toBe("changes recommended");
+      });
+
+    expect(after({ fixBeforeMerge: ["the guard still runs after the return"] }, 0).startsFixRound).toBeUndefined();
     // The carried half of the count reaches the same arm, so it cannot be the
     // way in either.
-    expect(
-      deriveVerdict(output(), {
-        ci: "green",
-        fixRoundProgress: { given: 1, closed: 0 },
-        stillOpen: 1,
-        movedToFollowUps: 0, base: "main",
-        autoFix: true,
-      }).verdict,
-    ).toBe("changes recommended");
+    expect(after({}, 1).startsFixRound).toBeUndefined();
+    expect(after({}, 1).stop).toBe("no progress");
   });
 
   /**
-   * …and neither can a review with nothing to fix. The row is a *changes
-   * recommended* one: a pull request the loop is about to fix is a pull request
-   * with findings on it, and an approval that claimed a fix round had started
-   * would send a maintainer looking for a run nothing launched.
+   * …and neither can a review with nothing to fix. A pull request the loop is
+   * about to fix is a pull request with findings on it.
    */
   it.each([
     ["approval recommended", "green"],
     ["needs a closer look", "red"],
   ])("still answers %s with the input on and nothing to fix", (verdict, ci) => {
-    expect(
-      deriveVerdict(output(), {
-        ci: ci as CiResult,
-        fixRoundProgress: undefined,
-        stillOpen: 0,
-        movedToFollowUps: 0, base: "main",
-        autoFix: true,
-      }).verdict,
-    ).toBe(verdict);
+    const row = deriveVerdict(output(), {
+      ci: ci as CiResult,
+      fixRoundProgress: undefined,
+      stillOpen: 0,
+      movedToFollowUps: 0,
+      autoFix: true,
+    });
+    expect(row.verdict).toBe(verdict);
+    expect(row.startsFixRound).toBeUndefined();
   });
 
   /**
@@ -1297,15 +1168,15 @@ describe("deriveVerdict", () => {
    * fix round is the wrong answer.
    */
   it("does not start a fix round over a review that asked for a human", () => {
-    expect(
-      deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), {
-        ci: "green",
-        fixRoundProgress: undefined,
-        stillOpen: 0,
-        movedToFollowUps: 0, base: "main",
-        autoFix: true,
-      }).verdict,
-    ).toBe("needs a closer look");
+    const row = deriveVerdict(output({ needsYou: "the issue asked for the opposite" }), {
+      ci: "green",
+      fixRoundProgress: undefined,
+      stillOpen: 0,
+      movedToFollowUps: 0,
+      autoFix: true,
+    });
+    expect(row.verdict).toBe("needs a closer look");
+    expect(row.startsFixRound).toBeUndefined();
   });
 
   /**
@@ -1314,7 +1185,7 @@ describe("deriveVerdict", () => {
    * round exists to reach.
    */
   it("still recommends approval after a fix round that closed everything", () => {
-    expect(deriveVerdict(output(), { autoFix: true, ci: "green", fixRoundProgress: { given: 2, closed: 2 }, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
+    expect(deriveVerdict(output(), { autoFix: true, ci: "green", fixRoundProgress: { given: 2, closed: 2 }, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe(
       "approval recommended",
     );
   });
@@ -1327,22 +1198,9 @@ describe("deriveVerdict", () => {
    * closes anything, so nothing else would stop it.
    */
   it("recommends changes when the only thing wrong is what an earlier round asked for", () => {
-    expect(deriveVerdict(output(), { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 1, movedToFollowUps: 0, base: "main" }).verdict).toBe(
+    expect(deriveVerdict(output(), { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 1, movedToFollowUps: 0 }).verdict).toBe(
       "changes recommended",
     );
-  });
-
-  /**
-   * Added rather than maximised, unlike the two halves inside
-   * `countFixBeforeMerge`: those are two restatements of one set of findings,
-   * these are two disjoint sets. What makes the distinction visible is the
-   * no-progress line, which states the sum.
-   */
-  it("carries an earlier round's unfixed findings into the no-progress line", () => {
-    const row = deriveVerdict(output({ fixBeforeMerge: ["a new one"] }), {
-      autoFix: true, ci: "green", fixRoundProgress: { given: 2, closed: 0 }, stillOpen: 2, movedToFollowUps: 0, base: "main",
-    });
-    expect(row.nextStep).toContain("3 findings are still open");
   });
 
   /**
@@ -1363,17 +1221,17 @@ describe("deriveVerdict", () => {
     });
 
     expect(countFixBeforeMerge(missed, 0)).toBe(1);
-    expect(deriveVerdict(missed, { autoFix: true, ci: "green", fixRoundProgress: { given: 1, closed: 1 }, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
-      "changes recommended, fix round started",
+    expect(deriveVerdict(missed, { autoFix: true, ci: "green", fixRoundProgress: { given: 1, closed: 1 }, stillOpen: 0, movedToFollowUps: 0 })).toEqual(
+      { ...VERDICTS["changes recommended"], startsFixRound: true },
     );
-    expect(deriveVerdict(missed, { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict).toBe(
+    expect(deriveVerdict(missed, { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe(
       "changes recommended",
     );
   });
 });
 
 /**
- * The commit status each verdict posts. The descriptions are quoted from #96's
+ * The commit status each verdict posts. The descriptions are quoted from #201's
  * table rather than read back out of the constant — an expectation derived from
  * the thing it tests moves when that thing is wrong, and this one is the whole
  * of what a maintainer sees: the promise of the feature is that the status line
@@ -1384,47 +1242,54 @@ describe("the verdict's commit status", () => {
     expect(VERDICT_CONTEXT).toBe("agent-review");
   });
 
+  /**
+   * #201's *Verdict lines*, settled with the maintainer on 2026-09-30 and
+   * shipped by #297: the body's line and the status line, which may differ on
+   * every row. *Needs a closer look*'s row here is the reviewer asking for a
+   * human; its other two causes are pinned beside `deriveVerdict` above.
+   */
   it.each([
     [
       "approval recommended",
       "🟢 Approval recommended",
       "success",
-      "Approval recommended. Nothing left to fix. Merge when ready; follow-ups are filed as issues on merge.",
+      "Nothing left to fix. You can merge once the PR is ready and no longer a draft.",
+      "Approval recommended. Nothing left to fix. You can merge once the PR is ready and no longer a draft.",
     ],
     [
       "changes recommended",
       "🟡 Changes recommended",
       "failure",
-      "Changes recommended. The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically.",
-    ],
-    [
-      "changes recommended, fix round started",
-      "🟡 Changes recommended",
-      "failure",
-      "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically.",
+      "The review found changes to make. To skip one, reply to its comment explaining why you're leaving it as is. Then, if the agent isn't already working, add the `agent:fix` label.",
+      "Changes recommended. If the agent isn't already working on them, add the agent:fix label to have it make the changes.",
     ],
     [
       "needs a closer look",
       "🔵 Needs a closer look",
       "failure",
-      "Needs a closer look. A fix round can't settle this alone. Read the review, add guidance, then add agent:fix or close the PR.",
+      "This needs your judgement before anything is changed. Read the review, then do one of these: (1) comment with what to change and add the `agent:fix` label, (2) push a fix yourself, (3) merge as is if you're satisfied, or (4) close the PR.",
+      "Needs a closer look. Read the review, then tell the agent what to fix, fix it yourself, merge as is, or close the PR.",
     ],
   ] as const)(
     "states %s under its heading, with the state that shows it",
-    (verdict, heading, state, description) => {
+    (verdict, heading, state, nextStep, description) => {
       expect(VERDICTS[verdict].heading).toBe(heading);
       expect(VERDICTS[verdict].state).toBe(state);
+      expect(VERDICTS[verdict].nextStep).toBe(nextStep);
       expect(VERDICTS[verdict].description).toBe(description);
       expect(VERDICTS[verdict].verdict).toBe(verdict);
     },
   );
 
-  /**
-   * Three headings over four rows, and the two that share one are the
-   * *changes recommended* cases: the plain one, and the one with the automatic
-   * fix starting (#102). The heading is the assessment and the step is what
-   * differs, so a reader meets three answers and a machine meets four.
-   */
+  it("has one row per heading, and no fix-round-started row", () => {
+    expect(Object.keys(VERDICTS).sort()).toEqual([
+      "approval recommended",
+      "changes recommended",
+      "needs a closer look",
+    ]);
+  });
+
+  /** Three headings, which are Copilot code review's own. */
   it("offers the three headings Copilot code review uses, and no fourth", () => {
     expect(new Set(Object.values(VERDICTS).map((row) => row.heading))).toEqual(
       new Set(["🟢 Approval recommended", "🟡 Changes recommended", "🔵 Needs a closer look"]),
@@ -1433,15 +1298,13 @@ describe("the verdict's commit status", () => {
 
   /**
    * Two renderings of one row. The body is the heading over the step; the status
-   * line is the `label` — the heading without its marker, which a description
-   * refuses — and the step. Written out rather than composed so the table reads
-   * as what a maintainer sees, which leaves exactly one way for them to drift,
-   * and this is it.
+   * line is the `label` (the heading without its marker, which a description
+   * refuses) and the short form of the step. Every closer-look cause, too.
    */
-  it("says the same thing on the status as the body says in two parts", () => {
-    for (const row of Object.values(VERDICTS)) {
+  it("opens every status line with the label the heading carries", () => {
+    for (const row of EVERY_ROW) {
       expect(row.heading, row.verdict).toMatch(new RegExp(` ${row.label}$`));
-      expect(row.description, row.verdict).toBe(`${row.label}. ${row.nextStep}`);
+      expect(row.description.startsWith(`${row.label}. `), row.description).toBe(true);
     }
   });
 
@@ -1454,7 +1317,7 @@ describe("the verdict's commit status", () => {
    * (#121). The heading keeps its marker: a review body accepts it.
    */
   it("keeps every status description to characters GitHub accepts there", () => {
-    for (const row of Object.values(VERDICTS)) {
+    for (const row of EVERY_ROW) {
       const astral = [...row.description].filter((ch) => (ch.codePointAt(0) ?? 0) > 0xffff);
       expect(astral, row.verdict).toEqual([]);
     }
@@ -1466,7 +1329,7 @@ describe("the verdict's commit status", () => {
    * can come back from.
    */
   it("writes no em dash into any verdict row", () => {
-    for (const row of Object.values(VERDICTS)) {
+    for (const row of EVERY_ROW) {
       expect([row.heading, row.label, row.nextStep, row.description].join("\n"), row.verdict).not.toContain("—");
     }
   });
@@ -1478,7 +1341,7 @@ describe("the verdict's commit status", () => {
    * in the one place nothing else reports.
    */
   it("keeps every next step inside GitHub's 140-character limit", () => {
-    for (const row of Object.values(VERDICTS)) {
+    for (const row of EVERY_ROW) {
       expect(row.description.length, row.verdict).toBeLessThanOrEqual(140);
     }
   });
@@ -1603,7 +1466,8 @@ describe("the posted review body", () => {
     expect(body).toContain("1 finding is open.");
     expect(body).not.toContain(parts.verdict.description);
     expect(body.indexOf("1 finding is open.")).toBeLessThan(body.indexOf("**Findings:** 1"));
-    expect(body.indexOf("_The fixes are clear.")).toBeLessThan(body.indexOf("**Findings:**"));
+    expect(body.indexOf("_The review found changes to make.")).toBeGreaterThan(-1);
+    expect(body.indexOf("_The review found changes to make.")).toBeLessThan(body.indexOf("**Findings:**"));
   });
 
   /**
@@ -1632,9 +1496,10 @@ describe("the posted review body", () => {
   it("renders a label name as code in the body, and leaves the status plain", () => {
     const body = render();
 
-    expect(body).toContain("_The fixes are clear. Add `agent:fix` to start a fix round");
-    expect(body).not.toContain("Add agent:fix");
-    for (const row of Object.values(VERDICTS)) expect(row.description).not.toContain("`");
+    expect(body).toContain("add the `agent:fix` label._");
+    expect(body).not.toContain("``agent:fix``");
+    expect(body).not.toContain(" agent:fix ");
+    for (const row of EVERY_ROW) expect(row.description).not.toContain("`");
   });
 
   /** And any other label a line this file composes happens to name. */
@@ -2508,7 +2373,7 @@ describe("a finding the record does not read a label on", () => {
   it("counts in the round that raised it, rather than recommending approval over itself", () => {
     expect(countFixBeforeMerge(output([unlabelled]), 0)).toBe(1);
     expect(
-      deriveVerdict(output([unlabelled]), { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" }).verdict,
+      deriveVerdict(output([unlabelled]), { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }).verdict,
     ).toBe("changes recommended");
   });
 
@@ -2640,7 +2505,6 @@ describe("the record's size is the count the verdict was given", () => {
         fixRoundProgress: undefined,
         stillOpen: stillOpen.length,
         movedToFollowUps: unanchored.length,
-        base: "main",
       }).verdict === "approval recommended",
     ).toBe(record.findings === 0);
   });
@@ -2684,10 +2548,10 @@ describe("severity changes no outcome", () => {
       const baseline = deriveVerdict(reviewed(["medium", "medium", "medium"]), { autoFix: false,
         ci,
         fixRoundProgress: undefined,
-        stillOpen: 0, movedToFollowUps: 0, base: "main" });
+        stillOpen: 0, movedToFollowUps: 0 });
 
       for (const severities of assignments) {
-        expect(deriveVerdict(reviewed(severities), { autoFix: false, ci, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0, base: "main" }), severities.join()).toEqual(
+        expect(deriveVerdict(reviewed(severities), { autoFix: false, ci, fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }), severities.join()).toEqual(
           baseline,
         );
       }
@@ -2782,7 +2646,6 @@ index 0ff3bbb..c6ca7ae 100644
         fixRoundProgress: undefined,
         stillOpen: 0,
         movedToFollowUps: unanchored.length,
-        base: "main",
       }),
       output: reviewed,
       placed,
@@ -2926,7 +2789,6 @@ index 0ff3bbb..c6ca7ae 100644
         fixRoundProgress: undefined,
         stillOpen: 0,
         movedToFollowUps: moved.unanchored.length,
-        base: "main",
       }).verdict,
     ).toBe("approval recommended");
   });

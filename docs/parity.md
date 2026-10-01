@@ -382,7 +382,7 @@ PRD.
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
-| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the verdicts that announced them; the `auto-fix` input it replaced is a deprecated alias for one release. The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
+| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297); the `auto-fix` input it replaced is a deprecated alias for one release. The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
 | **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance**, a step of the review's posting job and a job in `fix`, both running the composite action `.github/actions/advance-prd` (#257): re-adds `agent:implement` to the slice PR's **parent** on 🟢 and on 🟡 with no fix round starting, and, in `fix`, when the fix run pushed nothing and posted no out-of-scope note, and so ended the round itself. The same shape as the fix round: no checkout, no model, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
@@ -646,7 +646,7 @@ expensive to rediscover.
   changes and, with budget left, start another round; and after a fix round that closed none of the
   findings it was given, matched by id, none starts, whatever budget is left. Whether a review
   follows a fix round is read from the **verdict history** (`shared/review-round.ts`): the latest
-  verdict announced a round, and commits have landed since, or the fix run posted an out-of-scope
+  verdict asked for a round (its `agent-fix-round` status, #297), and commits have landed since, or the fix run posted an out-of-scope
   note since without pushing (#213). The review still verifies every earlier
   finding, as it did in every round before.
 
@@ -664,7 +664,7 @@ expensive to rediscover.
   the last verdict forward instead (#96, decision 6). The first bound is what holds it — one hop to
   a review whose own return leg is bounded separately (#102, below). The early stop does not judge
   it: a resolution posts no verdict, so the review it asks for follows no fix round unless the
-  verdict before the conflict announced one. That is the reading rather than a gap in it (#105,
+  verdict before the conflict asked for one. That is the reading rather than a gap in it (#105,
   and #202 since the round rule went). The findings of the verdict a conflict interrupted have
   never been attempted, so judging the merge as a fix round would stop the loop on them, spending a
   human on a base branch moving and on findings no fix round ever saw, which is the one thing on
@@ -684,14 +684,14 @@ expensive to rediscover.
   - **The early stop** (#202, which replaced the round rule above). After a fix round that closed
     none of the findings it was given, matched by the ids the workflow wrote into them, no further
     automatic round starts, whatever budget is left. New findings the re-review raised neither
-    count as progress nor reset anything. The automatic fix selects on a verdict **key** that such
-    a derivation cannot emit, and the verdict says why the loop stopped (for example "no progress:
-    the fix round closed none of the 3 findings it was given") with the same three ways on as a
-    spent budget. A pull request with one review round so far never stops here.
+    count as progress nor reset anything. The automatic fix selects on `startsFixRound`, which such
+    a derivation cannot set; the verdict's line is the plain 🟡 one (#297), and on a PRD PR the park
+    comment says the loop stopped for no progress. A pull request with one review round so far
+    never stops here.
   - **The fix-round budget** (#201, which replaced the `agent:auto-fixed` marker that held it to
     one). `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the
-    verdicts on the pull request that announced a round, so nothing but those verdicts records
-    them. Until #201 this was one automatic fix per pull request, recorded by a marker label on the
+    `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297), so nothing
+    but the pull request records them. Until #201 this was one automatic fix per pull request, recorded by a marker label on the
     pull request itself. A human's own commits start no count again, so a later review that
     recommends changes once the budget is spent asks the maintainer for the label. Without this, a
     pull request a human kept pushing to could be fixed automatically over and over, each round
@@ -701,18 +701,19 @@ expensive to rediscover.
   nothing and not a *pull request*, and "the loop will fix this for you, as many times as you push" is a different
   product from the one PRD #101 asked for.
 
-  What holds the two halves together is that the sentence and the job are one decision. The verdict
-  key is derived where the fix round's progress is known (`deriveVerdict`), from the budget step's answer the
-  workflow passes in, and the job's `if:` matches that key — so a line saying *a fix round has
-  already started* cannot be posted over a pull request where none did, which is the only way this
-  feature can be wrong without anything failing.
+  What holds the two halves together is that the record and the job are one decision.
+  `startsFixRound` is derived where the fix round's progress is known (`deriveVerdict`), from the
+  budget step's answer the workflow passes in; the posting step writes the `agent-fix-round` status
+  from it, and the job's `if:` selects on it. Since #297 no verdict line promises a round at all
+  (#201's *Verdict lines*), so the one claim left to keep true is the count, and the job starts no
+  round whose status is missing.
 
   The job it runs in is where decision 2 lands: no checkout, no toolchain, no agent, so the PAT is
   nowhere near the job that reads untrusted pull-request content and runs a model over it. That
   was a job of its own, `auto-fix`, holding `pull-requests: write` alone, until #257 folded it into
   the review's **posting job** as its last step, after `agent:review` comes off. The posting job is
   in the same shape and holds the writes the posting spends (below).
-  Without the PAT no round is announced at all since #201: the budget step starts none, and the
+  Without the PAT no round is asked for at all since #201: the budget step starts none, and the
   verdict asks for the label. And since #201 the step decides from live state: it adds nothing where
   `agent:fix` is already on the pull request or a newer verdict stands, and a round it fails to
   start is said on the pull request.

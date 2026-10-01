@@ -430,8 +430,8 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
       "Changes recommended after a fix round",
     ],
     [
-      "changes recommended, with a fix round started",
-      verdictOn("failure", VERDICTS["changes recommended, fix round started"].description),
+      "changes recommended, with a fix round started (before #297)",
+      verdictOn("failure", "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically."),
       "Changes recommended",
     ],
     ["needs a closer look", verdictOn("failure", VERDICTS["needs a closer look"].description), "Needs a closer look"],

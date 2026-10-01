@@ -293,7 +293,6 @@ describe("applyCriteriaRulings", () => {
         stillOpen: 0,
         movedToFollowUps: 0,
         autoFix: false,
-        base: "main",
       }).verdict,
     ).toBe("changes recommended");
   });

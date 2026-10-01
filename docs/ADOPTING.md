@@ -495,23 +495,18 @@ with, taken verbatim. If you have read one of those, you already know what ours 
 
 | Verdict | Commit status | What GitHub shows you |
 |---|---|---|
-| **🟢 Approval recommended** | `success` | Approval recommended. Nothing left to fix. Merge when ready; follow-ups are filed as issues on merge. |
-| **🟡 Changes recommended** | `failure` | Changes recommended. The fixes are clear. Add agent:fix to start a fix round; a re-review follows automatically. |
-| **🟡 Changes recommended**, with the fix round already started | `failure` | Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically. |
-| **🔵 Needs a closer look** | `failure` | Needs a closer look. A fix round can't settle this alone. Read the review, add guidance, then add agent:fix or close the PR. |
+| **🟢 Approval recommended** | `success` | Approval recommended. Nothing left to fix. You can merge once the PR is ready and no longer a draft. |
+| **🟡 Changes recommended** | `failure` | Changes recommended. If the agent isn't already working on them, add the agent:fix label to have it make the changes. |
+| **🔵 Needs a closer look**, the review needs your judgement | `failure` | Needs a closer look. Read the review, then tell the agent what to fix, fix it yourself, merge as is, or close the PR. |
+| **🔵 Needs a closer look**, a CI check failed | `failure` | Needs a closer look. A CI check failed and the review couldn't trace it to the code. Read the failing check, then fix it or merge as is. |
+| **🔵 Needs a closer look**, CI hadn't finished or couldn't be read | `failure` | Needs a closer look. CI hadn't finished or couldn't be read. Once it's done, add agent:review, or merge as is if CI isn't needed. |
 
-The third column is the status description **verbatim** — what GitHub shows you is what is written
-here, and the same words open the review summary, so the two cannot tell you different things.
-Three headings and four rows: *Changes recommended* has two lines, because what you do about it
-differs while the assessment does not. One the workflow has just started a fix round for asks you
-for nothing at all. Only the last row asks you to read anything.
-
-The plain *Changes recommended* line is replaced by a longer one where the loop has **stopped**
-without approval, saying why: the automatic fix rounds are spent, or the last fix round made **no
-progress** ("No progress (0 of 3 findings closed)" on the status). Either way it gives the three ways
-on: add `agent:fix` for another round, reply to a finding to decline it, or push a commit.
-
-The third row arrives only where you switched the automatic fix on; below is what it is.
+The third column is the status description **verbatim**. The review summary opens with the long
+form of the same line, under the same heading, so the two cannot tell you different things. Each
+line is **fixed**: it is true whatever the pull request's state, PRD or not, whichever round, budget
+left or spent, so it never claims something the review cannot know. *Needs a closer look* has three
+lines because what you do about it differs by cause, and the review knows the cause; each lists
+merging as is among the ways on.
 
 `failure` on anything but the first row is not the loop disliking the change. It is a step left to
 do, and it is a `failure` because a green tick beside *add `agent:fix`* would say the opposite of
@@ -543,16 +538,18 @@ recommended* adds the label itself while the pull request has automatic fix roun
 **3 by default**, set with the repository variable `AGENT_MAX_FIX_ROUNDS` (`0` for none). The
 reusable workflow reads the variable from your repository, so it goes in *Settings → Secrets and
 variables → Actions → Variables*, and nothing goes in a caller. A value that is not a whole number
-fails the review, naming the variable and the value. The rounds spent are counted from the verdicts
-the loop posted on the pull request, so nothing records them but the verdicts themselves, and only
-automatic rounds count: your own `agent:fix` always starts a round, and your own push resets nothing.
-It needs `AGENT_PAT`; without it the verdict asks you for the label rather than announcing a round
-nothing would start.
+fails the review, naming the variable and the value. The rounds spent are counted from the pull
+request: a review that asks for an automatic round posts a second status beside its verdict,
+context `agent-fix-round` (`success`, "This review asked for an automatic fix round."), and the
+count is those statuses, so nothing records the rounds but the pull request itself. Only automatic
+rounds count: your own `agent:fix` always starts a round, and your own push resets nothing. It needs
+`AGENT_PAT`; without it no round starts, and the 🟡 line asks you for the label.
 
-That is the row above whose line says a fix round has already started, and the verdict says it only
-where the budget check says one will. The job that adds the label decides from the pull request as
-it is then, not as it was: it adds nothing where `agent:fix` is already there or a newer verdict
-stands, and where adding it fails it says on the pull request that no fix round started. The pull
+The verdict's line is the same 🟡 line either way, and says "if the agent isn't already working on
+them" for that reason. The job that adds the label decides from the pull request as it is then, not
+as it was: it adds nothing where `agent:fix` is already there or a newer verdict stands, and where
+adding it fails, or the `agent-fix-round` status is missing, it says on the pull request that no
+automatic fix round started. The pull
 request also stays a draft, because the loop is still working and it is not your turn yet. It is
 marked ready at the end of that round either way: by the re-review where the fix pushed, and by the
 fix run itself where it declined everything and so asked for no re-review. It cannot cycle: the
@@ -562,8 +559,8 @@ left; findings are matched by the ids the workflow wrote into them, so a finding
 reworded is not progress, and new findings the re-review raised neither count as progress nor reset
 anything. A later review may otherwise recommend changes and start another round, so a round that
 closed two findings and uncovered a third carries on while budget is left. Once the loop stops, the
-verdict says why (the budget is spent, or the last round made no progress), what is still open, and
-the three ways on (add `agent:fix`, reply to a finding to decline it, or push a commit).
+verdict is the same 🟡 line, which asks you for the label; on a PRD PR the park comment on the
+parent says why it stopped (the budget is spent, or the last round made no progress).
 
 The `auto-fix` input this replaced is **deprecated** and goes in the next release. Where a caller
 still sets it, it wins over the variable (`true` is a budget of 1, `false` a budget of 0), and the

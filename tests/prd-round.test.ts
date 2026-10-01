@@ -168,7 +168,6 @@ describe("a finding still open from an earlier slice", () => {
     stillOpen: 0,
     movedToFollowUps: 0,
     autoFix: false,
-    base: "main",
   };
 
   it("keeps the verdict off approval where the final review ruled on nothing", () => {
@@ -497,7 +496,6 @@ describe("parkReasonOf", () => {
     stillOpen: 0,
     movedToFollowUps: 0,
     autoFix: false,
-    base: "main",
   };
 
   it("reads each of #200's stops, and nothing where the chain moves on or a round starts", () => {
@@ -511,7 +509,7 @@ describe("parkReasonOf", () => {
     expect(parkReasonOf(deriveVerdict(output([]), { ...inputs, ci: "unknown" }))).toBe("needs a closer look");
     expect(parkReasonOf(deriveVerdict(output([]), inputs))).toBeUndefined();
     expect(parkReasonOf(deriveVerdict(open, { ...inputs, autoFix: true }))).toBeUndefined();
-    expect(parkReasonOf(VERDICTS["changes recommended, fix round started"])).toBeUndefined();
+    expect(parkReasonOf({ ...VERDICTS["changes recommended"], startsFixRound: true })).toBeUndefined();
   });
 });
 

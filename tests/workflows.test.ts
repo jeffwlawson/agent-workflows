@@ -7334,14 +7334,21 @@ describe("a trigger label is on while its run works, and off when it ends", () =
     expect(body.indexOf(comment)).toBeGreaterThanOrEqual(0);
     expect(body.indexOf(removal)).toBeGreaterThan(body.indexOf(comment));
     expect(body.indexOf(blocked)).toBeGreaterThan(body.indexOf(removal));
+    // Tolerated, since it now comes first: under `-e` a failed comment would
+    // end the step before the removal, and the implement pair's last step
+    // leaves a refused run's label alone, so it would stay on with no run.
+    const line = body.split("\n").find((l) => l.includes(comment)) ?? "";
+    expect(line).toMatch(/\|\| echo "::warning::[^"]+"$/);
   });
 
   it("update-branch.yml: a refusal comments, then takes its label off", () => {
     const run = runOf(fileOf("update-branch.yml"), "state");
     const comment = run.indexOf('gh pr comment "$PR_NUMBER"');
+    const removal = run.indexOf('--remove-label "agent:update-branch"');
 
     expect(comment).toBeGreaterThanOrEqual(0);
-    expect(run.indexOf('--remove-label "agent:update-branch"')).toBeGreaterThan(comment);
+    expect(removal).toBeGreaterThan(comment);
+    expect(run.slice(comment, removal)).toContain('|| echo "::warning::');
   });
 
   /**

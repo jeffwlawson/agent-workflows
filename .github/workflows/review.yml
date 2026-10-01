@@ -332,8 +332,10 @@ jobs:
           # In the loop's one order (#236): the comment first, then this run's
           # own label off, then `agent:blocked`, so the label that names the
           # next step goes on last.
+          # The comment is tolerated: under `-e` a failed one would end the step
+          # before the removal, and leave the label on with nothing behind it.
           refuse() {
-            gh pr comment "$PR_NUMBER" --body "$1"
+            gh pr comment "$PR_NUMBER" --body "$1" || echo "::warning::Could not post the refusal comment on PR #${PR_NUMBER}."
             gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
             gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
             echo "proceed=false" >> "$GITHUB_OUTPUT"

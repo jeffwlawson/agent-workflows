@@ -187,9 +187,11 @@ jobs:
           # first, then this run's own label off, then `agent:blocked` where
           # the refusal is a durable one, so the label that names the next step
           # goes on last.
+          # The comment is tolerated: under `-e` a failed one would end the step
+          # before the removal, and leave the label on with nothing behind it.
           refuse() {
             echo "refused=true" >> "$GITHUB_OUTPUT"
-            gh issue comment "$ISSUE_NUMBER" --body "$1"
+            gh issue comment "$ISSUE_NUMBER" --body "$1" || echo "::warning::Could not post the refusal comment on #${ISSUE_NUMBER}."
             gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
             if [ "${2:-}" = "blocked" ]; then
               gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true

@@ -19,9 +19,9 @@ How `/to-tickets` publishes a batch of slices into this repo's tracker — the q
 
 Two relationships, doing different jobs:
 
-- **parent / child** — containment. It is one slice PR per sub-issue, each reviewed on its own,
-  plus one PRD PR per parent that collects them and that a human merges once — and it is the
-  work-list `agent-implement-prd` walks.
+- **parent / child** — containment. Every sub-issue is built as commits on one PRD branch and
+  reviewed on its own, as a round of one PRD PR per parent that collects them and that a human
+  merges once — and it is the work-list `agent-implement-prd` walks.
 - **`blocked-by`** — ordering, and the machine-readable record of *why* the order is what it is.
 
 Both are **native** GitHub relations, not prose in a body. Why that distinction is load-bearing —
@@ -42,22 +42,26 @@ carries `ready-for-agent` and no workflow trigger label.
 
 The load-bearing detail, and the one that is easy to get wrong while getting the shape right.
 
-`agent-implement-prd.yml` targets *the first still-open sub-issue, in the order the sub-issues API
-returns them*. It **never reads `blocked-by`.** That is only safe because the sub-issues are
-*created* in dependency order — the topological sort happens once, at publish time, here.
+`agent-implement-prd.yml` targets *the first open sub-issue not yet built on the PRD branch, in the
+order the sub-issues API returns them*. It **never reorders by `blocked-by`.** That is only safe
+because the sub-issues are *created* in dependency order — the topological sort happens once, at
+publish time, here.
 
-So a batch published in the wrong order produces a chain that runs slices before their blockers,
-and nothing catches it: the edges are right there, and nothing consults them. Sequence the
-`gh issue create` calls yourself, blockers first, one at a time — a parallel publish has no
-defined order, which is the same bug arriving by accident. (The other direction is settled too:
-`agent-implement-prd.yml` says, in its header, *do not add edge-reading here; fix the publish order
-instead*.)
+The edges are read once, as a check rather than a schedule (PRD #222): before the first slice is
+built, a list whose order contradicts them, or a sub-issue blocked by an issue outside the PRD, is
+refused with the links named, and nothing is built. That catches a wrong order while it costs a
+reorder; it does not fix one. Sequence the `gh issue create` calls yourself, blockers first, one at
+a time — a parallel publish has no defined order, which is the same bug arriving by accident, and
+a refusal at the first label is still a round trip. (The other direction is settled too: the chain
+does not sort by the edges; fix the publish order instead.)
 
 **Why the chain does not simply read the edges**, and why the two blocker checks that *do* exist
 sit where they do, is
 [`docs/parity.md` §2a](../parity.md#containment-transfers-authorisation-sequencing-does-not):
 containment transfers authorisation, sequencing does not. Read it before proposing that the chain
-check blockers per slice — it has come up before, once from the author of the rule itself.
+check blockers per slice — it has come up before, once from the author of the rule itself. Since
+PRD #222 sub-issues stay open until the PRD PR merges, so a link between two slices never clears
+while the chain runs, and a per-slice check would refuse every slice after the first.
 
 **What the API returns is a position, not a timestamp.** Each sub-issue holds a place in the
 parent's list; creating one appends it, which is why publishing in order is enough. But the place
@@ -88,7 +92,8 @@ rely on it.
 No label marks a waiting issue either. Dependencies between top-level issues are native "blocked
 by" links, which `implement` reads and refuses on while a blocker is open; the `agent:queued`
 label that once stood for them is retired (#204). Within a PRD the ordering is already carried by
-creation order, and the chain does not need to be told to wait.
+creation order, and the chain does not need to be told to wait: it builds the next slice only once
+the last one's round on the PRD PR has ended on an approval.
 
 ## Publishing
 

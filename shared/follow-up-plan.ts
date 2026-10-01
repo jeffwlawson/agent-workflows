@@ -3,6 +3,7 @@ import { severityTextBadge } from "./review-findings.js";
 import {
   capFollowUps,
   embeddableJson,
+  type EarlierFollowUps,
   FOLLOW_UPS_LABEL,
   hasFollowUpsBlock,
   parseFollowUpsBlock,
@@ -62,6 +63,8 @@ export interface FilingReview {
   readonly lastEditedAt: string | null;
   /** Where a reader goes to see the finding in the context it was raised in. */
   readonly url: string;
+  /** The commit it reviewed, where it was read. What places it in a PRD PR's slice (#247). */
+  readonly commit?: string;
 }
 
 /** An existing `pr-follow-up` issue, open or closed. */
@@ -502,7 +505,7 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
     );
   }
 
-  let block: { followUps: FollowUp[]; dropped: number; moved: number; cut: number } | undefined;
+  let block: ReturnType<typeof parseFollowUpsBlock>;
   try {
     block = parseFollowUpsBlock(review.body);
   } catch (error) {
@@ -527,8 +530,12 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
   // three, filing nothing for the last of the model's and undoing at the filing
   // end exactly what the exemption kept at the posting end. A payload with no
   // `moved` reads zero, which is every block written before this existed.
+  //
+  // At the cap the review recorded (#247): three per landed slice on a PRD PR,
+  // whose newest review carries every earlier round's entries, and three on a
+  // regular pull request or a block written before the cap was recorded.
   const exempt = block.followUps.slice(0, block.moved);
-  const { kept: capped, dropped: over } = capFollowUps(block.followUps.slice(block.moved));
+  const { kept: capped, dropped: over } = capFollowUps(block.followUps.slice(block.moved), block.cap);
   const kept = [...exempt, ...capped];
   // Two causes, named apart: the cap, at either end, and the review body's
   // size, which cut the tail to fit GitHub's limit (#140). `block.dropped` is
@@ -617,4 +624,37 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
     ].join("\n"),
     removeMarker: true,
   };
+};
+
+/**
+ * What the earlier rounds on a PRD PR recorded, for its newest review to carry
+ * forward (#247): `follow-ups` files from that one body alone, and on a PRD PR
+ * each round is scoped to one slice, so nothing else restates them.
+ *
+ * Selected as `planFollowUps` selects the review it files from, since what is
+ * carried is filed: a block this loop posted, in a body nobody edited. An
+ * edited one is skipped and named, because carrying it would launder the edit
+ * into a body the filing end then trusts; so is one this version cannot read.
+ * Oldest first, as the reviews are listed.
+ */
+export const earlierFollowUps = (
+  reviews: readonly FilingReview[],
+): { readonly carried: EarlierFollowUps[]; readonly skipped: string[] } => {
+  const carried: EarlierFollowUps[] = [];
+  const skipped: string[] = [];
+  for (const review of reviews) {
+    if (!isWorkflowBot(review.author) || !hasFollowUpsBlock(review.body)) continue;
+    if (review.lastEditedAt !== null) {
+      skipped.push(`${review.url} (edited since it was submitted)`);
+      continue;
+    }
+    try {
+      const block = parseFollowUpsBlock(review.body);
+      if (block === undefined) continue;
+      carried.push({ moved: block.followUps.slice(0, block.moved), rest: block.followUps.slice(block.moved) });
+    } catch (error) {
+      skipped.push(`${review.url} (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+  return { carried, skipped };
 };

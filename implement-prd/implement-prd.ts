@@ -1,47 +1,37 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   claudeAgent,
   fail,
-  fetchPullRequestBody,
   fetchTrustedComments,
   fetchTrustedIssue,
+  gh,
   git,
   outputDir,
   required,
   scrubGitHubTokens,
-  updatePullRequestBody,
+  writeJson,
+  writeText,
 } from "../shared/common.js";
-import { addMergedSlice, parseSlicesUpdate } from "../shared/slices-table.js";
+import { firstLine, readPrdBranch } from "../shared/prd-round.js";
+import { renderProgressList, spliceProgressList } from "../shared/progress-list.js";
+import { sliceRanges } from "../shared/slice-ranges.js";
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
 const ISSUE_NUMBER = required("ISSUE_NUMBER");
 const ISSUE_TITLE = required("ISSUE_TITLE");
 
-/**
- * The **finishing run** (#177): every sub-issue is built, and this run merged
- * the last slice PR. It writes that slice's row and stops — no model, no
- * agent, nothing built — and the workflow hands the PRD PR over after it. So
- * everything below that only a build needs is required only of a build.
- */
-const FINISHING = process.env["FINISHING"] === "true";
-const forBuild = (name: string): string => (FINISHING ? "" : required(name));
-
 /** The one sub-issue this run implements, chosen by the workflow's preflight. */
-const SUB_NUMBER = forBuild("SUB_NUMBER");
-const SUB_TITLE = forBuild("SUB_TITLE");
-
-/** The slice branch this run builds on, cut from the PRD branch's tip. */
-const BRANCH = forBuild("BRANCH");
+const SUB_NUMBER = required("SUB_NUMBER");
+const SUB_TITLE = required("SUB_TITLE");
 
 /**
- * The PRD branch the slice branch was cut from, and the base of the slice PR
- * the workflow opens once this exits. Only the prompt uses it: it is where the
- * earlier slices are, which is what the agent builds on.
+ * The PRD branch this run builds on, at its tip: every earlier slice of the
+ * PRD is on it, which is what the agent builds on. The workflow pushes it
+ * once this exits.
  */
-const PRD_BRANCH = forBuild("PRD_BRANCH");
+const BRANCH = required("BRANCH");
 
 /**
  * The branch the chain is based on. Only the prompt uses it — it is what the
@@ -49,41 +39,81 @@ const PRD_BRANCH = forBuild("PRD_BRANCH");
  * workflow's `default-branch` input rather than a literal, so the instruction
  * names a ref that exists on a repo whose default branch is not `main`.
  */
-const BASE_REF = forBuild("BASE_REF");
+const BASE_REF = required("BASE_REF");
 
-/**
- * The PRD PR, when this run merged a slice PR into the PRD branch; empty when
- * it merged none. Its body gets that slice's row of the slices table.
- */
+/** The PRD PR, or "" on the first slice, which opens it once this exits. */
 const PRD_PR = process.env["PRD_PR"] ?? "";
 
 /**
- * Write the merged slice's row into the PRD PR body (#174), from the facts the
- * workflow gathered once the merge landed, after the rows of any slices an
- * earlier run merged and died before writing (#207).
- *
- * Here rather than in a step of its own because rendering is this package's,
- * and a workflow invokes this package exactly once — the one pinned `npm exec`
- * line the release rewrites. First, before the agent, so a build that fails
- * still leaves the row of the slice that did merge — and read, spliced and
- * written back within the same second, so a maintainer's edit to the body is
- * not overwritten with a copy read before a build that took minutes.
+ * The merge of the default branch the run pushed before this started (#245),
+ * or "": the PRD PR's head is then that merge, which no review has seen.
  */
-const writeSliceRow = (prdPr: string): void => {
-  const update = parseSlicesUpdate(
-    JSON.parse(fs.readFileSync(path.join(outputDir(), "slices-table.json"), "utf8")) as unknown,
-  );
-  const body = fetchPullRequestBody(prdPr);
-  const next = addMergedSlice(body, update);
+const MERGED = process.env["MERGED"] ?? "";
 
-  const slices = [...update.backfill, update.merged];
-
-  if (next === body) {
-    console.log(`PRD PR #${prdPr} already has a row for ${slices.map((s) => `sub-issue #${s.subIssue}`).join(", ")}.`);
-    return;
+/**
+ * The PRD PR's progress list (#246), rendered from the PRD branch as it stands
+ * and the parent's sub-issues, twice: with this slice **building**, written into
+ * the PRD PR's body now, and with it **in review**, left in `progress.md` for
+ * the step that asks for its round once the slice is pushed. That one is
+ * rendered over the branch with this slice's commits on it, which is what the
+ * push puts there.
+ *
+ * And for a run that stops once the list shows this slice building, two more,
+ * for `Show the stopped slice in the progress list` to write: `progress_stopped.md`
+ * with nothing pushed, this slice not started and the head's verdict as it now
+ * stands, and `progress_stopped_pushed.md` with this slice pushed and parked,
+ * since no round of it is running. Written before the list goes into the body,
+ * so a list that shows this slice building always has one to undo it.
+ *
+ * The run got past the approval gate, so the verdict on the head is an
+ * approval. Never fails the run: the list is a view of the chain, and a slice
+ * is worth more than it. A list that cannot be rendered or written says so.
+ */
+const writeProgress = (): void => {
+  try {
+    const sub = Number(SUB_NUMBER);
+    const { subIssues, log, ranges } = readPrdBranch(ISSUE_NUMBER, BASE_REF);
+    const pushed = sliceRanges(
+      [{ sha: "(this slice)", parents: [git(["rev-parse", "HEAD"]).trim()], slice: sub }, ...log],
+      subIssues,
+    );
+    const finalReview = "not requested";
+    writeText(
+      "progress.md",
+      renderProgressList({ subIssues, ranges: pushed, verdict: "none", running: { kind: "review" }, finalReview }),
+    );
+    writeText(
+      "progress_stopped.md",
+      renderProgressList({ subIssues, ranges, verdict: MERGED === "" ? "approval" : "none", running: null, finalReview }),
+    );
+    writeText(
+      "progress_stopped_pushed.md",
+      renderProgressList({ subIssues, ranges: pushed, verdict: "none", running: null, finalReview }),
+    );
+    if (PRD_PR === "") return;
+    const building = renderProgressList({
+      subIssues,
+      ranges,
+      verdict: "approval",
+      running: { kind: "build", subIssue: sub },
+      finalReview,
+    });
+    const endpoint = `repos/{owner}/{repo}/pulls/${PRD_PR}`;
+    const body = (JSON.parse(gh(["api", endpoint])) as { body?: string | null }).body ?? "";
+    const spliced = spliceProgressList(body, building);
+    if (spliced === undefined) {
+      console.log(
+        `::warning::PRD PR #${PRD_PR}'s body carries half a progress list, or two, so it was not written. ` +
+          "Restore the missing marker, or delete the markers and the text between them, and the next run writes it again.",
+      );
+      return;
+    }
+    writeJson("progress_edit.json", { body: spliced });
+    gh(["api", "--method", "PATCH", endpoint, "--input", path.join(outputDir(), "progress_edit.json")]);
+    console.log(`PRD PR #${PRD_PR}'s progress list shows sub-issue #${SUB_NUMBER} building.`);
+  } catch (error) {
+    console.log(`::warning::The PRD PR's progress list could not be written, so it is left as it stands: ${firstLine(error)}`);
   }
-  updatePullRequestBody(prdPr, next);
-  console.log(`Wrote the rows of ${slices.map((s) => `slice PR #${s.slicePr}`).join(", ")} into PRD PR #${prdPr}.`);
 };
 
 /**
@@ -108,40 +138,25 @@ const issueSection = (number: string, fallbackTitle: string): string => {
 };
 
 try {
-  if (PRD_PR !== "") {
-    try {
-      writeSliceRow(PRD_PR);
-    } catch (error) {
-      throw new Error(
-        `Could not write the merged slice's row into the slices table of PRD PR #${PRD_PR} ` +
-          `(${error instanceof Error ? error.message : String(error)}). The slice PR is merged; re-add ` +
-          "`agent:implement` to retry. The merge is not repeated, and a row already written is left as it is.",
-      );
-    }
-  }
-
-  if (FINISHING) {
-    console.log(`Finishing #${ISSUE_NUMBER}: every sub-issue is built, so no agent runs.`);
-    process.exit(0);
-  }
-
   // Both issues, through the same gate. The PRD is what makes the slice make
   // sense — it holds the ordering, the shared vocabulary and the reason the
   // seams are where they are — and it is exactly the context an agent working
   // one sub-issue in isolation would otherwise be missing.
   const prdContext = issueSection(ISSUE_NUMBER, ISSUE_TITLE);
   const subContext = issueSection(SUB_NUMBER, SUB_TITLE);
+  writeProgress();
 
-  // Context fetched and the slices table written; the agent has no legitimate
-  // use for the GitHub token. Closing the sub-issue, pushing and re-labelling
-  // all happen in workflow steps, after this process has exited.
+  // Context fetched and the progress list written; the agent has no
+  // legitimate use for the GitHub token.
+  // Pushing, opening the PRD PR and re-labelling all happen in workflow steps,
+  // after this process has exited.
   scrubGitHubTokens();
 
   // The branch tip *before* the agent runs. Counting against `main` — which is
   // what the single-issue runner does — would count every earlier slice too, so
   // from slice 2 on a run where the agent committed nothing at all would still
-  // look productive, and the workflow would go on to close a sub-issue nobody
-  // implemented.
+  // look productive, and the workflow would go on to ask for a review of a
+  // slice nobody implemented.
   const before = git(["rev-parse", "HEAD"]).trim();
 
   const result = await sandcastle.run({
@@ -158,7 +173,6 @@ try {
       SUB_NUMBER,
       SUB_TITLE,
       BRANCH,
-      PRD_BRANCH,
       BASE_REF,
       PRD_CONTEXT: prdContext,
       SUB_CONTEXT: subContext,

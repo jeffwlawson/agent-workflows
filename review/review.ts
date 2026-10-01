@@ -15,9 +15,28 @@ import {
 } from "../shared/common.js";
 import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
+import { fetchReviews } from "../shared/follow-up-filing.js";
+import { earlierFollowUps } from "../shared/follow-up-plan.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
-import { fetchPrdContext, type PrdContext } from "../shared/prd-context.js";
+import {
+  firstLine,
+  parkReasonOf,
+  readPrdBranch,
+  readSliceRound,
+  renderFinalReviewBrief,
+  renderParkComment,
+  renderPrdSummary,
+  renderSliceRoundBrief,
+  REVIEW_URL_SLOT,
+  roundName,
+  sliceCriteria,
+  type ParkFinding,
+  type PrdBranch,
+  type PrdRound,
+  type SliceCriteria,
+} from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
+import { progressAtRoundEnd } from "../shared/progress-list.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
@@ -29,8 +48,12 @@ import {
 } from "../shared/review-findings.js";
 import {
   countFixBeforeMerge,
+  dedupeFollowUps,
   deriveVerdict,
+  followUpsCap,
+  MAX_FOLLOW_UPS,
   recordFollowUps,
+  type EarlierFollowUps,
   renderFollowUpsBlock,
   renderReviewPost,
   reviewOutputSchema,
@@ -48,6 +71,7 @@ import {
   renderCarriedFindings,
   renderSettledFindings,
   verifyCarried,
+  type CarriedFinding,
   type ResolutionReason,
 } from "../shared/review-verification.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
@@ -57,120 +81,34 @@ const BRANCH = required("BRANCH");
 const BASE_REF = required("BASE_REF");
 
 /**
- * The slice this pull request builds, when its head is a slice branch (#175):
- * `agent/slice-<parent>-<sub>-<slug>`, the name `implement-prd` gives it. Its
- * base is the PRD branch, which holds the slices merged before it.
- */
-const SLICE_MATCH = /^agent\/slice-(\d+)-(\d+)-/.exec(BRANCH);
-const slice =
-  SLICE_MATCH === null ? undefined : { prd: SLICE_MATCH[1] ?? "", subIssue: SLICE_MATCH[2] ?? "" };
-
-/**
- * The PRD this pull request delivers, when its head is a PRD branch (#179):
- * `agent/prd-<parent>-<slug>`, the name `implement-prd` gives it. A PRD PR's
- * review is the chain's **integration review** — asked for only when the chain
- * holds more than one slice; a one-slice PRD's PRD PR is marked ready without
- * one.
+ * The PRD this pull request delivers, when its head is a PRD branch:
+ * `agent/prd-<parent>-<slug>`, the name `implement-prd` gives it. Every slice of
+ * the PRD is built on that branch and reviewed on this pull request, one
+ * **slice round** at a time, and then, where more than one slice landed, once
+ * more as the **final review** (PRD #222).
  */
 const PRD_MATCH = /^agent\/prd-(\d+)-/.exec(BRANCH);
 const prdParent = PRD_MATCH?.[1];
 
-const unreadable = (what: string): string =>
-  `- ${what}: **could not be read**. Do not assume there are none: read the PRD branch's history ` +
-  "and the slices table in this pull request's body, and review as though there were.";
-
 /**
- * The integration review's brief. Everything on this pull request was reviewed
- * on a slice PR except the two things listed here, so those are reviewed in
- * full and the rest only for what no slice round could see.
+ * Which round of a PRD PR this is, as the workflow decided it from the final
+ * review's mark in the PRD PR's body before this process started: `final`, or
+ * a slice round. Decided there rather than here so that a run which fails
+ * before it gets this far still knows which round it was.
  */
-const integrationReview = (prd: PrdContext): string => {
-  const slicePrs =
-    prd.slicePrs === undefined
-      ? unreadable("The slice PRs it holds")
-      : prd.slicePrs.length === 0
-        ? "- Slice PRs it holds: none."
-        : `- Slice PRs it holds, in merge order: ${prd.slicePrs
-            .map((pr) => `#${pr.number}${pr.subIssue === undefined ? "" : ` (sub-issue #${pr.subIssue})`}`)
-            .join(", ")}. Each had a review round of its own.`;
-  const preUpgrade =
-    prd.preUpgrade === undefined
-      ? unreadable("Slices built before slice PRs")
-      : prd.preUpgrade.length === 0
-        ? "- Slices built before slice PRs: none."
-        : [
-            "- **Slices built before slice PRs**, which had **no review of their own**. Review each one's " +
-              "diff **in full**, on the same bar as an ordinary pull request:",
-            ...prd.preUpgrade.map(
-              (slice) =>
-                `  - sub-issue #${slice.subIssue}: ${
-                  slice.commits.length === 0
-                    ? `no commit on this branch names \`(#${slice.subIssue})\`; find its work in the branch's history`
-                    : `commit${slice.commits.length === 1 ? "" : "s"} ${slice.commits.join(", ")}`
-                }`,
-            ),
-          ].join("\n");
-  const merges =
-    prd.resolvedMerges === undefined
-      ? unreadable("Merge commits whose conflicts an agent resolved")
-      : prd.resolvedMerges.length === 0
-        ? "- Merge commits whose conflicts an agent resolved: none."
-        : `- **Merge commits whose conflicts an agent resolved** while the chain was building, and nothing ` +
-          `has reviewed since: ${prd.resolvedMerges.join(", ")}. Review each **resolution** (what the ` +
-          "merge commit chose where the two sides conflicted) in full.";
-
-  return [
-    `This is a **PRD PR**: the PRD branch \`${BRANCH}\` into \`${BASE_REF}\`, delivering PRD ` +
-      `#${prd.parent}, which the linked issue above describes. It is the one pull request of the chain a ` +
-      "human merges. Its slices were each built and reviewed on a **slice PR** of their own, merged into " +
-      "the PRD branch when that slice's review round ended. This review is the **integration review**.",
-    [slicePrs, preUpgrade, merges].join("\n"),
-    "Review the slices built before slice PRs and the agent-resolved merges above in full. " +
-      "**Everything else, look at only for what spans slices**: the problems no slice review could see, " +
-      "because each saw one slice:",
-    [
-      "- **contracts between slices**: one slice calling, reading or configuring what another wrote, " +
-        "where the two do not agree;",
-      "- **duplication**: two slices each building the same thing their own way;",
-      "- **dead scaffolding**: something one slice left in place for a later one that the later slice " +
-        "never used, or replaced beside it.",
-    ].join("\n"),
-    "A problem inside one slice that its slice review could have seen is **not** this review's: one no " +
-      "slice round raised goes to `followUps` on the bar that list states. " +
-      "And **never re-raise a slice's leftover findings**, not as a finding and not as a follow-up. " +
-      "A slice round that ended with open findings left them on its slice PR, and the slices table in " +
-      "this pull request's body links them: they are a pointer for the human who merges, not work for " +
-      "this review or its fix.",
-    "Your verdict is this pull request's own, and it means **the slices fit together**, not a roll-up " +
-      "of the slice verdicts. Every finding anchors on a line the diff below shows; the diff is the whole " +
-      "PRD against its base.",
-  ].join("\n\n");
-};
+const FINAL_REVIEW = process.env["ROUND"] === "final";
 
 /**
  * What kind of pull request the reviewer is reading. An ordinary one is the
- * whole change; a slice PR is one slice of a PRD, reviewed on its own round,
- * over code the earlier slices' rounds already reviewed; a PRD PR is every
- * slice together, reviewed once more for how they fit.
+ * whole change; a PRD PR's slice round is one slice of it, bounded by that
+ * slice's commits; its final review is every slice together.
  */
-const pullRequestKind = (prd: PrdContext | undefined): string =>
-  prd !== undefined ? integrationReview(prd) : sliceOrOrdinary();
-
-const sliceOrOrdinary = (): string =>
-  slice === undefined
+const pullRequestKind = (round: PrdRound | undefined): string =>
+  round === undefined
     ? `An ordinary pull request into \`${BASE_REF}\`. Review the whole change.`
-    : [
-        `This is a **slice PR**: the slice of PRD #${slice.prd} that sub-issue #${slice.subIssue} ` +
-          `describes, opened against the PRD branch \`${BASE_REF}\`. The linked issue above is that ` +
-          "sub-issue, and it is what this slice has to do; the PRD is the whole it is a part of.",
-        `The PRD branch holds every slice of the PRD merged before this one, and each of those had a ` +
-          "review round of its own on its own slice PR. Treat them as **settled context**: read them to " +
-          "understand what this slice builds on, and do not review them again. A problem you find in " +
-          "one is outside this pull request's scope, and goes to `followUps` on the bar that list states.",
-        `The diff below is this pull request's own three-dot diff against \`${BASE_REF}\` (this slice ` +
-          "alone), and every finding anchors on a line it shows. Later slices are not written yet, so " +
-          "work the PRD gives to a later slice is not missing from this one.",
-      ].join("\n\n");
+    : round.kind === "final"
+      ? renderFinalReviewBrief(round.parent, BRANCH, BASE_REF)
+      : renderSliceRoundBrief(round, BRANCH, BASE_REF);
 
 /**
  * Results of the PR's other checks, gathered by the workflow after waiting for
@@ -238,16 +176,48 @@ const fixRounds = (): FixRounds | undefined => {
   return spent === undefined || budget === undefined ? undefined : { spent, budget };
 };
 
+/** What the brief says of the summary's shape on every review but a PRD PR's final review. */
+const NOT_FINAL = "Leave `behaviourChanges` out.";
+
+/**
+ * The final review's summary shape (#247). The workflow lays the sections out;
+ * the review writes the outcome and the behaviour changes, and the rest comes
+ * from the slice rounds' records and this review's follow-ups.
+ */
+const FINAL_SUMMARY_SHAPE = [
+  "**This is the final review of a PRD PR, so the summary is the whole PRD's**, and the workflow lays it out in sections. Write:",
+  "",
+  "- **`summary`**: the **outcome**, what the PRD delivered as a whole, in a few sentences. Nothing about the review, and no list of slices: the body already shows them.",
+  "- **`behaviourChanges`**: one entry per behaviour the PRD changes, `{ \"change\": \"one line\", \"breaking\": true }` where a caller or a user has to act on it and `false` otherwise. The workflow marks the breaking ones; do not write the mark yourself.",
+  "",
+  "The criteria each slice changed or dropped are added from each slice round's record, and the known issues from the follow-ups this review records, so write neither. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
+].join("\n");
+
+/** Off a PRD PR, the brief's follow-ups section is the ordinary one. */
+const NOT_CARRIED =
+  "(None. `followUps` is a complete restatement every round on this pull request, so re-record the entries an earlier round listed that are still true.)";
+
 try {
-  const context = fetchPullRequestContext(PR_NUMBER, slice?.subIssue);
-  const prd =
-    prdParent === undefined ? undefined : fetchPrdContext(prdParent, BRANCH, BASE_REF, PR_NUMBER);
+  // On a PRD PR, which round this is, read while the token is still in hand.
+  // A slice round reads its slice off the PRD branch's history, and is handed
+  // that slice's sub-issue as its linked issue: the PRD PR's body closes the
+  // parent and every sub-issue, and what this round checks is one of them.
+  const round: PrdRound | undefined =
+    prdParent === undefined
+      ? undefined
+      : FINAL_REVIEW
+        ? { kind: "final", parent: prdParent }
+        : readSliceRound(prdParent, BASE_REF);
+  console.log(`Round: ${round === undefined ? "an ordinary pull request" : roundName(round)}.`);
+  const subIssue = round?.kind === "slice" ? round.slice?.subIssue : undefined;
+  const context = fetchPullRequestContext(PR_NUMBER, subIssue === undefined ? undefined : String(subIssue));
 
   // The linked issue's acceptance criteria, which this review rules on one by
-  // one (#214). Not on a PRD PR: its integration review looks only for what
-  // spans slices, and each slice was held to its own sub-issue's criteria on
-  // its slice PR, so a PRD's checklist (often its slices) is not this pass's.
-  const criteria = prd === undefined ? context.criteria : [];
+  // one (#214): on a slice round, its sub-issue's. Not on the final review,
+  // whose linked issue is the PRD: each slice was held to its own sub-issue's
+  // criteria in its own round, and a PRD's checklist (often its slices) is not
+  // this pass's.
+  const criteria = round?.kind === "final" ? [] : context.criteria;
   console.log(`Acceptance criteria handed to the review: ${criteria.length}.`);
 
   // What the verdicts already on this pull request say about this review,
@@ -275,11 +245,97 @@ try {
   // The head this review reads, and whether the title and the summary block
   // are rewritten by it (#218): only where anything was pushed since the
   // summary was last written, which the block records itself.
+  // The final review writes them however little was pushed (#247): the last
+  // slice round wrote them at this same head, about one slice.
   const headSha = sh("git rev-parse HEAD").trim();
-  const writesSummary = summaryDue(context.prBody, headSha);
+  const final = round?.kind === "final";
+  const writesSummary = summaryDue(context.prBody, headSha, final);
   console.log(
-    `Title and summary: ${writesSummary ? "rewritten, since something was pushed after the summary was last written" : "left as they are, since nothing was pushed after the summary was last written"}.`,
+    `Title and summary: ${
+      !writesSummary
+        ? "left as they are, since nothing was pushed after the summary was last written"
+        : final
+          ? "rewritten with the PRD's sections, since this is the final review"
+          : "rewritten, since something was pushed after the summary was last written"
+    }.`,
   );
+
+  // The park comment for a round that does not finish (PRD #222), written now
+  // because a failure later has no chance to: the advance job posts it on the
+  // PRD's parent if the review or its posting fails. What is open is what was
+  // open before this review, since nothing after this point is known to have
+  // happened.
+  const runUrl = workflowRunUrl();
+  if (round !== undefined) {
+    writeText(
+      "park_failed.md",
+      renderParkComment({
+        round,
+        prNumber: PR_NUMBER,
+        reason: "failed",
+        findings: context.carriedFindings.map(carriedForPark),
+        ...(runUrl === undefined ? {} : { runUrl }),
+      }),
+    );
+  }
+
+  // The PRD branch, read once for what follows, while the token is in hand.
+  // Undefined off a PRD PR, or where it cannot be read, which each use below
+  // says in its own words.
+  let prdBranch: PrdBranch | undefined;
+  if (round !== undefined) {
+    try {
+      prdBranch = readPrdBranch(round.parent, BASE_REF);
+    } catch (error) {
+      console.log(`::warning::The PRD branch's history could not be read: ${firstLine(error)}`);
+    }
+  }
+
+  // The PRD PR's progress list for each way this round can end (#246), for
+  // the advance job, which knows how it ended and runs no toolchain, to write
+  // into the body. A list that cannot be rendered is left as it stands, and
+  // says so: it is a view of the chain, and a review is worth more than it.
+  if (round !== undefined) {
+    if (prdBranch === undefined) {
+      console.log("::warning::The PRD PR's progress list could not be rendered, so it is left as it stands.");
+    } else {
+      const lists = progressAtRoundEnd({
+        subIssues: prdBranch.subIssues,
+        ranges: prdBranch.ranges,
+        finalReview: round.kind === "final" ? "requested" : "not requested",
+      });
+      for (const [ending, list] of Object.entries(lists)) writeText(`progress_${ending}.md`, list);
+    }
+  }
+
+  // On a PRD PR, the follow-ups (#247): what every earlier round on it
+  // recorded, carried forward into this review's record, since `follow-ups`
+  // files from the newest body alone and each round here is scoped to one
+  // slice; and the cap, three per landed slice. Off a PRD PR, neither: a
+  // regular pull request's review restates its list every round, and its cap
+  // stays three. The final review also reads each slice round's criteria
+  // record off the same reviews, by the commit each one reviewed.
+  let carried: EarlierFollowUps[] = [];
+  let cap = MAX_FOLLOW_UPS;
+  let slicesCriteria: SliceCriteria[] | undefined;
+  if (round !== undefined) {
+    const reviews = fetchReviews(PR_NUMBER);
+    const earlier = earlierFollowUps(reviews);
+    carried = earlier.carried;
+    for (const skipped of earlier.skipped) {
+      console.log(`::warning::Follow-ups not carried forward from ${skipped}.`);
+    }
+    if (prdBranch === undefined) {
+      console.log(`::warning::The landed slices could not be counted, so the follow-ups cap is ${cap}.`);
+    } else {
+      const landed = prdBranch.ranges.slices.filter((slice) => slice.range !== null).length;
+      cap = followUpsCap(landed);
+      if (round.kind === "final") slicesCriteria = sliceCriteria(reviews, prdBranch.ranges);
+    }
+    console.log(
+      `Follow-ups: ${carried.reduce((n, e) => n + e.moved.length + e.rest.length, 0)} recorded by earlier rounds, carried forward under a cap of ${cap}.`,
+    );
+  }
 
   // All `gh`-based context fetching is done; the review agent must not hold the
   // GitHub token (it has no legitimate use for it, and posting happens in a
@@ -296,7 +352,7 @@ try {
       PR_NUMBER,
       BRANCH,
       PR_TITLE: context.prTitle,
-      PULL_REQUEST_KIND: pullRequestKind(prd),
+      PULL_REQUEST_KIND: pullRequestKind(round),
       ISSUE_NUMBER: context.issueNumber || "(none)",
       ISSUE_TITLE: context.issueTitle || "(no linked issue)",
       LINKED_ISSUE: context.linkedIssue,
@@ -309,9 +365,13 @@ try {
       FIX_NOTES: renderNotesForReview(context.fixNotes),
       PR_DIFF: context.diff,
       CURRENT_SUMMARY: currentSummary(context.prBody),
-      SUMMARY_RULE: writesSummary
-        ? "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours."
-        : "**This review leaves them as they are.** Nothing was pushed since the summary was last written, so the workflow writes neither; omit both fields.",
+      SUMMARY_RULE: !writesSummary
+        ? "**This review leaves them as they are.** Nothing was pushed since the summary was last written, so the workflow writes neither; omit both fields."
+        : final
+          ? "**This review writes them.** It is the final review, so the workflow replaces the title and the summary block with yours, laid out as the section below says."
+          : "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours.",
+      FINAL_SUMMARY: final ? FINAL_SUMMARY_SHAPE : NOT_FINAL,
+      CARRIED_FOLLOW_UPS: round === undefined ? NOT_CARRIED : renderCarriedFollowUps(carried),
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),
@@ -405,7 +465,9 @@ try {
     followUps,
     dropped: droppedFollowUps,
     moved: movedFollowUps,
-  } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable);
+    cap: followUpsCapUsed,
+    carried: followUpsCarried,
+  } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable, { cap, carried });
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
@@ -425,7 +487,6 @@ try {
     autoFix: willAutoFix(),
     ...(rounds === undefined ? {} : { fixRounds: rounds }),
     base: BASE_REF,
-    ...(slice === undefined ? {} : { sliceParent: slice.prd }),
   });
   // And a history nothing could establish says so in the body as well as in
   // the brief. The agent was told it followed a fix round; what it cannot say,
@@ -452,6 +513,8 @@ try {
     resolved,
     followUps,
     droppedFollowUps,
+    followUpsCap: followUpsCapUsed,
+    followUpsCarried,
     droppedNotes: notes.dropped,
     criteria: criteriaRulings.results,
     runUrl: workflowRunUrl(),
@@ -506,7 +569,22 @@ try {
   // the whole condition, as `follow_ups.md`'s is. The posting job splices the
   // summary into the body as it stands then, not as it was read here, so an
   // edit made outside the block while this review ran survives it.
-  const summary = writesSummary ? summaryUpdate(output, headSha) : undefined;
+  //
+  // The final review's summary is the PRD's (#247): its outcome, then the
+  // behaviour changes, the criteria each slice changed or dropped, and the
+  // known issues this review records to be filed on merge, laid out here.
+  const written = final
+    ? {
+        ...output,
+        summary: renderPrdSummary({
+          outcome: output.summary,
+          behaviourChanges: output.behaviourChanges ?? [],
+          slices: slicesCriteria,
+          followUps,
+        }),
+      }
+    : output;
+  const summary = writesSummary ? summaryUpdate(written, headSha, final) : undefined;
   if (summary !== undefined) writeJson("pr_summary.json", summary);
 
   // What the workflow posts the commit status from — context, state and line.
@@ -527,6 +605,53 @@ try {
     description: verdict.description,
   });
 
+  // And on a PRD PR, what the advance job says on the parent where this round
+  // ends without approval and with no fix round starting (PRD #222): the
+  // round, the stop and every finding still open, the ones raised here linking
+  // the review the posting job is about to post. Written only in that case,
+  // so the file's existence is the whole condition, as `follow_ups.md`'s is.
+  //
+  // Beside it, whatever the verdict, `park_posted.md`: the comment for a round
+  // whose verdict was posted but whose posting job failed after it, which
+  // parks the chain on any verdict. It names the verdict and the same
+  // findings, since the review that raised them is on the pull request.
+  if (round !== undefined) {
+    const openFindings: ParkFinding[] = [
+      ...stillOpen.map(carriedForPark),
+      ...placed.map(
+        (p): ParkFinding => ({
+          title: p.finding.title,
+          anchor: `${p.finding.path}:${p.finding.line}`,
+          url: REVIEW_URL_SLOT,
+        }),
+      ),
+    ];
+    const parkReason = parkReasonOf(verdict);
+    if (parkReason !== undefined) {
+      writeText(
+        "park.md",
+        renderParkComment({
+          round,
+          prNumber: PR_NUMBER,
+          reason: parkReason,
+          detail: verdict.nextStep,
+          findings: openFindings,
+        }),
+      );
+    }
+    writeText(
+      "park_posted.md",
+      renderParkComment({
+        round,
+        prNumber: PR_NUMBER,
+        reason: "post failed",
+        detail: `[The verdict](${REVIEW_URL_SLOT}) was *${verdict.heading}*.`,
+        findings: openFindings,
+        ...(runUrl === undefined ? {} : { runUrl }),
+      }),
+    );
+  }
+
   // How the workflow knows to mark the pull request: a step cannot read this
   // process's memory, and the marker label has to go on when — and only when —
   // this run recorded something. Written only in that case, so its *existence*
@@ -539,7 +664,7 @@ try {
   if (followUps.length > 0) {
     writeText(
       "follow_ups.md",
-      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps),
+      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps, followUpsCapUsed, followUpsCarried),
     );
   }
 
@@ -572,7 +697,7 @@ try {
     `Earlier findings: ${context.carriedFindings.length} open before this review: ${closedAs("ADDRESSED")} verified fixed, ${closedAs("WONT_FIX")} closed on a maintainer's decline, ${stillOpen.length} still open.`,
   );
   console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
-  console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
+  console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap of ${followUpsCapUsed}.`);
   const ruledAs = (status: string): number =>
     criteriaRulings.results.filter((r) => r.status === status).length;
   console.log(
@@ -583,6 +708,32 @@ try {
   );
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * The follow-ups the earlier rounds on a PRD PR recorded (#247), which the
+ * workflow carries into this review's record itself: so the review records
+ * only what is new, and a second copy of one of these would be filed twice.
+ */
+function renderCarriedFollowUps(carried: readonly EarlierFollowUps[]): string {
+  const lines = dedupeFollowUps(
+    carried.flatMap((earlier) => [...earlier.moved, ...earlier.rest]),
+    new Set(),
+  ).map((entry) => `- **${entry.title.replace(/\s+/g, " ").trim()}** · \`${entry.location}\``);
+  return [
+    lines.length === 0 ? "(None yet.)" : lines.join("\n"),
+    "",
+    "**These are carried forward by the workflow**, into this review's record, and filed when this pull request merges. Do not record any of them again in `followUps`: record only what is new in this round.",
+  ].join("\n");
+}
+
+/** An earlier finding still open, as a park comment lists it: linked to its thread. */
+function carriedForPark(finding: CarriedFinding): ParkFinding {
+  return {
+    title: finding.title ?? finding.text,
+    ...(finding.anchor === undefined ? {} : { anchor: finding.anchor }),
+    ...(finding.url === undefined ? {} : { url: finding.url }),
+  };
 }
 
 /**

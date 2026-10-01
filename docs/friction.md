@@ -2402,3 +2402,24 @@ neighbour: one PR reviewed once, then stacks, then slice PRs.
 The lesson for the next map is about the option space rather than the options: when a design is
 chosen by amending the last one, write down the alternatives that were *not* adjacent before choosing
 between the adjacent ones. #222 carries the redesign; #227 tracks the whole change in order.
+
+## 2026-10-01: a writer that outlived its reader by three slices
+
+#249 removed the last of slice PRs from the install path and the docs, and the sweep for the retired
+terms turned up one that was not vocabulary. `update-branch` still had a step that, on a draft PRD
+PR, held back the review a conflict resolution asks for and left a `<!-- agent-resolved-merge -->`
+marker instead, for the integration review to find. #244 had deleted that review's reader of the
+marker along with the review itself; the writer stayed, with its test, which asserted the step
+existed and was still green. Under the new chain every slice round is on that draft PRD PR, so the
+first conflict resolution would have left the head with no verdict, and the approval gate would
+have refused to move on, naming the ways on as though the round had ended.
+
+Nothing failed, because a test that holds a writer in place says nothing about whether anything
+still reads what it writes. The reader's test went with the reader, and the pair had no assertion
+in common. The fix here deleted the step and asserted the marker is gone; the habit worth keeping
+is the other half, when a reader is retired, grep for what it read, not only for what it was
+called.
+
+`docs/parity.md` §2a and §10 still describe the chain on slice PRs, and their tests pin that text. #249
+named `CONTEXT.md` and `docs/ADOPTING.md` as the documents that must describe the chain as it now
+is, and stopped there; the parity rewrite is a follow-up rather than something to fold in here.

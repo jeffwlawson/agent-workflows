@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   currentSummary,
+  DRAFT_NOTE_END,
+  DRAFT_NOTE_START,
+  FINAL_SUMMARY_MARK,
   readSummaryBlock,
   SUMMARY_END,
   SUMMARY_START,
@@ -18,6 +21,7 @@ describe("readSummaryBlock", () => {
   it("reads the frame's placeholder as a block no review has written", () => {
     expect(readSummaryBlock(body("_The review will summarize this change here after its first pass._"))).toEqual({
       text: "_The review will summarize this change here after its first pass._",
+      final: false,
     });
   });
 
@@ -25,6 +29,7 @@ describe("readSummaryBlock", () => {
     expect(readSummaryBlock(body(`<!-- agent:summary-head ${HEAD} -->\nIt moves the guard.`))).toEqual({
       text: "It moves the guard.",
       head: HEAD,
+      final: false,
     });
   });
 
@@ -112,5 +117,38 @@ describe("summaryUpdate", () => {
     const inner = summaryUpdate({ summary: "It does x." }, HEAD)?.summary?.inner ?? "";
     expect(summaryDue(body(inner), HEAD)).toBe(false);
     expect(readSummaryBlock(body(inner))?.text).toBe("It does x.");
+  });
+});
+
+/**
+ * **The final review writes the PRD PR's title and summary** (#247, #216),
+ * however little was pushed: the last slice round wrote the block at the very
+ * head the final review reads, about one slice, and the head alone would leave
+ * the title the PRD issue's, copied, and the summary that one slice's.
+ */
+describe("the final review's summary", () => {
+  const sliceRound = body(`<!-- agent:summary-head ${HEAD} -->\nWhat slice 3 did.`);
+
+  it("is due to the final review over a block a slice round wrote at the same head", () => {
+    expect(summaryDue(sliceRound, HEAD)).toBe(false);
+    expect(summaryDue(sliceRound, HEAD, true)).toBe(true);
+  });
+
+  it("is not due again to a later final review with nothing pushed", () => {
+    const inner = summaryUpdate({ title: "feat: the PRD", summary: "The PRD." }, HEAD, true)?.summary?.inner ?? "";
+
+    expect(inner).toContain(FINAL_SUMMARY_MARK);
+    expect(summaryDue(body(inner), HEAD, true)).toBe(false);
+    expect(summaryDue(body(inner), OTHER, true)).toBe(true);
+    expect(readSummaryBlock(body(inner))).toEqual({ text: "The PRD.", head: HEAD, final: true });
+    expect(currentSummary(body(inner))).toBe("The PRD.");
+  });
+
+  it("asks the posting job to remove the draft-only note, and only on the final review", () => {
+    expect(summaryUpdate({ title: "feat: the PRD" }, HEAD, true)).toEqual({
+      title: "feat: the PRD",
+      drop: { start: DRAFT_NOTE_START, end: DRAFT_NOTE_END },
+    });
+    expect(summaryUpdate({ title: "feat: x" }, HEAD)).toEqual({ title: "feat: x" });
   });
 });

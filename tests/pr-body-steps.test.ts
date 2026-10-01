@@ -4,8 +4,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { readSummaryBlock, SUMMARY_END, SUMMARY_START, summaryUpdate } from "../shared/pr-summary.js";
-import { SLICES_END, SLICES_START, spliceSliceRows } from "../shared/slices-table.js";
+import {
+  DRAFT_NOTE_END,
+  DRAFT_NOTE_START,
+  readSummaryBlock,
+  SUMMARY_END,
+  SUMMARY_START,
+  summaryUpdate,
+} from "../shared/pr-summary.js";
+import {
+  PROGRESS_END,
+  PROGRESS_START,
+  renderProgressList,
+  spliceProgressList,
+  type ProgressInputs,
+} from "../shared/progress-list.js";
+import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -26,6 +40,7 @@ const CAN_RUN = ["bash", "jq"].every(onPath);
 interface Step {
   readonly name?: string;
   readonly run?: string;
+  readonly env?: Record<string, string>;
 }
 interface Workflow {
   readonly jobs: Record<string, { readonly steps?: readonly Step[] }>;
@@ -54,7 +69,7 @@ case "$*" in
   *PATCH*) case " $GH_FAIL " in *" patch "*) exit 1 ;; esac; echo '{}' ;;
   "api repos/{owner}/{repo}/pulls/"*) case " $GH_FAIL " in *" read "*) exit 1 ;; esac; cat "$GH_PR" ;;
   "pr create"*) echo "https://github.com/acme/widgets/pull/31" ;;
-  "pr list"*) echo "" ;;
+  "pr list"*) echo "\${GH_PR_LIST:-}" ;;
 esac
 exit 0
 `;
@@ -110,6 +125,35 @@ const runStep = (
 
 const RUN_URL = "https://github.com/acme/widgets/actions/runs/4242";
 
+/** A PRD of two slices, the first approved and the second in review. */
+const PROGRESS_SUBS = [
+  { number: 15, title: "One", state: "OPEN" as const },
+  { number: 16, title: "Two", state: "OPEN" as const },
+];
+const PROGRESS: ProgressInputs = {
+  subIssues: PROGRESS_SUBS,
+  ranges: sliceRanges(
+    [
+      { sha: "c", parents: ["b"], slice: 16 },
+      { sha: "b", parents: ["a"], slice: 15 },
+    ],
+    PROGRESS_SUBS,
+  ),
+  verdict: "none",
+  running: { kind: "review" },
+  finalReview: "not requested",
+};
+
+/**
+ * The preflight's snapshot of the PRD, #14: #15 closed before the upgrade
+ * with no slice range, and #16 open.
+ */
+const SNAPSHOT = { subIssues: { nodes: [{ number: 15, state: "CLOSED" }, { number: 16, state: "OPEN" }] } };
+
+/** The PRD PR's `Closes` block, which `implement-prd` owns and the review splices around. */
+const CLOSES_START = "<!-- agent:closes -->";
+const CLOSES_END = "<!-- /agent:closes -->";
+
 /**
  * The frames, exactly as the issue settled them. Written once by the run that
  * opens the pull request, and never again by anything.
@@ -140,28 +184,43 @@ describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
     );
   });
 
-  it("opens a PRD PR with Closes first, the note, an empty slices table and an unwritten summary", () => {
-    const outcome = runStep(stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"), {
-      ISSUE_NUMBER: "14",
-      ISSUE_TITLE: "A PRD",
-      RUN_URL,
-      BASE_REF: "main",
-      PRD_BRANCH: "agent/prd-14-a-prd",
-      SLICE_PR: "20",
-      HAS_PAT: "true",
-    });
+  it("opens a PRD PR with the Closes block first, the progress list, the note and an unwritten summary", () => {
+    const outcome = runStep(
+      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      {
+        ISSUE_NUMBER: "14",
+        ISSUE_TITLE: "A PRD",
+        RUN_URL,
+        BASE_REF: "main",
+        PRD_BRANCH: "agent/prd-14-a-prd",
+        HAS_PAT: "true",
+        PROGRESS_START,
+        PROGRESS_END,
+      },
+      {
+        "prd-issue.json": JSON.stringify({
+          subIssues: { nodes: [{ number: 15, state: "OPEN" }, { number: 16, state: "OPEN" }] },
+        }),
+      },
+    );
 
     expect(outcome.status, outcome.stdout).toBe(0);
     expect(outcome.sent).toBe(
       [
+        CLOSES_START,
         "Closes #14",
+        "Closes #15",
+        "Closes #16",
+        CLOSES_END,
         "",
+        PROGRESS_START,
+        "_The progress list is written when this slice's review round ends._",
+        PROGRESS_END,
+        "",
+        DRAFT_NOTE_START,
         "> [!NOTE]",
-        "> The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the summary below; the loop never edits them.",
-        "",
-        "## Progress",
-        SLICES_START,
-        SLICES_END,
+        "> The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.",
+        DRAFT_NOTE_END,
         "",
         SUMMARY_START,
         "_The final review will summarize the whole PRD here._",
@@ -193,8 +252,9 @@ const writeSummary = (
     summary: "It writes the title.\n\n- **Breaking:** the old field is gone.",
   },
   fail = "",
+  final = false,
 ): Outcome & { readonly request: { title?: string; body?: string } | undefined } => {
-  const file = update === null ? undefined : summaryUpdate(update, HEAD);
+  const file = update === null ? undefined : summaryUpdate(update, HEAD, final);
   const outcome = runStep(
     stepRun("review", "post-review", "Write the PR title and summary"),
     { PR_NUMBER: "152", GH_FAIL: fail },
@@ -226,33 +286,61 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
     expect(readSummaryBlock(written)).toEqual({
       text: "It writes the title.\n\n- **Breaking:** the old field is gone.",
       head: HEAD,
+      final: false,
     });
     expect(outcome.request?.title).toBe("feat: write the title");
     expect(outcome.gh.some((call) => call.startsWith("api --method PATCH repos/{owner}/{repo}/pulls/152"))).toBe(true);
   });
 
   /**
-   * The PRD PR's slices table is outside the block, and is written by another
-   * run between reviews. Both writers keep to their own markers.
+   * The PRD PR's `Closes` block is outside the summary block and is the
+   * chain's, so the review's rewrite carries it over byte for byte: merging
+   * the PRD PR closes what it always said it would.
    */
-  it("leaves the slices table as it is, and the table's writer leaves the summary", () => {
+  it("leaves the PRD PR's Closes block as it is", () => {
     const prd = [
-      "Closes #14\n",
-      "## Progress",
-      SLICES_START,
-      SLICES_END,
+      CLOSES_START,
+      "Closes #14",
+      "Closes #15",
+      CLOSES_END,
       "",
       SUMMARY_START,
       "_The final review will summarize the whole PRD here._",
       SUMMARY_END,
       "",
     ].join("\n");
-    const withRow = spliceSliceRows(prd, ["| Slice (#15) | [#20](u) | 🟢 | none |"]);
-    const written = writeSummary(withRow).request?.body ?? "";
+    const written = writeSummary(prd).request?.body ?? "";
 
-    expect(outside(written)).toEqual(outside(withRow));
-    const again = spliceSliceRows(written, ["| Next (#16) | [#21](u) | 🟢 | none |"]);
-    expect(readSummaryBlock(again)?.text).toContain("It writes the title.");
+    expect(outside(written)).toEqual(outside(prd));
+    expect(written.startsWith(`${CLOSES_START}\nCloses #14\nCloses #15\n${CLOSES_END}\n`)).toBe(true);
+  });
+
+  /**
+   * And the progress list beside it (#246), which the chain re-renders and
+   * the review never touches: both blocks come through the rewrite byte for
+   * byte, whatever the summary becomes.
+   */
+  it("leaves the PRD PR's Closes block and progress list as they are", () => {
+    const list = renderProgressList(PROGRESS);
+    const prd = [
+      CLOSES_START,
+      "Closes #14",
+      "Closes #15",
+      CLOSES_END,
+      "",
+      list,
+      "",
+      "> [!NOTE]\r\n> A note.",
+      "",
+      SUMMARY_START,
+      "_The final review will summarize the whole PRD here._",
+      SUMMARY_END,
+      "",
+    ].join("\n");
+    const written = writeSummary(prd).request?.body ?? "";
+
+    expect(outside(written)).toEqual(outside(prd));
+    expect(written.startsWith(`${CLOSES_START}\nCloses #14\nCloses #15\n${CLOSES_END}\n\n${list}\n\n`)).toBe(true);
   });
 
   /** Rewriting a block a review already wrote replaces it, and only it. */
@@ -290,6 +378,77 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
     expect(outcome.stdout).toContain("half a summary block, or two");
   });
 
+  /**
+   * **The final review leaves no draft-only text** (#247, #216): the frame's
+   * note that the PRD PR stays a draft goes, markers and all, with the blank
+   * line after it, when the final review writes the summary. Every other byte
+   * outside the summary block stays, the `Closes` block and the progress list
+   * included.
+   */
+  describe("on a PRD PR's final review", () => {
+    const NOTE = [
+      DRAFT_NOTE_START,
+      "> [!NOTE]",
+      "> The agent loop builds PRD #14 here, one sub-issue at a time. It stays a draft until every slice is done.",
+      DRAFT_NOTE_END,
+    ].join("\n");
+    const prd = (note: string): string =>
+      [
+        CLOSES_START,
+        "Closes #14",
+        "Closes #15",
+        CLOSES_END,
+        "",
+        PROGRESS_START,
+        "- ✅ **Approved:** #15 Slice",
+        PROGRESS_END,
+        "",
+        note,
+        "",
+        SUMMARY_START,
+        "_The final review will summarize the whole PRD here._",
+        SUMMARY_END,
+        "",
+        "A maintainer's note.",
+      ].join("\n");
+
+    it("removes the draft-only note and writes the PRD's summary, marked as the final review's", () => {
+      const outcome = writeSummary(prd(NOTE), undefined, "", true);
+      const written = outcome.request?.body ?? "";
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      expect(written).not.toContain(DRAFT_NOTE_START);
+      expect(written).not.toContain("stays a draft");
+      expect(written).not.toContain("_The final review will summarize");
+      expect(outside(written)).toEqual(outside(prd(NOTE).replace(`${NOTE}\n\n`, "")));
+      expect(readSummaryBlock(written)).toMatchObject({ head: HEAD, final: true });
+      expect(outcome.request?.title).toBe("feat: write the title");
+    });
+
+    it("removes the note even where it writes only the title", () => {
+      const outcome = writeSummary(prd(NOTE), { title: "feat: the whole PRD" }, "", true);
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      expect(outcome.request?.body).toBe(prd(NOTE).replace(`${NOTE}\n\n`, ""));
+    });
+
+    it("leaves a body with no note, or half of one, as it is outside the summary", () => {
+      const none = writeSummary(prd("My own text."), undefined, "", true);
+      expect(outside(none.request?.body ?? "")).toEqual(outside(prd("My own text.")));
+
+      const half = writeSummary(prd(DRAFT_NOTE_START), undefined, "", true);
+      expect(outside(half.request?.body ?? "")).toEqual(outside(prd(DRAFT_NOTE_START)));
+    }, CEILING);
+
+    /** A slice round's write is not the final review's, and the note stays. */
+    it("leaves the note where a slice round writes the summary", () => {
+      const outcome = writeSummary(prd(NOTE));
+
+      expect(outcome.request?.body).toContain(NOTE);
+      expect(readSummaryBlock(outcome.request?.body ?? "")?.final).toBe(false);
+    });
+  });
+
   /** Nothing pushed since the summary was written: the runner wrote no file. */
   it("writes nothing where the review left the title and summary as they are", () => {
     const outcome = writeSummary(FRAME, null);
@@ -314,4 +473,328 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
     expect(unwritten.status, unwritten.stdout).toBe(0);
     expect(unwritten.stdout).toContain("::warning::Could not write the title and summary of PR #152");
   }, CEILING);
+});
+
+/**
+ * The progress list's three writers in a workflow (#246), each splicing a list a
+ * runner rendered into the PRD PR's body: the advance job at every ending of a
+ * round, the build run that reuses a PRD PR once its slice is pushed, and the
+ * build run that stops after its runner showed the slice building. All
+ * keep the rule `spliceProgressList` keeps, and are held to it here: every
+ * byte outside the markers kept, a list appended to a body with none, and
+ * half a list, or two, not written.
+ */
+describe.skipIf(!CAN_RUN)("the progress list is spliced into the PRD PR's body", () => {
+  const list = renderProgressList(PROGRESS);
+  const stale = renderProgressList({ ...PROGRESS, running: null, verdict: "approval" });
+  const bodies: readonly [string, string | null][] = [
+    ["a body with a list", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\n${stale}\n\nMine.\r\n`],
+    ["a body with none", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\nMine.`],
+    ["a body ending in a newline", "Mine.\n"],
+    ["no body", null],
+    ["half a list", `Mine.\n${PROGRESS_START}\nrest`],
+    ["two lists", `${stale}\n${stale}`],
+  ];
+
+  const advance = (body: string | null, env: Record<string, string>, fail = ""): Outcome =>
+    runStep(
+      stepRun("review", "advance", "Re-render the progress list"),
+      { PR_NUMBER: "201", PROGRESS_START, PROGRESS_END, GH_FAIL: fail, ...env },
+      {
+        "pr.json": JSON.stringify({ number: 201, body }),
+        "progress_approved.md": "approved list",
+        "progress_parked.md": "parked list",
+        "progress_running.md": list,
+      },
+    );
+  const RUNNING = { ENDED: "true", VERDICT: "changes recommended, fix round started" };
+
+  it.each(bodies)("the advance job over %s keeps spliceProgressList's rule", (_case, body) => {
+    const outcome = advance(body, RUNNING);
+    const expected = spliceProgressList(body ?? "", list);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    if (expected === undefined) {
+      expect(outcome.sent).toBeUndefined();
+      expect(outcome.stdout).toContain("half a progress list, or two");
+    } else {
+      expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected });
+    }
+  });
+
+  it.each([
+    ["an approval", { ENDED: "true", VERDICT: "approval recommended" }, "approved list"],
+    ["a fix round started", RUNNING, list],
+    ["changes recommended", { ENDED: "true", VERDICT: "changes recommended" }, "parked list"],
+    ["needs a closer look", { ENDED: "true", VERDICT: "needs a closer look" }, "parked list"],
+    ["a run that did not finish", { ENDED: "false", VERDICT: "approval recommended" }, "parked list"],
+  ])("the advance job writes the list for %s", (_case, env, written) => {
+    const outcome = advance("Mine.", env);
+
+    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: `Mine.\n\n${written}` });
+  });
+
+  it("the advance job goes on with a warning where the list cannot be read, written or was not rendered", () => {
+    const unread = advance("Mine.", RUNNING, "read");
+    expect(unread.status, unread.stdout).toBe(0);
+    expect(unread.stdout).toContain("::warning::Could not read PRD PR #201");
+
+    const unwritten = advance("Mine.", RUNNING, "patch");
+    expect(unwritten.status, unwritten.stdout).toBe(0);
+    expect(unwritten.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
+
+    const none = runStep(
+      stepRun("review", "advance", "Re-render the progress list"),
+      { PR_NUMBER: "201", PROGRESS_START, PROGRESS_END, ...RUNNING },
+      { "pr.json": JSON.stringify({ number: 201, body: "Mine." }) },
+    );
+    expect(none.status, none.stdout).toBe(0);
+    expect(none.stdout).toContain("::warning::The review rendered no progress list");
+    expect(none.gh).toEqual([]);
+  }, 3 * SUBPROCESS_TIMEOUT);
+
+  const reuse = (body: string | null, fail = ""): Outcome =>
+    runStep(
+      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      {
+        ISSUE_NUMBER: "14",
+        ISSUE_TITLE: "A PRD",
+        BASE_REF: "main",
+        PRD_BRANCH: "agent/prd-14-a-prd",
+        HAS_PAT: "true",
+        PROGRESS_START,
+        PROGRESS_END,
+        GH_PR_LIST: "201",
+        GH_FAIL: fail,
+      },
+      {
+        "pr.json": JSON.stringify({ number: 201, body }),
+        "progress.md": list,
+        "prd-issue.json": JSON.stringify(SNAPSHOT),
+      },
+    );
+
+  /**
+   * A body with no `Closes` marker at all is one an older release opened
+   * (#248), and gets the block in front of it, from the snapshot, with no
+   * line for a sub-issue closed before the upgrade.
+   */
+  const reused = (body: string | null): string | undefined => {
+    const spliced = spliceProgressList(body ?? "", list);
+    if (spliced === undefined || (body ?? "").includes(CLOSES_START)) return spliced;
+    return `${CLOSES_START}\nCloses #14\nCloses #16\n${CLOSES_END}\n\n${spliced}`;
+  };
+
+  it.each(bodies)("a build run reusing the PRD PR over %s keeps spliceProgressList's rule", (_case, body) => {
+    const outcome = reuse(body);
+    const expected = reused(body);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.gh.some((call) => call.startsWith("pr create"))).toBe(false);
+    if (expected === undefined) {
+      expect(outcome.sent).toBeUndefined();
+      expect(outcome.stdout).toContain("half a progress list, or two");
+    } else {
+      expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected });
+    }
+  });
+
+  it("a build run reusing the PRD PR goes on with a warning where the list cannot be written", () => {
+    const outcome = reuse("Mine.", "patch");
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
+  });
+});
+
+/**
+ * A build run that stops after its runner showed the slice building writes
+ * the list back (#246): the one the runner rendered for nothing pushed, or for
+ * the slice pushed, whichever happened. A failed build starts no round, so no
+ * advance job would.
+ */
+describe.skipIf(!CAN_RUN)("a stopped build run writes the progress list back", () => {
+  const building = renderProgressList({ ...PROGRESS, running: { kind: "build", subIssue: 16 }, verdict: "approval" });
+  const bodies: readonly [string, string | null][] = [
+    ["a body with a list", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\n${building}\n\nMine.\r\n`],
+    ["a body with none", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\nMine.`],
+    ["a body ending in a newline", "Mine.\n"],
+    ["no body", null],
+    ["half a list", `Mine.\n${PROGRESS_START}\nrest`],
+    ["two lists", `${building}\n${building}`],
+  ];
+
+  const stopped = (
+    body: string | null,
+    env: Record<string, string> = {},
+    files: Record<string, string> = { "progress_stopped.md": "stopped list", "progress_stopped_pushed.md": "pushed list" },
+  ): Outcome =>
+    runStep(
+      stepRun("implement-prd", "implement-prd", "Show the stopped slice in the progress list"),
+      { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END, ...env },
+      { "pr.json": JSON.stringify({ number: 201, body }), ...files },
+    );
+
+  it.each(bodies)("over %s keeps spliceProgressList's rule", (_case, body) => {
+    const outcome = stopped(body);
+    const expected = spliceProgressList(body ?? "", "stopped list");
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    if (expected === undefined) {
+      expect(outcome.sent).toBeUndefined();
+      expect(outcome.stdout).toContain("half a progress list, or two");
+    } else {
+      expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected });
+    }
+  });
+
+  it.each([
+    ["nothing was pushed", "", "stopped list"],
+    ["the slice was pushed", "0123456789abcdef", "pushed list"],
+  ])("writes the list for a run that stopped where %s", (_case, pushed, written) => {
+    const outcome = stopped("Mine.", { PUSHED: pushed });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: `Mine.\n\n${written}` });
+  });
+
+  it("writes nothing where no PRD PR is open, or the runner never showed the slice building", () => {
+    const unopened = stopped("Mine.", { PRD_PR: "" });
+    expect(unopened.status, unopened.stdout).toBe(0);
+    expect(unopened.gh).toEqual([]);
+
+    const unrendered = stopped("Mine.", {}, {});
+    expect(unrendered.status, unrendered.stdout).toBe(0);
+    expect(unrendered.gh).toEqual([]);
+  }, 2 * SUBPROCESS_TIMEOUT);
+
+  it("goes on with a warning where the list cannot be read or written", () => {
+    const unread = stopped("Mine.", { GH_FAIL: "read" });
+    expect(unread.status, unread.stdout).toBe(0);
+    expect(unread.stdout).toContain("::warning::Could not read PRD PR #201");
+
+    const unwritten = stopped("Mine.", { GH_FAIL: "patch" });
+    expect(unwritten.status, unwritten.stdout).toBe(0);
+    expect(unwritten.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
+  }, 2 * SUBPROCESS_TIMEOUT);
+});
+
+/**
+ * **A slices table an older release wrote is history, and nothing rewrites it**
+ * (#248): pre-upgrade compatibility, removable under #224. A PRD PR an older
+ * release opened carries `Closes #<parent>`, a note, the slices table between
+ * its markers and the summary block, and no `Closes` block or progress list.
+ * Every writer of a PRD PR's body runs over it in turn, as a chain resumed at
+ * the upgrade would: the build run that reuses it, the advance job at the end
+ * of its round, the slice round's summary, the stopped run's list and the
+ * final review's summary. The table comes through every one byte for byte.
+ */
+describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
+  const TABLE = [
+    "<!-- agent:slices -->",
+    "| Slice | PR | Verdict | Open findings |",
+    "|---|---|---|---|",
+    "| One (#15) | #20 | ✅ approval recommended | none |",
+    "<!-- /agent:slices -->",
+  ].join("\n");
+  const OLD = [
+    "Closes #14",
+    "",
+    "> [!NOTE]",
+    "> The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each before starting the next.",
+    "",
+    "## Progress",
+    TABLE,
+    "",
+    SUMMARY_START,
+    "_The final review will summarize the whole PRD here._",
+    SUMMARY_END,
+    "",
+  ].join("\n");
+  const list = renderProgressList(PROGRESS);
+
+  const keepsTable = (body: string | undefined): string => {
+    expect(body?.split(TABLE)).toHaveLength(2);
+    expect(body).toContain(`## Progress\n${TABLE}\n`);
+    return body ?? "";
+  };
+
+  it("survives every rewrite of the body, unchanged", () => {
+    const reused = runStep(
+      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      {
+        ISSUE_NUMBER: "14",
+        ISSUE_TITLE: "A PRD",
+        BASE_REF: "main",
+        PRD_BRANCH: "agent/prd-14-a-prd",
+        HAS_PAT: "true",
+        PROGRESS_START,
+        PROGRESS_END,
+        GH_PR_LIST: "201",
+      },
+      {
+        "pr.json": JSON.stringify({ number: 201, body: OLD }),
+        "progress.md": list,
+        "prd-issue.json": JSON.stringify(SNAPSHOT),
+      },
+    );
+    expect(reused.status, reused.stdout).toBe(0);
+    const afterReuse = keepsTable((JSON.parse(reused.sent ?? "{}") as { body?: string }).body);
+    expect(afterReuse).toBe(`${CLOSES_START}\nCloses #14\nCloses #16\n${CLOSES_END}\n\n${OLD}\n${list}`);
+
+    const advanced = runStep(
+      stepRun("review", "advance", "Re-render the progress list"),
+      { PR_NUMBER: "201", PROGRESS_START, PROGRESS_END, ENDED: "true", VERDICT: "approval recommended" },
+      {
+        "pr.json": JSON.stringify({ number: 201, body: afterReuse }),
+        "progress_approved.md": "approved list",
+        "progress_parked.md": "parked list",
+        "progress_running.md": list,
+      },
+    );
+    expect(advanced.status, advanced.stdout).toBe(0);
+    const afterAdvance = keepsTable((JSON.parse(advanced.sent ?? "{}") as { body?: string }).body);
+
+    const sliceRound = writeSummary(afterAdvance);
+    expect(sliceRound.status, sliceRound.stdout).toBe(0);
+    const afterSliceRound = keepsTable(sliceRound.request?.body);
+
+    const stopped = runStep(
+      stepRun("implement-prd", "implement-prd", "Show the stopped slice in the progress list"),
+      { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END },
+      { "pr.json": JSON.stringify({ number: 201, body: afterSliceRound }), "progress_stopped.md": "stopped list" },
+    );
+    expect(stopped.status, stopped.stdout).toBe(0);
+    const afterStopped = keepsTable((JSON.parse(stopped.sent ?? "{}") as { body?: string }).body);
+
+    const finalReview = writeSummary(afterStopped, undefined, "", true);
+    expect(finalReview.status, finalReview.stdout).toBe(0);
+    keepsTable(finalReview.request?.body);
+  }, 5 * SUBPROCESS_TIMEOUT);
+
+  /** The block goes in only where no `Closes` marker is: a body with one is left to the splice alone. */
+  it("gets the Closes block once, on the first build run that reuses the PRD PR", () => {
+    const withBlock = `${CLOSES_START}\nCloses #14\nCloses #16\n${CLOSES_END}\n\n${OLD}`;
+    const outcome = runStep(
+      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      {
+        ISSUE_NUMBER: "14",
+        ISSUE_TITLE: "A PRD",
+        BASE_REF: "main",
+        PRD_BRANCH: "agent/prd-14-a-prd",
+        HAS_PAT: "true",
+        PROGRESS_START,
+        PROGRESS_END,
+        GH_PR_LIST: "201",
+      },
+      {
+        "pr.json": JSON.stringify({ number: 201, body: withBlock }),
+        "progress.md": list,
+        "prd-issue.json": JSON.stringify(SNAPSHOT),
+      },
+    );
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: spliceProgressList(withBlock, list) });
+  });
 });

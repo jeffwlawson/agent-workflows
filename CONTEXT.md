@@ -12,7 +12,7 @@ the middle. One workflow per label transition, near enough:
 | Label | Fires | Does |
 |---|---|---|
 | `agent:implement` on an **issue** | `implement` | branch, implement, open a draft PR, request review |
-| `agent:implement` on a **PRD parent** | `implement-prd` | merge the slice PR whose round has ended into the PRD branch and add its row to the PRD PR's slices table, then build the next sub-issue on a slice branch, open it as a draft slice PR, request its review — or, with no sub-issue left, hand the PRD PR over |
+| `agent:implement` on a **PRD parent** | `implement-prd` | once the PRD PR's head carries an approval, merge the default branch into the PRD branch if it has moved, build the next sub-issue as commits on the PRD branch, open the PRD PR as a draft the first time, request the slice's round on it; or, with no sub-issue left, hand the PRD PR over |
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
 | `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed or left an out-of-scope note |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
@@ -20,21 +20,58 @@ the middle. One workflow per label transition, near enough:
 
 `implement` and `implement-prd` share one label and partition on **issue shape**: a parent with
 sub-issues goes to the PRD chain, everything else to the single-issue run. The chain works one
-sub-issue per run, each as a pull request of its own, and waits for that pull request's review
-round to end before it builds the next; review's advance (below) re-adds the label that moves
-it on.
+sub-issue per run, and waits for that sub-issue's review round to end on an approval before it
+builds the next; review's advance (below) re-adds the label that moves it on.
 
-That branch is the **PRD branch** (the code's "accumulating branch"), and the one pull request
-from it into the base branch is the **PRD PR** — the only PR of a chain a human merges. A **slice
-PR** is one sub-issue's pull request whose base is the PRD branch. None
-of the three is a *layer*. A slice PR's head is its **slice branch**, `agent/slice-<parent>-<sub>-…`
-— never under `agent/prd-`, so the PRD branch lookup cannot match it. The run that merges the last
-slice PR and hands the PRD PR over is the **finishing run**; it runs no model (#163). The PRD PR's
-own review is the **integration review**: every slice was already reviewed on its slice PR, so it
-looks only for what spans slices, never takes up a slice's leftover findings, and is skipped for a
-one-slice PRD, whose PRD PR diff is the slice PR's. Those leftovers are linked from the **slices
-table** in the PRD PR body — one row per slice, written by the run that merges it and never
-refreshed (#164).
+Every slice is built as commits on one branch, the **PRD branch** (`agent/prd-<parent>-…`), and the
+one pull request from it into the default branch is the **PRD PR**: the only pull request of a
+chain, opened as a draft by the first build run, and the one a human merges. Its base is the
+default branch, so the CI configured for the default branch runs on every slice with nothing more
+to set up. No slice has a branch or a pull request of its own (PRD #222).
+
+A sub-issue's commits on the PRD branch are its **slice range**. Every commit a build run makes
+carries an `Agent-Slice: #<sub>` trailer, written by the workflow before the push, and
+`shared/slice-ranges.ts` derives the ranges from the PRD branch's first-parent log: a slice starts
+at the first parent of its earliest trailered commit and ends where the next one starts. Fix, human
+and conflict-resolution commits carry no trailer and belong to the range they fall in, a
+resolution at the end of a slice included; the merge of the default branch the chain makes before a
+slice is built carries an `Agent-Catch-Up` trailer instead, and falls outside every range. That one function
+answers every "which slice": the **next** is the first open sub-issue with no range, in the
+sub-issue list's order, never read off which issues are closed; the **current** is the last one
+with a range; and it gives the review its *k of n*. Order is the sub-issue list's (publish order is
+execution order, `docs/agents/ticket-shape.md`), and its "blocked by" links are checked against it
+once, before the first slice is built.
+
+Each slice is reviewed as a **slice round** on the PRD PR: an ordinary review round, told "slice
+*k* of *n*: #sub", handed the slice range's commits and the sub-issue's acceptance criteria, and
+allowed to raise only what those commits cause. The diff is still the whole PRD PR's, and a
+problem this slice causes in earlier code is anchored at this slice's change. Fix rounds run on
+the PRD PR under the same budget and early stop as anywhere else. The PRD PR stays a draft through
+every slice round. **The next slice starts only on an approval**: the build run's preflight reads
+the `agent-review` verdict on the PRD PR's head, live, and refuses on anything else, so a human
+re-adding the label to a parked chain cannot skip the gate. Before building, the run merges the
+default branch into the PRD branch if it has moved; it never rebases or force-pushes, so verdicts
+and threads stay on the commits they were made on, and a conflict **parks** the chain, builds
+nothing and names `agent:update-branch` on the PRD PR.
+
+The run that finds every sub-issue built is the **finishing run**; it runs no model (#163). With
+more than one slice landed it asks for the **final review**: a full review of the PRD PR with no
+slice range, which rules on every finding still open, honours every decline, looks for what spans
+slices, writes the PRD's title and body, and marks the PRD PR ready on approval. With one slice it
+marks the PRD PR ready itself, since the slice round already read the same diff. A review knows it
+is the final review from the PRD PR body's **progress list**, which the finishing run marks.
+
+Sub-issues stay **open** until the PRD PR merges: its body's `Closes` block names the parent and
+every sub-issue, so the merge closes exactly the work it contains and a PRD PR closed unmerged
+closes nothing. Progress is shown by the progress list and by comments: each build run comments on
+the sub-issue it starts, with the run link, and notes it on the parent, and the run after an
+approval says on the slice's sub-issue which commit was approved and which criteria changed.
+
+A chain an older release started is migrated rather than stranded (#248), by rules marked
+*Pre-upgrade compatibility* and removable under #224: a closed sub-issue with no slice range landed
+before the upgrade and is not built again, and a pull request from the older release's per-slice
+`agent/slice-` branches still open into the PRD branch refuses the run by name until a human merges
+or closes it.
 
 **A trigger label is on while its run works** (#236). The run leaves it on as it starts and takes
 it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
@@ -88,7 +125,9 @@ the one before it announced none. A fix run that pushed nothing and left no out-
 for nothing, and leaves every thread it answered open, so a round it declined its way through ends
 on a human rather than on another pass. It is also the run that marks such a pull request
 **ready**, because there is no re-review coming to do it (#159): a run that pushed hands the pull
-request to a review, and a run that did not hands it back. **A note bends that rule** (#213): a run
+request to a review, and a run that did not hands it back. **Not on a PRD PR** (PRD #222): there
+every fix run asks for a re-review, whatever it pushed, and never marks the PRD PR ready, so every
+ending of a slice round is a verdict, which the advance either moves on from or parks on. **A note bends that rule** (#213): a run
 that pushed nothing but posted an out-of-scope note asks for a re-review too, because the review is
 what rules on the note, and an unruled note is filed by nobody. The fix-round budget bounds that
 leg as it bounds a push.
@@ -129,27 +168,21 @@ working, and what marks it ready is whichever end the round comes to — the re-
 pushed or left a note, and the fix run itself where it did neither and so asked for none.
 
 The second is the **advance**, a second arrow, and it lands on an issue rather than a pull
-request (#176). When a **slice PR**'s round ends on a verdict the chain moves on from (🟢, or 🟡 with
-no fix round starting), it re-adds `agent:implement` to the slice PR's
-**parent**, and the `implement-prd` run that starts merges the slice PR and builds the next slice.
-`fix` carries the same advance, as a job of its own, for the round a fix run ends itself, by
-pushing nothing. It parks on 🔵
-and on a failed run, and a human re-adding the label there is the acceptance. It cannot cycle: it
-never labels a pull request, the run it starts either merges the slice PR — so no later round on
-it can fire the advance again, or refuses, and it is **bounded by the number of sub-issues**,
-because a finished PRD refuses the label. Both workflows run it from one composite action,
-`.github/actions/advance-prd`, pinned to the release like the runner (no checkout, no model,
-`AGENT_PAT` or nothing), and it is on by default, since only the PRD chain opens a slice PR.
-
-So is merging the slice PR by hand (#209). `review` carries a twin of the advance, as a job, on the
-`closed` event its caller also listens for: a slice PR merged into its PRD branch by anyone but the
-chain re-adds `agent:implement` to the parent, and the run that starts finds the slice PR merged,
-writes its row and builds the next slice. The chain's own merge is told apart by a mark, not by
-who merged, since both are the maintainer's login: `implement-prd` writes
-`<!-- agent-chain-merge <head sha> -->` into the slice PR's body before it merges, and the job's
-`if:` skips a `closed` payload carrying the mark for the head it merged. It also stands aside while
-the parent already carries `agent:implement`, which is on from the advance until the run it starts
-ends: the chain is moving, and a second label would only queue a second run.
+request (#176). It is one job, `advance` in `review`, and it fires only on a PRD PR (head under
+`agent/prd-`, same repository). When a slice round ends on an **approval**, it re-adds
+`agent:implement` to the PRD's **parent**, parsed from the head name, and the `implement-prd` run
+that starts passes the approval gate and builds the next slice, or finishes. When a slice round or
+the final review ends any other way, the same job **parks** the chain: it comments on the parent
+naming the slice (or "final review"), why the round stopped (the fix-round budget spent, no
+progress, a review that needs a closer look, a run that did not finish), the open findings with
+links, and the three ways on: `agent:fix` for another round; decline a finding by replying to it,
+then `agent:review`; or push a commit, then `agent:review`. A verdict that started a fix round is
+neither, and the job does nothing on it. At every ending it first re-renders the progress list.
+`fix` has no copy of it: only a review posts an approval, and every fix run on a PRD PR ends in
+one. It cannot cycle: it never labels a pull request, the run it starts builds one slice and asks
+for one round, or refuses at the gate, and it is **bounded by the number of sub-issues**, because a
+finished PRD refuses the label. It runs a composite action, `.github/actions/advance-prd`, pinned
+to the release like the runner (no checkout, no model, `AGENT_PAT` or nothing).
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
@@ -259,13 +292,16 @@ is none) and hands them over by id; the review rules on each as *met*,
 *changed* on purpose with the reason, or *unmet*. An unmet one is a fix-before-merge finding,
 anchored at the change nearest to it like any other; a changed one is not a finding, and is listed
 with its reason in the body's *Acceptance criteria* section, which a pull request with no linked
-issue or no criteria does not get. A PRD PR's integration review is handed none: each slice was
-held to its own sub-issue's criteria on its slice PR.
+issue or no criteria does not get. On a PRD PR a slice round is handed its own sub-issue's
+criteria, and the final review is handed none: each slice was held to its own in its round, and the
+final review reads what each round recorded.
 
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
 a pull request writes its **frame** once and never again: `Closes #N` first, a note saying what the
-loop does with it and how to steer it (linking the opening run), on a PRD PR the slices table's
-markers under *Progress*, and a **summary block** between `<!-- agent:summary -->` markers. The
+loop does with it and how to steer it (linking the opening run), on a PRD PR the **progress list**
+between `<!-- agent:progress -->` markers (#246: each sub-issue not started, building, in review,
+parked or approved, re-rendered from live state by every build run, including one that stops, and at every ending of a round,
+never edited incrementally, and holding the final review's mark), and a **summary block** between `<!-- agent:summary -->` markers. The
 review writes the block and the title, and nothing else in the body: a maintainer's notes outside
 the markers survive every round byte for byte. The rule is **anything pushed since the summary was
 last written rewrites both** (the first build, a maintainer's push, a conflict resolution and a fix
@@ -276,12 +312,26 @@ kept where it is still true. The agent produces `title` and `summary`; the posti
 splicing into the body as it stands then rather than as the review read it. So the review comment
 carries no description of the change, and the description exists in one place.
 
+A PRD PR's **final review** writes both however little was pushed, since the last slice round wrote
+them at the same head (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
+the behaviour changes with the breaking ones marked, the acceptance criteria each slice changed or
+dropped (read off each slice round's record, by the commit it reviewed, through the slice ranges),
+and the known issues, naming the follow-ups filed at merge. The same write removes the frame's
+**draft-only** note, between its own markers, so a PRD PR marked ready says nothing about being a
+draft.
+
 `follow-ups` is the row that is not quite a label transition. The **merge** is what fires it and
 the label is a marker it reads — re-adding that label to a closed PR is a manual entry point rather
 than the normal path — and it is the one workflow an adopter can decline by not copying its caller
 (`docs/ADOPTING.md` §4). It is also the only one that runs **no model**: the review agent records
 the findings and cannot file them, and the workflow holding `issues: write` decides what to file
-with a pure function (`docs/parity.md` §10).
+with a pure function (`docs/parity.md` §10). On a PRD chain it fires once, at the PRD PR's merge, since nothing
+merges into the PRD branch through a pull request any more (#247). That PR's newest review carries
+forward, de-duplicated by the id the workflow gave each entry, every follow-up an earlier round on
+it recorded, because each round there is scoped to one slice and none restates another's; and the
+cap is **three per landed slice**, recorded in the payload and re-applied by the filing end. A
+regular pull request is one slice, so its cap stays three and its review still restates its list
+every round.
 
 ## The three parts, and what belongs in each
 
@@ -310,7 +360,7 @@ takes its whole input from the environment; passing an argument is refused rathe
 
 **Part, not layer.** These were *the three layers* until stacked pull requests arrived: GitHub calls
 one pull request in a stack a **layer**, and that is the only meaning the word has here now. The
-PRD chain uses no stacks, so it has slice PRs rather than layers. Older
+PRD chain uses no stacks: its slices are ranges of commits on one branch, not layers. Older
 entries in `docs/friction.md` keep the old usage, because that log is never rewritten.
 
 ### And the install path, which is none of the three
@@ -329,8 +379,7 @@ class the pair exists to remove.
 
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
 the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape
-and its freshness, `self-check`, the labels, a CI that runs on slice PRs where the PRD chain is
-installed (#209), an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with no `AGENT_PAT` behind it (the default counts), a caller still passing the deprecated `auto-fix`, and a time limit variable that is not a positive integer (#220) — and reads nothing out of `examples/callers/`, so a
+and its freshness, `self-check`, the labels, an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with no `AGENT_PAT` behind it (the default counts), a caller still passing the deprecated `auto-fix`, and a time limit variable that is not a positive integer (#220) — and reads nothing out of `examples/callers/`, so a
 release that changes a caller *body* is a release that teaches `diagnose` about it in the same
 commit, exactly as a new pin site is a change to `shared/pins.ts` in the same commit. Diffing an
 adopter's caller against the reference is the other design and it is the wrong one here: most of

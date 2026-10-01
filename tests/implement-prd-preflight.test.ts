@@ -4,7 +4,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { SLICES_END, SLICES_HEADING, SLICES_START } from "../shared/slices-table.js";
+import { DRAFT_NOTE_END, DRAFT_NOTE_START, SUMMARY_END, SUMMARY_START } from "../shared/pr-summary.js";
+import {
+  FINAL_REVIEW_MARK,
+  FINAL_REVIEW_REQUESTED_LINES,
+  PROGRESS_END,
+  PROGRESS_START,
+  renderProgressList,
+} from "../shared/progress-list.js";
+import { renderCriteriaGroup, VERDICTS, type CriterionResult } from "../shared/review-output.js";
+import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -14,20 +23,17 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * built for the same reason: a string assertion passes on a step `gh` refuses
  * (#28).
  *
- * What it executes is the preflight's state table (#172, #177), every row of
- * it. Open slice PRs are found by their **base**, the PRD branch, and the
- * outcomes are different runs: none builds the next slice, one is merged and
- * then the next slice built on it (#173), and more than one stops and names
- * them all. With no sub-issue left, one open slice PR is the finishing run's to
- * merge, none with a draft PRD PR resumes the handover, and none otherwise is a
- * finished PRD. A stop fails into `Mark blocked on failure` with a reason file,
- * so what is asserted is the reason file, the exit, and that the step itself
- * touched nothing on the tracker.
+ * What it executes is the preflight's state table (PRD #222, #243), every row
+ * of it. Which sub-issues are built is read off the PRD branch, from the
+ * `Agent-Slice` trailers of the commits it has and the default branch lacks,
+ * and never from which sub-issues are closed. A built slice moves the chain on
+ * only when the PRD PR's head carries an approval: every other verdict, and no
+ * verdict, refuses and names the ways on. Before the first build, and only
+ * then, the sub-issues' "blocked by" links are checked against their order.
  *
- * And the steps that come after it (#173): `Merge slice PR`, the step that
- * gathers the merged slice's row of the slices table (#174), the step that
- * opens or reuses the PRD PR once a slice has merged, and the finishing run's
- * handover of it (#177) — executed the same way, against the same replay.
+ * And the steps that come after it: the step that opens or reuses the PRD PR,
+ * and the finishing run's handover of it, executed the same way, against the
+ * same replay.
  *
  * Skipped where `bash`, `jq` or `node` are not on PATH, as that file is.
  */
@@ -39,6 +45,7 @@ interface Step {
   readonly id?: string;
   readonly shell?: string;
   readonly run?: string;
+  readonly env?: Record<string, string>;
 }
 interface Workflow {
   readonly jobs: Record<string, { readonly steps?: readonly Step[] }>;
@@ -65,10 +72,11 @@ const CAN_RUN = ["bash", "jq", "node"].every(onPath);
 
 const GH_REPO = "acme/widgets";
 const PARENT = "171";
-const PRD_BRANCH = "agent/prd-171-slice-prs";
+const PRD_BRANCH = "agent/prd-171-slices-on-the-prd-branch";
+const PRD_TIP = "0123456789abcdef0123456789abcdef01234567";
 
-/** A PRD with its first sub-issue built and the next two still open. */
-const issue = (states: readonly string[] = ["CLOSED", "OPEN", "OPEN"]): Record<string, unknown> => ({
+/** A PRD whose sub-issues, #172 on, are in `states`: open, all three, unless said. */
+const issue = (states: readonly string[] = ["OPEN", "OPEN", "OPEN"]): Record<string, unknown> => ({
   parent: null,
   labels: { nodes: [{ name: "agent:implement" }] },
   subIssues: {
@@ -81,46 +89,55 @@ const pull = (
   number: number,
   headRefName: string,
   baseRefName: string,
-  state = "OPEN",
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> => ({
   number,
   headRefName,
   baseRefName,
-  state,
-  isDraft: false,
-  mergeable: "MERGEABLE",
+  state: "OPEN",
+  isDraft: true,
   headRefOid: `sha-of-${number}`,
   labels: [],
   ...extra,
 });
 
-/** A PRD PR body whose slices table holds a row for each of `subs`. */
-const prdBody = (subs: readonly number[]): string =>
-  [
-    `Closes #${PARENT}`,
-    "",
-    SLICES_HEADING,
-    SLICES_START,
-    "| Slice | PR | Verdict | Open findings |",
-    "|---|---|---|---|",
-    ...subs.map((sub) => `| Slice \\| ${sub - 171} (#${sub}) | #${sub + 30} | 🟢 | none |`),
-    SLICES_END,
-    "",
-  ].join("\n");
+/** The PRD PR, #201: a draft from the PRD branch into the base. */
+const PRD_PR = pull(201, PRD_BRANCH, "main");
+
+/** What the handover of a PRD of more than one slice leaves in the PRD PR's body. */
+const FINAL_REVIEW = "<!-- agent:final-review requested -->";
 
 /**
- * What the preflight must look past: an ordinary PR into the base branch, the
- * PRD PR itself (whose *head* is the PRD branch), a merged slice PR whose row
- * the PRD PR already has, and an open slice PR of PRD #1710, whose branch
- * starts with this one's number, and is kept out only by the dash after it.
+ * What the lookups must look past: an ordinary PR into the base branch, and
+ * the PRD PR of PRD #1710, whose branch starts with this one's number and is
+ * kept out only by the dash after it.
  */
-const BYSTANDERS = [
-  pull(200, "agent/issue-9-typo", "main"),
-  pull(201, PRD_BRANCH, "main", "OPEN", { body: prdBody([172]) }),
-  pull(202, "agent/slice-171-172-slice-1", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-01T10:00:00Z" }),
-  pull(203, "agent/slice-1710-1711-other", "agent/prd-1710-other"),
+const BYSTANDERS = [pull(200, "agent/issue-9-typo", "main"), pull(203, "agent/prd-1710-other", "main")];
+
+/**
+ * The commits the PRD branch has and the base lacks, each slice's carrying the
+ * trailer a build run gives it, with an untrailered fix commit after each, as a
+ * fix round leaves one.
+ */
+const sliceCommits = (subs: readonly number[]): Record<string, unknown>[] =>
+  subs.flatMap((sub) => [
+    { sha: `built-${sub}`, commit: { message: `feat: slice ${sub} (#${sub})\n\nWhy.\n\nAgent-Slice: #${sub}` } },
+    { sha: `fixed-${sub}`, commit: { message: `fix: address review findings on slice ${sub}` } },
+  ]);
+
+/** One `agent-review` status on the PRD PR's head, as the combined status lists it. */
+const verdictOn = (state: string, description: string): Record<string, unknown>[] => [
+  {
+    state: state === "success" ? "success" : "failure",
+    total_count: 2,
+    statuses: [
+      { context: "agent-review", state, description },
+      { context: "ci/build", state: "success", description: "Build passed" },
+    ],
+  },
 ];
+
+const APPROVED = verdictOn("success", VERDICTS["approval recommended"].description);
 
 interface Outcome {
   readonly status: number | null;
@@ -128,46 +145,65 @@ interface Outcome {
   readonly output: string;
   readonly reason: string;
   readonly writes: readonly string[];
-}
-
-interface StepOutcome extends Outcome {
   /** A file the step wrote under `RUNNER_TEMP`, or "" if it wrote none. */
   readonly temp: (name: string) => string;
 }
 
-const runStep = (
-  id: string,
-  options: {
-    readonly pulls: readonly Record<string, unknown>[];
-    readonly issue?: Record<string, unknown>;
-    readonly repo?: Record<string, unknown>;
-    /** The slice PR's review thread nodes, as the GraphQL read returns them. */
-    readonly threads?: readonly Record<string, unknown>[];
-    /** The combined-status pages on the slice PR's head. */
-    readonly statusPages?: readonly Record<string, unknown>[];
-    /** The step's own `env:`, supplied in the expressions' place. */
-    readonly env?: Record<string, string>;
-  },
-): StepOutcome => {
+interface Scenario {
+  readonly issue?: Record<string, unknown>;
+  readonly pulls?: readonly Record<string, unknown>[];
+  /** The `agent/prd-171-` branches on the remote; the PRD branch at `PRD_TIP` unless said. */
+  readonly branches?: readonly { readonly name: string; readonly sha: string }[];
+  /** The sub-issues whose slices are on the PRD branch, in the order they were built. */
+  readonly built?: readonly number[];
+  /** Extra commits, after the slices', for a scenario to say something odd. */
+  readonly commits?: readonly Record<string, unknown>[];
+  /** The combined-status pages on the PRD PR's head. */
+  readonly statusPages?: readonly Record<string, unknown>[];
+  /** The "blocked by" links, keyed by issue number. */
+  readonly blockedBy?: Record<string, readonly Record<string, unknown>[]>;
+  /** The step's own `env:`, supplied in the expressions' place. */
+  readonly env?: Record<string, string>;
+  /** The PRD PR's reviews, keyed by id. */
+  readonly reviews?: Record<string, Record<string, unknown>>;
+  /** Issue comments, an array per issue number. */
+  readonly comments?: Record<string, readonly Record<string, unknown>[]>;
+  /** Files an earlier step left under `RUNNER_TEMP`, by name. */
+  readonly files?: Record<string, string>;
+}
+
+const runStep = (id: string, scenario: Scenario = {}): Outcome => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-implement-prd-"));
   const script = path.join(temp, "step.sh");
-  const issueFile = path.join(temp, "issue.json");
-  const pullsFile = path.join(temp, "pulls.json");
-  const repoFile = path.join(temp, "repo.json");
-  const threadsFile = path.join(temp, "threads.json");
-  const statusFile = path.join(temp, "status.json");
+  const files = {
+    GH_REPLAY_ISSUE: ["issue.json", scenario.issue ?? issue()],
+    GH_REPLAY_PULLS: ["pulls.json", scenario.pulls ?? [...BYSTANDERS, PRD_PR]],
+    GH_REPLAY_REFS: ["refs.json", scenario.branches ?? [{ name: PRD_BRANCH, sha: PRD_TIP }]],
+    GH_REPLAY_COMPARE: [
+      "compare.json",
+      { status: "ahead", commits: [...sliceCommits(scenario.built ?? []), ...(scenario.commits ?? [])] },
+    ],
+    GH_REPLAY_STATUS_PAGES: [
+      "status.json",
+      scenario.statusPages ?? [{ state: "pending", total_count: 0, statuses: [] }],
+    ],
+    GH_REPLAY_BLOCKED_BY: ["blocked-by.json", scenario.blockedBy ?? {}],
+    GH_REPLAY_REVIEWS: ["reviews.json", scenario.reviews ?? {}],
+    GH_REPLAY_COMMENTS: ["comments.json", scenario.comments ?? {}],
+  } as const;
   const output = path.join(temp, "output");
   const log = path.join(temp, "writes.log");
 
   fs.writeFileSync(script, stepById(id).run ?? "");
-  fs.writeFileSync(issueFile, JSON.stringify(options.issue ?? issue()));
-  fs.writeFileSync(pullsFile, JSON.stringify(options.pulls));
-  fs.writeFileSync(repoFile, JSON.stringify(options.repo ?? {}));
-  fs.writeFileSync(threadsFile, JSON.stringify(options.threads ?? []));
-  fs.writeFileSync(statusFile, JSON.stringify(options.statusPages ?? [{ state: "pending", total_count: 0, statuses: [] }]));
+  const replay: Record<string, string> = {};
+  for (const [name, [file, value]] of Object.entries(files)) {
+    replay[name] = path.join(temp, file);
+    fs.writeFileSync(replay[name], JSON.stringify(value));
+  }
   // The snapshot the preflight leaves for the steps after it, as a run that
   // got past the preflight has it.
-  if (id !== "preflight") fs.writeFileSync(path.join(temp, "prd-issue.json"), JSON.stringify(options.issue ?? issue()));
+  if (id !== "preflight") fs.writeFileSync(path.join(temp, "prd-issue.json"), JSON.stringify(scenario.issue ?? issue()));
+  for (const [name, content] of Object.entries(scenario.files ?? {})) fs.writeFileSync(path.join(temp, name), content);
   fs.writeFileSync(output, "");
 
   const ghDir = path.resolve(REPLAY_DIR);
@@ -180,21 +216,19 @@ const runStep = (
       ...process.env,
       // The job-level env the step reads, supplied in the event's place.
       ISSUE_NUMBER: PARENT,
-      ISSUE_TITLE: "Slice PRs into a PRD branch",
+      ISSUE_TITLE: "Slices on the PRD branch",
       ISSUE_STATE: "open",
       BASE_REF: "main",
       GH_REPO,
       GH_TOKEN: "test-token",
       RUNNER_TEMP: temp,
       GITHUB_OUTPUT: output,
-      GH_REPLAY_ISSUE: issueFile,
-      GH_REPLAY_PULLS: pullsFile,
-      GH_REPLAY_REPO: repoFile,
-      GH_REPLAY_THREADS: threadsFile,
-      GH_REPLAY_STATUS_PAGES: statusFile,
+      ...replay,
       GH_REPLAY_LOG: log,
       PATH: `${ghDir}${path.delimiter}${process.env["PATH"] ?? ""}`,
-      ...options.env,
+      // The step's own `env:` where it is a literal rather than an expression.
+      ...Object.fromEntries(Object.entries(stepById(id).env ?? {}).filter(([, value]) => !value.includes("${{"))),
+      ...scenario.env,
     },
   });
   const read = (name: string): string => {
@@ -212,852 +246,737 @@ const runStep = (
   };
 };
 
-const runPreflight = (options: {
-  readonly pulls: readonly Record<string, unknown>[];
-  readonly issue?: Record<string, unknown>;
-}): Outcome => runStep("preflight", options);
+const runPreflight = (scenario: Scenario = {}): Outcome => runStep("preflight", scenario);
+
+/** One output a step wrote, read back as the expression after it would. */
+const outputOf = (outcome: Outcome, name: string): string =>
+  new RegExp(`^${name}=(.*)$`, "m").exec(outcome.output)?.[1] ?? "";
+
+/** Every write, as the argv `gh` was called with. */
+const writes = (outcome: Outcome): string[][] => outcome.writes.map((line) => JSON.parse(line) as string[]);
+
+/** The comment a refusal posted on the parent, or "" if it posted none. */
+const refusal = (outcome: Outcome): string =>
+  writes(outcome).find((argv) => argv[0] === "issue" && argv[1] === "comment")?.at(-1) ?? "";
+
+/** The ways on from a round that did not end on an approval, each named. */
+const expectWaysOn = (comment: string): void => {
+  expect(comment).toContain("add `agent:fix` to PRD PR #201");
+  expect(comment).toMatch(/decline a finding by replying to it, then add `agent:review`/);
+  expect(comment).toMatch(/push a commit, then add `agent:review`/);
+};
 
 describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   it("runs under the shell the workflow actually gets", () => {
     expect(preflight().shell).toBeUndefined();
   });
 
-  it("builds the next slice when no slice PR is open against the PRD branch", () => {
-    const outcome = runPreflight({ pulls: BYSTANDERS });
+  /**
+   * The first run of a chain: no PRD branch yet, so nothing is built. It
+   * builds the first sub-issue on a branch named from the parent's title, and
+   * touches nothing on the tracker on the way.
+   */
+  it("builds the first sub-issue on a new PRD branch when nothing is built", () => {
+    const outcome = runPreflight({ branches: [], pulls: BYSTANDERS });
 
-    expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("sub=173\n");
-    expect(outcome.output).toContain("refused=false\n");
-    expect(outcome.reason).toBe("");
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "sub")).toBe("172");
+    expect(outputOf(outcome, "build")).toBe("true");
+    expect(outputOf(outcome, "finishing")).toBe("false");
+    expect(outputOf(outcome, "landed")).toBe("0");
+    expect(outputOf(outcome, "prd_branch")).toBe(PRD_BRANCH);
+    expect(outputOf(outcome, "prd_branch_exists")).toBe("false");
+    expect(outputOf(outcome, "prd_pr")).toBe("");
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outcome.output).toContain("sub_title<<PRD_SUB_TITLE_EOF\nSlice 1\nPRD_SUB_TITLE_EOF\n");
     expect(outcome.writes).toEqual([]);
   });
 
-  /** What `Merge slice PR` titles the slices table's rows from (#174). */
+  /** What `Open or reuse the PRD PR` writes its `Closes` lines from. */
   it("leaves its snapshot of the PRD for the steps after it", () => {
-    const outcome = runStep("preflight", { pulls: BYSTANDERS });
+    const outcome = runPreflight({ branches: [] });
 
     expect(JSON.parse(outcome.temp("prd-issue.json"))).toEqual(issue());
   });
 
-  it("hands no slice PR to the merge step when none is open", () => {
-    expect(runPreflight({ pulls: BYSTANDERS }).output).toContain("slice_pr=\n");
-  });
-
-  /**
-   * One open slice PR with a sub-issue left is the chain mid-flight: the run
-   * merges it and builds the next slice (#173). By base, never by name — the
-   * slice branch here was renamed away from `agent/slice-`, and it is still
-   * the slice PR the merge step is handed.
-   */
-  it("hands one open slice PR to the merge step and builds the next slice, whatever its branch is called", () => {
-    const outcome = runPreflight({ pulls: [...BYSTANDERS, pull(210, "renamed-by-hand", PRD_BRANCH)] });
+  /** A PRD of one sub-issue is a chain of one slice, not a shape to refuse. */
+  it("accepts a PRD with one sub-issue", () => {
+    const outcome = runPreflight({ issue: issue(["OPEN"]), branches: [], pulls: BYSTANDERS });
 
     expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("slice_pr=210\n");
-    expect(outcome.output).toContain("sub=173\n");
-    expect(outcome.output).toContain("refused=false\n");
-    expect(outcome.reason).toBe("");
+    expect(outputOf(outcome, "sub")).toBe("172");
+    expect(outputOf(outcome, "build")).toBe("true");
     expect(outcome.writes).toEqual([]);
   });
 
-  it("stops on more than one open slice PR, naming every one", () => {
+  /**
+   * The PRD branch is found by the half of its name a human cannot edit, so a
+   * retitled parent still finds it, and a PRD whose number starts this one's
+   * is not it.
+   */
+  it("finds the PRD branch by the parent's number, whatever its slug now is", () => {
     const outcome = runPreflight({
-      pulls: [
-        ...BYSTANDERS,
-        pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH),
-        pull(211, "agent/slice-171-174-slice-3", PRD_BRANCH),
+      branches: [
+        { name: "agent/prd-1710-other", sha: "other" },
+        { name: "agent/prd-171-an-old-title", sha: PRD_TIP },
+      ],
+      pulls: [...BYSTANDERS, { ...PRD_PR, headRefName: "agent/prd-171-an-old-title" }],
+      built: [172],
+      statusPages: APPROVED,
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "prd_branch")).toBe("agent/prd-171-an-old-title");
+    expect(outputOf(outcome, "prd_branch_exists")).toBe("true");
+    expect(outputOf(outcome, "prd_pr")).toBe("201");
+    expect(outputOf(outcome, "sub")).toBe("173");
+  });
+
+  it("stops on two branches for one PRD, naming both", () => {
+    const outcome = runPreflight({
+      branches: [
+        { name: PRD_BRANCH, sha: PRD_TIP },
+        { name: "agent/prd-171-a-fork", sha: "fork" },
       ],
     });
 
     expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain("2 slice PRs are open");
-    expect(outcome.reason).toContain("#210 (`agent/slice-171-173-slice-2`");
-    expect(outcome.reason).toContain("#211 (`agent/slice-171-174-slice-3`");
-    expect(outcome.reason).toMatch(/can't tell which of these lands next/);
+    expect(outcome.reason).toContain(`\`${PRD_BRANCH}\`, \`agent/prd-171-a-fork\``);
+    expect(outcome.reason).toContain("Delete or rename all but one");
     expect(outcome.output).not.toContain("refused=");
     expect(outcome.writes).toEqual([]);
   });
 
-  it("says a run that builds a slice is not the finishing run", () => {
-    expect(runPreflight({ pulls: BYSTANDERS }).output).toContain("finishing=false\n");
-  });
-
-  /**
-   * The last slice PR still open is a PRD waiting on it, not a finished one:
-   * the lookup sits before the finished refusal. With no sub-issue left, it is
-   * the **finishing run** (#177): it merges that slice PR and hands the PRD PR
-   * over, and builds nothing.
-   */
-  it("makes the finishing run of the last open slice PR, rather than calling the PRD finished", () => {
-    const outcome = runPreflight({
-      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
-      pulls: [...BYSTANDERS, pull(212, "agent/slice-171-174-slice-3", PRD_BRANCH)],
-    });
-
-    expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("slice_pr=212\n");
-    expect(outcome.output).toContain("sub=\n");
-    expect(outcome.output).toContain("finishing=true\n");
-    expect(outcome.output).toContain("refused=false\n");
-    expect(outcome.output).not.toContain("prd_pr=");
-    expect(outcome.reason).toBe("");
-    expect(outcome.writes).toEqual([]);
-  });
-
-  /**
-   * A run that died after the last merge leaves every sub-issue closed, no
-   * slice PR open and the PRD PR still a draft. Re-labelled, it resumes the
-   * handover — the one thing left — and merges and builds nothing.
-   */
-  it("resumes the handover when nothing is open and the PRD PR is still a draft", () => {
-    const outcome = runPreflight({
-      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
-      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, isDraft: true } : p)),
-    });
-
-    expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("finishing=true\n");
-    expect(outcome.output).toContain("slice_pr=\n");
-    expect(outcome.output).toContain("prd_pr=201\n");
-    expect(outcome.output).toContain(`prd_branch=${PRD_BRANCH}\n`);
-    expect(outcome.output).toContain("refused=false\n");
-    expect(outcome.writes).toEqual([]);
-  });
-
-  /** …with a handed-over PRD PR, it is finished, refused as before. */
-  it("refuses a PRD with no open sub-issue, no open slice PR and a handed-over PRD PR as finished", () => {
-    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED", "CLOSED"]), pulls: BYSTANDERS });
-
-    expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("refused=true\n");
-    expect(outcome.output).not.toContain("finishing=");
-    expect(outcome.reason).toBe("");
-    expect(
-      outcome.writes.some(
-        (w) =>
-          w.includes('"comment"') &&
-          w.includes(
-            "**`agent:implement` didn't run:** Every sub-issue of this PRD is built and its PRD PR is ready for you. To build more, add a sub-issue first.",
-          ),
-      ),
-    ).toBe(true);
-    // A finished PRD is not blocked (#253): nobody has anything to act on.
-    expect(outcome.writes.some((w) => w.includes("agent:blocked"))).toBe(false);
-  });
-
-  /**
-   * …and with no PRD PR at all, the same: there is nothing to hand over. A
-   * merged slice PR with no PRD PR is a row nobody wrote, resumed below, so
-   * this chain's slices were all built before slice PRs.
-   */
-  it("refuses a PRD with no PRD PR at all as finished", () => {
-    const outcome = runPreflight({
-      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
-      pulls: BYSTANDERS.filter((p) => p["number"] !== 201 && p["number"] !== 202),
-    });
-
-    expect(outcome.output).toContain("refused=true\n");
-    expect(outcome.writes.some((w) => w.includes("Every sub-issue of this PRD is built"))).toBe(true);
-  });
-
-  /**
-   * The finished refusal no longer sends a human to hand the PRD PR over: the
-   * resume-the-handover row does that, on the same re-label.
-   */
-  it("tells nobody to add agent:review by hand when it refuses a finished PRD", () => {
-    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED", "CLOSED"]), pulls: BYSTANDERS });
-    const comment = outcome.writes.find((w) => w.includes('"comment"')) ?? "";
-
-    expect(comment).not.toContain("agent:review");
-    expect(comment).not.toMatch(/by hand/);
-  });
-
-  it("will not guess which of two draft PRD PRs to hand over", () => {
-    const outcome = runPreflight({
-      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
-      pulls: [
-        ...BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, isDraft: true } : p)),
-        pull(205, PRD_BRANCH, "release", "OPEN", { isDraft: true }),
-      ],
-    });
+  it("stops on two open PRs from the PRD branch, naming both", () => {
+    const outcome = runPreflight({ pulls: [...BYSTANDERS, PRD_PR, pull(205, PRD_BRANCH, "release")], built: [172] });
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("#201, #205");
-    expect(outcome.output).not.toContain("refused=");
     expect(outcome.writes).toEqual([]);
   });
 
   /**
-   * A run that merged a slice PR and then died left it merged with no row in
-   * the slices table (#207), and the PRD PR unopened if it was the first. The
-   * re-label resumes it: the merged, rowless slice PR is handed to the merge
-   * step, whose `MERGED` arm merges nothing twice, so the row and the PRD PR
-   * steps run, and then the next slice is built as usual.
+   * **The next slice is chosen by slice range.** #173 is built, so it is not
+   * built again; #172 is closed with no range, so it landed before the
+   * upgrade (#248) and is not built either. The next is #174, and both count
+   * as landed.
    */
-  it("hands a merged slice PR with no row to the merge step, when no PRD PR was opened", () => {
-    const outcome = runPreflight({ pulls: BYSTANDERS.filter((p) => p["number"] !== 201) });
+  it("picks the first open sub-issue with no slice range", () => {
+    const outcome = runPreflight({ issue: issue(["CLOSED", "OPEN", "OPEN"]), built: [173], statusPages: APPROVED });
 
-    expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("slice_pr=202\n");
-    expect(outcome.output).toContain("backfill=\n");
-    expect(outcome.output).toContain("sub=173\n");
-    expect(outcome.output).toContain("finishing=false\n");
-    expect(outcome.output).toContain("refused=false\n");
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "sub")).toBe("174");
+    expect(outputOf(outcome, "landed")).toBe("2");
+  });
+
+  it("does not build again an open sub-issue that has a slice range", () => {
+    const outcome = runPreflight({ built: [172], statusPages: APPROVED });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "sub")).toBe("173");
+    expect(outputOf(outcome, "build")).toBe("true");
+    expect(outputOf(outcome, "landed")).toBe("1");
+  });
+
+  /**
+   * The trailer is read the way git's own parser reads it, any case. A trailer
+   * naming an issue outside the PRD marks nothing, and a commit merged in from
+   * the default branch never reaches the comparison at all.
+   */
+  it("reads the trailer in any case, and a trailer naming no sub-issue as nothing", () => {
+    const outcome = runPreflight({
+      commits: [
+        { sha: "a", commit: { message: "feat: one\n\nagent-slice: #172" } },
+        { sha: "b", commit: { message: "feat: elsewhere\n\nAgent-Slice: #9" } },
+      ],
+      statusPages: APPROVED,
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "sub")).toBe("173");
+    expect(outputOf(outcome, "landed")).toBe("1");
+  });
+
+  /** "Could not look" is never read as "nothing built", which would build the first slice again. */
+  it("stops, naming the branch, when it cannot read which sub-issues are built", () => {
+    const outcome = runPreflight({ built: [172], statusPages: APPROVED, env: { GH_REPLAY_COMPARE_FAILURE: "1" } });
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain(`already built on \`${PRD_BRANCH}\`, so nothing was built`);
+    expect(outcome.output).not.toContain("sub=");
     expect(outcome.writes).toEqual([]);
   });
 
-  it("hands a merged slice PR to the merge step when the PRD PR has no row for its sub-issue", () => {
-    const outcome = runPreflight({
-      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, body: `Closes #${PARENT}\n` } : p)),
-    });
+  /** The gate, open: an approval on the PRD PR's head moves the chain on. */
+  it("builds the next slice when the PRD PR's head carries an approval", () => {
+    const outcome = runPreflight({ built: [172], statusPages: APPROVED });
 
-    expect(outcome.output).toContain("slice_pr=202\n");
-    expect(outcome.output).toContain("sub=173\n");
-  });
-
-  /** The row is keyed by sub-issue, read out of the table between its markers and nowhere else. */
-  it("never picks a merged slice PR up again once its row is written", () => {
-    const outcome = runPreflight({ pulls: BYSTANDERS });
-
-    expect(outcome.output).toContain("slice_pr=\n");
-    expect(outcome.output).toContain("backfill=\n");
-  });
-
-  it("does not take a mention of the sub-issue outside the table for its row", () => {
-    const outcome = runPreflight({
-      pulls: BYSTANDERS.map((p) =>
-        p["number"] === 201 ? { ...p, body: `Closes #${PARENT}\n\n| Slice 1 (#172) | #202 | 🟢 | none |\n` } : p,
-      ),
-    });
-
-    expect(outcome.output).toContain("slice_pr=202\n");
-  });
-
-  /**
-   * The state the #207 retry left behind: the rowless slice PR, and the slice
-   * PR the retry built on top of it, open and waiting. This run merges the open
-   * one as it would anyway, and writes the rowless one's row first, in merge
-   * order, rather than building a second slice on an unmerged one.
-   */
-  it("backfills a rowless merged slice PR beside the open one it merges", () => {
-    const outcome = runPreflight({
-      issue: issue(["CLOSED", "CLOSED", "OPEN"]),
-      pulls: [
-        ...BYSTANDERS.filter((p) => p["number"] !== 201),
-        pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH),
-      ],
-    });
-
-    expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("slice_pr=210\n");
-    expect(outcome.output).toContain("backfill=202\n");
-    expect(outcome.output).toContain("sub=174\n");
-  });
-
-  /**
-   * More than one is backfilled, not refused: each row is read off its own
-   * merged slice PR, which no later run can change, so there is nothing for a
-   * human to decide, and a refusal would leave them writing rows by hand.
-   * The latest-merged goes through the merge step; the rest are written before
-   * it, in the order they merged.
-   */
-  it("backfills every rowless merged slice PR, in the order they merged", () => {
-    const outcome = runPreflight({
-      issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]),
-      pulls: [
-        ...BYSTANDERS.filter((p) => p["number"] !== 201 && p["number"] !== 202),
-        pull(212, "agent/slice-171-174-slice-3", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-03T10:00:00Z" }),
-        pull(202, "agent/slice-171-172-slice-1", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-01T10:00:00Z" }),
-        pull(211, "agent/slice-171-173-slice-2", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-02T10:00:00Z" }),
-      ],
-    });
-
-    expect(outcome.output).toContain("slice_pr=212\n");
-    expect(outcome.output).toContain("backfill=202 211\n");
-    expect(outcome.output).toContain("sub=175\n");
-  });
-
-  /**
-   * Found by base, as the open ones are. A merged PR into another PRD's branch
-   * is not this chain's, and one into this PRD branch that names no sub-issue,
-   * by body or by branch, is not a slice a row could be written for.
-   */
-  it("backfills nothing merged into another PRD branch, or that names no sub-issue", () => {
-    const outcome = runPreflight({
-      pulls: [
-        ...BYSTANDERS,
-        pull(204, "agent/slice-1710-1711-other", "agent/prd-1710-other", "MERGED", { body: "Part of #1711" }),
-        pull(205, "hand-made", PRD_BRANCH, "MERGED", { body: "A fix by hand." }),
-      ],
-    });
-
-    expect(outcome.output).toContain("slice_pr=\n");
-    expect(outcome.output).toContain("backfill=\n");
-  });
-
-  /**
-   * The same death on the last slice: every sub-issue closed, nothing open, and
-   * the last merge rowless. That is not a finished PRD but a finishing run to
-   * resume, which writes the row, opens the PRD PR if it has to, and hands it
-   * over.
-   */
-  it("makes the finishing run of a rowless last slice PR, rather than calling the PRD finished", () => {
-    const outcome = runPreflight({
-      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
-      pulls: [
-        ...BYSTANDERS.filter((p) => p["number"] !== 201),
-        pull(212, "agent/slice-171-174-slice-3", PRD_BRANCH, "MERGED", { mergedAt: "2026-09-03T10:00:00Z" }),
-      ],
-    });
-
-    expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("slice_pr=212\n");
-    expect(outcome.output).toContain("backfill=202\n");
-    expect(outcome.output).toContain("finishing=true\n");
-    expect(outcome.output).toContain("refused=false\n");
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "sub")).toBe("173");
+    expect(outputOf(outcome, "refused")).toBe("false");
     expect(outcome.writes).toEqual([]);
   });
 
   /**
-   * A PRD reopened after its PRD PR merged, to add a sub-issue: its rows are in
-   * a merged body. Read from open PRD PRs only, every slice would look rowless
-   * and the run would try to open a PRD PR from a branch already merged. Rows
-   * are read from PRD PRs in every state, so it builds the new sub-issue.
+   * The gate, shut: every other ending of a round refuses, takes the label off
+   * and names the ways on, and is not a block. The label is never the gate, so
+   * a human re-adding `agent:implement` to a parked chain lands here too.
    */
-  it("reads rows from a merged PRD PR, so a reopened PRD resumes nothing", () => {
-    const outcome = runPreflight({
-      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "MERGED" } : p)),
-    });
+  it.each([
+    ["changes recommended", verdictOn("failure", VERDICTS["changes recommended"].description), "Changes recommended"],
+    [
+      "changes recommended after a fix round",
+      verdictOn("failure", "Changes recommended after a fix round. Read the review, then add agent:fix again or fix it by hand."),
+      "Changes recommended after a fix round",
+    ],
+    [
+      "changes recommended, with a fix round started",
+      verdictOn("failure", VERDICTS["changes recommended, fix round started"].description),
+      "Changes recommended",
+    ],
+    ["needs a closer look", verdictOn("failure", VERDICTS["needs a closer look"].description), "Needs a closer look"],
+    [
+      "an error status",
+      verdictOn("error", "The review run did not finish, so there's no verdict. Check the run, then re-add agent:review."),
+      "didn't finish",
+    ],
+    ["no verdict at all", [{ state: "pending", total_count: 0, statuses: [] }], "hasn't been reviewed"],
+  ])("refuses the next slice on %s, naming the ways on", (_case, statusPages, says) => {
+    const outcome = runPreflight({ built: [172], statusPages });
+    const comment = refusal(outcome);
 
-    expect(outcome.status).toBe(0);
-    expect(outcome.output).toContain("slice_pr=\n");
-    expect(outcome.output).toContain("backfill=\n");
-    expect(outcome.output).toContain("sub=173\n");
-  });
-
-  /** …and with nothing left to build, it is refused as finished, as before, not made a finishing run. */
-  it("refuses a PRD whose PRD PR merged with every row as finished", () => {
-    const outcome = runPreflight({
-      issue: issue(["CLOSED", "CLOSED", "CLOSED"]),
-      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "MERGED" } : p)),
-    });
-
-    expect(outcome.output).toContain("refused=true\n");
-    expect(outcome.output).not.toContain("finishing=");
-  });
-
-  it("reads rows from a closed PRD PR too", () => {
-    const outcome = runPreflight({
-      pulls: BYSTANDERS.map((p) => (p["number"] === 201 ? { ...p, state: "CLOSED" } : p)),
-    });
-
-    expect(outcome.output).toContain("slice_pr=\n");
-    expect(outcome.output).toContain("backfill=\n");
-  });
-
-  /** The markers the rows are read between are the ones the runner splices between. */
-  it("reads rows between the slices table's own markers", () => {
-    expect(preflight().run ?? "").toContain(`--arg start "${SLICES_START}" --arg end "${SLICES_END}"`);
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(outputOf(outcome, "sub")).toBe("");
+    expect(comment).toContain("**`agent:implement` didn't run:**");
+    expect(comment).toContain(says);
+    expect(comment).toContain("the next slice wasn't started");
+    expectWaysOn(comment);
+    expect(writes(outcome).slice(1)).toEqual([["issue", "edit", PARENT, "--remove-label", "agent:implement"]]);
   });
 
   /**
-   * The contract the `pr list` replay stands on, against the real binary: the
-   * flags parse and every `--json` field exists, so gh gets as far as the
-   * connection to `localhost` and no further. gh checks field names before any
-   * request, so a misspelt one is refused here rather than on a PRD.
+   * #203, replayed: jeffwlawson/mealie-mcp-server#77's round ended with one
+   * open Low finding and *changes recommended*, and the chain built on it
+   * about thirty seconds later. Now the next slice does not start, whoever
+   * re-adds the label.
    */
-  it.skipIf(!onPath("gh"))("gh accepts the pr list calls the lookup composes", () => {
-    const run = preflight().run ?? "";
+  it("does not start the next slice on the mealie#77 sequence: one open Low finding, changes recommended", () => {
+    const outcome = runPreflight({
+      issue: issue(["OPEN", "OPEN", "OPEN", "OPEN", "OPEN", "OPEN"]),
+      built: [172, 173],
+      statusPages: verdictOn("failure", VERDICTS["changes recommended"].description),
+    });
 
-    for (const call of [
-      "gh pr list --state open --limit 1000 --json number,headRefName,baseRefName,isDraft",
-      "gh pr list --state all --limit 1000 --json number,state,headRefName,baseRefName,body,mergedAt",
-    ]) {
-      expect(run).toContain(call);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(outputOf(outcome, "build")).toBe("");
+    expectWaysOn(refusal(outcome));
+  });
 
-      const attempt = spawnSync("gh", [...call.split(" ").slice(1), "--jq", "."], {
-        encoding: "utf8",
-        timeout: SUBPROCESS_TIMEOUT,
-        env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
+  /** A parked chain re-labelled by hand: the label alone moves nothing. */
+  it("refuses a human re-adding the label to a parked chain", () => {
+    const outcome = runPreflight({
+      built: [172],
+      statusPages: verdictOn("failure", VERDICTS["needs a closer look"].description),
+    });
+
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(writes(outcome).some((argv) => argv.includes("agent:blocked"))).toBe(false);
+  });
+
+  /** A round in flight is never cut short, whatever its head carries now. */
+  it.each(["agent:review", "agent:fix", "agent:update-branch"])(
+    "refuses while the PRD PR carries %s, its round still running",
+    (label) => {
+      const outcome = runPreflight({
+        pulls: [...BYSTANDERS, { ...PRD_PR, labels: [{ name: label }] }],
+        built: [172],
+        statusPages: APPROVED,
       });
 
-      expect(attempt.status).not.toBe(0);
-      expect(attempt.stderr).not.toContain("unknown flag");
-      expect(attempt.stderr).not.toContain("Unknown JSON field");
-      expect(attempt.stderr).toContain("connection refused");
-    }
-  });
-});
-
-/** What the merge step reads the settings from: every method on unless said. */
-const REPO = { allow_squash_merge: true, allow_rebase_merge: true, allow_merge_commit: true };
-
-const SLICE = 210;
-const SLICE_BRANCH = "agent/slice-171-172-slice-1";
-
-/** The merge step, handed slice PR #210 in the state `extra` describes. */
-const runMerge = (
-  extra: Record<string, unknown> = {},
-  options: {
-    readonly repo?: Record<string, unknown>;
-    readonly pat?: boolean;
-    /** GitHub refuses the merge itself, as a required check or review does. */
-    readonly mergeRefused?: boolean;
-  } = {},
-): StepOutcome =>
-  runStep("merge", {
-    pulls: [...BYSTANDERS, pull(SLICE, SLICE_BRANCH, PRD_BRANCH, "OPEN", extra)],
-    repo: options.repo ?? REPO,
-    env: {
-      SLICE_PR: String(SLICE),
-      HAS_PAT: String(options.pat ?? true),
-      ...(options.mergeRefused === true ? { GH_REPLAY_MERGE_FAILURE: "1" } : {}),
+      expect(outputOf(outcome, "refused")).toBe("true");
+      expect(refusal(outcome)).toContain(`PRD PR #201 still has \`${label}\``);
     },
+  );
+
+  /** Every sub-issue built and the last round approved: the finishing run. */
+  it("makes the finishing run once every sub-issue is built and the head is approved", () => {
+    const outcome = runPreflight({ built: [172, 173, 174], statusPages: APPROVED });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "finishing")).toBe("true");
+    expect(outputOf(outcome, "build")).toBe("false");
+    expect(outputOf(outcome, "sub")).toBe("");
+    expect(outputOf(outcome, "landed")).toBe("3");
+    expect(outputOf(outcome, "prd_pr")).toBe("201");
+    expect(outcome.writes).toEqual([]);
   });
 
-/** The pull request writes, as the argv each was made with. */
-const prWrites = (outcome: Outcome): string[][] =>
-  outcome.writes.map((w) => JSON.parse(w) as string[]).filter((argv) => argv[0] === "pr" || argv[0] === "api");
+  /** …and not before its last round approves. */
+  it("does not finish on a last slice whose round did not approve", () => {
+    const outcome = runPreflight({
+      built: [172, 173, 174],
+      statusPages: verdictOn("failure", VERDICTS["changes recommended"].description),
+    });
 
-const merges = (outcome: Outcome): string[][] => prWrites(outcome).filter((argv) => argv[1] === "merge");
-
-/**
- * `Merge slice PR #<n>` (#173), executed. It never reads the verdict; what it
- * rules on is whether the round is still running and whether GitHub can merge
- * the thing at all, and every refusal names the slice PR and fails into `Mark
- * blocked on failure` with a reason file — touching nothing on the way.
- */
-describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
-  it("runs under the shell the workflow actually gets", () => {
-    expect(stepById("merge").shell).toBeUndefined();
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(outputOf(outcome, "finishing")).toBe("");
   });
 
-  it.each(["agent:review", "agent:fix", "agent:update-branch"])(
-    "refuses while %s is on the slice PR, naming it",
-    (label: string) => {
-      const outcome = runMerge({ labels: [{ name: "agent:follow-ups" }, { name: label }] });
+  /**
+   * A PRD PR handed over already is a finished PRD. With more than one slice,
+   * that is the final-review mark the handover writes, whatever the draft
+   * state: review marks the PRD PR ready after slice rounds too.
+   */
+  it.each([true, false])(
+    "refuses a PRD of several slices whose final review was requested as finished (draft: %s)",
+    (isDraft) => {
+      const outcome = runPreflight({
+        pulls: [...BYSTANDERS, { ...PRD_PR, isDraft, body: `Closes #171\n\n${FINAL_REVIEW}` }],
+        built: [172, 173, 174],
+        statusPages: APPROVED,
+      });
 
-      expect(outcome.status).toBe(1);
-      expect(outcome.reason).toContain(`Slice PR #${SLICE}`);
-      expect(outcome.reason).toContain(`\`${label}\``);
-      expect(outcome.reason).toMatch(/round has not ended/);
-      expect(outcome.stdout).toContain(`::error::Slice PR #${SLICE} still has`);
-      expect(outcome.writes).toEqual([]);
-      expect(outcome.output).not.toContain("merged=");
+      expect(outputOf(outcome, "refused")).toBe("true");
+      expect(refusal(outcome)).toContain(
+        "Every sub-issue of this PRD is built and the final review of PRD PR #201 was requested",
+      );
+      expect(refusal(outcome)).not.toMatch(/agent:review/);
+      expect(writes(outcome).some((argv) => argv.includes("agent:blocked"))).toBe(false);
     },
   );
 
   /**
-   * UNKNOWN — GitHub still computing — is waited on before it lands here, and
-   * is not executed: the replay answers the same every time, so that scenario
-   * would be half a minute of sleeping to reach this same refusal.
+   * The sequence the draft test got wrong: slice 1's round ended and review
+   * marked the PRD PR ready, as it does after any round that starts no fix,
+   * and every later slice was built on it. Ready is not handed over, so the
+   * last approval still makes the finishing run, and the final review is
+   * still asked for.
    */
-  it("refuses a conflicted slice PR, naming it and pointing at agent:update-branch on it", () => {
-    const outcome = runMerge({ mergeable: "CONFLICTING" });
+  it("makes the finishing run of a PRD of several slices whose PRD PR review already marked ready", () => {
+    const outcome = runPreflight({
+      pulls: [...BYSTANDERS, { ...PRD_PR, isDraft: false, body: "Closes #171" }],
+      built: [172, 173, 174],
+      statusPages: APPROVED,
+    });
 
-    expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`slice PR #${SLICE}`);
-    expect(outcome.reason).toContain("conflicting");
-    expect(outcome.reason).toContain(`Add \`agent:update-branch\` to slice PR #${SLICE}`);
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "finishing")).toBe("true");
+    expect(outputOf(outcome, "landed")).toBe("3");
     expect(outcome.writes).toEqual([]);
   });
 
-  it("refuses a slice PR closed without merging, naming it", () => {
-    const outcome = runMerge({ state: "CLOSED" });
+  /** With one slice, ready is the whole handover, so ready is finished, whoever marked it. */
+  it("refuses a one-slice PRD whose PRD PR is ready as finished", () => {
+    const outcome = runPreflight({
+      issue: issue(["OPEN"]),
+      pulls: [...BYSTANDERS, { ...PRD_PR, isDraft: false }],
+      built: [172],
+      statusPages: APPROVED,
+    });
 
-    expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`Slice PR #${SLICE}`);
-    expect(outcome.reason).toContain("closed");
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(refusal(outcome)).toContain("Every sub-issue of this PRD is built and its PRD PR is ready for you.");
+    expect(writes(outcome).some((argv) => argv.includes("agent:blocked"))).toBe(false);
+  });
+
+  it("makes the finishing run of a one-slice PRD whose PRD PR is still a draft", () => {
+    const outcome = runPreflight({ issue: issue(["OPEN"]), built: [172], statusPages: APPROVED });
+
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "finishing")).toBe("true");
+    expect(outputOf(outcome, "landed")).toBe("1");
+  });
+
+  /**
+   * A run that died between its push and opening the PRD PR leaves slices on
+   * the branch and no PRD PR. The re-label opens it and asks for the review,
+   * and builds nothing: there is no verdict to gate on until it has.
+   */
+  it("opens the missing PRD PR rather than building, when slices are built and none is open", () => {
+    const outcome = runPreflight({ pulls: BYSTANDERS, built: [172] });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "build")).toBe("false");
+    expect(outputOf(outcome, "finishing")).toBe("false");
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "prd_pr")).toBe("");
     expect(outcome.writes).toEqual([]);
   });
 
-  it.each([
-    [REPO, "--squash"],
-    [{ ...REPO, allow_squash_merge: false }, "--rebase"],
-    [{ ...REPO, allow_squash_merge: false, allow_rebase_merge: false }, "--merge"],
-  ])("merges with the first method the repo allows (%j → %s)", (repo: Record<string, unknown>, flag: string) => {
-    const outcome = runMerge({}, { repo });
+  /**
+   * **Blocking links, checked once, before the first build.** A sub-issue
+   * listed before one it is blocked by is refused, naming both, and nothing is
+   * built.
+   */
+  it("refuses a sub-issue listed before one it is blocked by, naming both, before anything is built", () => {
+    const outcome = runPreflight({
+      branches: [],
+      pulls: BYSTANDERS,
+      blockedBy: { "173": [{ number: 174, state: "open" }] },
+    });
+    const comment = refusal(outcome);
 
-    expect(outcome.status).toBe(0);
-    expect(merges(outcome)).toEqual([["pr", "merge", String(SLICE), flag, "--match-head-commit", `sha-of-${SLICE}`]]);
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(outputOf(outcome, "build")).toBe("");
+    expect(comment).toContain("Sub-issue #173 comes before #174");
+    expect(comment).toContain("Reorder the sub-issues so #174 comes before #173");
+    expect(writes(outcome).at(-1)).toEqual(["issue", "edit", PARENT, "--add-label", "agent:blocked"]);
   });
 
-  /** Settings this token cannot read come back absent, which is no method. */
-  it("refuses rather than guessing when the repo allows no method it can read", () => {
-    const outcome = runMerge({}, { repo: {} });
+  it("refuses a sub-issue blocked by an issue outside the PRD, naming the link to move to the parent", () => {
+    const outcome = runPreflight({
+      branches: [],
+      pulls: BYSTANDERS,
+      blockedBy: { "173": [{ number: 99, state: "open" }] },
+    });
+    const comment = refusal(outcome);
 
-    expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`slice PR #${SLICE}`);
-    expect(merges(outcome)).toEqual([]);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(comment).toContain("Sub-issue #173 is blocked by #99, which isn't part of this PRD");
+    expect(comment).toContain('Move that "blocked by" link from #173 to this issue');
+    expect(writes(outcome).at(-1)).toEqual(["issue", "edit", PARENT, "--add-label", "agent:blocked"]);
+  });
+
+  /** A closed outside blocker is done with, as a closed blocker of the parent is. */
+  it("does not refuse a sub-issue blocked by an outside issue that is closed", () => {
+    const outcome = runPreflight({
+      branches: [],
+      pulls: BYSTANDERS,
+      blockedBy: { "173": [{ number: 99, state: "closed" }] },
+    });
+
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "sub")).toBe("172");
   });
 
   /**
-   * The chain's mark (#209): written into the slice PR's body before the merge,
-   * pinned to the head the merge is pinned to, so review's `advance-merged`
-   * can tell this merge from one made by hand under the same login.
+   * A correctly ordered PRD whose slices are each blocked by the one before
+   * runs every slice: the links never clear while the chain runs, since
+   * sub-issues stay open, and the check is made before the first build only.
    */
-  it("marks the slice PR's body with the head it merges, before it merges", () => {
-    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" });
-    const writes = prWrites(outcome);
-    const mark = writes.findIndex((argv) => argv[0] === "api" && argv[2] === "PATCH");
+  it("runs every slice of a chain whose slices are each blocked by the one before", () => {
+    const blockedBy = {
+      "173": [{ number: 172, state: "open" }],
+      "174": [{ number: 173, state: "open" }],
+    };
+    const first = runPreflight({ branches: [], pulls: BYSTANDERS, blockedBy });
+    const second = runPreflight({ built: [172], statusPages: APPROVED, blockedBy });
+    const third = runPreflight({ built: [172, 173], statusPages: APPROVED, blockedBy });
+    const last = runPreflight({ built: [172, 173, 174], statusPages: APPROVED, blockedBy });
 
-    expect(outcome.status).toBe(0);
-    expect(mark).toBeGreaterThanOrEqual(0);
-    expect(writes[mark]?.[3]).toBe(`repos/${GH_REPO}/pulls/${SLICE}`);
-    expect(writes[mark]?.at(-1)).toBe("body=Part of #172\n\n<!-- agent-chain-merge 0123abc -->");
-    expect(mark).toBeLessThan(writes.findIndex((argv) => argv[1] === "merge"));
+    expect([first, second, third].map((o) => outputOf(o, "sub"))).toEqual(["172", "173", "174"]);
+    expect(outputOf(last, "finishing")).toBe("true");
+    for (const outcome of [first, second, third, last]) expect(outcome.writes).toEqual([]);
+  }, 4 * SUBPROCESS_TIMEOUT);
+
+  /** Once a slice is built, links that would refuse the first build are not read. */
+  it("does not check the links again once a slice is built", () => {
+    const outcome = runPreflight({
+      built: [172],
+      statusPages: APPROVED,
+      blockedBy: { "173": [{ number: 174, state: "open" }, { number: 99, state: "open" }] },
+    });
+
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "sub")).toBe("173");
   });
 
-  it("does not mark a body that already carries the mark for this head", () => {
-    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172\n\n<!-- agent-chain-merge 0123abc -->" });
+  /** The parent's own blockers still refuse a build, with their own message. */
+  it("refuses a parent with an open blocker before it builds", () => {
+    const outcome = runPreflight({
+      branches: [],
+      pulls: BYSTANDERS,
+      blockedBy: { [PARENT]: [{ number: 50, state: "open" }] },
+    });
 
-    expect(outcome.status).toBe(0);
-    expect(prWrites(outcome).some((argv) => argv[2] === "PATCH")).toBe(false);
-    expect(merges(outcome)).toHaveLength(1);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(refusal(outcome)).toContain("It's blocked by #50, which is still open.");
   });
 
   /**
-   * And takes it back out when the merge does not happen (#209, review of
-   * #210). A mark that outlived a refused merge would make a later hand merge
-   * of the same head read as the chain's, and nothing would move the chain on.
+   * The contract the replay stands on, against the real binary: the flags
+   * parse and every `--json` field exists, so gh gets as far as the connection
+   * to `localhost` and no further. gh checks field names before any request,
+   * so a misspelt one is refused here rather than on a PRD.
    */
-  it("takes the mark back out when the merge is refused", () => {
-    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" }, { mergeRefused: true });
-    const writes = prWrites(outcome);
-    const patches = writes.filter((argv) => argv[2] === "PATCH");
-    const merged = writes.findIndex((argv) => argv[1] === "merge");
+  it.skipIf(!onPath("gh"))("gh accepts the pr list call the PRD PR lookup composes", () => {
+    const run = preflight().run ?? "";
+    const call = 'gh pr list --state open --head "$prd_branch" --limit 100 --json number,headRefOid,isDraft,labels,body';
 
-    expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`Couldn't merge slice PR #${SLICE}`);
-    expect(patches.map((argv) => argv.at(-1))).toEqual([
-      "body=Part of #172\n\n<!-- agent-chain-merge 0123abc -->",
-      "body=Part of #172",
-    ]);
-    expect(writes.lastIndexOf(patches[1] ?? [])).toBeGreaterThan(merged);
-  });
+    expect(run).toContain(call);
 
-  /** A mark on this head an earlier run could not remove goes too, and nothing else in the body does. */
-  it("takes out a mark an earlier run left on this head, when the merge is refused", () => {
-    const outcome = runMerge(
-      { headRefOid: "0123abc", body: "Part of #172\n\n<!-- agent-chain-merge 0123abc -->\n\n<!-- agent-chain-merge 9999fff -->" },
-      { mergeRefused: true },
+    const attempt = spawnSync(
+      "gh",
+      [...call.replace('"$prd_branch"', PRD_BRANCH).split(" ").slice(1), "--jq", "."],
+      {
+        encoding: "utf8",
+        timeout: SUBPROCESS_TIMEOUT,
+        env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
+      },
     );
-    const patches = prWrites(outcome).filter((argv) => argv[2] === "PATCH");
 
-    expect(outcome.status).toBe(1);
-    expect(patches.map((argv) => argv.at(-1))).toEqual([
-      "body=Part of #172\n\n<!-- agent-chain-merge 9999fff -->",
-    ]);
+    expect(attempt.status).not.toBe(0);
+    expect(attempt.stderr).not.toContain("unknown flag");
+    expect(attempt.stderr).not.toContain("Unknown JSON field");
+    expect(attempt.stderr).toContain("connection refused");
   });
-
-  it("keeps the mark once the merge has happened", () => {
-    const outcome = runMerge({ headRefOid: "0123abc", body: "Part of #172" });
-
-    expect(outcome.status).toBe(0);
-    expect(prWrites(outcome).filter((argv) => argv[2] === "PATCH")).toHaveLength(1);
-  });
-
-  it("marks nothing on a slice PR that is already merged", () => {
-    const outcome = runMerge({ state: "MERGED" });
-
-    expect(prWrites(outcome).some((argv) => argv[2] === "PATCH")).toBe(false);
-  });
-
-  it("pins the merge to the head it inspected", () => {
-    const outcome = runMerge({ headRefOid: "0123abc" });
-
-    expect(merges(outcome)[0]).toContain("--match-head-commit");
-    expect(merges(outcome)[0]?.at(-1)).toBe("0123abc");
-  });
-
-  it("marks a still-draft slice PR ready first", () => {
-    const outcome = runMerge({ isDraft: true });
-    const verbs = prWrites(outcome).map((argv) => argv[1]);
-
-    expect(outcome.status).toBe(0);
-    expect(prWrites(outcome)[0]).toEqual(["pr", "ready", String(SLICE)]);
-    expect(verbs.indexOf("ready")).toBeLessThan(verbs.indexOf("merge"));
-  });
-
-  it("leaves a slice PR that is already ready alone", () => {
-    expect(prWrites(runMerge()).map((argv) => argv[1])).not.toContain("ready");
-  });
-
-  it("deletes the slice branch once it has merged, and hands the PRD branch on", () => {
-    const outcome = runMerge();
-    const writes = prWrites(outcome);
-
-    expect(writes.at(-1)).toEqual(["api", "-X", "DELETE", `repos/${GH_REPO}/git/refs/heads/${SLICE_BRANCH}`]);
-    expect(writes.findIndex((argv) => argv[1] === "merge")).toBeLessThan(writes.length - 1);
-    expect(outcome.output).toContain(`prd_branch=${PRD_BRANCH}\n`);
-    expect(outcome.output).toContain("merged=true\n");
-  });
-
-  /** A re-run after a merge that landed merges nothing twice. */
-  it("does not merge a slice PR that is already merged, and still carries on", () => {
-    const outcome = runMerge({ state: "MERGED" });
-
-    expect(outcome.status).toBe(0);
-    expect(merges(outcome)).toEqual([]);
-    expect(outcome.output).toContain("merged=true\n");
-  });
-
-  it("says nothing about the token when AGENT_PAT merged it", () => {
-    expect(runMerge({ labels: [{ name: "agent:follow-ups" }] }).stdout).not.toContain("::warning::AGENT_PAT");
-  });
-
-  it("warns on a GITHUB_TOKEN merge that the PRD PR's CI did not run", () => {
-    const outcome = runMerge({}, { pat: false });
-
-    expect(outcome.status).toBe(0);
-    expect(merges(outcome)).toHaveLength(1);
-    expect(outcome.stdout).toContain("::warning::AGENT_PAT is not set");
-    expect(outcome.stdout).toContain("the PRD PR's CI did not run");
-    expect(outcome.stdout).not.toContain("follow-ups were not filed");
-  });
-
-  it("adds, when the slice PR carries agent:follow-ups, that they were not filed and how to file them", () => {
-    const outcome = runMerge({ labels: [{ name: "agent:follow-ups" }] }, { pat: false });
-
-    expect(outcome.stdout).toContain("the PRD PR's CI did not run");
-    expect(outcome.stdout).toContain("follow-ups were not filed");
-    expect(outcome.stdout).toContain(`remove \`agent:follow-ups\` from slice PR #${SLICE} and add it back`);
-  });
-});
-
-const SLICE_URL = `https://github.com/${GH_REPO}/pull/${SLICE}`;
-
-/** The step after the merge, handed merged slice PR #210 as `extra` describes it. */
-const runSliceRow = (
-  extra: Record<string, unknown> = {},
-  options: {
-    readonly issue?: Record<string, unknown>;
-    readonly bystanders?: readonly Record<string, unknown>[];
-    readonly threads?: readonly Record<string, unknown>[];
-    readonly statusPages?: readonly Record<string, unknown>[];
-    /** The rowless merged slice PRs the preflight found before this one. */
-    readonly backfill?: string;
-  } = {},
-): StepOutcome =>
-  runStep("slice_row", {
-    pulls: [
-      ...(options.bystanders ?? BYSTANDERS),
-      pull(SLICE, SLICE_BRANCH, PRD_BRANCH, "MERGED", {
-        title: "Slice 1 (#172)",
-        body: "Part of #172\n\nOne slice of PRD #171.",
-        url: SLICE_URL,
-        ...extra,
-      }),
-    ],
-    ...(options.issue === undefined ? {} : { issue: options.issue }),
-    ...(options.threads === undefined ? {} : { threads: options.threads }),
-    ...(options.statusPages === undefined ? {} : { statusPages: options.statusPages }),
-    env: { SLICE_PR: String(SLICE), PRD_BRANCH, BACKFILL: options.backfill ?? "" },
-  });
-
-/** The facts the step left for the slices table, read back. */
-const facts = (outcome: StepOutcome): Record<string, unknown> => JSON.parse(outcome.temp("slices-table.json")) as Record<string, unknown>;
-
-const merged = (outcome: StepOutcome): Record<string, unknown> => facts(outcome)["merged"] as Record<string, unknown>;
-
-/** A review thread node, as the GraphQL read returns it. */
-const reviewThread = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
-  isResolved: false,
-  path: ".github/workflows/review.yml",
-  line: 88,
-  originalLine: 80,
-  comments: { nodes: [{ url: `${SLICE_URL}#discussion_r1` }] },
-  ...over,
 });
 
 /**
- * The facts for the merged slice's row of the slices table (#174), gathered
- * through `gh` by the step after the merge and left under `RUNNER_TEMP` for the
- * runner, which renders them into the PRD PR body.
+ * **A chain an older release started, at the upgrade** (#248): pre-upgrade
+ * compatibility, removable under #224. That release built each slice as a
+ * slice PR into the PRD branch, merged it with no `Agent-Slice` trailer, and
+ * closed the slice's sub-issue as its slice PR opened.
  */
-describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, executed", () => {
-  it("names the sub-issue by its title in the preflight's snapshot, and the slice PR by number and URL", () => {
-    const outcome = runSliceRow();
-
-    expect(outcome.status).toBe(0);
-    expect(merged(outcome)).toMatchObject({ title: "Slice 1", subIssue: 172, slicePr: SLICE, slicePrUrl: SLICE_URL });
-  });
-
-  it("reads the verdict from the agent-review status on the merged head, and only that context", () => {
-    const outcome = runSliceRow(
-      {},
-      {
-        statusPages: [
-          {
-            state: "failure",
-            total_count: 2,
-            statuses: [
-              { context: "ci/build", state: "success", description: "Build passed." },
-              { context: "agent-review", state: "failure", description: "Needs a closer look. Read the review." },
-            ],
-          },
-        ],
-      },
-    );
-
-    expect(merged(outcome)["verdict"]).toBe("Needs a closer look. Read the review.");
-  });
-
-  it("records no verdict when the merged head carries none", () => {
-    expect(merged(runSliceRow())["verdict"]).toBeNull();
-  });
-
-  it("links the unresolved threads only, falling back to the original line of an outdated one", () => {
-    const outcome = runSliceRow(
-      {},
-      {
-        threads: [
-          reviewThread(),
-          reviewThread({ isResolved: true, path: "resolved.ts" }),
-          reviewThread({ path: "outdated.ts", line: null, originalLine: 12 }),
-          reviewThread({ path: "file-level.md", line: null, originalLine: null }),
-        ],
-      },
-    );
-
-    expect(merged(outcome)["openThreads"]).toEqual([
-      { path: ".github/workflows/review.yml", line: 88, url: `${SLICE_URL}#discussion_r1` },
-      { path: "outdated.ts", line: 12, url: `${SLICE_URL}#discussion_r1` },
-      { path: "file-level.md", line: null, url: `${SLICE_URL}#discussion_r1` },
-    ]);
-  });
+describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight on a chain in flight at the upgrade, executed", () => {
+  /** The slice PR of #173 an older release opened into the PRD branch. */
+  const OLD_SLICE = pull(190, "agent/slice-171-173-slice-2", PRD_BRANCH);
 
   /**
-   * #172 and #173 were built before slice PRs: closed, and no slice PR says
-   * `Part of` either. #174 is the slice being merged, and #175 is still open.
+   * #172 and #173 are closed with no slice range: landed before the upgrade.
+   * The chain resumes at #174, on the PRD branch and PRD PR it already has,
+   * with no verdict to gate on, since no round on the PRD PR reviewed them;
+   * and the links are not checked, since this is not the first slice.
    */
-  it("offers every closed sub-issue with no slice PR as a pre-upgrade slice, in sub-issue order", () => {
-    const outcome = runSliceRow(
-      { body: "Part of #174", title: "Slice 3 (#174)" },
-      {
-        issue: {
-          ...issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]),
-        },
-        bystanders: BYSTANDERS.filter((p) => p["number"] !== 202),
-      },
-    );
+  it("builds the first open sub-issue of a chain whose closed sub-issues have no slice range", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "OPEN"]),
+      blockedBy: { "172": [{ number: 174, state: "open" }] },
+    });
 
-    expect(outcome.status).toBe(0);
-    expect(merged(outcome)).toMatchObject({ title: "Slice 3", subIssue: 174 });
-    expect(facts(outcome)["preUpgrade"]).toEqual([
-      { title: "Slice 1", subIssue: 172 },
-      { title: "Slice 2", subIssue: 173 },
-    ]);
-  });
-
-  /** #202 is a merged slice PR for #172, found by its branch: it has no body. */
-  it("does not offer a sub-issue a slice PR of any state built", () => {
-    const outcome = runSliceRow(
-      { body: "Part of #174" },
-      { issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]) },
-    );
-
-    expect(facts(outcome)["preUpgrade"]).toEqual([{ title: "Slice 2", subIssue: 173 }]);
-  });
-
-  it("offers none on an ordinary chain, whose closed sub-issues each had a slice PR", () => {
-    expect(facts(runSliceRow())["preUpgrade"]).toEqual([]);
-  });
-
-  it("falls back to the slice branch's name when the body no longer says Part of", () => {
-    expect(merged(runSliceRow({ body: "Edited by hand." }))["subIssue"]).toBe(172);
-  });
-
-  it("stops, naming the slice PR, when it cannot tell which sub-issue the slice built", () => {
-    const outcome = runSliceRow({ body: "Edited by hand.", headRefName: "renamed-by-hand" });
-
-    expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`slice PR #${SLICE}`);
-    expect(outcome.reason).toContain("Part of #<sub-issue>");
-    expect(outcome.reason).toContain("Trying again doesn't repeat the merge.");
-    expect(outcome.temp("slices-table.json")).toBe("");
-  });
-
-  it("only reads", () => {
-    expect(runSliceRow().writes).toEqual([]);
-  });
-
-  it("backfills nothing when the preflight found no other rowless slice PR", () => {
-    expect(facts(runSliceRow())["backfill"]).toEqual([]);
-  });
-
-  /**
-   * #202 merged in a run that died before writing its row (#207). Its row is
-   * gathered the way the merged slice's is, from its own merged head, and
-   * listed in the order the preflight found them, before the merged slice's.
-   */
-  it("gathers the row of every backfilled slice PR, in the order it is handed them", () => {
-    const outcome = runSliceRow(
-      { body: "Part of #174", title: "Slice 3 (#174)" },
-      {
-        issue: issue(["CLOSED", "CLOSED", "CLOSED", "OPEN"]),
-        backfill: "202 211",
-        bystanders: [
-          ...BYSTANDERS.map((p) => (p["number"] === 202 ? { ...p, url: `https://github.com/${GH_REPO}/pull/202` } : p)),
-          pull(211, "agent/slice-171-173-slice-2", PRD_BRANCH, "MERGED", {
-            body: "Part of #173",
-            url: `https://github.com/${GH_REPO}/pull/211`,
-          }),
-        ],
-      },
-    );
-
-    expect(outcome.status).toBe(0);
-    expect(facts(outcome)["backfill"]).toEqual([
-      expect.objectContaining({ title: "Slice 1", subIssue: 172, slicePr: 202, slicePrUrl: `https://github.com/${GH_REPO}/pull/202` }),
-      expect.objectContaining({ title: "Slice 2", subIssue: 173, slicePr: 211 }),
-    ]);
-    expect(merged(outcome)).toMatchObject({ subIssue: 174, slicePr: SLICE });
-    expect(facts(outcome)["preUpgrade"]).toEqual([]);
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "build")).toBe("true");
+    expect(outputOf(outcome, "sub")).toBe("174");
+    expect(outputOf(outcome, "sub_k")).toBe("3");
+    expect(outputOf(outcome, "landed")).toBe("2");
+    expect(outputOf(outcome, "prd_pr")).toBe("201");
+    expect(outputOf(outcome, "approved_sub")).toBe("");
     expect(outcome.writes).toEqual([]);
   });
 
-  it("stops, naming the backfilled slice PR, when it cannot tell which sub-issue that one built", () => {
-    const outcome = runSliceRow(
-      { body: "Part of #174" },
+  /**
+   * The slices that landed before the upgrade count for the handover: one
+   * slice built here beside them was not a review of the whole PRD PR, so the
+   * finishing run asks for the final review rather than marking it ready.
+   */
+  it("counts the slices landed before the upgrade when it finishes", () => {
+    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED", "OPEN"]), built: [174], statusPages: APPROVED });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "finishing")).toBe("true");
+    expect(outputOf(outcome, "landed")).toBe("3");
+    expect(outputOf(outcome, "approved_sub")).toBe("174");
+  });
+
+  /** And "finished" is read off the same count, so the retry of that handover is refused as one. */
+  it("refuses a finished chain whose final review was requested over slices landed before the upgrade", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "OPEN"]),
+      built: [173],
+      pulls: [...BYSTANDERS, { ...PRD_PR, body: `Closes #171\n\n${FINAL_REVIEW}` }],
+      statusPages: APPROVED,
+    });
+
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(refusal(outcome)).toContain("the final review of PRD PR #201 was requested");
+  });
+
+  /** Every sub-issue closed and none built here: nothing to build, and nothing to finish on. */
+  it("refuses a chain whose every sub-issue closed before the upgrade, building nothing", () => {
+    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED"]) });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(outputOf(outcome, "build")).toBe("");
+    expect(refusal(outcome)).toContain("closed before this release built any of them");
+    expect(writes(outcome).some((argv) => argv.includes("agent:blocked"))).toBe(false);
+  });
+
+  /**
+   * **An old slice PR still open is refused by name**, and nothing is built
+   * over it: what to do is the maintainer's, and the refusal says what that
+   * is. Before the gate, so a chain whose PRD PR head carries an approval is
+   * refused all the same.
+   */
+  it("refuses an open slice PR into the PRD branch, naming it, and builds nothing", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "OPEN"]),
+      pulls: [...BYSTANDERS, PRD_PR, OLD_SLICE],
+      statusPages: APPROVED,
+    });
+    const comment = refusal(outcome);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(outputOf(outcome, "build")).toBe("");
+    expect(outputOf(outcome, "sub")).toBe("");
+    expect(comment).toContain("#190 (`agent/slice-171-173-slice-2`)");
+    expect(comment).toContain(`\`${PRD_BRANCH}\``);
+    expect(comment).toContain("Merge or close each by hand");
+    expect(comment).toContain("reopen its sub-issue");
+    expect(comment).toContain("Then add `agent:implement` again.");
+    expect(writes(outcome)).toEqual([
+      ["issue", "comment", PARENT, "--body", comment],
+      ["issue", "edit", PARENT, "--remove-label", "agent:implement"],
+      ["issue", "edit", PARENT, "--add-label", "agent:blocked"],
+    ]);
+  });
+
+  it("names every open slice PR into the PRD branch", () => {
+    const outcome = runPreflight({
+      pulls: [...BYSTANDERS, PRD_PR, OLD_SLICE, pull(191, "agent/slice-171-174-slice-3", PRD_BRANCH)],
+    });
+
+    expect(refusal(outcome)).toContain("#190 (`agent/slice-171-173-slice-2`), #191 (`agent/slice-171-174-slice-3`)");
+  });
+
+  /**
+   * Only an **open** PR from an `agent/slice-` branch **into this PRD's
+   * branch**: a merged one is history, a human's PR into the PRD branch is
+   * not a slice, and a slice PR into another PRD's branch is that PRD's.
+   */
+  it("does not refuse over a merged slice PR, a human's PR into the PRD branch, or another PRD's slice PR", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "OPEN", "OPEN"]),
+      pulls: [
+        ...BYSTANDERS,
+        PRD_PR,
+        { ...OLD_SLICE, state: "MERGED" },
+        pull(192, "fix/a-typo", PRD_BRANCH),
+        pull(193, "agent/slice-1710-1711-other", "agent/prd-1710-other"),
+      ],
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "sub")).toBe("173");
+  });
+
+  /** "Could not look" is never read as "none open", which would build over one. */
+  it("stops, naming the branch, when it cannot look for open slice PRs", () => {
+    const outcome = runPreflight({ env: { GH_REPLAY_PR_LIST_FAILURE: "1" } });
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain(`Couldn't look for slice PRs still open into \`${PRD_BRANCH}\`, so nothing was built.`);
+    expect(outcome.output).not.toContain("sub=");
+    expect(outcome.writes).toEqual([]);
+  });
+
+  it.skipIf(!onPath("gh"))("gh accepts the pr list call the slice PR lookup composes", () => {
+    const call = 'gh pr list --state open --base "$prd_branch" --limit 100 --json number,headRefName';
+
+    expect(preflight().run ?? "").toContain(call);
+
+    const attempt = spawnSync(
+      "gh",
+      [...call.replace('"$prd_branch"', PRD_BRANCH).split(" ").slice(1), "--jq", "."],
       {
-        backfill: "205",
-        bystanders: [...BYSTANDERS, pull(205, "renamed-by-hand", PRD_BRANCH, "MERGED", { body: "Edited by hand." })],
+        encoding: "utf8",
+        timeout: SUBPROCESS_TIMEOUT,
+        env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
       },
     );
 
-    expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain("slice PR #205");
-    expect(outcome.reason).toContain("Trying again doesn't repeat the merge.");
-    expect(outcome.temp("slices-table.json")).toBe("");
+    expect(attempt.status).not.toBe(0);
+    expect(attempt.stderr).not.toContain("unknown flag");
+    expect(attempt.stderr).not.toContain("Unknown JSON field");
+    expect(attempt.stderr).toContain("connection refused");
+  });
+
+  /** On a first run there is no PRD branch, so there is nothing for a slice PR to be into. */
+  it("does not look for slice PRs before the PRD branch exists", () => {
+    const outcome = runPreflight({ branches: [], pulls: [...BYSTANDERS, OLD_SLICE] });
+
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "sub")).toBe("172");
   });
 });
 
-/** The PRD PR step, handed the PRD branch the merge step read off the slice PR. */
-const runPrdPr = (pulls: readonly Record<string, unknown>[]): StepOutcome =>
-  runStep("prd_pr", { pulls, env: { PRD_BRANCH } });
+const prWrites = (outcome: Outcome): string[][] => writes(outcome).filter((argv) => argv[0] === "pr");
+
+const runPrdPr = (pulls: readonly Record<string, unknown>[], states?: readonly string[]): Outcome =>
+  runStep("prd_pr", { pulls, ...(states === undefined ? {} : { issue: issue(states) }), env: { PRD_BRANCH, HAS_PAT: "true" } });
 
 /**
- * The PRD PR (#173): opened as a draft carrying `Closes #<parent>` by the run
- * that merges the first slice, found by its **head** by every run after — which
- * is also what adopts the draft PR a pre-upgrade chain opened from the PRD
- * branch.
+ * The PRD PR: opened as a draft by the run that builds the first slice, found
+ * by its **head** by every run after.
  */
 describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
-  it("opens it as a draft from the PRD branch into the base, closing the parent", () => {
-    const outcome = runPrdPr(BYSTANDERS.filter((p) => p["number"] !== 201));
+  it("opens it as a draft from the PRD branch into the base", () => {
+    const outcome = runPrdPr(BYSTANDERS);
     const creates = prWrites(outcome).filter((argv) => argv[1] === "create");
 
-    expect(outcome.status).toBe(0);
+    expect(outcome.status, outcome.stdout).toBe(0);
     expect(creates).toHaveLength(1);
     expect(creates[0]?.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "main", "--head", PRD_BRANCH]);
-    expect(outcome.temp("prd-pr-body.md").split("\n")[0]).toBe(`Closes #${PARENT}`);
     expect(outcome.output).toContain("number=300\n");
   });
 
-  /** #201 is the PR whose head is the PRD branch: a pre-upgrade draft, or this chain's own. */
-  it("reuses the PRD PR a run before it opened, or a pre-upgrade one, rather than a second", () => {
-    const outcome = runPrdPr(BYSTANDERS);
+  /**
+   * The frame, byte for byte: the `Closes` block first, closing the parent and
+   * every open sub-issue when the PRD PR merges, and nothing before; a closed
+   * sub-issue gets no line. Then the progress list, which a run that built
+   * nothing has none of and says when it is written, the note and the
+   * unwritten summary.
+   */
+  it("writes the Closes block with the parent and every open sub-issue", () => {
+    const outcome = runPrdPr(BYSTANDERS, ["OPEN", "CLOSED", "OPEN", "OPEN"]);
+
+    expect(outcome.temp("prd-pr-body.md")).toBe(
+      [
+        "<!-- agent:closes -->",
+        `Closes #${PARENT}`,
+        "Closes #172",
+        "Closes #174",
+        "Closes #175",
+        "<!-- /agent:closes -->",
+        "",
+        PROGRESS_START,
+        "_The progress list is written when this slice's review round ends._",
+        PROGRESS_END,
+        "",
+        DRAFT_NOTE_START,
+        "> [!NOTE]",
+        `> The agent loop builds PRD #${PARENT} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.`,
+        DRAFT_NOTE_END,
+        "",
+        SUMMARY_START,
+        "_The final review will summarize the whole PRD here._",
+        SUMMARY_END,
+        "",
+      ].join("\n"),
+    );
+  });
+
+  /**
+   * A build run opens the PRD PR with the progress list its runner rendered,
+   * this slice in review, as it stands between the `Closes` block and the
+   * note.
+   */
+  it("opens it with the progress list the runner rendered", () => {
+    const list = renderProgressList({
+      subIssues: [{ number: 172, title: "Slice 1", state: "OPEN" }],
+      ranges: sliceRanges([{ sha: "a", parents: ["b"], slice: 172 }], [{ number: 172, state: "OPEN" }]),
+      verdict: "none",
+      running: { kind: "review" },
+      finalReview: "not requested",
+    });
+    const outcome = runStep("prd_pr", {
+      pulls: BYSTANDERS,
+      env: { PRD_BRANCH, HAS_PAT: "true" },
+      files: { "progress.md": list },
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.temp("prd-pr-body.md")).toContain(`<!-- /agent:closes -->\n\n${list}\n\n${DRAFT_NOTE_START}\n> [!NOTE]`);
+  });
+
+  it("reuses the PRD PR a run before it opened, rather than a second", () => {
+    const outcome = runPrdPr([...BYSTANDERS, PRD_PR]);
 
     expect(outcome.status).toBe(0);
     expect(prWrites(outcome)).toEqual([]);
@@ -1065,7 +984,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
   });
 
   it("refuses to guess between two open PRs from the PRD branch", () => {
-    const outcome = runPrdPr([...BYSTANDERS, pull(205, PRD_BRANCH, "release")]);
+    const outcome = runPrdPr([...BYSTANDERS, PRD_PR, pull(205, PRD_BRANCH, "release")]);
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("#201, #205");
@@ -1073,58 +992,181 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
   });
 });
 
-/** One output a step wrote, read back as the expression after it would. */
-const outputOf = (outcome: Outcome, name: string): string =>
-  new RegExp(`^${name}=(.*)$`, "m").exec(outcome.output)?.[1] ?? "";
+const RUN_URL = "https://github.com/acme/widgets/actions/runs/4242";
+const REVIEW_URL = "https://github.com/acme/widgets/pull/201#pullrequestreview-123";
+
+/** Every comment a step posted, as `[issue, body]`. */
+const comments = (outcome: Outcome): [string, string][] =>
+  writes(outcome)
+    .filter((argv) => argv[0] === "issue" && argv[1] === "comment")
+    .map((argv) => [argv[2] ?? "", argv.at(-1) ?? ""]);
 
 /**
- * The #207 sequence, replayed: slice PR #202 merged in a run that died before
- * its row or the PRD PR, and a re-label. Every step up to the build is run on
- * the outputs of the one before it, as the workflow wires them.
+ * Progress without labels (#246): a build run says on the sub-issue it starts
+ * and on the parent that it started, and the run past an approval notes the
+ * approved slice on its sub-issue. Executed, against the same replay.
  */
-describe.skipIf(!CAN_RUN)("agent-implement-prd resumes a run that died after merging a slice", () => {
-  it("merges nothing twice, gathers the missing row, opens the PRD PR, and builds the next slice", () => {
-    const pulls = BYSTANDERS.filter((p) => p["number"] !== 201).map((p) =>
-      p["number"] === 202 ? { ...p, body: "Part of #172", url: `https://github.com/${GH_REPO}/pull/202` } : p,
+describe.skipIf(!CAN_RUN)("agent-implement-prd's progress comments, executed", () => {
+  /**
+   * The slice the approval is for is the current one, the last sub-issue in
+   * the list with a slice range, whatever is closed: the one the note goes on.
+   */
+  it("hands the approved slice, its head and its review to the steps after the gate", () => {
+    const statusPages = [
+      {
+        state: "success",
+        total_count: 1,
+        statuses: [
+          { context: "agent-review", state: "success", description: VERDICTS["approval recommended"].description, target_url: REVIEW_URL },
+        ],
+      },
+    ];
+    const outcome = runPreflight({ issue: issue(["CLOSED", "OPEN", "OPEN"]), built: [172, 173], statusPages });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "approved_sub")).toBe("173");
+    expect(outputOf(outcome, "approved_sha")).toBe("sha-of-201");
+    expect(outputOf(outcome, "approved_review")).toBe(REVIEW_URL);
+    expect(outputOf(outcome, "sub")).toBe("174");
+    expect(outputOf(outcome, "sub_k")).toBe("3");
+    expect(outputOf(outcome, "subs")).toBe("3");
+  });
+
+  it("names no approved slice on the first slice, which follows no round", () => {
+    const outcome = runPreflight();
+
+    expect(outputOf(outcome, "sub")).toBe("172");
+    expect(outputOf(outcome, "sub_k")).toBe("1");
+    expect(outputOf(outcome, "approved_sub")).toBe("");
+  });
+
+  const START = {
+    SUB: "173",
+    SUB_TITLE: "Slice 2",
+    SUB_K: "2",
+    SUBS: "3",
+    PRD_BRANCH,
+    BUILD: "true",
+    FINISHING: "false",
+    RUN_URL,
+  };
+
+  it("posts the start comment on the sub-issue a build run starts, and a one-line note on the parent", () => {
+    const outcome = runStep("start", { env: START });
+    const posted = comments(outcome);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(posted.map(([n]) => n)).toEqual([PARENT, "173"]);
+    expect(posted[0]?.[1]).toBe(
+      `**\`agent:implement\` started:** Building sub-issue #173 (Slice 2) on the PRD branch. [Workflow run](${RUN_URL})`,
     );
+    expect(posted[0]?.[1]).not.toContain("\n");
+    expect(posted[1]?.[1]).toBe(
+      `**\`agent:implement\` started building this sub-issue**, slice 2 of 3 of PRD #${PARENT}, on the PRD branch \`${PRD_BRANCH}\`. [Workflow run](${RUN_URL})`,
+    );
+  });
 
-    const preflighted = runPreflight({ pulls });
-    expect(preflighted.status).toBe(0);
-    expect(outputOf(preflighted, "sub")).toBe("173");
-    expect(outputOf(preflighted, "finishing")).toBe("false");
+  it("comments on no sub-issue on a run that builds none", () => {
+    const outcome = runStep("start", { env: { ...START, SUB: "", SUB_K: "", BUILD: "false", FINISHING: "true" } });
 
-    const env = { SLICE_PR: outputOf(preflighted, "slice_pr"), BACKFILL: outputOf(preflighted, "backfill") };
-    const merge = runStep("merge", { pulls, repo: REPO, env: { ...env, HAS_PAT: "true" } });
-    expect(merge.status).toBe(0);
-    expect(merges(merge)).toEqual([]);
-    expect(outputOf(merge, "merged")).toBe("true");
+    expect(comments(outcome).map(([n]) => n)).toEqual([PARENT]);
+  });
 
-    const row = runStep("slice_row", { pulls, env: { ...env, PRD_BRANCH: outputOf(merge, "prd_branch") } });
-    expect(row.status).toBe(0);
-    expect(facts(row)["merged"]).toMatchObject({ subIssue: 172, slicePr: 202 });
+  it("goes on with a warning where neither start comment can be posted", () => {
+    const outcome = runStep("start", { env: { ...START, GH_REPLAY_COMMENT_FAILURE: "1" } });
 
-    const prdPr = runStep("prd_pr", { pulls, env: { ...env, PRD_BRANCH: outputOf(merge, "prd_branch") } });
-    expect(prdPr.status).toBe(0);
-    expect(prWrites(prdPr).filter((argv) => argv[1] === "create")).toHaveLength(1);
-    expect(outputOf(prdPr, "number")).toBe("300");
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain(`::warning::Could not post the start comment on #${PARENT}.`);
+    expect(outcome.stdout).toContain("::warning::Could not post the start comment on sub-issue #173.");
+  });
+
+  const HEAD = "0123456789abcdef0123456789abcdef01234567";
+  const NOTE = { APPROVED_SUB: "173", APPROVED_SHA: HEAD, APPROVED_REVIEW: REVIEW_URL, PRD_PR: "201", SERVER_URL: "https://github.com" };
+  /** An approving review's body, its #214 record rendered as the review renders it. */
+  const reviewBody = (criteria: readonly CriterionResult[]): string =>
+    ["## Agent review", "", "Approved.", "", renderCriteriaGroup(criteria) ?? "", "", "Footer."].join("\n");
+
+  it("notes the approved slice on its sub-issue, with the criteria the approving round changed or left unmet", () => {
+    const outcome = runStep("approved_note", {
+      env: NOTE,
+      reviews: {
+        "123": {
+          body: reviewBody([
+            { id: "C1", text: "It renders every state.", status: "met" },
+            { id: "C2", text: "It survives the splice.", status: "changed", reason: "the splice moved" },
+            { id: "C3", text: "No label is added.", status: "unmet" },
+          ]),
+        },
+      },
+    });
+    const posted = comments(outcome);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]?.[0]).toBe("173");
+    expect(posted[0]?.[1]).toBe(
+      [
+        `**Slice approved:** built in [\`0123456\`](https://github.com/${GH_REPO}/commit/${HEAD}), [reviewed](${REVIEW_URL}) on PRD PR #201. This sub-issue stays open until the PRD PR merges.`,
+        "",
+        "**Acceptance criteria changed or unmet:**",
+        "",
+        "- **Changed:** It survives the splice. · the splice moved",
+        "- **Unmet:** No label is added.",
+        "",
+        `<!-- agent:slice-approved ${HEAD} -->`,
+      ].join("\n"),
+    );
+  });
+
+  /** A retry past the same approval, after a run that failed, posts no second note. */
+  it("notes an approved head once", () => {
+    const outcome = runStep("approved_note", {
+      env: NOTE,
+      comments: { "173": [{ body: "Started." }, { body: `**Slice approved:** …\n\n<!-- agent:slice-approved ${HEAD} -->` }] },
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(comments(outcome)).toEqual([]);
+    expect(outcome.stdout).toContain("already has its approved-slice note");
+  });
+
+  it("says none changed or went unmet where the approving round met every criterion", () => {
+    const outcome = runStep("approved_note", {
+      env: NOTE,
+      reviews: { "123": { body: reviewBody([{ id: "C1", text: "It renders every state.", status: "met" }]) } },
+    });
+
+    expect(comments(outcome)[0]?.[1]).toContain("\n\n**Acceptance criteria changed or unmet:** none.\n\n<!-- agent:slice-approved");
+  });
+
+  it("still notes the slice, saying so, where the approving review cannot be read", () => {
+    const outcome = runStep("approved_note", { env: NOTE });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain("::warning::Could not read the review that approved sub-issue #173");
+    expect(comments(outcome)[0]?.[1]).toContain("the approving review couldn't be read");
+  });
+
+  it("goes on with a warning where the note cannot be posted", () => {
+    const outcome = runStep("approved_note", { env: { ...NOTE, GH_REPLAY_COMMENT_FAILURE: "1" } });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain("::warning::Could not post the approved-slice note on sub-issue #173.");
   });
 });
 
-/** The handover, handed PRD PR #201 and the PRD branch, as the finishing run has them. */
-const runHandover = (
-  options: { readonly issue: Record<string, unknown>; readonly pulls: readonly Record<string, unknown>[]; readonly pat?: boolean },
-): StepOutcome =>
+/** The handover, handed PRD PR #201 and how many slices landed, as the finishing run has them. */
+const runHandover = (landed: number, options: { readonly body?: string; readonly pat?: boolean } = {}): Outcome =>
   runStep("handover", {
-    issue: options.issue,
-    pulls: options.pulls,
-    env: { PRD_PR: "201", PRD_BRANCH, HAS_PAT: String(options.pat ?? true) },
+    pulls: [...BYSTANDERS, { ...PRD_PR, body: options.body ?? "Closes #171" }],
+    env: { PRD_PR: "201", LANDED: String(landed), HAS_PAT: String(options.pat ?? true) },
   });
 
 /**
- * The finishing run's handover (#177), executed. More than one slice asks for
- * the integration review with `agent:review`, and review marks the PRD PR
- * ready; one slice was reviewed on its slice PR already, so the PRD PR is
- * marked ready here. A slice built before slice PRs is a slice.
+ * The finishing run's handover, executed. One slice was reviewed as the whole
+ * PRD PR already, so it is marked ready and no review is asked for. More than
+ * one asks for the final review: recorded in the body first, then
+ * `agent:review`.
  */
 describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
   it("runs under the shell the workflow actually gets", () => {
@@ -1132,47 +1174,114 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
   });
 
   it("marks the PRD PR of a one-slice PRD ready itself, and asks for no review", () => {
-    const outcome = runHandover({ issue: issue(["CLOSED"]), pulls: BYSTANDERS });
+    const outcome = runHandover(1);
 
-    expect(outcome.status).toBe(0);
+    expect(outcome.status, outcome.stdout).toBe(0);
     expect(prWrites(outcome)).toEqual([["pr", "ready", "201"]]);
+    expect(writes(outcome).some((argv) => argv.includes("agent:review"))).toBe(false);
   });
 
-  it("asks for the integration review on the PRD PR of a PRD with more than one slice PR", () => {
-    const outcome = runHandover({
-      issue: issue(["CLOSED", "CLOSED"]),
-      pulls: [...BYSTANDERS, pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH, "MERGED")],
-    });
+  it("records the final review in the body, then asks for it, on a PRD of more than one slice", () => {
+    const outcome = runHandover(3);
+    const all = writes(outcome);
 
-    expect(outcome.status).toBe(0);
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(all[0]?.slice(0, 4)).toEqual(["api", "-X", "PATCH", `repos/${GH_REPO}/pulls/201`]);
+    expect(all[0]?.at(-1)).toBe(`body=Closes #171\n\n${FINAL_REVIEW}`);
     expect(prWrites(outcome)).toEqual([
       ["pr", "edit", "201", "--remove-label", "agent:review"],
       ["pr", "edit", "201", "--add-label", "agent:review"],
     ]);
+    expect(prWrites(outcome).some((argv) => argv[1] === "ready")).toBe(false);
   });
 
-  /** #202 built #172; #173 was closed with no slice PR, before slice PRs existed. */
-  it("counts a slice built before slice PRs as a slice", () => {
-    const outcome = runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS });
-
-    expect(prWrites(outcome)).toEqual([
-      ["pr", "edit", "201", "--remove-label", "agent:review"],
-      ["pr", "edit", "201", "--add-label", "agent:review"],
-    ]);
-  });
-
-  /** An open slice PR is the one the finishing run is about to merge; nothing else is built. */
-  it("does not count a slice PR that has not merged", () => {
-    const outcome = runHandover({
-      issue: issue(["CLOSED", "CLOSED"]),
-      pulls: [...BYSTANDERS, pull(210, "agent/slice-171-173-slice-2", PRD_BRANCH, "CLOSED")],
+  /**
+   * The mark goes into the progress list (#246), with the final review shown
+   * in review: what the list rendered for the final review requested is, byte
+   * for byte, the one the last slice's round left with the lines written in
+   * front of its end marker. The handover runs no toolchain, so this is how
+   * it re-renders.
+   */
+  it("records the final review in the progress list as the list renders it", () => {
+    const subIssues = [
+      { number: 172, title: "Slice 1", state: "OPEN" as const },
+      { number: 173, title: "Slice 2", state: "OPEN" as const },
+    ];
+    const ranges = sliceRanges(
+      [
+        { sha: "c", parents: ["b"], slice: 173 },
+        { sha: "b", parents: ["a"], slice: 172 },
+      ],
+      subIssues,
+    );
+    const approved = renderProgressList({ subIssues, ranges, verdict: "approval", running: null, finalReview: "not requested" });
+    const requested = renderProgressList({
+      subIssues,
+      ranges,
+      verdict: "approval",
+      running: { kind: "review" },
+      finalReview: "requested",
     });
+    const body = (list: string): string => `<!-- agent:closes -->\nCloses #171\n<!-- /agent:closes -->\n\n${list}\n\nMine.`;
+    const outcome = runHandover(2, { body: body(approved) });
 
-    expect(prWrites(outcome)).toEqual([["pr", "ready", "201"]]);
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(writes(outcome)[0]?.at(-1)).toBe(`body=${body(requested)}`);
+    expect(requested).toContain(FINAL_REVIEW);
+    expect(FINAL_REVIEW_REQUESTED_LINES).toContain(FINAL_REVIEW_MARK);
+  });
+
+  /**
+   * A PRD PR an older release opened keeps its slices table as history
+   * (#248): the mark goes in front of the end of the list, and every byte of
+   * the table stays.
+   */
+  it("leaves an old slices table where it is when it records the final review", () => {
+    const table = "<!-- agent:slices -->\n| Slice | PR | Verdict | Open findings |\n|---|---|---|---|\n| One (#172) | #190 | ✅ | none |\n<!-- /agent:slices -->";
+    const body = `Closes #171\n\n## Progress\n${table}\n\n${PROGRESS_START}\n- ✅ **Approved:** #173 Slice 2\n${PROGRESS_END}\n\nMine.`;
+    const outcome = runHandover(2, { body });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(writes(outcome)[0]?.at(-1)).toBe(
+      `body=${body.replace(PROGRESS_END, `${FINAL_REVIEW_REQUESTED_LINES}${PROGRESS_END}`)}`,
+    );
+    expect(writes(outcome)[0]?.at(-1)).toContain(`## Progress\n${table}\n\n`);
+  });
+
+  /** A retry finds the record a run before it wrote, and writes it once. */
+  it("does not record the final review twice", () => {
+    const outcome = runHandover(2, { body: `Closes #171\n\n${FINAL_REVIEW}` });
+
+    expect(writes(outcome).some((argv) => argv[2] === "PATCH")).toBe(false);
+    expect(prWrites(outcome)).toHaveLength(2);
+  });
+
+  /**
+   * The mark is what the preflight reads "finished" by, so a label that did
+   * not go on takes it back out: left in, the retry the failure comment
+   * offers would be refused as finished, and no final review would ever run.
+   */
+  it("takes the final-review mark back out when the label does not go on", () => {
+    const outcome = runStep("handover", {
+      pulls: [...BYSTANDERS, { ...PRD_PR, body: "Closes #171" }],
+      env: { PRD_PR: "201", LANDED: "3", HAS_PAT: "true", GH_REPLAY_LABEL_FAILURE: "1" },
+    });
+    const all = writes(outcome);
+    const added = all.findIndex((argv) => argv.includes("--add-label"));
+    const restored = all.findIndex((argv, i) => i > added && argv[2] === "PATCH");
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain("so its final review was not requested. Trying again resumes the handover");
+    expect(all.filter((argv) => argv[2] === "PATCH").map((argv) => argv.at(-1))).toEqual([
+      `body=Closes #171\n\n${FINAL_REVIEW}`,
+      "body=Closes #171",
+    ]);
+    expect(added).toBeGreaterThan(0);
+    expect(restored).toBeGreaterThan(added);
   });
 
   it("refuses without AGENT_PAT rather than add a label that starts nothing, touching nothing", () => {
-    const outcome = runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS, pat: false });
+    const outcome = runHandover(2, { pat: false });
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("PRD PR #201");
@@ -1191,11 +1300,9 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
 
 /**
  * The contract the replay stands on for the steps above, against the real
- * binary, the way the preflight's `pr list` is checked: the flags parse and
- * every `--json` field exists, so gh gets as far as the connection to
- * `localhost` and no further.
+ * binary, the way the preflight's `pr list` is checked.
  */
-describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row, PRD PR and handover steps compose", () => {
+describe.skipIf(!onPath("gh"))("gh accepts the calls the PRD PR and handover steps compose", () => {
   const attempt = (args: readonly string[]): ReturnType<typeof spawnSync> =>
     spawnSync("gh", [...args], {
       encoding: "utf8",
@@ -1204,33 +1311,17 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row, PRD P
     });
 
   it.each([
-    ["pr view", ["pr", "view", "210", "--json", "number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels,body"]],
-    ["api -X PATCH pulls, the chain's mark", ["api", "-X", "PATCH", `repos/${GH_REPO}/pulls/210`, "-f", "body=x"]],
-    ["pr view, merged", ["pr", "view", "210", "--json", "number,headRefOid,headRefName,title,body,url"]],
-    ["api graphql --paginate --slurp", ["api", "graphql", "--paginate", "--slurp", "-F", "number=210", "-f", "query=query($endCursor: String) { viewer { login } }"]],
-    ["pr list --base", ["pr", "list", "--state", "all", "--base", PRD_BRANCH, "--limit", "1000", "--json", "number,body,headRefName"]],
-    ["pr merge", ["pr", "merge", "210", "--squash", "--match-head-commit", "abc"]],
     ["pr list --head", ["pr", "list", "--state", "open", "--head", PRD_BRANCH, "--limit", "100", "--json", "number"]],
-    ["pr list --base, with state", ["pr", "list", "--state", "all", "--base", PRD_BRANCH, "--limit", "1000", "--json", "number,state,body,headRefName"]],
+    ["pr view --json body", ["pr", "view", "201", "--json", "body", "--jq", ".body"]],
+    ["api -X PATCH pulls", ["api", "-X", "PATCH", `repos/${GH_REPO}/pulls/201`, "-f", "body=x"]],
     ["pr edit --remove-label", ["pr", "edit", "201", "--remove-label", "agent:review"]],
     ["pr edit --add-label", ["pr", "edit", "201", "--add-label", "agent:review"]],
     ["pr ready", ["pr", "ready", "201"]],
   ])("%s", (_name: string, args: readonly string[]) => {
-    const merge = stepById("merge").run ?? "";
-    const prdPr = stepById("prd_pr").run ?? "";
-
-    const row = stepById("slice_row").run ?? "";
-
-    expect(merge).toContain("fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels,body\n");
-    expect(merge).toContain('gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body=');
-    expect(row).toContain('gh pr view "$number" --json number,headRefOid,headRefName,title,body,url');
-    expect(row).toContain("gh api graphql --paginate --slurp");
-    expect(row).toContain('gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,body,headRefName');
-    expect(merge).toContain('gh pr merge "$SLICE_PR" "--${method}" --match-head-commit "$head"');
-    expect(prdPr).toContain('gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number');
-    expect(stepById("handover").run ?? "").toContain(
-      'gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,state,body,headRefName',
+    expect(stepById("prd_pr").run ?? "").toContain(
+      'gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number',
     );
+    expect(stepById("handover").run ?? "").toContain('gh pr view "$PRD_PR" --json body --jq \'.body\'');
 
     const result = attempt(args);
 

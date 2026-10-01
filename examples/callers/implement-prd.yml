@@ -19,10 +19,10 @@ jobs:
     # Granted here, bounded there. A called workflow can only downgrade the
     # token it is handed, so these have to be at least what the job needs:
     # `contents: write` to push, `issues: write` to transition the parent's
-    # labels and close each finished sub-issue, `pull-requests: write` to open
-    # and label the one accumulating PR, `statuses: read` to record each
-    # merged slice's `agent-review` verdict in the slices table, and the
-    # `packages: read` explained below.
+    # labels and comment on it and its sub-issues, `pull-requests: write` to
+    # open and label the one PRD PR, `statuses: read` for the approval gate,
+    # which reads the `agent-review` verdict on that PR's head before the next
+    # slice is built, and the `packages: read` explained below.
     permissions:
       contents: write
       issues: write

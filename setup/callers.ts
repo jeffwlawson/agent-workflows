@@ -81,13 +81,6 @@ export interface InstalledCaller {
    */
   readonly secrets: readonly string[] | "inherit" | undefined;
   /**
-   * The activity types its `pull_request_target` trigger lists, or none where
-   * it lists none. Read for one rule (#209): the review caller's `closed` is
-   * what moves the PRD chain on from a slice PR merged by hand, and a caller
-   * installed before that has `labeled` alone.
-   */
-  readonly pullRequestTypes: readonly string[];
-  /**
    * The events its workflow file triggers on: the keys of `on:`, or the one or
    * several it names as a string or a list. Read for the Actions policy (#219),
    * which targets a workflow **file** and has to know which of them run on
@@ -246,15 +239,11 @@ export const callersIn = (
   let jobs: Record<string, unknown> = {};
   let top: unknown;
   let topDeclared = false;
-  let pullRequestTypes: readonly string[] = [];
   let events: readonly string[] = [];
   try {
     const document = parse(text) as
       | { readonly jobs?: unknown; readonly permissions?: unknown; readonly on?: unknown }
       | null;
-    const trigger = (document?.on as { readonly pull_request_target?: unknown } | null | undefined)
-      ?.pull_request_target as { readonly types?: unknown } | null | undefined;
-    pullRequestTypes = patternsOf(trigger?.types) ?? [];
     events = eventsOf(document?.on);
     const held = document?.jobs;
     if (typeof held === "object" && held !== null && !Array.isArray(held)) {
@@ -298,7 +287,6 @@ export const callersIn = (
         selfCheck,
         autoFix: autoFixOf(job.with),
         secrets: secretsOf(job.secrets),
-        pullRequestTypes,
         events,
       },
     ];
@@ -337,154 +325,3 @@ export const readInstalledCallers = (
       `${WORKFLOW_DIR}/${entry}`,
     ),
   );
-
-/**
- * A branch the PRD chain opens slice PRs into: `agent/prd-<parent>-<slug>`, the
- * name `implement-prd` gives it. What a CI trigger is measured against (#209).
- */
-export const PRD_BRANCH_EXAMPLE = "agent/prd-209-a-slug";
-
-/**
- * How one workflow that is not the loop's own answers a pull request into a PRD
- * branch (#209): it has no `pull_request` trigger, its branch filter leaves the
- * PRD branch out, or it runs. `undefined` where the file could not be read or
- * its trigger could not be made sense of, which is not an answer either way.
- */
-export interface OtherWorkflow {
-  /** Repo-relative and forward-slashed, like a caller's. */
-  readonly file: string;
-  readonly onSlicePrs: "no pull_request trigger" | "filtered out" | "runs" | undefined;
-}
-
-/**
- * One GitHub branch-filter pattern as a regular expression: `*` is anything but
- * `/`, `**` is anything, `?` and `+` quantify the character before them, and
- * `[…]` is a class. `undefined` for a pattern that makes no expression, so a
- * filter holding one is unreadable rather than a miss.
- */
-const branchPattern = (pattern: string): RegExp | undefined => {
-  let source = "";
-  for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern[i] ?? "";
-    if (ch === "*") {
-      if (pattern[i + 1] === "*") {
-        source += ".*";
-        i++;
-      } else {
-        source += "[^/]*";
-      }
-    } else if (ch === "?" || ch === "+") {
-      source += ch;
-    } else if (ch === "[" && pattern.indexOf("]", i) > i) {
-      const end = pattern.indexOf("]", i);
-      source += pattern.slice(i, end + 1);
-      i = end;
-    } else {
-      source += escapeRe(ch);
-    }
-  }
-  try {
-    return new RegExp(`^${source}$`);
-  } catch {
-    return undefined;
-  }
-};
-
-const patternsOf = (value: unknown): readonly string[] | undefined =>
-  typeof value === "string"
-    ? [value]
-    : Array.isArray(value) && value.every((entry) => typeof entry === "string")
-      ? (value as string[])
-      : undefined;
-
-/**
- * Whether a `pull_request` trigger's filters let `branch` through. No filter
- * matches everything; `branches` is read in order, a later `!pattern` taking a
- * branch back out; `branches-ignore` lets through what it does not name.
- */
-const filterPasses = (trigger: unknown, branch: string): boolean | undefined => {
-  if (trigger === null || trigger === undefined) return true;
-  if (typeof trigger !== "object" || Array.isArray(trigger)) return undefined;
-  const filters = trigger as { readonly branches?: unknown; readonly "branches-ignore"?: unknown };
-  // GitHub refuses a trigger carrying both.
-  if ("branches" in filters && "branches-ignore" in filters) return undefined;
-
-  if ("branches" in filters) {
-    const patterns = patternsOf(filters.branches);
-    if (patterns === undefined) return undefined;
-    let passes = false;
-    for (const raw of patterns) {
-      const negated = raw.startsWith("!");
-      const regex = branchPattern(negated ? raw.slice(1) : raw);
-      if (regex === undefined) return undefined;
-      if (regex.test(branch)) passes = !negated;
-    }
-    return passes;
-  }
-  if ("branches-ignore" in filters) {
-    const patterns = patternsOf(filters["branches-ignore"]);
-    if (patterns === undefined) return undefined;
-    const regexes = patterns.map(branchPattern);
-    if (regexes.some((regex) => regex === undefined)) return undefined;
-    return !regexes.some((regex) => regex?.test(branch));
-  }
-  return true;
-};
-
-/**
- * How one workflow file answers a pull request into a PRD branch, or nothing
- * for a file that is the loop's own: a caller runs on `pull_request_target`
- * and is not CI. Text in, like `callersIn`.
- */
-export const otherWorkflowIn = (
-  text: string,
-  packageName: string,
-  file: string,
-): OtherWorkflow | undefined => {
-  if (callersIn(text, packageName, file).length > 0) return undefined;
-
-  let on: unknown;
-  try {
-    const document = parse(text) as { readonly on?: unknown } | null;
-    if (document === null || typeof document !== "object") return { file, onSlicePrs: undefined };
-    on = document.on;
-  } catch {
-    return { file, onSlicePrs: undefined };
-  }
-
-  const verdict = (passes: boolean | undefined): OtherWorkflow => ({
-    file,
-    onSlicePrs: passes === undefined ? undefined : passes ? "runs" : "filtered out",
-  });
-  if (typeof on === "string") {
-    return on === "pull_request" ? verdict(true) : { file, onSlicePrs: "no pull_request trigger" };
-  }
-  if (Array.isArray(on)) {
-    return on.includes("pull_request")
-      ? verdict(true)
-      : { file, onSlicePrs: "no pull_request trigger" };
-  }
-  if (typeof on === "object" && on !== null) {
-    return "pull_request" in on
-      ? verdict(filterPasses((on as Record<string, unknown>)["pull_request"], PRD_BRANCH_EXAMPLE))
-      : { file, onSlicePrs: "no pull_request trigger" };
-  }
-  return { file, onSlicePrs: undefined };
-};
-
-/** Every workflow under `dir` that is not a caller for this package, in filename order. */
-export const readOtherWorkflows = (
-  dir: string,
-  packageName: string,
-): readonly OtherWorkflow[] =>
-  workflowFiles(dir).flatMap((entry) => {
-    const file = `${WORKFLOW_DIR}/${entry}`;
-    let text: string;
-    try {
-      text = fs.readFileSync(path.join(dir, ...WORKFLOW_DIR.split("/"), entry), "utf8");
-    } catch {
-      return [{ file, onSlicePrs: undefined }];
-    }
-    const workflow = otherWorkflowIn(text, packageName, file);
-    return workflow === undefined ? [] : [workflow];
-  });

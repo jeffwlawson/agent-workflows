@@ -2,14 +2,11 @@ import { safeGh, writeText } from "../shared/common.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
   passesSecret,
-  PRD_BRANCH_EXAMPLE,
   readInstalledCallers,
-  readOtherWorkflows,
   repoSlug,
   selfCheckFor,
   selfCheckMatches,
   type InstalledCaller,
-  type OtherWorkflow,
 } from "./callers.js";
 import { labelCommand, labelDeleteCommand, labelSpecsFor, RETIRED_LABELS } from "./init.js";
 import {
@@ -377,11 +374,10 @@ export const REQUIRED_PERMISSIONS: readonly {
     value: "read",
     workflows: ["implement-prd"],
     why:
-      "the slices table records each slice's `agent-review` verdict, read from the merged " +
-      "commit's status, and a status is its own scope rather than part of `contents` or " +
-      "`pull-requests`. The read happens on the run after a slice's review round ends, once the " +
-      "slice is already merged into the PRD branch, so a job short of it merges the slice and " +
-      "then stops the chain before its row is written (#199)",
+      "the approval gate reads the `agent-review` verdict on the PRD PR's head before a run " +
+      "builds the next slice, and a status is its own scope rather than part of `contents` or " +
+      "`pull-requests`. A job short of it cannot tell an approved slice from a parked one, so " +
+      "the chain stops at the first slice it is asked to move on from (#199)",
   },
   {
     permission: "contents",
@@ -452,14 +448,12 @@ const REFUSED =
   `as a workflow file issue, and which no job log records at all.`;
 
 /**
- * Rule on the installed callers, the workflows beside them and the facts. Pure:
- * everything it needs has already been read, and everything it cannot know
- * arrives as `undefined`.
+ * Rule on the installed callers and the facts. Pure: everything it needs has
+ * already been read, and everything it cannot know arrives as `undefined`.
  */
 export const diagnose = (
   callers: readonly InstalledCaller[],
   facts: RepoFacts,
-  others: readonly OtherWorkflow[],
   packageName: string = PACKAGE_NAME,
 ): readonly Finding[] => {
   const findings: Finding[] = [];
@@ -802,74 +796,6 @@ export const diagnose = (
           : `\`${FIX_ROUNDS_VARIABLE}\` to \`${rounds}\`, which is what \`auto-fix: ` +
             `${caller.autoFix}\` does today; unset, it is ${DEFAULT_FIX_ROUNDS}.`),
     });
-  }
-
-  // CI on slice PRs (#209). The PRD chain opens each slice PR into its PRD
-  // branch, and a CI whose `pull_request` trigger is filtered to the default
-  // branch never runs on one. Nothing errors: review reads CI as unknown, a
-  // clean slice lands on *Needs a closer look* and the chain parks at its first
-  // slice, which is jeffwlawson/mealie-mcp-server#80.
-  //
-  // One workflow that runs is enough. An unreadable one could be it, so where
-  // none is known to run and one could not be read this is a warning rather
-  // than a pass or a fault.
-  if (callers.some((caller) => caller.workflow === "implement-prd")) {
-    const runs = others.some((workflow) => workflow.onSlicePrs === "runs");
-    const unreadable = others.filter((workflow) => workflow.onSlicePrs === undefined);
-    const filtered = others.filter((workflow) => workflow.onSlicePrs === "filtered out");
-    const line = `branches: [main, 'agent/prd-**']`;
-    if (!runs && unreadable.length > 0) {
-      add({
-        severity: "warning",
-        check: "CI on slice PRs",
-        problem:
-          `${unreadable.map((workflow) => workflow.file).join(", ")} could not be read, and no other ` +
-          `workflow here runs on a pull request into a PRD branch (\`${PRD_BRANCH_EXAMPLE}\`). ` +
-          `If none does, every slice PR reads its CI as unknown and the PRD chain parks at its first slice.`,
-        fix:
-          `Check that your CI's \`pull_request\` trigger covers the PRD branches, one line: ` +
-          `\`${line}\` (docs/ADOPTING.md, *Slice PRs and your CI*).`,
-      });
-    } else if (!runs) {
-      add({
-        severity: "error",
-        check: "CI on slice PRs",
-        problem:
-          (filtered.length === 0
-            ? `No workflow here other than the loop's own triggers on \`pull_request\`, so `
-            : `${filtered.map((workflow) => workflow.file).join(", ")} ${filtered.length === 1 ? "filters" : "filter"} ` +
-              `\`pull_request\` to branches that leave out the PRD branches (\`${PRD_BRANCH_EXAMPLE}\`), so `) +
-          `nothing runs on a slice PR. Review reads its CI as unknown rather than green, a clean ` +
-          `slice lands on *Needs a closer look*, and the PRD chain parks at its first slice.`,
-        fix:
-          filtered.length === 0
-            ? `Give your CI a \`pull_request\` trigger that covers the PRD branches: ` +
-              `\`pull_request: { ${line} }\` (docs/ADOPTING.md, *Slice PRs and your CI*).`
-            : `Add the PRD branches to that filter, one line: \`${line}\` ` +
-              `(docs/ADOPTING.md, *Slice PRs and your CI*).`,
-      });
-    }
-  }
-
-  // The review caller's `closed` trigger (#209), which a caller installed
-  // before it does not carry and `init` does not add back: it moves pins and
-  // nothing else. Without it the loop works exactly as it did, and a slice PR
-  // merged by hand is the dead end it was, so a warning, and only where there
-  // is a chain to move.
-  if (callers.some((caller) => caller.workflow === "implement-prd")) {
-    for (const caller of callers) {
-      if (caller.workflow !== "review" || caller.pullRequestTypes.includes("closed")) continue;
-      add({
-        severity: "warning",
-        check: "hand-merged slice PRs",
-        problem:
-          `${caller.file} triggers on \`pull_request_target\` types ` +
-          `${caller.pullRequestTypes.length === 0 ? "it does not list" : caller.pullRequestTypes.map((type) => `\`${type}\``).join(", ")}, ` +
-          `without \`closed\`. A slice PR merged by hand then does not move the PRD chain on: ` +
-          `nothing re-adds \`agent:implement\` to its parent, and nothing says so.`,
-        fix: `Set \`types: [closed, labeled]\` on that trigger, as examples/callers/review.yml does.`,
-      });
-    }
   }
 
   // GitHub's default rule blocks `pull_request_target` on a public repository
@@ -1317,7 +1243,7 @@ const render = (finding: Finding): string =>
 export const runDoctor = async (options: DoctorOptions, io: CliIo): Promise<number> => {
   const callers = readInstalledCallers(options.dir, PACKAGE_NAME);
   const facts = options.facts ?? gatherFacts(options.dir);
-  const findings = diagnose(callers, facts, readOtherWorkflows(options.dir, PACKAGE_NAME));
+  const findings = diagnose(callers, facts);
 
   const errors = findings.filter((finding) => finding.severity === "error");
   const warnings = findings.filter((finding) => finding.severity === "warning");

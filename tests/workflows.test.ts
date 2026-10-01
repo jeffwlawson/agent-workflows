@@ -489,8 +489,9 @@ const wiredCallers = (): readonly string[] =>
 
 /**
  * What each caller's trigger fires on, keyed by filename (#46). Everything
- * absent takes `TRIGGER_TYPES_DEFAULT` — which today is every caller there is,
- * so the map is empty and the default is exactly the assertion it replaces.
+ * absent takes `TRIGGER_TYPES_DEFAULT`. The review pair is absent on purpose:
+ * its `closed` was `advance-merged`'s, which PRD #222 retired with slice PRs,
+ * so both caller sets drop it (#249) and exact equality holds them to that.
  *
  * It exists ahead of the first entry on purpose. The assertion below ran over
  * every caller with no list at all, which reads as *derived* — the good kind of
@@ -518,14 +519,6 @@ const TRIGGER_TYPES: Readonly<Record<string, readonly string[]>> = {
    */
   "agent-follow-ups.yml": ["closed", "labeled"],
   "follow-ups.yml": ["closed", "labeled"],
-  /**
-   * The review pair (#209). `labeled` is the review; `closed` was
-   * `advance-merged`'s, which PRD #222 retired with slice PRs, and the callers
-   * have not dropped it yet. Every job in `review.yml` guards on the label, so
-   * a `closed` event starts a run whose jobs all skip, which is harmless.
-   */
-  "agent-review.yml": ["closed", "labeled"],
-  "review.yml": ["closed", "labeled"],
 };
 const triggerTypesOf = (file: string): readonly string[] =>
   TRIGGER_TYPES[path.basename(file)] ?? TRIGGER_TYPES_DEFAULT;

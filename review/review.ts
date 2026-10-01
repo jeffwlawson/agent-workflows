@@ -247,7 +247,9 @@ try {
   // fix round changes what the agent is asked to do (verify that the last
   // round's findings landed) and what the derivation may conclude: the early
   // stop judges that round, which is the half that is not the agent's.
-  const history = readReviewHistory(PR_NUMBER);
+  // A fix round that pushed nothing but left a note asked for this review as
+  // well (#213), and is one the early stop judges like any other.
+  const history = readReviewHistory(PR_NUMBER, context.fixNotes.length > 0);
   console.log(
     `Follows a fix round: ${history.afterFixRound ? "yes" : "no"}${history.unreadable === undefined ? "" : `, assumed because ${history.unreadable}`}.`,
   );

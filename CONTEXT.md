@@ -71,7 +71,8 @@ pull request is bounded twice over (below), by the fix-round budget and by the *
 review a **fix** asks for may recommend changes and, with budget left, start another round, unless
 the fix round it follows closed none of the findings it was given (`docs/parity.md` §10). Whether a
 review follows a fix round is read from the **verdict history**, never from who authored the
-commits: the latest verdict announced a round, and commits have landed since. The review a
+commits: the latest verdict announced a round, and commits have landed since, or the fix run
+posted an out-of-scope note since without pushing (#213). The review a
 **conflict resolution** asks for follows no fix round, because a resolution posts no verdict and
 the one before it announced none. A fix run that pushed nothing and left no out-of-scope note asks
 for nothing, and leaves every thread it answered open, so a round it declined its way through ends

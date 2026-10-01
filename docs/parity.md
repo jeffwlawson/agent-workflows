@@ -645,7 +645,8 @@ expensive to rediscover.
   changes and, with budget left, start another round; and after a fix round that closed none of the
   findings it was given, matched by id, none starts, whatever budget is left. Whether a review
   follows a fix round is read from the **verdict history** (`shared/review-round.ts`): the latest
-  verdict announced a round, and commits have landed since. The review still verifies every earlier
+  verdict announced a round, and commits have landed since, or the fix run posted an out-of-scope
+  note since without pushing (#213). The review still verifies every earlier
   finding, as it did in every round before.
 
   And a fix run that pushed *nothing* requests nothing. The threads it replied to already say why

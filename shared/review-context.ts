@@ -1,3 +1,4 @@
+import { extractCriteria } from "./acceptance-criteria.js";
 import { fetchTrustedComments, fetchTrustedIssue, gh } from "./common.js";
 import {
   fetchPullRequestFeedback,
@@ -25,6 +26,13 @@ export interface PullRequestContext {
   readonly issueNumber: string;
   readonly issueTitle: string;
   readonly linkedIssue: string;
+  /**
+   * The linked issue's acceptance criteria, as `extractCriteria` reads them
+   * off its body (#214). Empty where there is no linked issue, where its
+   * author is untrusted (its text never reaches the agent), or where it names
+   * none.
+   */
+  readonly criteria: readonly string[];
   /** Collaborator-authored conversation comments on the PR and linked issue. */
   readonly discussion: string;
   /**
@@ -98,11 +106,13 @@ export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequ
   // and holds even once community-authored issues enter the backlog.
   let issueTitle = "";
   let linkedIssue = "(no linked issue found)";
+  let criteria: string[] = [];
   if (issueNumber) {
     const issue = fetchTrustedIssue(issueNumber);
     if (issue.trusted) {
       issueTitle = issue.title;
       linkedIssue = issue.body || "(linked issue has no description)";
+      criteria = extractCriteria(issue.body);
     } else {
       linkedIssue = `(linked issue #${issueNumber} was opened by a non-collaborator; its text is omitted so world-writable input never reaches the agent)`;
     }
@@ -148,6 +158,7 @@ export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequ
     issueNumber,
     issueTitle,
     linkedIssue,
+    criteria,
     discussion,
     unreadableFeedback: feedback.unreadable,
     // Assembled here rather than in the fetch, which reads GitHub surfaces and

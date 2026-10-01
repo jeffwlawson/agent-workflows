@@ -13,6 +13,7 @@ import {
   writeJson,
   writeText,
 } from "../shared/common.js";
+import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPrdContext, type PrdContext } from "../shared/prd-context.js";
@@ -242,6 +243,13 @@ try {
   const prd =
     prdParent === undefined ? undefined : fetchPrdContext(prdParent, BRANCH, BASE_REF, PR_NUMBER);
 
+  // The linked issue's acceptance criteria, which this review rules on one by
+  // one (#214). Not on a PRD PR: its integration review looks only for what
+  // spans slices, and each slice was held to its own sub-issue's criteria on
+  // its slice PR, so a PRD's checklist (often its slices) is not this pass's.
+  const criteria = prd === undefined ? context.criteria : [];
+  console.log(`Acceptance criteria handed to the review: ${criteria.length}.`);
+
   // What the verdicts already on this pull request say about this review,
   // read off the repository before the token goes (#202). Whether it follows a
   // fix round changes what the agent is asked to do (verify that the last
@@ -292,6 +300,7 @@ try {
       ISSUE_NUMBER: context.issueNumber || "(none)",
       ISSUE_TITLE: context.issueTitle || "(no linked issue)",
       LINKED_ISSUE: context.linkedIssue,
+      ACCEPTANCE_CRITERIA: renderCriteriaForReview(criteria, context.prBody),
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
       HISTORY: describeHistory(history),
@@ -321,7 +330,18 @@ try {
   // release it from (#124). The brief asks the model to anchor such a problem
   // at the change that causes it; where it did not, nothing in the diff causes
   // it, and `unanchored` is what comes back — recorded below as a follow-up.
-  const { placed, unanchored } = placeFindings(result.output.findings, context.diffLines);
+  //
+  // An unmet acceptance criterion is one of those findings (#214): the review
+  // rules on each criterion, and `applyCriteriaRulings` makes each unmet one a
+  // fix-before-merge finding at the anchor the review gave it. Added to the
+  // output here, before anything reads it, so placement, the count and the
+  // record all see one set.
+  const criteriaRulings = applyCriteriaRulings(criteria, result.output.criteria ?? []);
+  const reviewed = {
+    ...result.output,
+    findings: [...result.output.findings, ...criteriaRulings.findings],
+  };
+  const { placed, unanchored } = placeFindings(reviewed.findings, context.diffLines);
 
   // **Unless the path names nothing.** "Outside the diff" only means "not this
   // pull request's" for a file that exists; a path that is no file at the
@@ -333,10 +353,10 @@ try {
   const pathErrorReason = pathErrorNote(unplaceable);
   const output =
     pathErrorReason === undefined
-      ? result.output
+      ? reviewed
       : {
-          ...result.output,
-          needsYou: [result.output.needsYou, pathErrorReason].filter(Boolean).join("\n\n"),
+          ...reviewed,
+          needsYou: [reviewed.needsYou, pathErrorReason].filter(Boolean).join("\n\n"),
         };
 
   // What the review said about the findings it was handed: which threads the
@@ -433,6 +453,7 @@ try {
     followUps,
     droppedFollowUps,
     droppedNotes: notes.dropped,
+    criteria: criteriaRulings.results,
     runUrl: workflowRunUrl(),
     // What was shed, where the body had to be cut to fit GitHub's limit (#140).
     // A body that cannot be made to fit throws, and the catch below writes the
@@ -552,6 +573,11 @@ try {
   );
   console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
+  const ruledAs = (status: string): number =>
+    criteriaRulings.results.filter((r) => r.status === status).length;
+  console.log(
+    `Acceptance criteria: ${criteriaRulings.results.length} checked: ${ruledAs("met")} met, ${ruledAs("changed")} changed with a reason, ${ruledAs("unmet")} unmet and raised as findings, ${ruledAs("unchecked")} not ruled on.`,
+  );
   console.log(
     `Notes from the fix run: ${context.fixNotes.length} handed over, ${notes.promoted.length} recorded as follow-ups, ${notes.dropped.length} dropped with a reason.`,
   );

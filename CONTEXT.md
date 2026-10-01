@@ -218,8 +218,8 @@ writers of it would break "the newest record wins".
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the
 review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,
-*Resolved since last review* and *Follow-ups*, then *How this was checked*, then a rule and the
-run. A group with nothing in it is omitted and that rule is the only
+*Resolved since last review*, *Acceptance criteria* and *Follow-ups*, then *How this was checked*,
+then a rule and the run. A group with nothing in it is omitted and that rule is the only
 divider in the body. Every entry carries a **severity** — `high` / `medium` / `low`, which orders the list
 and decides nothing else; a test permutes it across a review and holds the verdict identical. It is
 rendered as a **chip this repository hosts**, pinned to the release that posted it, and the thread
@@ -251,6 +251,15 @@ The prose beside the record is capped by the schema rather than asked for in the
 **restates no finding**: the findings are above it with their severities, and the one 250-word
 paragraph that mixed *what the change is* with *what the reviewer verified* is what made a body
 long enough to bury the record in it.
+
+**Every review checks the linked issue's acceptance criteria one by one** (#214). The workflow
+reads them off the issue (its acceptance section, the last one where triage appended a brief, or
+its checklist where it has none) and hands them over by id; the review rules on each as *met*,
+*changed* on purpose with the reason, or *unmet*. An unmet one is a fix-before-merge finding,
+anchored at the change nearest to it like any other; a changed one is not a finding, and is listed
+with its reason in the body's *Acceptance criteria* section, which a pull request with no linked
+issue or no criteria does not get. A PRD PR's integration review is handed none: each slice was
+held to its own sub-issue's criteria on its slice PR.
 
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
 a pull request writes its **frame** once and never again: `Closes #N` first, a note saying what the

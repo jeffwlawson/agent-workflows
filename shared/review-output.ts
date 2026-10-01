@@ -107,6 +107,39 @@ export type NoteRuling =
     }
   | { readonly noteId: string; readonly status: "dropped"; readonly reason: string };
 
+/**
+ * What the review decided about one of the linked issue's **acceptance
+ * criteria** (#214), named by the id it was handed it under (`C1`, `C2`, …).
+ *
+ * `changed` carries its reason by type: a criterion dropped or replaced on
+ * purpose with nothing saying why is the silent change #214 exists to end. An
+ * `unmet` one carries an anchor, because it becomes a fix-before-merge finding
+ * (`applyCriteriaRulings`) and a finding is posted on the diff.
+ */
+export type CriterionRuling =
+  | { readonly id: string; readonly status: "met" }
+  | { readonly id: string; readonly status: "changed"; readonly reason: string }
+  | {
+      readonly id: string;
+      readonly status: "unmet";
+      readonly reason?: string;
+      readonly path: string;
+      readonly line: number;
+      readonly severity: Severity;
+    };
+
+/**
+ * One criterion as the body lists it: the issue's own words, and what the
+ * review said. `unchecked` is a criterion the review said nothing about, shown
+ * as such rather than left out, so a list that looks complete is complete.
+ */
+export interface CriterionResult {
+  readonly id: string;
+  readonly text: string;
+  readonly status: "met" | "changed" | "unmet" | "unchecked";
+  readonly reason?: string;
+}
+
 /** A note the review dropped, as the body lists it. */
 export interface DroppedNote {
   readonly title: string;
@@ -206,6 +239,12 @@ export interface ReviewOutput {
    * review.
    */
   readonly noteRulings?: NoteRuling[];
+  /**
+   * One ruling per acceptance criterion of the linked issue (#214). Absent
+   * where the review was handed none: no linked issue, or one with no
+   * criteria to identify.
+   */
+  readonly criteria?: CriterionRuling[];
 }
 
 /**
@@ -1074,7 +1113,7 @@ const shedSentence = (shed: Shed): string | undefined => {
  * the review's own sentence naming what is unresolved, the step in italics, the
  * count and — on the rounds that have one — the line saying a finding was moved
  * to the follow-ups, then *Open*, *Previously missed*, *Resolved since last
- * review*, *Follow-ups* and *How this was checked*, then a rule and the run
+ * review*, *Acceptance criteria* (#214), *Follow-ups* and *How this was checked*, then a rule and the run
  * that produced it. What the change *is* is not here: it is the summary block
  * in the pull request's body (#218), so it is said in one place. The order is Copilot code review's
  * own overview, which is the point — a maintainer who has read one of those
@@ -1259,6 +1298,13 @@ export interface ReviewBodyParts {
    */
   readonly droppedNotes?: readonly DroppedNote[] | undefined;
   /**
+   * The linked issue's acceptance criteria and what this review said about
+   * each (#214), from `applyCriteriaRulings`. Optional, because a pull request
+   * with no linked issue, or one whose issue names no criteria, has none; empty
+   * and absent both render nothing.
+   */
+  readonly criteria?: readonly CriterionResult[] | undefined;
+  /**
    * The run that produced this review. Optional — it is a link, and a review
    * that could not name its own run is still a review — so a caller outside
    * Actions renders a body without one rather than failing.
@@ -1323,6 +1369,7 @@ const renderBody = (
       slotted
         ? RESOLVED_SLOT
         : renderGroup(RESOLVED_GROUP.title, cut(record.resolved), RESOLVED_GROUP.open),
+      renderCriteriaGroup(parts.criteria ?? [], shed.titles),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles),
       renderDroppedNotesGroup(parts.droppedNotes ?? []),
       renderHowChecked(parts.output.howChecked),
@@ -1531,6 +1578,39 @@ const closerLook = (
 };
 
 /**
+ * One criterion ruling, thrown on where it is malformed as a note ruling is: a
+ * change with no reason, or an unmet criterion with nowhere to post it, is the
+ * extraction retry's to get right rather than this file's to guess.
+ */
+const parseCriterionRuling = (value: unknown): CriterionRuling => {
+  const record = asRecord(value, "criterion ruling");
+  const id = asString(record["id"] ?? record["criterionId"], "criterion ruling id").trim();
+  const status = asString(record["status"], "criterion ruling status");
+  const reason = optionalReason(record["reason"], "criterion reason");
+  if (status === "met") return { id, status };
+  if (status === "changed") {
+    if (reason === undefined) throw new Error(`criterion ${id} is changed but carries no reason`);
+    return { id, status, reason: reason.trim() };
+  }
+  if (status !== "unmet") {
+    throw new Error(`criterion ruling status must be "met", "changed" or "unmet", got "${status}"`);
+  }
+  const path = asString(record["path"] ?? record["file"], `unmet criterion ${id} path`);
+  const line = record["line"];
+  if (typeof line !== "number" || !Number.isInteger(line) || line < 1) {
+    throw new Error(`unmet criterion ${id} line must be a positive integer`);
+  }
+  return {
+    id,
+    status,
+    ...(reason === undefined ? {} : { reason: reason.trim() }),
+    path,
+    line,
+    severity: parseSeverity(record["severity"]),
+  };
+};
+
+/**
  * One ruling, thrown on rather than dropped where it is malformed, as a
  * verification is: a drop without a reason would be a note lost with nothing
  * said, and the extraction retry is what gets the reason written.
@@ -1688,6 +1768,7 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     record["noteRulings"] ?? record["note_rulings"] ?? [],
     "noteRulings",
   ).map(parseNoteRuling);
+  const criteria = asArray(record["criteria"] ?? [], "criteria").map(parseCriterionRuling);
   return {
     ...(assessment === undefined ? {} : { assessment }),
     ...(howChecked === undefined ? {} : { howChecked: cappedWords(howChecked, MAX_HOW_CHECKED_WORDS) }),
@@ -1724,6 +1805,8 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     // id this review was not handed is dropped by `applyNoteRulings`, for the
     // reason `verified` defers the same check.
     ...(noteRulings.length === 0 ? {} : { noteRulings }),
+    // Absent where the review was handed no criteria, for the same reason.
+    ...(criteria.length === 0 ? {} : { criteria }),
   };
 });
 
@@ -2083,6 +2166,58 @@ export const renderFollowUpsGroup = (
     "",
     ...items,
     ...truncation,
+    "",
+    "</details>",
+  ].join("\n");
+};
+
+/** How the body names each status, in the order the summary counts them. */
+const CRITERION_STATUS: readonly [CriterionResult["status"], string, string][] = [
+  ["met", "Met", "met"],
+  ["changed", "Changed", "changed"],
+  ["unmet", "Unmet", "unmet"],
+  ["unchecked", "Not checked", "not checked"],
+];
+
+/**
+ * The linked issue's acceptance criteria, one line each with what the review
+ * said (#214), or `undefined` where there are none, so a pull request with no
+ * linked issue or no criteria gets no section.
+ *
+ * In the issue's order rather than by status, because that is the order a
+ * reader holding the issue checks them in. Expanded where any is not met: a
+ * change or a gap is what a reader deciding whether to merge has to see, and
+ * a list that is all *met* is the record's memory, folded like *Resolved*.
+ *
+ * An unmet one is also a finding, in *Open* with a thread to answer it on;
+ * this list is the issue's view of the same pass, not a second count.
+ */
+export const renderCriteriaGroup = (
+  criteria: readonly CriterionResult[],
+  shorten = false,
+): string | undefined => {
+  if (criteria.length === 0) return undefined;
+  const label = new Map(CRITERION_STATUS.map(([status, word]) => [status, word]));
+  const counts = CRITERION_STATUS.map(([status, , word]) => ({
+    word,
+    count: criteria.filter((criterion) => criterion.status === status).length,
+  }))
+    .filter(({ count }) => count > 0)
+    .map(({ word, count }) => `${count} ${word}`)
+    .join(", ");
+  const text = (value: string): string =>
+    shorten ? shortened(oneLine(value), SHED_TITLE_LENGTH) : oneLine(value);
+  const items = criteria.map(
+    (criterion) =>
+      `- **${label.get(criterion.status) ?? criterion.status}:** ${text(criterion.text)}` +
+      (criterion.reason === undefined ? "" : ` · ${text(criterion.reason)}`),
+  );
+  const expanded = criteria.some((criterion) => criterion.status !== "met");
+  return [
+    `<details${expanded ? " open" : ""}>`,
+    `<summary><b>Acceptance criteria</b> (${criteria.length}) · ${counts}</summary>`,
+    "",
+    ...items,
     "",
     "</details>",
   ].join("\n");

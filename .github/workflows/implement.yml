@@ -98,6 +98,10 @@ jobs:
       BASE_REF: ${{ inputs.default-branch }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
+      # This run's page, linked from every comment the run posts on the issue:
+      # the start comment, the PR it opened, and the failure (#205). One
+      # definition, so the three cannot link different things.
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     steps:
       # The clock the failure step reads a time limit off (#220). A job that
@@ -273,12 +277,19 @@ jobs:
 
       # The trigger label is consumed, not left in place. That is what makes a
       # retry idempotent: a human re-adds it deliberately.
+      #
+      # Then the run links itself on the issue (#205), last and before the
+      # checkout, so a run in progress can be found from the issue rather than
+      # by matching timestamps in Actions. A warning where it cannot be posted,
+      # never a failure: nothing has been done yet that a stopped run would
+      # need to report.
       - name: Transition labels
         if: steps.preflight.outputs.refused == 'false'
         run: |
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:blocked" || true
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:in-progress"
+          gh issue comment "$ISSUE_NUMBER" --body "\`agent:implement\` started: [workflow run](${RUN_URL})." || echo "::warning::Could not post the start comment on #${ISSUE_NUMBER}. The run goes on; it is ${RUN_URL}."
 
       - name: Checkout the base branch
         if: steps.preflight.outputs.refused == 'false'
@@ -411,6 +422,17 @@ jobs:
           echo "number=$(basename "$pr_url")" >> "$GITHUB_OUTPUT"
           echo "Opened $pr_url"
 
+      # The success outcome, said on the issue with the run link (#205), so
+      # every comment a run leaves there links it. Before the review is asked
+      # for, and a warning where it cannot be posted: the PR is open either
+      # way, and the review must still be requested.
+      - name: Link the PR on the issue
+        if: steps.preflight.outputs.refused == 'false' && success()
+        env:
+          NEW_PR: ${{ steps.open_pr.outputs.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --body "\`agent:implement\` opened PR #${NEW_PR}: [workflow run](${RUN_URL})." || echo "::warning::Could not comment PR #${NEW_PR} on #${ISSUE_NUMBER}."
+
       # Cascade: every agent PR gets reviewed without a human labelling it.
       #
       # Safe because the hop it starts is bounded at the other end. Since #102
@@ -467,7 +489,6 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           reason="(no reason file written; check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then

@@ -6982,3 +6982,109 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
     });
   });
 });
+
+/**
+ * A run links itself on the issue it was triggered from as soon as it starts
+ * (#205). Before, the only comment carrying the run link was the failure
+ * comment, so a run in progress, or one that succeeded, was found by opening
+ * Actions and matching timestamps; harder still on a PRD, whose chain starts
+ * one run per slice on the same parent.
+ *
+ * The comment is posted in the step that takes the issue, before the checkout
+ * and so before any agent work, and it is a warning where it fails: it is a
+ * courtesy, and must never stop a run that has not done anything yet.
+ */
+describe("an implement run links itself on the issue when it starts", () => {
+  const RUN_URL = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}";
+  const START = '--add-label "agent:in-progress"';
+
+  const transition = (file: string): Step => {
+    const step = stepsOf(file).find((s) => s.name === "Transition labels");
+
+    expect(step, `${file} has no \`Transition labels\` step`).toBeDefined();
+    return step as Step;
+  };
+  /** The lines of a step's script that post a comment on the triggering issue. */
+  const commentLines = (run: string): readonly string[] =>
+    run.split("\n").filter((l) => l.includes('gh issue comment "$ISSUE_NUMBER"'));
+
+  it.each([IMPLEMENT, PRD])("%s: defines the run link once, for the job", (file: string) => {
+    expect(jobOf(file).env?.["RUN_URL"]).toBe(RUN_URL);
+    for (const step of stepsOf(file)) expect(step.env?.["RUN_URL"], step.name).toBeUndefined();
+  });
+
+  it.each([IMPLEMENT, PRD])("%s: comments the run link where it takes the issue, before the checkout", (file: string) => {
+    const steps = stepsOf(file);
+    const step = transition(file);
+    const run = step.run ?? "";
+    const [comment, ...rest] = commentLines(run);
+
+    expect(step.if).toBe("steps.preflight.outputs.refused == 'false'");
+    expect(rest).toEqual([]);
+    expect(comment).toContain("${RUN_URL}");
+    expect(run.indexOf(comment ?? "")).toBeGreaterThan(run.indexOf(START));
+    expect(steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@"))).toBeGreaterThan(
+      steps.indexOf(step),
+    );
+  });
+
+  /**
+   * A warning, never a failure: `|| echo "::warning::…"` on the comment line
+   * itself, so the step's `bash -e` cannot end on it, and nothing after it in
+   * the step that could fail in its place.
+   */
+  it.each([IMPLEMENT, PRD])("%s: a start comment that cannot be posted is a warning, not a failure", (file: string) => {
+    const step = transition(file);
+    const run = step.run ?? "";
+    const [comment] = commentLines(run);
+
+    expect(comment).toMatch(/\|\| echo "::warning::[^"]+"$/);
+    expect(step["continue-on-error"]).toBeUndefined();
+    const after = run.slice(run.indexOf(comment ?? "") + (comment ?? "").length).trim();
+
+    expect(after).toBe("");
+  });
+
+  it("implement.yml: says the run started on the issue", () => {
+    expect(commentLines(transition(IMPLEMENT).run ?? "")[0]).toContain("\\`agent:implement\\` started:");
+  });
+
+  /**
+   * On a PRD the parent is what was labelled, so the comment goes there, and
+   * names what this run is for: the sub-issue it builds, the slice PR it
+   * merges first, or that it is the finishing run.
+   */
+  it("implement-prd.yml: names what this run is doing on the parent", () => {
+    const step = transition(PRD);
+    const run = step.run ?? "";
+
+    expect(step.env?.["SUB"]).toBe("${{ steps.preflight.outputs.sub }}");
+    expect(step.env?.["SUB_TITLE"]).toBe("${{ steps.preflight.outputs.sub_title }}");
+    expect(step.env?.["SLICE_PR"]).toBe("${{ steps.preflight.outputs.slice_pr }}");
+    expect(step.env?.["FINISHING"]).toBe("${{ steps.preflight.outputs.finishing }}");
+    expect(run).toContain('if [ "$FINISHING" = "true" ]; then');
+    expect(run).toContain("finishing run started");
+    expect(run).toContain("building sub-issue #${SUB}");
+    expect(run).toContain("slice PR #${SLICE_PR}");
+  });
+
+  /**
+   * `implement.yml`'s success outcome is the PR it opens, so that is the
+   * comment that carries the link on success, and it is a warning where it
+   * fails for the same reason: the PR is open by then, and the review it asks
+   * for must still be requested.
+   */
+  it("implement.yml: says which PR it opened, with the run link, and cannot fail the job on it", () => {
+    const steps = stepsOf(IMPLEMENT);
+    const opened = steps.findIndex((s) => s.id === "open_pr");
+    const step = steps.find((s, i) => i > opened && commentLines(s.run ?? "").length > 0);
+    const [comment] = commentLines(step?.run ?? "");
+
+    expect(step?.if).toBe("steps.preflight.outputs.refused == 'false' && success()");
+    expect(step?.env?.["NEW_PR"]).toBe("${{ steps.open_pr.outputs.number }}");
+    expect(steps.indexOf(step as Step)).toBeLessThan(steps.findIndex((s) => s.name === "Request review"));
+    expect(step?.run ?? "").toContain("opened PR #${NEW_PR}");
+    expect(comment).toContain("${RUN_URL}");
+    expect(comment).toMatch(/\|\| echo "::warning::[^"]+"$/);
+  });
+});

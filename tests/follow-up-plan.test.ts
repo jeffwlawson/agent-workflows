@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  earlierFollowUps,
   FOLLOW_UP_STUB_LABEL,
   MAX_STUB_TITLE,
   planFollowUps,
@@ -7,7 +8,13 @@ import {
   type FilingReview,
   type FilingStub,
 } from "../shared/follow-up-plan.js";
-import { followUpsPayload, renderFollowUpsBlock, type FollowUp } from "../shared/review-output.js";
+import {
+  followUpsCap,
+  followUpsPayload,
+  recordFollowUps,
+  renderFollowUpsBlock,
+  type FollowUp,
+} from "../shared/review-output.js";
 
 /**
  * The one seam in the filing half (#48). Everything worth arguing about — who
@@ -940,6 +947,49 @@ describe("planFollowUps: what the merged pull request is told", () => {
     expect(result.report).toMatch(/1 further finding was dropped by the cap/);
   });
 
+  /**
+   * **At the cap the review recorded** (#247): three per landed slice on a PRD
+   * PR, whose newest review carries every earlier round's entries. The belt
+   * re-applies that cap rather than its own three, which would cut a
+   * three-slice PRD's nine back to three at the end that files them.
+   */
+  it("re-applies the cap the payload records, three per landed slice", () => {
+    const list = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => followUp({ title: `t${n}`, location: `src/t${n}.ts:1` }));
+    const result = plan([], [], {
+      reviews: [
+        {
+          author: "github-actions",
+          body: renderFollowUpsBlock(list, 0, 0, followUpsCap(3)),
+          lastEditedAt: null,
+          url: REVIEW_URL,
+        },
+      ],
+    });
+
+    expect(result.issues).toHaveLength(9);
+    expect(result.issues.map((i) => i.title)).not.toContain("t9");
+    expect(result.report).toMatch(/1 further finding was dropped by the cap/);
+  });
+
+  /** A regular pull request is one slice: its block records three, and the belt bites at three. */
+  it("keeps a regular pull request's cap at three", () => {
+    const list = [0, 1, 2, 3].map((n) => followUp({ title: `t${n}`, location: `src/t${n}.ts:1` }));
+    const result = plan(list);
+
+    expect(result.issues.map((i) => i.title)).toEqual(["t0", "t1", "t2"]);
+    expect(result.report).toMatch(/1 further finding was dropped by the cap/);
+  });
+
+  /** And a block written before the cap was recorded reads as three. */
+  it("caps a block that records no cap at three", () => {
+    const list = [0, 1, 2, 3].map((n) => followUp({ title: `t${n}`, location: `src/t${n}.ts:1` }));
+    const body = followUpsPayload(list, 0, 0).replace(',"cap":3', "");
+    const result = plan([], [], { reviews: [{ author: "github-actions", body, lastEditedAt: null, url: REVIEW_URL }] });
+
+    expect(body).not.toContain('"cap"');
+    expect(result.issues).toHaveLength(3);
+  });
+
   /** Removed only on success, so a failed run leaves the retry affordance. */
   it("removes the marker once it has acted on a block, and not otherwise", () => {
     expect(plan([followUp()]).removeMarker).toBe(true);
@@ -1020,7 +1070,76 @@ describe("the stub key and the review block version independently", () => {
     );
 
     expect(render([], 0, 0)).toBe(
-      `<!-- ${marker} {"version":1,"dropped":0,"moved":0,"followUps":[]} -->`,
+      `<!-- ${marker} {"version":1,"dropped":0,"moved":0,"cap":3,"followUps":[]} -->`,
     );
+  });
+});
+
+/**
+ * What a PRD PR's newest review carries forward (#247), selected as the
+ * review the filing end files from is selected: this loop's own, unedited.
+ * Carried entries are filed, so an edited body carried forward would launder
+ * the edit into a body the filing end trusts.
+ */
+describe("earlierFollowUps", () => {
+  const block = (findings: readonly FollowUp[], moved = 0): string =>
+    `A summary.\n\n${renderFollowUpsBlock(findings, 0, moved)}`;
+
+  it("reads every round this loop posted, oldest first, split at the exempt prefix", () => {
+    const moved = followUp({ title: "moved", id: "fu-00000001" });
+    const rest = followUp({ title: "rest", id: "fu-00000002" });
+    const later = followUp({ title: "later", id: "fu-00000003" });
+    const { carried, skipped } = earlierFollowUps([
+      review([], { body: block([moved, rest], 1) }),
+      review([], { author: "a-maintainer", body: block([followUp({ title: "typed by a person" })]) }),
+      review([], { body: "A review with no block." }),
+      review([], { body: block([later]) }),
+    ]);
+
+    expect(carried).toEqual([
+      { moved: [moved], rest: [rest] },
+      { moved: [], rest: [later] },
+    ]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("skips and names an edited body, and one this version cannot read", () => {
+    const { carried, skipped } = earlierFollowUps([
+      review([followUp()], { lastEditedAt: "2026-09-20T10:00:00Z", url: "https://example.test/edited" }),
+      review([], { body: `<!-- agent-follow-ups {"version":99} -->`, url: "https://example.test/future" }),
+    ]);
+
+    expect(carried).toEqual([]);
+    expect(skipped).toHaveLength(2);
+    expect(skipped[0]).toContain("https://example.test/edited");
+    expect(skipped[0]).toContain("edited");
+    expect(skipped[1]).toContain("https://example.test/future");
+  });
+
+  /**
+   * End to end over the pure halves: two slice rounds and a final review on a
+   * PRD PR, the last carrying both earlier rounds' entries once each, and the
+   * merge filing all of them under the cap the final review recorded.
+   */
+  it("files every round's follow-ups once at the PRD PR's merge", () => {
+    const post = (findings: FollowUp[], earlier: readonly FilingReview[], landed: number): FilingReview => {
+      const recorded = recordFollowUps([], findings, [], {
+        cap: followUpsCap(landed),
+        carried: earlierFollowUps(earlier).carried,
+      });
+      return review([], {
+        body: `A summary.\n\n${renderFollowUpsBlock(recorded.followUps, recorded.dropped, recorded.moved, recorded.cap)}`,
+      });
+    };
+    const three = (slice: number): FollowUp[] =>
+      [0, 1, 2].map((n) => followUp({ title: `slice ${slice} #${n}`, location: `src/s${slice}-${n}.ts:1` }));
+    const round1 = post(three(1), [], 1);
+    const round2 = post(three(2), [round1], 2);
+    const final = post([], [round1, round2], 2);
+
+    const result = plan([], [], { reviews: [round1, round2, final] });
+
+    expect(result.issues.map((i) => i.title)).toEqual([...three(1), ...three(2)].map((f) => f.title));
+    expect(result.report).not.toMatch(/dropped/);
   });
 });

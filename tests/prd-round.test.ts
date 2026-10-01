@@ -10,14 +10,28 @@ import {
   readSliceRound,
   renderFinalReviewBrief,
   renderParkComment,
+  renderPrdSummary,
   renderSliceRoundBrief,
   roundName,
+  sliceCriteria,
+  type PostedReview,
   type ParkFinding,
   type ParkReason,
   type PrdRound,
   type RangeCommit,
 } from "../shared/prd-round.js";
-import { deriveVerdict, VERDICTS, type ReviewOutput, type VerdictInputs } from "../shared/review-output.js";
+import {
+  deriveVerdict,
+  renderCriteriaGroup,
+  renderReviewBody,
+  reviewOutputSchema,
+  VERDICTS,
+  type CriterionResult,
+  type ReviewOutput,
+  type VerdictInputs,
+} from "../shared/review-output.js";
+import { verifyCarried, type CarriedFinding } from "../shared/review-verification.js";
+import { sliceRanges } from "../shared/slice-ranges.js";
 
 /**
  * A review round on a PRD PR (PRD #222, #244): the slice-round and final-review
@@ -120,6 +134,212 @@ describe("the final-review brief", () => {
     expect(text).not.toMatch(/slice \d+ of \d+/);
     expect(text).not.toContain("commits, oldest first");
     expect(roundName({ kind: "final", parent: "222" })).toBe("the final review");
+  });
+  /** #215: every open finding, from any slice, and nothing a maintainer settled. */
+  it("asks for a ruling on every open finding from any slice, and never a settled one again", () => {
+    const text = renderFinalReviewBrief("222", BRANCH, "main");
+
+    expect(text).toContain("Rule on **every** open finding");
+    expect(text).toContain("whichever slice's round raised it");
+    expect(text).toContain("declined or resolved by hand is raised again");
+    expect(text).toContain("what no slice round could see");
+  });
+});
+
+/**
+ * **#215 on the final review**: a finding a slice round raised and nothing
+ * closed stays open whatever the final review says of it, so the verdict
+ * cannot be the one that says nothing is left to fix.
+ */
+describe("a finding still open from an earlier slice", () => {
+  const carried: CarriedFinding = {
+    id: "f-0badc0de",
+    threadId: "PRRT_1",
+    text: "src/a.ts:3 the guard runs after the return",
+    title: "the guard runs after the return",
+    anchor: "src/a.ts:3",
+  };
+  const clean = reviewOutputSchema["~standard"].validate({ summary: "s", findings: [] }) as { value: ReviewOutput };
+  const inputs: VerdictInputs = {
+    ci: "green",
+    fixRoundProgress: undefined,
+    stillOpen: 0,
+    movedToFollowUps: 0,
+    autoFix: false,
+    base: "main",
+  };
+
+  it("keeps the verdict off approval where the final review ruled on nothing", () => {
+    const { stillOpen, resolved } = verifyCarried([carried], []);
+    const verdict = deriveVerdict(clean.value, { ...inputs, stillOpen: stillOpen.length });
+    const posted = renderReviewBody({
+      verdict,
+      output: clean.value,
+      placed: [],
+      movedToFollowUps: 0,
+      stillOpen,
+      resolved,
+      followUps: [],
+      droppedFollowUps: 0,
+    });
+
+    expect(stillOpen).toHaveLength(1);
+    expect(verdict.verdict).not.toBe("approval recommended");
+    expect(posted).not.toContain("Nothing left to fix");
+    expect(posted).not.toContain("Nothing is open");
+    expect(posted).toContain("the guard runs after the return");
+  });
+
+  it("approves only once the finding is ruled closed", () => {
+    const { stillOpen } = verifyCarried([carried], [{ id: "f-0badc0de", status: "landed", note: "fixed" }]);
+
+    expect(deriveVerdict(clean.value, { ...inputs, stillOpen: stillOpen.length }).verdict).toBe(
+      "approval recommended",
+    );
+  });
+});
+
+/**
+ * The final review's record of what each slice changed or dropped (#247),
+ * read off the slice rounds' review bodies by the commit each one reviewed,
+ * through the slice ranges.
+ */
+describe("sliceCriteria", () => {
+  const subIssues = [
+    { number: 242, state: "OPEN" as const },
+    { number: 243, state: "OPEN" as const },
+    { number: 244, state: "OPEN" as const },
+    { number: 245, state: "OPEN" as const },
+  ];
+  // Newest first, as `git log` lists it: two commits of 242, a fix of 242,
+  // a merge of the default branch, one of 243 and one of 244. 245 is not built.
+  const ranges = sliceRanges(
+    [
+      { sha: "c6", parents: ["c5"], slice: 244 },
+      { sha: "c5", parents: ["c4"], slice: 243 },
+      { sha: "c4", parents: ["c3", "main1"], slice: null },
+      { sha: "c3", parents: ["c2"], slice: null },
+      { sha: "c2", parents: ["c1"], slice: 242 },
+      { sha: "c1", parents: ["c0"], slice: 242 },
+    ],
+    subIssues,
+  );
+  const group = (results: CriterionResult[]): string =>
+    `## Agent review\n\n${renderCriteriaGroup(results) ?? ""}\n\n<!-- agent-follow-ups {} -->`;
+  const bot = (commit: string, body: string): PostedReview => ({ author: "github-actions", commit, body });
+
+  it("takes each slice's newest round with a record, and reads its changed and unmet criteria", () => {
+    const reviews = [
+      bot("c2", group([{ id: "C1", text: "It refuses a stale tag.", status: "unmet", reason: "not yet" }])),
+      // The fix round's re-review, which approved slice 242.
+      bot("c3", group([
+        { id: "C1", text: "It refuses a stale tag.", status: "unmet", reason: "declined by the maintainer" },
+        { id: "C2", text: "It logs the tag.", status: "changed", reason: "the log is a warning now" },
+        { id: "C3", text: "It is fast.", status: "met" },
+      ])),
+      bot("c5", group([{ id: "C1", text: "Everything as written.", status: "met" }])),
+      // A slice whose sub-issue named no criteria.
+      bot("c6", "## Agent review\n\nNo criteria group."),
+    ];
+
+    expect(sliceCriteria(reviews, ranges)).toEqual([
+      {
+        subIssue: 242,
+        record: {
+          kind: "recorded",
+          changes: [
+            { status: "unmet", line: "It refuses a stale tag. · declined by the maintainer" },
+            { status: "changed", line: "It logs the tag. · the log is a warning now" },
+          ],
+        },
+      },
+      { subIssue: 243, record: { kind: "recorded", changes: [] } },
+      { subIssue: 244, record: { kind: "none checked" } },
+    ]);
+  });
+
+  /** Anyone may post a review, and this text goes into the PRD PR's body. */
+  it("reads only reviews this loop posted, and says where a slice has none", () => {
+    const forged = { author: "someone", commit: "c5", body: group([{ id: "C1", text: "x", status: "changed", reason: "y" }]) };
+
+    expect(sliceCriteria([forged], ranges).map((s) => s.record.kind)).toEqual(["no record", "no record", "no record"]);
+  });
+});
+
+/**
+ * The final review's PRD sections (#247, #216), as the workflow lays them out
+ * in the summary block: the outcome, the behaviour changes with the breaking
+ * ones marked, the criteria each slice changed or dropped, and the known
+ * issues naming the follow-ups filed on merge.
+ */
+describe("renderPrdSummary", () => {
+  const followUp = { title: "the cache key omits the tenant", location: "src/cache.ts:12", body: "b", severity: "medium" as const };
+
+  it("renders every section, a breaking change marked and a dropped criterion with its slice", () => {
+    const text = renderPrdSummary({
+      outcome: "Each slice is built on one branch and reviewed on one pull request.",
+      behaviourChanges: [
+        { change: "Slice PRs are no longer opened.", breaking: false },
+        { change: "Adopters must drop the `closed` trigger.", breaking: true },
+      ],
+      slices: [
+        { subIssue: 242, record: { kind: "recorded", changes: [] } },
+        {
+          subIssue: 243,
+          record: {
+            kind: "recorded",
+            changes: [
+              { status: "unmet", line: "It refuses a stale tag. · declined" },
+              { status: "changed", line: "It logs the tag. · a warning now" },
+            ],
+          },
+        },
+        { subIssue: 244, record: { kind: "none checked" } },
+        { subIssue: 245, record: { kind: "no record" } },
+      ],
+      followUps: [followUp],
+    });
+
+    expect(text).toBe(
+      [
+        "### Outcome",
+        "Each slice is built on one branch and reviewed on one pull request.",
+        "### Behaviour changes",
+        "- **Breaking:** Adopters must drop the `closed` trigger.\n- Slice PRs are no longer opened.",
+        "### Acceptance criteria changed or dropped",
+        [
+          "- #243:",
+          "  - **Dropped:** It refuses a stale tag. · declined",
+          "  - **Changed:** It logs the tag. · a warning now",
+          "- #245: no review of this slice could be read, so its record is not listed here.",
+        ].join("\n"),
+        "### Known issues",
+        "Filed as issues when this pull request merges:\n\n- the cache key omits the tenant (`src/cache.ts:12`)",
+      ].join("\n\n"),
+    );
+  });
+
+  it("says so where nothing changed, nothing is known and the history could not be read", () => {
+    const quiet = renderPrdSummary({
+      outcome: undefined,
+      behaviourChanges: [],
+      slices: [{ subIssue: 242, record: { kind: "recorded", changes: [] } }],
+      followUps: [],
+    });
+
+    expect(quiet).toContain("None: every slice met its sub-issue's criteria as written.");
+    expect(quiet).toContain("### Known issues\n\nNone recorded to be filed.");
+    expect(quiet).toContain("### Behaviour changes\n\nNone recorded.");
+    expect(renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: undefined, followUps: [] })).toContain(
+      "could not be read",
+    );
+  });
+
+  /** #216: nothing in what the workflow lays out says the PRD PR is a draft. */
+  it("carries no draft-only text", () => {
+    const text = renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: [], followUps: [] });
+
+    expect(text).not.toMatch(/draft|summarize the whole PRD here/i);
   });
 });
 

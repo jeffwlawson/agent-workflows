@@ -120,6 +120,10 @@ saying it again here is the same problem read twice.
 
   Both are written only where something was pushed since the summary was last written, which the
   brief told you. Where it said this review leaves them as they are, omit both.
+- **`behaviourChanges`**: on a PRD PR's **final review** only, where the brief asked for it: one
+  entry per behaviour the whole change alters, `{ "change": "one line", "breaking": true }` for one
+  a caller or a user has to act on and `false` otherwise. The workflow marks the breaking ones and
+  lays the summary out around them. Omit the field on every other review.
 
 Do not use em dashes in anything you write, in any field; use a comma, colon, semicolon,
 parentheses, or a new sentence instead.
@@ -233,7 +237,8 @@ A criterion you omit is listed as not checked.
 </output>
 ```
 
-Use an empty array for any of the six lists with no entries (`verified` is empty when you were
+`behaviourChanges` is not in the example: it is asked for on one review in many, and the brief
+says when. Use an empty array for any of the six lists with no entries (`verified` is empty when you were
 given no open findings to rule on, `noteRulings` when you were given no notes, and `criteria` when
 you were given no criteria). Leave
 `needsYou` out entirely unless it applies, and `title` and `summary` out where the brief said this

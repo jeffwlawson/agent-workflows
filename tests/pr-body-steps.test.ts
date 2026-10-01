@@ -4,7 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { readSummaryBlock, SUMMARY_END, SUMMARY_START, summaryUpdate } from "../shared/pr-summary.js";
+import {
+  DRAFT_NOTE_END,
+  DRAFT_NOTE_START,
+  readSummaryBlock,
+  SUMMARY_END,
+  SUMMARY_START,
+  summaryUpdate,
+} from "../shared/pr-summary.js";
 import {
   PROGRESS_END,
   PROGRESS_START,
@@ -204,8 +211,10 @@ describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
         "_The progress list is written when this slice's review round ends._",
         PROGRESS_END,
         "",
+        DRAFT_NOTE_START,
         "> [!NOTE]",
         "> The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.",
+        DRAFT_NOTE_END,
         "",
         SUMMARY_START,
         "_The final review will summarize the whole PRD here._",
@@ -237,8 +246,9 @@ const writeSummary = (
     summary: "It writes the title.\n\n- **Breaking:** the old field is gone.",
   },
   fail = "",
+  final = false,
 ): Outcome & { readonly request: { title?: string; body?: string } | undefined } => {
-  const file = update === null ? undefined : summaryUpdate(update, HEAD);
+  const file = update === null ? undefined : summaryUpdate(update, HEAD, final);
   const outcome = runStep(
     stepRun("review", "post-review", "Write the PR title and summary"),
     { PR_NUMBER: "152", GH_FAIL: fail },
@@ -270,6 +280,7 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
     expect(readSummaryBlock(written)).toEqual({
       text: "It writes the title.\n\n- **Breaking:** the old field is gone.",
       head: HEAD,
+      final: false,
     });
     expect(outcome.request?.title).toBe("feat: write the title");
     expect(outcome.gh.some((call) => call.startsWith("api --method PATCH repos/{owner}/{repo}/pulls/152"))).toBe(true);
@@ -359,6 +370,77 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
     expect(outcome.status, outcome.stdout).toBe(0);
     expect(outcome.request).toEqual({ title: "feat: write the title" });
     expect(outcome.stdout).toContain("half a summary block, or two");
+  });
+
+  /**
+   * **The final review leaves no draft-only text** (#247, #216): the frame's
+   * note that the PRD PR stays a draft goes, markers and all, with the blank
+   * line after it, when the final review writes the summary. Every other byte
+   * outside the summary block stays, the `Closes` block and the progress list
+   * included.
+   */
+  describe("on a PRD PR's final review", () => {
+    const NOTE = [
+      DRAFT_NOTE_START,
+      "> [!NOTE]",
+      "> The agent loop builds PRD #14 here, one sub-issue at a time. It stays a draft until every slice is done.",
+      DRAFT_NOTE_END,
+    ].join("\n");
+    const prd = (note: string): string =>
+      [
+        CLOSES_START,
+        "Closes #14",
+        "Closes #15",
+        CLOSES_END,
+        "",
+        PROGRESS_START,
+        "- ✅ **Approved:** #15 Slice",
+        PROGRESS_END,
+        "",
+        note,
+        "",
+        SUMMARY_START,
+        "_The final review will summarize the whole PRD here._",
+        SUMMARY_END,
+        "",
+        "A maintainer's note.",
+      ].join("\n");
+
+    it("removes the draft-only note and writes the PRD's summary, marked as the final review's", () => {
+      const outcome = writeSummary(prd(NOTE), undefined, "", true);
+      const written = outcome.request?.body ?? "";
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      expect(written).not.toContain(DRAFT_NOTE_START);
+      expect(written).not.toContain("stays a draft");
+      expect(written).not.toContain("_The final review will summarize");
+      expect(outside(written)).toEqual(outside(prd(NOTE).replace(`${NOTE}\n\n`, "")));
+      expect(readSummaryBlock(written)).toMatchObject({ head: HEAD, final: true });
+      expect(outcome.request?.title).toBe("feat: write the title");
+    });
+
+    it("removes the note even where it writes only the title", () => {
+      const outcome = writeSummary(prd(NOTE), { title: "feat: the whole PRD" }, "", true);
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      expect(outcome.request?.body).toBe(prd(NOTE).replace(`${NOTE}\n\n`, ""));
+    });
+
+    it("leaves a body with no note, or half of one, as it is outside the summary", () => {
+      const none = writeSummary(prd("My own text."), undefined, "", true);
+      expect(outside(none.request?.body ?? "")).toEqual(outside(prd("My own text.")));
+
+      const half = writeSummary(prd(DRAFT_NOTE_START), undefined, "", true);
+      expect(outside(half.request?.body ?? "")).toEqual(outside(prd(DRAFT_NOTE_START)));
+    }, CEILING);
+
+    /** A slice round's write is not the final review's, and the note stays. */
+    it("leaves the note where a slice round writes the summary", () => {
+      const outcome = writeSummary(prd(NOTE));
+
+      expect(outcome.request?.body).toContain(NOTE);
+      expect(readSummaryBlock(outcome.request?.body ?? "")?.final).toBe(false);
+    });
   });
 
   /** Nothing pushed since the summary was written: the runner wrote no file. */

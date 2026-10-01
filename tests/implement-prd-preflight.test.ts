@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { SUMMARY_END, SUMMARY_START } from "../shared/pr-summary.js";
+import { DRAFT_NOTE_END, DRAFT_NOTE_START, SUMMARY_END, SUMMARY_START } from "../shared/pr-summary.js";
 import {
   FINAL_REVIEW_MARK,
   FINAL_REVIEW_REQUESTED_LINES,
@@ -768,8 +768,10 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
         "_The progress list is written when this slice's review round ends._",
         PROGRESS_END,
         "",
+        DRAFT_NOTE_START,
         "> [!NOTE]",
         `> The agent loop builds PRD #${PARENT} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.`,
+        DRAFT_NOTE_END,
         "",
         SUMMARY_START,
         "_The final review will summarize the whole PRD here._",
@@ -799,7 +801,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
     });
 
     expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.temp("prd-pr-body.md")).toContain(`<!-- /agent:closes -->\n\n${list}\n\n> [!NOTE]`);
+    expect(outcome.temp("prd-pr-body.md")).toContain(`<!-- /agent:closes -->\n\n${list}\n\n${DRAFT_NOTE_START}\n> [!NOTE]`);
   });
 
   it("reuses the PRD PR a run before it opened, rather than a second", () => {

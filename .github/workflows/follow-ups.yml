@@ -26,6 +26,14 @@ name: Agent Follow-ups (reusable)
 # | `labeled` anything else | any | any | the job never starts |
 # | any of the above, from a fork | any | any | the job never starts |
 #
+# **A PRD chain files once, at its PRD PR's merge** (#247). Its slices are
+# built as commits on the PRD branch and reviewed on the PRD PR, and nothing
+# merges into the PRD branch through a pull request any more, so the PRD PR's
+# merge is the only `closed` event the chain produces and no filter is needed
+# here. The PRD PR's newest review carries forward every follow-up an earlier
+# round on it recorded, de-duplicated, under a cap of three per landed slice
+# that the payload records and the filing re-applies.
+#
 # `pull_request_target` for two reasons that both belong in the file: it reads
 # workflow YAML from the default branch, so a pull request cannot alter what runs,
 # and it carries the write token unconditionally — a `pull_request` close from

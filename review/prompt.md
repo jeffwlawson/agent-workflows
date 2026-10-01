@@ -90,8 +90,8 @@ but *did the last round's findings land, and did the new commits break anything?
   ordinary finding rather than a weaker one. It does **not** go to `followUps`, which is where an
   earlier version of this brief sent it.
 - Anything real but outside this pull request's scope is still a `followUps` entry, on the bar
-  stated with that list. It is a complete restatement every round, so re-record the entries the
-  earlier round listed that are still true.
+  stated with that list. Whether to re-record the entries an earlier round listed is said under
+  *FOLLOW-UPS EARLIER ROUNDS RECORDED* below.
 - Say in `howChecked` that this pass is a verification of the earlier round, and what you checked
   the earlier findings against. The reader is being asked to look at a pull request they had
   already been told was nearly ready, and why is the first thing they will want.
@@ -181,6 +181,10 @@ either:
 
 A note you say nothing about is recorded as a follow-up at `medium`. That is the safe direction:
 a note nobody ruled on must not disappear.
+
+# FOLLOW-UPS EARLIER ROUNDS RECORDED
+
+{{CARRIED_FOLLOW_UPS}}
 
 # CI RESULTS
 
@@ -351,6 +355,8 @@ optional. The **type comes from what the diff does**, not from the issue's title
 called a fix that adds a capability is `feat`. It is not the issue's title copied, and a title a
 maintainer edited is input in the same way the block is. A squash merge may land this line as the
 commit subject, so write it as one.
+
+{{FINAL_SUMMARY}}
 
 # WHEN ANOTHER PASS WILL NOT SETTLE IT
 

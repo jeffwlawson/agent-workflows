@@ -967,7 +967,10 @@ jobs:
       # PRD of more than one slice, since a human can still mark it ready by
       # hand. Its body is the **frame** (#218), written once:
       # the `Closes` block, the progress list, a note on what the chain does
-      # here, and the summary block the PRD PR's review writes. The `Closes`
+      # here, and the summary block the PRD PR's review writes. The note is
+      # **draft-only** text, between its own markers (`DRAFT_NOTE_START` and
+      # `DRAFT_NOTE_END` in `shared/pr-summary.ts`, held equal by a test),
+      # which the final review's write of the summary removes (#247). The `Closes`
       # block and the progress list are workflow-owned, each between its own
       # markers, which the review's rewrite of the summary splices around byte
       # for byte. The `Closes` block is `Closes #<parent>` and one
@@ -1066,8 +1069,10 @@ jobs:
 
           ${list}
 
+          <!-- agent:draft-note -->
           > [!NOTE]
           > The agent loop builds PRD #${ISSUE_NUMBER} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.
+          <!-- /agent:draft-note -->
 
           <!-- agent:summary -->
           _The final review will summarize the whole PRD here._

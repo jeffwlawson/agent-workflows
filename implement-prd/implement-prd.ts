@@ -15,7 +15,15 @@ import {
   writeText,
 } from "../shared/common.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
-import { renderProgressList, spliceProgressList } from "../shared/progress-list.js";
+import {
+  renderPrdStatus,
+  renderProgressList,
+  spliceProgressList,
+  spliceStatus,
+  statusBlock,
+  type ProgressInputs,
+} from "../shared/progress-list.js";
+import { readRoundRecord, roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
@@ -51,18 +59,21 @@ const PRD_PR = process.env["PRD_PR"] ?? "";
 const MERGED = process.env["MERGED"] ?? "";
 
 /**
- * The PRD PR's progress list (#246), rendered from the PRD branch as it stands
- * and the parent's sub-issues, twice: with this slice **building**, written into
+ * The PRD PR's progress list (#246), a table since #298 with the status line
+ * beside it, rendered from the PRD branch as it stands, the parent's
+ * sub-issues and the rounds on the PRD PR, twice: with this slice **building**, written into
  * the PRD PR's body now, and with it **in review**, left in `progress.md` for
- * the step that asks for its round once the slice is pushed. That one is
- * rendered over the branch with this slice's commits on it, which is what the
- * push puts there.
+ * the step that asks for its round once the slice is pushed, with its status
+ * line in `status.md`. That one is rendered over the branch with this slice's
+ * commits on it, which is what the push puts there; they are not made yet, so
+ * its row links no diff until its round ends.
  *
  * And for a run that stops once the list shows this slice building, two more,
  * for `Show the stopped slice in the progress list` to write: `progress_stopped.md`
  * with nothing pushed, this slice not started and the head's verdict as it now
  * stands, and `progress_stopped_pushed.md` with this slice pushed and parked,
- * since no round of it is running. Written before the list goes into the body,
+ * since no round of it is running, each with its `status_` twin. Written
+ * before the list goes into the body,
  * so a list that shows this slice building always has one to undo it.
  *
  * The run got past the approval gate, so the verdict on the head is an
@@ -77,30 +88,33 @@ const writeProgress = (): void => {
       [{ sha: "(this slice)", parents: [git(["rev-parse", "HEAD"]).trim()], slice: sub }, ...log],
       subIssues,
     );
-    const finalReview = "not requested";
-    writeText(
-      "progress.md",
-      renderProgressList({ subIssues, ranges: pushed, verdict: "none", running: { kind: "review" }, finalReview }),
-    );
-    writeText(
-      "progress_stopped.md",
-      renderProgressList({ subIssues, ranges, verdict: MERGED === "" ? "approval" : "none", running: null, finalReview }),
-    );
-    writeText(
-      "progress_stopped_pushed.md",
-      renderProgressList({ subIssues, ranges: pushed, verdict: "none", running: null, finalReview }),
-    );
+    // Each slice's reviews and fix rounds so far (#298), off the PRD PR; none
+    // before it is open. Left out where they cannot be read, and the table
+    // says so in each cell.
+    let rounds: RoundCounts | undefined;
+    if (PRD_PR !== "") {
+      try {
+        rounds = roundCounts(readRoundRecord(PRD_PR), ranges);
+      } catch (error) {
+        console.log(`::warning::The PRD PR's rounds could not be read, so the progress table does not count them: ${firstLine(error)}`);
+      }
+    }
+    const server = process.env["GITHUB_SERVER_URL"];
+    const repo = process.env["GITHUB_REPOSITORY"];
+    const prUrl = PRD_PR !== "" && server && repo ? `${server}/${repo}/pull/${PRD_PR}` : undefined;
+    const common = { subIssues, finalReview: "not requested" as const, prUrl, rounds };
+    const write = (name: string, inputs: ProgressInputs): void => {
+      writeText(`progress${name}.md`, renderProgressList(inputs));
+      writeText(`status${name}.md`, statusBlock(renderPrdStatus(inputs)));
+    };
+    write("", { ...common, ranges: pushed, verdict: "none", running: { kind: "review" } });
+    write("_stopped", { ...common, ranges, verdict: MERGED === "" ? "approval" : "none", running: null });
+    write("_stopped_pushed", { ...common, ranges: pushed, verdict: "none", running: null });
     if (PRD_PR === "") return;
-    const building = renderProgressList({
-      subIssues,
-      ranges,
-      verdict: "approval",
-      running: { kind: "build", subIssue: sub },
-      finalReview,
-    });
+    const building: ProgressInputs = { ...common, ranges, verdict: "approval", running: { kind: "build", subIssue: sub } };
     const endpoint = `repos/{owner}/{repo}/pulls/${PRD_PR}`;
     const body = (JSON.parse(gh(["api", endpoint])) as { body?: string | null }).body ?? "";
-    const spliced = spliceProgressList(body, building);
+    const spliced = spliceProgressList(body, renderProgressList(building));
     if (spliced === undefined) {
       console.log(
         `::warning::PRD PR #${PRD_PR}'s body carries half a progress list, or two, so it was not written. ` +
@@ -108,7 +122,7 @@ const writeProgress = (): void => {
       );
       return;
     }
-    writeJson("progress_edit.json", { body: spliced });
+    writeJson("progress_edit.json", { body: spliceStatus(spliced, statusBlock(renderPrdStatus(building))) ?? spliced });
     gh(["api", "--method", "PATCH", endpoint, "--input", path.join(outputDir(), "progress_edit.json")]);
     console.log(`PRD PR #${PRD_PR}'s progress list shows sub-issue #${SUB_NUMBER} building.`);
   } catch (error) {

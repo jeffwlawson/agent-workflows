@@ -28,7 +28,12 @@ import {
 import { REVIEW_URL_SLOT } from "../shared/prd-round.js";
 import {
   FINAL_REVIEW_MARK,
-  FINAL_REVIEW_REQUESTED_LINES,
+  finalReviewRequestedLines,
+  OPENING_STATUS,
+  renderPrdStatus,
+  STATUS_END,
+  STATUS_START,
+  statusBlock,
   PROGRESS_END,
   PROGRESS_START,
 } from "../shared/progress-list.js";
@@ -3009,6 +3014,7 @@ describe("the review posts last, from one job", () => {
       "Resolve the threads this review closed",
       "Post PR review",
       "Write the PR title and summary",
+      "Write the PR status line",
       "Mark the PR as carrying follow-ups",
       "Post the verdict as a commit status",
       "Mark PR ready for review",
@@ -5001,7 +5007,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
     expect(run).toContain('gh pr list --state open --head "$PRD_BRANCH"');
     expect(run).toContain('gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH"');
-    expect(run).toContain('"Closes #\\($parent)", (.subIssues.nodes[] | select(.state == "OPEN") | "Closes #\\(.number)")');
+    expect(run).toContain('["#\\($parent)", (.subIssues.nodes[] | select(.state == "OPEN") | "#\\(.number)")] | "Closes " + join(", closes ")');
     expect(run.indexOf("gh pr list")).toBeLessThan(run.indexOf("gh pr create"));
     expect(runOf(PRD, "preflight")).toContain('> "${RUNNER_TEMP}/prd-issue.json"');
   });
@@ -7088,7 +7094,7 @@ describe("an implement run links itself on the issue when it starts", () => {
     for (const step of stepsOf(file)) expect(step.env?.["RUN_URL"], step.name).toBeUndefined();
   });
 
-  it.each([IMPLEMENT, PRD])("%s: comments the run link where it takes the issue, before the checkout", (file: string) => {
+  it.each([IMPLEMENT])("%s: comments the run link where it takes the issue, before the checkout", (file: string) => {
     const steps = stepsOf(file);
     const step = transition(file);
     const run = step.run ?? "";
@@ -7105,12 +7111,23 @@ describe("an implement run links itself on the issue when it starts", () => {
 
   /**
    * A warning, never a failure: `|| echo "::warning::…"` on each comment line
-   * itself, so the step's `bash -e` cannot end on it, and nothing after the
-   * first in the step that could fail in its place. On a PRD that is the note
-   * on the parent and the comment on the sub-issue the run starts (#246),
-   * which only a build run posts.
+   * itself, so the step's `bash -e` cannot end on it, and on a single issue
+   * nothing after the first in the step that could fail in its place. On a
+   * PRD that is the note on the parent, the comment on the sub-issue the run
+   * starts (#246), and the chapter marker on the PRD PR (#298), which only a
+   * build run posts.
    */
   it.each([IMPLEMENT, PRD])("%s: a start comment that cannot be posted is a warning, not a failure", (file: string) => {
+    const step = transition(file);
+    const run = step.run ?? "";
+    const comments = [...anyCommentLines(run), ...run.split("\n").filter((l) => l.includes("gh pr comment "))];
+
+    expect(comments.length).toBeGreaterThan(0);
+    for (const line of comments) expect(line).toMatch(/\|\| echo "::warning::[^"]+"$/);
+    expect(step["continue-on-error"]).toBeUndefined();
+  });
+
+  it.each([IMPLEMENT])("%s: does nothing after the start comment that could fail in its place", (file: string) => {
     const step = transition(file);
     const run = step.run ?? "";
     const comments = anyCommentLines(run);
@@ -7129,42 +7146,44 @@ describe("an implement run links itself on the issue when it starts", () => {
   });
 
   /**
-   * A build run comments on the sub-issue it starts, with the run link
-   * (#246): a running build is found from the work it is for.
+   * On a PRD the run's link lives on the sub-issue it builds (#298), so a
+   * running build is found from the work it is for, and is posted before the
+   * checkout, as on a single issue.
    */
-  it("implement-prd.yml: comments the run link on the sub-issue a build run starts", () => {
+  it("implement-prd.yml: comments the run link on the sub-issue a build run starts, before the checkout", () => {
+    const steps = stepsOf(PRD);
     const step = transition(PRD);
     const run = step.run ?? "";
     const sub = anyCommentLines(run).filter((l) => l.includes('gh issue comment "$SUB"'));
 
+    expect(step.if).toBe("steps.preflight.outputs.refused == 'false'");
     expect(sub).toHaveLength(1);
-    expect(sub[0]).toContain("[Workflow run](${RUN_URL})");
-    expect(run.indexOf(sub[0] ?? "")).toBeGreaterThan(run.indexOf('if [ "$BUILD" = "true" ]; then'));
+    expect(sub[0]).toContain("· [Workflow run](${RUN_URL})");
+    expect(run.indexOf(sub[0] ?? "")).toBeGreaterThan(run.indexOf('[ "$BUILD" = "true" ] || exit 0'));
+    expect(run.indexOf('[ "$BUILD" = "true" ] || exit 0')).toBeGreaterThan(run.indexOf(START));
+    expect(steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@"))).toBeGreaterThan(steps.indexOf(step));
     expect(step.env?.["SUB_K"]).toBe("${{ steps.preflight.outputs.sub_k }}");
   });
 
-  it("implement.yml: says the run started on the issue", () => {
-    expect(commentLines(transition(IMPLEMENT).run ?? "")[0]).toContain("\\`agent:implement\\` started:");
-  });
-
   /**
-   * On a PRD the parent is what was labelled, so the comment goes there, and
-   * names what this run is for: the sub-issue it builds, the finishing run's
-   * handover, or opening a PRD PR a run before it died short of.
+   * The parent gets one comment from the whole chain, on its first run, with
+   * no link: the sub-issue holds that. And the PRD PR a chapter marker per
+   * slice, with no link either. Neither repeats a title beside its `#N`.
    */
-  it("implement-prd.yml: names what this run is doing on the parent", () => {
+  it("implement-prd.yml: links the run nowhere but the sub-issue, and names no title", () => {
     const step = transition(PRD);
     const run = step.run ?? "";
+    const parent = commentLines(run);
+    const marker = run.split("\n").filter((l) => l.includes('gh pr comment "$PRD_PR"'));
 
-    expect(step.env?.["SUB"]).toBe("${{ steps.preflight.outputs.sub }}");
-    expect(step.env?.["SUB_TITLE"]).toBe("${{ steps.preflight.outputs.sub_title }}");
-    expect(step.env?.["BUILD"]).toBe("${{ steps.preflight.outputs.build }}");
-    expect(step.env?.["FINISHING"]).toBe("${{ steps.preflight.outputs.finishing }}");
-    expect(run).toContain('if [ "$FINISHING" = "true" ]; then');
-    expect(run).toContain('what="Every sub-issue is built, so this run hands the PRD PR over"');
-    expect(run).toContain('what="Building sub-issue #${SUB} (${SUB_TITLE}) on the PRD branch"');
-    expect(run).toMatch(/what="[^"]*opens it and asks for its review\. It builds nothing"/);
-    expect(commentLines(run)[0]).toContain("**\\`agent:implement\\` started:** ${what}. [Workflow run](${RUN_URL})");
+    expect(parent).toHaveLength(1);
+    expect(parent[0]).toContain('--body "$body"');
+    expect(run).toContain("**`agent:implement` started:** building #%s first.");
+    expect(run).toContain('if [ "$LANDED" = "0" ]; then');
+    expect(marker).toHaveLength(1);
+    expect(marker[0]).toContain('--body "**Slice ${SUB_K} of ${SUBS} · #${SUB} started**"');
+    expect(step.env?.["SUB_TITLE"]).toBeUndefined();
+    expect(run).not.toContain("SUB_TITLE");
     expect(run).not.toContain("slice PR");
   });
 
@@ -7743,14 +7762,57 @@ describe("the PRD chain's progress", () => {
     const handover = runOf(PRD, "handover");
 
     const stopped = stepsOf(PRD).find((s) => s.name === "Show the stopped slice in the progress list");
+    const prStatus = (jobNamed(REVIEW, "post-review").steps ?? []).find((s) => s.name === "Write the PR status line");
     for (const env of [progressStep()?.env, prdPr?.env, stopped?.env]) {
       expect(env?.["PROGRESS_START"]).toBe(PROGRESS_START);
       expect(env?.["PROGRESS_END"]).toBe(PROGRESS_END);
     }
+    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, prStatus?.env]) {
+      expect(env?.["STATUS_START"]).toBe(STATUS_START);
+      expect(env?.["STATUS_END"]).toBe(STATUS_END);
+    }
+    for (const env of [progressStep()?.env, prStatus?.env]) expect(env?.["REVIEW_URL_SLOT"]).toBe(REVIEW_URL_SLOT);
     expect(handover).toContain(`mark="${FINAL_REVIEW_MARK}"`);
     expect(handover).toContain(`end="${PROGRESS_END}"`);
-    expect(handover).toContain(`lines=$'\\n**Final review:** 🔍 in review\\n'"\${mark}"$'\\n'`);
-    expect(FINAL_REVIEW_REQUESTED_LINES).toBe(`\n**Final review:** 🔍 in review\n${FINAL_REVIEW_MARK}\n`);
+    expect(handover).toContain(`status_start="${STATUS_START}"`);
+    expect(handover).toContain(`status_end="${STATUS_END}"`);
+    const prUrl = "${SERVER_URL}/${GH_REPO}/pull/${PRD_PR}";
+    expect(handover).toContain(
+      `lines="${finalReviewRequestedLines(prUrl).replace(`\n${FINAL_REVIEW_MARK}\n`, "")}"$'\\n'"\${mark}"$'\\n'`,
+    );
+    expect(handover).toContain(
+      `\${status_start}${renderPrdStatus({
+        subIssues: [{ number: 1, title: "", state: "OPEN" }, { number: 2, title: "", state: "OPEN" }],
+        ranges: { slices: [], next: null, current: null },
+        verdict: "none",
+        running: { kind: "review" },
+        finalReview: "requested",
+      }).replace("2", "${SUBS}")}\${status_end}`,
+    );
+  });
+
+  /** A regular pull request's note opens with the status line its review rewrites. */
+  it("opens a regular pull request's note with the status line the renderer names", () => {
+    const step = stepsOf(IMPLEMENT).find((s) => s.name === "Open draft PR");
+
+    expect(step?.env?.["OPENING_STATUS"]).toBe(OPENING_STATUS);
+    expect(step?.run).toContain("> <!-- agent:status -->${OPENING_STATUS}<!-- /agent:status -->");
+    expect(statusBlock("x")).toBe("<!-- agent:status -->x<!-- /agent:status -->");
+  });
+
+  /** The regular pull request's status line is the posting job's; a PRD PR's is the advance job's. */
+  it("writes a regular pull request's status line after its summary, and never a PRD PR's", () => {
+    const names = (jobNamed(REVIEW, "post-review").steps ?? []).map((s) => s.name ?? "");
+    const step = (jobNamed(REVIEW, "post-review").steps ?? []).find((s) => s.name === "Write the PR status line");
+
+    expect(names.indexOf("Write the PR status line")).toBe(names.indexOf("Write the PR title and summary") + 1);
+    expect(step?.if).toBe("steps.review.outcome == 'success' && !startsWith(github.event.pull_request.head.ref, 'agent/prd-')");
+    expect(step?.env?.["REVIEW_URL"]).toBe("${{ steps.review.outputs.url }}");
+    expect(step?.run).toContain("set -uo pipefail");
+    expect(String(stepsOf(REVIEW).find((s) => s.name === "Hand the review to the posting job")?.with?.["path"])).toContain(
+      "${{ runner.temp }}/pr_status.md",
+    );
+    expect(fs.readFileSync("review/review.ts", "utf8")).toContain('"pr_status.md"');
   });
 
   /**
@@ -7769,6 +7831,7 @@ describe("the PRD chain's progress", () => {
     expect(step?.["continue-on-error"]).toBeUndefined();
     for (const ending of ["approved", "parked", "running"]) {
       expect(String(upload?.with?.["path"] ?? "")).toContain(`\${{ runner.temp }}/progress_${ending}.md`);
+      expect(String(upload?.with?.["path"] ?? "")).toContain(`\${{ runner.temp }}/status_${ending}.md`);
     }
     expect(jobNamed(REVIEW, "advance").permissions).toEqual({ "pull-requests": "write" });
   });
@@ -7811,11 +7874,16 @@ describe("the PRD chain's progress", () => {
     expect(steps.find((s) => s.name === "Run implementation agent")?.env?.["MERGED"]).toBe(
       "${{ steps.catch_up.outputs.merged }}",
     );
-    for (const file of ["progress_stopped.md", "progress_stopped_pushed.md"]) {
+    for (const file of ["progress_stopped.md", "progress_stopped_pushed.md", "status_stopped.md", "status_stopped_pushed.md"]) {
       expect(run).toContain(file);
-      expect(implement.indexOf(`"${file}"`)).toBeGreaterThan(-1);
-      expect(implement.indexOf(`"${file}"`)).toBeLessThan(implement.indexOf('"PATCH"'));
     }
+    // The runner writes `progress<name>.md` and `status<name>.md` for each.
+    for (const name of ['"_stopped"', '"_stopped_pushed"']) {
+      expect(implement.indexOf(`write(${name}`)).toBeGreaterThan(-1);
+      expect(implement.indexOf(`write(${name}`)).toBeLessThan(implement.indexOf('"PATCH"'));
+    }
+    expect(implement).toContain("writeText(`progress${name}.md`");
+    expect(implement).toContain("writeText(`status${name}.md`");
   });
 
   /**

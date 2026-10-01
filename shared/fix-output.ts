@@ -1,6 +1,7 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
 import { parseOutOfScopeNotes, type OutOfScopeNote } from "./fix-notes.js";
 import { withoutFindingMarkers } from "./review-findings.js";
+import { withoutHeader } from "./round-header.js";
 
 /** What the fix agent decided about one review thread. */
 export interface ThreadOutcome {
@@ -396,9 +397,13 @@ export const TOP_LEVEL_COMMENT_MARKER = "<!-- agent-fix:top-level -->";
 export const isAgentTopLevelComment = (body: string | null | undefined): boolean =>
   (body ?? "").includes(TOP_LEVEL_COMMENT_MARKER);
 
-/** A body with its marker removed, so a new comment compares against a posted one. */
+/**
+ * A body with its marker and its round's header (#298) removed, so a new
+ * comment compares against a posted one: the same comment from a later round
+ * carries a different header.
+ */
 export const unmarkedBody = (body: string): string =>
-  body.split(TOP_LEVEL_COMMENT_MARKER).join("").trim();
+  withoutHeader(body.split(TOP_LEVEL_COMMENT_MARKER).join("").trim()).trim();
 
 /**
  * How many top-level comments one run may post. Two, because the channel's

@@ -61,11 +61,23 @@ slices, writes the PRD's title and body, and marks the PRD PR ready on approval.
 marks the PRD PR ready itself, since the slice round already read the same diff. A review knows it
 is the final review from the PRD PR body's **progress list**, which the finishing run marks.
 
-Sub-issues stay **open** until the PRD PR merges: its body's `Closes` block names the parent and
+Sub-issues stay **open** until the PRD PR merges: its body's `Closes` line names the parent and
 every sub-issue, so the merge closes exactly the work it contains and a PRD PR closed unmerged
-closes nothing. Progress is shown by the progress list and by comments: each build run comments on
-the sub-issue it starts, with the run link, and notes it on the parent, and the run after an
-approval says on the slice's sub-issue which commit was approved and which criteria changed.
+closes nothing. Progress is shown by the progress table and by comments, and **each run's link lives
+on the sub-issue it builds** (#298): each build run comments there with the run link as it starts,
+puts a link-free chapter marker (*Slice k of n · #sub started*) on the PRD PR, and says nothing on
+the parent but once, link-free, on the chain's first run; the final review's start comment and the
+failure comments are the two that carry a link elsewhere, since no sub-issue holds one for them. The
+run after an approval says on the slice's sub-issue which commit was approved and which criteria
+changed. No loop-written text puts an issue's title beside its `#N`: GitHub renders it already.
+
+Every top-level review and fix comment opens with a **round header** (#298): *Slice k of n · #sub ·
+review r* (or *fix f*), *Final review · review r* on the final review, *Review r* or *Fix f* on a
+regular pull request. `shared/round-header.ts` numbers them off the pull request's own record,
+restarting per slice: a review belongs to the slice whose range holds the commit it reviewed, or to
+the final review where its header says so, and a fix round is an `agent:fix` label event, belonging
+to the scope whose first review came last before it. So a hand-requested review counts, and so does
+a fix round added by hand past the budget.
 
 A chain an older release started is migrated rather than stranded (#248), by rules marked
 *Pre-upgrade compatibility* and removable under #224: a closed sub-issue with no slice range landed
@@ -250,7 +262,7 @@ direction that cannot lose one. The fix agent never writes the follow-ups record
 writers of it would break "the newest record wins".
 
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
-record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the
+record, not a rendering of the latest pass: the round header, `## Agent review`, the assessment, one sentence the
 review wrote naming what is unresolved, the step, a count, then *Open*, *Previously missed*,
 *Resolved since last review*, *Acceptance criteria* and *Follow-ups*, then *How this was checked*,
 then a rule and the run. A group with nothing in it is omitted and that rule is the only
@@ -298,12 +310,16 @@ criteria, and the final review is handed none: each slice was held to its own in
 final review reads what each round recorded.
 
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
-a pull request writes its **frame** once and never again: `Closes #N` first, a note saying what the
-loop does with it and how to steer it (linking the opening run), on a PRD PR the **progress list**
-between `<!-- agent:progress -->` markers (#246: each sub-issue not started, building, in review,
-parked or approved, re-rendered from live state by every build run, including one that stops, and at every ending of a round,
-never edited incrementally, and holding the final review's mark), and a **summary block** between `<!-- agent:summary -->` markers. The
-review writes the block and the title, and nothing else in the body: a maintainer's notes outside
+a pull request writes its **frame** once and never again, in the order #298 settled: a note saying
+what the loop does with it and how to steer it (linking the opening run), opening with a one-line
+**status** between `<!-- agent:status -->` markers; `## Summary` and a **summary block** between
+`<!-- agent:summary -->` markers; on a PRD PR the **progress table** between `<!-- agent:progress -->`
+markers (#246: each sub-issue not started, building, in review, fixing, parked or approved, with its
+reviews, fix rounds and a diff of its slice range, and the final review's row; re-rendered from live
+state by every build run, including one that stops, and at every ending of a round, never edited
+incrementally, and holding the final review's mark); and the `Closes` line at the bottom. The status
+line is rendered beside the table on a PRD PR, and by the review's posting job on a regular one. The
+review writes the summary block and the title, and nothing else in the body: a maintainer's notes outside
 the markers survive every round byte for byte. The rule is **anything pushed since the summary was
 last written rewrites both** (the first build, a maintainer's push, a conflict resolution and a fix
 round alike), and nothing pushed leaves both alone. The block carries the head it was written at,
@@ -315,8 +331,9 @@ summary the runner adds the **failing-first tests** from the red check's report 
 only, or which of *not configured*, *could not be read* and *none red* holds instead. So the review comment
 carries no description of the change, and the description exists in one place.
 
-A PRD PR's **final review** writes both however little was pushed, since the last slice round wrote
-them at the same head (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
+On a PRD PR of more than one slice the summary is the final review's alone (#298): a slice round
+writes neither the title nor the block, which holds a placeholder until then. A PRD PR's **final
+review** writes both however little was pushed (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
 the behaviour changes with the breaking ones marked, the acceptance criteria each slice changed or
 dropped (read off each slice round's record, by the commit it reviewed, through the slice ranges),
 where the red check is configured each slice's failing-first tests (#235), read off the same rounds,

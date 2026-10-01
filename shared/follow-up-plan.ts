@@ -65,6 +65,8 @@ export interface FilingReview {
   readonly url: string;
   /** The commit it reviewed, where it was read. What places it in a PRD PR's slice (#247). */
   readonly commit?: string;
+  /** When it was posted, where it was read. What numbers a round's fix runs (#298). */
+  readonly submittedAt?: string;
 }
 
 /** An existing `pr-follow-up` issue, open or closed. */

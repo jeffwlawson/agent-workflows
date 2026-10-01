@@ -135,6 +135,9 @@ comment.
 Do not use em dashes in anything you write, including replies, comments and commit messages; use a
 comma, colon, semicolon, parentheses, or a new sentence instead.
 
+Refer to issues and pull requests by `#N` alone, without restating their titles: GitHub shows the
+title beside the reference already.
+
 **You close nothing.** Every thread you reply to stays open, whichever outcome you report; the next
 review reads the code and closes the ones it can see are fixed. You are the author of the fix, so
 your report is a claim about it and not a verification of it, which is why it is worth writing

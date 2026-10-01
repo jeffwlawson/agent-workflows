@@ -27,10 +27,45 @@ import {
   refusalReason,
   surfaceText,
 } from "../shared/pr-feedback.js";
+import { firstLine, readPrdBranch } from "../shared/prd-round.js";
+import { fixHeader, fixScope, readRoundRecord, roundCounts, withHeader } from "../shared/round-header.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
+import type { SliceRanges } from "../shared/slice-ranges.js";
 
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
+
+/**
+ * The header this run's top-level comments open with (#298): which slice and
+ * which fix round, numbered off the pull request's record, or which fix round
+ * of a regular pull request. Undefined where the record cannot be read, and
+ * the comments go out without one rather than with a number guessed.
+ */
+const readFixHeader = (): string | undefined => {
+  try {
+    const parent = /^agent\/prd-(\d+)-/.exec(BRANCH)?.[1];
+    const record = readRoundRecord(PR_NUMBER);
+    // A PRD branch that cannot be read leaves the reviews' own headers to
+    // place this run, which they do for every review that carries one.
+    let ranges: SliceRanges | undefined;
+    if (parent !== undefined) {
+      try {
+        ranges = readPrdBranch(parent, process.env["BASE_REF"] ?? "main").ranges;
+      } catch (error) {
+        console.log(`::warning::The PRD branch could not be read, so this run is placed by the reviews' headers: ${firstLine(error)}`);
+      }
+    }
+    const prd = parent !== undefined;
+    return fixHeader(fixScope(record, ranges, prd), roundCounts(record, ranges, prd));
+  } catch (error) {
+    console.log(`::warning::This pull request's rounds could not be read, so this run's comments are not numbered: ${firstLine(error)}`);
+    return undefined;
+  }
+};
+
+/** `body` under this run's header, where it has one. */
+const headed = (header: string | undefined, body: string): string =>
+  header === undefined || body === "" ? body : withHeader(header, body);
 
 try {
   const feedback = fetchPullRequestFeedback(PR_NUMBER);
@@ -59,6 +94,9 @@ try {
     console.log("Nothing to act on: no open review findings or comments are owed an answer.");
     process.exit(0);
   }
+
+  const header = readFixHeader();
+  console.log(`Header: ${header ?? "none, since the rounds could not be read"}.`);
 
   // Context is gathered; the agent must not hold the GitHub token. This matters
   // more here than anywhere else — this workflow can push.
@@ -100,7 +138,7 @@ try {
   );
   writeText(
     "conversation_outcomes.md",
-    renderConversationOutcomes(conversationOutcomes, feedback.conversationComments),
+    headed(header, renderConversationOutcomes(conversationOutcomes, feedback.conversationComments)),
   );
 
   // Findings that belong to no thread, capped and deduped against what earlier
@@ -110,7 +148,10 @@ try {
     result.output.topLevelComments,
     feedback.priorTopLevelComments,
   );
-  writeJson("top_level_comments.json", topLevelComments);
+  writeJson(
+    "top_level_comments.json",
+    topLevelComments.map((comment) => ({ ...comment, body: headed(header, comment.body) })),
+  );
 
   // What the run noticed outside this pull request's scope (#213), rendered
   // for posting and deduped against the notes earlier runs posted. Written
@@ -122,7 +163,7 @@ try {
   );
   writeJson(
     "out_of_scope_notes.json",
-    outOfScopeNotes.map((body) => ({ body })),
+    outOfScopeNotes.map((body) => ({ body: headed(header, body) })),
   );
 
   const after = sh("git rev-parse HEAD").trim();

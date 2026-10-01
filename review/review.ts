@@ -37,7 +37,7 @@ import {
   type SliceCriteria,
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
-import { progressAtRoundEnd } from "../shared/progress-list.js";
+import { progressAtRoundEnd, renderPrStatus, statusBlock } from "../shared/progress-list.js";
 import {
   describeRedCheck,
   readRedCheck,
@@ -86,6 +86,7 @@ import {
   type CarriedFinding,
   type ResolutionReason,
 } from "../shared/review-verification.js";
+import { readRoundRecord, reviewHeader, roundCounts, type RoundCounts, type RoundScope } from "../shared/round-header.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const PR_NUMBER = required("PR_NUMBER");
@@ -259,12 +260,19 @@ try {
   // summary was last written, which the block records itself.
   // The final review writes them however little was pushed (#247): the last
   // slice round wrote them at this same head, about one slice.
+  //
+  // A slice round of a PRD of more than one slice writes neither (#298): the
+  // PRD PR's summary is the final review's, and holds its placeholder until
+  // then. A PRD of one slice has no final review, so its round writes them.
   const headSha = sh("git rev-parse HEAD").trim();
   const final = round?.kind === "final";
-  const writesSummary = summaryDue(context.prBody, headSha, final);
+  const sliceOfMany = round?.kind === "slice" && (round.slice?.n ?? 2) > 1;
+  const writesSummary = !sliceOfMany && summaryDue(context.prBody, headSha, final);
   console.log(
     `Title and summary: ${
-      !writesSummary
+      sliceOfMany
+        ? "left for the final review, since this is a slice round of a PRD of more than one slice"
+        : !writesSummary
         ? "left as they are, since nothing was pushed after the summary was last written"
         : final
           ? "rewritten with the PRD's sections, since this is the final review"
@@ -310,22 +318,54 @@ try {
     }
   }
 
-  // The PRD PR's progress list for each way this round can end (#246), for
-  // the advance job, which knows how it ended and runs no toolchain, to write
-  // into the body. A list that cannot be rendered is left as it stands, and
-  // says so: it is a view of the chain, and a review is worth more than it.
-  if (round !== undefined) {
+  // Every review and fix round on this pull request so far, by slice on a PRD
+  // PR (#298): what this review's header is numbered from, and what the
+  // progress table counts. Undefined where they could not be read, and the
+  // header and the counts are left out rather than guessed.
+  let counts: RoundCounts | undefined;
+  try {
+    counts = roundCounts(readRoundRecord(PR_NUMBER), prdBranch?.ranges, round !== undefined);
+  } catch (error) {
+    console.log(`::warning::This pull request's earlier rounds could not be read, so the review is not numbered: ${firstLine(error)}`);
+  }
+  const scope: RoundScope =
+    round?.kind === "final"
+      ? { kind: "final" }
+      : round?.kind === "slice" && round.slice !== undefined
+        ? { kind: "slice", k: round.slice.k, n: round.slice.n, subIssue: round.slice.subIssue }
+        : { kind: "regular" };
+  const header = counts === undefined ? undefined : reviewHeader(scope, counts);
+  console.log(`Header: ${header ?? "none, since the earlier rounds could not be read"}.`);
+  const server = process.env["GITHUB_SERVER_URL"];
+  const repo = process.env["GITHUB_REPOSITORY"];
+  const prUrl = server && repo ? `${server}/${repo}/pull/${PR_NUMBER}` : undefined;
+
+  // The PRD PR's progress table and status line for each way this round can
+  // end (#246, #298), for the advance job, which knows how it ended and runs
+  // no toolchain, to write into the body. Written now, so a run that fails
+  // has them, and again once the review knows what it leaves open. A list
+  // that cannot be rendered is left as it stands, and says so: it is a view
+  // of the chain, and a review is worth more than it.
+  const writeProgress = (open: number): void => {
+    if (round === undefined) return;
     if (prdBranch === undefined) {
       console.log("::warning::The PRD PR's progress list could not be rendered, so it is left as it stands.");
-    } else {
-      const lists = progressAtRoundEnd({
+      return;
+    }
+    const lists = progressAtRoundEnd(
+      {
         subIssues: prdBranch.subIssues,
         ranges: prdBranch.ranges,
         finalReview: round.kind === "final" ? "requested" : "not requested",
-      });
-      for (const [ending, list] of Object.entries(lists)) writeText(`progress_${ending}.md`, list);
+      },
+      { rounds: counts, review: REVIEW_URL_SLOT, open, prUrl },
+    );
+    for (const [ending, list] of Object.entries(lists)) {
+      writeText(`progress_${ending}.md`, list.progress);
+      writeText(`status_${ending}.md`, list.status);
     }
-  }
+  };
+  writeProgress(context.carriedFindings.length);
 
   // On a PRD PR, the follow-ups (#247): what every earlier round on it
   // recorded, carried forward into this review's record, since `follow-ups`
@@ -395,7 +435,9 @@ try {
       FIX_NOTES: renderNotesForReview(context.fixNotes),
       PR_DIFF: context.diff,
       CURRENT_SUMMARY: currentSummary(context.prBody),
-      SUMMARY_RULE: !writesSummary
+      SUMMARY_RULE: sliceOfMany
+        ? "**This review leaves them as they are.** This is a slice round, and the final review writes the pull request's title and summary for the whole PRD, so the workflow writes neither; omit both fields."
+        : !writesSummary
         ? "**This review leaves them as they are.** Nothing was pushed since the summary was last written, so the workflow writes neither; omit both fields."
         : final
           ? "**This review writes them.** It is the final review, so the workflow replaces the title and the summary block with yours, laid out as the section below says."
@@ -554,6 +596,7 @@ try {
     criteria: criteriaRulings.results,
     ...(redTests === undefined ? {} : { redTestsBlock: renderRedTestsBlock(redTests) }),
     runUrl: workflowRunUrl(),
+    header,
     // What was shed, where the body had to be cut to fit GitHub's limit (#140).
     // A body that cannot be made to fit throws, and the catch below writes the
     // reason rather than letting the post meet the limit as a 422.
@@ -695,6 +738,20 @@ try {
         findings: openFindings,
         ...(runUrl === undefined ? {} : { runUrl }),
       }),
+    );
+  }
+
+  // The progress table and status line again, now that this review knows
+  // what it leaves open (#298). Off a PRD PR, the status line the posting job
+  // writes into the note (#298), linking this review once it is posted.
+  const open = stillOpen.length + placed.length;
+  writeProgress(open);
+  if (round === undefined) {
+    writeText(
+      "pr_status.md",
+      statusBlock(
+        renderPrStatus({ verdict: verdict.verdict, startsFixRound: verdict.startsFixRound === true, open, review: REVIEW_URL_SLOT }),
+      ),
     );
   }
 

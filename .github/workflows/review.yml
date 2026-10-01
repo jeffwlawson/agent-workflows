@@ -1842,6 +1842,7 @@ jobs:
             ${{ runner.temp }}/thread_resolutions.json
             ${{ runner.temp }}/follow_ups.md
             ${{ runner.temp }}/pr_summary.json
+            ${{ runner.temp }}/pr_status.md
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -1868,6 +1869,9 @@ jobs:
             ${{ runner.temp }}/progress_approved.md
             ${{ runner.temp }}/progress_parked.md
             ${{ runner.temp }}/progress_running.md
+            ${{ runner.temp }}/status_approved.md
+            ${{ runner.temp }}/status_parked.md
+            ${{ runner.temp }}/status_running.md
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
@@ -2360,6 +2364,57 @@ jobs:
           gh api --method PATCH "repos/{owner}/{repo}/pulls/${PR_NUMBER}" --input "$request" > /dev/null \
             && echo "Wrote $(jq -r 'keys | join(" and ")' "$request") of PR #${PR_NUMBER}." \
             || echo "::warning::Could not write the title and summary of PR #${PR_NUMBER}. GitHub's reply is above; the review is posted."
+
+      # Step 3b: off a PRD PR, the **status line** at the top of the body's
+      # note (#298), as this review leaves the pull request: ready for a human,
+      # fixing, or parked on one, linking the review just posted. The runner
+      # rendered it, `pr_status.md`, with a slot where the link goes. A PRD
+      # PR's is the advance job's, beside its progress table, since only that
+      # job knows how the round ended.
+      #
+      # Replaced between its markers and nowhere else: a body with none, one
+      # opened before #298, is left as it is, since the line belongs at the
+      # top of the note the opening run wrote. `spliceStatus` in
+      # `shared/progress-list.ts` is the same rule, and a test holds the two
+      # equal. Never fails the run, for the summary's reason.
+      - name: Write the PR status line
+        if: steps.review.outcome == 'success' && !startsWith(github.event.pull_request.head.ref, 'agent/prd-')
+        env:
+          REVIEW_URL: ${{ steps.review.outputs.url }}
+          # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
+          REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
+          # `STATUS_START` and `STATUS_END` in `shared/progress-list.ts`; a
+          # test holds them equal.
+          STATUS_START: "<!-- agent:status -->"
+          STATUS_END: "<!-- /agent:status -->"
+        run: |
+          set -uo pipefail
+          file="${RUNNER_TEMP}/pr_status.md"
+          [ -f "$file" ] || { echo "The review wrote no status line, so the note's is left as it stands."; exit 0; }
+          line=$(cat "$file")
+          line="${line//"$REVIEW_URL_SLOT"/"$REVIEW_URL"}"
+          current="${RUNNER_TEMP}/pr_status_current.json"
+          request="${RUNNER_TEMP}/pr_status_edit.json"
+          if ! gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER}" > "$current"; then
+            echo "::warning::Could not read PR #${PR_NUMBER}, so its status line is left as it stands. The review is posted."
+            exit 0
+          fi
+          jq --arg line "$line" '
+            (.body // "") as $b
+            | env.STATUS_START as $s | env.STATUS_END as $e
+            | ($b | split($s)) as $starts
+            | ($b | split($e)) as $ends
+            | if $b != "" and ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
+                {body: ($starts[0] + $line + ($starts[1] | split($e))[1])}
+              else {} end
+          ' "$current" > "$request" || { echo "::warning::Could not compose PR #${PR_NUMBER}'s status line, so it is left as it stands."; exit 0; }
+          if [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
+            echo "PR #${PR_NUMBER}'s body has no status line, or half of one, or two, so none is written."
+            exit 0
+          fi
+          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PR_NUMBER}" --input "$request" > /dev/null \
+            && echo "Wrote PR #${PR_NUMBER}'s status line." \
+            || echo "::warning::Could not write PR #${PR_NUMBER}'s status line. GitHub's reply is above; the review is posted."
 
       # The marker for the filing half (#47): this PR's review recorded
       # out-of-scope findings, and a human still has a say before they become
@@ -2902,10 +2957,16 @@ jobs:
           ENDED: ${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           FIX_ROUND: ${{ needs.review.outputs.fix-round }}
-          # `PROGRESS_START` and `PROGRESS_END` in `shared/progress-list.ts`;
-          # a test holds them equal.
+          REVIEW_URL: ${{ needs.post-review.outputs.review-url }}
+          SERVER_URL: ${{ github.server_url }}
+          # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
+          REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
+          # `PROGRESS_START`, `PROGRESS_END`, `STATUS_START` and `STATUS_END`
+          # in `shared/progress-list.ts`; a test holds them equal.
           PROGRESS_START: "<!-- agent:progress -->"
           PROGRESS_END: "<!-- /agent:progress -->"
+          STATUS_START: "<!-- agent:status -->"
+          STATUS_END: "<!-- /agent:status -->"
         run: |
           set -uo pipefail
           ending=parked
@@ -2916,25 +2977,39 @@ jobs:
           fi
           list="${RUNNER_TEMP}/progress_${ending}.md"
           [ -f "$list" ] || { echo "::warning::The review rendered no progress list, so PRD PR #${PR_NUMBER}'s is left as it stands."; exit 0; }
+          status="${RUNNER_TEMP}/status_${ending}.md"
+          [ -f "$status" ] || status=/dev/null
+          # The posted review goes where the runner left its slot (#298): the
+          # table's review count and the status line link it. Where no review
+          # was posted, the pull request stands in for it.
+          link="${REVIEW_URL:-${SERVER_URL}/${GH_REPO}/pull/${PR_NUMBER}}"
+          for file in "$list" "$status"; do
+            [ "$file" = /dev/null ] && continue
+            text=$(cat "$file")
+            printf '%s' "${text//"$REVIEW_URL_SLOT"/"$link"}" > "$file"
+          done
           current="${RUNNER_TEMP}/progress_pr.json"
           request="${RUNNER_TEMP}/progress_edit.json"
           if ! gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER}" > "$current"; then
             echo "::warning::Could not read PRD PR #${PR_NUMBER}, so its progress list is left as it stands."
             exit 0
           fi
-          jq --rawfile block "$list" '
+          jq --rawfile block "$list" --rawfile status "$status" '
+            def splice($b; $s; $e; $block; $append):
+              if $b == "" then (if $append then $block else $b end)
+              else
+                ($b | split($s)) as $starts
+                | ($b | split($e)) as $ends
+                | if ($starts | length) == 1 and ($ends | length) == 1 then
+                    (if $append then $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block else $b end)
+                  elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
+                    $starts[0] + $block + ($starts[1] | split($e))[1]
+                  else null end
+              end;
             (.body // "") as $b
-            | env.PROGRESS_START as $s | env.PROGRESS_END as $e
-            | (if $b == "" then $block
-               else
-                 ($b | split($s)) as $starts
-                 | ($b | split($e)) as $ends
-                 | if ($starts | length) == 1 and ($ends | length) == 1 then
-                     $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block
-                   elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
-                     $starts[0] + $block + ($starts[1] | split($e))[1]
-                   else null end
-               end) as $body
+            | splice($b; env.PROGRESS_START; env.PROGRESS_END; $block; true) as $body
+            | (if $body == null or $status == "" then $body
+               else (splice($body; env.STATUS_START; env.STATUS_END; $status; false) // $body) end) as $body
             | if $body == null then {} else {body: $body} end
           ' "$current" > "$request" || { echo "::warning::Could not compose PRD PR #${PR_NUMBER}'s progress list, so it is left as it stands."; exit 0; }
           if [ "$(jq -r 'has("body")' "$request")" != "true" ]; then

@@ -1428,6 +1428,12 @@ export interface ReviewBodyParts {
    */
   readonly runUrl?: string | undefined;
   /**
+   * The round's header (#298), from `reviewHeader` in `shared/round-header.ts`:
+   * the body's first line, above the heading. Optional, because a caller
+   * outside a pull request's record has no round to number.
+   */
+  readonly header?: string | undefined;
+  /**
    * Where to say what was shed when the body had to be made to fit. Optional,
    * because the body says it too; this is the run log's copy, for the human who
    * opens the run rather than the review.
@@ -1472,6 +1478,8 @@ const renderBody = (
     const dropped = parts.droppedFollowUps + shed.cutFollowUps;
 
     return [
+      // Which round of which slice this is (#298), above everything else.
+      parts.header,
       BODY_HEADING,
       `### ${parts.verdict.heading}`,
       assessment,
@@ -1501,7 +1509,7 @@ const renderBody = (
       // the review, and this is the run that posted it.
       parts.runUrl === undefined
         ? undefined
-        : `---\n\n_Posted by [this workflow run](${parts.runUrl})._`,
+        : `---\n\n_Posted by the review agent · [Workflow run](${parts.runUrl})_`,
       // Invisible, like the payload after it (#235).
       parts.redTestsBlock,
       // Last, and invisible. The filing half reads the latest one off the body

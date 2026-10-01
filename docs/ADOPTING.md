@@ -591,8 +591,8 @@ other checks are for.
 
 A PRD (a parent issue with sub-issues, labelled `agent:implement`) is built one sub-issue at a
 time, every slice as commits on one **PRD branch**, `agent/prd-<parent>-…`. The first run opens the
-**PRD PR**, that branch into your default branch, as a draft, and its body carries `Closes
-#<parent>` and a `Closes #<sub>` line for every sub-issue. Each slice is reviewed as a **slice
+**PRD PR**, that branch into your default branch, as a draft, and its body ends with one `Closes`
+line naming the parent and every sub-issue. Each slice is reviewed as a **slice
 round** on the PRD PR: the ordinary review, told which slice it is and handed that slice's commits
 and its sub-issue's acceptance criteria, and raising only what those commits cause. The chain waits
 for the round to end before building the next slice. What the verdict means is unchanged; what
@@ -625,12 +625,29 @@ merge that conflicts parks the chain and builds nothing: add `agent:update-branc
 whose resolution is reviewed as a round of the slice just built, and the chain moves on from its
 approval.
 
-**Progress** is in the PRD PR body's progress list, one line per sub-issue: not started, building,
-in review, parked or approved. Each build run also comments on the sub-issue it starts, with a link
-to the run, and notes it on the parent; the run after an approval says on the slice's sub-issue
-which commit was approved and which acceptance criteria changed. **Sub-issues stay open** while the
-chain runs: the PRD PR's `Closes` lines close them when you merge it, and closing it unmerged
-leaves them open.
+**Progress** is in the PRD PR body's progress table, one row per sub-issue: its status (⏳ not
+started, 🔨 building, 🔍 in review, 🔧 fixing, ⏸️ parked or ✅ approved, with the findings open
+beside it where any are), how many reviews it had, linking the latest, how many fix rounds ran,
+automatic or added by hand, and a link to a diff of that slice's commits alone. The final review gets
+a row of its own. A **status line** at the top of the body's note says where the chain is now.
+
+**Each run's link lives on the sub-issue it builds**: a build run comments there with the link as it
+starts, and puts a chapter marker on the PRD PR, *Slice 2 of 5 · #232 started*, with no link, the
+`#232` reaching it in one click. The parent hears once, on the chain's first run, which sub-issue
+is built first; after that it gets only refusals and park comments. The final review's start comment
+on the PRD PR, and every failure comment, carry their own link. The run after an approval says on
+the slice's sub-issue which commit was approved and which acceptance criteria changed.
+
+**Every review and every fix run's own comments open with a header** naming the round: *Slice 2 of 5
+· #232 · review 3*, or *· fix 2*; *Final review · review 1* on the final review; and *Review 3* or
+*Fix 2* on a regular pull request. Numbers restart for each slice, a review you asked for by hand
+counts, and so does a fix round you added after the budget ran out. Replies inside threads carry no
+header.
+
+**Sub-issues stay open** while the chain runs: the PRD PR's `Closes` line closes them when you merge
+it, and closing it unmerged leaves them open. **Merge the PRD PR with a merge commit, or rebase it,
+rather than squashing it**: each slice's commits then stay separate on your default branch, each
+carrying the `Agent-Slice: #<sub>` trailer that says which sub-issue it built.
 
 **The PRD PR stays a draft** through every slice round. After the last slice the finishing run
 hands it over: for a PRD of more than one slice it asks for the **final review**, a full review of
@@ -650,7 +667,8 @@ it unmerged, then add `agent:implement` again.
 ### Reading the review body
 
 The verdict is the one-line answer; the review body is the record it was derived from. It opens with
-`## Agent review`, which is how you tell it apart in a timeline where every agent in the loop posts
+the round's header, *Review 2* or *Slice 2 of 5 · #232 · review 3*, then `## Agent review`, which
+is how you tell it apart in a timeline where every agent in the loop posts
 as `github-actions[bot]`, and is then laid out like Copilot code review's overview, in one fixed
 order: the assessment heading from the table above, one sentence naming what is unresolved, the next
 step in italics, `**Findings:** N` with the severities behind it, then the findings in collapsible
@@ -753,12 +771,15 @@ is the direction that costs a round rather than a decision.
 
 ### The pull request's title and body
 
-The run that opens a pull request writes its body once, and nothing rewrites it: `Closes #N` first,
-then a note saying what the loop does with the pull request and how to steer it, with a link to the
-run that opened it, and a **summary block** under that. A PRD PR's note says not to merge it before
-every slice is done, and its body carries the `Closes` block and the progress list as well. The
-final review removes that note when it writes the summary, so a PRD PR marked ready says nothing
-about being a draft.
+The run that opens a pull request writes its body once, and nothing rewrites it outside the blocks
+the loop owns. Top to bottom: a note saying what the loop does with the pull request and how to
+steer it, with a link to the run that opened it, opening with a one-line **status** the loop keeps
+current; `## Summary` and the **summary block**; on a PRD PR the progress table; and `Closes #N` at
+the bottom, on one line, where GitHub reads it as well as anywhere. A PRD PR's note says not to
+merge it before every slice is done; the final review removes that sentence when it writes the
+summary, so a PRD PR marked ready says nothing about being a draft. On a PRD PR the summary is the
+final review's: until it runs, the block holds a placeholder, and a slice round writes neither the
+title nor the summary, unless the PRD has one slice and so no final review.
 
 The review writes the summary block and the title. The summary says what the change does, what
 behaviour it changes (breaking changes marked), and where it departs from the linked issue and why.

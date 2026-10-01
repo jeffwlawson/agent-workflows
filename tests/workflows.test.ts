@@ -2133,19 +2133,19 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * And both caller sets move with it. The reference caller no longer offers
-   * the deprecated input; it names the variable instead. This repository's
-   * caller still passes `auto-fix: true`, because it pins a release that
-   * predates the budget and reads the input as a boolean; it goes with the
-   * release after the one that ships the budget.
+   * And both caller sets move with it: neither offers the deprecated input,
+   * and both name the variable instead. This repository's caller kept
+   * `auto-fix: true` while its pin predated the budget, and it then capped
+   * every pull request here at one round of three (#296); the alias wins
+   * wherever it is passed, so no caller set carries it.
    */
-  it("names the variable in the reference caller, and offers the deprecated input nowhere new", () => {
-    expect(jobOf(path.join(WORKFLOW_DIR, "agent-review.yml")).with?.["auto-fix"]).toBe(true);
-
-    const text = fs.readFileSync(REVIEW_CALLER, "utf8");
-    expect(jobOf(REVIEW_CALLER).with?.["auto-fix"]).toBeUndefined();
-    expect(text).not.toMatch(/auto-fix:/);
-    expect(text).toContain("AGENT_MAX_FIX_ROUNDS");
+  it("names the variable in both caller sets, and passes the deprecated input in neither", () => {
+    for (const caller of [REVIEW_CALLER, path.join(WORKFLOW_DIR, "agent-review.yml")]) {
+      const text = fs.readFileSync(caller, "utf8");
+      expect(jobOf(caller).with?.["auto-fix"], caller).toBeUndefined();
+      expect(text, caller).not.toMatch(/auto-fix:/);
+      expect(text, caller).toContain("AGENT_MAX_FIX_ROUNDS");
+    }
   });
 });
 

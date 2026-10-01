@@ -1245,7 +1245,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.4 -- agent-workflows review
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.5 -- agent-workflows review
 
       # The verdict as something the posting job can select on (#102). The
       # **key**, not the heading: two rows share a heading and the automatic fix
@@ -2210,7 +2210,7 @@ jobs:
           steps.trigger.outputs.moved != 'true' &&
           (needs.review.outputs.verdict == 'approval recommended' ||
            needs.review.outputs.verdict == 'changes recommended')
-        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.4
+        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.5
         with:
           pr-number: ${{ github.event.pull_request.number }}
           head-ref: ${{ github.event.pull_request.head.ref }}

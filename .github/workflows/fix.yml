@@ -376,7 +376,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.4 -- agent-workflows fix
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.5 -- agent-workflows fix
 
       # A fix with nothing to act on is a note, not a failure (#253): no
       # `agent:blocked`, and the run ends green. But it is not a round that
@@ -819,7 +819,7 @@ jobs:
       # the runner the fix job runs. A composite rather than a second copy of the
       # script, so the two cannot come to say different things.
       - name: Advance the PRD chain
-        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.4
+        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.5
         with:
           pr-number: ${{ github.event.pull_request.number }}
           head-ref: ${{ github.event.pull_request.head.ref }}

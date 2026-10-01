@@ -341,6 +341,32 @@ and the failure step runs on both: the comment says "timed out after N minutes",
 instead. The two are told apart by how long the job ran, so a run cancelled by hand in its last
 minute reads as a timeout. `follow-ups` comments the same way and, as on a failure, adds no label.
 
+## 2d. The session transcript
+
+Every run that starts an agent uploads the agent's Claude Code session transcript as a workflow
+artifact named `agent-transcript`, on the run's page under *Artifacts*. It is the whole session as
+Claude Code recorded it: every prompt, every tool call and its result (file reads and edits
+included, which the job log never shows), the model's thinking, and its token usage. A failed,
+cancelled or timed-out run uploads one too, which is when you are most likely to want it.
+`follow-ups` runs no agent and uploads nothing.
+
+**Who can read it.** Anyone who can read the repository's Actions runs can download it: on a
+private repository, the people with read access; on a **public repository**, anyone. So treat it as
+public on a public repository. Before the upload, every secret the job holds,
+`CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_PAT` and `GITHUB_TOKEN`, is replaced with `[REDACTED]`, the two
+GitHub tokens also in the form a checkout's git config holds them in, so a transcript in which the
+agent printed its environment does not carry the token. What the agent read from your repository
+and its issues is in it unredacted, which on a public repository is already public.
+
+**How long.** Three days by default, set by the `transcript-retention-days` input on any agent
+caller's `with:` block. A repository or organization limit on artifact retention that is shorter
+wins. `0` turns the upload off:
+
+```yaml
+    with:
+      transcript-retention-days: 0
+```
+
 ---
 
 ## 3. Labels

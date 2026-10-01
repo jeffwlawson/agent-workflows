@@ -1,4 +1,5 @@
 import { asArray, asRecord, asString, standardSchema } from "./common.js";
+import { parseOutOfScopeNotes, type OutOfScopeNote } from "./fix-notes.js";
 import { withoutFindingMarkers } from "./review-findings.js";
 
 /** What the fix agent decided about one review thread. */
@@ -34,10 +35,13 @@ export interface ThreadOutcome {
 /**
  * A comment posted on the PR conversation rather than into a thread.
  *
- * The channel exists for a finding that belongs to **no** thread — something
- * noticed while fixing that is out of scope, a refusal that spans threads
- * rather than sitting in one, a cross-cutting observation answering no specific
- * comment. Before it existed such a finding had nowhere to go: one documented
+ * The channel exists for something that belongs to **no** thread: a refusal
+ * that spans threads rather than sitting in one, a cross-cutting observation
+ * answering no specific comment. Something noticed while fixing that is out of
+ * scope used to come here too, and is an `OutOfScopeNote` since #213: nothing
+ * read these comments, so a note posted as one was never filed.
+ *
+ * Before the channel existed such a finding had nowhere to go: one documented
  * bug ended up as a `DOCUMENTED BUG` comment inside a test file, and an "open a
  * follow-up and reference it" option was simply not executable, so the agent
  * would take the weaker option and reply as if it had chosen it.
@@ -96,6 +100,12 @@ export interface FixOutput {
   readonly threadOutcomes: ThreadOutcome[];
   readonly conversationOutcomes: ConversationOutcome[];
   readonly topLevelComments: TopLevelComment[];
+  /**
+   * What the run noticed that is not this pull request's to fix (#213). Posted
+   * by the workflow, and ruled on by the next review: filed on merge, or
+   * dropped with a reason. See `shared/fix-notes.ts`.
+   */
+  readonly outOfScopeNotes: OutOfScopeNote[];
 }
 
 const parseStatus = (value: unknown, label: string): "addressed" | "declined" => {
@@ -208,6 +218,9 @@ export const fixOutputSchema = standardSchema<FixOutput>((raw) => {
     topLevelComments: parseTopLevelComments(
       record["topLevelComments"] ?? record["top_level_comments"],
     ),
+    outOfScopeNotes: parseOutOfScopeNotes(
+      record["outOfScopeNotes"] ?? record["out_of_scope_notes"],
+    ),
   };
 });
 
@@ -295,11 +308,10 @@ export const filterConversationOutcomes = (
  * answering its own post, which is the shape #104 was written around.
  *
  * *Different*, because the two are not the same kind of thing to anything that
- * reads them. The top-level marker is the selector for harvesting an
- * out-of-scope finding into an issue (#4), and an outcome record raises no
- * work; it is also the key `filterTopLevelComments` dedupes that channel on, and
- * a record repeated across rounds is correct because each round's is about that
- * round.
+ * reads them. The top-level marker is the key `filterTopLevelComments` dedupes
+ * that channel on, and a record repeated across rounds is correct because each
+ * round's is about that round. (Neither is what raises work: an out-of-scope
+ * note carries a marker of its own, `OUT_OF_SCOPE_NOTE_MARKER`, since #213.)
  */
 export const CONVERSATION_OUTCOME_MARKER = "<!-- agent-fix:conversation-outcomes -->";
 
@@ -373,8 +385,10 @@ export const renderConversationOutcomes = (
  * `agent-review.yml` posts a *review*, which arrives via `reviews` /
  * `reviewThreads`.
  *
- * Second, it is a reliable selector for harvesting these comments into issues
- * (#4), which matching on prose would not be.
+ * Second, it is the key `filterTopLevelComments` dedupes against an earlier
+ * run's comments on. It is **not** a selector for filing anything: nothing
+ * harvests these comments into issues, which is why an out-of-scope note is a
+ * channel of its own since #213 (`shared/fix-notes.ts`).
  */
 export const TOP_LEVEL_COMMENT_MARKER = "<!-- agent-fix:top-level -->";
 
@@ -398,8 +412,7 @@ const MAX_TOP_LEVEL_COMMENTS = 2;
  * prompt says silence is the default, and model behaviour is not something to
  * take on trust. Without this, nothing caps how many comments one run posts and
  * nothing dedupes against an earlier run's, so a PR taking three `agent:fix`
- * rounds can accumulate three copies of the same note — and three issues once
- * #4 harvests them.
+ * rounds can accumulate three copies of the same comment.
  *
  * `alreadyPosted` is the bodies of marked comments already on the PR. The
  * comparison is exact after stripping the marker and trimming, so it catches a

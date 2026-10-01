@@ -383,7 +383,7 @@ PRD.
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the verdicts that announced them; the `auto-fix` input it replaced is a deprecated alias for one release. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; one of the two `AGENT_PAT` uses in the workflow, beside the advance job below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
-| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance job**, in `review` and in `fix`: re-adds `agent:implement` to the slice PR's **parent** on 🟢 and on 🟡 with no fix round starting — and, in `fix`, when the fix run pushed nothing and so ended the round itself. The same shape as the auto-fix job: no checkout, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
+| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance job**, in `review` and in `fix`: re-adds `agent:implement` to the slice PR's **parent** on 🟢 and on 🟡 with no fix round starting — and, in `fix`, when the fix run pushed nothing and posted no out-of-scope note, and so ended the round itself. The same shape as the auto-fix job: no checkout, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
@@ -409,7 +409,8 @@ PRD.
 | **Resolves the threads it addressed** | ❌ | ❌ | it did until #111 and now resolves **nothing**: the author of a fix marked its own work done, and a resolved thread is dropped from what the next review is shown, so the pass that checks it could not see it. The reviewer closes threads now (§3), and `addressed` / `declined` is a claim recorded in the reply |
 | **Posts new inline comments** | ✅ | ❌ | **decision, not omission** — see below |
 | **Posts top-level comments** | ✅ | ✅ | ours states in the prompt what the channel is *for*; CVM has the field and no guidance anywhere |
-| **Marks the PR ready where the round ends on it** | ❌ | ➕ | #159. A run that pushed asks for the re-review that marks it; a run that pushed nothing asks for nothing, so this arm is what hands the pull request back. Needed once review stopped marking one whose automatic fix was about to start (#102) — otherwise that pull request stays a draft with nothing left to change it. **Requires `AGENT_PAT`**, and warns without one, exactly as review's does (§10) |
+| **Out-of-scope notes end as an issue or a stated decision** | ❌ | ➕ | #213. The fix agent reports what it noticed outside the pull request as structured notes, posted under their own marker; the next review rules on each, promoting it into its follow-ups (filed on merge) or dropping it with a reason in its body. Selected by marker and bot author together |
+| **Marks the PR ready where the round ends on it** | ❌ | ➕ | #159. A run that pushed asks for the re-review that marks it, and since #213 so does one that posted an out-of-scope note; a run that did neither asks for nothing, so this arm is what hands the pull request back. Needed once review stopped marking one whose automatic fix was about to start (#102) — otherwise that pull request stays a draft with nothing left to change it. **Requires `AGENT_PAT`**, and warns without one, exactly as review's does (§10) |
 | **Reports an outcome on a conversation comment** | ❌ | ✅ | #104. Both read that surface and act on it; ours says what it did with each comment — addressed or declined, with the reason — in one comment on the same conversation, because there is no thread to reply into. A declined one is otherwise invisible, and since #103 a maintainer's steering arrives as exactly such a comment. On a **person's** comment: the loop's own notes on the same surface are shown for their evidence and owed nothing (§10) |
 
 **On the name.** CVM calls this `agent-implement-pr` and triggers it with `agent:implement`,
@@ -427,7 +428,9 @@ jeffwlawson/winget-manifest-lint#78 it can also *raise* something that belongs t
 top-level comment on the PR conversation — the channel that was missing when
 jeffwlawson/winget-manifest-lint#63's documented bug ended up buried in a test-file comment, and
 when jeffwlawson/winget-manifest-lint#77 offered an option (`open a follow-up and reference it`) the
-agent had no way to take.
+agent had no way to take. Since #213 an out-of-scope finding is not a top-level comment but a
+**note** of its own, because nothing read those comments and the one on
+jeffwlawson/mealie-mcp-server#82 was filed only by a human reading the thread after the merge.
 
 **Why we post top-level but not inline comments.** Inline comments need the diff-line allow-list,
 and that machinery produced two silent-failure bugs in three days:
@@ -1157,8 +1160,10 @@ expensive to rediscover.
   workflow to that, exempting only the two `implement` workflows — both halves of each pair since
   jeffwlawson/winget-manifest-lint#98 — `token-expiry.yml` by name, and the `follow-ups` pair for
   the reason immediately below, so a new one is covered on arrival (`agent-review` had been granted
-  it unused, jeffwlawson/winget-manifest-lint#101) — and harvesting those comments into issues
-  (jeffwlawson/winget-manifest-lint#79) is a separate workflow behind its own label.
+  it unused, jeffwlawson/winget-manifest-lint#101). Harvesting top-level comments into issues
+  (jeffwlawson/winget-manifest-lint#79) was never built. Since #213 the fix agent's out-of-scope
+  notes reach an issue through the **review**, which rules on each and records the ones it
+  promotes in its own follow-ups; the fix agent still files nothing and writes no record.
 
   **Amended by `follow-ups` (#44), in its second half only.** This used to continue "*filing is a
   separate, human-labelled step*", and that clause is now false: a merged pull request's recorded
@@ -1206,9 +1211,10 @@ expensive to rediscover.
   did with the conversation comments, under `<!-- agent-fix:conversation-outcomes -->`. Marked for
   the reason above — unmarked it returns next round as a comment to act on, and now also as one an
   outcome is owed on, the agent answering its own post. Marked *separately* because the two are
-  different things to their readers: jeffwlawson/winget-manifest-lint#79 harvests the top-level
-  marker into issues and a record raises no work, and `filterTopLevelComments` dedupes that channel
-  on its marker while a record is correct to repeat, each round's being about that round. The list
+  different things to their readers: `filterTopLevelComments` dedupes that channel on its marker
+  while a record is correct to repeat, each round's being about that round. A third, since #213,
+  is the out-of-scope note, under `<!-- agent-fix:out-of-scope ... -->`: kept from the fix run's
+  surface like the other two, and the one marked kind a **review** is handed, to rule on. The list
   of ids an outcome may name is drawn from the comments that survive both filters, so the split is
   what bounds the answer as well as the input.
 
@@ -1237,8 +1243,8 @@ expensive to rediscover.
   not a control. `filterOutcomes` drops invented thread ids because a model invents them, and
   `filterTopLevelComments` caps a run at two comments and drops verbatim repeats of ones already
   posted, because "silence is the default" is otherwise aspirational — three `agent:fix` rounds
-  would leave three copies of the same note, and three issues once
-  jeffwlawson/winget-manifest-lint#79 harvests them.
+  would leave three copies of the same comment. `filterOutOfScopeNotes` holds the notes (#213) to
+  the same two bounds, where a repeat would be ruled on, and filed, twice.
 
   **And the bound is on the channel, not on a field of it.** The brief tells the model to write no
   finding id of any kind; the half that enforces it is `withoutFindingMarkers`, run over the
@@ -1298,7 +1304,10 @@ expensive to rediscover.
   under a verdict saying a fix round had started and a re-review would follow. Before #102 review
   had already marked that same pull request ready. So the fix half now marks it ready on its
   no-push arm, which is the arm that *is* the human's turn — the mirror of the push arm asking for
-  the review, and the second half of "the loop marks it ready when it hands it back". Unconditional
+  the review, and the second half of "the loop marks it ready when it hands it back". **Amended by
+  #213**: a run that pushed nothing but posted an out-of-scope note asks for the re-review too,
+  since that review is what rules on the note, so it is the review that marks it ready and the
+  advance waits for its verdict. Bounded as the push leg is, by the fix-round budget. Unconditional
   on that arm rather than conditional on how the round started: a fix run cannot see whether a
   human or a review added its label, and where review has already marked it ready the call is a
   no-op.

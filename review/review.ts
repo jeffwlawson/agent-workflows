@@ -13,6 +13,7 @@ import {
   writeJson,
   writeText,
 } from "../shared/common.js";
+import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPrdContext, type PrdContext } from "../shared/prd-context.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
@@ -285,6 +286,7 @@ try {
       HISTORY: describeHistory(history),
       OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
       SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),
+      FIX_NOTES: renderNotesForReview(context.fixNotes),
       PR_DIFF: context.diff,
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
@@ -360,11 +362,17 @@ try {
   // exemption — because the payload carries the length of the exempt prefix and
   // a list assembled anywhere else would name the wrong entries to the filing
   // run.
+  //
+  // The fix run's out-of-scope notes join the review's own follow-ups here
+  // (#213), ahead of them and inside the cap: the review chose to promote each
+  // one over dropping it. A note it dropped is listed in the body with its
+  // reason instead, so every note ends one way or the other.
+  const notes = applyNoteRulings(context.fixNotes, output.noteRulings ?? []);
   const {
     followUps,
     dropped: droppedFollowUps,
     moved: movedFollowUps,
-  } = recordFollowUps(unanchored, output.followUps, unplaceable);
+  } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable);
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
@@ -411,6 +419,7 @@ try {
     resolved,
     followUps,
     droppedFollowUps,
+    droppedNotes: notes.dropped,
     // *What changed in this PR* describes the change, so it is rendered where
     // there is a change nothing has described. Which reviews those are is
     // `describesTheChange`'s, beside the history it reads: a fact about the
@@ -514,6 +523,9 @@ try {
   );
   console.log(`Settled by a maintainer and not raised again: ${context.settledFindings.length}.`);
   console.log(`Follow-ups: ${followUps.length} recorded, ${droppedFollowUps} dropped by the cap.`);
+  console.log(
+    `Notes from the fix run: ${context.fixNotes.length} handed over, ${notes.promoted.length} recorded as follow-ups, ${notes.dropped.length} dropped with a reason.`,
+  );
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }

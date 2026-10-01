@@ -30,12 +30,12 @@ were shown none. An unrecognised id is dropped, and nothing this loop posted its
 its own earlier comments and its status notes alike get no outcome.
 
 These are posted together as one comment on the pull request conversation. They are **not**
-`topLevelComments`. Do not report the same thing in both.
+`topLevelComments` or `outOfScopeNotes`. Do not report the same thing in two places.
 
 Then report `topLevelComments`: comments posted on the PR conversation rather than into a thread.
-One is warranted only for something that belongs to **no** thread: an out-of-scope finding noticed
-while fixing, a refusal or partial completion spanning several threads, a cross-cutting observation
-answering no specific comment. Not a summary of what you changed: the commit message carries that.
+One is warranted only for something that belongs to **no** thread: a refusal or partial completion
+spanning several threads, a cross-cutting observation answering no specific comment. Never
+something out of scope: that is an `outOfScopeNotes` entry, below. Not a summary of what you changed: the commit message carries that.
 Not anything a thread reply already says.
 
 **Default to an empty array.** Most runs have nothing that belongs outside a thread, and a channel
@@ -43,6 +43,14 @@ that fires every time is one nobody reads. At most two are posted; anything past
 dropped, so list the two that matter rather than everything you could say.
 
 Each body is **under 120 words**: name the thing, say where it is, say why it matters.
+
+Then report `outOfScopeNotes`: something real you noticed while fixing that is **not this pull
+request's to fix**, such as a defect in code this change does not touch, or a follow-up it makes
+worth doing. Each has a `title` (one line, under about twelve words), a `body` under 120 words
+(what it is, the evidence it is real, and why this pull request is not the place), and a
+`location` (`path` or `path:line`) where there is one; leave `location` out where there is none.
+The next review rules on each: filed as an issue on merge, or dropped with a reason. **Default to
+an empty array**; at most two are posted.
 
 ```json
 <output>
@@ -56,11 +64,14 @@ Each body is **under 120 words**: name the thing, say where it is, say why it ma
     { "commentId": "IC_kwDO...", "status": "declined", "reply": "Not doing this one: the value it would read is the one the caller already passes, so deriving it again is the drift you asked me to remove." }
   ],
   "topLevelComments": [
-    { "body": "Out of scope, noticed while fixing: `shared/pr-feedback.ts:206` interpolates `GH_REPO` into a shell string. Safe today only because of what that variable happens to be. Worth a follow-up issue." }
+    { "body": "Declined the three threads on `parse()` together: each asks for a special case, and the shared cause is the input format, which the commit message explains." }
+  ],
+  "outOfScopeNotes": [
+    { "title": "GH_REPO is interpolated into a shell string", "location": "shared/pr-feedback.ts:206", "body": "`shared/pr-feedback.ts:206` builds a shell string from `GH_REPO`. Safe today only because of what that variable happens to be. This pull request does not touch that function." }
   ]
 }
 </output>
 ```
 
-Use an empty array for any of the three fields when there is nothing to report: no threads acted
-on, no conversation comments shown, nothing outside them.
+Use an empty array for any of the four fields when there is nothing to report: no threads acted
+on, no conversation comments shown, nothing outside them, nothing out of scope.

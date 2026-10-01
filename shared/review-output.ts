@@ -96,6 +96,33 @@ export const MAX_WHAT_CHANGED = 5;
  */
 export const MAX_HOW_CHECKED_WORDS = 100;
 
+/**
+ * What the review decided about one **out-of-scope note** the fix run left
+ * (#213): record it as a follow-up, filed on merge like any other, or drop it
+ * with a reason the body states. See `applyNoteRulings`.
+ *
+ * A drop carries a reason by type, because a drop with none is the silent loss
+ * the ruling exists to end. A promotion carries what makes it a follow-up and
+ * the note does not have: a severity, and a location where the review can name
+ * a better one than the note gave.
+ */
+export type NoteRuling =
+  | {
+      readonly noteId: string;
+      readonly status: "promoted";
+      readonly severity: Severity;
+      readonly location?: string;
+    }
+  | { readonly noteId: string; readonly status: "dropped"; readonly reason: string };
+
+/** A note the review dropped, as the body lists it. */
+export interface DroppedNote {
+  readonly title: string;
+  readonly reason: string;
+  /** The note's permalink, where GitHub returned one. */
+  readonly url?: string;
+}
+
 export interface ReviewOutput {
   /**
    * **One sentence naming what is unresolved**, written by the review (#109,
@@ -170,6 +197,12 @@ export interface ReviewOutput {
    * that sets it for an ordinary finding spends the only signal that says so.
    */
   readonly needsYou?: string;
+  /**
+   * One ruling per out-of-scope note the fix run left since the last verdict
+   * (#213). Absent where the review was handed none, which is nearly every
+   * review.
+   */
+  readonly noteRulings?: NoteRuling[];
 }
 
 /**
@@ -1133,6 +1166,15 @@ export const renderReviewBody = (parts: {
   readonly followUps: readonly FollowUp[];
   readonly droppedFollowUps: number;
   /**
+   * The fix run's out-of-scope notes this review chose not to file, each with
+   * its reason (#213), from `applyNoteRulings`. The promoted ones are in
+   * `followUps` above and are not repeated here.
+   *
+   * Optional, because nearly every review is handed no notes; empty and absent
+   * both render nothing.
+   */
+  readonly droppedNotes?: readonly DroppedNote[] | undefined;
+  /**
    * Whether *What changed in this PR* is rendered at all.
    *
    * The caller's, because it is a fact about the **verdict history** and not
@@ -1201,6 +1243,7 @@ export const renderReviewBody = (parts: {
       renderGroup("Previously missed", cut(record.missed), true, PREVIOUSLY_MISSED_SUBTITLE),
       renderGroup("Resolved since last review", cut(record.resolved), false),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles),
+      renderDroppedNotesGroup(parts.droppedNotes ?? []),
       renderHowChecked(parts.output.howChecked),
       parts.showWhatChanged ? renderWhatChanged(parts.output.whatChanged) : undefined,
       // The only rule in the body, and it is here rather than between the groups
@@ -1407,6 +1450,30 @@ const closerLook = (
   return { ...row, nextStep, description: `${row.label}. ${short}` };
 };
 
+/**
+ * One ruling, thrown on rather than dropped where it is malformed, as a
+ * verification is: a drop without a reason would be a note lost with nothing
+ * said, and the extraction retry is what gets the reason written.
+ */
+const parseNoteRuling = (value: unknown): NoteRuling => {
+  const record = asRecord(value, "note ruling");
+  const noteId = asString(record["noteId"] ?? record["note_id"] ?? record["id"], "note ruling noteId");
+  const status = asString(record["status"], "note ruling status");
+  if (status === "dropped") {
+    return { noteId, status, reason: asString(record["reason"], "dropped note reason").trim() };
+  }
+  if (status !== "promoted") {
+    throw new Error(`note ruling status must be "promoted" or "dropped", got "${status}"`);
+  }
+  const location = record["location"];
+  return {
+    noteId,
+    status,
+    severity: parseSeverity(record["severity"]),
+    ...(typeof location === "string" && location.trim() !== "" ? { location: location.trim() } : {}),
+  };
+};
+
 const parseFollowUp = (value: unknown): FollowUp => {
   const record = asRecord(value, "follow-up");
   return {
@@ -1501,6 +1568,10 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
   // forbids that paragraph is restating the findings, and feeding it to the
   // sentence under the heading would be putting it back above them.
   const whatChanged = parseWhatChanged(record["whatChanged"] ?? record["what_changed"] ?? record["summary"]);
+  const noteRulings = asArray(
+    record["noteRulings"] ?? record["note_rulings"] ?? [],
+    "noteRulings",
+  ).map(parseNoteRuling);
   return {
     ...(assessment === undefined ? {} : { assessment }),
     ...(howChecked === undefined ? {} : { howChecked: cappedWords(howChecked, MAX_HOW_CHECKED_WORDS) }),
@@ -1531,6 +1602,11 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     // rule on is a fact about the run and not about the shape of its output.
     verified: asArray(record["verified"] ?? [], "verified").map(parseVerification),
     ...(needsYou === undefined ? {} : { needsYou }),
+    // Absent on nearly every review, and left out of the output then, so a
+    // review handed no notes reads exactly as it did before they existed. An
+    // id this review was not handed is dropped by `applyNoteRulings`, for the
+    // reason `verified` defers the same check.
+    ...(noteRulings.length === 0 ? {} : { noteRulings }),
   };
 });
 
@@ -1890,6 +1966,31 @@ export const renderFollowUpsGroup = (
     "",
     ...items,
     ...truncation,
+    "",
+    "</details>",
+  ].join("\n");
+};
+
+/**
+ * The fix run's out-of-scope notes this review decided not to file, each with
+ * the reason (#213). A note the loop posted ends as a filed issue or as a
+ * decision not to file one, and this group is where the second is recorded:
+ * on the pull request, while raising it by hand is still cheap, and in the body
+ * that is the round's record.
+ *
+ * Collapsed like the follow-ups beside it: neither counts against the merge.
+ */
+export const renderDroppedNotesGroup = (dropped: readonly DroppedNote[]): string | undefined => {
+  if (dropped.length === 0) return undefined;
+  const items = dropped.map(
+    (note) =>
+      `- **${oneLine(note.title)}**${note.url === undefined ? "" : ` ([note](${note.url}))`}: ${oneLine(note.reason)}`,
+  );
+  return [
+    "<details>",
+    `<summary><b>Notes from <code>agent:fix</code> not filed</b> (${dropped.length}) · out of scope, and judged not worth an issue</summary>`,
+    "",
+    ...items,
     "",
     "</details>",
   ].join("\n");

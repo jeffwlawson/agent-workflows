@@ -96,11 +96,14 @@ jobs:
     concurrency:
       group: agent-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
-    # What the `advance` job below reads: whether this run pushed. A job cannot
-    # read another job's steps, so the only way across is an output. See *Push
-    # branch*, which writes it on both arms.
+    # What the `advance` job below reads: whether this run pushed, and whether
+    # it posted an out-of-scope note (#213). Either asks for a re-review, which
+    # is what ends the round then. A job cannot read another job's steps, so
+    # the only way across is an output. See *Push branch*, which writes its
+    # output on both arms.
     outputs:
       pushed: ${{ steps.push.outputs.pushed }}
+      noted: ${{ steps.notes.outputs.posted }}
     # Granted by the caller, bounded here. A called workflow can only *downgrade*
     # the token it is handed, so this block cannot be widened from the caller's
     # side — and the caller's identical block is the grant, without which there
@@ -451,8 +454,8 @@ jobs:
             && echo "  posted the conversation comment outcomes" \
             || echo "  WARNING: failed to post the conversation comment outcomes"
 
-      # Findings that belong to no thread: something out of scope noticed while
-      # fixing, a refusal spanning threads, a cross-cutting observation. Posted
+      # What belongs to no thread: a refusal spanning threads, a cross-cutting
+      # observation. Something out of scope is a note, posted below. Posted
       # by the workflow from validated structured output — never by the agent,
       # which no longer holds a token by this point.
       #
@@ -462,9 +465,10 @@ jobs:
       # that is bounded mechanically rather than by the prompt alone
       # (`filterTopLevelComments`), and every body it writes carries
       # `<!-- agent-fix:top-level -->` so the next run does not read this run's
-      # own note back as feedback to act on. `pull-requests: write` is already
-      # granted and nothing new is needed; `issues: write` is deliberately NOT —
-      # an agent that raises work does not file it (docs/parity.md §10).
+      # own comment back as feedback to act on. `pull-requests: write` is
+      # already granted and nothing new is needed; `issues: write` is
+      # deliberately NOT: an agent that raises work does not file it
+      # (docs/parity.md §10).
       - name: Post top-level comments
         if: steps.state.outputs.proceed == 'true' && success()
         continue-on-error: true
@@ -488,16 +492,59 @@ jobs:
               || echo "  WARNING: failed to post comment ${i}"
           done
 
-      # The fix closes itself out: a push that changed the branch asks for the
-      # review of what it changed (#96). Last of the success arms, so the
-      # re-review is requested only once every thread has its reply and every
-      # top-level note is posted — the review reads that feedback, and a round
-      # that started first would read the round before it.
+      # What the run noticed outside this pull request's scope (#213), one
+      # comment per note, each opening with a heading that says so and carrying
+      # the note as a payload behind `<!-- agent-fix:out-of-scope ... -->`. The
+      # next review reads the notes posted since its last verdict, by that
+      # marker and by this bot having posted them, and rules on each: a
+      # follow-up `follow-ups` files on merge, or dropped with a reason in its
+      # body. Nothing here files anything; `issues: write` is still not granted.
       #
-      # **A run that pushed nothing requests nothing.** The threads it replied
-      # to already say why it declined, and the verdict standing on the head
-      # commit is still the right one: nothing has happened for a review to be
-      # about.
+      # `posted` is what the re-review below reads, written on both arms, and
+      # true only where a note actually went up: a note that failed to post is
+      # one no review can rule on.
+      - name: Post out-of-scope notes
+        id: notes
+        if: steps.state.outputs.proceed == 'true' && success()
+        continue-on-error: true
+        env:
+          NOTES: ${{ runner.temp }}/out_of_scope_notes.json
+        run: |
+          set -uo pipefail
+          posted=false
+          count=0
+          [ -f "$NOTES" ] && count=$(jq 'length' "$NOTES")
+          if [ "$count" -eq 0 ]; then
+            echo "No out-of-scope notes."
+          else
+            echo "Posting ${count} out-of-scope note(s)."
+            for i in $(seq 0 $((count - 1))); do
+              body_file="${RUNNER_TEMP}/out-of-scope-note-${i}.md"
+              jq -r ".[$i].body" "$NOTES" > "$body_file"
+              if gh pr comment "$PR_NUMBER" --body-file "$body_file" >/dev/null; then
+                echo "  posted note ${i}"
+                posted=true
+              else
+                echo "  WARNING: failed to post note ${i}"
+              fi
+            done
+          fi
+          echo "posted=${posted}" >> "$GITHUB_OUTPUT"
+
+      # The fix closes itself out: a push that changed the branch asks for the
+      # review of what it changed (#96), and so does an out-of-scope note, which
+      # asks for the review that rules on it (#213). Last of the success arms,
+      # so the re-review is requested only once every thread has its reply and
+      # every note is posted: the review reads them, and a round that started
+      # first would read the round before it.
+      #
+      # **A run that pushed nothing and noted nothing requests nothing.** The
+      # threads it replied to already say why it declined, and the verdict
+      # standing on the head commit is still the right one: nothing has
+      # happened for a review to be about. A note is the one exception, and it
+      # bends that rule on purpose: unreviewed, it is filed by nobody, which is
+      # the loss #213 was written about. The budget below bounds it as it
+      # bounds a push.
       #
       # This is the `agent:fix` → `agent:review` leg, which docs/parity.md §10
       # already calls safe, and what it rests on is the bounds under it: the
@@ -524,10 +571,13 @@ jobs:
       # fix run would read its own replies back and work the same feedback
       # again. What is missing is the review, so the remedy names the review.
       - name: Request re-review
-        if: steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed == 'true'
+        if: >-
+          steps.state.outputs.proceed == 'true' && success() &&
+          (steps.push.outputs.pushed == 'true' || steps.notes.outputs.posted == 'true')
         env:
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
           # The commit this run pushed, and how long the PR gets to show it as
           # its head before the label goes on anyway (#229).
           PUSHED_SHA: ${{ steps.push.outputs.head }}
@@ -540,15 +590,18 @@ jobs:
           # carry the commit before the push in its payload. Bounded: past it,
           # the label goes on anyway with a warning, since review reads the
           # branch tip itself and refuses by name where it cannot settle on it.
-          head=""
-          deadline=$((SECONDS + HEAD_WAIT_SECONDS))
-          until head=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$PUSHED_SHA" ]; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::warning::PR #${PR_NUMBER} still shows ${head:-an unreadable head} as its head ${HEAD_WAIT_SECONDS}s after ${PUSHED_SHA} was pushed. Asking for the review anyway: it reads the branch tip itself, and refuses by name if it cannot settle on ${PUSHED_SHA}."
-              break
-            fi
-            sleep 5
-          done
+          # Only after a push: a run that only posted notes moved no head.
+          if [ "$PUSHED" = "true" ]; then
+            head=""
+            deadline=$((SECONDS + HEAD_WAIT_SECONDS))
+            until head=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$PUSHED_SHA" ]; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "::warning::PR #${PR_NUMBER} still shows ${head:-an unreadable head} as its head ${HEAD_WAIT_SECONDS}s after ${PUSHED_SHA} was pushed. Asking for the review anyway: it reads the branch tip itself, and refuses by name if it cannot settle on ${PUSHED_SHA}."
+                break
+              fi
+              sleep 5
+            done
+          fi
           # This run's own label comes off before the next step's goes on
           # (#236): every reply and comment is posted by now, so what is left
           # is the hand-off. The last step removes it again, which is nothing
@@ -558,7 +611,7 @@ jobs:
           # on a label that is somehow still there fires nothing.
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
-            printf "Couldn't add \`agent:review\` after pushing the fix, so no re-review was requested.\n" \
+            printf "Couldn't add \`agent:review\` after this run, so no re-review was requested.\n" \
               > "${RUNNER_TEMP}/failure_reason.txt"
             exit 1
           fi
@@ -570,12 +623,13 @@ jobs:
             # on a run nobody opens. One line on the pull request, where the
             # maintainer who added `agent:fix` is already looking.
             echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
-            gh pr comment "$PR_NUMBER" --body 'The fix is pushed, but no re-review will start on its own: `AGENT_PAT` is not set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review the fix.' \
+            gh pr comment "$PR_NUMBER" --body 'This run asked for a re-review, but none will start on its own: `AGENT_PAT` is not set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review the fix and rule on any out-of-scope notes.' \
               || echo "::warning::…and that could not be said on the pull request either."
           fi
 
-      # And the other arm: a run that pushed nothing has nobody to hand this
-      # pull request to, so it hands it back to the human (#159).
+      # And the other arm: a run that pushed nothing and posted no note has
+      # nobody to hand this pull request to, so it hands it back to the human
+      # (#159). One that posted a note handed it to the review above (#213).
       #
       # Draft means "the loop is still working" (docs/parity.md §10), and until
       # #102 review marked every pull request it finished ready, so this arm had
@@ -600,7 +654,8 @@ jobs:
       - name: Mark PR ready for review
         if: >-
           steps.state.outputs.proceed == 'true' && success() &&
-          steps.push.outputs.pushed != 'true' && steps.nothing.outputs.nothing != 'true'
+          steps.push.outputs.pushed != 'true' && steps.notes.outputs.posted != 'true' &&
+          steps.nothing.outputs.nothing != 'true'
         env:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
@@ -626,6 +681,7 @@ jobs:
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUSHED: ${{ steps.push.outputs.pushed }}
+          NOTED: ${{ steps.notes.outputs.posted }}
         run: |
           reason="It stopped without giving a reason. The workflow run's log has the details."
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
@@ -655,6 +711,8 @@ jobs:
           retry="To try again, add \`agent:fix\`."
           if [ "$PUSHED" = "true" ]; then
             retry="Its changes were pushed before it stopped, so running it again would repeat work. Fix the problem above, then add \`agent:review\`."
+          elif [ "$NOTED" = "true" ]; then
+            retry="Its out-of-scope notes were posted before it stopped, so running it again would repeat work. Fix the problem above, then add \`agent:review\` to have them ruled on."
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           printf '**`agent:fix` stopped:** %s\n\n[Workflow run](%s) · %s\n' "$reason" "$RUN_URL" "$retry" > "$body_file"
@@ -683,16 +741,19 @@ jobs:
   # verdict and carries the reasoning; this is the same job, for the round a
   # fix run ends itself.
   #
-  # **Which runs end the round**: one that pushed nothing, and so asked for no
-  # re-review — the arm *Mark PR ready for review* above hands back to the
-  # human. A run that pushed has handed the round to the re-review it asked
-  # for, and that review's verdict decides; advancing here too would build the
-  # next slice under a re-review still in flight. So a slice whose fix declined
-  # every finding moves the chain on rather than sitting on "fix round started"
+  # **Which runs end the round**: one that pushed nothing and posted no
+  # out-of-scope note, and so asked for no re-review: the arm *Mark PR ready
+  # for review* above hands back to the human. A run that pushed, or posted a
+  # note (#213), has handed the round to the re-review it asked for, and that
+  # review's verdict decides; advancing here too would build the next slice
+  # under a re-review still in flight. So a slice whose fix declined every
+  # finding moves the chain on rather than sitting on "fix round started"
   # forever. `== 'false'` rather than `!= 'true'`: the push writes the output on
   # both arms, and an unset one is a run that never got as far as the push —
   # a refused or failed run, or one with nothing to do (#253), which parks
-  # the chain. A failed run skips this job through `needs:` besides.
+  # the chain. A failed run skips this job through `needs:` besides. `noted`
+  # is the other way round, `!= 'true'`, because unset there is a run that
+  # posted no note.
   #
   # Same shape, same scope, same step as the review's copy — a test holds the
   # steps equal, so the two cannot come to say different things.
@@ -702,7 +763,8 @@ jobs:
       github.event.label.name == 'agent:fix' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
-      needs.fix.outputs.pushed == 'false'
+      needs.fix.outputs.pushed == 'false' &&
+      needs.fix.outputs.noted != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # No concurrency group, for the reason the review's copy is in none.

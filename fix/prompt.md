@@ -62,8 +62,8 @@ not the defect, and repairing only the instance leaves the rest to be found one 
 
 - **Name the class, list its other members, and cover them in the same commit**, with a test for
   each. The class is the other inputs to **the code this pull request changes**; the same mistake in
-  code this change does not touch is a separate change under *Constraints*, so name it in a
-  top-level comment or say a follow-up is needed, rather than fixing it here.
+  code this change does not touch is a separate change under *Constraints*, so report it as an
+  out-of-scope note (a follow-up for the next review to rule on), rather than fixing it here.
 - **Read the earlier rounds on this pull request**: the review summaries above, and the replies
   already on the threads you were shown. Where findings keep landing in the same function, or on
   the same kind of input, the shared cause is what to fix rather than the newest symptom. Fix that,
@@ -72,7 +72,7 @@ not the defect, and repairing only the instance leaves the rest to be found one 
   machine-readable form of an input instead of parsing a human-readable one, or taking a value from
   whatever owns it instead of deriving it, can remove a whole class where a special case removes one
   member. Where it is within this pull request's scope, make it; where it is larger than this
-  change, put it in a top-level comment saying what it would replace. A special case that works is
+  change, report it as an out-of-scope note saying what it would replace. A special case that works is
   what keeps the redesign from being proposed, round after round.
 - **Where the code reads the output of another program** (a command line tool, a service's
   response, a file format), the tests you add use **output that program produced**: run it on the
@@ -184,11 +184,10 @@ this run's record is then empty and nothing is posted.
 You may also report zero or more **top-level comments**, posted on the PR conversation rather
 than into any thread.
 
-A top-level comment is for something that belongs to **no thread**. Out-of-scope findings noticed
-while fixing; a refusal or partial completion that spans threads rather than belonging to one; a
-cross-cutting observation that answers no specific comment; the different design *How to respond to
-feedback* asks for where one would remove a whole class of finding, which answers a class of comment
-rather than any one of them.
+A top-level comment is for something that belongs to **no thread**: a refusal or partial completion
+that spans threads rather than belonging to one; a cross-cutting observation that answers no
+specific comment. **Not something out of scope**: that is an out-of-scope note (the section below),
+which is the only one of the two anything acts on.
 
 Not a summary of what changed: the commit message carries that, and a bot posting "here is what I
 did" on every run is the noise that trains a reader to skim. Not anything a thread reply already
@@ -203,8 +202,24 @@ the two that matter. This is a ceiling, not a target: one, or none, is the usual
 Use prose and name the place: "`src/queue.ts:206` still interpolates the repo name into a shell
 string" is as locatable as an inline comment and does not need the diff-line machinery.
 
-You may say a follow-up issue is needed. You cannot file it, and the workflow will not: filing is
-a separate, human-labelled step. Say what the issue would be and stop there.
+# OUT-OF-SCOPE NOTES
+
+You may also report zero or more **out-of-scope notes**: something real you noticed while fixing
+that is **not this pull request's to fix**. A defect in code this change only calls or never
+touches; a follow-up this change makes worth doing; the larger redesign *How to respond to
+feedback* asks you to name rather than make. This is the only place such a thing goes: not a
+top-level comment, not a thread reply, and not a fix in this change.
+
+Each note has a short `title`, a `body` saying what it is, the evidence it is real and why this
+pull request is not the place for it, and a `location` (`path` or `path:line`) where there is one.
+
+You cannot file an issue, and you do not decide whether one is filed. The workflow posts each note
+on the pull request, and the next review rules on it: it either records the note as a follow-up,
+filed as an issue when the pull request merges, or drops it with a reason the review states. So
+write the note for that reviewer, who has to check it: quote what it rests on.
+
+**Silence is the default here too.** At most **two** are posted per run. A note is not a place for
+a preference, a "consider…", or anything this pull request should simply fix.
 
 Do not push. Do not edit labels. Do not create GitHub comments or reviews yourself. Do not resolve
 review threads: not yourself, and not by asking for it. Nothing you report resolves one. The

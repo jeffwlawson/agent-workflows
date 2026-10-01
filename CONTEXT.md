@@ -14,7 +14,7 @@ the middle. One workflow per label transition, near enough:
 | `agent:implement` on an **issue** | `implement` | branch, implement, open a draft PR, request review |
 | `agent:implement` on a **PRD parent** | `implement-prd` | merge the slice PR whose round has ended into the PRD branch and add its row to the PRD PR's slices table, then build the next sub-issue on a slice branch, open it as a draft slice PR, request its review — or, with no sub-issue left, hand the PRD PR over |
 | `agent:review` on a **PR** | `review` | wait for CI, review the diff, verify what earlier rounds found and resolve what landed, mark ready |
-| `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed |
+| `agent:fix` on a **PR** | `fix` | act on review feedback, reply to every thread it is asked about and close none, record what it did with the conversation comments, ask for a re-review if it pushed or left an out-of-scope note |
 | `agent:update-branch` on a **PR** | `update-branch` | merge the base branch in, resolve conflicts, carry the verdict over or ask for a re-review |
 | `agent:follow-ups` on a **merged PR** | `follow-ups` | file the out-of-scope findings its review recorded, as `needs-triage` stubs |
 
@@ -73,10 +73,14 @@ the fix round it follows closed none of the findings it was given (`docs/parity.
 review follows a fix round is read from the **verdict history**, never from who authored the
 commits: the latest verdict announced a round, and commits have landed since. The review a
 **conflict resolution** asks for follows no fix round, because a resolution posts no verdict and
-the one before it announced none. A fix run that pushed nothing asks for nothing — and leaves every thread it answered open,
-so a round it declined its way through ends on a human rather than on another pass. It is also the
-run that marks such a pull request **ready**, because there is no re-review coming to do it (#159):
-a run that pushed hands the pull request to a review, and a run that did not hands it back.
+the one before it announced none. A fix run that pushed nothing and left no out-of-scope note asks
+for nothing, and leaves every thread it answered open, so a round it declined its way through ends
+on a human rather than on another pass. It is also the run that marks such a pull request
+**ready**, because there is no re-review coming to do it (#159): a run that pushed hands the pull
+request to a review, and a run that did not hands it back. **A note bends that rule** (#213): a run
+that pushed nothing but posted an out-of-scope note asks for a re-review too, because the review is
+what rules on the note, and an unruled note is filed by nobody. The fix-round budget bounds that
+leg as it bounds a push.
 
 A review asked for **right after a push** is about the pushed commit, and two halves make it so
 (#229). GitHub moves a pull request's head asynchronously after a push, so a label added at once
@@ -111,7 +115,7 @@ either: `agent:queued` is retired with the marker (#204), because a native "bloc
 issue waits, and `implement` refuses while one is open. A pull request whose
 automatic fix is about to start also stays a **draft**: draft means the loop is still
 working, and what marks it ready is whichever end the round comes to — the re-review, where the fix
-pushed, and the fix run itself where it pushed nothing and so asked for none.
+pushed or left a note, and the fix run itself where it did neither and so asked for none.
 
 The second is the **advance job**, a second arrow, and it lands on an issue rather than a pull
 request (#176). When a **slice PR**'s round ends on a verdict the chain moves on from (🟢, or 🟡 with
@@ -183,8 +187,21 @@ offered an **id** for can carry an outcome, which is what keeps a run from answe
 marked kinds are never rendered, and the loop's own unmarked notes — a refusal, a failure comment,
 a warning about a label that fired nothing — are rendered for their evidence and offered no id,
 because a status note asks for nothing (#159). The record carries a
-marker of its own rather than the top-level one — `follow-ups` harvests that into issues, and a
-record raises no work.
+marker of its own rather than the top-level one, because the top-level one is what dedupes that
+channel across runs, and a record is correct to repeat.
+
+**And a fix run's out-of-scope note ends as an issue or as a decision not to file one** (#213). The
+fix agent often reads furthest past the diff, and what it noticed there used to be a top-level
+comment that nothing read: `follow-ups` files only from the newest review body, and the fetch keeps
+marked comments out of what the next review sees. So such a note is now structured (a title, a body,
+a location where there is one), posted by the workflow under a heading that says it is outside the
+pull request, and carries a marker of its own. The **next review** is handed the notes posted since
+its last verdict, selected by that marker **and** by the workflow bot having posted them, never by
+the marker alone, since anyone who can comment can type it. It rules on each: **promoted**, recorded
+in its own follow-ups (ahead of its own, inside the same cap) and filed on merge like any other, or
+**dropped**, listed in the body with the reason. A note it says nothing about is promoted, the
+direction that cannot lose one. The fix agent never writes the follow-ups record itself: two
+writers of it would break "the newest record wins".
 
 **And the review body is where the rounds are kept** (#109, decisions 8 and 9). It is a findings
 record, not a rendering of the latest pass: `## Agent review`, the assessment, one sentence the

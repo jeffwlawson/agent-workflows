@@ -159,6 +159,21 @@ dropped from the end, here, after you have written it; it is not yours to filter
 yours and is kept as you wrote it: nothing re-ranks this list by `severity`, so put the one you
 would most want filed first.
 
+## The fix run's out-of-scope notes: `noteRulings`
+
+One entry per note you were given under **NOTES THE FIX RUN LEFT**, using the `noteId` exactly as
+given (the `` note `IC_...` `` marker). An id you were not given is dropped. Empty where you were
+given none, which is nearly every review.
+
+- `promoted`: real, not this pull request's to fix, and worth an issue. Carries a `severity`, and a
+  `location` (`path` or `path:line`) where you can name a better one than the note did. The
+  workflow files it on merge as a follow-up, ahead of your own and inside the same cap of three.
+  Do not also write it into `followUps`.
+- `dropped`: not worth filing. Carries a `reason`, one line, which the review body shows beside
+  the note's title. A drop with no reason is refused.
+
+A note you omit is filed as a follow-up at `medium`, so omitting one is not a way to drop it.
+
 ```json
 <output>
 {
@@ -184,10 +199,15 @@ would most want filed first.
   ],
   "followUps": [
     { "title": "One line, as a human scans it in a triage list", "location": "src/other.ts:88", "severity": "medium", "body": "The evidence it is real, quoting what it rests on. Then why this pull request cannot fix it." }
+  ],
+  "noteRulings": [
+    { "noteId": "IC_kwDO...", "status": "promoted", "severity": "medium", "location": "src/client.ts:41" },
+    { "noteId": "IC_kwDO...", "status": "dropped", "reason": "Already tracked in the issue this pull request links." }
   ]
 }
 </output>
 ```
 
-Use an empty array for any of the four lists with no entries (`verified` is empty when you were
-given no open findings to rule on), and leave `needsYou` out entirely unless it applies.
+Use an empty array for any of the five lists with no entries (`verified` is empty when you were
+given no open findings to rule on, and `noteRulings` when you were given no notes), and leave
+`needsYou` out entirely unless it applies.

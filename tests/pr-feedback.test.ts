@@ -27,6 +27,7 @@ import {
   filterOutcomes,
   TOP_LEVEL_COMMENT_MARKER,
 } from "../shared/fix-output.js";
+import { renderOutOfScopeNote } from "../shared/fix-notes.js";
 import {
   fetchPullRequestFeedback,
   nothingToActOn,
@@ -2510,6 +2511,107 @@ describe("a conversation comment the fix run owes an outcome on", () => {
         feedback.conversationComments.map((c) => c.commentId),
       ),
     ).toEqual([declined]);
+  });
+});
+
+/**
+ * **The fix run's out-of-scope notes, for the review that rules on them** (#213).
+ *
+ * Selected by the marker **and** by the workflow bot having posted the comment:
+ * anyone who can comment can type the marker, and a note the review promotes
+ * is filed as an issue on merge. And only the ones posted since this loop's
+ * latest review, which is the review that ruled on everything before it.
+ */
+describe("the out-of-scope notes a review is handed", () => {
+  const BOT = { author: { login: "github-actions" }, authorAssociation: "NONE" };
+  const NOTE = { title: "Two tool parameters send ignored fields", location: "src/tools.ts:88", body: "Pre-existing." };
+  const noteComment = (id: string, createdAt: string, author: object = BOT) => ({
+    ...author,
+    id,
+    url: `https://github.test/pr/12#issuecomment-${id}`,
+    createdAt,
+    body: renderOutOfScopeNote(NOTE),
+  });
+  const verdict = (submittedAt: string) => ({
+    body: "## Agent review",
+    state: "COMMENTED",
+    submittedAt,
+    ...BOT,
+  });
+
+  const feedbackFor = (comments: unknown[], reviews: unknown[] = []) => {
+    ghAnswers(() =>
+      response(pullRequest({ comments: { nodes: comments }, reviews: { nodes: reviews } })),
+    );
+    return fetchPullRequestFeedback("12");
+  };
+
+  it("hands over a note the bot posted, read back from its payload", () => {
+    expect(feedbackFor([noteComment("IC_note", "2026-01-02T00:00:00Z")]).outOfScopeNotes).toEqual([
+      { noteId: "IC_note", url: "https://github.test/pr/12#issuecomment-IC_note", ...NOTE },
+    ]);
+  });
+
+  it("ignores the marker on a comment anybody else posted", () => {
+    const feedback = feedbackFor([noteComment("IC_forged", "2026-01-02T00:00:00Z", MAINTAINER)]);
+
+    expect(feedback.outOfScopeNotes).toEqual([]);
+    expect(feedback.priorOutOfScopeNotes).toEqual([]);
+    // And reads it as the ordinary comment it is: the marker hides nothing.
+    expect(feedback.conversationComments.map((c) => c.commentId)).toEqual(["IC_forged"]);
+  });
+
+  it("keeps the bot's notes out of the fix run's conversation, and offers them for the dedupe", () => {
+    const comment = noteComment("IC_note", "2026-01-02T00:00:00Z");
+    const feedback = feedbackFor([comment]);
+
+    expect(feedback.conversation).not.toContain("Pre-existing.");
+    expect(feedback.conversationComments).toEqual([]);
+    expect(feedback.priorOutOfScopeNotes).toEqual([comment.body]);
+  });
+
+  it("hands over only the notes posted since this loop's latest review", () => {
+    const feedback = feedbackFor(
+      [noteComment("IC_ruled", "2026-01-01T00:00:00Z"), noteComment("IC_new", "2026-01-03T00:00:00Z")],
+      [verdict("2026-01-02T00:00:00Z")],
+    );
+
+    expect(feedback.outOfScopeNotes.map((n) => n.noteId)).toEqual(["IC_new"]);
+    // The dedupe still sees both: a note ruled on is still one not to post again.
+    expect(feedback.priorOutOfScopeNotes).toHaveLength(2);
+  });
+
+  /** The direction that cannot lose a note: ruled on twice costs a line. */
+  it("keeps a note whose time cannot be placed", () => {
+    const feedback = feedbackFor(
+      [{ ...noteComment("IC_untimed", ""), createdAt: null }],
+      [verdict("2026-01-02T00:00:00Z")],
+    );
+
+    expect(feedback.outOfScopeNotes.map((n) => n.noteId)).toEqual(["IC_untimed"]);
+  });
+
+  /** A maintainer's own review is not a verdict this loop posted. */
+  it("measures from the bot's latest review, not a maintainer's", () => {
+    const feedback = feedbackFor(
+      [noteComment("IC_note", "2026-01-01T00:00:00Z")],
+      [{ ...REVIEW_SUMMARY, submittedAt: "2026-01-02T00:00:00Z" }],
+    );
+
+    expect(feedback.outOfScopeNotes.map((n) => n.noteId)).toEqual(["IC_note"]);
+  });
+
+  it("is handed to the review in its context", () => {
+    spawned.mockImplementation(((file: string, args: readonly string[]) => {
+      if (file === "git") return "";
+      if (args[0] === "api" && args[1] === "graphql") {
+        return response(pullRequest({ comments: { nodes: [noteComment("IC_note", "2026-01-02T00:00:00Z")] } }));
+      }
+      if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ id: "PR_1", title: "A PR", body: "No linked issue." });
+      throw new Error(`unrecorded call: ${file} ${args.join(" ")}`);
+    }) as never);
+
+    expect(fetchPullRequestContext("12").fixNotes.map((n) => n.noteId)).toEqual(["IC_note"]);
   });
 });
 

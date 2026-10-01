@@ -307,8 +307,12 @@ const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
    * …and the review's time limit (#220), which is its CI wait plus its own
    * time: an expression cannot add, so a job ahead of the review does the sum.
    * It holds no permission at all.
+   *
+   * …and the red check (#231), which runs the pull request's new and changed
+   * tests against the merge-base ahead of the review. It runs the PR's code,
+   * so it holds `contents: read` and no secret.
    */
-  [path.join(WORKFLOW_DIR, "review.yml")]: ["time-limit", "post-review", "advance"],
+  [path.join(WORKFLOW_DIR, "review.yml")]: ["time-limit", "red-check", "post-review", "advance"],
 };
 
 /**
@@ -888,7 +892,7 @@ describe("every PR workflow shares one concurrency group per PR", () => {
       ),
     ];
 
-    expect(checkRuns).toHaveLength(9);
+    expect(checkRuns).toHaveLength(10);
     // The posting job (#257): it runs after this wait, and it is not evidence
     // about the diff whenever it does.
     expect(checkRuns).toContain("review / post-review");
@@ -899,6 +903,10 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // starts and is no evidence about the diff either.
     expect(checkRuns).toContain("review / time-limit");
     expect("agent-review / time-limit").toMatch(excluded);
+    // …and the red check (#231), whose check run reads red exactly when it
+    // finds what it looks for, and so must never read as CI.
+    expect(checkRuns).toContain("review / red-check");
+    expect("agent-review / red-check").toMatch(excluded);
     for (const name of checkRuns) expect(name).toMatch(excluded);
     expect("agent-review / advance").toMatch(excluded);
     // And under a caller job an adopter renamed, where only the second half is
@@ -2924,7 +2932,7 @@ describe("the review posts last, from one job", () => {
   it("has one posting job, and no resolve or auto-fix job beside it", () => {
     const jobs = Object.keys(workflowOf(REVIEW).jobs);
 
-    expect(jobs).toEqual(["time-limit", "review", "post-review", "advance"]);
+    expect(jobs).toEqual(["time-limit", "red-check", "review", "post-review", "advance"]);
     for (const retired of ["resolve", "auto-fix", "advance-merged"]) expect(jobs).not.toContain(retired);
   });
 
@@ -3917,7 +3925,9 @@ describe("every workflow in the loop is called rather than copied", () => {
    * asserted rather than just made.
    */
   it("review.yml's permissions comment describes that failure, not a silent one", () => {
-    const [comment] = permissionComments(REVIEW);
+    // The review job's block, by the heading it opens with: the red check's
+    // (#231) comes before it in the file.
+    const comment = permissionComments(REVIEW).find((c) => c.startsWith("**Read-only, every scope**"));
 
     expect(comment).toBeDefined();
     expect(comment).toContain("grants nothing");
@@ -6945,8 +6955,13 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
     };
 
     it("is summed by a job that runs where the review does, and holds nothing", () => {
-      expect(jobOf(REVIEW).needs).toEqual(["time-limit"]);
-      expect(limits().if).toBe(jobOf(REVIEW).if);
+      expect(jobOf(REVIEW).needs).toEqual(["time-limit", "red-check"]);
+      // The review's two guards, which its own `if:` now follows with the
+      // checks on its needs (#231).
+      expect(limits().if).toBe(
+        "github.event.label.name == 'agent:review' && github.event.pull_request.head.repo.full_name == github.repository",
+      );
+      expect(jobOf(REVIEW).if ?? "").toContain(limits().if ?? "");
       expect(limits().permissions).toEqual({});
       expect(limits().outputs?.["minutes"]).toBe("${{ steps.limits.outputs.minutes }}");
     });
@@ -7774,5 +7789,158 @@ describe("the PRD chain's progress", () => {
     expect(run).toMatch(/gh issue comment "\$APPROVED_SUB" --body "\$note" \\\n\s*\|\| echo "::warning::/);
     const names = stepsOf(PRD).map((s) => s.name ?? "");
     expect(names.indexOf("Note the approved slice")).toBe(names.indexOf("Transition labels") + 1);
+  });
+});
+
+/**
+ * The red check (#231, PRD #212): a job that runs the tests a pull request adds
+ * or changes against the merge-base, and reports each as red, broken or passed.
+ * What its steps do to a tree and to a JUnit report is run in
+ * `tests/red-check.test.ts`; this is what the job holds, where it sits, and that
+ * it never stands between a pull request and its review.
+ */
+describe("the red check runs a PR's tests against the merge-base, holding nothing", () => {
+  const redCheck = (): Job => jobNamed(REVIEW, "red-check");
+  const INPUTS = ["red-check-command", "red-check-report", "red-check-test-globs"];
+
+  /** Off unless configured: every input defaults to empty, and nothing requires one. */
+  it("declares three optional inputs, all empty by default", () => {
+    const inputs = workflowOf(REVIEW).on?.workflow_call?.inputs ?? {};
+
+    for (const name of INPUTS) {
+      expect(inputs[name], name).toMatchObject({ type: "string", default: "" });
+      expect(inputs[name]?.required, name).toBeUndefined();
+    }
+    expect(inputs["red-check-command"]?.description).toMatch(/JUnit XML/);
+  });
+
+  /**
+   * Skipped unless the command is set, so an adopter who sets nothing gets no
+   * job. And the review's own two guards: it runs the PR's code, so a fork's
+   * PR must never reach it.
+   */
+  it("runs only where it is configured, and carries the review's fork and label guards", () => {
+    expect(redCheck().if).toBe(
+      "github.event.label.name == 'agent:review' && " +
+        "github.event.pull_request.head.repo.full_name == github.repository && " +
+        "inputs.red-check-command != ''",
+    );
+  });
+
+  it("holds only contents: read, and no secret", () => {
+    expect(redCheck().permissions).toEqual({ contents: "read" });
+    const text = JSON.stringify(redCheck());
+
+    expect(text).not.toMatch(/secrets\./);
+    expect(text).not.toMatch(/github\.token|GITHUB_TOKEN|GH_TOKEN/);
+  });
+
+  /**
+   * The token the checkout used is not left in `.git/config` for the PR's
+   * tests to read, and the toolchain saves no cache the PR's code could have
+   * written into: one saved here would be restored on the base branch.
+   */
+  it("leaves no credential behind and saves no cache", () => {
+    const steps = redCheck().steps ?? [];
+    const checkout = steps.find((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+    const node = steps.find((s) => (s.uses ?? "").startsWith("actions/setup-node@"));
+
+    expect(checkout?.with?.["persist-credentials"]).toBe(false);
+    expect(checkout?.with?.["ref"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(node?.with?.["cache"]).toBeUndefined();
+    expect(node?.with?.["package-manager-cache"]).toBe(false);
+  });
+
+  /**
+   * On a slice round its base is the PRD branch before the slice (#235), and
+   * on the final review it runs nothing. It tells the two apart by the mark
+   * the finishing run writes, a third spelling of it, held to the one the
+   * progress list writes. The body reaches the shell through `env:`, never
+   * inline: it is the pull request's to write.
+   */
+  it("tells a slice round from the final review by the mark the finishing run writes", () => {
+    const place = (redCheck().steps ?? []).find((s) => s.id === "place");
+
+    expect(place?.env?.["FINAL_REVIEW_MARK"]).toBe(FINAL_REVIEW_MARK);
+    expect(place?.env?.["PR_BODY"]).toBe("${{ github.event.pull_request.body }}");
+    expect(place?.env?.["HEAD_REF"]).toBe("${{ github.event.pull_request.head.ref }}");
+    expect(place?.run ?? "").toContain('if [[ "$HEAD_REF" == agent/prd-* && "$PR_BODY" == *"$FINAL_REVIEW_MARK"* ]]; then');
+    expect(place?.run ?? "").not.toContain("github.event");
+  });
+
+  /**
+   * Nothing it produces is trusted beyond its report: no job output, and
+   * nothing in the file reads one. The report is an artifact, written whatever
+   * happened.
+   */
+  it("hands over its report as an artifact and nothing else", () => {
+    expect(redCheck().outputs).toBeUndefined();
+    expect(fs.readFileSync(REVIEW, "utf8")).not.toContain("needs.red-check.outputs");
+
+    const upload = (redCheck().steps ?? []).find((s) => (s.uses ?? "").startsWith("actions/upload-artifact@"));
+    expect(upload?.if).toBe("always()");
+    expect(upload?.with?.["name"]).toBe("agent-red-check");
+    expect(upload?.with?.["path"]).toBe("${{ runner.temp }}/red_check.json");
+  });
+
+  /**
+   * The review `needs:` it so the report exists first, and runs however it
+   * ended. `!cancelled()` drops the implicit "every need succeeded" that would
+   * otherwise skip the review behind a skipped or failed red check, and
+   * nothing in the condition reads the red check's result.
+   */
+  it("never stops the review, whether it was skipped or failed", () => {
+    const review = jobOf(REVIEW);
+
+    expect(review.needs).toContain("red-check");
+    expect(review.if ?? "").toMatch(/^!cancelled\(\) && needs\.time-limit\.result == 'success' && /);
+    expect(review.if ?? "").not.toContain("red-check");
+    expect(review.if ?? "").not.toMatch(/\balways\(\)/);
+  });
+
+  /** Its check run reads red when it finds a red test, which is not CI. */
+  it("never feeds ci_result", () => {
+    expect("review / red-check").toMatch(new RegExp(waitStep().env?.["AGENT_CHECKS"] ?? ""));
+    expect("agent-review / red-check").toMatch(new RegExp(waitStep().env?.["AGENT_CHECKS"] ?? ""));
+  });
+
+  /**
+   * Both caller sets show the inputs commented out, the way an adopter turns
+   * the check on, and neither sets them: this repository's caller pins a
+   * release that may not declare them, and GitHub fails a caller passing an
+   * input its reusable does not declare.
+   */
+  it.each([REVIEW_CALLER, path.join(WORKFLOW_DIR, "agent-review.yml")])(
+    "%s: shows the inputs commented out",
+    (file) => {
+      const text = fs.readFileSync(file, "utf8");
+
+      for (const name of INPUTS) {
+        expect(text).toMatch(new RegExp(`^\\s*# ${name}: \\S`, "m"));
+        expect(jobOf(file).with?.[name]).toBeUndefined();
+      }
+    },
+  );
+
+  /**
+   * The review reads the report (#232): fetched only where the check is on,
+   * and never a step that can fail the review, since a report that did not
+   * arrive is a fact the runner reads as unknown. Whether it is on goes to the
+   * runner beside the file, since "off" and "lost" both leave no file.
+   */
+  it("hands the review its report, and whether the check is on", () => {
+    const steps = stepsOf(REVIEW);
+    const fetch = steps.find((s) => s.name === "Fetch the red check's report");
+    const agent = steps.find((s) => s.name === "Run review agent");
+    const names = steps.map((s) => s.name ?? "");
+
+    expect(fetch?.uses).toMatch(/^actions\/download-artifact@/);
+    expect(fetch?.with?.["name"]).toBe("agent-red-check");
+    expect(fetch?.with?.["path"]).toBe("${{ runner.temp }}/red-check");
+    expect(fetch?.if).toBe("steps.state.outputs.proceed == 'true' && inputs.red-check-command != ''");
+    expect(fetch?.["continue-on-error"]).toBe(true);
+    expect(names.indexOf("Fetch the red check's report")).toBeLessThan(names.indexOf("Run review agent"));
+    expect(agent?.env?.["RED_CHECK_CONFIGURED"]).toBe("${{ inputs.red-check-command != '' }}");
+    expect(agent?.env?.["RED_CHECK_FILE"]).toBe("${{ runner.temp }}/red-check/red_check.json");
   });
 });

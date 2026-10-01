@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="2" failures="1" errors="1" time="0.576">
+  <testsuite name="scale" errors="0" failures="1" skipped="0" timestamp="2026-10-01T14:32:12" time="0.234" tests="2">
+    <testcase classname="scale doubles a serving" name="scale doubles a serving" time="0.005" file="tests/scale.test.js">
+      <failure>Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 4
+Received: 2
+    at Object.toBe (/tmp/recipes/jest/tests/scale.test.js:2:49)
+    at Promise.finally.completed (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:1834:28)
+    at new Promise (&lt;anonymous&gt;)
+    at callAsyncCircusFn (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:1774:10)
+    at _callCircusTest (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:1167:40)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at _runTestInContext (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:1103:3)
+    at runTestWithContext (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:996:5)
+    at _runTestsForDescribeBlockOnce (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:1008:11)
+    at _runTestsForDescribeBlock (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:824:5)
+    at _runTestsForDescribeBlockOnce (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:1003:11)
+    at _runTestsForDescribeBlock (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:824:5)
+    at run (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:789:3)
+    at runAndTransformResultsToJestFormat (/tmp/recipes/node_modules/jest-circus/build/jestAdapterInit.js:2300:21)
+    at jestAdapter (/tmp/recipes/node_modules/jest-circus/build/runner.js:111:19)
+    at runTestInternal (/tmp/recipes/node_modules/jest-runner/build/testWorker.js:247:16)
+    at runTest (/tmp/recipes/node_modules/jest-runner/build/testWorker.js:315:7)
+    at Object.worker (/tmp/recipes/node_modules/jest-runner/build/testWorker.js:479:12)</failure>
+    </testcase>
+    <testcase classname="scale keeps the unit" name="scale keeps the unit" time="0.001" file="tests/scale.test.js">
+    </testcase>
+  </testsuite>
+  <testsuite name="tests/units.test.js" errors="1" failures="0" skipped="0" timestamp="1970-01-01T00:00:00" time="0" tests="0">
+    <testcase classname="Test suite failed to run" name="tests/units.test.js" time="0" file="tests/units.test.js">
+      <error>  ● Test suite failed to run
+
+    Cannot find module &apos;../src/units&apos; from &apos;tests/units.test.js&apos;
+
+    &gt; 1 | const { convert } = require(&quot;../src/units&quot;);
+        |                     ^
+      2 | describe(&quot;units&quot;, () =&gt; { it(&quot;converts&quot;, () =&gt; { expect(convert(1)).toBe(2); }); });
+      3 |
+
+      at Resolver._throwModNotFoundError (../node_modules/jest-resolve/build/index.js:1031:11)
+      at Object.require (tests/units.test.js:1:21)
+</error>
+    </testcase>
+    <testcase classname="Test suite failed to run" name="tests/units.test.js" time="0" file="tests/units.test.js">
+      <failure>&quot;Cannot find module &apos;../src/units&apos; from &apos;tests/units.test.js&apos;&quot;</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

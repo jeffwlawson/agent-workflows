@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="9" failures="5" errors="0" time="0.017714249">
+    <testsuite name="tests/client.test.ts" timestamp="2026-10-01T14:32:28.262Z" hostname="runnervm8df0l" tests="5" failures="2" errors="0" skipped="2" time="0.007758179">
+        <testcase classname="tests/client.test.ts" name="needs a client &gt; uses the client" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="tests/client.test.ts" name="pantry &gt; opens" time="0.001303734">
+        </testcase>
+        <testcase classname="tests/client.test.ts" name="pantry &gt; needs a shelf &gt; stocks the shelf" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="tests/client.test.ts" name="needs a client" time="0.004240198">
+            <failure message="no client" type="Error">
+Error: no client
+ ❯ tests/client.test.ts:3:27
+            </failure>
+        </testcase>
+        <testcase classname="tests/client.test.ts" name="needs a shelf" time="0.000653926">
+            <failure message="no shelf" type="Error">
+Error: no shelf
+ ❯ tests/client.test.ts:9:29
+            </failure>
+        </testcase>
+    </testsuite>
+    <testsuite name="tests/collect.test.ts" timestamp="2026-10-01T14:32:28.270Z" hostname="runnervm8df0l" tests="1" failures="1" errors="0" skipped="0" time="0">
+        <testcase classname="tests/collect.test.ts" name="tests/collect.test.ts" time="0">
+            <failure message="thrown while collecting" type="Error">
+Error: thrown while collecting
+ ❯ tests/collect.test.ts:3:9
+            </failure>
+        </testcase>
+    </testsuite>
+    <testsuite name="tests/scale.test.ts" timestamp="2026-10-01T14:32:28.271Z" hostname="runnervm8df0l" tests="2" failures="1" errors="0" skipped="0" time="0.00995607">
+        <testcase classname="tests/scale.test.ts" name="scale &gt; doubles a serving" time="0.008357792">
+            <failure message="expected 2 to be 4 // Object.is equality" type="AssertionError">
+AssertionError: expected 2 to be 4 // Object.is equality
+
+- Expected
++ Received
+
+- 4
++ 2
+
+ ❯ tests/scale.test.ts:3:49
+            </failure>
+        </testcase>
+        <testcase classname="tests/scale.test.ts" name="scale &gt; keeps the unit" time="0.000277328">
+        </testcase>
+    </testsuite>
+    <testsuite name="tests/units.test.ts" timestamp="2026-10-01T14:32:28.273Z" hostname="runnervm8df0l" tests="1" failures="1" errors="0" skipped="0" time="0">
+        <testcase classname="tests/units.test.ts" name="tests/units.test.ts" time="0">
+            <failure message="Cannot find module &apos;../src/units&apos; imported from &apos;/tmp/recipes/vitest/tests/units.test.ts&apos;" type="Error">
+Error: Cannot find module &apos;../src/units&apos; imported from &apos;/tmp/recipes/vitest/tests/units.test.ts&apos;
+ ❯ tests/units.test.ts:2:1
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
+Caused by: Error: Failed to load url ../src/units (resolved id: ../src/units) in /tmp/recipes/vitest/tests/units.test.ts. Does the file exist?
+ ❯ loadAndTransform ../node_modules/vite/dist/node/chunks/config.js:22739:33
+            </failure>
+        </testcase>
+    </testsuite>
+</testsuites>

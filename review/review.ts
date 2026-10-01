@@ -30,6 +30,7 @@ import {
   REVIEW_URL_SLOT,
   roundName,
   sliceCriteria,
+  sliceRedTests,
   type ParkFinding,
   type PrdBranch,
   type PrdRound,
@@ -37,6 +38,16 @@ import {
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
 import { progressAtRoundEnd } from "../shared/progress-list.js";
+import {
+  describeRedCheck,
+  readRedCheck,
+  redTestsRecord,
+  renderRedCheck,
+  renderRedCheckForFinal,
+  renderRedTestsBlock,
+  withFailingFirst,
+  type SliceRedTests,
+} from "../shared/red-check.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
@@ -190,7 +201,7 @@ const FINAL_SUMMARY_SHAPE = [
   "- **`summary`**: the **outcome**, what the PRD delivered as a whole, in a few sentences. Nothing about the review, and no list of slices: the body already shows them.",
   "- **`behaviourChanges`**: one entry per behaviour the PRD changes, `{ \"change\": \"one line\", \"breaking\": true }` where a caller or a user has to act on it and `false` otherwise. The workflow marks the breaking ones; do not write the mark yourself.",
   "",
-  "The criteria each slice changed or dropped are added from each slice round's record, and the known issues from the follow-ups this review records, so write neither. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
+  "The criteria each slice changed or dropped and, where the red check is configured, each slice's failing-first tests are added from each slice round's record, and the known issues from the follow-ups this review records, so write neither. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
 ].join("\n");
 
 /** Off a PRD PR, the brief's follow-ups section is the ordinary one. */
@@ -260,6 +271,13 @@ try {
     }.`,
   );
 
+  // The red check's report (#232), where the caller configured the check: the
+  // `red-check` job's artifact, downloaded beside the CI evidence. Whether it is
+  // configured is the workflow's to say, since a check that is off and one
+  // whose report was lost both leave no file, and only the second is unknown.
+  const redCheck = readRedCheck(process.env["RED_CHECK_CONFIGURED"] === "true", process.env["RED_CHECK_FILE"]);
+  console.log(`Red check: ${describeRedCheck(redCheck)}.`);
+
   // The park comment for a round that does not finish (PRD #222), written now
   // because a failure later has no chance to: the advance job posts it on the
   // PRD's parent if the review or its posting fails. What is open is what was
@@ -318,6 +336,7 @@ try {
   let carried: EarlierFollowUps[] = [];
   let cap = MAX_FOLLOW_UPS;
   let slicesCriteria: SliceCriteria[] | undefined;
+  let slicesRedTests: SliceRedTests[] | undefined;
   if (round !== undefined) {
     const reviews = fetchReviews(PR_NUMBER);
     const earlier = earlierFollowUps(reviews);
@@ -330,7 +349,10 @@ try {
     } else {
       const landed = prdBranch.ranges.slices.filter((slice) => slice.range !== null).length;
       cap = followUpsCap(landed);
-      if (round.kind === "final") slicesCriteria = sliceCriteria(reviews, prdBranch.ranges);
+      if (round.kind === "final") {
+        slicesCriteria = sliceCriteria(reviews, prdBranch.ranges);
+        slicesRedTests = sliceRedTests(reviews, prdBranch.ranges);
+      }
     }
     console.log(
       `Follow-ups: ${carried.reduce((n, e) => n + e.moved.length + e.rest.length, 0)} recorded by earlier rounds, carried forward under a cap of ${cap}.`,
@@ -359,6 +381,13 @@ try {
       ACCEPTANCE_CRITERIA: renderCriteriaForReview(criteria, context.prBody),
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
+      // The final review's red evidence is each slice round's record (#235),
+      // not a run of its own: against the merge-base a later slice's tests
+      // read as broken, and the job runs nothing on it.
+      RED_CHECK:
+        final && redCheck.kind !== "not-configured"
+          ? renderRedCheckForFinal(slicesRedTests)
+          : renderRedCheck(redCheck, headSha),
       HISTORY: describeHistory(history),
       OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
       SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),
@@ -503,6 +532,12 @@ try {
   // (#109, decision 8 as the maintainer settled it), and the payload the filing
   // half reads on merge goes out last and invisibly — so the posted body is
   // what this returns, with nothing concatenated on afterwards.
+  //
+  // A slice round records its red tests in its review (#235), invisibly: the
+  // body's failing-first list is rewritten by the next slice, and the review
+  // is the one record of a slice that outlives it, for the final review to
+  // list by slice.
+  const redTests = round?.kind === "slice" ? redTestsRecord(redCheck) : undefined;
   const post = renderReviewPost({
     verdict,
     output,
@@ -517,6 +552,7 @@ try {
     followUpsCarried,
     droppedNotes: notes.dropped,
     criteria: criteriaRulings.results,
+    ...(redTests === undefined ? {} : { redTestsBlock: renderRedTestsBlock(redTests) }),
     runUrl: workflowRunUrl(),
     // What was shed, where the body had to be cut to fit GitHub's limit (#140).
     // A body that cannot be made to fit throws, and the catch below writes the
@@ -581,9 +617,17 @@ try {
           behaviourChanges: output.behaviourChanges ?? [],
           slices: slicesCriteria,
           followUps,
+          // Each slice's red tests (#235), where the check is configured.
+          ...(redCheck.kind === "not-configured" ? {} : { redTests: { slices: slicesRedTests } }),
         }),
       }
-    : output;
+    : output.summary === undefined
+      ? output
+      : // A slice or a regular pull request's body lists its failing-first
+        // tests under the summary (#234), from the red check's report rather
+        // than the agent's word, so the agent's text and the list are kept
+        // apart. The final review's summary is the PRD's and does not.
+        { ...output, summary: withFailingFirst(output.summary, redCheck, headSha) };
   const summary = writesSummary ? summaryUpdate(written, headSha, final) : undefined;
   if (summary !== undefined) writeJson("pr_summary.json", summary);
 

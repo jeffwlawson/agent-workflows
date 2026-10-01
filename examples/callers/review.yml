@@ -86,6 +86,18 @@ jobs:
       # `AGENT_MAX_FIX_ROUNDS` to change that (`0` for none): the reusable
       # workflow reads it from this repository, so nothing goes here. Needs
       # `AGENT_PAT` (docs/ADOPTING.md §3b).
+      # The red check (#231): runs the tests a pull request adds or changes
+      # against the code as it was before the change, in a job holding no
+      # secrets, and reports to the review which of them fail there on an
+      # assertion (red) and which on an import or collection error (broken).
+      # Off unless `red-check-command` is set; the other two go with it. The
+      # command must write a JUnit XML report to `red-check-report`, and the
+      # globs, one a line, say which files are tests. Uncomment and adapt:
+      # red-check-command: npx vitest run --reporter=junit --outputFile=junit.xml
+      # red-check-report: junit.xml
+      # red-check-test-globs: |
+      #   tests/**
+      #   **/*.test.ts
     # Named rather than `secrets: inherit`, which would hand the called
     # workflow every secret this repository holds. Both are declared in it;
     # AGENT_PAT is optional and an absent one arrives as the empty string,

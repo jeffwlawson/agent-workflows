@@ -309,14 +309,20 @@ round alike), and nothing pushed leaves both alone. The block carries the head i
 which is how the rule is read: not from the verdict history, which says what a verdict has seen
 rather than what a summary has. A maintainer's edit inside the block is input to the next rewrite,
 kept where it is still true. The agent produces `title` and `summary`; the posting job writes them,
-splicing into the body as it stands then rather than as the review read it. So the review comment
+splicing into the body as it stands then rather than as the review read it. Under the agent's
+summary the runner adds the **failing-first tests** from the red check's report (#234), red ones
+only, or which of *not configured*, *could not be read* and *none red* holds instead. So the review comment
 carries no description of the change, and the description exists in one place.
 
 A PRD PR's **final review** writes both however little was pushed, since the last slice round wrote
 them at the same head (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
 the behaviour changes with the breaking ones marked, the acceptance criteria each slice changed or
 dropped (read off each slice round's record, by the commit it reviewed, through the slice ranges),
-and the known issues, naming the follow-ups filed at merge. The same write removes the frame's
+where the red check is configured each slice's failing-first tests (#235), read off the same rounds,
+and the known issues, naming the follow-ups filed at merge. A slice round's red check runs against
+the PRD branch as it stood before that slice, its slice range's base, rather than the merge-base,
+so each slice's tests run on code holding every earlier slice; the final review runs none, and holds
+each slice's changes to that slice round's record. The same write removes the frame's
 **draft-only** note, between its own markers, so a PRD PR marked ready says nothing about being a
 draft.
 

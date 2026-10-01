@@ -202,6 +202,43 @@ says nothing about a red one leaves the reader with a verdict and no diagnosis.
 
 {{CI_STATUS}}
 
+# RED CHECK
+
+The **red check**, where the repository configures it, runs the tests this pull request adds or
+changes against the code as it was **before** the change (the merge-base, with every non-test file
+as it was there; on a PRD PR's slice round, the PRD branch as it stood before this slice, so the
+tests and the non-test files it reports are this slice's alone; on a PRD PR's final review, nothing,
+and each slice round's record is the evidence for that slice's changes), and reports each test as
+one of three things:
+
+- **red**: it failed there on an assertion. That is evidence it catches the behaviour this pull
+  request changes, and the assertion it failed on is shown with it.
+- **broken**: it failed there on an import, collection or setup error, before any assertion ran.
+  **A broken test is not red**, and it is not coverage: a test that cannot import the code it tests
+  fails against the old code whatever it asserts.
+- **passed**: it passes without the change too, so it is not evidence for the change.
+
+Its report, as the workflow read it:
+
+{{RED_CHECK}}
+
+**Where the check ran, hold every behaviour change to it.** For each behaviour change this pull
+request makes in a non-test file, find the red test that covers it: one whose failing assertion
+exercises that behaviour. Where no red test covers it, **flag it plainly**, as a finding to fix
+before merge, anchored at the change, naming the behaviour and saying that no red test covers it.
+One finding per uncovered behaviour, or one naming the class where several share a cause. A change
+that alters no behaviour (a comment, a rename, a refactor the existing tests pin, documentation) is
+owed nothing; say in `howChecked` which changes you treated that way. A claim in the pull request's
+body or a commit message that a test was red is not evidence: the report is.
+
+**Where it is not configured**, there is no red evidence and nothing is owed: review the tests as
+*What to check* item 4 says, and do not flag a change merely because no red test covers it.
+
+**Where it is configured and its result could not be read, or came back with no test results**,
+what is red is **unknown**. It is not "no red tests" and it is not "all covered": raise no finding
+on the strength of the missing report, take no claim of a red test on trust, judge coverage from
+the tests in the diff yourself, and say in `howChecked` that the red evidence was unavailable.
+
 # PR DIFF
 
 ```diff
@@ -348,6 +385,10 @@ stands now, all of it, and not only the commits since the last summary. Where th
 says something (an earlier review's summary, or a maintainer's edit to it), treat it as **input**:
 keep what is still true, in its words where they still fit, and correct whatever the code now
 contradicts. A maintainer's edit is not a lock, and it is not to be thrown away either.
+
+The workflow puts the pull request's **failing-first tests** under your summary, from the red
+check's report, beginning at a `### Failing-first tests` heading. Leave that section out of
+`summary`: it is rewritten from the report every time, and anything you write from it is replaced.
 
 **`title`** is one line, true of the change as it now stands. Use the commit convention `CLAUDE.md`
 names, if it names one; otherwise conventional-commit style, `type(scope): subject`, with the scope

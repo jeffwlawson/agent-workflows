@@ -2632,6 +2632,97 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * **The red check** (#231, #233), optional: each review caller hears whether
+   * it is configured, as a note that changes nothing, or half configured, as a
+   * warning naming what is missing. The gesture is the one `examples/callers/`
+   * invites: its commented-out lines uncommented, all of them or some.
+   */
+  const withRedCheck = async (blocks: readonly string[]): Promise<string> => {
+    const root = await installed();
+    edit(root, "agent-review.yml", (text) => {
+      let after = text;
+      for (const block of blocks) {
+        const commented = block.split(INDENT).map((line) => `# ${line}`).join(INDENT);
+        expect(after, block).toContain(commented);
+        after = after.replace(commented, block);
+      }
+      return after;
+    });
+    return root;
+  };
+  const INDENT = "\n      ";
+  const COMMAND = "red-check-command: npx vitest run --reporter=junit --outputFile=junit.xml";
+  const REPORT = "red-check-report: junit.xml";
+  const GLOBS = ["red-check-test-globs: |", "  tests/**", "  **/*.test.ts"].join(INDENT);
+
+  it("notes that the red check is not configured on a caller init has just installed", async () => {
+    const { code, out, err } = await check(await installed(), healthy());
+
+    expect(out).toContain("note  red check: .github/workflows/agent-review.yml's `review` job does not configure the red check");
+    expect(out).toContain("red-check-command");
+    expect(out).not.toContain("warn  red check");
+    expect(err).toBe("");
+    expect(code).toBe(0);
+  });
+
+  it("notes that the red check is configured, naming its command and report", async () => {
+    const { code, out, err } = await check(await withRedCheck([COMMAND, REPORT, GLOBS]), healthy());
+
+    expect(out).toContain("note  red check: .github/workflows/agent-review.yml's `review` job configures the red check");
+    expect(out).toContain("`npx vitest run --reporter=junit --outputFile=junit.xml`");
+    expect(out).toContain("`junit.xml`");
+    expect(out).toContain("never a required status");
+    expect(out).not.toContain("warn  red check");
+    // A note is not a thing to know: the summary counts warnings only.
+    expect(out).toContain("0 thing(s) to know");
+    expect(err).toBe("");
+    expect(code).toBe(0);
+  });
+
+  /**
+   * **Half configured**, a command with no report path or no globs: the job
+   * reports itself misconfigured on every review, and the review reads what is
+   * red as unknown. A warning naming exactly what is missing, and never an
+   * error: the check is evidence for the review, never a required status.
+   */
+  it("warns that a red check with a command and no report or no globs is half configured", async () => {
+    const noGlobs = await check(await withRedCheck([COMMAND, REPORT]), healthy());
+    expect(noGlobs.out).toContain("warn  red check");
+    expect(noGlobs.out).toContain("sets `red-check-command` but not `red-check-test-globs`, so the red check is half configured");
+    expect(noGlobs.out).toContain("fix: Set `red-check-test-globs`");
+    expect(noGlobs.code).toBe(0);
+
+    const commandOnly = await check(await withRedCheck([COMMAND]), healthy());
+    expect(commandOnly.out).toContain("but not `red-check-report` or `red-check-test-globs`");
+    expect(commandOnly.out).toContain("fix: Set `red-check-report` and `red-check-test-globs`");
+    expect(commandOnly.out).not.toContain("note  red check");
+    expect(commandOnly.err).toBe("");
+    expect(commandOnly.code).toBe(0);
+  });
+
+  it("warns that red check inputs with no command turn nothing on", async () => {
+    const { code, out, err } = await check(await withRedCheck([REPORT]), healthy());
+
+    expect(out).toContain("warn  red check");
+    expect(out).toContain("sets `red-check-report` but not `red-check-command`, so the red check is off");
+    expect(err).toBe("");
+    expect(code).toBe(0);
+  });
+
+  /** Empty, null and whitespace-only globs are the input's default: none. */
+  it("reads red check inputs left empty, null or blank as not passed", async () => {
+    for (const value of ['""', "~", '"  "']) {
+      const root = await withRedCheck([COMMAND, REPORT]);
+      edit(root, "agent-review.yml", (text) =>
+        text.replace(REPORT, `${REPORT}${INDENT}red-check-test-globs: ${value}`),
+      );
+      const { out } = await check(root, healthy());
+
+      expect(out, value).toContain("but not `red-check-test-globs`");
+    }
+  });
+
+  /**
    * **No marker label to demand**, and none to create: the rounds spent are
    * counted from the pull request's own verdicts (#201), so `agent:auto-fixed`
    * is retired and a healthy repository passes clean without it.

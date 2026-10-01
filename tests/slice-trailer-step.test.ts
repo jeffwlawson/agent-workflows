@@ -85,7 +85,8 @@ const checkout = (): { work: string; published: readonly string[]; mainMoved: st
   git(work, "checkout", "-q", "-b", "agent/slice-222-242-x");
 
   // What the agent leaves: a plain commit, one with a wrong trailer, one with
-  // two, a merge of the default branch, and an uncommitted file.
+  // two, a merge of the default branch, two whose bodies hold a `---` line
+  // (a horizontal rule, and a quoted diff), and an uncommitted file.
   fs.writeFileSync(path.join(work, "built.txt"), "built\n");
   git(work, "add", "built.txt");
   commit(work, "feat: build the slice (#242)\n\nWhy it is built this way.\n\nCo-Authored-By: a <a@example.com>");
@@ -93,6 +94,8 @@ const checkout = (): { work: string; published: readonly string[]; mainMoved: st
   commit(work, "fix: tidy\n\nAgent-Slice: #241\nagent-slice: #7");
   git(work, "merge", "-q", "--no-ff", "--no-edit", "origin/main");
   commit(work, "docs: note it");
+  commit(work, "docs: a rule\n\nSome body.\n\n---\n\nMore.");
+  commit(work, "fix: quote the diff\n\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n\nCo-Authored-By: a <a@example.com>");
   fs.writeFileSync(path.join(work, "uncommitted.txt"), "left alone\n");
   const tree = git(work, "rev-parse", "HEAD^{tree}");
 
@@ -110,10 +113,18 @@ const runStep = (cwd: string): { status: number | null; stderr: string } => {
   return { status: result.status, stderr: result.stderr };
 };
 
+/** Every line of the message naming the key, wherever in the message it sits. */
 const trailers = (cwd: string, sha: string): string[] =>
   git(cwd, "log", "-1", "--format=%B", sha)
     .split("\n")
     .filter((line) => /^agent-slice:/i.test(line));
+
+/**
+ * The key's values as **git's own trailer parser** reads them, which is how
+ * the slice ranges are read: a line git does not count as a trailer is absent.
+ */
+const parsed = (cwd: string, sha: string): string =>
+  git(cwd, "log", "-1", `--format=%(trailers:key=${SLICE_TRAILER},valueonly,separator=%x2C)`, sha);
 
 /**
  * The vitest ceiling for a body making `spawns` bounded children: their sum,
@@ -122,7 +133,7 @@ const trailers = (cwd: string, sha: string): string[] =>
 const ceiling = (spawns: number): number => spawns * SUBPROCESS_TIMEOUT;
 
 /** `checkout()`'s spawns, and the step's one. */
-const SETUP_SPAWNS = 30;
+const SETUP_SPAWNS = 34;
 
 describe.skipIf(!CAN_RUN)("implement-prd's Mark the slice's commits", () => {
   let built: ReturnType<typeof checkout>;
@@ -140,16 +151,19 @@ describe.skipIf(!CAN_RUN)("implement-prd's Mark the slice's commits", () => {
     expect(ran.status, ran.stderr).toBe(0);
 
     const made = git(work, "rev-list", "HEAD", "--not", `refs/heads/${PRD_BRANCH}`, "--remotes").split("\n");
-    expect(made).toHaveLength(5);
-    for (const sha of made) expect(trailers(work, sha)).toEqual([`${SLICE_TRAILER}: #${SUB}`]);
+    expect(made).toHaveLength(7);
+    for (const sha of made) {
+      expect(trailers(work, sha)).toEqual([`${SLICE_TRAILER}: #${SUB}`]);
+      expect(parsed(work, sha), sha).toBe(`#${SUB}`);
+    }
 
     // Everything else in a message is kept, and the trailer joins its block.
-    expect(git(work, "log", "-1", "--format=%B", "HEAD~4")).toBe(
+    expect(git(work, "log", "-1", "--format=%B", "HEAD~6")).toBe(
       `feat: build the slice (#242)\n\nWhy it is built this way.\n\nCo-Authored-By: a <a@example.com>\nAgent-Slice: #${SUB}`,
     );
     expect(git(work, "log", "--format=%an %ad", `refs/heads/${PRD_BRANCH}..HEAD`, "--not", "--remotes")).toBe(authors);
     expect(git(work, "rev-parse", "HEAD^{tree}")).toBe(tree);
-  }, ceiling(10));
+  }, ceiling(20));
 
   it("rewrites nothing published: the PRD branch, the earlier slice and the merged default branch keep their shas", () => {
     const { work, published, mainMoved } = built;

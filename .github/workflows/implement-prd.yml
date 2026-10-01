@@ -1121,6 +1121,11 @@ jobs:
       # PRD branch, so a default-branch commit the agent merged in keeps its
       # identity. Trees, authors and dates are kept, and the branch is moved
       # without touching the working tree, since only messages change.
+      #
+      # `--no-divider` because the input is a commit message, not a patch
+      # email: without it a `---` line anywhere in the body is read as the
+      # start of a patch, the trailer lands above it, and git's own trailer
+      # parser, which reads the message's last paragraph, never sees it.
       - name: Mark the slice's commits
         id: trailer
         if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && success()
@@ -1142,7 +1147,7 @@ jobs:
             done
             message=$(git log -1 --format=%B "$commit" \
               | { grep -iv '^Agent-Slice:' || true; } \
-              | git interpret-trailers --trailer "Agent-Slice: #${SUB}")
+              | git interpret-trailers --no-divider --trailer "Agent-Slice: #${SUB}")
             rewritten[$commit]=$(
               export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
               GIT_AUTHOR_NAME=$(git log -1 --format=%an "$commit")

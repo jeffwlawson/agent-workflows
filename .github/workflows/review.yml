@@ -191,7 +191,8 @@ jobs:
   # else of the PR's: every non-test file is the merge-base's. What a test file
   # is, is the adopter's `red-check-test-globs`. On a PRD PR's slice round, the
   # PRD branch as it stood before that slice instead (#235), and the test files
-  # that slice adds or changes. Then `red-check-command`, which
+  # that slice adds or changes; on its final review, nothing, since each slice
+  # round's record is the evidence. Then `red-check-command`, which
   # writes a JUnit XML report, and each test in that report is classified:
   #
   #  - **red**: failed on an assertion, a JUnit `<failure>`, recorded with its
@@ -273,11 +274,17 @@ jobs:
       # slice range's base, and what that slice was built on. Read from the
       # history alone, since this job holds no token that reads the sub-issues,
       # which is the same answer wherever the chain builds the slices in order,
-      # as it does. The final review reads the whole PRD PR, so it keeps the
-      # merge-base, and is told apart by the mark the finishing run writes into
-      # the body, as the label event carried it. A PRD branch with no trailered
-      # commit keeps the merge-base too, the direction the review's own brief
-      # fails in where it cannot tell the slice.
+      # as it does. A PRD branch with no trailered commit keeps the merge-base,
+      # the direction the review's own brief fails in where it cannot tell the
+      # slice.
+      #
+      # **The final review runs nothing** (`final-review`): against the
+      # merge-base a later slice's test of an earlier slice's code fails to
+      # import, and reads as broken, so a merge-base run would tell the review
+      # that slice's change is uncovered when its own round found it red. The
+      # review reads each slice round's record instead. It is told apart by the
+      # mark the finishing run writes into the body, as the label event
+      # carried it.
       - name: Put the PR's test files over the merge-base
         id: place
         env:
@@ -306,6 +313,12 @@ jobs:
             exit 0
           fi
 
+          if [[ "$HEAD_REF" == agent/prd-* && "$PR_BODY" == *"$FINAL_REVIEW_MARK"* ]]; then
+            echo "The final review of a PRD PR: each slice's tests were run against the PRD branch as it stood before that slice, in that slice's round, so nothing is run here."
+            echo "status=final-review" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if ! base=$(git merge-base HEAD "refs/remotes/origin/${BASE_REF}"); then
             reason="${head} has no merge-base with ${BASE_REF}."
             echo "::error::${reason}"
@@ -316,7 +329,7 @@ jobs:
             exit 0
           fi
 
-          if [[ "$HEAD_REF" == agent/prd-* && "$PR_BODY" != *"$FINAL_REVIEW_MARK"* ]]; then
+          if [[ "$HEAD_REF" == agent/prd-* ]]; then
             slice=""
             slice_base=""
             declare -A started=()

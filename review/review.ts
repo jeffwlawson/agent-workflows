@@ -43,6 +43,7 @@ import {
   readRedCheck,
   redTestsRecord,
   renderRedCheck,
+  renderRedCheckForFinal,
   renderRedTestsBlock,
   withFailingFirst,
   type SliceRedTests,
@@ -380,7 +381,13 @@ try {
       ACCEPTANCE_CRITERIA: renderCriteriaForReview(criteria, context.prBody),
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
-      RED_CHECK: renderRedCheck(redCheck, headSha),
+      // The final review's red evidence is each slice round's record (#235),
+      // not a run of its own: against the merge-base a later slice's tests
+      // read as broken, and the job runs nothing on it.
+      RED_CHECK:
+        final && redCheck.kind !== "not-configured"
+          ? renderRedCheckForFinal(slicesRedTests)
+          : renderRedCheck(redCheck, headSha),
       HISTORY: describeHistory(history),
       OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
       SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),

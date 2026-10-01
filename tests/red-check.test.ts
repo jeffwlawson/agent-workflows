@@ -12,6 +12,7 @@ import {
   renderFailingFirst,
   renderFailingFirstBySlice,
   renderRedCheck,
+  renderRedCheckForFinal,
   renderRedTestsBlock,
   withFailingFirst,
   type RedCheck,
@@ -336,8 +337,15 @@ describe("the red check runs a slice round against the PRD branch as it stood be
     expect(fs.readFileSync(path.join(ran.temp, "red_check_source.txt"), "utf8")).toBe("src/scale.ts\n");
   });
 
-  it.skipIf(!CAN_RUN)("keeps the merge-base on the final review, which reads the whole PRD PR", () => {
-    const { root, mergeBase } = prdPullRequest();
+  /**
+   * Against the merge-base, slice two's test of slice one's code would fail to
+   * import and read as broken, telling the final review that slice two's change
+   * is uncovered when its own round found it red. So nothing runs, and the
+   * review reads each slice round's record instead.
+   */
+  it.skipIf(!CAN_RUN)("runs nothing on the final review, which reads each slice round's record", () => {
+    const { root } = prdPullRequest();
+    const before = git(root, "rev-parse", "HEAD");
 
     const ran = runStepIn(placeStep(), root, {
       ...PRD_PLACE,
@@ -345,9 +353,16 @@ describe("the red check runs a slice round against the PRD branch as it stood be
     });
 
     expect(ran.status, ran.stderr).toBe(0);
-    expect(ran.outputs).toMatchObject({ status: "ready", base: mergeBase });
+    expect(ran.outputs["status"]).toBe("final-review");
+    expect(ran.outputs["base"]).toBeUndefined();
     expect(ran.outputs["slice"]).toBeUndefined();
-    expect(read(root, "src/units.ts")).toBe("no units\n");
+    expect(git(root, "rev-parse", "HEAD")).toBe(before);
+    expect(read(root, "src/units.ts")).toBe("slice one's units\n");
+    expect(fs.readFileSync(path.join(ran.temp, "red_check_files.txt"), "utf8")).toBe("");
+
+    const report = classify("pytest.xml", { "${{ steps.place.outputs.status }}": "final-review" });
+
+    expect(report).toMatchObject({ status: "final-review", tests: [] });
   });
 
   it.skipIf(!CAN_RUN)("keeps the merge-base off a PRD branch, and on one with no slice trailer, saying so", () => {
@@ -795,7 +810,7 @@ describe("the review reads the red check's report as evidence", () => {
     const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
 
     expect(prompt).toContain("{{RED_CHECK}}");
-    expect(runner).toMatch(/RED_CHECK: renderRedCheck\(/);
+    expect(runner).toMatch(/RED_CHECK:[^,]*: renderRedCheck\(redCheck, headSha\)/);
     expect(prompt).toMatch(/\*\*A broken test is not red\*\*/);
     expect(prompt).toMatch(/no red test covers/);
   });
@@ -1039,6 +1054,34 @@ describe("a slice round's red check, and its record for the final review (#235)"
     expect(renderFailingFirstBySlice(undefined)).toContain("could not be read");
   });
 
+  /**
+   * The final review is briefed from each slice round's record, not a
+   * merge-base run, and told a red test there covers that slice's changes.
+   */
+  it("briefs the final review with each slice's record as its red evidence", () => {
+    const seen = renderRedCheckForFinal([
+      { subIssue: 231, record: { known: true, red: [{ name: "test_a", classname: "tests.a" }], more: 2 } },
+      { subIssue: 232, record: { known: true, red: [], more: 0 } },
+      { subIssue: 233, record: { known: false, red: [], more: 0 } },
+      { subIssue: 234, record: undefined },
+    ]);
+
+    expect(seen).toContain("**This is a PRD PR's final review, so the red check ran nothing here.**");
+    expect(seen).toContain("it is the red evidence for that slice's changes");
+    expect(seen).toContain("- #231: **red** (3):\n  - `test_a` (`tests.a`)\n  - And 2 more, not named in the record.");
+    expect(seen).toContain("- #232: **none red**.");
+    expect(seen).toContain("- #233: **unknown**. Its red check came back with no test results.");
+    expect(seen).toContain("- #234: **unknown**. No review of this slice recorded");
+    expect(seen).toContain("raise no finding on the strength of the missing record");
+    expect(seen).not.toMatch(/Broken against|Red against the merge-base/);
+
+    const unread = renderRedCheckForFinal(undefined);
+
+    expect(unread).toContain("**The PRD branch's history could not be read**");
+    expect(unread).toContain("**Which tests are red is unknown.**");
+    expect(renderRedCheckForFinal([])).toContain("No slice has landed");
+  });
+
   it("is what a slice round records in its review, and what the final review lists", () => {
     const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
 
@@ -1046,5 +1089,6 @@ describe("a slice round's red check, and its record for the final review (#235)"
     expect(runner).toMatch(/redTestsBlock: renderRedTestsBlock\(redTests\)/);
     expect(runner).toMatch(/slicesRedTests = sliceRedTests\(reviews, prdBranch\.ranges\)/);
     expect(runner).toMatch(/redTests: \{ slices: slicesRedTests \}/);
+    expect(runner).toMatch(/final && redCheck\.kind !== "not-configured"\s*\? renderRedCheckForFinal\(slicesRedTests\)/);
   });
 });

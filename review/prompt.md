@@ -207,8 +207,9 @@ says nothing about a red one leaves the reader with a verdict and no diagnosis.
 The **red check**, where the repository configures it, runs the tests this pull request adds or
 changes against the code as it was **before** the change (the merge-base, with every non-test file
 as it was there; on a PRD PR's slice round, the PRD branch as it stood before this slice, so the
-tests and the non-test files it reports are this slice's alone), and reports each test as one of
-three things:
+tests and the non-test files it reports are this slice's alone; on a PRD PR's final review, nothing,
+and each slice round's record is the evidence for that slice's changes), and reports each test as
+one of three things:
 
 - **red**: it failed there on an assertion. That is evidence it catches the behaviour this pull
   request changes, and the assertion it failed on is shown with it.

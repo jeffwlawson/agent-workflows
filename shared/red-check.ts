@@ -159,6 +159,7 @@ const NOT_RUN: Readonly<Record<string, string>> = {
   "no-report": "the test command wrote no JUnit report",
   "unreadable-report": "the JUnit report the test command wrote could not be parsed",
   failed: "the job failed before it could say what it ran",
+  "final-review": "this is a PRD PR's final review, which reads each slice round's red check instead",
 };
 
 const UNKNOWN =
@@ -309,6 +310,49 @@ export const renderRedCheck = (check: RedCheck, reviewedHead: string): string =>
     case "ran":
       return renderRan(check.report, reviewedHead);
   }
+};
+
+/**
+ * The red check's evidence as a PRD PR's final review is given it (#235): each
+ * slice round's record, not a run of its own. Against the merge-base a later
+ * slice's test of an earlier slice's code fails to import, and reads as
+ * broken, so the job runs nothing on the final review, and each slice's
+ * behaviour is held to the red check its own round ran against the PRD branch
+ * as it stood before it. `slices` is undefined where the PRD branch could not
+ * be read, which leaves every slice unknown.
+ */
+export const renderRedCheckForFinal = (slices: readonly SliceRedTests[] | undefined): string => {
+  const intro =
+    "**This is a PRD PR's final review, so the red check ran nothing here.** Each slice's tests were run in that slice's own round, against the PRD branch as it stood before the slice, where a test of an earlier slice's code can import it. Against the merge-base such a test reads as broken, so no merge-base run is evidence about a slice. What each slice round found is below, and it is the red evidence for that slice's changes: a test named red there covers the behaviour it exercises, whatever this review sees of it now.";
+  if (slices === undefined) {
+    return `${intro}
+
+**The PRD branch's history could not be read**, so no slice's record is known.
+
+${UNKNOWN}`;
+  }
+  if (slices.length === 0) return `${intro}
+
+No slice has landed, so there is no record to read.`;
+  const lines = slices.flatMap(({ subIssue, record }): string[] => {
+    if (record === undefined) {
+      return [`- #${subIssue}: **unknown**. No review of this slice recorded what its red check found.`];
+    }
+    if (!record.known) return [`- #${subIssue}: **unknown**. Its red check came back with no test results.`];
+    if (record.red.length === 0) {
+      return [`- #${subIssue}: **none red**. No test it adds or changes failed on an assertion before it.`];
+    }
+    return [
+      `- #${subIssue}: **red** (${record.red.length + record.more}):`,
+      ...record.red.map((test) => `  - ${describeTest({ ...test, result: "red" })}`),
+      ...(record.more > 0 ? [`  - And ${record.more} more, not named in the record.`] : []),
+    ];
+  });
+  return [
+    intro,
+    lines.join("\n"),
+    "Hold each slice's behaviour changes to its own line above. Where a slice's record is **unknown**, which tests are red for that slice is unknown: raise no finding on the strength of the missing record, take no claim of a red test on trust, and judge that slice's coverage from the tests in the diff yourself. Where it is **none red**, a behaviour change that slice makes is not covered by a red test.",
+  ].join("\n\n");
 };
 
 /** One line for the run's log. */

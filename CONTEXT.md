@@ -321,7 +321,8 @@ dropped (read off each slice round's record, by the commit it reviewed, through 
 where the red check is configured each slice's failing-first tests (#235), read off the same rounds,
 and the known issues, naming the follow-ups filed at merge. A slice round's red check runs against
 the PRD branch as it stood before that slice, its slice range's base, rather than the merge-base,
-so each slice's tests run on code holding every earlier slice. The same write removes the frame's
+so each slice's tests run on code holding every earlier slice; the final review runs none, and holds
+each slice's changes to that slice round's record. The same write removes the frame's
 **draft-only** note, between its own markers, so a PRD PR marked ready says nothing about being a
 draft.
 

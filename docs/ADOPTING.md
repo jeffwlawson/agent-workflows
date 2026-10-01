@@ -383,7 +383,8 @@ no event (§1), so an add on its own could be swallowed by a stale label; removi
 leaves nothing on the timeline. And a request made **while a run works** is not lost either: adding
 the label then fires nothing, since it is already on, so a review or a branch refresh that ends to
 find the pull request's head moved since it started, because somebody pushed, asks for itself
-again. `fix` does not: a second fix run would answer the threads this one answered, which stay open
+again, unless another trigger label is already on it: that is a run queued behind it, and a new
+request would cancel it before it could take its own label off. `fix` does not: a second fix run would answer the threads this one answered, which stay open
 until a review verifies them.
 
 **The cursor.** Each `implement-prd` run holds `agent:implement` on the parent while it builds and

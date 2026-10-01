@@ -630,7 +630,10 @@ jobs:
       # and the head has moved on from what it left (the merge it pushed, or
       # the head it found up to date), because somebody pushed, it asks for
       # its own step again: removed above, then added, with `AGENT_PAT` or not
-      # at all. Not on a failure, which is `agent:blocked` and a human's retry.
+      # at all. Not on a failure, which is `agent:blocked` and a human's retry,
+      # and not while another trigger label is on, since that is a queued run
+      # a request now would cancel and strand the label of; review's copy
+      # says why.
       - name: Always remove the trigger label
         if: always()
         env:
@@ -644,11 +647,15 @@ jobs:
           if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
             exit 0
           fi
-          live=$(gh pr view "$PR_NUMBER" --json state,headRefOid --jq '"\(.state) \(.headRefOid)"' 2>/dev/null || echo "")
-          if [ "${live%% *}" != "OPEN" ] || [ "${live#* }" = "$LEFT_SHA" ]; then
+          live=$(gh pr view "$PR_NUMBER" --json state,headRefOid,labels --jq '"\(.state) \(.headRefOid) \([.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")] | join(","))"' 2>/dev/null || echo "")
+          read -r state head busy <<< "$live"
+          if [ "$state" != "OPEN" ] || [ "$head" = "$LEFT_SHA" ]; then
             exit 0
           fi
-          head="${live#* }"
+          if [ -n "$busy" ]; then
+            echo "::notice::PR #${PR_NUMBER} moved on to ${head} while this run left ${LEFT_SHA}, but it carries ${busy}, so agent:update-branch was not asked for again: that run is queued, and a new one would cancel it and leave its label on with no run behind it. Add agent:update-branch by hand once ${busy} is off, if the new head still needs it."
+            exit 0
+          fi
           if [ "$HAS_PAT" != "true" ]; then
             echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run left ${LEFT_SHA}, but AGENT_PAT is not set, so agent:update-branch was not asked for again: a label added with GITHUB_TOKEN starts nothing. Add agent:update-branch by hand to refresh the new head."
             gh pr comment "$PR_NUMBER" --body "This PR moved on to \`${head}\` while \`agent:update-branch\` worked on \`${LEFT_SHA}\`. No refresh of the new head will start on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Add \`agent:update-branch\` by hand to refresh it." \

@@ -146,6 +146,16 @@ export const TRIGGER_LABELS: readonly LabelSpec[] = [
  */
 export const RETIRED_LABELS: readonly string[] = ["agent:in-progress", "agent:auto-fixed", "agent:queued"];
 
+/**
+ * `labelCommand` with `--force`, which creates the label or, where it exists,
+ * sets its colour and description. The fallback `init` names where it could
+ * not list the labels, which is the case it cannot tell a fresh install from an
+ * old one: a plain `gh label create` fails on a label that exists and
+ * recolours nothing. Joined with `; ` rather than `&&` so one refusal does not
+ * stop the rest.
+ */
+export const labelConvergeCommand = (label: LabelSpec): string => `${labelCommand(label)} --force`;
+
 /** The one command that deletes a retired label, for `doctor`'s fix and `init`'s note. */
 export const labelDeleteCommand = (name: string): string => `gh label delete "${name}" --yes`;
 
@@ -495,7 +505,7 @@ const convergeLabels = (workflows: readonly string[], github: LabelSurface): rea
         action: "kept",
         note:
           `could not list this repository's labels, so none was created or recoloured; ` +
-          `run ${wanted.map(labelCommand).join(" && ")}`,
+          `run ${wanted.map(labelConvergeCommand).join("; ")}`,
       },
     ];
   }

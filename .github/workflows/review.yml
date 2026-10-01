@@ -1535,6 +1535,14 @@ jobs:
       # `agent:blocked` and a human's retry, and never a cycle: nothing in the
       # loop pushes to a pull request while its review runs, since every run
       # that pushes shares this job's concurrency group.
+      #
+      # **Not while another trigger label is on.** That label is a run queued
+      # in this pull request's concurrency group, whose waiting slot holds one
+      # run: a request now would cancel it, and a run cancelled while pending
+      # never reaches its own last step, so its label would stay on with
+      # nothing behind it, and the PRD merge would refuse the PR as busy. The
+      # queued run sees the new head anyway, and a fix or a refresh asks for
+      # the review of what it pushed.
       - name: Always remove the trigger label
         if: always()
         env:
@@ -1548,11 +1556,15 @@ jobs:
           if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
             exit 0
           fi
-          live=$(gh pr view "$PR_NUMBER" --json state,headRefOid --jq '"\(.state) \(.headRefOid)"' 2>/dev/null || echo "")
-          if [ "${live%% *}" != "OPEN" ] || [ "${live#* }" = "$LEFT_SHA" ]; then
+          live=$(gh pr view "$PR_NUMBER" --json state,headRefOid,labels --jq '"\(.state) \(.headRefOid) \([.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")] | join(","))"' 2>/dev/null || echo "")
+          read -r state head busy <<< "$live"
+          if [ "$state" != "OPEN" ] || [ "$head" = "$LEFT_SHA" ]; then
             exit 0
           fi
-          head="${live#* }"
+          if [ -n "$busy" ]; then
+            echo "::notice::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, but it carries ${busy}, so agent:review was not asked for again: that run is queued, and a new one would cancel it and leave its label on with no run behind it. Add agent:review by hand once ${busy} is off, if the new head still needs it."
+            exit 0
+          fi
           if [ "$HAS_PAT" != "true" ]; then
             echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, but AGENT_PAT is not set, so agent:review was not asked for again: a label added with GITHUB_TOKEN starts nothing. Add agent:review by hand to review the new head."
             gh pr comment "$PR_NUMBER" --body "This PR moved on to \`${head}\` while its review of \`${LEFT_SHA}\` ran. No review of the new head will start on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Add \`agent:review\` by hand to review it." \

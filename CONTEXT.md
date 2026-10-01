@@ -44,7 +44,8 @@ makes `agent:implement` on only during each build run; the advance job puts it b
 follow from GitHub firing no event for a label already there. The loop adds a trigger label by
 **removing it first**, so a stale one cannot swallow the request. And a request made **while a run
 works** is not lost: a review or a branch refresh that ends to find the head moved since it
-started, because somebody pushed, asks for its own step again. `fix` does not, since a second fix
+started, because somebody pushed, asks for its own step again, unless another trigger label is
+on it: that is a run queued behind it, which a new request would cancel and strand. `fix` does not, since a second fix
 run would answer the threads it answered. There is no lifetime "in progress" label on an issue:
 an open issue with a linked pull request, a draft, and `agent:blocked` already give that view.
 

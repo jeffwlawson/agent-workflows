@@ -1211,7 +1211,11 @@ describe("init converges the labels the loop owns", () => {
 
     const kept = changes.find((c) => c.file === "labels");
     expect(kept?.action).toBe("kept");
-    for (const label of OWNED) expect(kept?.note).toContain(labelCommand(label));
+    // `--force`, so a label that exists is recoloured rather than refused, and
+    // `; `, so one that fails does not stop the rest.
+    for (const label of OWNED) expect(kept?.note).toContain(`${labelCommand(label)} --force`);
+    expect(kept?.note).not.toContain("&&");
+    expect(kept?.note?.split("; gh label create")).toHaveLength(OWNED.length);
   });
 
   it("names a refused write with the command that would make it", async () => {

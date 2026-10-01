@@ -2057,7 +2057,7 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     );
     expect(rerequests.map((s) => s.name)).toEqual(["Always remove the trigger label"]);
     const run = rerequests[0]?.run ?? "";
-    expect(run.indexOf('[ "${live#* }" = "$LEFT_SHA" ]')).toBeLessThan(run.indexOf('--add-label "agent:review"'));
+    expect(run.indexOf('[ "$head" = "$LEFT_SHA" ]')).toBeLessThan(run.indexOf('--add-label "agent:review"'));
     expect(rerequests[0]?.env?.["LEFT_SHA"]).toBe("${{ steps.state.outputs.sha }}");
     expect(jobOf(REVIEW).concurrency?.group).toBe("agent-pr-${{ github.event.pull_request.number }}");
     expect(startStep()).toBeDefined();
@@ -5192,7 +5192,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   it("removes agent:implement from the parent however the run ends", () => {
     const last = stepsOf(PRD).at(-1);
 
-    expect(last?.if).toBe("always() && steps.preflight.outputs.refused != 'true'");
+    expect(last?.if).toBe("always() && steps.preflight.outputs.refused == 'false'");
     expect(last?.run ?? "").toContain('--remove-label "agent:implement"');
   });
 });
@@ -7175,8 +7175,8 @@ describe("an implement run links itself on the issue when it starts", () => {
  */
 describe("a trigger label is on while its run works, and off when it ends", () => {
   const TRIGGERED: readonly (readonly [string, string, string])[] = [
-    ["implement.yml", "agent:implement", "always() && steps.preflight.outputs.refused != 'true'"],
-    ["implement-prd.yml", "agent:implement", "always() && steps.preflight.outputs.refused != 'true'"],
+    ["implement.yml", "agent:implement", "always() && steps.preflight.outputs.refused == 'false'"],
+    ["implement-prd.yml", "agent:implement", "always() && steps.preflight.outputs.refused == 'false'"],
     ["review.yml", "agent:review", "always()"],
     ["fix.yml", "agent:fix", "always()"],
     ["update-branch.yml", "agent:update-branch", "always()"],
@@ -7198,9 +7198,10 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   /**
    * The last step, so every failure arm above it has run: `agent:blocked` and
    * the comment go on first, and the label comes off whatever happened. Gated
-   * on `always()` and nothing that a dying step could leave unset; the
-   * implement pair keep the deferral out, since the other workflow owns that
-   * label event and its run holds the label.
+   * on `always()`; the implement pair also on a preflight that decided the
+   * issue was this run's, since a deferral, or a preflight that died before it
+   * could defer, may be the sibling's event, and the sibling's run holds the
+   * label.
    */
   it.each(TRIGGERED)("%s: takes %s off in its last step, however the run ends", (name, label, guard) => {
     const last = stepsOf(fileOf(name)).at(-1);
@@ -7274,11 +7275,16 @@ describe("a trigger label is on while its run works, and off when it ends", () =
     expect(last?.env?.["REQUEST_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
     expect(add).toBeGreaterThan(0);
     const gate = run.indexOf('if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then');
-    const moved = run.indexOf('if [ "${live%% *}" != "OPEN" ] || [ "${live#* }" = "$LEFT_SHA" ]; then');
+    const moved = run.indexOf('if [ "$state" != "OPEN" ] || [ "$head" = "$LEFT_SHA" ]; then');
+    // Another trigger label is a run queued behind this one, and a request
+    // would cancel it and strand its label.
+    const busy = run.indexOf('if [ -n "$busy" ]; then');
     const noPat = run.indexOf('if [ "$HAS_PAT" != "true" ]; then');
     expect(gate).toBeGreaterThan(0);
     expect(moved).toBeGreaterThan(gate);
-    expect(noPat).toBeGreaterThan(moved);
+    expect(run).toContain('select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")');
+    expect(busy).toBeGreaterThan(moved);
+    expect(noPat).toBeGreaterThan(busy);
     expect(add).toBeGreaterThan(noPat);
     // Without the PAT the add would start nothing, so it is said instead.
     const arm = run.slice(noPat, run.indexOf("\n          fi", noPat));

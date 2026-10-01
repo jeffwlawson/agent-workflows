@@ -47,7 +47,7 @@ const PUSHED = "2222222222222222222222222222222222222222";
 interface Scenario {
   readonly status?: "success" | "failure" | "cancelled";
   readonly proceeded?: string;
-  /** What `gh pr view --json state,headRefOid --jq …` prints, as the step's jq would. */
+  /** What `gh pr view --json state,headRefOid,labels --jq …` prints: state, head and the trigger labels on it, comma-joined. */
   readonly live?: string;
   readonly pat?: boolean;
 }
@@ -129,6 +129,24 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
         outcome.gh.indexOf(adds[0] ?? ""),
       );
     });
+
+    /**
+     * Another trigger label is a run queued in the same concurrency group, and
+     * a request now would cancel it while pending, before its own last step
+     * could take its label off.
+     */
+    it.each(["agent:fix", "agent:update-branch", "agent:review"])(
+      "asks for nothing, and leaves a queued run alone, where %s is on",
+      (other) => {
+        const outcome = run(command, { live: `OPEN ${PUSHED} ${other}` });
+
+        expect(outcome.status).toBe(0);
+        expect(outcome.gh).toEqual([
+          `workflow-token pr edit 152 --remove-label ${label}`,
+          expect.stringContaining("pr view 152"),
+        ]);
+      },
+    );
 
     it("asks for nothing where the head is still the one it left", () => {
       const outcome = run(command, { live: `OPEN ${REVIEWED}` });

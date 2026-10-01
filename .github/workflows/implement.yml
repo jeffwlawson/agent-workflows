@@ -183,8 +183,8 @@ jobs:
           # proceeds when an API call comes back empty, on the grounds that a
           # blip is not evidence; this one is the exception, because "no answer"
           # read as "standalone" is exactly the isolated sub-issue run the guard
-          # exists to prevent. A failed query fails the step, and the run is
-          # visibly red; the last step still takes the trigger label off.
+          # exists to prevent. A failed query fails the step, which leaves the
+          # trigger label in place and the run visibly red.
           issue=$(gh api graphql \
             -f owner="${GH_REPO%/*}" -f name="${GH_REPO#*/}" -F number="$ISSUE_NUMBER" \
             -f query='
@@ -523,9 +523,9 @@ jobs:
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           # "Re-apply", not "re-add", and the removal clause stays. The last
-          # step takes the label off on every path since #236, this one's
-          # included, but that removal is `|| true`, and where it failed the
-          # label is still attached: adding a label that is already present
+          # step takes the label off since #236, but not after a preflight
+          # that died before deciding, and its removal is `|| true`: on either
+          # path the label is still attached, and adding a label that is already present
           # fires no `labeled` event (docs/ADOPTING.md §1), so a literal
           # "re-add" would be inert there. One wording is correct on both paths.
           printf '`agent:implement` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-apply `agent:implement` to retry. If it is still attached, remove it first, since adding a label that is already present fires no event.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
@@ -533,11 +533,13 @@ jobs:
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
 
       # The trigger label comes off however the run ends (#236): success,
-      # failure, timeout or cancel, and a preflight that died before deciding,
-      # so it never outlives the run. `!= 'true'` for the reason the failure
-      # step above gives. A refusal took it off already, and a deferral must
-      # not touch it: `agent-implement-prd` owns that label event, and the
-      # label is its run's while it works.
+      # failure, timeout or cancel, so it never outlives the run that decided
+      # the issue was its own. `== 'false'`, unlike the failure step above: a
+      # refusal took it off already, a deferral must not touch it, and nor
+      # must a preflight that died before deciding, since that run may be the
+      # one that would have deferred, and `agent-implement-prd` owns that label event
+      # and holds the label while it works. Such a run leaves it on, as it
+      # always has, and the failure comment says to remove it before re-adding.
       - name: Always remove the trigger label
-        if: always() && steps.preflight.outputs.refused != 'true'
+        if: always() && steps.preflight.outputs.refused == 'false'
         run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true

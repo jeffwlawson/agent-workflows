@@ -50,6 +50,11 @@ name: Agent Implement PRD (reusable)
 # the ways on, and that includes a human re-adding `agent:implement` to a
 # parked chain: the label is never the gate.
 #
+# Before it builds, the run merges the default branch into the PRD branch
+# wherever it has moved, and never rebases: a conflict parks the chain and
+# names `agent:update-branch` (#245, `Merge the default branch into the PRD
+# branch` below).
+#
 # After the last slice, a **finishing run** builds nothing and runs no model.
 # With one slice landed, its round was the review of the whole PRD PR, so it
 # marks the PRD PR ready. With more than one, it records that the final review
@@ -604,12 +609,110 @@ jobs:
             echo "Created $PRD_BRANCH from ${BASE_REF}; building sub-issue #${SUB} on it, and it is pushed with this slice."
           fi
 
+      # **Keeping up with the default branch** (#245). Before a slice is built,
+      # the default branch is merged into the PRD branch wherever it has moved
+      # since the two last met, so a change made there mid-chain, CI's own
+      # workflow included, reaches the next slice's round with no hand steps
+      # (#211). GitHub runs no `pull_request` CI on a PR with conflicts, so a
+      # conflict found here, a slice at a time, is one found before it can
+      # strand every later slice on 🔵.
+      #
+      # A **merge**, never a rebase, and the push is plain, never forced:
+      # verdicts are commit statuses and review threads are pinned to commits,
+      # so rewriting the PRD branch orphans both.
+      #
+      # A clean merge is pushed **here, before the runner starts**. It is then
+      # on the remote, so `Mark the slice's commits` leaves it untrailered, and
+      # it lands before the slice's first trailered commit: outside every slice
+      # range (`shared/slice-ranges.ts`), so no slice round reviews it.
+      #
+      # A conflict is aborted, builds nothing and pushes nothing, and parks the
+      # chain with a refusal naming `agent:update-branch` on the PRD PR, whose
+      # agent resolves it and asks for a re-review: a round of the slice
+      # already built, whose approval moves the chain on as any other. Not a
+      # failure, so it exits 0, and every step after this one stands down on
+      # `parked`.
+      - name: Merge the default branch into the PRD branch
+        id: catch_up
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true'
+        env:
+          PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
+          EXISTS: ${{ steps.preflight.outputs.prd_branch_exists }}
+          PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
+          SUB: ${{ steps.preflight.outputs.sub }}
+        run: |
+          set -euo pipefail
+
+          block() {
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "::error::$1"
+            exit 1
+          }
+
+          # A PRD branch this run just cut from the default branch is the
+          # default branch, and is pushed with its first slice: pushing it
+          # here, with a merge on it and no slice, would publish a PRD branch
+          # nothing was built on.
+          if [ "$EXISTS" != "true" ]; then
+            echo "\`${PRD_BRANCH}\` was cut from \`${BASE_REF}\` by this run; nothing to merge."
+            exit 0
+          fi
+
+          git fetch origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
+            || block "Couldn't fetch \`${BASE_REF}\` to bring the PRD branch up to date with it, so nothing was built."
+          if git merge-base --is-ancestor "refs/remotes/origin/${BASE_REF}" HEAD; then
+            echo "\`${PRD_BRANCH}\` already has everything on \`${BASE_REF}\`; nothing to merge."
+            exit 0
+          fi
+
+          if ! git merge --no-ff --no-edit -m "Merge ${BASE_REF} into ${PRD_BRANCH}" "refs/remotes/origin/${BASE_REF}"; then
+            conflicts=$(git diff --name-only --diff-filter=U | sed 's/.*/`&`/' | paste -sd ',' - | sed 's/,/, /g')
+            git merge --abort || true
+            # A merge that stopped on no conflict is git refusing for some
+            # other reason, which is a failure, not this refusal.
+            if [ -z "$conflicts" ]; then
+              block "Couldn't merge \`${BASE_REF}\` into \`${PRD_BRANCH}\`, and not because of a conflict, so nothing was built. Git's reply is in the workflow run's log."
+            fi
+            if [ -n "$PRD_PR" ]; then
+              way="Add \`agent:update-branch\` to PRD PR #${PRD_PR} to merge it there and resolve the conflict. The chain moves on once a review of the resolution recommends approval."
+            else
+              way="Merge \`${BASE_REF}\` into \`${PRD_BRANCH}\` and resolve the conflict by hand, then add \`agent:implement\` again."
+            fi
+            # A refusal's order, as in the preflight: the comment first, then
+            # this run's own label off. No `agent:blocked`: the way on is a
+            # label on the PRD PR, and the chain moves on by itself after it.
+            echo "parked=true" >> "$GITHUB_OUTPUT"
+            gh issue comment "$ISSUE_NUMBER" --body "**\`agent:implement\` didn't run:** The default branch \`${BASE_REF}\` has changed since the PRD branch last took it in, and merging it into \`${PRD_BRANCH}\` conflicts in ${conflicts}. The chain parked before sub-issue #${SUB}, and nothing was built or pushed. ${way}" \
+              || echo "::warning::Could not post the conflict comment on #${ISSUE_NUMBER}."
+            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+            exit 0
+          fi
+
+          # A merge that brings in a change to a workflow file is a push
+          # GitHub rejects from a token without Workflows: write, the
+          # `GITHUB_TOKEN` fallback included, and a retry fails the same way.
+          # So that cause is named wherever the merge carries one: telling the
+          # human only to retry is a loop that cannot end.
+          if ! git push origin "$PRD_BRANCH"; then
+            workflows=$(git diff --name-only HEAD^1 HEAD -- .github/workflows | sed 's/.*/`&`/' | paste -sd ',' - | sed 's/,/, /g')
+            if [ -n "$workflows" ]; then
+              block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. The merge changes ${workflows}, and GitHub refuses a push that changes a workflow file from a token without Workflows: write, so trying again fails the same way until \`AGENT_PAT\` is set with Workflows: write. If it is, something else may have moved the PRD branch; trying again merges on top of it."
+            fi
+            block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. Something else may have moved the PRD branch; trying again merges on top of it."
+          fi
+          # The remote-tracking ref is what `Mark the slice's commits` reads
+          # "already published" off, so it is moved to the merge explicitly
+          # rather than trusted to the push's refspec.
+          git update-ref "refs/remotes/origin/${PRD_BRANCH}" HEAD
+          echo "merged=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Merged \`${BASE_REF}\` into \`${PRD_BRANCH}\` at $(git rev-parse --short HEAD), before building sub-issue #${SUB}."
+
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
       # agent's own runtime, and every runner image already has the Node it
       # needs for it.
       - name: Setup Node.js
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && inputs.node-version-file != ''
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && inputs.node-version-file != ''
         uses: actions/setup-node@v7
         with:
           node-version-file: ${{ inputs.node-version-file }}
@@ -620,12 +723,12 @@ jobs:
       # from: a literal in a workflow file, never an expression reading the
       # issue event.
       - name: Install dependencies
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && inputs.setup != ''
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && inputs.setup != ''
         run: |
           ${{ inputs.setup }}
 
       - name: Install Claude Code
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true'
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true'
         run: npm install -g @anthropic-ai/claude-code
 
       # The runner package lives on GitHub Packages, which has no anonymous
@@ -636,7 +739,7 @@ jobs:
       # cache opt-out belongs to the same note: this half declares no toolchain,
       # so it must not infer one.
       - name: Authenticate to GitHub Packages
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true'
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true'
         uses: actions/setup-node@v7
         with:
           registry-url: https://npm.pkg.github.com
@@ -644,7 +747,7 @@ jobs:
           package-manager-cache: false
 
       - name: Run implementation agent
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true'
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -692,7 +795,7 @@ jobs:
       # parser, which reads the message's last paragraph, never sees it.
       - name: Mark the slice's commits
         id: trailer
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && success()
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && success()
         env:
           SUB: ${{ steps.preflight.outputs.sub }}
         run: |
@@ -735,7 +838,7 @@ jobs:
       # slice is then built again on top of that by the retry.
       - name: Push the PRD branch
         id: push
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && success()
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && success()
         env:
           PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
         run: |
@@ -764,7 +867,7 @@ jobs:
       # exactly the work it contains, and nothing closes before that. A
       # maintainer's notes outside the blocks survive every run.
       - name: Open or reuse the PRD PR
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && success()
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && steps.catch_up.outputs.parked != 'true' && success()
         id: prd_pr
         env:
           PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
@@ -833,7 +936,7 @@ jobs:
       # for review. So it fails into `Mark blocked on failure`, whose comment
       # names the PRD PR to label by hand.
       - name: Request review
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && success()
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && steps.catch_up.outputs.parked != 'true' && success()
         env:
           PRD_PR: ${{ steps.prd_pr.outputs.number }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
@@ -959,6 +1062,7 @@ jobs:
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
           SUB: ${{ steps.preflight.outputs.sub }}
           PUSHED: ${{ steps.push.outputs.head }}
+          MERGED: ${{ steps.catch_up.outputs.merged }}
           PRD_PR: ${{ steps.prd_pr.outputs.number || steps.preflight.outputs.prd_pr }}
           FINISHING: ${{ steps.preflight.outputs.finishing }}
         run: |
@@ -1013,6 +1117,15 @@ jobs:
           # the review, so say where to ask for it. With no PRD PR open yet,
           # the retry is still the remedy: it opens one and asks for the
           # review, and builds nothing.
+          #
+          # Nor once the default branch is merged in and pushed, with the
+          # slice not: the PRD PR's head is then that merge, which no review
+          # has seen, so the gate refuses the retry too. Its review is the way
+          # on, a round of the slice already built, whose approval moves the
+          # chain on by itself.
+          if [ -z "${PUSHED}" ] && [ -n "${MERGED}" ] && [ -n "${PRD_PR}" ]; then
+            retry="The default branch \`${BASE_REF}\` was merged into the PRD branch before it stopped, and that merge has no review yet, so adding \`agent:implement\` would be refused. Add \`agent:review\` to PRD PR #${PRD_PR}; the chain moves on once it recommends approval."
+          fi
           if [ -n "${PUSHED}" ]; then
             if [ -n "${PRD_PR}" ]; then
               retry="Sub-issue #${SUB} was built and pushed to the PRD branch before it stopped, so it won't be built again. Add \`agent:review\` to PRD PR #${PRD_PR} if it doesn't have it."

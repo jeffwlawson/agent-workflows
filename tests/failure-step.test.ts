@@ -350,3 +350,30 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
     },
   );
 });
+
+/**
+ * An `implement-prd` run that merged the default branch into the PRD branch
+ * and pushed it (#245), then stopped before its slice was pushed. The PRD PR's
+ * head is that merge, which no review has seen, so the gate would refuse a
+ * re-added `agent:implement`. The way on it names is the review.
+ */
+describe.skipIf(!CAN_RUN)("implement-prd's failure step after the default branch was merged in", () => {
+  const prd = CASES.find((c) => c.command === "implement-prd") as Case;
+  const merged = { SUB: "245", BASE_REF: "main", PRD_PR: "286", MERGED: "0123456789abcdef" };
+
+  it("names the review on the PRD PR as the way on, not the label", () => {
+    const outcome = run(prd, "failure", 120, "30", "false", undefined, merged);
+
+    expect(outcome.comment).toContain("It was building sub-issue #245.");
+    expect(outcome.comment).toContain(
+      "The default branch `main` was merged into the PRD branch before it stopped, and that merge has no review yet, so adding `agent:implement` would be refused. Add `agent:review` to PRD PR #286",
+    );
+  });
+
+  it("says the slice was pushed, where it was, whatever was merged before it", () => {
+    const outcome = run(prd, "failure", 120, "30", "false", undefined, { ...merged, PUSHED: "fedcba9876543210" });
+
+    expect(outcome.comment).toContain("Sub-issue #245 was built and pushed to the PRD branch before it stopped");
+    expect(outcome.comment).not.toContain("was merged into the PRD branch");
+  });
+});

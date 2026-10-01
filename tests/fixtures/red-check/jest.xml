@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="1" failures="1" errors="0" time="0.5">
+  <testsuite name="scale" errors="0" failures="1" skipped="0" timestamp="2026-09-30T10:00:00" time="0.2" tests="1">
+    <testcase classname="scale doubles a serving" name="scale doubles a serving" time="0.003" file="tests/scale.test.js">
+      <failure>Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 4
+Received: 2
+    at Object.toBe (tests/scale.test.js:5:24)</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -81,6 +81,39 @@ on:
           exactly this quietly.
         required: true
         type: string
+      # The red check (#231, PRD #212): the `red-check` job below runs the
+      # tests a pull request adds or changes against the code as it was before
+      # the change, and reports which of them fail there. Off unless
+      # configured: with `red-check-command` empty, the default, the job is
+      # skipped and the review runs as it did before. The other two must be set
+      # with it, and the job says so where one is missing.
+      red-check-command:
+        description: >-
+          The command that runs the tests for the red check and writes a JUnit
+          XML report, such as `npx vitest run --reporter=junit
+          --outputFile=junit.xml` or `pytest --junitxml=junit.xml`. Empty, the
+          default, turns the red check off. It runs on the merge-base's source
+          with the pull request's test files put over it, in a job holding no
+          secrets. The test files are in `RED_CHECK_FILES`, one a line, for a
+          command that runs only those. Like `setup`, this is a *command*:
+          pass a literal from your workflow file, never an expression that
+          reads the event.
+        type: string
+        default: ""
+      red-check-report:
+        description: >-
+          Where `red-check-command` writes its JUnit XML report, relative to the
+          repository root.
+        type: string
+        default: ""
+      red-check-test-globs:
+        description: >-
+          Globs that tell test files from source files, one a line, matched
+          the way `.gitignore` matches (`tests/**`, `**/*.test.ts`). The test
+          files a pull request adds or changes are put over the merge-base;
+          every other file comes from the merge-base.
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: OAuth token the review agent runs under.
@@ -145,15 +178,312 @@ jobs:
             echo "refused=${refused}"
           } >> "$GITHUB_OUTPUT"
 
+  # The red check (#231, PRD #212): the tests a pull request adds or changes,
+  # run against the code as it was **before** the change, so the review can
+  # check that a fix is covered by a test that was red rather than take the PR's
+  # word for it. Off unless `red-check-command` is set.
+  #
+  # **What it runs on.** The merge-base of the pull request's head and its base
+  # branch, with the test files the PR adds or changes put over it, and nothing
+  # else of the PR's: every non-test file is the merge-base's. What a test file
+  # is, is the adopter's `red-check-test-globs`. Then `red-check-command`, which
+  # writes a JUnit XML report, and each test in that report is classified:
+  #
+  #  - **red**: failed on an assertion, a JUnit `<failure>`, recorded with its
+  #    message. The evidence the check exists for: this test catches the
+  #    behaviour the PR changed.
+  #  - **broken**: failed on collection, import or setup, a JUnit `<error>`. A
+  #    test that cannot import the function it tests fails against the
+  #    merge-base too, and proves nothing about the behaviour.
+  #  - **passed**.
+  #
+  # JUnit is the contract because that one distinction holds across languages:
+  # pytest's `--junitxml`, and the vitest and jest JUnit reporters, each write
+  # an assertion as `<failure>` and a collection or import error as `<error>`.
+  #
+  # **It runs the pull request's code**, so it carries the review's fork guard,
+  # holds **no secret** and only `contents: read`, and checks out without
+  # persisting the token. Nothing it produces is trusted beyond its report, the
+  # `agent-red-check` artifact: no job reads its outputs, and the report is
+  # evidence for the review, read as data. Its own label guard too, so it runs
+  # only where the review does.
+  #
+  # **And it never stops the review.** The review `needs:` it so the report is
+  # there to read, but runs whether this job was skipped, failed or timed out,
+  # and the CI wait excludes its check run, so it never feeds `ci_result`.
+  red-check:
+    if: >-
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      inputs.red-check-command != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref || inputs.default-branch }}
+    steps:
+      # `fetch-depth: 0` brings every branch with it, so the base branch is
+      # there for the merge-base without a second, authenticated fetch. And
+      # `persist-credentials: false`, so the token this checkout used is not
+      # left in `.git/config` for the tests below to read.
+      - name: Checkout PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The tree the tests run on. `status` is `ready` where there is
+      # something to run, and otherwise says why not, for the report.
+      #
+      # The globs are `:(glob)` pathspecs, so `**/` matches any depth as in a
+      # `.gitignore`. Renames are split, so a test file the PR moved counts as
+      # added. A name with a newline in it cannot be listed one a line, so it is
+      # dropped with a warning rather than being split in two. The files are
+      # put back from the head as literal paths: a file name is the PR's, and a
+      # `*` in one is not a pattern.
+      - name: Put the PR's test files over the merge-base
+        id: place
+        env:
+          REPORT_PATH: ${{ inputs.red-check-report }}
+          TEST_GLOBS: ${{ inputs.red-check-test-globs }}
+        run: |
+          set -euo pipefail
+          files="${RUNNER_TEMP}/red_check_files.txt"
+          : > "$files"
+          head=$(git rev-parse HEAD)
+          echo "head=${head}" >> "$GITHUB_OUTPUT"
+
+          missing=()
+          [ -n "$REPORT_PATH" ] || missing+=("\`red-check-report\`")
+          [ -n "$(printf '%s' "$TEST_GLOBS" | tr -d '[:space:]')" ] || missing+=("\`red-check-test-globs\`")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            reason="The red check is configured with \`red-check-command\` but not ${missing[*]}. Set them in the review caller's \`with:\` block."
+            echo "::error::${reason}"
+            {
+              echo "status=misconfigured"
+              echo "reason=${reason}"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! base=$(git merge-base HEAD "refs/remotes/origin/${BASE_REF}"); then
+            reason="${head} has no merge-base with ${BASE_REF}."
+            echo "::error::${reason}"
+            {
+              echo "status=no-merge-base"
+              echo "reason=${reason}"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
+
+          pathspecs=()
+          while IFS= read -r glob; do
+            glob="${glob#"${glob%%[![:space:]]*}"}"
+            glob="${glob%"${glob##*[![:space:]]}"}"
+            if [ -n "$glob" ]; then pathspecs+=(":(glob)${glob}"); fi
+          done <<< "$TEST_GLOBS"
+
+          placed=()
+          while IFS= read -r -d '' file; do
+            if [[ "$file" == *$'\n'* ]]; then
+              echo "::warning::Skipped a test file whose name has a line break in it."
+              continue
+            fi
+            placed+=("$file")
+          done < <(git diff -z --name-only --no-renames --diff-filter=AM "$base" "$head" -- "${pathspecs[@]}")
+
+          if [ "${#placed[@]}" -eq 0 ]; then
+            echo "This PR adds or changes no test file, so there is nothing to run against the merge-base."
+            echo "status=no-test-files" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout --quiet --detach "$base"
+          git --literal-pathspecs checkout "$head" -- "${placed[@]}"
+          printf '%s\n' "${placed[@]}" > "$files"
+          echo "Put ${#placed[@]} test file(s) from ${head} over the merge-base ${base}:"
+          printf '  %s\n' "${placed[@]}"
+          echo "status=ready" >> "$GITHUB_OUTPUT"
+
+      # The adopter's toolchain, as the review job sets it up, with one
+      # difference: no cache. This job runs the PR's code, and a cache it saved
+      # would be restored into every later run on the base branch, the review's
+      # included. So no `cache:`, and `package-manager-cache: false`, since
+      # `setup-node` caches by itself where `package.json` names a
+      # `packageManager`.
+      - name: Setup Node.js
+        if: steps.place.outputs.status == 'ready' && inputs.node-version-file != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: ${{ inputs.node-version-file }}
+          package-manager-cache: false
+
+      # The merge-base's dependencies, by the same command the review installs
+      # with. A literal from the caller's workflow file, as there.
+      - name: Install dependencies
+        id: setup
+        if: steps.place.outputs.status == 'ready' && inputs.setup != ''
+        run: |
+          ${{ inputs.setup }}
+
+      # The command reaches the shell through `env:`, so its exit code can be
+      # kept: a failing test is the result this job is looking for, not a
+      # failure of the job. A report left in the merge-base's tree is removed
+      # first, so one the command did not write is never read as its.
+      - name: Run the tests against the merge-base
+        id: run
+        if: steps.place.outputs.status == 'ready'
+        env:
+          RED_CHECK_COMMAND: ${{ inputs.red-check-command }}
+          REPORT_PATH: ${{ inputs.red-check-report }}
+        run: |
+          rm -f -- "$REPORT_PATH"
+          RED_CHECK_FILES="$(cat "${RUNNER_TEMP}/red_check_files.txt")"
+          export RED_CHECK_FILES
+          code=0
+          bash -e -c "$RED_CHECK_COMMAND" || code=$?
+          echo "The test command exited ${code}."
+          echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
+
+      # The report: `RUNNER_TEMP/red_check.json`, written whatever happened
+      # above, so the review can tell "no red test" from "the check did not
+      # run". `status` is `ran` where the JUnit report was read, and otherwise
+      # why it was not. A message is capped, since a test's output is the PR's
+      # to make as long as it likes.
+      - name: Classify each test as red, broken or passed
+        if: always()
+        shell: python
+        env:
+          STATUS: ${{ steps.place.outputs.status }}
+          REASON: ${{ steps.place.outputs.reason }}
+          BASE_SHA: ${{ steps.place.outputs.base }}
+          HEAD_SHA: ${{ steps.place.outputs.head }}
+          SETUP_OUTCOME: ${{ steps.setup.outcome }}
+          EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+          REPORT_PATH: ${{ inputs.red-check-report }}
+        run: |
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+
+          LIMIT = 2000
+          temp = os.environ["RUNNER_TEMP"]
+
+
+          def capped(text):
+              text = (text or "").strip()
+              return text if len(text) <= LIMIT else text[:LIMIT] + " [truncated]"
+
+
+          def message(element):
+              given = element.get("message") or ""
+              if given.strip():
+                  return capped(given)
+              body = (element.text or "").strip()
+              return capped(body.splitlines()[0] if body else "")
+
+
+          # An error outranks a failure: a test that could not be set up never
+          # reached the assertion it would have failed on.
+          def classify(case):
+              error = case.find("error")
+              failure = case.find("failure")
+              if error is not None:
+                  return "broken", message(error)
+              if failure is not None:
+                  return "red", message(failure)
+              if case.find("skipped") is not None:
+                  return "skipped", None
+              return "passed", None
+
+
+          status = os.environ.get("STATUS", "")
+          report = {
+              "status": status or "failed",
+              "base": os.environ.get("BASE_SHA") or None,
+              "head": os.environ.get("HEAD_SHA") or None,
+              "files": [],
+              "exitCode": None,
+              "tests": [],
+              "skipped": 0,
+          }
+          if os.environ.get("REASON"):
+              report["reason"] = os.environ["REASON"]
+
+          files = os.path.join(temp, "red_check_files.txt")
+          if os.path.exists(files):
+              with open(files, encoding="utf-8", errors="replace") as listed:
+                  report["files"] = [line for line in listed.read().splitlines() if line]
+
+          if status == "ready":
+              code = os.environ.get("EXIT_CODE", "")
+              report["exitCode"] = int(code) if code.isdigit() else None
+              path = os.environ.get("REPORT_PATH", "")
+              if os.environ.get("SETUP_OUTCOME") == "failure":
+                  report["status"] = "setup-failed"
+              elif report["exitCode"] is None:
+                  report["status"] = "not-run"
+              elif not os.path.isfile(path):
+                  report["status"] = "no-report"
+              else:
+                  try:
+                      root = ET.parse(path).getroot()
+                  except ET.ParseError as error:
+                      report["status"] = "unreadable-report"
+                      report["reason"] = capped(str(error))
+                  else:
+                      report["status"] = "ran"
+                      for case in root.iter("testcase"):
+                          result, said = classify(case)
+                          if result == "skipped":
+                              report["skipped"] += 1
+                              continue
+                          test = {"name": case.get("name", ""), "classname": case.get("classname", "")}
+                          if case.get("file"):
+                              test["file"] = case.get("file")
+                          test["result"] = result
+                          if said is not None:
+                              test["message"] = said
+                          report["tests"].append(test)
+
+          with open(os.path.join(temp, "red_check.json"), "w", encoding="utf-8") as out:
+              json.dump(report, out, indent=2)
+          counts = {}
+          for test in report["tests"]:
+              counts[test["result"]] = counts.get(test["result"], 0) + 1
+          print("Red check: " + report["status"] + ", " + json.dumps(counts) + ".")
+
+      # The report, for the review job to pick up. `always()`, because a run
+      # that could not place, install or run anything is still a report.
+      - name: Hand the report to the review
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-red-check
+          path: ${{ runner.temp }}/red_check.json
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
+
   review:
     # Two guards, both required:
     #  - the trigger label, and
     #  - same-repo head: a fork PR must never reach the checkout+npm ci steps,
     #    which would run untrusted code with secrets in scope.
     if: >-
+      !cancelled() &&
+      needs.time-limit.result == 'success' &&
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository
-    needs: [time-limit]
+    # `red-check` (#231) is a need so that its report exists before the review
+    # starts, and only for that: `!cancelled()` drops the implicit "every need
+    # succeeded", so a red check that was skipped, failed or timed out never
+    # stops the review. `time-limit` is still required to have succeeded, which
+    # is what that implicit check gave it.
+    needs: [time-limit, red-check]
     runs-on: ubuntu-latest
     # The sum `time-limit` made, which is the repository variable where it is set
     # and today's 20 where it is not. `needs` is among the contexts this key may
@@ -692,7 +1022,14 @@ jobs:
           # time this wait reads anything. Named all the same, for the reason
           # `post-review` is: under a renamed caller job it is `agent-review /
           # time-limit`, and a job that sums two numbers is not CI.
-          AGENT_CHECKS: '(^|/ )(review|time-limit|post-review|advance|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
+          #
+          # `red-check` (#231) also runs before this job, and is excluded for a
+          # stronger reason than a renamed caller: it is **never** CI. It runs
+          # the PR's tests against the merge-base, where a fix's new test is
+          # meant to fail, so its check run reading red is the check working.
+          # Counted here, it would turn `ci_result` red on every PR it found a
+          # red test on. Its result reaches the review as its report instead.
+          AGENT_CHECKS: '(^|/ )(review|time-limit|red-check|post-review|advance|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
           # This job's own check run, named the same way. Overlapping with the
           # pattern above is deliberate, not redundant: that one is a heuristic
           # over names nobody declares, and this is the exact answer the caller

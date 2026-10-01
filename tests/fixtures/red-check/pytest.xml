@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="1" skipped="1" tests="5" time="0.120" timestamp="2026-09-30T10:00:00.000000+00:00" hostname="runner"><testcase classname="tests.test_recipes" name="test_scales_servings" time="0.002"><failure message="AssertionError: assert 2 == 4&#10; +  where 2 = scale(1, 2)">def test_scales_servings():
+&gt;       assert scale(1, 2) == 4
+E       AssertionError: assert 2 == 4</failure></testcase><testcase classname="tests.test_recipes" name="test_keeps_units" time="0.001" /><testcase classname="tests.test_recipes" name="test_needs_a_fixture" time="0.001"><error message="failed on setup with &quot;fixture 'client' not found&quot;">file tests/test_recipes.py, line 20
+  def test_needs_a_fixture(client):
+E       fixture 'client' not found</error></testcase><testcase classname="" name="tests.test_units" time="0.000"><error message="collection failure">ImportError while importing test module 'tests/test_units.py'.
+E   ImportError: cannot import name 'convert' from 'src.units'</error></testcase><testcase classname="tests.test_recipes" name="test_later" time="0.000"><skipped type="pytest.skip" message="not yet">tests/test_recipes.py:30: not yet</skipped></testcase></testsuite></testsuites>

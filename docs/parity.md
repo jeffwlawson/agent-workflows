@@ -776,10 +776,18 @@ expensive to rediscover.
 
   The posting job is also the one exception to the next invariant: it sits in **no** concurrency group.
   Joining would give it the waiter slot, and it could then evict a fix a human queued while the
-  review ran. Overlap costs nothing instead. A fix run shown a thread that already carries its
+  review ran. Overlap costs little instead. A fix run shown a thread that already carries its
   closing reply is told the close is the only thing outstanding on it and is not asked to answer
   it, and a review that races the resolve re-verifies that thread and closes it without replying
   again.
+
+  What overlap would cost since #257 is the order. The group is released when the review job ends,
+  before anything is posted, so a fix or a refresh queued behind the review starts while the
+  posting job is still writing, and would read the previous round's feedback or copy a verdict that
+  is about to be replaced. So both wait, past their pre-flight, while `agent:review` is on the pull
+  request, which the posting job takes off only after every result is posted. The wait is bounded
+  by the posting job's ten minutes and then goes on with a warning, so a label nobody will take off
+  costs time and not the run.
 - **One concurrency group per PR, one per issue.** Every workflow that touches PR *n* — review,
   fix, update-branch — sits in `agent-pr-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: false`; `agent-implement` sits in a per-issue group. Not one group per

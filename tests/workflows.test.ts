@@ -3065,6 +3065,19 @@ describe("the review posts last, from one job", () => {
     );
   });
 
+  /**
+   * A refused post names the closures as they happened, not as planned: the
+   * resolve step skips a thread whose reply or resolve failed, with a warning,
+   * so "every thread resolved" is the claim this job exists to stop making.
+   */
+  it("says on a refused post that only the threads GitHub allowed were resolved", () => {
+    const run = (posting().steps ?? []).find((s) => s.name === "Post PR review")?.run ?? "";
+    const reason = run.split("\n").find((line) => line.includes("failure_reason.txt")) ?? "";
+
+    expect(reason).toContain("resolved where GitHub allowed it, and the log names any that were not");
+    expect(reason).not.toContain("closed are resolved");
+  });
+
   /** And the review job writes nothing: no comment, label, status or review. */
   it("posts nothing from the job that runs the model", () => {
     for (const step of stepsOf(REVIEW)) {

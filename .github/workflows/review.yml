@@ -1421,11 +1421,26 @@ jobs:
     # and a newer arrival evicts it silently (docs/parity.md §10). In the group,
     # this job would queue behind a fix a human labelled while the review ran,
     # could evict that fix, or be evicted itself, and an evicted posting job
-    # posts nothing at all. Nothing it does is a read a writer can tear. A fix
-    # run shown a thread that already carries its closing reply is told the
-    # close is the only thing outstanding on it (`shared/pr-feedback.ts`), and
-    # a review that races this job re-verifies such a thread and resolves it
-    # without a second reply. The hand-off labels it adds fire runs that do
+    # posts nothing at all. Joining would not even serialise it: a run waiting
+    # in the group starts the moment the review job ends, before this job is
+    # queued at all.
+    #
+    # **So the runs that read what this job writes wait for it instead.** The
+    # group is released when the review job ends, before anything is posted,
+    # and a fix or a branch refresh labelled while the review ran starts then.
+    # Unchecked, the fix would read only the previous round's feedback, and the
+    # refresh would copy the verdict on the old head before this round's
+    # exists. Both wait, as their first step past the pre-flight, while
+    # `agent:review` is on the pull request (*Wait for a review's posting to
+    # finish*, in `fix.yml` and `update-branch.yml`), and this job takes it off
+    # only after every result is posted. The wait is bounded by this job's
+    # `timeout-minutes`, so a label nobody will take off costs time and not
+    # the run.
+    #
+    # A fix run shown a thread that already carries its closing reply is told
+    # the close is the only thing outstanding on it (`shared/pr-feedback.ts`),
+    # and a review that races this job re-verifies such a thread and resolves
+    # it without a second reply. The hand-off labels it adds fire runs that do
     # join the group, so the serialisation this loop depends on still happens
     # where the work is.
     permissions:
@@ -1669,7 +1684,7 @@ jobs:
             echo "::warning::${unclosed} thread(s) this review closed could not be resolved, so the overview lists them as still open."
           fi
           if ! url=$(gh api graphql --input "$posted" --jq .data.addPullRequestReview.pullRequestReview.url); then
-            echo "GitHub refused the review, so it was not posted. Its threads are not on the pull request and there is no verdict; the earlier threads this review closed are resolved." > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "GitHub refused the review, so it was not posted. Its threads are not on the pull request and there is no verdict; the earlier threads this review closed were resolved where GitHub allowed it, and the log names any that were not." > "${RUNNER_TEMP}/failure_reason.txt"
             exit 1
           fi
           echo "url=${url}" >> "$GITHUB_OUTPUT"

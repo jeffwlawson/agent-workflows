@@ -176,8 +176,7 @@ The one failure here that has nothing to do with `GITHUB_TOKEN`, and the only on
 not fix.
 
 Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`
-(two also listen on `closed`: `follow-ups`, and `review`, whose `closed` moves the PRD chain on from
-a slice PR merged by hand).
+(one also listens on `closed`: `follow-ups`, which files on a merge).
 Labels passed in the **create** call produce only `issues.opened` — they ride along in that
 payload, but no `labeled` event is emitted and `github.event.label` does not exist on `opened`. The
 label is really on the issue, and the workflow correctly never saw an event.
@@ -374,7 +373,7 @@ a rule with exceptions, though. It is a three-valued property, and which value a
 |---|---|---|
 | `agent:review`, `agent:fix`, `agent:update-branch` | **on while its run works** | the run, as it ends |
 | `agent:implement` on an ordinary issue | **on while its run works** | the run, as it ends |
-| `agent:implement` on a PRD parent | **cursor** | each run, as it ends, and put back by review's advance when a slice PR's round ends, which never happens after the last one |
+| `agent:implement` on a PRD parent | **cursor** | each run, as it ends, and put back by review's advance when a slice round on the PRD PR ends on an approval, which never happens after the final review |
 | `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, on any run that reached a verdict — or you, to opt out |
 
 **Fill the column in when you add a label.** Written as prose this said "consumed on entry, except
@@ -396,12 +395,13 @@ the trigger label comes off, then the next step's label goes on: `agent:review` 
 moved while it worked does not start a fix round or advance a PRD chain off its verdict.
 
 **The cursor.** Each `implement-prd` run holds `agent:implement` on the parent while it builds and
-takes it off as it ends, and the chain moves on only when it comes back: review's **advance** re-adds it when a slice PR's
-round ends on a verdict the chain moves on from (§3b, *The verdict on a slice PR*), and you re-add
-it to accept a slice the chain parked on. Nothing re-adds it after the PRD PR's own review, so the
-chain stops by itself. So on a parent issue the label is a cursor rather than a one-shot: seeing it
-there means the next step is due. A slice PR whose round has ended with no label on its parent and
-no run happening means the PAT is missing (§1) — and the slice PR carries a comment saying so.
+takes it off as it ends, and the chain moves on only when it comes back: review's **advance** re-adds it when a slice
+round on the PRD PR ends on an approval (§3b, *The verdict on a slice round*). Re-adding it yourself
+to a parked chain does not move it on: the run reads the verdict on the PRD PR's head and refuses
+without an approval. Nothing re-adds it after the final review, so the chain stops by itself. So on
+a parent issue the label is a cursor rather than a one-shot: seeing it there means the next step is
+due. An approved slice round with no label on its parent and no run happening means the PAT is
+missing (§1), and the PRD PR carries a comment saying so.
 
 **The marker.** `agent:follow-ups` says *this pull request's latest review recorded out-of-scope
 findings*. The review half adds it on any run that recorded one and never removes it; removing it
@@ -433,7 +433,7 @@ anything obviously a timing problem.
 
 The PRD chain widens this. A parent's body is read fresh **by every slice**, so editing it mid-chain
 changes the brief under the slices that have not run yet, and the same PRD PR ends up built against
-two different specs. If something has to change after labelling, say so on the slice PR instead:
+two different specs. If something has to change after labelling, say so on the PRD PR instead:
 that reaches the review and fix agents, which the issue body no longer does.
 
 **Where the labels come from is a separate question.** These are all *workflow state*. If you also
@@ -589,47 +589,65 @@ not run when the copy was made — so a `success` carried on to a merge commit m
 of this branch found nothing to fix", and whether the merge itself is green is what the merge box's
 other checks are for.
 
-### The verdict on a slice PR
+### The verdict on a slice round
 
-A PRD — a parent issue with sub-issues, labelled `agent:implement` — is built one sub-issue at a
-time. Each sub-issue becomes a **slice PR**: a draft pull request from its own `agent/slice-…`
-branch into the PRD branch, `agent/prd-<parent>-…`, carrying `Part of #<sub-issue>` and reviewed like
-any other. Every slice PR gets the ordinary round, and the chain waits for it before building the
-next slice. What the verdict means is unchanged; what differs is what happens after it:
+A PRD (a parent issue with sub-issues, labelled `agent:implement`) is built one sub-issue at a
+time, every slice as commits on one **PRD branch**, `agent/prd-<parent>-…`. The first run opens the
+**PRD PR**, that branch into your default branch, as a draft, and its body carries `Closes
+#<parent>` and a `Closes #<sub>` line for every sub-issue. Each slice is reviewed as a **slice
+round** on the PRD PR: the ordinary review, told which slice it is and handed that slice's commits
+and its sub-issue's acceptance criteria, and raising only what those commits cause. The chain waits
+for the round to end before building the next slice. What the verdict means is unchanged; what
+differs is what happens after it:
 
-| Verdict on the slice PR | What the chain does | What is left to you |
+| How the slice round ends | What the chain does | What is left to you |
 |---|---|---|
-| **🟢 Approval recommended** | review marks the slice PR ready, and its advance re-adds `agent:implement` to the parent. The next run merges the slice PR into the PRD branch and builds the next slice | nothing |
-| **🟡 Changes recommended**, no automatic fix starting (off, spent, or no progress) | advances, as on 🟢. The findings stay open on the slice PR and are linked from its row in the PRD PR's slices table | nothing, unless you want them fixed before the PRD lands — see below |
-| **🟡 Changes recommended**, with the fix round already started | **waits**. The fix run's re-review decides, and a fix that pushed nothing and posted no out-of-scope note ends the round itself and advances the chain | nothing |
-| **🔵 Needs a closer look** | **parks**. Nothing is re-labelled, and the slice PR stays open | steer it, or accept it — below |
-| a failed run | parks, as on 🔵 | fix what the run names, then re-add `agent:review` to the slice PR |
+| **🟢 Approval recommended** | review's advance re-adds `agent:implement` to the parent. The next run builds the next slice, or finishes | nothing |
+| **🟡 Changes recommended**, with the fix round already started | **waits**. Every fix run on the PRD PR asks for a re-review, whatever it pushed, and that review ends the round | nothing |
+| **🟡 Changes recommended**, no automatic fix starting (off, spent, or no progress) | **parks** | a way on, below |
+| **🔵 Needs a closer look** | **parks** | a way on, below |
+| a failed run | **parks** | fix what the run names, then a way on, below |
 
-**Steering a parked slice** uses the labels you already know, on the slice PR: `agent:fix` with a
-comment giving the direction, `agent:update-branch` if it conflicts with the PRD branch, or your own
-commits followed by `agent:review`. The round that ends on a verdict the chain moves on from
-advances it, exactly as the first one would have.
+**A parked chain says so on the parent**, in one comment naming the slice, why the round stopped,
+the findings still open with links, and the ways on, all three on the PRD PR:
 
-**Accepting a parked slice as it stands** is re-adding `agent:implement` to the parent. The re-label
-is the acceptance: the run merges the slice PR without reading its verdict, and its row in the slices
-table reads *🔵 accepted by hand*, so the one slice nobody watched advance stands out. The run still
-refuses, naming the slice PR, while `agent:review`, `agent:fix` or `agent:update-branch` is on it,
-because a round is never cut short, and while it conflicts, pointing you at `agent:update-branch`.
+- `agent:fix` for another fix round, with a comment giving the direction if it needs one;
+- declining a finding by replying to it, then `agent:review`, to accept the finding as it stands;
+- pushing your own commit, then `agent:review`.
 
-**Leftover 🟡 findings are pointers, not a gate.** They are linked from the slices table and never
-re-raised: the PRD PR's integration review does not take them up, the PRD PR's automatic fix is not
-spent on them, and `follow-ups` never files them. Merging the PRD PR with them open is your call. If
-you would rather a slice's findings were fixed before the next slice is built on it, turn the
-automatic fix on (above): it gives every slice PR its one fix round, and the chain waits for it.
+The round that ends on an approval moves the chain on, exactly as the first one would have.
+Re-adding `agent:implement` to the parent is **not** a way on: the run reads the verdict on the PRD
+PR's head, and without an approval it refuses and names these three. It refuses too while
+`agent:review`, `agent:fix` or `agent:update-branch` is on the PRD PR, because a round is never cut
+short.
 
-**The PRD PR** — the PRD branch into your default branch, carrying `Closes #<parent>` — opens as a
-draft with the first slice merge and stays one until every slice is merged. The finishing run then
-hands it over: for a PRD of more than one slice it asks for an **integration review**, which looks
-only for what spans slices, and whose verdict means *the slices fit together* rather than a roll-up
-of theirs; for a one-slice PRD, whose PRD PR diff its slice PR's review already read, it marks it
-ready directly. That verdict reads like any other, gets the ordinary automatic fix, and a human
-merges the PRD PR — the loop never does. A slice PR with no CI of its own reads **unknown**, not
-green, and lands on 🔵: see §5, *Slice PRs and your CI*.
+**Before each slice the run merges your default branch into the PRD branch**, if it has moved, so
+a change to your CI reaches the next slice with no hand steps. It never rebases or force-pushes. A
+merge that conflicts parks the chain and builds nothing: add `agent:update-branch` to the PRD PR,
+whose resolution is reviewed as a round of the slice just built, and the chain moves on from its
+approval.
+
+**Progress** is in the PRD PR body's progress list, one line per sub-issue: not started, building,
+in review, parked or approved. Each build run also comments on the sub-issue it starts, with a link
+to the run, and notes it on the parent; the run after an approval says on the slice's sub-issue
+which commit was approved and which acceptance criteria changed. **Sub-issues stay open** while the
+chain runs: the PRD PR's `Closes` lines close them when you merge it, and closing it unmerged
+leaves them open.
+
+**The PRD PR stays a draft** through every slice round. After the last slice the finishing run
+hands it over: for a PRD of more than one slice it asks for the **final review**, a full review of
+the PRD PR that rules on every finding still open, never re-raises one you declined, looks for what
+spans slices, and writes the PR's title and body; its approval marks the PRD PR ready, and any
+other ending parks like a slice round. For a one-slice PRD, whose diff the slice round already
+read, it marks the PRD PR ready directly. Either way, you merge the PRD PR; the loop never does.
+Its base is your default branch, so the CI you already run on pull requests into it runs on every
+slice round, and nothing more needs configuring.
+
+**Upgrading mid-chain.** A chain an older release started, building each slice on a branch and pull
+request of its own, carries on: a sub-issue that release already closed counts as landed and is not
+built again. If one of those per-slice pull requests (`agent/slice-…`) is still open into the PRD
+branch, the run refuses and names it: merge or close it by hand, reopen its sub-issue if you closed
+it unmerged, then add `agent:implement` again.
 
 ### Reading the review body
 
@@ -740,7 +758,9 @@ is the direction that costs a round rather than a decision.
 The run that opens a pull request writes its body once, and nothing rewrites it: `Closes #N` first,
 then a note saying what the loop does with the pull request and how to steer it, with a link to the
 run that opened it, and a **summary block** under that. A PRD PR's note says not to merge it before
-every slice is done, and its body carries the slices table under *Progress* as well.
+every slice is done, and its body carries the `Closes` block and the progress list as well. The
+final review removes that note when it writes the summary, so a PRD PR marked ready says nothing
+about being a draft.
 
 The review writes the summary block and the title. The summary says what the change does, what
 behaviour it changes (breaking changes marked), and where it departs from the linked issue and why.
@@ -1028,8 +1048,8 @@ configuration that under-grants nothing is the **permissive** default token, whi
 scope write.
 
 > **`issues: write` is on one row only, and it is the one that creates issues.** No other workflow
-> in the loop holds it to *file* anything — the `implement` pair spends it on labels and on closing
-> a sub-issue the PRD already lists. It is also the only caller that passes **no secrets at all**:
+> in the loop holds it to *file* anything — the `implement` pair spends it on labels and on
+> comments. It is also the only caller that passes **no secrets at all**:
 > the job runs no model, so there is no `CLAUDE_CODE_OAUTH_TOKEN` to hand over, and it creates its
 > issues with `GITHUB_TOKEN`, so there is no `AGENT_PAT` either — a repository without the PAT
 > files exactly as much as one with it. Adding either to your caller is not harmless: GitHub
@@ -1067,14 +1087,11 @@ scope write.
 > refusal at the head of this table. A refresh that had to *resolve* conflicts copies nothing and
 > adds `agent:review` instead, which is a label rather than a status and needs no scope of its own.
 
-> **`statuses: read` on implement-prd is what fills the slices table.** Each merged slice's row
-> records its `agent-review` verdict, read from the merged commit's status, and a status is a scope
-> of its own. The read happens on the run after a slice's review round ends, after the slice has
-> been merged into the PRD branch. v0.7.0 read it without declaring the scope, so the read 403d and
-> the chain stopped there (#199). **Move the grant when you move the pin**: a caller without it
-> gets the refusal at the head of this table, not a 403. To recover a chain that stopped there,
-> re-add `agent:implement` to the PRD issue. The run sees the slice is already merged, skips the
-> merge, and retries the row.
+> **`statuses: read` on implement-prd is the approval gate.** Before it builds the next slice, the
+> run reads the `agent-review` verdict on the PRD PR's head, and a status is a scope of its own.
+> v0.7.0 read a verdict without declaring the scope, so the read 403d and the chain stopped (#199).
+> **Move the grant when you move the pin**: a caller without it gets the refusal at the head of this
+> table, not a 403.
 
 > **`checks: read` on review is the row only a private repository *spends* — and it is not optional
 > on a public one.** The CI wait polls `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`, which a
@@ -1361,7 +1378,7 @@ next person does not go looking for it.
 | The gate command (`npm run verify` here) | not an input, and not a coupling | each prompt says to run "the verify command `CLAUDE.md` names", so writing your gate down once in `CLAUDE.md` (§6) is the whole of it. It cannot become an input: `runWithExtraction` drops prompt arguments before the extraction pass, so a placeholder would reach one prompt literal |
 | `CONTEXT.md` and `CLAUDE.md` exist | still yours to write | see §6. This is the coupling the others turned into — a de-domained prompt makes it total rather than partial |
 | Project domain | **not a coupling** (jeffwlawson/winget-manifest-lint#95) | the prompts name no domain of their own. A test walks every prompt and runner file and fails on any adopting repo's vocabulary, so it stays that way |
-| Sub-issues are created blockers-first | **not an input, by design** | `agent-implement-prd` walks sub-issues in **API order** and never reads `blocker` edges, so whatever publishes them owns the topological sort. If yours publishes in an arbitrary order, fix that rather than teaching the chain to read edges (docs/parity.md §2a). The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |
+| Sub-issues are created blockers-first | **not an input, by design** | `agent-implement-prd` walks sub-issues in **API order**, so whatever publishes them owns the topological sort. It reads the "blocked by" links once, before the first slice, and refuses a list whose order contradicts them, or a sub-issue blocked from outside the PRD, naming the links to fix; it never reorders. The publishing side is `docs/agents/ticket-shape.md` — including the repair, which reorders the parent's list rather than recreating the slice |
 
 Your own CI is the one place a branch name is still yours to write, and it always was: `ci.yml`
 here triggers on `branches: [main]`. A workflow's *trigger* cannot come from a `workflow_call`
@@ -1369,25 +1386,12 @@ input — that is the same limitation that keeps the trigger in your caller rath
 reusable half — and your CI is not part of this loop anyway. Nothing about the conversion changes
 it; it is named here only because the row it used to share is gone.
 
-### Slice PRs and your CI
+### Your CI and the PRD chain
 
-`agent-implement-prd` opens each slice of a PRD as a **slice PR** whose base is the PRD branch,
-`agent/prd-<parent>-<slug>`, not your default branch. A CI workflow that filters `pull_request` to
-the default branch does not run on one. Add the PRD branches to that filter, one line:
-
-```yaml
-on:
-  pull_request:
-    branches: [main, 'agent/prd-**']
-```
-
-Without it, a slice PR carries no check but the loop's own, and review reads that as CI
-**unknown** rather than green: a clean review lands on *Needs a closer look* and the chain parks at
-the first slice, instead of approving code no CI ran on. The review's CI evidence says so and links
-here. Ordinary pull requests are unchanged — on a repository with no CI anywhere, they still read
-green. A CI with no `branches:` filter on `pull_request`, like this repository's, needs nothing. `doctor`
-checks this where `agent-implement-prd` is installed: it fails when no workflow of yours has a
-`pull_request` trigger whose branch filter lets a PRD branch through.
+Nothing to change. Every slice of a PRD is reviewed on the PRD PR, whose base is your default
+branch, so a CI that runs on pull requests into it runs on every slice round. Releases before
+#249 opened a pull request per slice into the PRD branch and asked you to add the PRD branches to
+your CI's branch filter; that entry is harmless if you keep it, and nothing needs it now.
 
 Nothing above will error if you get it wrong — with one exception worth knowing, because it is the
 exception on purpose. An empty base ref used to default to `main` inside the runners; since
@@ -1457,7 +1461,7 @@ usually the one that was wrong, and noticing that while writing the ticket costs
 
 The PRD tier raises the stakes rather than changing the rule. A chain implements its slices
 unattended, and each slice's review reads that slice against its own sub-issue (docs/parity.md §2a)
-— so an uncited criterion is checked by a review reasoning from the same ticket, and on a 🟢 or 🟡
+— so an uncited criterion is checked by a review reasoning from the same ticket, and on an approval
 the next slice is built on it before any human has read it.
 
 ---

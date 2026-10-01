@@ -19,14 +19,12 @@ name: Agent Review
 # `@main` would hand a job that runs with your secrets to whatever currently
 # sits on another repository's default branch (docs/ADOPTING.md §9).
 #
-# Two activity types. `labeled` is the review. `closed` is the PRD chain's
-# `advance-merged` (#209): a slice PR merged by hand re-adds `agent:implement`
-# to its parent, so the chain moves on from it. It is **not** a default
-# `pull_request_target` type, so without it a hand merge is a dead end. Every
-# other job in the called workflow skips a `closed` event.
+# One activity type, `labeled`: the review. A caller installed before #249 also
+# lists `closed`, for a job the PRD chain no longer has. Every job in the called
+# workflow skips a `closed` event, so leaving it in is harmless.
 on:
   pull_request_target:
-    types: [closed, labeled]
+    types: [labeled]
 
 jobs:
   # The job id is load-bearing: it is the first half of the check-run name

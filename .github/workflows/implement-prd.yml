@@ -8,8 +8,9 @@ name: Agent Implement PRD (reusable)
 # The PRD path (jeffwlawson/winget-manifest-lint#92). Labelling a *parent* issue
 # `agent:implement` implements its sub-issues one at a time, one per run, as
 # commits straight onto a single **PRD branch**, reviewed on a single **PRD PR**
-# into the default branch (PRD #222). There are no slice branches and no slice
-# PRs: the PRD PR's CI is the default branch's CI, so every slice gets it.
+# into the default branch (PRD #222). No slice has a branch or a pull request
+# of its own: the PRD PR's CI is the default branch's CI, so every slice gets
+# it.
 #
 # It shares its trigger label with `agent-implement`, so both jobs start on
 # every `agent:implement` label event and the pair partitions the work by issue

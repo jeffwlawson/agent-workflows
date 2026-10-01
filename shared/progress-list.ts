@@ -3,10 +3,10 @@ import type { SliceRanges } from "./slice-ranges.js";
 /**
  * The **progress list** in a PRD PR's body (PRD #222, #246): one line per
  * sub-issue, saying where the chain is, so a maintainer reads the chain's
- * state off the PRD PR rather than off closed issues or state labels. It
- * replaces the slices table, and like the `Closes` block beside it, it is
- * workflow-owned, between its own markers, which the review's rewrite of the
- * summary (#218) splices around byte for byte.
+ * state off the PRD PR rather than off closed issues or state labels. Like
+ * the `Closes` block beside it, it is workflow-owned, between its own
+ * markers, which the review's rewrite of the summary (#218) splices around
+ * byte for byte.
  *
  * **Re-rendered from live state, never edited incrementally.** Every
  * `implement-prd` run that builds renders it as the slice starts and again as

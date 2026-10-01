@@ -41,6 +41,12 @@ name: Agent Implement PRD (reusable)
 # not make the chain skip or repeat work. `Closes` lines in the PRD PR close
 # them when it merges.
 #
+# The one exception is pre-upgrade compatibility, removable under #224: a
+# chain an older release started with slice PRs. A closed sub-issue with no
+# slice range landed before the upgrade and is not built again, and a slice PR
+# still open into the PRD branch refuses the run by name. Each site is marked
+# "Pre-upgrade compatibility" so #224 can find it.
+#
 # ## The next slice waits for an approval
 #
 # A run builds one slice, pushes it to the PRD branch, adds `agent:review` to
@@ -338,6 +344,26 @@ jobs:
             prd_branch="agent/prd-${ISSUE_NUMBER}-${slug}"
           fi
 
+          # Pre-upgrade compatibility, removable under #224. A release before
+          # #222 built each slice on a slice branch, as a slice PR into the PRD
+          # branch, and merged it there. One still open is a slice this release
+          # cannot see on the PRD branch and must not build over: building its
+          # sub-issue again would put a second copy of the work beside it. So
+          # the run refuses and names it, and building nothing is the point; a
+          # human decides whether it lands. Durable, until they do, so the
+          # parent is marked blocked as for a shape.
+          #
+          # Not `|| true`, for the shape query's reason: "could not look" read
+          # as "none open" is the build over it this exists to prevent.
+          if [ -n "$prd_sha" ]; then
+            old_slices=$(gh pr list --state open --base "$prd_branch" --limit 100 --json number,headRefName) \
+              || block "Couldn't look for slice PRs still open into \`${prd_branch}\`, so nothing was built."
+            old_slices=$(jq -r 'map(select(.headRefName | startswith("agent/slice-")) | "#\(.number) (`\(.headRefName)`)") | join(", ")' <<< "$old_slices")
+            if [ -n "$old_slices" ]; then
+              refuse_shape "Slice PRs from an earlier release are still open into this PRD's branch \`${prd_branch}\`: ${old_slices}. This release builds every slice on the PRD branch itself and doesn't use slice PRs, so it won't build over them. Merge or close each by hand; if you close one without merging it, reopen its sub-issue so it's built again. Then add \`agent:implement\` again."
+            fi
+          fi
+
           # The sub-issues already built: the ones a commit on the PRD branch
           # names in its `Agent-Slice` trailer, which is exactly the set with a
           # slice range (`shared/slice-ranges.ts`). Read from the commits the
@@ -355,13 +381,24 @@ jobs:
               || block "Couldn't read which sub-issues are already built on \`${prd_branch}\`, so nothing was built."
           fi
 
-          # The whole scheduling policy, in one filter: keep the sub-issues no
-          # commit names, in the order the API returned them, take the head.
-          # Whatever their state, since state is not progress any more.
+          # The whole scheduling policy, in one filter: keep the open
+          # sub-issues no commit names, in the order the API returned them,
+          # take the head. `next` in `shared/slice-ranges.ts`, the same rule.
           next=$(jq -c --argjson built "$built" \
-            '[.subIssues.nodes[] | select(.number as $n | any($built[]; . == $n) | not)] | .[0] // empty' <<< "$issue")
+            '[.subIssues.nodes[] | select(.state == "OPEN" and (.number as $n | any($built[]; . == $n) | not))] | .[0] // empty' <<< "$issue")
           landed=$(jq --argjson built "$built" \
             '[.subIssues.nodes[] | select(.number as $n | any($built[]; . == $n))] | length' <<< "$issue")
+          # Pre-upgrade compatibility, removable under #224. A closed sub-issue
+          # no commit names **landed before the upgrade**: a release before
+          # #222 closed each slice's sub-issue as its slice PR opened, and
+          # merged that PR without a trailer. It is not built again, gets no
+          # `Closes` line, and the progress list shows it as landed before the
+          # upgrade (`shared/progress-list.ts`). It counts towards the slices
+          # that landed, for the handover; never towards the gate, since no
+          # round on the PRD PR reviewed it.
+          before_upgrade=$(jq --argjson built "$built" \
+            '[.subIssues.nodes[] | select(.state == "CLOSED" and (.number as $n | any($built[]; . == $n) | not))] | length' <<< "$issue")
+          slices_landed=$((landed + before_upgrade))
 
           # The PRD PR, found by its **head**, the PRD branch.
           prd_pr=""
@@ -390,7 +427,12 @@ jobs:
           approved_sub=""
           approved_sha=""
           approved_review=""
-          if [ "$landed" -gt 0 ] && [ -z "$prd_pr" ]; then
+          if [ "$landed" -eq 0 ] && [ -z "$next" ]; then
+            # Pre-upgrade compatibility, removable under #224: every sub-issue
+            # closed before this release built any, so there is nothing to
+            # build and no round of its own to finish on.
+            refuse "Every sub-issue of this PRD was closed before this release built any of them, so there's nothing left to build. To build more, add a sub-issue, or reopen one, first."
+          elif [ "$landed" -gt 0 ] && [ -z "$prd_pr" ]; then
             echo "Slices of #${ISSUE_NUMBER} are on \`${prd_branch}\` but no PRD PR is open from it; opening one and asking for its review. Nothing is built."
             build=false
           elif [ "$landed" -gt 0 ]; then
@@ -405,10 +447,10 @@ jobs:
             # whole handover, so ready is finished, whoever marked it.
             if [ -z "$next" ]; then
               final_review="<!-- agent:final-review requested -->"
-              if [ "$landed" -gt 1 ] && [[ "$(jq -r '.[0].body // ""' <<< "$prd_prs")" == *"$final_review"* ]]; then
+              if [ "$slices_landed" -gt 1 ] && [[ "$(jq -r '.[0].body // ""' <<< "$prd_prs")" == *"$final_review"* ]]; then
                 refuse "Every sub-issue of this PRD is built and the final review of PRD PR #${prd_pr} was requested, so it's yours from here. To build more, add a sub-issue first."
               fi
-              if [ "$landed" -eq 1 ] && [ "$(jq -r '.[0].isDraft' <<< "$prd_prs")" != "true" ]; then
+              if [ "$slices_landed" -eq 1 ] && [ "$(jq -r '.[0].isDraft' <<< "$prd_prs")" != "true" ]; then
                 refuse "Every sub-issue of this PRD is built and its PRD PR is ready for you. To build more, add a sub-issue first."
               fi
             fi
@@ -479,7 +521,7 @@ jobs:
             # is wrong either way; one to an outside issue only while that
             # issue is open, the parent's own rule below. Not `|| true`: "could
             # not read" read as "no links" is the order this exists to check.
-            if [ "$landed" -eq 0 ]; then
+            if [ "$slices_landed" -eq 0 ]; then
               order=$(jq -c '[.subIssues.nodes[].number]' <<< "$issue")
               for sub in $(jq -r '.[]' <<< "$order"); do
                 links=$(gh api "repos/${GH_REPO}/issues/${sub}/dependencies/blocked_by" --jq '[.[] | {number, state}]') \
@@ -540,7 +582,9 @@ jobs:
             echo "prd_branch=${prd_branch}"
             echo "prd_branch_exists=$([ -n "$prd_sha" ] && echo true || echo false)"
             echo "prd_pr=${prd_pr}"
-            echo "landed=${landed}"
+            # Every slice that landed, those before the upgrade included: what
+            # the handover asks "more than one?" of.
+            echo "landed=${slices_landed}"
             echo "approved_sub=${approved_sub}"
             echo "approved_sha=${approved_sha}"
             echo "approved_review=${approved_review}"
@@ -562,7 +606,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           if [ "$build" = "true" ]; then
-            echo "Targeting sub-issue #$(jq -r '.number' <<< "$next") of ${subs}, with ${landed} built."
+            echo "Targeting sub-issue #$(jq -r '.number' <<< "$next") of ${subs}, with ${landed} built and ${before_upgrade} landed before the upgrade."
           fi
 
       # The trigger label stays on while this run works and comes off in the
@@ -986,6 +1030,14 @@ jobs:
       # nothing has none, and opens the PRD PR with a list that says when it
       # is written. A list that cannot be written into a reused PRD PR is a
       # warning: the slice is pushed, and its review is what matters now.
+      #
+      # Pre-upgrade compatibility, removable under #224: a PRD PR an older
+      # release opened has no `Closes` block, only `Closes #<parent>`, since
+      # that release closed each sub-issue itself. A reused PRD PR with no
+      # `Closes` marker at all gets the block in front of its body, in the same
+      # write as the list, so the sub-issues still open close when it merges.
+      # Nothing else in that body is touched: an old slices table stays where
+      # it is, as history.
       - name: Open or reuse the PRD PR
         if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && steps.catch_up.outputs.parked != 'true' && success()
         id: prd_pr
@@ -1013,6 +1065,14 @@ jobs:
           # built nothing.
           progress="${RUNNER_TEMP}/progress.md"
 
+          # From the preflight's snapshot, the one every branch of it ruled on.
+          # A closed sub-issue gets no line: one this release built is open
+          # until the PRD PR merges, so a closed one landed before the upgrade.
+          closes=$(jq -r --arg parent "$ISSUE_NUMBER" \
+            '"Closes #\($parent)", (.subIssues.nodes[] | select(.state == "OPEN") | "Closes #\(.number)")' \
+            "${RUNNER_TEMP}/prd-issue.json")
+          closes_block=$(printf '%s\n%s\n%s' "<!-- agent:closes -->" "$closes" "<!-- /agent:closes -->")
+
           existing=$(gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number --jq 'map(.number) | join(" ")') \
             || block "Couldn't look for the PRD PR from \`${PRD_BRANCH}\`. The slice is on the PRD branch, and trying again doesn't build it twice."
           count=$(wc -w <<< "$existing")
@@ -1027,7 +1087,7 @@ jobs:
               request="${RUNNER_TEMP}/progress_edit.json"
               if ! gh api "repos/{owner}/{repo}/pulls/${number}" > "$current"; then
                 echo "::warning::Could not read PRD PR #${number}, so its progress list is left as it stands."
-              elif ! jq --rawfile block "$progress" '
+              elif ! jq --rawfile block "$progress" --arg closes "$closes_block" '
                   (.body // "") as $b
                   | env.PROGRESS_START as $s | env.PROGRESS_END as $e
                   | (if $b == "" then $block
@@ -1040,6 +1100,8 @@ jobs:
                            $starts[0] + $block + ($starts[1] | split($e))[1]
                          else null end
                      end) as $body
+                  | (if $body == null or ($b | contains("<!-- agent:closes -->") or contains("<!-- /agent:closes -->")) then $body
+                     else $closes + "\n\n" + $body end) as $body
                   | if $body == null then {} else {body: $body} end
                 ' "$current" > "$request"; then
                 echo "::warning::Could not compose PRD PR #${number}'s progress list, so it is left as it stands."
@@ -1052,10 +1114,6 @@ jobs:
               fi
             fi
           else
-            # From the preflight's snapshot, the one every branch of it ruled on.
-            closes=$(jq -r --arg parent "$ISSUE_NUMBER" \
-              '"Closes #\($parent)", (.subIssues.nodes[] | select(.state == "OPEN") | "Closes #\(.number)")' \
-              "${RUNNER_TEMP}/prd-issue.json")
             body_file="${RUNNER_TEMP}/prd-pr-body.md"
             if [ -f "$progress" ]; then
               list=$(cat "$progress")
@@ -1063,9 +1121,7 @@ jobs:
               list=$(printf '%s\n%s\n%s' "$PROGRESS_START" "_The progress list is written when this slice's review round ends._" "$PROGRESS_END")
             fi
             cat > "$body_file" <<FRAME
-          <!-- agent:closes -->
-          ${closes}
-          <!-- /agent:closes -->
+          ${closes_block}
 
           ${list}
 
@@ -1156,6 +1212,11 @@ jobs:
       # first, so the review the label starts finds it, and a retry writes it
       # once. It is also what the preflight reads the PRD as finished by, so
       # a label add that fails takes it back out before the step stops.
+      #
+      # `LANDED` counts the slices that landed before the upgrade too
+      # (pre-upgrade compatibility, removable under #224): no round on the
+      # PRD PR reviewed them, so one slice built here beside them is not a
+      # review of the whole PRD PR.
       #
       # Needs AGENT_PAT either way, and refuses without it rather than doing
       # half. `gh pr ready` cannot convert a draft under GITHUB_TOKEN, and a

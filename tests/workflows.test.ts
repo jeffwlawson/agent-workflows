@@ -4681,10 +4681,11 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   });
 
   /**
-   * The whole scheduling policy, in one jq filter: keep the sub-issues no
+   * The whole scheduling policy, in one jq filter: keep the open sub-issues no
    * commit on the PRD branch names in its `Agent-Slice` trailer, in the order
-   * the API returned them, take the head. Not by state: no step closes a
-   * sub-issue any more, and a hand-closed one must not be skipped.
+   * the API returned them, take the head. An open one with a trailer is never
+   * built again, whatever happened to its state; a closed one with none landed
+   * before the upgrade (#248), `next` in `shared/slice-ranges.ts`.
    */
   it("targets the first sub-issue with no slice on the PRD branch, in API order", () => {
     const run = runOf(PRD, "preflight");
@@ -4695,7 +4696,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(run).toContain('capture("^agent-slice:[ \\t]*#(?<n>[0-9]+)[ \\t]*$"; "i")');
     expect(filter).toContain("any($built[]; . == $n) | not");
     expect(filter).toContain("| .[0]");
-    expect(filter).not.toContain(".state");
+    expect(filter).toContain('select(.state == "OPEN" and (.number as $n | any($built[]; . == $n) | not))');
     expect(run).toContain('echo "sub=$(jq -r \'.number\' <<< "$next")"');
   });
 
@@ -4775,7 +4776,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(calls).toHaveLength(2);
     expect(calls.some((l) => l.includes("${ISSUE_NUMBER}"))).toBe(true);
     expect(subs).not.toBe("");
-    expect(run.lastIndexOf('if [ "$landed" -eq 0 ]; then', run.indexOf(subs))).toBeGreaterThanOrEqual(0);
+    expect(run.lastIndexOf('if [ "$slices_landed" -eq 0 ]; then', run.indexOf(subs))).toBeGreaterThanOrEqual(0);
     expect(run).toContain("docs/parity.md §2a");
     expect(run).toMatch(/Reorder the sub-issues so #\$\{late\} comes before #\$\{sub\}/);
     expect(run).toMatch(/Move that \\"blocked by\\" link from #\$\{sub\} to this issue/);
@@ -4875,13 +4876,23 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   /**
    * **No slice branches.** The agent builds on the PRD branch itself, and is
    * handed it as the branch it is on. Nothing in this workflow names a slice
-   * branch any more, in code or in comment.
+   * branch any more, in code or in comment, but the pre-upgrade refusal of a
+   * slice PR an older release left open (#248): every line that does sits in
+   * the paragraph its "Pre-upgrade compatibility" mark opens, with no blank
+   * line between, which is how #224 finds what to remove.
    */
-  it("builds every slice on the PRD branch, and names no agent/slice- branch", () => {
+  it("builds every slice on the PRD branch, and names no agent/slice- branch outside the pre-upgrade rules", () => {
     const agent = stepsOf(PRD).find((s) => (s.run ?? "").includes("agent-workflows implement-prd"));
+    const lines = fs.readFileSync(PRD, "utf8").split("\n");
+    const naming = lines.flatMap((line, i) => (line.includes("agent/slice-") ? [i] : []));
 
     expect(agent?.env?.["BRANCH"]).toBe("${{ steps.preflight.outputs.prd_branch }}");
-    expect(fs.readFileSync(PRD, "utf8")).not.toContain("agent/slice-");
+    expect(naming.length).toBeGreaterThan(0);
+    for (const at of naming) {
+      const mark = lines.findLastIndex((line, i) => i <= at && line.includes("Pre-upgrade compatibility, removable under #224"));
+      expect(mark, lines[at]).toBeGreaterThanOrEqual(0);
+      expect(lines.slice(mark, at + 1).some((line) => line.trim() === ""), lines[at]).toBe(false);
+    }
   });
 
   /**

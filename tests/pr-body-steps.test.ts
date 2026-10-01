@@ -144,6 +144,12 @@ const PROGRESS: ProgressInputs = {
   finalReview: "not requested",
 };
 
+/**
+ * The preflight's snapshot of the PRD, #14: #15 closed before the upgrade
+ * with no slice range, and #16 open.
+ */
+const SNAPSHOT = { subIssues: { nodes: [{ number: 15, state: "CLOSED" }, { number: 16, state: "OPEN" }] } };
+
 /** The PRD PR's `Closes` block, which `implement-prd` owns and the review splices around. */
 const CLOSES_START = "<!-- agent:closes -->";
 const CLOSES_END = "<!-- /agent:closes -->";
@@ -561,12 +567,27 @@ describe.skipIf(!CAN_RUN)("the progress list is spliced into the PRD PR's body",
         GH_PR_LIST: "201",
         GH_FAIL: fail,
       },
-      { "pr.json": JSON.stringify({ number: 201, body }), "progress.md": list },
+      {
+        "pr.json": JSON.stringify({ number: 201, body }),
+        "progress.md": list,
+        "prd-issue.json": JSON.stringify(SNAPSHOT),
+      },
     );
+
+  /**
+   * A body with no `Closes` marker at all is one an older release opened
+   * (#248), and gets the block in front of it, from the snapshot, with no
+   * line for a sub-issue closed before the upgrade.
+   */
+  const reused = (body: string | null): string | undefined => {
+    const spliced = spliceProgressList(body ?? "", list);
+    if (spliced === undefined || (body ?? "").includes(CLOSES_START)) return spliced;
+    return `${CLOSES_START}\nCloses #14\nCloses #16\n${CLOSES_END}\n\n${spliced}`;
+  };
 
   it.each(bodies)("a build run reusing the PRD PR over %s keeps spliceProgressList's rule", (_case, body) => {
     const outcome = reuse(body);
-    const expected = spliceProgressList(body ?? "", list);
+    const expected = reused(body);
 
     expect(outcome.status, outcome.stdout).toBe(0);
     expect(outcome.gh.some((call) => call.startsWith("pr create"))).toBe(false);
@@ -656,4 +677,124 @@ describe.skipIf(!CAN_RUN)("a stopped build run writes the progress list back", (
     expect(unwritten.status, unwritten.stdout).toBe(0);
     expect(unwritten.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
   }, 2 * SUBPROCESS_TIMEOUT);
+});
+
+/**
+ * **A slices table an older release wrote is history, and nothing rewrites it**
+ * (#248): pre-upgrade compatibility, removable under #224. A PRD PR an older
+ * release opened carries `Closes #<parent>`, a note, the slices table between
+ * its markers and the summary block, and no `Closes` block or progress list.
+ * Every writer of a PRD PR's body runs over it in turn, as a chain resumed at
+ * the upgrade would: the build run that reuses it, the advance job at the end
+ * of its round, the slice round's summary, the stopped run's list and the
+ * final review's summary. The table comes through every one byte for byte.
+ */
+describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
+  const TABLE = [
+    "<!-- agent:slices -->",
+    "| Slice | PR | Verdict | Open findings |",
+    "|---|---|---|---|",
+    "| One (#15) | #20 | ✅ approval recommended | none |",
+    "<!-- /agent:slices -->",
+  ].join("\n");
+  const OLD = [
+    "Closes #14",
+    "",
+    "> [!NOTE]",
+    "> The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each before starting the next.",
+    "",
+    "## Progress",
+    TABLE,
+    "",
+    SUMMARY_START,
+    "_The final review will summarize the whole PRD here._",
+    SUMMARY_END,
+    "",
+  ].join("\n");
+  const list = renderProgressList(PROGRESS);
+
+  const keepsTable = (body: string | undefined): string => {
+    expect(body?.split(TABLE)).toHaveLength(2);
+    expect(body).toContain(`## Progress\n${TABLE}\n`);
+    return body ?? "";
+  };
+
+  it("survives every rewrite of the body, unchanged", () => {
+    const reused = runStep(
+      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      {
+        ISSUE_NUMBER: "14",
+        ISSUE_TITLE: "A PRD",
+        BASE_REF: "main",
+        PRD_BRANCH: "agent/prd-14-a-prd",
+        HAS_PAT: "true",
+        PROGRESS_START,
+        PROGRESS_END,
+        GH_PR_LIST: "201",
+      },
+      {
+        "pr.json": JSON.stringify({ number: 201, body: OLD }),
+        "progress.md": list,
+        "prd-issue.json": JSON.stringify(SNAPSHOT),
+      },
+    );
+    expect(reused.status, reused.stdout).toBe(0);
+    const afterReuse = keepsTable((JSON.parse(reused.sent ?? "{}") as { body?: string }).body);
+    expect(afterReuse).toBe(`${CLOSES_START}\nCloses #14\nCloses #16\n${CLOSES_END}\n\n${OLD}\n${list}`);
+
+    const advanced = runStep(
+      stepRun("review", "advance", "Re-render the progress list"),
+      { PR_NUMBER: "201", PROGRESS_START, PROGRESS_END, ENDED: "true", VERDICT: "approval recommended" },
+      {
+        "pr.json": JSON.stringify({ number: 201, body: afterReuse }),
+        "progress_approved.md": "approved list",
+        "progress_parked.md": "parked list",
+        "progress_running.md": list,
+      },
+    );
+    expect(advanced.status, advanced.stdout).toBe(0);
+    const afterAdvance = keepsTable((JSON.parse(advanced.sent ?? "{}") as { body?: string }).body);
+
+    const sliceRound = writeSummary(afterAdvance);
+    expect(sliceRound.status, sliceRound.stdout).toBe(0);
+    const afterSliceRound = keepsTable(sliceRound.request?.body);
+
+    const stopped = runStep(
+      stepRun("implement-prd", "implement-prd", "Show the stopped slice in the progress list"),
+      { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END },
+      { "pr.json": JSON.stringify({ number: 201, body: afterSliceRound }), "progress_stopped.md": "stopped list" },
+    );
+    expect(stopped.status, stopped.stdout).toBe(0);
+    const afterStopped = keepsTable((JSON.parse(stopped.sent ?? "{}") as { body?: string }).body);
+
+    const finalReview = writeSummary(afterStopped, undefined, "", true);
+    expect(finalReview.status, finalReview.stdout).toBe(0);
+    keepsTable(finalReview.request?.body);
+  }, 5 * SUBPROCESS_TIMEOUT);
+
+  /** The block goes in only where no `Closes` marker is: a body with one is left to the splice alone. */
+  it("gets the Closes block once, on the first build run that reuses the PRD PR", () => {
+    const withBlock = `${CLOSES_START}\nCloses #14\nCloses #16\n${CLOSES_END}\n\n${OLD}`;
+    const outcome = runStep(
+      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      {
+        ISSUE_NUMBER: "14",
+        ISSUE_TITLE: "A PRD",
+        BASE_REF: "main",
+        PRD_BRANCH: "agent/prd-14-a-prd",
+        HAS_PAT: "true",
+        PROGRESS_START,
+        PROGRESS_END,
+        GH_PR_LIST: "201",
+      },
+      {
+        "pr.json": JSON.stringify({ number: 201, body: withBlock }),
+        "progress.md": list,
+        "prd-issue.json": JSON.stringify(SNAPSHOT),
+      },
+    );
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: spliceProgressList(withBlock, list) });
+  });
 });

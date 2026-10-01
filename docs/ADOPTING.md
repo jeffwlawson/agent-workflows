@@ -600,7 +600,7 @@ next slice. What the verdict means is unchanged; what differs is what happens af
 |---|---|---|
 | **🟢 Approval recommended** | review marks the slice PR ready, and its advance job re-adds `agent:implement` to the parent. The next run merges the slice PR into the PRD branch and builds the next slice | nothing |
 | **🟡 Changes recommended**, no automatic fix starting (off, spent, or no progress) | advances, as on 🟢. The findings stay open on the slice PR and are linked from its row in the PRD PR's slices table | nothing, unless you want them fixed before the PRD lands — see below |
-| **🟡 Changes recommended**, with the fix round already started | **waits**. The fix run's re-review decides, and a fix that pushed nothing ends the round itself and advances the chain | nothing |
+| **🟡 Changes recommended**, with the fix round already started | **waits**. The fix run's re-review decides, and a fix that pushed nothing and posted no out-of-scope note ends the round itself and advances the chain | nothing |
 | **🔵 Needs a closer look** | **parks**. Nothing is re-labelled, and the slice PR stays open | steer it, or accept it — below |
 | a failed run | parks, as on 🔵 | fix what the run names, then re-add `agent:review` to the slice PR |
 

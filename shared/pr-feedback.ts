@@ -1,5 +1,6 @@
 import { fail, ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { parseNameStatus } from "./diff-lines.js";
+import { isOutOfScopeNote, readOutOfScopeNote, type PostedNote } from "./fix-notes.js";
 import {
   isAgentConversationOutcome,
   isAgentTopLevelComment,
@@ -160,6 +161,24 @@ export interface PullRequestFeedback {
    * can avoid posting the same note twice.
    */
   readonly priorTopLevelComments: readonly string[];
+  /**
+   * The out-of-scope notes `agent:fix` posted **since this loop's latest
+   * review** (#213): the ones the next review has not yet ruled on, and is
+   * handed to rule on now.
+   *
+   * Selected by the marker **and** by the workflow bot having posted the
+   * comment, never by the marker alone: anyone who can comment can type it, and
+   * a note promoted here is filed as an issue on merge. A comment posted before
+   * the latest review was ruled on by it; one whose time could not be read is
+   * kept, because ruling on a note twice costs a line and never ruling on it
+   * is the loss this exists to end.
+   */
+  readonly outOfScopeNotes: readonly PostedNote[];
+  /**
+   * Bodies of every out-of-scope note `agent:fix` posted on this PR, whenever,
+   * so a new run can avoid posting the same note twice.
+   */
+  readonly priorOutOfScopeNotes: readonly string[];
   /** Diff of the branch against the PR's base branch merge-base (three-dot). */
   readonly diff: string;
   /**
@@ -220,8 +239,8 @@ const QUERY = `
 query($owner:String!,$repo:String!,$number:Int!) {
   repository(owner:$owner,name:$repo) {
     pullRequest(number:$number) {
-      comments(first:100) { nodes { id url body author { login } authorAssociation } }
-      reviews(last:50) { nodes { body state author { login } authorAssociation } }
+      comments(first:100) { nodes { id url body createdAt author { login } authorAssociation } }
+      reviews(last:50) { nodes { body state submittedAt author { login } authorAssociation } }
       reviewThreads(first:100) {
         nodes {
           id
@@ -258,6 +277,8 @@ interface GqlAuthored {
 interface GqlComment extends GqlAuthored {
   id?: string | null;
   url?: string | null;
+  /** When it was posted, which is what places an out-of-scope note after a verdict (#213). */
+  createdAt?: string | null;
 }
 
 interface GqlThreadComment extends GqlAuthored {
@@ -345,7 +366,9 @@ interface GqlThread {
  */
 interface GqlPullRequest {
   comments?: { nodes?: (GqlComment | null)[] | null } | null;
-  reviews?: { nodes?: ((GqlAuthored & { state?: string }) | null)[] | null } | null;
+  reviews?: {
+    nodes?: ((GqlAuthored & { state?: string; submittedAt?: string | null }) | null)[] | null;
+  } | null;
   reviewThreads?: { nodes?: (GqlThread | null)[] | null } | null;
 }
 
@@ -1201,13 +1224,25 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     .filter((n) => isAgentTopLevelComment(n.body))
     .map((n) => n.body ?? "");
 
-  // Both markers, not just the top-level one: since #104 this workflow also
-  // posts a record of what it did with these comments, and an unmarked record
-  // would come back next round as a comment to act on — and to report an outcome
-  // on, the agent answering its own post. One predicate for "we wrote this".
+  // The out-of-scope notes (#213), by marker **and** by author: the marker is
+  // a selector anyone can type, and a note is something a review may file.
+  const notesByBot = commentNodes.filter(
+    (n) => isWorkflowBot(n.author?.login ?? undefined) && isOutOfScopeNote(n.body),
+  );
+  const priorOutOfScopeNotes = notesByBot.map((n) => n.body ?? "");
+
+  // Every marker this workflow writes, not just the top-level one: since #104
+  // it also posts a record of what it did with these comments, and since #213
+  // its out-of-scope notes. Unmarked, either would come back next round as a
+  // comment to act on, and to report an outcome on: the agent answering its
+  // own post. A note's marker is honoured only on a note the bot posted, so a
+  // person who types it is still read.
   const conversationNodes = renderable(
     commentNodes.filter(
-      (n) => !isAgentTopLevelComment(n.body) && !isAgentConversationOutcome(n.body),
+      (n) =>
+        !isAgentTopLevelComment(n.body) &&
+        !isAgentConversationOutcome(n.body) &&
+        !notesByBot.includes(n),
     ),
   );
 
@@ -1386,12 +1421,23 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
   // query makes this: `.pop()` over a page taken from the *front* is the newest
   // of the fifty oldest, which is only the newest review while a pull request
   // has had fewer than fifty (#125).
-  const latestAgentReviewBody =
-    present(pr?.reviews?.nodes)
-      .filter((review) => isWorkflowBot(review.author?.login ?? undefined))
-      .map((review) => (review.body ?? "").trim())
-      .filter((body) => body !== "")
-      .pop() ?? "";
+  const latestAgentReview = present(pr?.reviews?.nodes)
+    .filter((review) => isWorkflowBot(review.author?.login ?? undefined))
+    .filter((review) => (review.body ?? "").trim() !== "")
+    .pop();
+  const latestAgentReviewBody = (latestAgentReview?.body ?? "").trim();
+
+  // The notes that review has not ruled on: posted after it, or all of them
+  // where this loop has posted no review yet (#213). An unreadable time on
+  // either side keeps the note, which is the direction that cannot lose one.
+  const since = Date.parse(latestAgentReview?.submittedAt ?? "");
+  const outOfScopeNotes = notesByBot.flatMap((n): PostedNote[] => {
+    const posted = Date.parse(n.createdAt ?? "");
+    if (!Number.isNaN(since) && !Number.isNaN(posted) && posted <= since) return [];
+    const note = readOutOfScopeNote(n.body);
+    if (note === undefined || typeof n.id !== "string") return [];
+    return [{ noteId: n.id, ...note, ...(typeof n.url === "string" ? { url: n.url } : {}) }];
+  });
 
   const all = [
     summaries && `### Review summaries\n\n${summaries}`,
@@ -1412,6 +1458,8 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     settledFindings,
     latestAgentReviewBody,
     priorTopLevelComments,
+    outOfScopeNotes,
+    priorOutOfScopeNotes,
     diff: readDiff(prNumber),
     changedFiles: parseNameStatus(git(changedFilesCommandAgainstBase(process.env["BASE_REF"]))),
     // Deliberately **not** computed from `all` (#160). What is rendered and

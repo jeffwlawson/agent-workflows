@@ -2181,11 +2181,40 @@ describe("agent-fix asks for the re-review its own push needs", () => {
     expect(push?.run ?? "").toContain('echo "pushed=false" >> "$GITHUB_OUTPUT"');
   });
 
-  it("requests the review only when the fix pushed something", () => {
-    expect(request()?.if).toBe(
-      "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed == 'true'",
+  it("requests the review only when the fix pushed something or posted a note", () => {
+    expect((request()?.if ?? "").replace(/\s+/g, " ").trim()).toBe(
+      "steps.state.outputs.proceed == 'true' && success() && (steps.push.outputs.pushed == 'true' || steps.notes.outputs.posted == 'true')",
     );
     expect(request()?.run ?? "").toContain('--add-label "agent:review"');
+  });
+
+  /**
+   * **A run that pushed nothing but posted an out-of-scope note asks for a
+   * re-review** (#213), because the review is what rules on the note: filed on
+   * merge, or dropped with a reason. Unreviewed, a note is filed by nobody,
+   * which is the loss jeffwlawson/mealie-mcp-server#82 showed.
+   *
+   * `posted` is written on both arms and is true only where a note actually
+   * went up: one that failed to post is one no review can rule on.
+   */
+  it("posts the notes in a step that says whether any went up", () => {
+    const notes = stepNamed("Post out-of-scope notes");
+
+    expect(notes?.id).toBe("notes");
+    expect(notes?.env?.["NOTES"]).toBe("${{ runner.temp }}/out_of_scope_notes.json");
+    expect(notes?.run ?? "").toContain("posted=false");
+    expect(notes?.run ?? "").toContain('echo "posted=${posted}" >> "$GITHUB_OUTPUT"');
+    const post = notes?.run ?? "";
+    expect(post.indexOf("posted=true")).toBeGreaterThan(post.indexOf('if gh pr comment "$PR_NUMBER"'));
+  });
+
+  /** A run that only posted notes moved no head, so it has no commit to wait for. */
+  it("waits for the pushed head only where it pushed", () => {
+    const run = request()?.run ?? "";
+
+    expect(request()?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.pushed }}");
+    expect(run.indexOf('if [ "$PUSHED" = "true" ]; then')).toBeGreaterThan(-1);
+    expect(run.indexOf('if [ "$PUSHED" = "true" ]; then')).toBeLessThan(run.indexOf("--json headRefOid"));
   });
 
   /**
@@ -2206,7 +2235,7 @@ describe("agent-fix asks for the re-review its own push needs", () => {
 
   it("marks the pull request ready exactly where it asks for no review", () => {
     expect((ready()?.if ?? "").replace(/\s+/g, " ").trim()).toBe(
-      "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed != 'true' && steps.nothing.outputs.nothing != 'true'",
+      "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed != 'true' && steps.notes.outputs.posted != 'true' && steps.nothing.outputs.nothing != 'true'",
     );
     expect(ready()?.run ?? "").toContain('gh pr ready "$PR_NUMBER"');
   });
@@ -2246,6 +2275,7 @@ describe("agent-fix asks for the re-review its own push needs", () => {
       "Reply to review threads",
       "Post conversation comment outcomes",
       "Post top-level comments",
+      "Post out-of-scope notes",
     ]) {
       // `toContain` first: a renamed step makes `indexOf` return -1, which every
       // "is after" assertion passes vacuously.
@@ -2318,6 +2348,20 @@ describe("agent-fix asks for the re-review its own push needs", () => {
 
     expect(blocked?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.pushed }}");
     expect(blocked?.run ?? "").toContain('"$PUSHED" = "true"');
+  });
+
+  /**
+   * Nor after its out-of-scope notes are posted (#213): a second fix run would
+   * answer the same threads again, and what is missing is the review that
+   * rules on the notes.
+   */
+  it("sends a run that posted notes to the review, not back to the fix", () => {
+    const blocked = stepNamed("Mark blocked on failure");
+    const run = blocked?.run ?? "";
+    const arm = run.slice(run.indexOf('elif [ "$NOTED" = "true" ]; then'));
+
+    expect(blocked?.env?.["NOTED"]).toBe("${{ steps.notes.outputs.posted }}");
+    expect(arm).toContain("add \\`agent:review\\`");
   });
 });
 
@@ -2397,6 +2441,16 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
     expect(condition(FIX)).not.toContain("pushed != ");
     expect(advance(FIX).needs).toBe("fix");
     expect(jobOf(FIX).outputs?.["pushed"]).toBe("${{ steps.push.outputs.pushed }}");
+  });
+
+  /**
+   * **Nor where it posted an out-of-scope note** (#213): that run asked for the
+   * review that rules on the note, and advancing here too would build the next
+   * slice under it.
+   */
+  it("does not advance from fix where the run posted a note", () => {
+    expect(condition(FIX)).toContain("needs.fix.outputs.noted != 'true'");
+    expect(jobOf(FIX).outputs?.["noted"]).toBe("${{ steps.notes.outputs.posted }}");
   });
 
   /**

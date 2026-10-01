@@ -130,6 +130,29 @@ it were new is this loop overruling the person it works for, and the record has 
 that it has happened. If you believe one of them is now a different problem (the code has changed
 since and broken something else), say so about *that* problem, naming what changed.
 
+# NOTES THE FIX RUN LEFT
+
+Things `agent:fix` noticed while fixing this pull request that are **outside its scope**, posted
+on the conversation since the last review. Each carries the id the workflow read it under. They are
+not findings against this pull request, and they do not count toward its verdict.
+
+{{FIX_NOTES}}
+
+**Rule on every one of them, by id, in `noteRulings`.** Read the code each one points at, then
+either:
+
+- **promote** it: it is real, it is not this pull request's to fix, and it is worth an issue. Give
+  it a `severity`, and a `location` where you can name a better one than the note did. The workflow
+  records it as a follow-up, filed when this pull request merges like any other. A promoted note
+  takes one of the three follow-up places, ahead of your own, so do not also write it into
+  `followUps`.
+- **drop** it, with a `reason` the body shows: it is not real, it is already tracked, it is this
+  pull request's to fix after all (then it is a finding of your own, on the usual terms), or it is
+  not worth an issue.
+
+A note you say nothing about is recorded as a follow-up at `medium`. That is the safe direction:
+a note nobody ruled on must not disappear.
+
 # CI RESULTS
 
 The PR's other checks, waited for and collected before this review started. Some are

@@ -21,6 +21,13 @@ export interface ReviewHistory {
    * review announced it, `agent:fix` pushed, and the push asked for this
    * review. It is what the early stop judges (`fixRoundProgress`).
    *
+   * **Or the round pushed nothing but posted an out-of-scope note** (#213),
+   * which asks for this review too. That round declined or answered every
+   * finding without a commit, and it is exactly the one the early stop must
+   * see: read as following no round, its 🟡 would start another until the
+   * budget ran out, and the brief would not ask this review to restate the
+   * follow-ups its record replaces.
+   *
    * Only the automatic rounds, because only they spend the budget (PRD #200
    * decision 7), and they are the rounds the early stop exists to bound. A round
    * a human started by adding `agent:fix` posts no verdict of its own, so the
@@ -155,9 +162,12 @@ const verdictOn = (repo: string, sha: string): string | null | undefined => {
  *
  * A verdict on the head itself, with nothing after it, follows no fix round:
  * that is a human re-adding `agent:review` without pushing, and there is
- * nothing a fix round did for the early stop to judge.
+ * nothing a fix round did for the early stop to judge. **Unless** `noted`: the
+ * fix run posted an out-of-scope note since this loop's latest review, so a
+ * round did run, and pushed nothing (#213). The note is read off the
+ * conversation, which this file does not fetch, so the caller says.
  */
-export const readReviewHistory = (prNumber: string): ReviewHistory => {
+export const readReviewHistory = (prNumber: string, noted = false): ReviewHistory => {
   const repo = process.env["GH_REPO"] ?? "";
   const commits = readCommits(repo, prNumber);
   if (commits === undefined) {
@@ -183,7 +193,10 @@ export const readReviewHistory = (prNumber: string): ReviewHistory => {
     if (verdict === null) continue;
 
     const since = commits.length - 1 - i;
-    return { afterFixRound: since > 0 && verdict === FIX_ROUND_STARTED, unreviewedCommits: since > 0 };
+    return {
+      afterFixRound: (since > 0 || noted) && verdict === FIX_ROUND_STARTED,
+      unreviewedCommits: since > 0,
+    };
   }
 
   // No verdict anywhere on this pull request: the first review of it, and every
@@ -241,7 +254,9 @@ export const describeHistory = (history: ReviewHistory): string => {
     return `This review is taken to **follow a fix round**, the stricter reading, because ${history.unreadable}.`;
   }
   if (history.afterFixRound) {
-    return "This review **follows a fix round**: an earlier review of this pull request started one, and commits have landed since.";
+    return history.unreviewedCommits
+      ? "This review **follows a fix round**: an earlier review of this pull request started one, and commits have landed since."
+      : "This review **follows a fix round**: an earlier review of this pull request started one, and the fix run pushed nothing but left out-of-scope notes.";
   }
   if (history.unreviewedCommits) {
     return "This review follows **no fix round** it can recognise: either no earlier verdict stands on this pull request, or the commits since the last one are a human's push, a merge, or a fix round a human started by adding `agent:fix`, which posts no verdict of its own. Review them as a change in full.";

@@ -270,6 +270,31 @@ describe("readReviewHistory", () => {
     expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: false });
   });
 
+  /**
+   * **Unless the fix run left an out-of-scope note** (#213): that run asked for
+   * this review without pushing, so the round it was is one the early stop
+   * judges, and this review restates the follow-ups its record replaces.
+   */
+  it("follows a fix round when the round pushed nothing but posted a note", () => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(HEAD)]],
+      statuses: statuses({ [HEAD]: [started()] }),
+    });
+
+    expect(readReviewHistory("12", true)).toEqual({ afterFixRound: true, unreviewedCommits: false });
+    expect(describeHistory(readReviewHistory("12", true))).toMatch(/follows a fix round.*out-of-scope notes/);
+  });
+
+  /** A note after any other verdict is a human-started fix, which spends no budget. */
+  it("follows no fix round when a note follows a verdict that started none", () => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(HEAD)]],
+      statuses: statuses({ [HEAD]: [verdict()] }),
+    });
+
+    expect(readReviewHistory("12", true).afterFixRound).toBe(false);
+  });
+
   it("reads every page, so a long pull request's head is not off the end", () => {
     ghAnswers({
       commits: [[commit(FIRST)], [commit(MIDDLE), commit(HEAD)]],

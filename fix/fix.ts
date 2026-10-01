@@ -12,6 +12,7 @@ import {
   writeJson,
   writeText,
 } from "../shared/common.js";
+import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
 import {
   filterConversationOutcomes,
   filterOutcomes,
@@ -111,6 +112,19 @@ try {
   );
   writeJson("top_level_comments.json", topLevelComments);
 
+  // What the run noticed outside this pull request's scope (#213), rendered
+  // for posting and deduped against the notes earlier runs posted. Written
+  // unconditionally like the comments above. The workflow posts them, and a
+  // run that posted one asks for the review that rules on it.
+  const outOfScopeNotes = filterOutOfScopeNotes(
+    result.output.outOfScopeNotes,
+    feedback.priorOutOfScopeNotes,
+  );
+  writeJson(
+    "out_of_scope_notes.json",
+    outOfScopeNotes.map((body) => ({ body })),
+  );
+
   const after = sh("git rev-parse HEAD").trim();
   if (before === after) {
     // Not a failure: the agent may have judged every comment already handled or
@@ -153,6 +167,14 @@ try {
       : produced === 0
         ? "Top-level comments: none, nothing outside the threads."
         : `Top-level comments: none posted (${produced} produced, all dropped; see warnings above).`,
+  );
+  const noted = result.output.outOfScopeNotes.length;
+  console.log(
+    outOfScopeNotes.length > 0
+      ? `Out-of-scope notes: ${outOfScopeNotes.length} to post (${noted} produced), for the next review to rule on.`
+      : noted === 0
+        ? "Out-of-scope notes: none."
+        : `Out-of-scope notes: none posted (${noted} produced, all dropped; see warnings above).`,
   );
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));

@@ -5,6 +5,7 @@ import {
   type UnreadableSelection,
 } from "./pr-feedback.js";
 import { keyedByChangedFiles, parseDiffLines } from "./diff-lines.js";
+import type { PostedNote } from "./fix-notes.js";
 import {
   carriedFindings,
   type CarriedFinding,
@@ -55,6 +56,13 @@ export interface PullRequestContext {
    * by filling in a field.
    */
   readonly settledFindings: readonly SettledFinding[];
+  /**
+   * The out-of-scope notes the fix run posted since this loop's last review
+   * (#213), each of which this review rules on: filed on merge, or dropped with
+   * a reason. Read off the conversation by marker and by bot author, in the
+   * fetch.
+   */
+  readonly fixNotes: readonly PostedNote[];
   readonly diff: string;
   readonly diffLines: Map<string, Set<number>>;
 }
@@ -150,6 +158,7 @@ export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequ
       latestReviewBody: feedback.latestAgentReviewBody,
     }),
     settledFindings: feedback.settledFindings,
+    fixNotes: feedback.outOfScopeNotes,
     diff,
     // The files come from git's file list and the lines from the patch — see
     // `keyedByChangedFiles` for why the list, not the patch, decides the keys.

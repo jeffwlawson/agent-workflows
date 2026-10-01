@@ -337,13 +337,19 @@ jobs:
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.4 -- agent-workflows fix
 
       # A fix with nothing to act on is a note, not a failure (#253): no
-      # `agent:blocked`, and the run ends green. Every step after this one
-      # finds nothing to post and nothing to push, so the run ends the way one
-      # that declined everything does, handing the pull request back.
+      # `agent:blocked`, and the run ends green. But it is not a round that
+      # ended, the way one that declined everything is: nothing was read, so
+      # nothing was decided. The output it writes skips the push, so `pushed`
+      # stays unset, and with it `Mark PR ready for review` and the `advance`
+      # job. Otherwise a slice PR whose review failed, given `agent:fix` by
+      # hand, would have its block cleared and the chain would merge it
+      # unreviewed; and a draft PRD PR would be handed over early.
       - name: Say there was nothing to do
+        id: nothing
         if: steps.state.outputs.proceed == 'true' && success()
         run: |
           [ -f "${RUNNER_TEMP}/nothing_to_do.txt" ] || exit 0
+          echo "nothing=true" >> "$GITHUB_OUTPUT"
           gh pr comment "$PR_NUMBER" --body "**\`agent:fix\` had nothing to do:** There are no open review findings or comments for it to act on." \
             || echo "::warning::Could not post the nothing-to-do note on PR #${PR_NUMBER}."
 
@@ -358,7 +364,7 @@ jobs:
       # branch that did not move is not one to ask for a review of.
       - name: Push branch
         id: push
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: steps.state.outputs.proceed == 'true' && success() && steps.nothing.outputs.nothing != 'true'
         run: |
           set -euo pipefail
           if [ -z "$(git log origin/"$BRANCH"..HEAD --oneline 2>/dev/null)" ]; then
@@ -594,7 +600,7 @@ jobs:
       - name: Mark PR ready for review
         if: >-
           steps.state.outputs.proceed == 'true' && success() &&
-          steps.push.outputs.pushed != 'true'
+          steps.push.outputs.pushed != 'true' && steps.nothing.outputs.nothing != 'true'
         env:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
@@ -685,8 +691,8 @@ jobs:
   # every finding moves the chain on rather than sitting on "fix round started"
   # forever. `== 'false'` rather than `!= 'true'`: the push writes the output on
   # both arms, and an unset one is a run that never got as far as the push —
-  # a refused or failed run, which parks the chain. A failed run skips this job
-  # through `needs:` besides.
+  # a refused or failed run, or one with nothing to do (#253), which parks
+  # the chain. A failed run skips this job through `needs:` besides.
   #
   # Same shape, same scope, same step as the review's copy — a test holds the
   # steps equal, so the two cannot come to say different things.

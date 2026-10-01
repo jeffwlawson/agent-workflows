@@ -638,10 +638,10 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
       const outcome = runMerge({ labels: [{ name: "agent:follow-ups" }, { name: label }] });
 
       expect(outcome.status).toBe(1);
-      expect(outcome.reason).toContain(`slice PR #${SLICE}`);
+      expect(outcome.reason).toContain(`Slice PR #${SLICE}`);
       expect(outcome.reason).toContain(`\`${label}\``);
       expect(outcome.reason).toMatch(/round has not ended/);
-      expect(outcome.stdout).toContain(`::error::Refused to merge slice PR #${SLICE}`);
+      expect(outcome.stdout).toContain(`::error::Slice PR #${SLICE} still has`);
       expect(outcome.writes).toEqual([]);
       expect(outcome.output).not.toContain("merged=");
     },
@@ -666,7 +666,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     const outcome = runMerge({ state: "CLOSED" });
 
     expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`slice PR #${SLICE}`);
+    expect(outcome.reason).toContain(`Slice PR #${SLICE}`);
     expect(outcome.reason).toContain("closed");
     expect(outcome.writes).toEqual([]);
   });
@@ -728,7 +728,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     const merged = writes.findIndex((argv) => argv[1] === "merge");
 
     expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`Could not merge slice PR #${SLICE}`);
+    expect(outcome.reason).toContain(`Couldn't merge slice PR #${SLICE}`);
     expect(patches.map((argv) => argv.at(-1))).toEqual([
       "body=Part of #172\n\n<!-- agent-chain-merge 0123abc -->",
       "body=Part of #172",
@@ -974,7 +974,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain(`slice PR #${SLICE}`);
     expect(outcome.reason).toContain("Part of #<sub-issue>");
-    expect(outcome.reason).toContain("The merge is not repeated");
+    expect(outcome.reason).toContain("Trying again doesn't repeat the merge.");
     expect(outcome.temp("slices-table.json")).toBe("");
   });
 
@@ -1028,7 +1028,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("slice PR #205");
-    expect(outcome.reason).toContain("The merge is not repeated");
+    expect(outcome.reason).toContain("Trying again doesn't repeat the merge.");
     expect(outcome.temp("slices-table.json")).toBe("");
   });
 });

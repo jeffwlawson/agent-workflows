@@ -2206,7 +2206,7 @@ describe("agent-fix asks for the re-review its own push needs", () => {
 
   it("marks the pull request ready exactly where it asks for no review", () => {
     expect((ready()?.if ?? "").replace(/\s+/g, " ").trim()).toBe(
-      "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed != 'true'",
+      "steps.state.outputs.proceed == 'true' && success() && steps.push.outputs.pushed != 'true' && steps.nothing.outputs.nothing != 'true'",
     );
     expect(ready()?.run ?? "").toContain('gh pr ready "$PR_NUMBER"');
   });
@@ -7564,6 +7564,40 @@ describe("every failure and refusal says so in one of two patterns", () => {
     expect(run).not.toContain("agent:blocked");
     expect(run).not.toContain("exit 1");
     expect(run).toMatch(/\|\| echo "::warning::[^"]+"$/m);
+  });
+
+  /**
+   * But nothing to do is not a round that ended: nothing was read, so nothing
+   * was decided. Its output skips the push, which leaves `pushed` unset, so the
+   * pull request is not handed back as ready and the `advance` job, gated on
+   * `pushed == 'false'`, does not move a PRD chain past an unreviewed slice.
+   */
+  it("fix: a run with nothing to act on pushes nothing, hands nothing back and advances no chain", () => {
+    const steps = stepsOf(FIX);
+    const step = (name: string): Step | undefined => steps.find((s) => s.name === name);
+    const skip = "steps.nothing.outputs.nothing != 'true'";
+
+    expect(step("Say there was nothing to do")?.id).toBe("nothing");
+    expect(step("Say there was nothing to do")?.run ?? "").toContain('echo "nothing=true" >> "$GITHUB_OUTPUT"');
+    expect(step("Push branch")?.if ?? "").toContain(skip);
+    expect(step("Mark PR ready for review")?.if ?? "").toContain(skip);
+    // The advance reads only `pushed`, which a skipped push never writes.
+    expect(jobNamed(FIX, "advance").if ?? "").toContain("needs.fix.outputs.pushed == 'false'");
+  });
+
+  /**
+   * A reason a PRD run's `block` writes is posted inside the stopped pattern,
+   * whose footer already says how to try again. So none of them opens the old
+   * way or gives the retry a second time.
+   */
+  it("implement-prd: no reason it blocks with opens the old way or repeats the retry", () => {
+    const offenders = fs
+      .readFileSync(PRD, "utf8")
+      .split("\n")
+      .filter((line) => /\bblock "/.test(line) && !line.trimStart().startsWith("#"))
+      .filter((line) => /Refused|re-add/i.test(line));
+
+    expect(offenders).toEqual([]);
   });
 
   /** The start and success comments #205 added, in the same pattern. */

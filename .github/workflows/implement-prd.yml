@@ -628,7 +628,7 @@ jobs:
           # head is the one the merge is pinned to.
           fields=number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName,labels,body
           pr=$(gh pr view "$SLICE_PR" --json "$fields") \
-            || block "Could not read slice PR #${SLICE_PR}, so nothing was merged. Re-add \`agent:implement\` here to retry."
+            || block "Couldn't read slice PR #${SLICE_PR}, so nothing was merged."
           state=$(jq -r '.state' <<< "$pr")
           head=$(jq -r '.headRefOid' <<< "$pr")
           head_ref=$(jq -r '.headRefName' <<< "$pr")
@@ -642,13 +642,13 @@ jobs:
           # works and while it is queued (#236), so a run in progress shows.
           busy=$(jq -r '[.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")] | join("`, `")' <<< "$pr")
           if [ -n "$busy" ]; then
-            block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: it carries \`${busy}\`, so its review round has not ended. Re-add \`agent:implement\` here once that label is gone."
+            block "Slice PR #${SLICE_PR} still has \`${busy}\`, so its review round has not ended and it wasn't merged. Wait until that label is gone."
           fi
 
           if [ "$state" = "MERGED" ]; then
             echo "Slice PR #${SLICE_PR} is already merged into ${prd_branch}; nothing to merge."
           elif [ "$state" != "OPEN" ]; then
-            block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: it is ${state,,}, not open. Reopen it, or close the sub-issue it built and re-open that one, then re-add \`agent:implement\` here."
+            block "Slice PR #${SLICE_PR} is ${state,,}, so it wasn't merged. Reopen it, or close the sub-issue it built and reopen that one."
           else
             # UNKNOWN is GitHub still computing the answer, which a read starts;
             # a short wait settles it far more often than a refusal would.
@@ -659,7 +659,7 @@ jobs:
               mergeable=$(gh pr view "$SLICE_PR" --json mergeable --jq '.mergeable')
             done
             if [ "$mergeable" != "MERGEABLE" ]; then
-              block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: GitHub reports it as ${mergeable,,}, not mergeable. That is usually a conflict with a PRD branch that moved since the slice was built. Add \`agent:update-branch\` to slice PR #${SLICE_PR} to bring it up to date, then re-add \`agent:implement\` here once its round has ended."
+              block "GitHub says slice PR #${SLICE_PR} can't be merged (${mergeable,,}), usually because the PRD branch changed after the slice was built. Add \`agent:update-branch\` to slice PR #${SLICE_PR} to bring it up to date, and wait for its review to finish."
             fi
 
             # A draft cannot be merged, and a slice PR accepted by hand as it
@@ -667,7 +667,7 @@ jobs:
             # like any other.
             if [ "$(jq -r '.isDraft' <<< "$pr")" = "true" ]; then
               gh pr ready "$SLICE_PR" \
-                || block "Could not mark slice PR #${SLICE_PR} ready for review, and a draft cannot be merged. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand, then re-add \`agent:implement\` here."
+                || block "Couldn't mark slice PR #${SLICE_PR} ready for review, and a draft can't be merged. If \`AGENT_PAT\` isn't set, that is why: GitHub doesn't let the default token do it. Mark it ready by hand."
             fi
 
             # The first method the repository allows, in the order that gives
@@ -680,7 +680,7 @@ jobs:
                 if .allow_merge_commit then "merge" else empty end
               ] | .[0] // ""') || method=""
             if [ -z "$method" ]; then
-              block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: this repository's settings allow none of squash, rebase or a merge commit, or this token cannot read them."
+              block "Couldn't merge slice PR #${SLICE_PR}: this repository allows none of squash, rebase or merge commits, or the token can't read those settings."
             fi
 
             # The chain's own mark, for review's `advance-merged` (#209), which
@@ -714,14 +714,14 @@ jobs:
             trap 'exit 1' INT TERM
             if [[ "$body" != *"$marker"* ]]; then
               gh api -X PATCH "repos/${GH_REPO}/pulls/${SLICE_PR}" -f body="${body}"$'\n\n'"${marker}" >/dev/null \
-                || block "Could not mark slice PR #${SLICE_PR} as merged by the chain, so nothing was merged: merged without the mark, it would read as a hand merge and start a second run. Re-add \`agent:implement\` here to retry."
+                || block "Couldn't note on slice PR #${SLICE_PR} that the loop is merging it, so nothing was merged. Without that note the merge would look like a hand merge and start a second run."
             fi
 
             # Pinned to the head read above. A push between that read and this
             # merge is code nothing checked, and GitHub refuses it rather than
             # merging it unseen.
             gh pr merge "$SLICE_PR" "--${method}" --match-head-commit "$head" \
-              || block "Could not merge slice PR #${SLICE_PR} into the PRD branch (${method}, pinned to ${head}). If it was pushed to since this run read it, its new head has not been through a round: re-add \`agent:implement\` here once it has."
+              || block "Couldn't merge slice PR #${SLICE_PR} into the PRD branch (${method}, at ${head}). If it was pushed to after this run read it, wait for a review of the new commit first."
             # Merged, so the mark is the chain's to keep: the `closed` event it
             # answers has already been sent.
             trap - EXIT INT TERM
@@ -786,12 +786,12 @@ jobs:
             # One read of the merged slice PR. Its head is the one the merge
             # was pinned to, and a merged pull request's head no longer moves.
             pr=$(gh pr view "$number" --json number,headRefOid,headRefName,title,body,url) \
-              || block "Merged slice PR #${number} into the PRD branch, but could not read it back for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+              || block "Merged slice PR #${number} into the PRD branch, but couldn't read it back for its row of the slices table. Trying again doesn't repeat the merge."
             head=$(jq -r '.headRefOid' <<< "$pr")
 
             sub=$(jq -r --arg parent "$ISSUE_NUMBER" "$slice_of" <<< "$pr")
             if [ -z "$sub" ]; then
-              block "Merged slice PR #${number} into the PRD branch, but could not tell which sub-issue it built: its body has no \`Part of #<sub-issue>\` and its branch is not \`agent/slice-${ISSUE_NUMBER}-<sub-issue>-…\`. Put \`Part of #<sub-issue>\` back in slice PR #${number}'s body, then re-add \`agent:implement\` here. The merge is not repeated."
+              block "Merged slice PR #${number} into the PRD branch, but couldn't tell which sub-issue it built: its description has no \`Part of #<sub-issue>\` and its branch isn't \`agent/slice-${ISSUE_NUMBER}-<sub-issue>-…\`. Put \`Part of #<sub-issue>\` back in slice PR #${number}'s description. Trying again doesn't repeat the merge."
             fi
             url=$(jq -r '.url' <<< "$pr")
 
@@ -800,7 +800,7 @@ jobs:
             # holds the latest post per context.
             verdict=$(gh api "repos/${GH_REPO}/commits/${head}/status" --paginate --slurp \
               | jq -c '[.[].statuses[]? | select(.context == "agent-review")] | .[0].description // null') \
-              || block "Merged slice PR #${number} into the PRD branch, but could not read the \`agent-review\` verdict on ${head} for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+              || block "Merged slice PR #${number} into the PRD branch, but couldn't read its \`agent-review\` verdict on ${head} for its row of the slices table. Trying again doesn't repeat the merge."
 
             # Every review thread left open, linked from the row rather than
             # raised again: the PRD PR's review is not a second round of these.
@@ -820,7 +820,7 @@ jobs:
               | jq -c --arg url "$url" '[.[].data.repository.pullRequest.reviewThreads.nodes[]
                   | select(.isResolved | not)
                   | {path, line: (.line // .originalLine), url: (.comments.nodes[0].url // $url)}]') \
-              || block "Merged slice PR #${number} into the PRD branch, but could not read its review threads for its row of the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+              || block "Merged slice PR #${number} into the PRD branch, but couldn't read its review threads for its row of the slices table. Trying again doesn't repeat the merge."
 
             row=$(jq -n \
               --slurpfile issue "${RUNNER_TEMP}/prd-issue.json" \
@@ -848,7 +848,7 @@ jobs:
           # Every state, since a merged slice PR is exactly what rules one out.
           built=$(gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,body,headRefName \
             | jq -c --arg parent "$ISSUE_NUMBER" "[.[] | ${slice_of} | tonumber]") \
-            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but could not list the slice PRs of \`${PRD_BRANCH}\` for the slices table. Re-add \`agent:implement\` here to retry. The merge is not repeated."
+            || block "Merged slice PR #${SLICE_PR} into the PRD branch, but couldn't list the slice PRs of \`${PRD_BRANCH}\` for the slices table. Trying again doesn't repeat the merge."
 
           jq -n \
             --slurpfile issue "${RUNNER_TEMP}/prd-issue.json" \
@@ -895,11 +895,11 @@ jobs:
           }
 
           existing=$(gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number --jq 'map(.number) | join(" ")') \
-            || block "Could not look for the PRD PR from \`${PRD_BRANCH}\`. Slice PR #${SLICE_PR} is merged; re-add \`agent:implement\` here to retry. The merge is not repeated."
+            || block "Couldn't look for the PRD PR from \`${PRD_BRANCH}\`. Slice PR #${SLICE_PR} is merged, and trying again doesn't repeat the merge."
           count=$(wc -w <<< "$existing")
 
           if [ "$count" -gt 1 ]; then
-            block "Refused to pick a PRD PR: ${count} open PRs come from the PRD branch \`${PRD_BRANCH}\` of #${ISSUE_NUMBER} (#${existing// /, #}). Close all but one, then re-add \`agent:implement\` here."
+            block "${count} open PRs come from this PRD's branch \`${PRD_BRANCH}\` (#${existing// /, #}), so it can't tell which one is the PRD PR. Close all but one."
           elif [ "$count" -eq 1 ]; then
             number="$existing"
             echo "Reusing PRD PR #${number}."
@@ -1286,7 +1286,7 @@ jobs:
           # #<n>`, or failing that the slice branch's name, as the row step.
           slice_of='(.body // "" | capture("Part of #(?<n>[0-9]+)").n) // (.headRefName | capture("^agent/slice-\($parent)-(?<n>[0-9]+)-").n) // empty'
           prs=$(gh pr list --state all --base "$PRD_BRANCH" --limit 1000 --json number,state,body,headRefName) \
-            || block "Could not list the slice PRs of \`${PRD_BRANCH}\` to decide how to hand PRD PR #${PRD_PR} over. Re-add \`agent:implement\` here to retry. Nothing is merged twice."
+            || block "Couldn't list the slice PRs of \`${PRD_BRANCH}\` to decide how to hand PRD PR #${PRD_PR} over. Trying again merges nothing twice."
           merged=$(jq '[.[] | select(.state == "MERGED")] | length' <<< "$prs")
           built=$(jq -c --arg parent "$ISSUE_NUMBER" "[.[] | ${slice_of} | tonumber]" <<< "$prs")
           before=$(jq --argjson built "$built" \
@@ -1302,11 +1302,11 @@ jobs:
             # Removed first, as every trigger label the loop adds (#236).
             gh pr edit "$PRD_PR" --remove-label "agent:review" || true
             gh pr edit "$PRD_PR" --add-label "agent:review" \
-              || block "Could not add \`agent:review\` to PRD PR #${PRD_PR}, so its integration review was not asked for. Re-add \`agent:implement\` here to retry the handover. Nothing is merged twice."
+              || block "Couldn't add \`agent:review\` to PRD PR #${PRD_PR}, so its review was not requested. Trying again resumes the handover and merges nothing twice."
             echo "Asked for the integration review of PRD PR #${PRD_PR}; review marks it ready."
           else
             gh pr ready "$PRD_PR" \
-              || block "Could not mark PRD PR #${PRD_PR} ready for review. Re-add \`agent:implement\` here to retry the handover. Nothing is merged twice."
+              || block "Couldn't mark PRD PR #${PRD_PR} ready for review. Trying again resumes the handover and merges nothing twice."
             echo "Marked PRD PR #${PRD_PR} ready: its one slice was reviewed on its slice PR."
           fi
 

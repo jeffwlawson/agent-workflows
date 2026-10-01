@@ -19,6 +19,7 @@ import {
   deriveVerdict,
   FIX_ROUND_STATUS,
   FOLLOW_UPS_LABEL,
+  LEGACY_FIX_ROUND_STARTED,
   renderReviewBody,
   type Verdict,
   VERDICT_CONTEXT,
@@ -1841,7 +1842,13 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     expect(step?.env?.["FIX_ROUND_CONTEXT"]).toBe(FIX_ROUND_STATUS.context);
     expect(step?.env?.["STARTED"]).toBeUndefined();
     expect(run).toContain(".context == env.FIX_ROUND_CONTEXT");
-    expect(run).not.toContain(".description ==");
+    // And, for one release, a 0.7.6 verdict that started a round, which has
+    // no `agent-fix-round` status to count (#297).
+    expect(step?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
+    expect(step?.env?.["LEGACY_STARTED"]).toBe(LEGACY_FIX_ROUND_STARTED);
+    expect(run).toContain(
+      "(.context == env.FIX_ROUND_CONTEXT or (.context == env.VERDICT_CONTEXT and .description == env.LEGACY_STARTED))",
+    );
     expect(run).toContain(".creator.login == env.LOOP_ACCOUNT");
     expect(run).toContain("sort -u");
     // An unreadable count starts nothing.

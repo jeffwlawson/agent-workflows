@@ -1,5 +1,10 @@
 import { isWorkflowBot, safeGh } from "./common.js";
-import { FIX_ROUND_STATUS, VERDICT_CONTEXT, type FixRoundProgress } from "./review-output.js";
+import {
+  FIX_ROUND_STATUS,
+  LEGACY_FIX_ROUND_STARTED,
+  VERDICT_CONTEXT,
+  type FixRoundProgress,
+} from "./review-output.js";
 import type { CarriedFinding } from "./review-verification.js";
 
 /**
@@ -127,7 +132,9 @@ const readCommits = (repo: string, prNumber: string): readonly string[] | undefi
  *
  * The round is the `FIX_ROUND_STATUS` record (#297), matched to the verdict by
  * the review both link, so a record an earlier review of the same commit left
- * is not read as this verdict's.
+ * is not read as this verdict's. Or, for one release, the verdict's own line
+ * is 0.7.6's *fix round started* one (`LEGACY_FIX_ROUND_STARTED`), which is all
+ * a round in flight at the upgrade carries.
  */
 const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | undefined => {
   const pages = readJson(
@@ -139,6 +146,7 @@ const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | un
     pages.flatMap((page) => (Array.isArray(page) ? (page as unknown[]) : [page])) as {
       context?: unknown;
       state?: unknown;
+      description?: unknown;
       target_url?: unknown;
       creator?: { login?: unknown };
     }[]
@@ -154,9 +162,10 @@ const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | un
   const url = verdict.target_url;
   return {
     fixRound:
-      typeof url === "string" &&
+      verdict.description === LEGACY_FIX_ROUND_STARTED ||
+      (typeof url === "string" &&
       url !== "" &&
-      statuses.some((status) => status.context === FIX_ROUND_STATUS.context && status.target_url === url),
+      statuses.some((status) => status.context === FIX_ROUND_STATUS.context && status.target_url === url)),
   };
 };
 

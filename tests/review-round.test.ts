@@ -17,7 +17,7 @@ import {
   unreadableHistoryNote,
   type ReviewHistory,
 } from "../shared/review-round.js";
-import { FIX_ROUND_STATUS, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
+import { FIX_ROUND_STATUS, LEGACY_FIX_ROUND_STARTED, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
 import type { CarriedFinding } from "../shared/review-verification.js";
 
 /**
@@ -255,6 +255,20 @@ describe("readReviewHistory", () => {
     });
 
     expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
+  });
+
+  /**
+   * A round in flight at the upgrade (#297): its verdict is 0.7.6's *fix round
+   * started* line, and no `agent-fix-round` record was ever posted beside it.
+   * Counted for one release, so the early stop can still judge that round.
+   */
+  it("follows a fix round a 0.7.6 verdict started, which carries no record", () => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
+      statuses: statuses({ [MIDDLE]: [verdict(LEGACY_FIX_ROUND_STARTED)] }),
+    });
+
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   /**

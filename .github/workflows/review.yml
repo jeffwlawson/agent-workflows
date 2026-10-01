@@ -954,6 +954,11 @@ jobs:
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           # `FIX_ROUND_STATUS.context`; a test holds the two equal.
           FIX_ROUND_CONTEXT: agent-fix-round
+          # And, for one release, the verdict a round started under 0.7.6
+          # carries instead: `LEGACY_FIX_ROUND_STARTED` and `VERDICT_CONTEXT`,
+          # verbatim, which a test holds equal (#297).
+          VERDICT_CONTEXT: agent-review
+          LEGACY_STARTED: "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically."
           LOOP_ACCOUNT: github-actions[bot]
         run: |
           set -uo pipefail
@@ -987,13 +992,14 @@ jobs:
 
           # Every link an `agent-fix-round` status of ours carries, one per
           # line, over every commit of the pull request; or a failure, which is
-          # not the same answer as none.
+          # not the same answer as none. A 0.7.6 verdict that started a round
+          # has no such status, and counts by its line instead.
           started_links() {
             local commits sha
             commits=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/commits" --paginate --jq '.[].sha') || return 1
             for sha in $commits; do
               gh api "repos/${GH_REPO}/commits/${sha}/statuses" --paginate --slurp \
-                | jq -r '(add // [])[] | select(.context == env.FIX_ROUND_CONTEXT and .creator.login == env.LOOP_ACCOUNT) | (.target_url // "status \(.id)")' \
+                | jq -r '(add // [])[] | select(.creator.login == env.LOOP_ACCOUNT and (.context == env.FIX_ROUND_CONTEXT or (.context == env.VERDICT_CONTEXT and .description == env.LEGACY_STARTED))) | (.target_url // "status \(.id)")' \
                 || return 1
             done
           }

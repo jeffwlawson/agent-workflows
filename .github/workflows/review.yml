@@ -1060,12 +1060,19 @@ jobs:
       # The commit the pre-flight settled on, not the payload's (#229). Still an
       # explicit `ref:`, which is what keeps `actions/checkout`'s own fork check
       # on; the job's `if:` is the other half.
+      #
+      # And no credential left in the checkout. The token is this job's, which
+      # reads and cannot write, but the agent below reads the PR's own text,
+      # and on a private repository a token lifted from the checkout reads the
+      # code and the Actions logs from anywhere until the job ends. The base
+      # fetch carries it itself instead. red-check's checkout persists none either.
       - name: Checkout PR head
         if: steps.state.outputs.proceed == 'true'
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.state.outputs.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Make the PR base available for diffing
         if: steps.state.outputs.proceed == 'true'
@@ -1094,7 +1101,14 @@ jobs:
         # The `:-main` this line used to carry is gone, not lost: the fallback
         # moved up to the `env:` block, where it is the `default-branch` input
         # rather than a literal only this repo could be right about.
-        run: git fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
+        #
+        # The checkout persists no credential, so the fetch carries the job's
+        # token itself, as a masked header on this one command.
+        run: |
+          set -euo pipefail
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
 
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the

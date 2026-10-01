@@ -742,13 +742,10 @@ jobs:
         with:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
-          # AGENT_PAT is optional. When absent this falls back to GITHUB_TOKEN,
-          # which works, except that CI on the resulting PR waits for a
-          # maintainer to approve it: since 2026-06-11 a push made with it
-          # starts `pull_request` runs that require approval (#221). Add the
-          # secret later and this starts using it with no change to the
-          # workflow.
-          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # No credential is left in the checkout for the agent's git, or
+          # anything else it runs, to find. Each fetch and push below passes
+          # its own token on the command line instead.
+          persist-credentials: false
 
       # Every slice is built **on the PRD branch itself**, at its tip, so slice
       # N is written on top of slices 1..N-1. The branch the preflight found is
@@ -767,7 +764,11 @@ jobs:
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
 
           if [ "$EXISTS" = "true" ]; then
-            git fetch origin "+refs/heads/${PRD_BRANCH}:refs/remotes/origin/${PRD_BRANCH}"
+            # The checkout persists no credential, so the fetch carries the
+            # job's read token itself, as each push carries its own.
+            auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+            echo "::add-mask::${auth}"
+            git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${PRD_BRANCH}:refs/remotes/origin/${PRD_BRANCH}"
             git checkout -B "$PRD_BRANCH" "refs/remotes/origin/${PRD_BRANCH}"
             echo "Building sub-issue #${SUB} on $PRD_BRANCH at $(git rev-parse --short HEAD)."
           else
@@ -793,6 +794,12 @@ jobs:
       # slice's first trailered commit, outside every slice range
       # (`shared/slice-ranges.ts`), so no slice round reviews it.
       #
+      # The checkout persists no credential, so the fetch carries the job's
+      # read token and the push `AGENT_PAT` (or its fallback), each as a masked
+      # header on its own command. This step runs before the agent, which is
+      # why the push token is in its env at all; nothing it does is written
+      # into the checkout.
+      #
       # A conflict is aborted, builds nothing and pushes nothing, and parks the
       # chain with a refusal naming `agent:update-branch` on the PRD PR, whose
       # agent resolves it and asks for a re-review: a round of the slice
@@ -807,6 +814,7 @@ jobs:
           EXISTS: ${{ steps.preflight.outputs.prd_branch_exists }}
           PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
           SUB: ${{ steps.preflight.outputs.sub }}
+          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -825,7 +833,9 @@ jobs:
             exit 0
           fi
 
-          git fetch origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
             || block "Couldn't fetch \`${BASE_REF}\` to bring the PRD branch up to date with it, so nothing was built."
           if git merge-base --is-ancestor "refs/remotes/origin/${BASE_REF}" HEAD; then
             echo "\`${PRD_BRANCH}\` already has everything on \`${BASE_REF}\`; nothing to merge."
@@ -865,7 +875,9 @@ jobs:
           # `GITHUB_TOKEN` fallback included, and a retry fails the same way.
           # So that cause is named wherever the merge carries one: telling the
           # human only to retry is a loop that cannot end.
-          if ! git push origin "$PRD_BRANCH"; then
+          push_auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${push_auth}"
+          if ! git -c "http.extraHeader=AUTHORIZATION: basic ${push_auth}" push origin "$PRD_BRANCH"; then
             workflows=$(git diff --name-only HEAD^1 HEAD -- .github/workflows | sed 's/.*/`&`/' | paste -sd ',' - | sed 's/,/, /g')
             if [ -n "$workflows" ]; then
               block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. The merge changes ${workflows}, and GitHub refuses a push that changes a workflow file from a token without Workflows: write, so trying again fails the same way until \`AGENT_PAT\` is set with Workflows: write. If it is, something else may have moved the PRD branch; trying again merges on top of it."
@@ -1015,14 +1027,21 @@ jobs:
       # reviews. A rejected non-fast-forward is the correct outcome: it means
       # something else moved the branch while this slice was built, and the
       # slice is then built again on top of that by the retry.
+      #
+      # The checkout persists no credential, so the token reaches git here, for
+      # the push alone, as a masked header. Why, and what that does not cover,
+      # is the note on implement.yml's `Push branch`.
       - name: Push the PRD branch
         id: push
         if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && success()
         env:
           PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
+          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git push origin "$PRD_BRANCH"
+          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push origin "$PRD_BRANCH"
           # The commit `Request review` waits for the PRD PR to show.
           echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 

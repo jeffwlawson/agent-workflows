@@ -287,23 +287,30 @@ export const git = (args: readonly string[]): string =>
   execFileSync("git", [...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
- * Remove the GitHub token from this process's environment. The agent runs
+ * Remove the GitHub tokens from this process's environment. The agent runs
  * unsandboxed (`noSandbox` merges `process.env`) and its Bash tool can read the
  * environment, so a prompt-injected agent could use `gh` to act on the repo or
  * exfiltrate the token. Neither runner's agent legitimately needs it: issue/PR
  * context is fetched *before* the agent starts, and all pushing/labelling/
  * commenting happens in separate workflow steps.
  *
+ * `NODE_AUTH_TOKEN` is the same job token under another name: the workflow
+ * hands it to the runner step so `npm exec` can install this package from
+ * GitHub Packages, and by the time this runs that install is done. In every
+ * job but review it holds `contents: write`, so left in place it would be a
+ * push credential the agent could read off its own environment.
+ *
  * Scope and limits: this affects only the current Node process and its
- * children, not later workflow steps. It does NOT remove the git credentials
- * `actions/checkout` persists — from v6 in a `$RUNNER_TEMP` file that
- * `.git/config` includes rather than in `.git/config` itself, which changes
- * where they are and not that `git` finds them. Preventing `git push` is a
- * separate control (`contents: read`, or `persist-credentials: false`).
+ * children, not later workflow steps. Nor does it reach the git credentials
+ * `actions/checkout` would persist — from v6 in a `$RUNNER_TEMP` file that
+ * `.git/config` includes — and it does not need to: every checkout an agent
+ * runs in sets `persist-credentials: false`, and each fetch or push passes
+ * its token on its own command (asserted in `tests/workflows.test.ts`).
  */
 export const scrubGitHubTokens = (): void => {
   delete process.env["GH_TOKEN"];
   delete process.env["GITHUB_TOKEN"];
+  delete process.env["NODE_AUTH_TOKEN"];
 };
 
 /**

@@ -314,13 +314,10 @@ jobs:
         with:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
-          # AGENT_PAT is optional. When absent this falls back to GITHUB_TOKEN,
-          # which works, except that CI on the resulting PR waits for a
-          # maintainer to approve it: since 2026-06-11 a push made with it
-          # starts `pull_request` runs that require approval (#221). Add the
-          # secret later and this starts using it with no change to the
-          # workflow.
-          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # No credential is left in the checkout for the agent's git, or
+          # anything else it runs, to find. Each fetch and push below passes
+          # its own token on the command line instead.
+          persist-credentials: false
 
       - name: Compute branch name
         if: steps.preflight.outputs.refused == 'false'
@@ -403,14 +400,37 @@ jobs:
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.7 -- agent-workflows implement
 
       # `head` is the commit `Request review` waits for the new PR to show.
+      #
+      # **The token reaches git here, for this one command, and never before.**
+      # The checkout persists no credential, so while the agent ran there was
+      # none in `.git/config` or the `$RUNNER_TEMP` file checkout v6+ includes
+      # from it: its `git push` had nothing to push with, and nothing it could
+      # read held `AGENT_PAT`, which carries Workflows: write. The token goes in
+      # as a `-c http.extraHeader`, the way `actions/checkout` authenticates and
+      # fix's pre-flight `ls-remote` does, masked, and is gone when git exits.
+      #
+      # AGENT_PAT is optional. When absent this falls back to GITHUB_TOKEN,
+      # which works, except that CI on the resulting PR waits for a maintainer
+      # to approve it: since 2026-06-11 a push made with it starts
+      # `pull_request` runs that require approval (#221). Add the secret later
+      # and this starts using it with no change to the workflow.
+      #
+      # The limit, stated so it is not mistaken for more: this step runs on the
+      # same runner the agent just ran on, unsandboxed and with the runner's
+      # `sudo`. What this closes is the agent finding the token ready to use;
+      # an agent that leaves something behind to catch it here is not stopped
+      # by anything in this job, and only a push from a job of its own would be.
       - name: Push branch
         id: push
         if: steps.preflight.outputs.refused == 'false' && success()
         env:
           BRANCH: ${{ steps.branch.outputs.name }}
+          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git push --force origin "$BRANCH"
+          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force origin "$BRANCH"
           echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # The body is the **frame** (#218), written here once and never

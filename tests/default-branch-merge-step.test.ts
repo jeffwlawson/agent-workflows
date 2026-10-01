@@ -142,6 +142,7 @@ const runStep = ({ temp, work }: Checkout, env: Readonly<Record<string, string>>
       BASE_REF: "main",
       GH_REPO: "acme/widgets",
       GH_TOKEN: "test-token",
+      PUSH_TOKEN: "test-push-token",
       RUNNER_TEMP: temp,
       GITHUB_OUTPUT: output,
       GH_REPLAY_LOG: log,
@@ -228,6 +229,24 @@ describe.skipIf(!CAN_RUN)("implement-prd's Merge the default branch into the PRD
     expect(git(built.work, "log", "-1", `--format=%(trailers:key=${CATCH_UP_TRAILER},valueonly)`, "HEAD")).toBe(`#${SUB}`);
     expect(git(built.work, "log", "-1", `--format=%(trailers:key=${SLICE_TRAILER},valueonly)`, "HEAD")).toBe("");
     expect(git(built.work, "symbolic-ref", "--short", "HEAD")).toBe(PRD_BRANCH);
+  }, ceiling(SPAWNS));
+
+  /**
+   * The checkout persists no credential, and this step, the one push before
+   * the agent runs, leaves none behind either: each token rides on its own
+   * command, so the agent that follows finds neither in the checkout's config.
+   */
+  it("leaves neither token in the checkout's git config", () => {
+    const built = checkout("ci");
+    const outcome = runStep(built);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    const config = git(built.work, "config", "--list", "--show-origin");
+    for (const token of ["test-token", "test-push-token"]) {
+      expect(config).not.toContain(token);
+      expect(config).not.toContain(Buffer.from(`x-access-token:${token}`).toString("base64"));
+    }
+    expect(config).not.toMatch(/extraheader/i);
   }, ceiling(SPAWNS));
 
   it("makes no merge commit when the default branch has not moved", () => {

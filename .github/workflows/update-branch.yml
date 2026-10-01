@@ -204,7 +204,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # No credential is left in the checkout for the agent's git, or
+          # anything else it runs, to find. Each fetch and push below passes
+          # its own token on the command line instead.
+          persist-credentials: false
 
       # The whole job in the common case. Only a conflicted merge goes further.
       #
@@ -238,7 +241,11 @@ jobs:
           # and the empty-equals-empty comparison would report "up to date" on a
           # branch that was never merged. A deleted base branch is a real case
           # once the base is the PR's own, so refuse instead.
-          if ! git fetch origin "+refs/heads/${base}:refs/remotes/origin/${base}"; then
+          # The checkout persists no credential, so the fetch carries the job's
+          # read token itself, as `Push branch` carries its own.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          if ! git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${base}:refs/remotes/origin/${base}"; then
             echo "::error::Could not fetch base branch '${base}' from origin."
             exit 1
           fi
@@ -344,9 +351,16 @@ jobs:
       - name: Push branch
         id: push
         if: steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts'
+        # The checkout persists no credential, so the token reaches git here,
+        # for the push alone, as a masked header. Why, and what that does not
+        # cover, is the note on implement.yml's `Push branch`.
+        env:
+          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
+          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
           {
             echo "pushed=true"
             echo "head=$(git rev-parse HEAD)"

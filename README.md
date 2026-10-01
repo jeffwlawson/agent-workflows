@@ -38,8 +38,9 @@ and `npx` exits `404 Not Found`, which reads as "no such package" rather than "n
 
 `init` copies the reference callers from [`examples/callers/`](./examples/callers/) into
 `.github/workflows/`, substituting the one thing that is per-repo — the version pin — and writes a
-`SETUP.md` naming the work it cannot do: the two secrets, the repository setting, the labels, and
-the two documents below. It **updates** on a re-run rather than refusing, which is how you take a
+`SETUP.md` naming the work it cannot do: the two secrets, the repository setting, and the two
+documents below. It creates the loop's labels, recolours any an earlier release left behind, and
+deletes a retired one that no open issue or pull request still carries. It **updates** on a re-run rather than refusing, which is how you take a
 release: the pin moves in the callers you have, and nothing else about them changes, a caller being
 the half an adopter owns.
 

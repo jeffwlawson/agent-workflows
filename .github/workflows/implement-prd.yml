@@ -181,8 +181,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The trigger label is consumed by every refusal, which is what makes
-          # a retry a deliberate human act rather than a re-run.
+          # The trigger label comes off with every refusal, as with every run
+          # that ends (#236), which is what makes a retry a deliberate human
+          # act rather than a re-run.
           refuse() {
             echo "refused=true" >> "$GITHUB_OUTPUT"
             gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
@@ -216,8 +217,8 @@ jobs:
           # Deliberately not `|| true`, the same exception
           # jeffwlawson/winget-manifest-lint#90 made: "no answer" read as "no
           # sub-issues" would hand a PRD to the single-issue path. A failed
-          # query fails the step, which leaves the trigger label in place and
-          # the run visibly red.
+          # query fails the step, and the run is visibly red; the last step
+          # still takes the trigger label off.
           issue=$(gh api graphql \
             -f owner="${GH_REPO%/*}" -f name="${GH_REPO#*/}" -F number="$ISSUE_NUMBER" \
             -f query='
@@ -523,8 +524,15 @@ jobs:
 
           echo "Targeting sub-issue #$(jq -r '.number' <<< "$next") of ${subs}."
 
-      # The trigger label is consumed, not left in place. Nothing in this run
-      # puts it back: the next slice waits on this one's slice PR.
+      # The trigger label stays on while this run works and comes off in the
+      # last step, however the run ends (#236), so on the parent it is on only
+      # during a build. Nothing in this run puts it back: the next slice waits
+      # on this one's slice PR, and review's advance job re-adds it. So the one
+      # label to take off here is a block an earlier run left. The line before
+      # it is the permission probe, as in review's `Transition labels`, where
+      # the reason is spelled out: it adds the label this run already holds,
+      # which changes nothing, and is not `|| true`, so a short token fails the
+      # run before the checkout.
       #
       # Then the run links itself on the parent (#205), naming what it is for,
       # since a chain starts one run per slice on the same parent and the link
@@ -540,9 +548,8 @@ jobs:
           SLICE_OPEN: ${{ steps.preflight.outputs.slice_open }}
           FINISHING: ${{ steps.preflight.outputs.finishing }}
         run: |
-          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+          gh issue edit "$ISSUE_NUMBER" --add-label "agent:implement"
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:blocked" || true
-          gh issue edit "$ISSUE_NUMBER" --add-label "agent:in-progress"
           # An open slice PR is merged first. A rowless one has merged
           # already, and this run only writes its row.
           slice=""
@@ -619,7 +626,9 @@ jobs:
 
           # A round in flight is never cut short: the review, the fix it
           # started, or the re-review that fix asked for is still to land on it.
-          busy=$(jq -r '[.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:in-progress")] | join("`, `")' <<< "$pr")
+          # Read off the trigger labels alone, which are on while their run
+          # works and while it is queued (#236), so a run in progress shows.
+          busy=$(jq -r '[.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")] | join("`, `")' <<< "$pr")
           if [ -n "$busy" ]; then
             block "Refused to merge slice PR #${SLICE_PR} into the PRD branch: it carries \`${busy}\`, so its review round has not ended. Re-add \`agent:implement\` here once that label is gone."
           fi
@@ -1198,6 +1207,9 @@ jobs:
             fi
             sleep 5
           done
+          # Removed first, as every trigger label the loop adds (#236): an add
+          # on a label that is somehow already there fires nothing.
+          gh pr edit "$SLICE_PR" --remove-label "agent:review" || true
           gh pr edit "$SLICE_PR" --add-label "agent:review"
           if [ "$HAS_PAT" != "true" ]; then
             echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on slice PR #${SLICE_PR}."
@@ -1262,6 +1274,8 @@ jobs:
           echo "PRD PR #${PRD_PR} holds ${slices} slice(s): ${merged} merged slice PR(s) and ${before} built before slice PRs."
 
           if [ "$slices" -gt 1 ]; then
+            # Removed first, as every trigger label the loop adds (#236).
+            gh pr edit "$PRD_PR" --remove-label "agent:review" || true
             gh pr edit "$PRD_PR" --add-label "agent:review" \
               || block "Could not add \`agent:review\` to PRD PR #${PRD_PR}, so its integration review was not asked for. Re-add \`agent:implement\` here to retry the handover. Nothing is merged twice."
             echo "Asked for the integration review of PRD PR #${PRD_PR}; review marks it ready."
@@ -1327,9 +1341,9 @@ jobs:
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           # "Re-apply", and the removal clause, for the same reason as
-          # agent-implement: this step also covers a preflight that failed
-          # before `Transition labels` ran, where the label is still attached —
-          # and adding a label that is already present fires no event.
+          # agent-implement: the last step's removal is `|| true`, and where it
+          # failed the label is still attached, and adding a label that is
+          # already present fires no event.
           # The finishing run built nothing, so there is no sub-issue to retry.
           # What a retry does instead is the rest of the state table: merge the
           # last slice PR if it is still open, and resume the handover if the
@@ -1343,6 +1357,12 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
 
-      - name: Always remove in-progress
-        if: always() && steps.preflight.outputs.refused == 'false'
-        run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:in-progress" || true
+      # The trigger label comes off however the run ends (#236): success,
+      # failure, timeout or cancel, and a preflight that died before deciding,
+      # so it never outlives the run. `!= 'true'` for the reason the failure
+      # step above gives. A refusal took it off already, and a deferral must
+      # not touch it: `agent-implement` owns that label event, and the label is
+      # its run's while it works.
+      - name: Always remove the trigger label
+        if: always() && steps.preflight.outputs.refused != 'true'
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true

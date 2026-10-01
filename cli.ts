@@ -131,9 +131,10 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
     run: async (args, io) => {
       const { init } = await import("./setup/init.js");
       const { livePolicySurface } = await import("./setup/policies.js");
+      const { liveLabelSurface } = await import("./setup/labels.js");
       const dir = targetDir("init", args);
       io.stdout(`  in ${dir}\n`);
-      for (const change of init({ dir, github: livePolicySurface(dir) })) {
+      for (const change of init({ dir, github: livePolicySurface(dir), labels: liveLabelSurface(dir) })) {
         io.stdout(`  ${change.action.padEnd(9)} ${change.file}${change.note ? ` (${change.note})` : ""}\n`);
       }
     },

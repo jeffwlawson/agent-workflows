@@ -70,9 +70,9 @@ well-written ticket into a running agent, which is not what triage was asserting
 
 Two mechanical reasons reinforce it:
 
-- **Trigger labels are consumed on entry** (`ADOPTING.md` §3), which is what makes a retry
-  idempotent — a human re-adds the label deliberately. An automatic promoter would re-add it
-  automatically, and the idempotence is gone.
+- **A trigger label is on while its run works** (`ADOPTING.md` §3) and comes off when the run
+  ends, however it ends, which is what makes a retry idempotent: a human re-adds the label
+  deliberately. An automatic promoter would re-add it automatically, and the idempotence is gone.
 - **On a PRD parent the label is a cursor, not a one-shot.** The chain re-adds `agent:implement` to
   the parent after each slice closes, and stops by *not* re-adding it. A promoter writing the same
   label from a different rule would be writing into a live cursor.

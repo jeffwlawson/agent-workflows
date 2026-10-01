@@ -209,12 +209,17 @@ jobs:
 
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
+      # The trigger label stays on while this run works and comes off in the
+      # last step (#236), so the one label to take off here is a block an
+      # earlier run left. The line before it is the permission probe, as in
+      # review's `Transition labels`, where the reason is spelled out: it adds
+      # the label this run already holds, which changes nothing, and is not
+      # `|| true`, so a short token fails the run before the checkout.
       - name: Transition labels
         if: steps.state.outputs.proceed == 'true'
         run: |
-          gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
+          gh pr edit "$PR_NUMBER" --add-label "agent:fix"
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
-          gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
       - name: Checkout PR head
         if: steps.state.outputs.proceed == 'true'
@@ -518,6 +523,9 @@ jobs:
             fi
             sleep 5
           done
+          # Removed first, as every trigger label the loop adds (#236): an add
+          # on a label that is somehow still there fires nothing.
+          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:review"; then
             printf 'The fix is pushed, but `agent:review` could not be added, so no re-review was requested. Add `agent:review` to this PR by hand. Re-adding `agent:fix` would work the same threads again, since a thread stays open until a review verifies the fix landed.\n' \
               > "${RUNNER_TEMP}/failure_reason.txt"
@@ -617,9 +625,21 @@ jobs:
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
           gh pr comment "$PR_NUMBER" --body-file "$body_file"
 
-      - name: Always remove in-progress
-        if: always() && steps.state.outputs.proceed == 'true'
-        run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
+      # The trigger label comes off however the run ends (#236): success,
+      # failure, refusal, timeout or cancel, so it never outlives the run.
+      # `always()` alone, so a pre-flight that died before deciding is covered
+      # too; a refusal took it off already, and removing an absent label leaves
+      # nothing on the timeline.
+      #
+      # Unlike review and update-branch, a fix run whose pull request moved
+      # while it worked does **not** ask for itself again. A second fix run
+      # reads the same threads, which stay open until a review verifies them
+      # (#111), and answers them twice: the harm the stale-head refusal above
+      # exists to stop. A push made during a fix makes this run's own push fail
+      # its lease anyway, which is `agent:blocked` and a human's call.
+      - name: Always remove the trigger label
+        if: always()
+        run: gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
 
   # The PRD chain's advance, where this run is what ends a slice PR's round
   # (#176, PRD #171). `review.yml`'s `advance` job is the one that fires on a
@@ -683,5 +703,8 @@ jobs:
               || echo "::warning::…and that could not be said on the pull request either."
             exit 0
           fi
+          # Removed first, as every trigger label the loop adds (#236): an add
+          # on a label still there fires nothing, and the chain would stall.
+          gh issue edit "$parent" --remove-label "agent:implement" || true
           gh issue edit "$parent" --add-label "agent:implement"
           echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."

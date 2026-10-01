@@ -199,12 +199,12 @@ jobs:
     # half works; no review at all, which is what `setup/doctor.ts` tells an
     # adopter before a label rather than after one.
     #
-    # Where a token is short for some other reason, the first `gh pr edit` to
-    # feel it is the `--add-label "agent:in-progress"` ending `Transition
-    # labels`, which is deliberately not written `|| true`: Actions' default
-    # `bash -e` fails the run there — before the checkout, so before the diff is
-    # fetched and before an agent pass is spent. That is why that one line
-    # carries no tolerance while the removals beside it do.
+    # Where a token is short for some other reason, the first label write to
+    # feel it is the probe opening `Transition labels`, which is deliberately
+    # not written `|| true`: Actions' default `bash -e` fails the run there,
+    # before the checkout, so before the diff is fetched and before an agent
+    # pass is spent. That is why that one line carries no tolerance while the
+    # removal beside it does.
     permissions:
       # Reading the check runs the CI wait below polls. On a **public**
       # repository they are readable without this scope, which is why every
@@ -378,12 +378,21 @@ jobs:
           echo "sha=${tip}" >> "$GITHUB_OUTPUT"
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
+      # The trigger label stays on while this run works and comes off in the
+      # last step, however the run ends (#236), so the one label to take off
+      # here is a block an earlier run left.
+      #
+      # The line before it is the permission probe, the label write a short
+      # token feels first (see the `permissions:` comment above). It adds the
+      # label this run already holds, the one trigger-label add not preceded
+      # by a removal, on purpose: the label is on, so it changes nothing, fires
+      # no event and leaves no timeline entry, while still being a label write
+      # under the scope every other one here needs.
       - name: Transition labels
         if: steps.state.outputs.proceed == 'true'
         run: |
-          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
+          gh pr edit "$PR_NUMBER" --add-label "agent:review"
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
-          gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
       # The review's own time, refused the way the fix-round budget below is:
       # a limit nobody wrote down is not one to guess (#220). `time-limit` summed
@@ -1381,9 +1390,9 @@ jobs:
       # that lives in the review body, so marking a PR whose review failed to
       # post would point at nothing.
       #
-      # Never fails the run. This label is newer than the six `docs/ADOPTING.md`
-      # §3 mandates, so an adopter can be up to date on the pin and not have it
-      # — and a posted review is worth more than a marker. A warning says so
+      # Never fails the run. This label is not one `docs/ADOPTING.md` §3
+      # mandates, so an adopter can be up to date on the pin and not have it,
+      # and a posted review is worth more than a marker. A warning says so
       # where `|| true` would not, the same call `Mark PR ready for review`
       # makes below.
       - name: Mark the PR as carrying follow-ups
@@ -1511,9 +1520,47 @@ jobs:
             -f "description=The review run did not finish, so there's no verdict. Check the run, then re-add agent:review." \
             || echo "::warning::Could not post the failed \`agent-review\` verdict for ${HEAD_SHA}. The failure comment on the pull request is the only record of this run."
 
-      - name: Always remove in-progress
-        if: always() && steps.state.outputs.proceed == 'true'
-        run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
+      # The trigger label comes off however the run ends (#236): success,
+      # failure, refusal, timeout or cancel, so it never outlives the run.
+      # `always()` alone, so a pre-flight that died before deciding is covered
+      # too; a refusal took it off already, and removing an absent label leaves
+      # nothing on the timeline.
+      #
+      # **A request made while this run worked is not lost.** Adding the label
+      # then fired nothing, since it was already on. So where the run finished
+      # and the pull request's head has moved on from the commit it reviewed,
+      # because somebody pushed, it asks for its own step again: removed above,
+      # then added. With `AGENT_PAT` or not at all, since a label added with
+      # `GITHUB_TOKEN` starts nothing. Not on a failure, which is
+      # `agent:blocked` and a human's retry, and never a cycle: nothing in the
+      # loop pushes to a pull request while its review runs, since every run
+      # that pushes shares this job's concurrency group.
+      - name: Always remove the trigger label
+        if: always()
+        env:
+          PROCEEDED: ${{ steps.state.outputs.proceed }}
+          JOB_STATUS: ${{ job.status }}
+          LEFT_SHA: ${{ steps.state.outputs.sha }}
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          REQUEST_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
+          if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
+            exit 0
+          fi
+          live=$(gh pr view "$PR_NUMBER" --json state,headRefOid --jq '"\(.state) \(.headRefOid)"' 2>/dev/null || echo "")
+          if [ "${live%% *}" != "OPEN" ] || [ "${live#* }" = "$LEFT_SHA" ]; then
+            exit 0
+          fi
+          head="${live#* }"
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, but AGENT_PAT is not set, so agent:review was not asked for again: a label added with GITHUB_TOKEN starts nothing. Add agent:review by hand to review the new head."
+            gh pr comment "$PR_NUMBER" --body "This PR moved on to \`${head}\` while its review of \`${LEFT_SHA}\` ran. No review of the new head will start on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Add \`agent:review\` by hand to review it." \
+              || echo "::warning::…and that could not be said on the pull request either."
+            exit 0
+          fi
+          GH_TOKEN="$REQUEST_TOKEN" gh pr edit "$PR_NUMBER" --add-label "agent:review" \
+            || echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, and agent:review could not be added again. Add it by hand to review the new head."
 
   # Closes the threads the review verified (#133). It is the only job in this
   # workflow holding `contents: write`, and it is shaped so that it cannot
@@ -1827,6 +1874,9 @@ jobs:
             exit 0
           fi
 
+          # Removed first, as every trigger label the loop adds (#236): an add
+          # on a label that is somehow still there fires nothing.
+          gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:fix"; then
             no_round "adding \`agent:fix\` failed, and GitHub's reply is in the workflow run's log"
           fi
@@ -1939,6 +1989,9 @@ jobs:
               || echo "::warning::…and that could not be said on the pull request either."
             exit 0
           fi
+          # Removed first, as every trigger label the loop adds (#236): an add
+          # on a label still there fires nothing, and the chain would stall.
+          gh issue edit "$parent" --remove-label "agent:implement" || true
           gh issue edit "$parent" --add-label "agent:implement"
           echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."
 
@@ -1962,8 +2015,9 @@ jobs:
   #
   # **Not while the chain is already moving.** A human merge can land while
   # the run `advance` started is queued or building (the parent carries
-  # `agent:implement` or `agent:in-progress`); that run finds the slice PR
-  # merged and goes on, and a second label would only queue a second run.
+  # `agent:implement`, which is on from the advance until that run ends); that
+  # run finds the slice PR merged and goes on, and a second label would only
+  # queue a second run.
   #
   # **Only on a slice PR**, for `advance`'s reason and by the same head, and
   # only into a PRD branch. `closed` with `merged`, and the action named:
@@ -2014,10 +2068,11 @@ jobs:
               || echo "::warning::…and that could not be said on the pull request either."
             exit 0
           fi
-          busy=$(gh issue view "$parent" --json labels --jq '[.labels[].name | select(. == "agent:implement" or . == "agent:in-progress")] | join(", ")')
+          busy=$(gh issue view "$parent" --json labels --jq '[.labels[].name | select(. == "agent:implement")] | join(", ")')
           if [ -n "$busy" ]; then
             echo "#${parent} carries ${busy}: the PRD chain is already moving, and its run finds slice PR #${PR_NUMBER} merged. Nothing to add."
             exit 0
           fi
+          gh issue edit "$parent" --remove-label "agent:implement" || true
           gh issue edit "$parent" --add-label "agent:implement"
           echo "Re-added agent:implement to #${parent}: slice PR #${PR_NUMBER} was merged by hand, and the PRD chain moves on from it."

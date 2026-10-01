@@ -144,8 +144,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The trigger label is consumed by every refusal, which is what makes
-          # a retry a deliberate human act rather than a re-run.
+          # The trigger label comes off with every refusal, as with every run
+          # that ends (#236), which is what makes a retry a deliberate human
+          # act rather than a re-run.
           refuse() {
             echo "refused=true" >> "$GITHUB_OUTPUT"
             gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
@@ -182,8 +183,8 @@ jobs:
           # proceeds when an API call comes back empty, on the grounds that a
           # blip is not evidence; this one is the exception, because "no answer"
           # read as "standalone" is exactly the isolated sub-issue run the guard
-          # exists to prevent. A failed query fails the step, which leaves the
-          # trigger label in place and the run visibly red.
+          # exists to prevent. A failed query fails the step, and the run is
+          # visibly red; the last step still takes the trigger label off.
           issue=$(gh api graphql \
             -f owner="${GH_REPO%/*}" -f name="${GH_REPO#*/}" -F number="$ISSUE_NUMBER" \
             -f query='
@@ -275,8 +276,13 @@ jobs:
           fi
           echo "refused=false" >> "$GITHUB_OUTPUT"
 
-      # The trigger label is consumed, not left in place. That is what makes a
-      # retry idempotent: a human re-adds it deliberately.
+      # The trigger label stays on while this run works and comes off in the
+      # last step, however the run ends (#236): a retry is still a human
+      # re-adding it deliberately. So the one label to take off here is a block
+      # an earlier run left. The line before it is the permission probe, as in
+      # review's `Transition labels`, where the reason is spelled out: it adds
+      # the label this run already holds, which changes nothing, and is not
+      # `|| true`, so a short token fails the run before the checkout.
       #
       # Then the run links itself on the issue (#205), last and before the
       # checkout, so a run in progress can be found from the issue rather than
@@ -286,9 +292,8 @@ jobs:
       - name: Transition labels
         if: steps.preflight.outputs.refused == 'false'
         run: |
-          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+          gh issue edit "$ISSUE_NUMBER" --add-label "agent:implement"
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:blocked" || true
-          gh issue edit "$ISSUE_NUMBER" --add-label "agent:in-progress"
           gh issue comment "$ISSUE_NUMBER" --body "\`agent:implement\` started: [workflow run](${RUN_URL})." || echo "::warning::Could not post the start comment on #${ISSUE_NUMBER}. The run goes on; it is ${RUN_URL}."
 
       - name: Checkout the base branch
@@ -472,6 +477,9 @@ jobs:
             fi
             sleep 5
           done
+          # Removed first, as every trigger label the loop adds (#236): an add
+          # on a label that is somehow already there fires nothing.
+          gh pr edit "$NEW_PR" --remove-label "agent:review" || true
           gh pr edit "$NEW_PR" --add-label "agent:review"
           if [ "$HAS_PAT" != "true" ]; then
             echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${NEW_PR}."
@@ -514,17 +522,22 @@ jobs:
             fi
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
-          # "Re-apply", not "re-add", and the removal clause is load-bearing. This
-          # step now also covers a preflight that failed *before* `Transition
-          # labels` ran, where `agent:implement` is still attached — and adding a
-          # label that is already present fires no `labeled` event, so a literal
-          # "re-add" is inert on exactly the path this gate was widened to catch
-          # (docs/ADOPTING.md §1). One wording is correct on both paths: consumed,
-          # and never consumed.
+          # "Re-apply", not "re-add", and the removal clause stays. The last
+          # step takes the label off on every path since #236, this one's
+          # included, but that removal is `|| true`, and where it failed the
+          # label is still attached: adding a label that is already present
+          # fires no `labeled` event (docs/ADOPTING.md §1), so a literal
+          # "re-add" would be inert there. One wording is correct on both paths.
           printf '`agent:implement` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-apply `agent:implement` to retry. If it is still attached, remove it first, since adding a label that is already present fires no event.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
 
-      - name: Always remove in-progress
-        if: always() && steps.preflight.outputs.refused == 'false'
-        run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:in-progress" || true
+      # The trigger label comes off however the run ends (#236): success,
+      # failure, timeout or cancel, and a preflight that died before deciding,
+      # so it never outlives the run. `!= 'true'` for the reason the failure
+      # step above gives. A refusal took it off already, and a deferral must
+      # not touch it: `agent-implement-prd` owns that label event, and the
+      # label is its run's while it works.
+      - name: Always remove the trigger label
+        if: always() && steps.preflight.outputs.refused != 'true'
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true

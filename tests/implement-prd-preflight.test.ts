@@ -622,7 +622,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     expect(stepById("merge").shell).toBeUndefined();
   });
 
-  it.each(["agent:review", "agent:fix", "agent:in-progress"])(
+  it.each(["agent:review", "agent:fix", "agent:update-branch"])(
     "refuses while %s is on the slice PR, naming it",
     (label: string) => {
       const outcome = runMerge({ labels: [{ name: "agent:follow-ups" }, { name: label }] });
@@ -1135,14 +1135,20 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
     });
 
     expect(outcome.status).toBe(0);
-    expect(prWrites(outcome)).toEqual([["pr", "edit", "201", "--add-label", "agent:review"]]);
+    expect(prWrites(outcome)).toEqual([
+      ["pr", "edit", "201", "--remove-label", "agent:review"],
+      ["pr", "edit", "201", "--add-label", "agent:review"],
+    ]);
   });
 
   /** #202 built #172; #173 was closed with no slice PR, before slice PRs existed. */
   it("counts a slice built before slice PRs as a slice", () => {
     const outcome = runHandover({ issue: issue(["CLOSED", "CLOSED"]), pulls: BYSTANDERS });
 
-    expect(prWrites(outcome)).toEqual([["pr", "edit", "201", "--add-label", "agent:review"]]);
+    expect(prWrites(outcome)).toEqual([
+      ["pr", "edit", "201", "--remove-label", "agent:review"],
+      ["pr", "edit", "201", "--add-label", "agent:review"],
+    ]);
   });
 
   /** An open slice PR is the one the finishing run is about to merge; nothing else is built. */
@@ -1196,6 +1202,7 @@ describe.skipIf(!onPath("gh"))("gh accepts the calls the merge, slice row, PRD P
     ["pr merge", ["pr", "merge", "210", "--squash", "--match-head-commit", "abc"]],
     ["pr list --head", ["pr", "list", "--state", "open", "--head", PRD_BRANCH, "--limit", "100", "--json", "number"]],
     ["pr list --base, with state", ["pr", "list", "--state", "all", "--base", PRD_BRANCH, "--limit", "1000", "--json", "number,state,body,headRefName"]],
+    ["pr edit --remove-label", ["pr", "edit", "201", "--remove-label", "agent:review"]],
     ["pr edit --add-label", ["pr", "edit", "201", "--add-label", "agent:review"]],
     ["pr ready", ["pr", "ready", "201"]],
   ])("%s", (_name: string, args: readonly string[]) => {

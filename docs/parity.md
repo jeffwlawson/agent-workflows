@@ -95,7 +95,7 @@ claims in primary sources at authoring time is what actually closed it before
 |---|:--:|:--:|---|
 | Triggered by label on an issue | ✅ | ✅ | |
 | Job-level `if` (skip before provisioning a runner) | ✅ | ✅ | |
-| Consumes the trigger label; `in-progress` / `blocked` transitions | ✅ | ✅ | |
+| Trigger label / `blocked` transitions | ✅ | ✅ | CVM consumes the trigger label on entry and holds `in-progress`; ours holds the trigger label while the run works and takes it off when it ends, so `in-progress` is retired (#236) |
 | Deterministic branch name `agent/issue-<n>-<slug>` | ✅ | ✅ | |
 | Refuses when a PR already targets the issue | ✅ | ✅ | |
 | Refuses a **closed** issue | ✅ | ✅ | added jeffwlawson/winget-manifest-lint#102. Must precede the PR check, which lists *open* PRs only — so a merged-and-closed issue otherwise looks untouched |
@@ -137,11 +137,11 @@ trade below records why that changed.
 | Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ✅ | when its slice PR opens, so "first open sub-issue" still means the next slice to build. The only record tying a closed sub-issue to its code once the slice branch is gone |
 | Adds `agent:review` to **every** slice PR | ❌ | ➕ | CVM adds it once, when no sub-issues remain — the trade below |
 | Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance job** in `review` and `fix` does, when a slice PR's round ends on 🟢, or on 🟡 with no fix round starting (§10). It parks on 🔵 and on a failed run, and a human's re-label of the parent is then the acceptance. Without the PAT it warns, and comments on the slice PR naming the by-hand re-label |
-| **Merges the waiting slice PR first**, as a step of its own | ❌ | ➕ | refuses into `agent:blocked`, naming the slice PR, while `agent:review`, `agent:fix` or `agent:in-progress` is on it, or while it is conflicted — pointing at `agent:update-branch` on it. Pinned with `--match-head-commit` to the head it inspected; squash, then rebase, then a merge commit, whichever the repository allows first. It never reads the verdict, so a human's re-label and the advance job's are one path |
+| **Merges the waiting slice PR first**, as a step of its own | ❌ | ➕ | refuses into `agent:blocked`, naming the slice PR, while `agent:review`, `agent:fix` or `agent:update-branch` is on it, or while it is conflicted, pointing at `agent:update-branch` on it. Pinned with `--match-head-commit` to the head it inspected; squash, then rebase, then a merge commit, whichever the repository allows first. It never reads the verdict, so a human's re-label and the advance job's are one path |
 | A **draft PRD PR**, opened with the first slice merge and carrying `Closes #<parent>` | ✅ | ✅ | CVM's one PR, drafted until the chain finishes. Ours also carries the **slices table**: one row per slice, written by the run that merges it and never refreshed. Merged with `AGENT_PAT` so the PRD PR's CI and Follow-ups see each slice; the `GITHUB_TOKEN` fallback warns that neither ran |
 | A **finishing run** hands the PRD PR over | ❌ | ➕ | no model: merges the last slice PR, writes its row, then adds `agent:review` to the PRD PR for an **integration review** when more than one slice was merged, and marks it ready itself when one was |
 | Label adds and the merge run under `set -e` | — | ➕ | each warn-if-no-PAT `if` returns 0 when the PAT *is* set; without `-e` a failed add exits the step green, `failure()` never fires, and the slice PR sits in draft asking nobody for review |
-| `failure_reason.txt` → issue comment, `agent:blocked`, `agent:in-progress` held | ✅ | ✅ | on the **parent**; the failure comment names which sub-issue stopped the chain and, when there is one, the slice PR it had already opened |
+| `failure_reason.txt` → issue comment, `agent:blocked`, and the trigger label taken off | ✅ | ✅ | on the **parent**; the failure comment names which sub-issue stopped the chain and, when there is one, the slice PR it had already opened |
 | Agent-authored PR title + body | ✅ | ❌ | same gap as §2, same fixed heredoc |
 
 **Ordering comes from creation order, not from the edges.** The chain walks sub-issues API order and
@@ -502,7 +502,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | `agent:implement` | ✅ issues **and** PRs | ✅ issues only — two workflows, partitioned by shape (§2a) |
 | `agent:fix` | ❌ | ➕ PRs — CVM overloads `agent:implement` instead |
 | `agent:review` | ✅ | ✅ |
-| `agent:in-progress` | ✅ | ✅ |
+| `agent:in-progress` | ✅ | ❌ **retired** (#236). Every trigger label is on while its run works and comes off when it ends, which says the same thing in one write rather than two: a review, fix and re-review cycle wrote about thirteen label events before. `init` deletes it where nothing open carries it, and `doctor` reports it |
 | `agent:blocked` | ✅ | ✅ |
 | `agent:queued` | ✅ | ❌ **retired** (#204). Declared once in `docs/agents/triage-labels.md`, written by a human and read by nothing, since `promote-queued` is deferred (§1). Native "blocked by" links do its job, and `implement` already refuses an issue whose blocker is open (§10) |
 | `agent:to-issues` | ✅ | ❌ PRD tier — and the string is double-booked on the tracker: jeffwlawson/winget-manifest-lint#79 (harvest agent comments into issues, §10) proposes the same label for an unrelated job. Neither exists here yet, so it costs nothing to settle, but jeffwlawson/winget-manifest-lint#79 is the one that has to move — this row is upstream's name for upstream's workflow |
@@ -725,6 +725,17 @@ expensive to rediscover.
   label. It is in `auto-fix`'s shape — no checkout, no model, `pull-requests: write` alone, and
   `AGENT_PAT` or nothing — and on by default, because it only ever fires on a slice PR, which only
   the PRD chain opens.
+- **A trigger label is on while its run works, and never outlives it** (#236). It used to be
+  consumed on entry and swapped for `agent:in-progress`; now every run leaves its trigger label on
+  and takes it off in its last step, on success, failure, refusal, timeout and cancel alike, which
+  is why that step is `always()` and why it depends on #220's failure step firing on a cancel too.
+  Every trigger label the loop adds is **removed first**, since an add on a label already there
+  fires nothing. And a review or a branch refresh whose pull request moved while it worked asks
+  for itself again at the end, the one request a label that was already on could have swallowed.
+  That is a third trigger label review adds, on its own pull request, and not an arrow of the
+  loop's: nothing in the loop pushes to a pull request while its review runs, since every run that
+  pushes shares the review job's concurrency group, so only a human push sets it off. `fix` does
+  not ask for itself again, because a second fix run answers the same open threads twice.
 - **Review stays `contents: read`.** It is the one agent that cannot mutate the branch, and that
   is what bounds the damage a wrong review can do. Adding self-improvement (§9.5) forfeits this.
 
@@ -805,7 +816,7 @@ expensive to rediscover.
   Group keys cannot close it: an `issues` event carries no PR number, so the two cannot compute a
   shared key. The happy path does not overlap — the review a run requests is on a **slice PR**,
   whose branch the chain does not push to again, and the next run's merge step refuses while
-  `agent:review`, `agent:fix` or `agent:in-progress` is on it — but a human labelling `agent:review`
+  `agent:review`, `agent:fix` or `agent:update-branch` is on it; but a human labelling `agent:review`
   on the draft PRD PR mid-chain would hit it. Accepted knowingly rather than fixed; if it ever
   bites, the fix is a preflight refusal in review when the linked issue has an active PRD chain —
   not a concurrency change.
@@ -868,14 +879,14 @@ expensive to rediscover.
   `promote-queued` ever ships (§1, §9.6), it reads the edge.
 - **Every workflow refuses a terminal target before it does any work.** A closed or merged PR, a
   closed issue: the guard is the first step, it is itself ungated, and it runs before checkout,
-  before `npm ci`, and before the label transitions — so a refused run never claims
-  `agent:in-progress` and never has a working tree to be wrong about. The failure it prevents is not
+  before `npm ci`, and before the label transitions, so a refused run never transitions a label
+  and never has a working tree to be wrong about. The failure it prevents is not
   a crash but a *plausible* result: review had no guard until jeffwlawson/winget-manifest-lint#102
   and would review merged work in full, then fail at `gh pr ready` under a warning blaming a missing
   `AGENT_PAT`, which is a wrong diagnosis of a real problem. Each refusal says which state it
   refused; two refusals that read alike are two states a human cannot tell apart from the comment.
   `tests/workflows.test.ts` holds all five workflows to all three properties — guard first, guard
-  ungated, no `agent:in-progress` on a refused run. In `agent-implement-prd` the third covers a
+  ungated, no label transition on a refused run. In `agent-implement-prd` the third covers a
   *deferral* as well as a refusal, which is the same property for a stronger reason: a run that
   stepped aside for its sibling must not have claimed the issue on the way past.
 
@@ -889,7 +900,7 @@ expensive to rediscover.
   Re-examined in jeffwlawson/winget-manifest-lint#105 for the moved-head refusal specifically, where
   the PR being refused is healthy and green, and kept, on two grounds. The label is defined as "a
   run failed **or was refused**; needs human attention" (docs/ADOPTING.md §3), and attention is
-  precisely what is owed: `refuse()` also consumes `agent:review`, so without the label a PR that
+  precisely what is owed: `refuse()` also takes `agent:review` off, so without the label a PR that
   silently never got reviewed carries no signal at all. And this refusal is self-clearing where the
   closed/merged one is not — the remedy the comment gives is re-adding `agent:review`, and
   `Transition labels` removes `agent:blocked` on the way in. So the objection above (a stale label

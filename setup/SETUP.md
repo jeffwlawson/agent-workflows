@@ -37,7 +37,8 @@ above, this is belt and braces.
 ## 3. The labels
 
 Each one is a transition. A missing label makes its transition a no-op and the state machine drifts
-without erroring, so create them before labelling anything:
+without erroring. `init` creates them, and recolours any an earlier release left behind; where it
+said it could not, create them before labelling anything:
 
 ```bash
 {{LABELS}}

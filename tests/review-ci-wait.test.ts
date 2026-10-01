@@ -712,9 +712,16 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(outcome.evidence).not.toContain("Still running after");
   });
 
-  /** And a grace period that passes with nothing appearing is "no CI". */
+  /**
+   * And a grace period that passes with nothing appearing is "no CI".
+   *
+   * Three seconds rather than one: the step reads its clock in whole seconds,
+   * so a grace of one ends anywhere from no time to a second after it starts,
+   * and the first poll, which prints the line asserted below, lost that race
+   * often enough under a loaded suite to fail it.
+   */
   it("concludes there is no CI once the grace period passes empty", () => {
-    const outcome = runWaitStep({ pages: NO_CI, extraEnv: { POLL_SECONDS: "0", GRACE_SECONDS: "1" } });
+    const outcome = runWaitStep({ pages: NO_CI, extraEnv: { POLL_SECONDS: "0", GRACE_SECONDS: "3" } });
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).toContain("No CI has reported on this commit yet");

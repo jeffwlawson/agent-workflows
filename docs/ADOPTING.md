@@ -44,6 +44,11 @@ npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
 `SETUP.md` listing what is left: the two secrets (§2), the repository setting (§1), the labels (§3),
 and the two documents §6 is about. A `SETUP.md` it did not write is left alone.
 
+It also converges the loop's labels (§3): it creates one that is missing, recolours one whose colour
+or description differs, and deletes a retired one that no open issue or pull request carries. A
+re-run reports each of them `unchanged`. A retired label still in use is left, with the issues and
+pull requests carrying it named, and a label it could not write is named with the command.
+
 On a **public** repository it also creates the Actions event policy that lets the callers run on
 `pull_request_target` (§1, *On a public repository, `pull_request_target` stops running*), targeted
 at the caller files it installed or found and at nothing else. A re-run that finds the policy says
@@ -73,6 +78,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for the whole of its 15-minute CI wait |
 | the labels exist | §3 — a transition that is a silent no-op |
+| no retired label is still here, as a warning with the `gh label delete` that removes it | §3, *Retired labels*: nothing reads it, and it reads as a run in progress that is not |
 | the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; and, as warnings, that a budget above 0 (the default of 3 included) has `AGENT_PAT` behind it, and that no review caller still passes the deprecated `auto-fix` | §3b — a variable the review refuses fails every review; without the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand; and the release after this one fails a caller that passes `auto-fix` before any job starts |
 | the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | §1: from 2026-11-02 a label is added and no run starts |
@@ -342,31 +348,52 @@ All of these must exist. A missing label makes its transition a no-op, and the s
 without erroring.
 
 ```bash
-gh label create "agent:implement"   --color 0E8A16 --description "Ready for the implement workflow to run"
-gh label create "agent:review"      --color 1D76DB --description "PR is ready for the automated review workflow"
-gh label create "agent:fix"         --color 1D76DB --description "Address review feedback on this PR"
-gh label create "agent:update-branch" --color 5319E7 --description "Refresh this PR branch from its base branch"
-gh label create "agent:in-progress" --color FBCA04 --description "An agent run is currently active"
-gh label create "agent:blocked"     --color B60205 --description "A run failed or was refused; needs human attention"
+gh label create "agent:implement"   --color 8250DF --description "Build this issue, or the next slice of this PRD. On while the run works."
+gh label create "agent:review"      --color 0969DA --description "Review this PR. On while the review runs."
+gh label create "agent:fix"         --color D4A72C --description "Act on review findings. On while the fix runs."
+gh label create "agent:update-branch" --color 1B7C83 --description "Merge the base branch into this PR. On while it runs."
+gh label create "agent:blocked"     --color CF222E --description "A run failed or was refused. Needs you."
 ```
 
-**Trigger labels are consumed on entry.** That is what makes a retry idempotent — a human re-adds
-the label deliberately. It is not a rule with exceptions, though. It is a three-valued property,
-and which value a label has is a **column**:
+`init` creates these, and recolours any whose colour or description differs, so an install made
+before a release changed them catches up on its next run; the block is what to run where it could
+not. Each colour is a **stage**: purple is building, blue reviewing, yellow fixing, teal refreshing,
+grey a marker, red a run that needs you.
+
+**A trigger label is on while its run works.** The run leaves it on as it starts and takes it off
+when it ends, whether it succeeded, failed, was refused, timed out or was cancelled, so the label on
+an issue or pull request is the run working on it now. A failure or a refusal also adds
+`agent:blocked` and says why in a comment, and a human re-adds the trigger label to retry. It is not
+a rule with exceptions, though. It is a three-valued property, and which value a label has is a
+**column**:
 
 | Label | Lifecycle | Cleared by |
 |---|---|---|
-| `agent:review`, `agent:fix`, `agent:update-branch` | **consumed on entry** | the run, as it starts |
-| `agent:implement` on an ordinary issue | **consumed on entry** | the run, as it starts |
-| `agent:implement` on a PRD parent | **cursor** | each run, as it starts — and put back by review's advance job when a slice PR's round ends, which never happens after the last one |
+| `agent:review`, `agent:fix`, `agent:update-branch` | **on while its run works** | the run, as it ends |
+| `agent:implement` on an ordinary issue | **on while its run works** | the run, as it ends |
+| `agent:implement` on a PRD parent | **cursor** | each run, as it ends, and put back by review's advance job when a slice PR's round ends, which never happens after the last one |
 | `agent:follow-ups` on a pull request | **marker, removed on success** | the filing run, on any run that reached a verdict — or you, to opt out |
 
 **Fill the column in when you add a label.** Written as prose this said "consumed on entry, except
 on a PRD parent, and also except for the marker" — which is read as "consumed on entry", and the
 exception nobody read is the one that behaves differently at three in the morning.
 
-**The cursor.** Each `implement-prd` run takes `agent:implement` off the parent as it starts, and
-the chain moves on only when it comes back: review's **advance job** re-adds it when a slice PR's
+**The loop adds a trigger label by removing it first.** Adding a label that is already there fires
+no event (§1), so an add on its own could be swallowed by a stale label; removing an absent one
+leaves nothing on the timeline. And a request made **while a run works** is not lost either: adding
+the label then fires nothing, since it is already on, so a review or a branch refresh that ends to
+find the pull request's head moved since it started, because somebody pushed, asks for itself
+again, unless another trigger label is already on it: that is a run queued behind it, and a new
+request would cancel it before it could take its own label off. `fix` does not: a second fix run would answer the threads this one answered, which stay open
+until a review verifies them.
+
+**A run's own label comes off before the next one goes on.** Every result is posted first, then
+the trigger label comes off, then the next step's label goes on: `agent:review` on a hand-off,
+`agent:blocked` after a failure or a refusal, whose comment comes first. A review that finds the head
+moved while it worked does not start a fix round or advance a PRD chain off its verdict.
+
+**The cursor.** Each `implement-prd` run holds `agent:implement` on the parent while it builds and
+takes it off as it ends, and the chain moves on only when it comes back: review's **advance job** re-adds it when a slice PR's
 round ends on a verdict the chain moves on from (§3b, *The verdict on a slice PR*), and you re-add
 it to accept a slice the chain parked on. Nothing re-adds it after the PRD PR's own review, so the
 chain stops by itself. So on a parent issue the label is a cursor rather than a one-shot: seeing it
@@ -384,10 +411,15 @@ the gesture
 in §1 is about: you will reach for it on a pull request that already carries the label, where it
 does nothing at all.
 
-`agent:in-progress` is held for the duration and removed by an `always()` step; `agent:blocked` is
-applied on failure alongside a comment carrying the reason — and by either `implement` workflow
-when it refuses an issue's *shape* (a sub-issue, a nested PRD, or a `wayfinder:*` planning ticket),
-since re-labelling would only reproduce the same refusal.
+`agent:blocked` is applied on failure alongside a comment carrying the reason, and by either
+`implement` workflow when it refuses an issue's *shape* (a sub-issue, a nested PRD, or a
+`wayfinder:*` planning ticket), since re-labelling would only reproduce the same refusal.
+
+**Retired labels.** `agent:in-progress` went when the trigger labels began staying on while their
+run works, and two others before it. Nothing writes or reads any of them.
+`init` deletes each one no open issue or pull request still carries, and names the ones that are
+still carrying it rather than stripping them; `doctor` reports one that is still here, with the
+`gh label delete` that removes it.
 
 **Amend the issue before you label it, never after.** The runner reads the issue body when the run
 starts, so an edit made afterwards describes work the agent was never asked to do — the PR then
@@ -410,14 +442,14 @@ the file is also a skill's output path — and the reasoning survives the rename
 
 ### Three more, and none of them mandated
 
-`init` creates none of them and `doctor` demands none of them; `init` does *list* them in the
-`SETUP.md` it writes, and only for a repository it installed the filing caller into, since a caller
-you declined is three labels nothing will ever read. They arrived after the six above, so a
-repository can be current on the pin without them — and nothing fails when they are missing, which
-is the problem. What each absence costs is below.
+`doctor` demands none of them. `init` creates and recolours `agent:follow-ups`, the one in the
+loop's own vocabulary, and *lists* the other two in the `SETUP.md` it writes, only for a repository
+it installed the filing caller into, since a caller you declined is labels nothing will ever read.
+They arrived after the labels above, so a repository can be current on the pin without them, and
+nothing fails when they are missing, which is the problem. What each absence costs is below.
 
 ```bash
-gh label create "agent:follow-ups" --color 0052CC --description "This PR's review recorded out-of-scope findings"
+gh label create "agent:follow-ups" --color 6E7781 --description "This PR's review recorded out-of-scope findings; they are filed on merge."
 gh label create "pr-follow-up"     --color D4C5F9 --description "Filed from a merged PR's review by the follow-ups workflow"
 gh label create "needs-triage"     --color D93F0B --description "Maintainer needs to evaluate this issue"
 ```
@@ -576,7 +608,7 @@ advances it, exactly as the first one would have.
 **Accepting a parked slice as it stands** is re-adding `agent:implement` to the parent. The re-label
 is the acceptance: the run merges the slice PR without reading its verdict, and its row in the slices
 table reads *🔵 accepted by hand*, so the one slice nobody watched advance stands out. The run still
-refuses — naming the slice PR — while `agent:review`, `agent:fix` or `agent:in-progress` is on it,
+refuses, naming the slice PR, while `agent:review`, `agent:fix` or `agent:update-branch` is on it,
 because a round is never cut short, and while it conflicts, pointing you at `agent:update-branch`.
 
 **Leftover 🟡 findings are pointers, not a gate.** They are linked from the slices table and never

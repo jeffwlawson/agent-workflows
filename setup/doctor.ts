@@ -11,7 +11,7 @@ import {
   type InstalledCaller,
   type OtherWorkflow,
 } from "./callers.js";
-import { labelCommand, labelSpecsFor } from "./init.js";
+import { labelCommand, labelDeleteCommand, labelSpecsFor, RETIRED_LABELS } from "./init.js";
 import {
   asVisibility,
   policyBody,
@@ -310,8 +310,9 @@ export const REQUIRED_PERMISSIONS: readonly {
     value: "write",
     workflows: ["implement", "implement-prd"],
     why:
-      "the issue's labels are transitioned from this job — `agent:in-progress` above the " +
-      "checkout, and the `agent:blocked` and reason it leaves when it stops — its outcome is " +
+      "the issue's labels are transitioned from this job (`agent:blocked` cleared above the " +
+      "checkout, the trigger label taken off when it ends, and the `agent:blocked` and reason it " +
+      "leaves when it stops), its outcome is " +
       "commented on the issue, and the PRD chain closes the sub-issue it finished in order to " +
       "advance",
   },
@@ -999,6 +1000,21 @@ export const diagnose = (
           `not exist. A missing label makes its transition a no-op, so the state machine drifts ` +
           `without erroring.`,
         fix: absent.map(labelCommand).join("\n       "),
+      });
+    }
+
+    // A label the loop retired (#236) breaks nothing by being there, so this
+    // is a thing to know rather than a failure. `init` deletes one nothing
+    // open carries; one still here is either in use or from before `init` ran.
+    const retired = RETIRED_LABELS.filter((name) => facts.labels?.includes(name));
+    if (retired.length > 0) {
+      add({
+        severity: "warning",
+        check: "retired labels",
+        problem:
+          `${retired.join(", ")} ${retired.length === 1 ? "is" : "are"} no longer written or read by ` +
+          `any workflow. Deleting a label takes it off every issue and pull request carrying it.`,
+        fix: retired.map(labelDeleteCommand).join("\n       "),
       });
     }
   }

@@ -88,8 +88,8 @@ const PR_WORKFLOWS = [
  *
  * It files a **closed** pull request's recorded findings, so five of the shared
  * set's assertions are false of it — no base ref, no state environment, an
- * *inverted* closed-PR guard, no checkout, no in-progress labelling — and two
- * of those assert that a checkout step and an in-progress step *exist*, which
+ * *inverted* closed-PR guard, no checkout, no label transition, and two
+ * of those assert that a checkout step and a transition step *exist*, which
  * the set's exemption idiom cannot express. Keeping it in would also make the
  * set's own premise ("every one of them has to work against the PR's real
  * base") false the moment a member has no base ref at all.
@@ -1092,10 +1092,10 @@ describe("PR workflows refuse a closed or merged PR", () => {
     for (const step of checkout) expect(step.if ?? "").toContain(PROCEED);
   });
 
-  it.each(PR_WORKFLOWS)("%s: the run never enters agent:in-progress", (file) => {
-    const labelling = stepsOf(file).filter((s) => (s.run ?? "").includes('--add-label "agent:in-progress"'));
+  it.each(PR_WORKFLOWS)("%s: the label transition is gated on the guard", (file) => {
+    const labelling = stepsOf(file).filter((s) => s.name === "Transition labels");
 
-    expect(labelling).not.toHaveLength(0);
+    expect(labelling).toHaveLength(1);
     for (const step of labelling) expect(step.if ?? "").toContain(PROCEED);
   });
 });
@@ -1886,7 +1886,14 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
       ...fs.readdirSync("setup").filter((f) => f.endsWith(".ts")).map((f) => path.join("setup", f)),
       "review/review.ts",
     ];
-    for (const file of files) expect(fs.readFileSync(file, "utf8"), file).not.toContain("agent:auto-fixed");
+    // `init` deletes it by name (#236), from the one list of retired labels,
+    // which is the only place it may still be written.
+    for (const file of files) {
+      expect(
+        fs.readFileSync(file, "utf8").replace(/^export const RETIRED_LABELS\b.*$/m, ""),
+        file,
+      ).not.toContain("agent:auto-fixed");
+    }
     expect(job().if ?? "").not.toContain("labels");
     expect(runnerStep()?.env?.["AUTO_FIXED"]).toBeUndefined();
   });
@@ -1936,7 +1943,11 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     const run = startStep()?.run ?? "";
 
     expect(run).toContain("set -euo pipefail");
-    expect(run).not.toContain("|| true");
+    // The one tolerance is the removal before the add (#236): a label that is
+    // not there is not a failure.
+    expect(run.split("\n").filter((l) => l.includes("|| true"))).toEqual([
+      'gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true',
+    ]);
     expect(run).toMatch(
       /if ! gh pr edit "\$PR_NUMBER" --add-label "agent:fix"; then\n\s*no_round "adding \\`agent:fix\\` failed/,
     );
@@ -2027,14 +2038,28 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
 
     // The second is the PRD chain's advance (#176), and it is not a label on
     // the pull request under review: it goes on the slice PR's **parent
-    // issue**, through `gh issue edit`, and only from the `advance` job.
-    expect(added).toEqual(["agent:fix", "agent:implement"]);
+    // issue**, through `gh issue edit`, and only from the `advance` job. The
+    // third is the review asking for itself again (#236), which is no arrow
+    // of the loop's: only where the head moved on from the commit it reviewed
+    // while it worked, which nothing in the loop does, since every run that
+    // pushes shares the review job's concurrency group. A human pushed.
+    expect([...added].sort()).toEqual(["agent:fix", "agent:implement", "agent:review"]);
     // …and in these jobs. `stepsOf` reads the review job alone, so its silence
     // is the assertion: each add is somewhere `jobOf` does not reach.
     for (const step of stepsOf(REVIEW)) {
       expect(step.run ?? "").not.toContain('--add-label "agent:fix"');
       expect(step.run ?? "").not.toContain('--add-label "agent:implement"');
     }
+    // Past the probe opening `Transition labels`, which adds the label this
+    // run already holds and so requests nothing.
+    const rerequests = stepsOf(REVIEW).filter(
+      (s) => s.name !== "Transition labels" && (s.run ?? "").includes('--add-label "agent:review"'),
+    );
+    expect(rerequests.map((s) => s.name)).toEqual(["Always remove the trigger label"]);
+    const run = rerequests[0]?.run ?? "";
+    expect(run.indexOf('[ "$head" = "$LEFT_SHA" ]')).toBeLessThan(run.indexOf('--add-label "agent:review"'));
+    expect(rerequests[0]?.env?.["LEFT_SHA"]).toBe("${{ steps.state.outputs.sha }}");
+    expect(jobOf(REVIEW).concurrency?.group).toBe("agent-pr-${{ github.event.pull_request.number }}");
     expect(startStep()).toBeDefined();
     for (const step of job().steps ?? []) {
       expect(step.run ?? "").not.toContain('--add-label "agent:implement"');
@@ -2258,7 +2283,13 @@ describe("agent-fix asks for the re-review its own push needs", () => {
     expect(run).toContain("set -euo pipefail");
     expect(run).toContain("failure_reason.txt");
     expect(run).toContain("exit 1");
-    expect(run).not.toContain("|| true");
+    // The two tolerances are removals (#236): this run's own label, which
+    // comes off before the next step's goes on, and the removal before the
+    // add. A label that is not there is not a failure.
+    expect(run.split("\n").filter((l) => l.includes("|| true"))).toEqual([
+      'gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true',
+      'gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true',
+    ]);
   });
 
   /**
@@ -2335,7 +2366,10 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
     // added to the table arrives here as a decision rather than as a gap.
     const parked = Object.keys(VERDICTS).filter((key) => !selected.includes(key as Verdict));
     expect(parked.sort()).toEqual(["changes recommended, fix round started", "needs a closer look"]);
-    expect(condition(REVIEW)).not.toContain("!=");
+    // The one `!=` is the moved-head stand-down (#236), whose output is
+    // written only as `true`, so unset is the head that did not move.
+    expect(condition(REVIEW)).toContain("needs.review.outputs.moved != 'true'");
+    expect(condition(REVIEW).replace("needs.review.outputs.moved != 'true'", "")).not.toContain("!=");
     expect(advance(REVIEW).needs).toEqual(["review", "resolve"]);
   });
 
@@ -2577,7 +2611,8 @@ describe("a slice PR merged by hand advances the PRD chain", () => {
 
     expect(busy).toBeGreaterThanOrEqual(0);
     expect(add).toBeGreaterThan(busy);
-    expect(run.slice(busy, add)).toContain('. == "agent:implement" or . == "agent:in-progress"');
+    expect(run.slice(busy, add)).toContain('select(. == "agent:implement")');
+    expect(run).not.toContain("agent:in-progress");
     expect(run.slice(busy, add)).toContain("exit 0");
   });
 
@@ -3171,7 +3206,13 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
     expect(run).toContain("set -euo pipefail");
     expect(run).toContain("failure_reason.txt");
     expect(run).toContain("exit 1");
-    expect(run).not.toContain("|| true");
+    // The two tolerances are removals (#236): this run's own label, which
+    // comes off before the next step's goes on, and the removal before the
+    // add. A label that is not there is not a failure.
+    expect(run.split("\n").filter((l) => l.includes("|| true"))).toEqual([
+      'gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true',
+      'gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true',
+    ]);
   });
 
   /**
@@ -3755,9 +3796,13 @@ describe("every workflow in the loop is called rather than copied", () => {
    * paid (#78). The comment above used to say the review ran, spent a full
    * agent pass and transitioned no label — and that is the one shape this
    * cannot take: `review`, `fix` and `update-branch` all transition labels in
-   * one step *above* their checkout, and the `--add-label` ending it is
-   * deliberately not written `|| true`, so Actions' default `bash -e` fails the
-   * run there. Loud, and before the diff is fetched.
+   * one step *above* their checkout, and the probe opening it is deliberately
+   * not written `|| true`, so Actions' default `bash -e` fails the run there.
+   * Loud, and before the diff is fetched.
+   *
+   * The probe was the `agent:in-progress` add until that label retired (#236).
+   * It is now the trigger label the run already holds, added again: the same
+   * write under the same scope, which changes nothing, since the label is on.
    *
    * A property of these three workflows rather than an oversight in them: a
    * `|| true` added to that line would buy back exactly the silent, paid-for run
@@ -3768,23 +3813,20 @@ describe("every workflow in the loop is called rather than copied", () => {
    */
   it.each(PR_WORKFLOWS)("%s: a 403 on the label transition fails before the checkout", (file) => {
     const steps = stepsOf(file);
-    const transition = steps.findIndex((s) =>
-      (s.run ?? "").includes('--add-label "agent:in-progress"'),
-    );
+    const label = (jobOf(file).if ?? "").match(/github\.event\.label\.name == '(agent:[a-z-]+)'/)?.[1];
+    const probe = `gh pr edit "$PR_NUMBER" --add-label "${label}"`;
+    const transition = steps.findIndex((s) => s.name === "Transition labels");
     const checkout = steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@"));
 
+    expect(label).toBeDefined();
     expect(transition).toBeGreaterThanOrEqual(0);
     expect(checkout).toBeGreaterThan(transition);
 
-    // Keyed on the tolerance rather than on the command: the two `--remove-label`
-    // lines in the same step are `|| true` on purpose — a label that is not
-    // there is not a failure — so it is this line alone that must be bare.
-    const adds = (steps[transition]?.run ?? "")
-      .split("\n")
-      .filter((l) => l.includes('--add-label "agent:in-progress"'));
-
-    expect(adds).not.toHaveLength(0);
-    for (const line of adds) expect(line).not.toContain("|| true");
+    // The probe is the step's first line and bare; the removal after it is
+    // `|| true` on purpose, since a label that is not there is not a failure.
+    const lines = (steps[transition]?.run ?? "").trim().split("\n");
+    expect(lines[0]).toBe(probe);
+    expect(lines.slice(1).every((line) => line.endsWith("|| true"))).toBe(true);
   });
 
   /**
@@ -4153,12 +4195,10 @@ describe("agent-implement refuses a closed issue", () => {
     for (const step of checkout) expect(step.if ?? "").toContain(NOT_REFUSED);
   });
 
-  it("never enters agent:in-progress when it refuses", () => {
-    const labelling = stepsOf(FILE).filter((s) =>
-      (s.run ?? "").includes('--add-label "agent:in-progress"'),
-    );
+  it("transitions no label when it refuses", () => {
+    const labelling = stepsOf(FILE).filter((s) => s.name === "Transition labels");
 
-    expect(labelling).not.toHaveLength(0);
+    expect(labelling).toHaveLength(1);
     for (const step of labelling) expect(step.if ?? "").toContain(NOT_REFUSED);
   });
 });
@@ -4608,8 +4648,10 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   it("marks the durable shape refusals blocked, and the finished PRD not", () => {
     const run = runOf(PRD, "preflight");
 
-    expect(bashFunctionBody(run, "refuse_shape")).toContain('--add-label "agent:blocked"');
+    expect(bashFunctionBody(run, "refuse_shape")).toContain('refuse "$1" blocked');
+    expect(bashFunctionBody(run, "refuse")).toContain('--add-label "agent:blocked"');
     expect(armOf(run, "no open sub-issues")).not.toContain("refuse_shape");
+    expect(armOf(run, "no open sub-issues")).not.toContain("blocked");
   });
 
   /**
@@ -4628,7 +4670,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   it.each([
     ["checks nothing out", (s: Step) => (s.uses ?? "").startsWith("actions/checkout@")],
     ["installs nothing", isInstallStep],
-    ["never enters agent:in-progress", (s: Step) => (s.run ?? "").includes('--add-label "agent:in-progress"')],
+    ["transitions no label", (s: Step) => s.name === "Transition labels"],
   ])("%s when it refuses or defers", (_case: string, match: (s: Step) => boolean) => {
     const steps = stepsOf(PRD).filter(match);
 
@@ -4782,7 +4824,11 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * integration review on the PRD PR (#177), which a building run never adds.
    */
   it("requests review on the slice PR, and re-labels nothing else", () => {
-    const adds = stepsOf(PRD).filter((s) => /--add-label "agent:(implement|review)"/.test(s.run ?? ""));
+    // Past the probe opening `Transition labels`, which adds the label this run
+    // already holds and requests nothing (#236).
+    const adds = stepsOf(PRD).filter(
+      (s) => s.name !== "Transition labels" && /--add-label "agent:(implement|review)"/.test(s.run ?? ""),
+    );
 
     expect(adds).toHaveLength(2);
     expect(adds[0]?.run ?? "").toContain('gh pr edit "$SLICE_PR" --add-label "agent:review"');
@@ -4792,7 +4838,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(adds[1]?.id).toBe("handover");
     expect(adds[1]?.run ?? "").toContain('gh pr edit "$PRD_PR" --add-label "agent:review"');
     expect(adds[1]?.if ?? "").toContain("steps.preflight.outputs.finishing == 'true'");
-    expect(runOf(PRD, "handover")).not.toContain("agent:implement\" ");
+    expect(runOf(PRD, "handover")).not.toContain('--add-label "agent:implement"');
     expect(stepsOf(PRD).map((s) => s.id)).not.toContain("remaining");
   });
 
@@ -4873,8 +4919,9 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     const run = runOf(PRD, "merge");
 
     expect(run).not.toMatch(/agent-review|verdict|statuses/);
-    for (const label of ["agent:review", "agent:fix", "agent:in-progress"]) expect(run).toContain(`. == "${label}"`);
-    expect(run).toContain("agent:update-branch");
+    // The trigger labels alone, which are on while their run works (#236).
+    for (const label of ["agent:review", "agent:fix", "agent:update-branch"]) expect(run).toContain(`. == "${label}"`);
+    expect(run).not.toContain("agent:in-progress");
     expect(run.indexOf('gh pr ready "$SLICE_PR"')).toBeLessThan(run.indexOf("gh pr merge"));
   });
 
@@ -5151,11 +5198,11 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(blocked?.run ?? "").toContain('--add-label "agent:blocked"');
   });
 
-  it("removes agent:in-progress however the run ends", () => {
+  it("removes agent:implement from the parent however the run ends", () => {
     const last = stepsOf(PRD).at(-1);
 
-    expect(last?.if ?? "").toContain("always()");
-    expect(last?.run ?? "").toContain('--remove-label "agent:in-progress"');
+    expect(last?.if).toBe("always() && steps.preflight.outputs.refused == 'false'");
+    expect(last?.run ?? "").toContain('--remove-label "agent:implement"');
   });
 });
 
@@ -5926,7 +5973,7 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
    * it arrives here as a failing test rather than as a sentence in a table.
    */
   const LIFECYCLES = [
-    "consumed on entry",
+    "on while its run works",
     "cursor",
     "marker, removed on success",
   ];
@@ -5990,6 +6037,21 @@ describe("the adoption doc gives every label a lifecycle, in a column", () => {
         );
       }
     }
+  });
+
+  /**
+   * **`agent:in-progress` retired with #236**, when the trigger labels began
+   * staying on while their run works. §3 names it once, where it says `init`
+   * deletes it, so it is in no row of the table and no `gh label create` line,
+   * and no workflow names it at all.
+   */
+  it("offers agent:in-progress as nothing but retired", () => {
+    const label = "agent:in-progress";
+    for (const doc of ["CONTEXT.md", ADOPTING, TRIAGE, path.join("docs", "parity.md"), path.join("setup", "SETUP.md")]) {
+      expect(fs.readFileSync(doc, "utf8"), doc).not.toMatch(new RegExp(`gh label create +"${label}"`));
+    }
+    for (const row of rows()) expect(row).not.toContain(label);
+    for (const file of workflowFiles) expect(fs.readFileSync(file, "utf8"), file).not.toContain(label);
   });
 
   /**
@@ -6996,7 +7058,7 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
  */
 describe("an implement run links itself on the issue when it starts", () => {
   const RUN_URL = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}";
-  const START = '--add-label "agent:in-progress"';
+  const START = 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:blocked" || true';
 
   const transition = (file: string): Step => {
     const step = stepsOf(file).find((s) => s.name === "Transition labels");
@@ -7110,5 +7172,230 @@ describe("an implement run links itself on the issue when it starts", () => {
     expect(step?.run ?? "").toContain("opened PR #${NEW_PR}");
     expect(comment).toContain("${RUN_URL}");
     expect(comment).toMatch(/\|\| echo "::warning::[^"]+"$/);
+  });
+});
+
+/**
+ * **A trigger label is on while its run works** (#236), and comes off when the
+ * run ends, however it ends. That retired `agent:in-progress`, which every run
+ * wrote and three places read: a review → fix → re-review cycle wrote about
+ * thirteen label events, and with the PAT acting as the maintainer several of
+ * them read as the maintainer's.
+ */
+describe("a trigger label is on while its run works, and off when it ends", () => {
+  const TRIGGERED: readonly (readonly [string, string, string])[] = [
+    ["implement.yml", "agent:implement", "always() && steps.preflight.outputs.refused == 'false'"],
+    ["implement-prd.yml", "agent:implement", "always() && steps.preflight.outputs.refused == 'false'"],
+    ["review.yml", "agent:review", "always()"],
+    ["fix.yml", "agent:fix", "always()"],
+    ["update-branch.yml", "agent:update-branch", "always()"],
+  ];
+  const TRIGGER_LABELS = ["agent:implement", "agent:review", "agent:fix", "agent:update-branch"];
+  const fileOf = (name: string): string => path.join(WORKFLOW_DIR, name);
+  const removal = (label: string): RegExp =>
+    new RegExp(`gh (?:pr|issue) edit "\\$[A-Z_a-z]+" --remove-label "${label}"`);
+
+  it("covers every workflow a trigger label starts", () => {
+    const started = runnerWorkflows
+      .filter((file) => !MERGE_GATED.includes(file))
+      .map((file) => path.basename(file))
+      .sort();
+
+    expect(TRIGGERED.map(([file]) => file).sort()).toEqual(started);
+  });
+
+  /**
+   * The last step, so every failure arm above it has run: `agent:blocked` and
+   * the comment go on first, and the label comes off whatever happened. Gated
+   * on `always()`; the implement pair also on a preflight that decided the
+   * issue was this run's, since a deferral, or a preflight that died before it
+   * could defer, may be the sibling's event, and the sibling's run holds the
+   * label.
+   */
+  it.each(TRIGGERED)("%s: takes %s off in its last step, however the run ends", (name, label, guard) => {
+    const last = stepsOf(fileOf(name)).at(-1);
+
+    expect(last?.name).toBe("Always remove the trigger label");
+    expect(last?.if).toBe(guard);
+    expect((last?.run ?? "").trim().split("\n")[0]).toMatch(removal(label));
+    expect(last?.run ?? "").toMatch(new RegExp(`${removal(label).source} \\|\\| true`));
+  });
+
+  it.each(TRIGGERED)("%s: leaves %s on as the run starts", (name, label) => {
+    const transition = stepsOf(fileOf(name)).find((s) => s.name === "Transition labels");
+
+    expect(transition).toBeDefined();
+    // The probe: the label the run holds, added again, bare, before anything.
+    expect((transition?.run ?? "").trim().split("\n")[0]).toMatch(
+      new RegExp(`^gh (?:pr|issue) edit "\\$[A-Z_]+" --add-label "${label}"$`),
+    );
+    expect(transition?.run ?? "").not.toMatch(removal(label));
+    expect(transition?.run ?? "").toMatch(removal("agent:blocked"));
+  });
+
+  /**
+   * Adding a label that is already there fires nothing (`docs/ADOPTING.md`
+   * §1), and removing one that is not leaves nothing on the timeline. So a
+   * stale label can never swallow a request the loop makes: each add is
+   * preceded, in the same script and on the same issue or pull request, by a
+   * removal of the same label.
+   *
+   * Except the permission probe opening `Transition labels`, which requests
+   * nothing: it adds the label the run already holds, so that a short token
+   * fails there, before the checkout, and a removal before it would fire the
+   * run all over again.
+   */
+  it.each(workflowFiles)("%s: adds every trigger label by removing it first", (file: string) => {
+    for (const job of jobsOf(file)) {
+      for (const step of job.steps ?? []) {
+        const lines = (step.run ?? "").split("\n");
+        lines.forEach((line, i) => {
+          if (step.name === "Transition labels" && i === 0) return;
+          const add = line.match(/gh (pr|issue) edit ("\$[A-Za-z_]+") --add-label "(agent:[a-z-]+)"/);
+          if (add === null || !TRIGGER_LABELS.includes(add[3] ?? "")) return;
+          const remove = `gh ${add[1]} edit ${add[2]} --remove-label "${add[3]}"`;
+          expect(
+            lines.slice(0, i).some((before) => before.includes(remove)),
+            `${file}: ${step.name}: ${line.trim()}`,
+          ).toBe(true);
+        });
+      }
+    }
+  });
+
+  /**
+   * **A request made while a run works is not lost.** Adding the trigger label
+   * then fires nothing, since it is on. So a review or a refresh that finished
+   * to find the head moved on from what it left asks for itself again, with
+   * the PAT, since a label added with `GITHUB_TOKEN` starts nothing. Only on
+   * success: a failure is `agent:blocked` and a human's retry.
+   */
+  it.each([
+    ["review.yml", "agent:review", "${{ steps.state.outputs.sha }}"],
+    ["update-branch.yml", "agent:update-branch", "${{ steps.push.outputs.head || github.event.pull_request.head.sha }}"],
+  ])("%s: asks for %s again where the head moved while it worked", (name, label, left) => {
+    const last = stepsOf(fileOf(name)).at(-1);
+    const run = last?.run ?? "";
+    const add = run.indexOf(`GH_TOKEN="$REQUEST_TOKEN" gh pr edit "$PR_NUMBER" --add-label "${label}"`);
+
+    expect(last?.env?.["LEFT_SHA"]).toBe(left);
+    expect(last?.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
+    expect(last?.env?.["PROCEEDED"]).toBe("${{ steps.state.outputs.proceed }}");
+    expect(last?.env?.["REQUEST_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(add).toBeGreaterThan(0);
+    const gate = run.indexOf('if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then');
+    const moved = run.indexOf('if [ "$state" != "OPEN" ] || [ "$head" = "$LEFT_SHA" ]; then');
+    // Another trigger label is a run queued behind this one, and a request
+    // would cancel it and strand its label.
+    const busy = run.indexOf('if [ -n "$busy" ]; then');
+    const noPat = run.indexOf('if [ "$HAS_PAT" != "true" ]; then');
+    expect(gate).toBeGreaterThan(0);
+    expect(moved).toBeGreaterThan(gate);
+    expect(run).toContain('select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")');
+    expect(busy).toBeGreaterThan(moved);
+    expect(noPat).toBeGreaterThan(busy);
+    expect(add).toBeGreaterThan(noPat);
+    // Without the PAT the add would start nothing, so it is said instead.
+    const arm = run.slice(noPat, run.indexOf("\n          fi", noPat));
+    expect(arm).toContain("::warning::");
+    expect(arm).toContain('gh pr comment "$PR_NUMBER"');
+    expect(arm).toContain("exit 0");
+  });
+
+  /**
+   * Not `fix`: a second fix run would answer the threads this one answered,
+   * which stay open until a review verifies them (#111).
+   */
+  it("fix.yml: does not ask for itself again", () => {
+    // The probe opening `Transition labels` adds the label the run holds,
+    // which requests nothing; asserted above.
+    for (const job of jobsOf(fileOf("fix.yml"))) {
+      for (const step of job.steps ?? []) {
+        if (step.name === "Transition labels") continue;
+        expect(step.run ?? "").not.toContain('--add-label "agent:fix"');
+      }
+    }
+  });
+
+  /**
+   * **The loop's one order** (#236): label on, do the work, post every
+   * result, take your own label off, add the next step's label. A refusal is
+   * a run that ends at once, so its comment goes first, then its own label
+   * off, then `agent:blocked` where it applies.
+   */
+  it.each([
+    ["implement.yml", "preflight", 'gh issue comment "$ISSUE_NUMBER"', 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"'],
+    ["implement-prd.yml", "preflight", 'gh issue comment "$ISSUE_NUMBER"', 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"'],
+    ["review.yml", "state", 'gh pr comment "$PR_NUMBER"', 'gh pr edit "$PR_NUMBER" --remove-label "agent:review"', 'gh pr edit "$PR_NUMBER" --add-label "agent:blocked"'],
+    ["fix.yml", "state", 'gh pr comment "$PR_NUMBER"', 'gh pr edit "$PR_NUMBER" --remove-label "agent:fix"', 'gh pr edit "$PR_NUMBER" --add-label "agent:blocked"'],
+  ])("%s: a refusal comments, then takes its label off, then blocks", (name, id, comment, removal, blocked) => {
+    const body = bashFunctionBody(runOf(fileOf(name), id), "refuse");
+
+    expect(body.indexOf(comment)).toBeGreaterThanOrEqual(0);
+    expect(body.indexOf(removal)).toBeGreaterThan(body.indexOf(comment));
+    expect(body.indexOf(blocked)).toBeGreaterThan(body.indexOf(removal));
+    // Tolerated, since it now comes first: under `-e` a failed comment would
+    // end the step before the removal, and the implement pair's last step
+    // leaves a refused run's label alone, so it would stay on with no run.
+    const line = body.split("\n").find((l) => l.includes(comment)) ?? "";
+    expect(line).toMatch(/\|\| echo "::warning::[^"]+"$/);
+  });
+
+  it("update-branch.yml: a refusal comments, then takes its label off", () => {
+    const run = runOf(fileOf("update-branch.yml"), "state");
+    const comment = run.indexOf('gh pr comment "$PR_NUMBER"');
+    const removal = run.indexOf('--remove-label "agent:update-branch"');
+
+    expect(comment).toBeGreaterThanOrEqual(0);
+    expect(removal).toBeGreaterThan(comment);
+    expect(run.slice(comment, removal)).toContain('|| echo "::warning::');
+  });
+
+  /**
+   * And a hand-off takes the run's own label off before it adds the next
+   * step's, in the same step and only on its success path, so the issue or
+   * pull request never carries both.
+   */
+  it.each([
+    ["implement.yml", "Request review", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$NEW_PR" --add-label "agent:review"'],
+    ["implement-prd.yml", "Request review", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$SLICE_PR" --add-label "agent:review"'],
+    ["implement-prd.yml", "handover", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$PRD_PR" --add-label "agent:review"'],
+    ["fix.yml", "Request re-review", 'gh pr edit "$PR_NUMBER" --remove-label "agent:fix"', 'gh pr edit "$PR_NUMBER" --add-label "agent:review"'],
+    ["update-branch.yml", "Request a review of the resolution", 'gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch"', 'gh pr edit "$PR_NUMBER" --add-label "agent:review"'],
+  ])("%s: %s takes its own label off before it adds the next", (name, step, removal, add) => {
+    const found = stepsOf(fileOf(name)).find((s) => s.name === step || s.id === step);
+    const run = found?.run ?? "";
+
+    expect(found?.if ?? "").toContain("success()");
+    expect(run.indexOf(removal)).toBeGreaterThanOrEqual(0);
+    expect(run.indexOf(add)).toBeGreaterThan(run.indexOf(removal));
+  });
+
+  /**
+   * A review whose pull request moved while it worked says so, and the two
+   * jobs that act on its verdict stand down: the verdict is about a commit the
+   * pull request has left (#236).
+   */
+  it("review.yml: auto-fix and advance stand down where the head moved", () => {
+    const review = jobNamed(REVIEW, "review");
+    const trigger = (review.steps ?? []).find((s) => s.name === "Always remove the trigger label");
+
+    expect(trigger?.id).toBe("trigger");
+    expect((review as { outputs?: Record<string, string> }).outputs?.["moved"]).toBe("${{ steps.trigger.outputs.moved }}");
+    for (const id of ["auto-fix", "advance"]) {
+      expect(jobNamed(REVIEW, id).if ?? "", id).toContain("needs.review.outputs.moved != 'true'");
+    }
+  });
+
+  /**
+   * The PRD chain's two busy checks read the trigger labels alone, now that
+   * those are on while their run works.
+   */
+  it("reads the trigger labels where it asks whether a round or the chain is busy", () => {
+    const merge = stepsOf(PRD).find((s) => s.id === "merge")?.run ?? "";
+    const advanceMerged = (jobNamed(REVIEW, "advance-merged").steps ?? [])[0]?.run ?? "";
+
+    expect(merge).toContain('select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")');
+    expect(advanceMerged).toContain('select(. == "agent:implement")');
   });
 });

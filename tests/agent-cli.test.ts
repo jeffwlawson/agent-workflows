@@ -37,6 +37,7 @@ import {
   type PolicyBody,
   type PolicySurface,
 } from "../setup/policies.js";
+import type { LabelSurface, RepoLabel } from "../setup/labels.js";
 
 /**
  * The Actions policy step, for the tests that are not about it: a private
@@ -52,6 +53,25 @@ const offline: PolicySurface = {
   },
   update: () => {
     throw new Error("init wrote an Actions policy in a test that is not about it");
+  },
+};
+
+/**
+ * The label step, for the tests that are not about it: a repository whose
+ * labels could not be listed, which it reports and leaves alone, and a write
+ * that fails the test rather than reaching anything.
+ */
+const noLabels: LabelSurface = {
+  labels: () => undefined,
+  carriers: () => undefined,
+  create: () => {
+    throw new Error("init created a label in a test that is not about it");
+  },
+  edit: () => {
+    throw new Error("init edited a label in a test that is not about it");
+  },
+  remove: () => {
+    throw new Error("init deleted a label in a test that is not about it");
   },
 };
 
@@ -420,7 +440,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes one caller per reference file, pinned to this package's own version", async () => {
     const root = adopted();
 
-    const changes = await init({ dir: root, github: offline });
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
 
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "created"),
@@ -441,7 +461,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes a self-check naming the job it sits in", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
 
     expect(read(root, ".github/workflows/agent-review.yml")).toMatch(
       /^\s*self-check: review \/ review$/m,
@@ -464,7 +484,7 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("moves the pin on a re-run and changes nothing else in a caller", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
     const theirs = read(root, ".github/workflows/agent-review.yml")
       .replace(/^  review:$/m, "  agent_review:")
       .replace(/self-check: review \/ review/, "self-check: agent_review / review")
@@ -473,7 +493,7 @@ describe("init installs the reference callers into an adopting repo", () => {
       .replace(`@v${manifest.version}`, "@v0.0.1");
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), theirs);
 
-    const changes = await init({ dir: root, github: offline });
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
 
     const text = read(root, ".github/workflows/agent-review.yml");
     expect(text).toBe(theirs.replace("@v0.0.1", `@v${manifest.version}`));
@@ -496,10 +516,10 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("does not put back a caller the adopter deleted, and says it did not", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
     fs.rmSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"));
 
-    const changes = await init({ dir: root, github: offline });
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
 
     expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"))).toBe(
       false,
@@ -520,7 +540,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const theirs = "name: Our own fix job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-fix.yml"), theirs);
 
-    const changes = await init({ dir: root, github: offline });
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
 
     expect(read(root, ".github/workflows/agent-fix.yml")).toBe(theirs);
     expect(changes.find((c) => c.file.endsWith("agent-fix.yml"))?.action).toBe("kept");
@@ -528,9 +548,9 @@ describe("init installs the reference callers into an adopting repo", () => {
 
   it("reports an unchanged caller rather than rewriting it", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
 
-    const changes = await init({ dir: root, github: offline });
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
 
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "unchanged"),
@@ -546,12 +566,12 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("emits a SETUP.md prompt for the work it cannot do", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
 
     const setup = read(root, "SETUP.md");
     expect(setup).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     expect(setup).toContain("AGENT_PAT");
-    expect(setup).toContain("agent:in-progress");
+    expect(setup).toContain("agent:blocked");
     expect(setup).toContain("doctor");
     expect(setup).toContain(manifest.name);
   });
@@ -565,7 +585,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: manifest.name }));
 
-    const changes = await init({ dir: root, github: offline });
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
 
     expect(fs.existsSync(path.join(root, "SETUP.md"))).toBe(false);
     const change = changes.find((c) => c.file === "SETUP.md");
@@ -584,7 +604,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     fs.writeFileSync(path.join(root, "SETUP.md"), "# How we set this repo up\n");
 
-    const changes = await init({ dir: root, github: offline });
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
 
     expect(read(root, "SETUP.md")).toBe("# How we set this repo up\n");
     const change = changes.find((c) => c.file === "SETUP.md");
@@ -634,7 +654,10 @@ describe("init installs the reference callers into an adopting repo", () => {
       }
     }
     const calls = fs.readFileSync(log, "utf8").trim().split("\n");
-    expect(calls).toEqual(["GH_REPO= repo view --json visibility --jq .visibility"]);
+    expect(calls).toEqual([
+      "GH_REPO= repo view --json visibility --jq .visibility",
+      "GH_REPO= label list --limit 1000 --json name,color,description",
+    ]);
   });
 
   it("refuses a flag it does not know rather than ignoring it", async () => {
@@ -698,7 +721,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("leaves no placeholder unsubstituted in the prompt it writes", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
 
     expect(read(root, "SETUP.md")).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
@@ -744,7 +767,7 @@ describe("init installs the reference callers into an adopting repo", () => {
 
     // The block itself has to still be there: a doc restructure that moved it
     // would otherwise make this pass by comparing nothing.
-    expect(mandated).toHaveLength(6);
+    expect(mandated).toHaveLength(5);
     expect(byName([...TRIGGER_LABELS, ...STATE_LABELS])).toEqual(byName(mandated));
   });
 
@@ -793,7 +816,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     const conditional = documentedLabels().slice(1).flat();
 
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
 
     expect(byName(advisoryLabelSpecsFor(referenceNames))).toEqual(byName(conditional));
     for (const label of conditional) expect(read(root, "SETUP.md")).toContain(labelCommand(label));
@@ -811,10 +834,10 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("says nothing about them once the caller that wants them is gone", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
 
     fs.rmSync(path.join(root, ".github", "workflows", "agent-follow-ups.yml"));
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
 
     const setup = read(root, "SETUP.md");
     const filing = ADVISORY_LABELS["follow-ups"] ?? [];
@@ -894,7 +917,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface, sent } = github("public", []);
 
-    const first = await init({ dir: root, github: surface });
+    const first = await init({ dir: root, github: surface, labels: noLabels });
 
     expect(first.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
     expect(sent).toHaveLength(1);
@@ -907,7 +930,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     expect(body?.conditions.workflow_path.include).not.toContain(".github/workflows/ci.yml");
     expect(body?.rules).toEqual([{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }]);
 
-    const second = await init({ dir: root, github: surface });
+    const second = await init({ dir: root, github: surface, labels: noLabels });
 
     expect(second.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(1);
@@ -920,12 +943,12 @@ describe("init allows pull_request_target for the loop's callers on a public rep
    */
   it("lists every event a targeted caller also triggers on", async () => {
     const root = adopted();
-    await init({ dir: root, github: github("private", []).surface });
+    await init({ dir: root, github: github("private", []).surface, labels: noLabels });
     const review = path.join(root, ".github", "workflows", "agent-review.yml");
     fs.writeFileSync(review, fs.readFileSync(review, "utf8").replace(/^on:$/m, "on:\n  workflow_dispatch:"));
     const { surface, sent } = github("public", []);
 
-    await init({ dir: root, github: surface });
+    await init({ dir: root, github: surface, labels: noLabels });
 
     expect(sent[0]?.body.rules[0].parameters.allowed_events).toEqual(["pull_request_target", "workflow_dispatch"]);
   });
@@ -936,7 +959,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
       { id: 3, name: POLICY_NAME, enforcement: "active", include: triggered.slice(1), exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface });
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
     expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
@@ -949,7 +972,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
       { id: 9, name: "theirs", enforcement: "active", include: [".github/workflows/agent-*.yml"], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface });
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(0);
@@ -959,7 +982,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface, sent } = github("private", []);
 
-    const changes = await init({ dir: root, github: surface });
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)).toBeUndefined();
     expect(sent).toHaveLength(0);
@@ -974,7 +997,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface } = github("public", [], "HTTP 403: Resource not accessible by integration");
 
-    const changes = await init({ dir: root, github: surface });
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
 
     const policy = changes.find((c) => c.file === POLICY_CHANGE);
     expect(policy?.action).toBe("kept");
@@ -993,14 +1016,14 @@ describe("init allows pull_request_target for the loop's callers on a public rep
   it.skipIf(process.platform === "win32")("reads each policy in full, so a re-run leaves its own alone", () => {
     const root = adopted();
 
-    const first = replayed({ visibility: "PUBLIC" }, () => init({ dir: root, github: livePolicySurface(root) }));
+    const first = replayed({ visibility: "PUBLIC" }, () => init({ dir: root, github: livePolicySurface(root), labels: noLabels }));
 
     expect(first.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
     expect(first.writes.map((call) => call.slice(0, 3))).toEqual([["api", "--method", "POST"]]);
     const created = { id: 6133, target: "actions", source_type: "Repository", source: "repo", ...(first.writes[0]?.[4] as object) };
 
     const second = replayed({ visibility: "PUBLIC", policies: [created] }, () =>
-      init({ dir: root, github: livePolicySurface(root) }),
+      init({ dir: root, github: livePolicySurface(root), labels: noLabels }),
     );
 
     expect(second.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
@@ -1017,7 +1040,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const theirs = { id: 4, name: "theirs", enforcement: "active" };
 
     const { result, writes } = replayed({ visibility: "PUBLIC", policies: [theirs], unreadable: [4] }, () =>
-      init({ dir: root, github: livePolicySurface(root) }),
+      init({ dir: root, github: livePolicySurface(root), labels: noLabels }),
     );
 
     const policy = result.find((c) => c.file === POLICY_CHANGE);
@@ -1033,12 +1056,182 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface, sent } = github(visibility, policies);
 
-    const changes = await init({ dir: root, github: surface });
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
 
     const policy = changes.find((c) => c.file === POLICY_CHANGE);
     expect(policy?.action).toBe("kept");
     expect(policy?.note).toContain("gh api --method POST");
     expect(sent).toHaveLength(0);
+  });
+});
+
+/**
+ * The labels (#236). `init` creates a missing one and edits one whose colour or
+ * description is not §3's, so an existing install picks up a recolour on its
+ * next run, and deletes a retired one that nothing open still carries.
+ */
+describe("init converges the labels the loop owns", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const adopted = (): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-labels-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+    return root;
+  };
+
+  /**
+   * GitHub, as far as this step talks to it: a label list that a write really
+   * changes, so a second run reads what the first one left.
+   */
+  const github = (start: readonly RepoLabel[], carriers: Readonly<Record<string, readonly number[] | undefined>> = {}) => {
+    let labels = [...start];
+    const sent: string[] = [];
+    const surface: LabelSurface = {
+      labels: () => labels,
+      carriers: (name) => (name in carriers ? carriers[name] : []),
+      create: (label) => {
+        sent.push(`create ${label.name}`);
+        labels = [...labels, { ...label, color: label.color.toLowerCase() }];
+        return undefined;
+      },
+      edit: (label) => {
+        sent.push(`edit ${label.name}`);
+        labels = labels.map((l) => (l.name === label.name ? { ...label, color: label.color.toLowerCase() } : l));
+        return undefined;
+      },
+      remove: (name) => {
+        sent.push(`delete ${name}`);
+        labels = labels.filter((l) => l.name !== name);
+        return undefined;
+      },
+    };
+    return { surface, sent, now: () => labels };
+  };
+
+  /** The labels as an install made before #236 left them: the old colours, and `agent:in-progress`. */
+  const OLD: readonly RepoLabel[] = [
+    { name: "agent:implement", color: "0e8a16", description: "Ready for the implement workflow to run" },
+    { name: "agent:review", color: "1d76db", description: "PR is ready for the automated review workflow" },
+    { name: "agent:fix", color: "1d76db", description: "Address review feedback on this PR" },
+    { name: "agent:update-branch", color: "5319e7", description: "Refresh this PR branch from its base branch" },
+    { name: "agent:in-progress", color: "fbca04", description: "An agent run is currently active" },
+    { name: "agent:blocked", color: "b60205", description: "A run failed or was refused; needs human attention" },
+    { name: "agent:follow-ups", color: "0052cc", description: "This PR's review recorded out-of-scope findings" },
+    { name: "needs-triage", color: "ededed", description: "theirs" },
+  ];
+
+  const OWNED = [...TRIGGER_LABELS, ...STATE_LABELS, ...(ADVISORY_LABELS["follow-ups"] ?? [])].filter((label) =>
+    label.name.startsWith("agent:"),
+  );
+
+  const labelChanges = (changes: readonly { file: string; action: string; note?: string }[]) =>
+    changes.filter((c) => c.file.startsWith("label "));
+
+  it("recolours an old install, and a second run reports every label unchanged", async () => {
+    const root = adopted();
+    const { surface, sent, now } = github(OLD);
+
+    const first = await init({ dir: root, github: offline, labels: surface });
+
+    for (const label of OWNED) {
+      expect(first.find((c) => c.file === `label "${label.name}"`)?.action, label.name).toBe("updated");
+      const held = now().find((l) => l.name === label.name);
+      expect(held?.color.toUpperCase()).toBe(label.color);
+      expect(held?.description).toBe(label.description);
+    }
+    expect(first.find((c) => c.file === 'label "agent:in-progress"')?.action).toBe("deleted");
+    expect(now().map((l) => l.name)).not.toContain("agent:in-progress");
+
+    const writes = sent.length;
+    const second = await init({ dir: root, github: offline, labels: surface });
+
+    expect(labelChanges(second).map((c) => c.action)).toEqual(OWNED.map(() => "unchanged"));
+    expect(sent).toHaveLength(writes);
+  });
+
+  /** The triage vocabulary is an adopter's, so its colours are theirs too. */
+  it("touches no label outside agent:*", async () => {
+    const root = adopted();
+    const { surface, sent } = github(OLD);
+
+    await init({ dir: root, github: offline, labels: surface });
+
+    expect(sent.filter((write) => !write.includes(" agent:"))).toEqual([]);
+  });
+
+  it("creates a label that does not exist", async () => {
+    const root = adopted();
+    const { surface, sent } = github(OLD.filter((label) => label.name !== "agent:fix"));
+
+    const changes = await init({ dir: root, github: offline, labels: surface });
+
+    expect(changes.find((c) => c.file === 'label "agent:fix"')?.action).toBe("created");
+    expect(sent).toContain("create agent:fix");
+  });
+
+  /**
+   * Deleting a label strips it from everything carrying it, so a retired label
+   * still on an open issue or pull request is left, and named with where.
+   */
+  it("leaves a retired label that is still in use, and says where", async () => {
+    const root = adopted();
+    const { surface, sent } = github(
+      [...OLD, { name: "agent:queued", color: "ededed", description: "" }],
+      { "agent:in-progress": [12, 34] },
+    );
+
+    const changes = await init({ dir: root, github: offline, labels: surface });
+
+    const kept = changes.find((c) => c.file === 'label "agent:in-progress"');
+    expect(kept?.action).toBe("kept");
+    expect(kept?.note).toContain("#12, #34");
+    expect(kept?.note).toContain('gh label delete "agent:in-progress" --yes');
+    expect(sent).not.toContain("delete agent:in-progress");
+    expect(changes.find((c) => c.file === 'label "agent:queued"')?.action).toBe("deleted");
+  });
+
+  it("leaves a retired label where whether it is in use could not be read", async () => {
+    const root = adopted();
+    const { surface, sent } = github(OLD, { "agent:in-progress": undefined });
+
+    const changes = await init({ dir: root, github: offline, labels: surface });
+
+    expect(changes.find((c) => c.file === 'label "agent:in-progress"')?.action).toBe("kept");
+    expect(sent).not.toContain("delete agent:in-progress");
+  });
+
+  it("says what to run where the labels could not be listed, and writes none", async () => {
+    const root = adopted();
+
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
+
+    const kept = changes.find((c) => c.file === "labels");
+    expect(kept?.action).toBe("kept");
+    // `--force`, so a label that exists is recoloured rather than refused, and
+    // `; `, so one that fails does not stop the rest.
+    for (const label of OWNED) expect(kept?.note).toContain(`${labelCommand(label)} --force`);
+    expect(kept?.note).not.toContain("&&");
+    expect(kept?.note?.split("; gh label create")).toHaveLength(OWNED.length);
+  });
+
+  it("names a refused write with the command that would make it", async () => {
+    const root = adopted();
+    const { surface } = github(OLD.filter((label) => label.name !== "agent:fix"));
+
+    const changes = await init({
+      dir: root,
+      github: offline,
+      labels: { ...surface, create: () => "HTTP 403: Resource not accessible by integration" },
+    });
+
+    const kept = changes.find((c) => c.file === 'label "agent:fix"');
+    expect(kept?.action).toBe("kept");
+    expect(kept?.note).toContain("HTTP 403");
+    expect(kept?.note).toContain(labelCommand(OWNED.find((label) => label.name === "agent:fix") as RepoLabel));
   });
 });
 
@@ -1066,7 +1259,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
     roots.push(root);
     fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
-    await init({ dir: root, github: offline });
+    await init({ dir: root, github: offline, labels: noLabels });
     fs.writeFileSync(path.join(root, ".github", "workflows", "ci.yml"), ciOn("  pull_request:"));
     return root;
   };
@@ -1122,7 +1315,6 @@ describe("doctor names the failures that otherwise look like something else", ()
       "agent:review",
       "agent:fix",
       "agent:update-branch",
-      "agent:in-progress",
       "agent:blocked",
     ],
     visibility: "private",
@@ -2665,6 +2857,30 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(fresh.err).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     expect(fresh.err).toContain("AGENT_PAT");
     expect(fresh.err).toContain("agent:implement");
+  });
+
+  /**
+   * A label the loop retired (#236) breaks nothing by being there, so it is a
+   * thing to know rather than a failure: named, with the command that deletes
+   * it, and the reason `init` may have left it.
+   */
+  it("reports a retired label still present as advisory, with the delete command", async () => {
+    const { code, out, err } = await check(await installed(), {
+      ...healthy(),
+      labels: [...(healthy().labels ?? []), "agent:in-progress"],
+    });
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("warn  retired labels:");
+    expect(out).toContain("agent:in-progress");
+    expect(out).toContain('gh label delete "agent:in-progress" --yes');
+  });
+
+  it("says nothing about retired labels where none is present", async () => {
+    const { out } = await check(await installed(), healthy());
+
+    expect(out).not.toContain("retired labels");
   });
 
   /**

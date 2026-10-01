@@ -20,6 +20,7 @@ import {
   unreadable,
   type PolicySurface,
 } from "./policies.js";
+import type { LabelSurface } from "./labels.js";
 
 /**
  * The install path: scaffold into an adopter's repository what nothing upstream
@@ -112,16 +113,51 @@ export interface LabelSpec {
  * The trigger labels are derived from the callers instead — see `labelSpecsFor`.
  */
 export const STATE_LABELS: readonly LabelSpec[] = [
-  { name: "agent:in-progress", color: "FBCA04", description: "An agent run is currently active" },
-  { name: "agent:blocked", color: "B60205", description: "A run failed or was refused; needs human attention" },
+  { name: "agent:blocked", color: "CF222E", description: "A run failed or was refused. Needs you." },
 ];
 
+/**
+ * Coloured by **stage** (#236), so the colour on an issue or a pull request
+ * says where in the lifecycle it is: build, review, fix, refresh. Each is on
+ * while its run works and comes off when the run ends, which is what retired
+ * `agent:in-progress`; the descriptions say so, since they are what GitHub
+ * shows on hover.
+ */
 export const TRIGGER_LABELS: readonly LabelSpec[] = [
-  { name: "agent:implement", color: "0E8A16", description: "Ready for the implement workflow to run" },
-  { name: "agent:review", color: "1D76DB", description: "PR is ready for the automated review workflow" },
-  { name: "agent:fix", color: "1D76DB", description: "Address review feedback on this PR" },
-  { name: "agent:update-branch", color: "5319E7", description: "Refresh this PR branch from its base branch" },
+  {
+    name: "agent:implement",
+    color: "8250DF",
+    description: "Build this issue, or the next slice of this PRD. On while the run works.",
+  },
+  { name: "agent:review", color: "0969DA", description: "Review this PR. On while the review runs." },
+  { name: "agent:fix", color: "D4A72C", description: "Act on review findings. On while the fix runs." },
+  {
+    name: "agent:update-branch",
+    color: "1B7C83",
+    description: "Merge the base branch into this PR. On while it runs.",
+  },
 ];
+
+/**
+ * Labels the loop wrote once and writes no longer. `init` deletes each where
+ * no open issue or pull request still carries it, and `doctor` reports one
+ * that is still there. Deleting a label strips it from everything carrying it,
+ * so one still in use is left for a human, named.
+ */
+export const RETIRED_LABELS: readonly string[] = ["agent:in-progress", "agent:auto-fixed", "agent:queued"];
+
+/**
+ * `labelCommand` with `--force`, which creates the label or, where it exists,
+ * sets its colour and description. The fallback `init` names where it could
+ * not list the labels, which is the case it cannot tell a fresh install from an
+ * old one: a plain `gh label create` fails on a label that exists and
+ * recolours nothing. Joined with `; ` rather than `&&` so one refusal does not
+ * stop the rest.
+ */
+export const labelConvergeCommand = (label: LabelSpec): string => `${labelCommand(label)} --force`;
+
+/** The one command that deletes a retired label, for `doctor`'s fix and `init`'s note. */
+export const labelDeleteCommand = (name: string): string => `gh label delete "${name}" --yes`;
 
 /**
  * Which label triggers a given workflow. `implement-prd` shares `agent:implement`
@@ -159,7 +195,11 @@ export const labelSpecsFor = (workflows: readonly string[]): readonly LabelSpec[
  */
 export const ADVISORY_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
   "follow-ups": [
-    { name: "agent:follow-ups", color: "0052CC", description: "This PR's review recorded out-of-scope findings" },
+    {
+      name: "agent:follow-ups",
+      color: "6E7781",
+      description: "This PR's review recorded out-of-scope findings; they are filed on merge.",
+    },
     { name: "pr-follow-up", color: "D4C5F9", description: "Filed from a merged PR's review by the follow-ups workflow" },
     { name: "needs-triage", color: "D93F0B", description: "Maintainer needs to evaluate this issue" },
   ],
@@ -176,7 +216,7 @@ export const advisoryLabelSpecsFor = (workflows: readonly string[]): readonly La
  * and `doctor` offers them as the fix for a label that does not exist. Only the
  * name decides anything at run time, so a second copy of the form would not
  * break a loop — it would just leave a repository that followed `doctor`'s
- * advice carrying six differently-coloured, undescribed labels from one that
+ * advice carrying five differently-coloured, undescribed labels from one that
  * ran `init`, and `docs/ADOPTING.md` §3 unable to be right about both.
  */
 export const labelCommand = ({ name, color, description }: LabelSpec): string =>
@@ -193,7 +233,7 @@ export interface InitChange {
    * or a caller an adopter does not have and this will not add for them. It
    * always carries the note saying which.
    */
-  readonly action: "created" | "updated" | "unchanged" | "kept";
+  readonly action: "created" | "updated" | "unchanged" | "kept" | "deleted";
   /** Why — mandatory on `kept`, since a refusal nobody can read is a silence. */
   readonly note?: string;
 }
@@ -209,6 +249,11 @@ export interface InitOptions {
    * repository the environment named.
    */
   readonly github: PolicySurface;
+  /**
+   * Where the labels are read and written: `liveLabelSurface(dir)` from the
+   * CLI, a stand-in from the tests. Required for the same reason as `github`.
+   */
+  readonly labels: LabelSurface;
 }
 
 /** How the policy step names itself in the list of changes. */
@@ -418,6 +463,104 @@ export const init = (options: InitOptions): readonly InitChange[] => {
     options.github,
   );
   if (policy !== undefined) changes.push(policy);
+  changes.push(...convergeLabels(workflows, options.labels));
+  return changes;
+};
+
+/** How a label names itself in the list of changes. */
+export const labelChange = (name: string): string => `label "${name}"`;
+
+/**
+ * Every label the loop owns, as `docs/ADOPTING.md` §3 defines it (#236): the
+ * `agent:*` labels the installed callers reach for, and `agent:follow-ups`
+ * whichever callers were taken, since the review adds it whether or not the
+ * filing caller is installed. The triage labels beside them are a vocabulary of
+ * their own and an adopter's, so they are named in `SETUP.md` and never
+ * written here.
+ */
+const ownedLabels = (workflows: readonly string[]): readonly LabelSpec[] => [
+  ...labelSpecsFor(workflows),
+  ...Object.values(ADVISORY_LABELS)
+    .flat()
+    .filter((label) => label.name.startsWith("agent:")),
+];
+
+/**
+ * Create a missing label, edit one whose colour or description differs, and
+ * leave one that matches, so a second run reports every label `unchanged`.
+ * Then delete each retired label that is still here, unless an open issue or
+ * pull request carries it: that one is left, and the note says where it is.
+ *
+ * Never fails the install, for the policy step's reason: the callers are on
+ * disk by now, and a token that cannot write a label leaves a step a human can
+ * take, named with the command.
+ */
+const convergeLabels = (workflows: readonly string[], github: LabelSurface): readonly InitChange[] => {
+  const wanted = ownedLabels(workflows);
+  const present = github.labels();
+  if (present === undefined) {
+    return [
+      {
+        file: "labels",
+        action: "kept",
+        note:
+          `could not list this repository's labels, so none was created or recoloured; ` +
+          `run ${wanted.map(labelConvergeCommand).join("; ")}`,
+      },
+    ];
+  }
+
+  const byName = new Map(present.map((label) => [label.name, label]));
+  const changes: InitChange[] = wanted.map((label): InitChange => {
+    const file = labelChange(label.name);
+    const current = byName.get(label.name);
+    if (current === undefined) {
+      const refused = github.create(label);
+      return refused === undefined
+        ? { file, action: "created" }
+        : { file, action: "kept", note: `GitHub refused to create it (${refused}); run ${labelCommand(label)}` };
+    }
+    // GitHub answers the colour in lower case whatever it was given.
+    if (current.color.toLowerCase() === label.color.toLowerCase() && current.description === label.description) {
+      return { file, action: "unchanged" };
+    }
+    const refused = github.edit(label);
+    return refused === undefined
+      ? { file, action: "updated", note: `colour and description as docs/ADOPTING.md §3 gives them` }
+      : {
+          file,
+          action: "kept",
+          note: `GitHub refused to edit it (${refused}); run gh label edit "${label.name}" --color ${label.color} --description "${label.description}"`,
+        };
+  });
+
+  for (const name of RETIRED_LABELS) {
+    if (!byName.has(name)) continue;
+    const file = labelChange(name);
+    const carriers = github.carriers(name);
+    if (carriers === undefined) {
+      changes.push({
+        file,
+        action: "kept",
+        note: `retired, but whether an open issue or PR still carries it could not be read; once none does, run ${labelDeleteCommand(name)}`,
+      });
+      continue;
+    }
+    if (carriers.length > 0) {
+      changes.push({
+        file,
+        action: "kept",
+        note: `retired, but still on ${carriers.map((n) => `#${n}`).join(", ")}; once none of them carries it, run ${labelDeleteCommand(name)}`,
+      });
+      continue;
+    }
+    const refused = github.remove(name);
+    changes.push(
+      refused === undefined
+        ? { file, action: "deleted", note: `retired, and no open issue or PR carried it` }
+        : { file, action: "kept", note: `retired, but GitHub refused to delete it (${refused}); run ${labelDeleteCommand(name)}` },
+    );
+  }
   return changes;
 };
 

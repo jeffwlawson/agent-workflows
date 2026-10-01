@@ -180,6 +180,12 @@ jobs:
       # how that job tells this verdict from a newer one (#201).
       sha: ${{ steps.state.outputs.sha }}
       url: ${{ steps.review.outputs.url }}
+      # …and whether the pull request moved on from that commit while this
+      # run reviewed it (#236), which `auto-fix` and `advance` both skip on:
+      # their verdict is about a head that is no longer the pull request's,
+      # and the review of the new one is asked for, queued, or left to a
+      # human. See *Always remove the trigger label*.
+      moved: ${{ steps.trigger.outputs.moved }}
     # `contents: read` is the invariant that bounds what a wrong review can do
     # (docs/parity.md §10). No `issues: write`: review files nothing, and the
     # `gh pr edit --add-label` steps below need only `pull-requests: write` —
@@ -199,12 +205,12 @@ jobs:
     # half works; no review at all, which is what `setup/doctor.ts` tells an
     # adopter before a label rather than after one.
     #
-    # Where a token is short for some other reason, the first `gh pr edit` to
-    # feel it is the `--add-label "agent:in-progress"` ending `Transition
-    # labels`, which is deliberately not written `|| true`: Actions' default
-    # `bash -e` fails the run there — before the checkout, so before the diff is
-    # fetched and before an agent pass is spent. That is why that one line
-    # carries no tolerance while the removals beside it do.
+    # Where a token is short for some other reason, the first label write to
+    # feel it is the probe opening `Transition labels`, which is deliberately
+    # not written `|| true`: Actions' default `bash -e` fails the run there,
+    # before the checkout, so before the diff is fetched and before an agent
+    # pass is spent. That is why that one line carries no tolerance while the
+    # removal beside it does.
     permissions:
       # Reading the check runs the CI wait below polls. On a **public**
       # repository they are readable without this scope, which is why every
@@ -323,10 +329,15 @@ jobs:
           HEAD_POLL_SECONDS: "5"
         run: |
           set -uo pipefail
+          # In the loop's one order (#236): the comment first, then this run's
+          # own label off, then `agent:blocked`, so the label that names the
+          # next step goes on last.
+          # The comment is tolerated: under `-e` a failed one would end the step
+          # before the removal, and leave the label on with nothing behind it.
           refuse() {
+            gh pr comment "$PR_NUMBER" --body "$1" || echo "::warning::Could not post the refusal comment on PR #${PR_NUMBER}."
             gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
             gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
-            gh pr comment "$PR_NUMBER" --body "$1"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           }
 
@@ -378,12 +389,21 @@ jobs:
           echo "sha=${tip}" >> "$GITHUB_OUTPUT"
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
+      # The trigger label stays on while this run works and comes off in the
+      # last step, however the run ends (#236), so the one label to take off
+      # here is a block an earlier run left.
+      #
+      # The line before it is the permission probe, the label write a short
+      # token feels first (see the `permissions:` comment above). It adds the
+      # label this run already holds, the one trigger-label add not preceded
+      # by a removal, on purpose: the label is on, so it changes nothing, fires
+      # no event and leaves no timeline entry, while still being a label write
+      # under the scope every other one here needs.
       - name: Transition labels
         if: steps.state.outputs.proceed == 'true'
         run: |
-          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
+          gh pr edit "$PR_NUMBER" --add-label "agent:review"
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
-          gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
       # The review's own time, refused the way the fix-round budget below is:
       # a limit nobody wrote down is not one to guess (#220). `time-limit` summed
@@ -1381,9 +1401,9 @@ jobs:
       # that lives in the review body, so marking a PR whose review failed to
       # post would point at nothing.
       #
-      # Never fails the run. This label is newer than the six `docs/ADOPTING.md`
-      # §3 mandates, so an adopter can be up to date on the pin and not have it
-      # — and a posted review is worth more than a marker. A warning says so
+      # Never fails the run. This label is not one `docs/ADOPTING.md` §3
+      # mandates, so an adopter can be up to date on the pin and not have it,
+      # and a posted review is worth more than a marker. A warning says so
       # where `|| true` would not, the same call `Mark PR ready for review`
       # makes below.
       - name: Mark the PR as carrying follow-ups
@@ -1451,6 +1471,36 @@ jobs:
           gh pr ready "$PR_NUMBER" \
             || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
 
+      # And a run that failed says so where the verdict goes, rather than leaving the
+      # last verdict standing. So does one that was cancelled or timed out
+      # (#220), which leaves it standing just the same. Silence is the dangerous answer here: a status is
+      # per commit and per context, so a review that died half way reads from
+      # the outside exactly like one that recommended approval — right up until
+      # someone merges on it.
+      #
+      # Below every step it is the arm for, so every step above it is covered,
+      # including the one that posts the verdict itself, whose own failure
+      # would otherwise be the one that leaves no status at all. And above the
+      # failure comment, which is where the labels move (#236): every result is
+      # posted before this run takes its own label off.
+      #
+      # The one step that spells the context out. A run that failed wrote no
+      # `verdict.json` to read it from, so this literal is held to
+      # `VERDICT_CONTEXT` by a test instead.
+      - name: Post an error verdict
+        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
+        env:
+          HEAD_SHA: ${{ steps.state.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api --method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}" \
+            -f "context=agent-review" -f "state=error" -f "target_url=${RUN_URL}" \
+            -f "description=The review run did not finish, so there's no verdict. Check the run, then re-add agent:review." \
+            || echo "::warning::Could not post the failed \`agent-review\` verdict for ${HEAD_SHA}. The failure comment on the pull request is the only record of this run."
+
+      # In the loop's one order (#236): the comment, then this run's own label
+      # off, then `agent:blocked`. After the error verdict, so it is the last
+      # result this run posts.
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
         env:
@@ -1483,37 +1533,75 @@ jobs:
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           printf '`agent:review` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-add `agent:review` to retry.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
+          gh pr comment "$PR_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on PR #${PR_NUMBER}."
+          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
-          gh pr comment "$PR_NUMBER" --body-file "$body_file"
 
-      # And a run that failed says so in the same place, rather than leaving the
-      # last verdict standing. So does one that was cancelled or timed out
-      # (#220), which leaves it standing just the same. Silence is the dangerous answer here: a status is
-      # per commit and per context, so a review that died half way reads from
-      # the outside exactly like one that recommended approval — right up until
-      # someone merges on it.
+      # The trigger label comes off however the run ends (#236): success,
+      # failure, refusal, timeout or cancel, so it never outlives the run.
+      # `always()` alone, so a pre-flight that died before deciding is covered
+      # too; a refusal took it off already, and removing an absent label leaves
+      # nothing on the timeline.
       #
-      # Last of the failure arms, so every step above it is covered — including
-      # the one that posts the verdict itself, whose own failure would otherwise
-      # be the one that leaves no status at all.
+      # **A request made while this run worked is not lost.** Adding the label
+      # then fired nothing, since it was already on. So where the run finished
+      # and the pull request's head has moved on from the commit it reviewed,
+      # because somebody pushed, it asks for its own step again: removed above,
+      # then added. With `AGENT_PAT` or not at all, since a label added with
+      # `GITHUB_TOKEN` starts nothing. Not on a failure, which is
+      # `agent:blocked` and a human's retry, and never a cycle: nothing in the
+      # loop pushes to a pull request while its review runs, since every run
+      # that pushes shares this job's concurrency group.
       #
-      # The one step that spells the context out. A run that failed wrote no
-      # `verdict.json` to read it from, so this literal is held to
-      # `VERDICT_CONTEXT` by a test instead.
-      - name: Post an error verdict
-        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
+      # **Not while another trigger label is on.** That label is a run queued
+      # in this pull request's concurrency group, whose waiting slot holds one
+      # run: a request now would cancel it, and a run cancelled while pending
+      # never reaches its own last step, so its label would stay on with
+      # nothing behind it, and the PRD merge would refuse the PR as busy. The
+      # queued run sees the new head anyway, and a fix or a refresh asks for
+      # the review of what it pushed.
+      #
+      # **Whichever of the three it does, it says the head moved**, as
+      # `moved=true`, and `auto-fix` and `advance` stand down on it. This
+      # run's verdict is about a commit the pull request has left: a fix
+      # round started off it would read a branch somebody else has pushed to,
+      # and finding no verdict on the head it would post a false "no fix
+      # round" failure; an advance would re-add `agent:implement` and the
+      # chain's merge would refuse the slice PR as busy, or merge a head
+      # nobody reviewed. The review of the new head, re-requested here or
+      # queued or added by hand, decides both.
+      - name: Always remove the trigger label
+        id: trigger
+        if: always()
         env:
-          HEAD_SHA: ${{ steps.state.outputs.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PROCEEDED: ${{ steps.state.outputs.proceed }}
+          JOB_STATUS: ${{ job.status }}
+          LEFT_SHA: ${{ steps.state.outputs.sha }}
+          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          REQUEST_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          gh api --method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}" \
-            -f "context=agent-review" -f "state=error" -f "target_url=${RUN_URL}" \
-            -f "description=The review run did not finish, so there's no verdict. Check the run, then re-add agent:review." \
-            || echo "::warning::Could not post the failed \`agent-review\` verdict for ${HEAD_SHA}. The failure comment on the pull request is the only record of this run."
-
-      - name: Always remove in-progress
-        if: always() && steps.state.outputs.proceed == 'true'
-        run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
+          gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
+          if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
+            exit 0
+          fi
+          live=$(gh pr view "$PR_NUMBER" --json state,headRefOid,labels --jq '"\(.state) \(.headRefOid) \([.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")] | join(","))"' 2>/dev/null || echo "")
+          read -r state head busy <<< "$live"
+          if [ "$state" != "OPEN" ] || [ "$head" = "$LEFT_SHA" ]; then
+            exit 0
+          fi
+          echo "moved=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$busy" ]; then
+            echo "::notice::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, but it carries ${busy}, so agent:review was not asked for again: that run is queued, and a new one would cancel it and leave its label on with no run behind it. Add agent:review by hand once ${busy} is off, if the new head still needs it."
+            exit 0
+          fi
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, but AGENT_PAT is not set, so agent:review was not asked for again: a label added with GITHUB_TOKEN starts nothing. Add agent:review by hand to review the new head."
+            gh pr comment "$PR_NUMBER" --body "This PR moved on to \`${head}\` while its review of \`${LEFT_SHA}\` ran. No review of the new head will start on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Add \`agent:review\` by hand to review it." \
+              || echo "::warning::…and that could not be said on the pull request either."
+            exit 0
+          fi
+          GH_TOKEN="$REQUEST_TOKEN" gh pr edit "$PR_NUMBER" --add-label "agent:review" \
+            || echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, and agent:review could not be added again. Add it by hand to review the new head."
 
   # Closes the threads the review verified (#133). It is the only job in this
   # workflow holding `contents: write`, and it is shaped so that it cannot
@@ -1729,7 +1817,8 @@ jobs:
     if: >-
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.review.outputs.verdict == 'changes recommended, fix round started'
+      needs.review.outputs.verdict == 'changes recommended, fix round started' &&
+      needs.review.outputs.moved != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # **No concurrency group**, for the reason `resolve` is in none: the
@@ -1827,6 +1916,9 @@ jobs:
             exit 0
           fi
 
+          # Removed first, as every trigger label the loop adds (#236): an add
+          # on a label that is somehow still there fires nothing.
+          gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
           if ! gh pr edit "$PR_NUMBER" --add-label "agent:fix"; then
             no_round "adding \`agent:fix\` failed, and GitHub's reply is in the workflow run's log"
           fi
@@ -1896,6 +1988,7 @@ jobs:
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
+      needs.review.outputs.moved != 'true' &&
       (needs.review.outputs.verdict == 'approval recommended' ||
        needs.review.outputs.verdict == 'changes recommended')
     runs-on: ubuntu-latest
@@ -1939,6 +2032,9 @@ jobs:
               || echo "::warning::…and that could not be said on the pull request either."
             exit 0
           fi
+          # Removed first, as every trigger label the loop adds (#236): an add
+          # on a label still there fires nothing, and the chain would stall.
+          gh issue edit "$parent" --remove-label "agent:implement" || true
           gh issue edit "$parent" --add-label "agent:implement"
           echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."
 
@@ -1962,8 +2058,9 @@ jobs:
   #
   # **Not while the chain is already moving.** A human merge can land while
   # the run `advance` started is queued or building (the parent carries
-  # `agent:implement` or `agent:in-progress`); that run finds the slice PR
-  # merged and goes on, and a second label would only queue a second run.
+  # `agent:implement`, which is on from the advance until that run ends); that
+  # run finds the slice PR merged and goes on, and a second label would only
+  # queue a second run.
   #
   # **Only on a slice PR**, for `advance`'s reason and by the same head, and
   # only into a PRD branch. `closed` with `merged`, and the action named:
@@ -2014,10 +2111,11 @@ jobs:
               || echo "::warning::…and that could not be said on the pull request either."
             exit 0
           fi
-          busy=$(gh issue view "$parent" --json labels --jq '[.labels[].name | select(. == "agent:implement" or . == "agent:in-progress")] | join(", ")')
+          busy=$(gh issue view "$parent" --json labels --jq '[.labels[].name | select(. == "agent:implement")] | join(", ")')
           if [ -n "$busy" ]; then
             echo "#${parent} carries ${busy}: the PRD chain is already moving, and its run finds slice PR #${PR_NUMBER} merged. Nothing to add."
             exit 0
           fi
+          gh issue edit "$parent" --remove-label "agent:implement" || true
           gh issue edit "$parent" --add-label "agent:implement"
           echo "Re-added agent:implement to #${parent}: slice PR #${PR_NUMBER} was merged by hand, and the PRD chain moves on from it."

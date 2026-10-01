@@ -36,6 +36,27 @@ one-slice PRD, whose PRD PR diff is the slice PR's. Those leftovers are linked f
 table** in the PRD PR body — one row per slice, written by the run that merges it and never
 refreshed (#164).
 
+**A trigger label is on while its run works** (#236). The run leaves it on as it starts and takes
+it off in its last step, however it ends: success, failure, refusal, timeout or cancel. So the
+label on an issue or a pull request is the run working on it now, or the one queued behind it, and
+`agent:in-progress`, which said the same thing in a second write, is retired. On a PRD parent that
+makes `agent:implement` on only during each build run; the advance job puts it back. Two rules
+follow from GitHub firing no event for a label already there. The loop adds a trigger label by
+**removing it first**, so a stale one cannot swallow the request. And a request made **while a run
+works** is not lost: a review or a branch refresh that ends to find the head moved since it
+started, because somebody pushed, asks for its own step again, unless another trigger label is
+on it: that is a run queued behind it, which a new request would cancel and strand. `fix` does not, since a second fix
+run would answer the threads it answered. There is no lifetime "in progress" label on an issue:
+an open issue with a linked pull request, a draft, and `agent:blocked` already give that view.
+
+Every run ends in **one order**: post every result, take its own label off, then add the label
+naming the next step. A hand-off removes its trigger label just before it adds `agent:review`; a
+failure comments, then removes it, then adds `agent:blocked`; a refusal does the same. So nothing
+ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
+review that found the head moved hands off one way only, and says so as `moved`: its `auto-fix` and
+`advance` jobs stand down, since its verdict is about a commit the pull request has left, and
+`update-branch` asks for itself again only where it did not just ask for a review.
+
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
 first row. A run that pushed asks for the review of what it pushed, so the round it was given
@@ -107,8 +128,8 @@ writes its row and builds the next slice. The chain's own merge is told apart by
 who merged, since both are the maintainer's login: `implement-prd` writes
 `<!-- agent-chain-merge <head sha> -->` into the slice PR's body before it merges, and the job's
 `if:` skips a `closed` payload carrying the mark for the head it merged. It also stands aside while
-the parent already carries `agent:implement` or `agent:in-progress`: the chain is moving, and a
-second label would only queue a second run.
+the parent already carries `agent:implement`, which is on from the advance until the run it starts
+ends: the chain is moving, and a second label would only queue a second run.
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
@@ -349,7 +370,8 @@ The ones worth knowing because nothing fails when they break:
 - **A job that reaches its `timeout-minutes` is cancelled, not failed** (#220). A step gated on
   `failure()` alone never sees it, so every failure step here runs on `cancelled()` too, and tells a
   timeout from a hand cancel by how long the job ran, off a clock its first step starts. Before that
-  a timed-out run posted nothing, while the `always()` cleanup still took `agent:in-progress` off.
+  a timed-out run posted nothing, while the `always()` cleanup still took the label marking the run
+  off.
 - **A label set when an issue is *created* fires no `labeled` event.** Label in a separate call,
   always; recovery is remove-then-re-add.
 - **A label added with `GITHUB_TOKEN` is a silent no-op**, which is why `AGENT_PAT` exists.

@@ -20,8 +20,8 @@ name: Agent Review
 # sits on another repository's default branch (docs/ADOPTING.md §9).
 #
 # One activity type, `labeled`: the review. A caller installed before #249 also
-# lists `closed`, which only a job retired with slice PRs used. Every job in the
-# called workflow skips a `closed` event, so leaving it in is harmless.
+# lists `closed`, for a job the PRD chain no longer has. Every job in the called
+# workflow skips a `closed` event, so leaving it in is harmless.
 on:
   pull_request_target:
     types: [labeled]

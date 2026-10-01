@@ -3203,46 +3203,17 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
   });
 
   /**
-   * Except on a draft PRD PR, where a review is the integration review and
-   * would start over a partial chain (#178). The resolution is still code no
-   * review has seen, so it is named on the PRD PR instead — by the commit the
-   * push reported, under a marker the integration review can find — and the
-   * request is skipped only there: a handed-over PRD PR is not a draft, and an
-   * ordinary pull request is not under `agent/prd-`.
+   * On a PRD PR too, draft or not (#249). Every slice is reviewed as a round on
+   * the draft PRD PR, so the review a resolution asks for is a round of the
+   * current slice, and it is what the approval gate needs: a resolution with
+   * no review leaves the head with no verdict, and the chain cannot move on.
+   * The step that held the review for the retired integration review is gone,
+   * and so is the marker it left, which nothing reads.
    */
-  it("holds the review on a draft PRD PR and names the resolved merge commit instead", () => {
-    const hold = stepNamed("Name the resolution on a draft PRD PR");
-    const run = hold?.run ?? "";
-
-    expect(hold?.id).toBe("prd");
-    expect(hold?.if).toBe("steps.merge.outputs.status == 'conflicts' && success()");
-    expect(hold?.env?.["RESOLVED_SHA"]).toBe("${{ steps.push.outputs.head }}");
-    expect(run).toContain('[[ "$BRANCH" != agent/prd-* ]]');
-    expect(run).toContain("isDraft");
-    expect(run).toContain("<!-- agent-resolved-merge ${RESOLVED_SHA} -->");
-    expect(run).toContain("gh pr comment");
-    expect(run).toContain("held=true");
-    expect(run).not.toContain("agent:review\"");
-    expect(run).not.toContain("--add-label");
-
-    // Between the push that names the commit and the request it stands in for.
-    const names = stepsOf(UPDATE).map((s) => s.name ?? "");
-    expect(names.indexOf(hold?.name ?? "")).toBeGreaterThan(names.indexOf("Comment on the PR"));
-    expect(names.indexOf(hold?.name ?? "")).toBeLessThan(names.indexOf(request()?.name ?? ""));
-  });
-
-  /**
-   * A comment that did not land leaves a resolution nothing will review, so it
-   * fails the run the way a failed `agent:review` add does, with the commit in
-   * the reason — the one place left that still names it.
-   */
-  it("fails naming the commit when the resolution could not be recorded", () => {
-    const run = stepNamed("Name the resolution on a draft PRD PR")?.run ?? "";
-
-    expect(run).toContain("set -euo pipefail");
-    expect(run).toContain("failure_reason.txt");
-    expect(run.slice(run.indexOf("failure_reason.txt") - 400)).toContain("${RESOLVED_SHA}");
-    expect(run).toContain("exit 1");
+  it("asks for the review on a draft PRD PR as on any other", () => {
+    expect(stepsOf(UPDATE).some((s) => s.id === "prd")).toBe(false);
+    expect(fs.readFileSync(UPDATE, "utf8")).not.toContain("agent-resolved-merge");
+    expect(request()?.if).not.toContain("steps.prd");
   });
 
   /**
@@ -3254,9 +3225,7 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
    */
   it("never does both: the copy is the clean path, the request the conflicts one", () => {
     expect(copy()?.if).toBe("steps.merge.outputs.status == 'clean' && success()");
-    expect(request()?.if).toBe(
-      "steps.merge.outputs.status == 'conflicts' && steps.prd.outputs.held != 'true' && success()",
-    );
+    expect(request()?.if).toBe("steps.merge.outputs.status == 'conflicts' && success()");
   });
 
   /**
@@ -5428,31 +5397,53 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
     expect(rows.find((r) => r.includes("**issue**"))).toContain("| `implement` |");
     const prd = rows.find((r) => r.includes("**PRD parent**")) ?? "";
     expect(prd).toContain("| `implement-prd` |");
-    expect(prd).toMatch(/slice PR/);
+    expect(prd).toMatch(/approval/);
     expect(prd).toMatch(/hand the PRD PR over/);
   });
 
   /**
-   * What an adopter sees per verdict on a slice PR — every heading the verdict
-   * table names, since each one moves the chain differently — beside the CI
-   * note the zero-checks rule already added.
+   * What an adopter sees per verdict on a slice round (#249): every heading
+   * the verdict table names, since each one moves the chain differently, and
+   * the three ways on from a park. Nothing about CI on the PRD branches: the
+   * PRD PR's base is the default branch, so there is nothing to configure.
    */
-  it("gives ADOPTING.md the slice-PR experience per verdict", () => {
-    const section = subsection(adopting, /^### The verdict on a slice PR$/);
+  it("gives ADOPTING.md the slice-round experience per verdict", () => {
+    const section = subsection(adopting, /^### The verdict on a slice round$/);
 
     expect(topLevel(adopting, "## 3b.")).toContain(section);
     expect(section).not.toBe("");
     for (const row of Object.values(VERDICTS)) expect(section).toContain(row.heading);
     expect(section).toMatch(/\*\*parks\*\*/);
     expect(section).toMatch(/\*\*waits\*\*/);
-    expect(section).toContain("accepted by hand");
-    expect(section).toContain("*Slice PRs and your CI*");
+    expect(section).toContain("`agent:fix` for another fix round");
+    expect(section).toContain("declining a finding by replying to it, then `agent:review`");
+    expect(section).toContain("pushing your own commit, then `agent:review`");
     expect(adopting).not.toMatch(/reviews once at the end/);
   });
 
-  it("amends ticket-shape.md: one slice PR per sub-issue plus one PRD PR", () => {
+  /**
+   * The chain without slice PRs (#249), in the two documents an adopter and
+   * a contributor read: none of the retired terms is left describing the chain
+   * as it is, and the CI requirement on PRD branches is gone with them.
+   */
+  it("retires the slice-PR vocabulary from CONTEXT.md and ADOPTING.md", () => {
+    for (const doc of [context, adopting]) {
+      expect(doc).not.toMatch(/slice PRs?\b/i);
+      expect(doc).not.toMatch(/slice branch/i);
+      expect(doc).not.toMatch(/integration review/i);
+      expect(doc).not.toMatch(/slices table/i);
+      expect(doc).not.toMatch(/chain-merge/);
+      expect(doc).not.toContain("advance-merged");
+    }
+    expect(adopting).not.toContain("'agent/prd-**'");
+    for (const term of ["**slice range**", "**slice round**", "**final review**", "**progress list**", "**finishing run**"]) {
+      expect(context).toContain(term);
+    }
+  });
+
+  it("amends ticket-shape.md: every slice on one PRD branch, one PRD PR per parent", () => {
     expect(ticketShape).not.toMatch(/one PR per PRD/);
-    expect(ticketShape).toMatch(/one slice PR per sub-issue/);
+    expect(ticketShape).not.toMatch(/slice PR/);
     expect(ticketShape).toMatch(/one PRD PR per parent/);
   });
 });

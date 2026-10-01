@@ -746,6 +746,53 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(outcome.ciResult).toBe("green");
   });
 
+  /**
+   * A run that completed without passing is `red` from the runs surface too,
+   * and named with its conclusion. The member that needs it is
+   * `startup_failure`: a workflow file GitHub could not run creates no job, so
+   * no check run, and with no statuses either the commit read as no CI and
+   * green. The rest of the class (`failure`, `cancelled`, `timed_out`,
+   * `stale`) also fails a check run, which reads red already; covered so the
+   * two surfaces agree on every conclusion.
+   */
+  it.each(["startup_failure", "failure", "cancelled", "timed_out", "stale"])(
+    "is red when a run completed as %s, and names it",
+    (conclusion) => {
+      const outcome = runWaitStep({ pages: NO_CI, runs: [workflowRun(206, "CI", "completed", conclusion)] });
+
+      expect(outcome.status).toBe(0);
+      expect(outcome.ciResult).toBe("red");
+      expect(outcome.evidence).toContain(`- CI: ${conclusion}, https://github.com/${GH_REPO}/actions/runs/206`);
+      expect(outcome.evidence).not.toContain("No CI ran");
+    },
+  );
+
+  /** …and a run that passed, was neutral or was skipped is not. */
+  it.each(["success", "neutral", "skipped"])("is green when a run completed as %s", (conclusion) => {
+    const outcome = runWaitStep({ pages: NO_CI, runs: [workflowRun(207, "CI", "completed", conclusion)] });
+
+    expect(outcome.ciResult).toBe("green");
+    expect(outcome.evidence).not.toContain("did not pass");
+  });
+
+  /**
+   * A job held by an environment's required reviewers has a check run whose
+   * status is `waiting`, beside a run that is `waiting` too. Neither can move
+   * until a human acts, so the wait does not count the check run as pending
+   * either: at the real 900 a wait that did would spin the whole ceiling. The
+   * verdict still reads it as unfinished.
+   */
+  it("does not wait for a check run held by a protection rule", () => {
+    const outcome = runWaitStep({
+      pages: [page([running(SELF_CHECK, "in_progress"), running("deploy", "waiting")])],
+      runs: [workflowRun(208, "Deploy", "waiting")],
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).not.toContain("Waiting for");
+    expect(outcome.ciResult).toBe("unknown");
+    expect(outcome.evidence).toContain("- Deploy: waiting for approval");
+  });
 
   /**
    * "No CI ran" is both surfaces empty, not check runs alone: a slice PR whose

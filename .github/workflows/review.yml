@@ -742,7 +742,7 @@ jobs:
             : > "$err"
             body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err") || return 0
             printf '%s' "$body" \
-              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\")] | length" \
+              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\" and .status != \"waiting\")] | length" \
               2>>"$err" || true
           }
 
@@ -788,13 +788,21 @@ jobs:
           # (`action_required`, as a status or a conclusion) or a protection
           # rule holds it (`waiting`). Neither is pending: it cannot start until
           # a human acts, so waiting for it would spend the whole ceiling on
-          # nothing.
+          # nothing. The same goes for a job in it whose check run is `waiting`
+          # on an environment's reviewers, which `pending_count` skips for that
+          # reason; the verdict below still reads it as unfinished.
+          #
+          # A run is `failed` when it completed with any conclusion a check run
+          # would read as red, approval aside. Most of those also fail a check
+          # run, but not all: a `startup_failure` (a workflow file GitHub could
+          # not run) creates no job, so no check run, and is seen here or nowhere.
           ci_runs_filter='[.[].workflow_runs[]
             | select((.id | tostring) != env.SELF_RUN_ID)
             | select((.name // "") | startswith("Agent ") | not)
             | select(any(.referenced_workflows[]?; (.path // "") | test("^[^/]+/agent-workflows/\\.github/workflows/")) | not)
             | {id, name, status, conclusion, html_url,
-               awaiting: (.status == "action_required" or .status == "waiting" or .conclusion == "action_required")}]'
+               awaiting: (.status == "action_required" or .status == "waiting" or .conclusion == "action_required"),
+               failed: (.status == "completed" and (.conclusion // "" | IN("success", "neutral", "skipped", "action_required") | not))}]'
 
           # The filtered runs as one JSON array, or nothing when the read
           # fails. Gated on gh's exit status, and slurped, for the reasons
@@ -1003,8 +1011,11 @@ jobs:
           # never started has failed nothing and passed nothing, and the
           # evidence names it with a link a maintainer can approve it from.
           #
-          # `red` is left to the check runs, which carry every Actions failure
-          # job by job. A run still going at the ceiling is `unknown`, as a
+          # A run that completed without passing is `red` here as well as in the
+          # check runs, because not every such run has a check run to fail: a
+          # `startup_failure` creates no job at all, and with no statuses either
+          # it would otherwise read as no CI, and green. Each one is named with
+          # its conclusion. A run still going at the ceiling is `unknown`, as a
           # check run is.
           #
           # Unreadable is `unknown` rather than skipped: green needs every
@@ -1023,7 +1034,15 @@ jobs:
             fi
             echo "_Could not list this commit's workflow runs, so a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._" >> "$out"
           else
-            workflow_runs=$(printf '%s' "$runs" | jq -r 'if length == 0 then "none" elif any(.awaiting or .status != "completed") then "unknown" else "green" end')
+            workflow_runs=$(printf '%s' "$runs" | jq -r 'if length == 0 then "none" elif any(.failed) then "red" elif any(.awaiting or .status != "completed") then "unknown" else "green" end')
+            failed=$(printf '%s' "$runs" | jq -r '.[] | select(.failed) | "- \(.name): \(.conclusion), \(.html_url)"')
+            if [ -n "$failed" ]; then
+              {
+                echo
+                echo "_Workflow runs that did not pass:_"
+                echo "$failed"
+              } >> "$out"
+            fi
             awaiting=$(printf '%s' "$runs" | jq -r '.[] | select(.awaiting) | "- \(.name): waiting for approval, \(.html_url)"')
             if [ -n "$awaiting" ]; then
               echo "::warning::A CI run on this commit is waiting for approval, so CI is unknown here rather than green."

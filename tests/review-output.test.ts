@@ -709,14 +709,21 @@ describe("deriveVerdict", () => {
       );
     });
 
-    it("says a fix round cannot help where no CI result could be read, and names the base", () => {
+    /**
+     * `unknown` is also CI that had not finished: a run waiting for approval,
+     * or one still going at the wait's ceiling (#221). For those the way on is
+     * to approve it or let it finish, not to change the CI setup.
+     */
+    it("says a fix round cannot help where no CI result could be read, and names every way on", () => {
       const row = deriveVerdict(output(), { ...inputs, ci: "unknown" });
 
       expect(row.verdict).toBe("needs a closer look");
       expect(row.nextStep).toContain("a fix round cannot help");
-      expect(row.nextStep).toContain("Make CI run on pull requests into `agent/prd-14-search`, then re-add agent:review.");
+      expect(row.nextStep).toContain("CI had not finished");
+      expect(row.nextStep).toContain("approve a run waiting for approval or let it finish");
+      expect(row.nextStep).toContain("make CI run on pull requests into `agent/prd-14-search`. Then re-add agent:review.");
       expect(row.description).toBe(
-        "Needs a closer look. No CI ran on this PR, or it could not be read. Make CI run on PRs into its base, then re-add agent:review.",
+        "Needs a closer look. CI unfinished, absent or unreadable. Approve it, let it finish or make it run, then re-add agent:review.",
       );
     });
 

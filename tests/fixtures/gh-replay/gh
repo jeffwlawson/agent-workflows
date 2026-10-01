@@ -26,6 +26,7 @@
  *                                                    from GH_REPLAY_THREADS
  *   repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by
  *                                                  — blockers from GH_REPLAY_BLOCKED_BY
+ *   repos/{owner}/{repo}/git/matching-refs/{ref}   : the branches from GH_REPLAY_REFS
  *   repos/{owner}/{repo}                           — the repository from GH_REPLAY_REPO
  *   repos/{owner}/{repo}/compare/{base}...{head}   : the comparison from GH_REPLAY_COMPARE
  *   repos/{owner}/{repo}/actions/policies?…        : the list, from GH_REPLAY_POLICIES,
@@ -66,7 +67,11 @@
  *   GH_REPLAY_RUNS_COUNTER  path this process counts runs-listing calls in
  *   GH_REPLAY_RUNS_FAILURE  `403` or `unreachable`: how the runs listing fails
  *   GH_REPLAY_ISSUE       path to the `issue` node the graphql query returns
- *   GH_REPLAY_BLOCKED_BY  path to a JSON array of blocking issues; default none
+ *   GH_REPLAY_BLOCKED_BY  path to a JSON array of blocking issues, the same for every
+ *                         issue, or to an object keyed by issue number holding
+ *                         one such array each; default none
+ *   GH_REPLAY_REFS        path to a JSON array of branch names, each `{name, sha}`;
+ *                         default none
  *   GH_REPLAY_PULLS       path to a JSON array of pull requests, each carrying
  *                         a `state` of OPEN, CLOSED or MERGED; default none.
  *                         One carrying `headRefOids` answers `pr view` with the
@@ -84,6 +89,7 @@
  *   GH_REPLAY_POLICY_FAILURE  comma-separated policy ids whose detail cannot be read
  *   GH_REPLAY_CREATED     the number `pr create` answers with; default 300
  *   GH_REPLAY_MERGE_FAILURE  set: `pr merge` is logged, then refused
+ *   GH_REPLAY_LABEL_FAILURE  set: `pr edit --add-label` is logged, then refused
  *   GH_REPLAY_LOG         path each tracker write is appended to, one JSON
  *                         argv per line
  */
@@ -254,6 +260,10 @@ if (argv[0] === "pr" && ["ready", "merge", "create", "edit", "comment"].includes
   if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
   if (argv[1] === "merge" && process.env["GH_REPLAY_MERGE_FAILURE"] !== undefined) {
     process.stderr.write("GraphQL: Required status check \"ci\" is expected. (mergePullRequest)\n");
+    process.exit(1);
+  }
+  if (argv[1] === "edit" && argv.includes("--add-label") && process.env["GH_REPLAY_LABEL_FAILURE"] !== undefined) {
+    process.stderr.write("HTTP 502: Bad Gateway\n");
     process.exit(1);
   }
   if (argv[1] === "create") {
@@ -579,9 +589,32 @@ if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
   process.exit(0);
 }
 
-// The parent's blockers — the REST array of issues, `state` lower-case.
-if (/\/issues\/[0-9]+\/dependencies\/blocked_by$/.test(endpoint)) {
-  emit(fixture("GH_REPLAY_BLOCKED_BY", []));
+// An issue's blockers: the REST array of issues, `state` lower-case. One
+// array for every issue, or one per issue where the scenario keys them: the
+// PRD preflight reads the parent's and then each sub-issue's.
+const blockedBy = /\/issues\/([0-9]+)\/dependencies\/blocked_by$/.exec(endpoint);
+
+if (blockedBy !== null) {
+  const blockers = fixture("GH_REPLAY_BLOCKED_BY", []);
+
+  emit(Array.isArray(blockers) ? blockers : (blockers[blockedBy[1]] ?? []));
+  process.exit(0);
+}
+
+// The refs whose name starts with the one given, in the documented shape: an
+// array of `{ref, object: {sha}}`, empty where none matches. The prefix is
+// matched as a string, so `heads/agent/prd-17-` does not match
+// `heads/agent/prd-171-…`.
+const matchingRefs = /^repos\/[^/]+\/[^/]+\/git\/matching-refs\/(.+)$/.exec(endpoint);
+
+if (matchingRefs !== null) {
+  const prefix = `refs/${matchingRefs[1]}`;
+
+  emit(
+    fixture("GH_REPLAY_REFS", [])
+      .map(({ name, sha }) => ({ ref: `refs/heads/${name}`, object: { sha, type: "commit" } }))
+      .filter((ref) => ref.ref.startsWith(prefix)),
+  );
   process.exit(0);
 }
 

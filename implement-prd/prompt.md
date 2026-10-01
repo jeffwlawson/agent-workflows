@@ -4,14 +4,14 @@ Implement issue #{{SUB_NUMBER}}: {{SUB_TITLE}}
 
 It is one slice of PRD #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}.
 
-You are on the slice branch `{{BRANCH}}`, cut from the tip of the PRD branch `{{PRD_BRANCH}}`.
-The PRD branch holds **every earlier slice of this PRD**, so they are already in your checkout:
+You are on the PRD branch `{{BRANCH}}`, at its tip.
+It holds **every earlier slice of this PRD**, so they are already in your checkout:
 build on them rather than redo them. Later slices are not yet written and are not yours.
 
 Implement **only** #{{SUB_NUMBER}}. Do not start the next sub-issue, even if it looks small, and
-even if the code you are writing would be tidier with it done. Another run does that one, on a
-slice branch of its own cut from the PRD branch, with this same context, and a slice that quietly
-absorbs its successor leaves that run with nothing to do and a sub-issue nobody can honestly close.
+even if the code you are writing would be tidier with it done. Another run does that one, on this
+same branch once this slice is reviewed, with this same context, and a slice that quietly absorbs
+its successor leaves that run with nothing to do and a sub-issue nobody can honestly close.
 
 # THE SLICE
 
@@ -62,8 +62,8 @@ branch; read the failure before assuming which.
 # BEFORE YOU COMMIT
 
 Review your own slice: read the diff you are about to commit as though someone else wrote it.
-This is not ceremony: this slice is opened as a pull request of its own against the PRD branch and
-reviewed there, and the next slice is built on whatever that review leaves. A design problem you
+This is not ceremony: this slice is reviewed on its own, as a round on the PRD's pull request, and
+the next slice is built only once that review approves it. A design problem you
 catch now costs one edit; one the review catches costs a round.
 
 # COMMIT

@@ -17,7 +17,9 @@ import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/accepta
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import {
+  firstLine,
   parkReasonOf,
+  readPrdBranch,
   readSliceRound,
   renderFinalReviewBrief,
   renderParkComment,
@@ -28,6 +30,7 @@ import {
   type PrdRound,
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
+import { progressAtRoundEnd } from "../shared/progress-list.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
@@ -234,6 +237,25 @@ try {
         ...(runUrl === undefined ? {} : { runUrl }),
       }),
     );
+  }
+
+  // The PRD PR's progress list for each way this round can end (#246), for
+  // the advance job, which knows how it ended and runs no toolchain, to write
+  // into the body. Read off the PRD branch now, while the token is in hand.
+  // A list that cannot be rendered is left as it stands, and says so: it is a
+  // view of the chain, and a review is worth more than it.
+  if (round !== undefined) {
+    try {
+      const { subIssues, ranges } = readPrdBranch(round.parent, BASE_REF);
+      const lists = progressAtRoundEnd({
+        subIssues,
+        ranges,
+        finalReview: round.kind === "final" ? "requested" : "not requested",
+      });
+      for (const [ending, list] of Object.entries(lists)) writeText(`progress_${ending}.md`, list);
+    } catch (error) {
+      console.log(`::warning::The PRD PR's progress list could not be rendered, so it is left as it stands: ${firstLine(error)}`);
+    }
   }
 
   // All `gh`-based context fetching is done; the review agent must not hold the

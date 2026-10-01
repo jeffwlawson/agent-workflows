@@ -361,6 +361,20 @@ describe.skipIf(!CAN_RUN)("implement-prd's failure step after the default branch
   const prd = CASES.find((c) => c.command === "implement-prd") as Case;
   const merged = { SUB: "245", BASE_REF: "main", PRD_PR: "286", MERGED: "0123456789abcdef" };
 
+  /**
+   * The sub-issue named is the one the preflight selected off the slice
+   * ranges and handed over as `sub` (#246), with the run link: the step
+   * reads no issue, so it cannot infer one from which are closed.
+   */
+  it("names the sub-issue the run selected, with the run link", () => {
+    const outcome = run(prd, "failure", 120, "30", "false", undefined, { SUB: "246", BASE_REF: "main" });
+
+    expect(outcome.comment).toContain("It was building sub-issue #246.");
+    expect(outcome.comment).toContain("[Workflow run](https://github.com/acme/widgets/actions/runs/1)");
+    expect(outcome.gh.filter((call) => !call.startsWith("issue comment 135") && !call.startsWith("issue edit 135"))).toEqual([]);
+    expect(runOf(prd)).not.toMatch(/gh (api|issue view|issue list)/);
+  });
+
   it("names the review on the PRD PR as the way on, not the label", () => {
     const outcome = run(prd, "failure", 120, "30", "false", undefined, merged);
 

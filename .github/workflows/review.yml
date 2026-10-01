@@ -1318,7 +1318,9 @@ jobs:
       # job (PRD #222): `park.md` where the round ended without approval and
       # with no fix round starting, `park_posted.md` for a verdict posted by a
       # posting job that then failed, and `park_failed.md`, written before the
-      # agent ran, for a round that does not finish. Its own artifact and
+      # agent ran, for a round that does not finish. Beside them the PRD PR's
+      # progress list for each way the round can end, `progress_<ending>.md`
+      # (#246), also written before the agent ran. Its own artifact and
       # `always()`, because a failed run is one of the endings it is for, and
       # the review's own artifact is uploaded only on success. Either file may
       # be missing; the advance job says so where it needs one.
@@ -1331,6 +1333,9 @@ jobs:
             ${{ runner.temp }}/park.md
             ${{ runner.temp }}/park_posted.md
             ${{ runner.temp }}/park_failed.md
+            ${{ runner.temp }}/progress_approved.md
+            ${{ runner.temp }}/progress_parked.md
+            ${{ runner.temp }}/progress_running.md
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
@@ -2261,8 +2266,11 @@ jobs:
   # `always()` drops them with the rest of "every need succeeded". And only
   # where the review proceeded: a refusal ended no round.
   #
+  # **At every ending** it first writes the PRD PR's progress list (#246), the
+  # one the review rendered for how the round ended.
+  #
   # **Its shape**: no checkout, no toolchain, no model, `pull-requests: write`
-  # alone for the no-PAT arm's comment on the PRD PR, and `AGENT_PAT` for
+  # alone for the progress list and the no-PAT arm's comment on the PRD PR, and `AGENT_PAT` for
   # everything on the parent, or nothing there. `issues: write` stays out of
   # this job and every caller's grant (docs/parity.md §10). **No concurrency
   # group**, for the reason the posting job is in none. It cannot cycle: it
@@ -2279,7 +2287,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      # The no-PAT arm's comment on the PRD PR, and nothing else.
+      # The progress list in the PRD PR's body, and the no-PAT arm's comment
+      # on the PRD PR, and nothing else.
       pull-requests: write
     steps:
       # What the runner wrote. Missing where the run failed before it got that
@@ -2290,6 +2299,72 @@ jobs:
         with:
           name: agent-review-park
           path: ${{ runner.temp }}
+
+      # The PRD PR's **progress list** (#246), re-rendered at every ending of
+      # a round: the one the runner rendered for how this round ended, written
+      # between its markers in the PRD PR's body. Approved on an approval,
+      # still in review where the verdict started a fix round, and parked on
+      # every other ending, a run that did not finish included. First, so the
+      # list says where the chain is before anything this job starts reads it.
+      #
+      # Spliced the way the review's summary is (#218): every byte outside the
+      # markers is kept, a body with no list gets one appended, and one with
+      # half a list, or two, is not written at all. `spliceProgressList` in
+      # `shared/progress-list.ts` is the same rule, and a test holds the two
+      # equal.
+      #
+      # Never fails the job: the list is a view of the chain, and the advance
+      # or the park comment after it is the chain itself. A warning says so
+      # where `|| true` would not.
+      - name: Re-render the progress list
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ENDED: ${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}
+          VERDICT: ${{ needs.review.outputs.verdict }}
+          # `PROGRESS_START` and `PROGRESS_END` in `shared/progress-list.ts`;
+          # a test holds them equal.
+          PROGRESS_START: "<!-- agent:progress -->"
+          PROGRESS_END: "<!-- /agent:progress -->"
+        run: |
+          set -uo pipefail
+          ending=parked
+          if [ "$ENDED" = "true" ] && [ "$VERDICT" = "approval recommended" ]; then
+            ending=approved
+          elif [ "$ENDED" = "true" ] && [ "$VERDICT" = "changes recommended, fix round started" ]; then
+            ending=running
+          fi
+          list="${RUNNER_TEMP}/progress_${ending}.md"
+          [ -f "$list" ] || { echo "::warning::The review rendered no progress list, so PRD PR #${PR_NUMBER}'s is left as it stands."; exit 0; }
+          current="${RUNNER_TEMP}/progress_pr.json"
+          request="${RUNNER_TEMP}/progress_edit.json"
+          if ! gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER}" > "$current"; then
+            echo "::warning::Could not read PRD PR #${PR_NUMBER}, so its progress list is left as it stands."
+            exit 0
+          fi
+          jq --rawfile block "$list" '
+            (.body // "") as $b
+            | env.PROGRESS_START as $s | env.PROGRESS_END as $e
+            | (if $b == "" then $block
+               else
+                 ($b | split($s)) as $starts
+                 | ($b | split($e)) as $ends
+                 | if ($starts | length) == 1 and ($ends | length) == 1 then
+                     $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block
+                   elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
+                     $starts[0] + $block + ($starts[1] | split($e))[1]
+                   else null end
+               end) as $body
+            | if $body == null then {} else {body: $body} end
+          ' "$current" > "$request" || { echo "::warning::Could not compose PRD PR #${PR_NUMBER}'s progress list, so it is left as it stands."; exit 0; }
+          if [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
+            echo "::warning::PRD PR #${PR_NUMBER}'s body carries half a progress list, or two, so it was not written. Restore the missing marker, or delete the markers and the text between them, and the next ending of a round writes it again."
+            exit 0
+          fi
+          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PR_NUMBER}" --input "$request" > /dev/null \
+            && echo "Wrote PRD PR #${PR_NUMBER}'s progress list: the round ended ${ending}." \
+            || echo "::warning::Could not write PRD PR #${PR_NUMBER}'s progress list. GitHub's reply is above."
 
       # A slice round's approval, and nothing else. The verdict key, matched
       # exactly, and only where the review and its posting both finished: a

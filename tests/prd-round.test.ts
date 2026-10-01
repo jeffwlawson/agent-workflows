@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import {
   parkReasonOf,
+  readPrdBranch,
   readSliceRound,
   renderFinalReviewBrief,
   renderParkComment,
@@ -25,7 +26,7 @@ import { deriveVerdict, VERDICTS, type ReviewOutput, type VerdictInputs } from "
  */
 
 /** Where `readSliceRound`'s git runs, and what its `gh` answers. */
-const fixture = vi.hoisted(() => ({ dir: "", subIssues: [] as { number: number; state: string }[] }));
+const fixture = vi.hoisted(() => ({ dir: "", subIssues: [] as { number: number; title?: string; state: string }[] }));
 
 vi.mock("../shared/common.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../shared/common.js")>()),
@@ -308,6 +309,34 @@ describe("readSliceRound", () => {
       expect(last).toMatchObject({ subject: "fix: a finding", merge: false });
     },
     SPAWNS * SUBPROCESS_TIMEOUT,
+  );
+
+  /** The one reading the progress list is rendered from (#246), titles and all. */
+  it(
+    "reads the sub-issues with their titles, and the ranges, for the progress list",
+    () => {
+      fixture.dir = fs.mkdtempSync(path.join(os.tmpdir(), "prd-branch-"));
+      fixture.subIssues = [
+        { number: 10, title: "One", state: "OPEN" },
+        { number: 11, title: "Two", state: "OPEN" },
+      ];
+      g("init", "-q", "-b", "main");
+      g("config", "user.email", "test@example.test");
+      g("config", "user.name", "test");
+      write("base.txt", "base\n");
+      commitAll("base");
+      g("checkout", "-q", "-b", "agent/prd-222-x");
+      write("one.txt", "one\n");
+      const one = commitAll("feat: slice one\n\nAgent-Slice: #10");
+
+      const branch = readPrdBranch("222", "main");
+
+      expect(branch.subIssues).toEqual(fixture.subIssues);
+      expect(branch.log.map((c) => c.sha)).toEqual([one]);
+      expect(branch.ranges.current).toEqual({ subIssue: 10, k: 1, n: 2 });
+      expect(branch.ranges.next).toBe(11);
+    },
+    20 * SUBPROCESS_TIMEOUT,
   );
 
   it("says why where no slice can be told", () => {

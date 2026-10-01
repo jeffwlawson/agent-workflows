@@ -29,6 +29,8 @@
  *   repos/{owner}/{repo}/git/matching-refs/{ref}   : the branches from GH_REPLAY_REFS
  *   repos/{owner}/{repo}                           — the repository from GH_REPLAY_REPO
  *   repos/{owner}/{repo}/compare/{base}...{head}   : the comparison from GH_REPLAY_COMPARE
+ *   repos/{owner}/{repo}/pulls/{n}/reviews/{id}    : one review from GH_REPLAY_REVIEWS
+ *   repos/{owner}/{repo}/issues/{n}/comments       : the comments from GH_REPLAY_COMMENTS
  *   repos/{owner}/{repo}/actions/policies?…        : the list, from GH_REPLAY_POLICIES,
  *                                                    in the list's own shape (below)
  *   repos/{owner}/{repo}/actions/policies/{id}     : one policy in full, from the same
@@ -44,6 +46,7 @@
  *                                                  — pull requests from GH_REPLAY_PULLS
  *   pr view {n} --json {fields}                    —  "     "    "
  *   issue edit | issue comment                     — logged to GH_REPLAY_LOG, exit 0
+ *                                                    (issue comment exits 1 under GH_REPLAY_COMMENT_FAILURE)
  *   pr ready | pr merge | pr create | pr edit | pr comment
  *                                                  : logged to GH_REPLAY_LOG, exit 0
  *                                                    (pr merge exits 1 under GH_REPLAY_MERGE_FAILURE)
@@ -81,6 +84,11 @@
  *   GH_REPLAY_COMPARE     path to the comparison object; unset has no recording
  *   GH_REPLAY_COMPARE_FAILURE  set: the comparison cannot be read
  *   GH_REPLAY_REPO        path to the repository object; default `{}`
+ *   GH_REPLAY_REVIEWS     path to an object of pull request reviews keyed by id; one
+ *                         it does not hold is GitHub's 404
+ *   GH_REPLAY_COMMENT_FAILURE  set: `issue comment` is logged, then refused
+ *   GH_REPLAY_COMMENTS    path to an object of issue comments, an array per issue
+ *                         number; one it does not name has none
  *   GH_REPLAY_THREADS     path to a JSON array of review thread nodes; default none
  *   GH_REPLAY_VISIBILITY  what `repo view` answers, e.g. PUBLIC; unset has no recording
  *   GH_REPLAY_POLICIES    path to a JSON array of Actions policies, each in full
@@ -169,6 +177,10 @@ if (argv[0] === "issue" && (argv[1] === "edit" || argv[1] === "comment")) {
   const log = process.env["GH_REPLAY_LOG"];
 
   if (log !== undefined) writeFileSync(log, `${JSON.stringify(argv)}\n`, { flag: "a" });
+  if (argv[1] === "comment" && process.env["GH_REPLAY_COMMENT_FAILURE"] !== undefined) {
+    process.stderr.write("HTTP 502: Bad Gateway\n");
+    process.exit(1);
+  }
   process.exit(0);
 }
 
@@ -579,6 +591,26 @@ if (policyId !== null) {
   if (failing.includes(policyId[1])) die("gh: Resource not accessible by integration (HTTP 403)", 1);
   if (policy === undefined) die("gh: Not Found (HTTP 404)", 1);
   emit(policy);
+  process.exit(0);
+}
+
+// One review of a pull request, the REST object: what an approved slice's
+// note reads the approving round's acceptance-criteria record from (#246).
+const review = /^repos\/[^/]+\/[^/]+\/pulls\/[0-9]+\/reviews\/([0-9]+)$/.exec(endpoint);
+
+if (review !== null) {
+  const found = fixture("GH_REPLAY_REVIEWS", {})[review[1]];
+
+  if (found === undefined) die("gh: Not Found (HTTP 404)", 1);
+  emit(found);
+  process.exit(0);
+}
+
+// An issue's comments: one page, which `--paginate` prints as it is.
+const issueComments = /^repos\/[^/]+\/[^/]+\/issues\/([0-9]+)\/comments$/.exec(endpoint);
+
+if (issueComments !== null) {
+  emit(fixture("GH_REPLAY_COMMENTS", {})[issueComments[1]] ?? []);
   process.exit(0);
 }
 

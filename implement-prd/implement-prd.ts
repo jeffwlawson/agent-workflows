@@ -6,10 +6,17 @@ import {
   fail,
   fetchTrustedComments,
   fetchTrustedIssue,
+  gh,
   git,
+  outputDir,
   required,
   scrubGitHubTokens,
+  writeJson,
+  writeText,
 } from "../shared/common.js";
+import { firstLine, readPrdBranch } from "../shared/prd-round.js";
+import { renderProgressList, spliceProgressList } from "../shared/progress-list.js";
+import { sliceRanges } from "../shared/slice-ranges.js";
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
 const ISSUE_NUMBER = required("ISSUE_NUMBER");
@@ -33,6 +40,81 @@ const BRANCH = required("BRANCH");
  * names a ref that exists on a repo whose default branch is not `main`.
  */
 const BASE_REF = required("BASE_REF");
+
+/** The PRD PR, or "" on the first slice, which opens it once this exits. */
+const PRD_PR = process.env["PRD_PR"] ?? "";
+
+/**
+ * The merge of the default branch the run pushed before this started (#245),
+ * or "": the PRD PR's head is then that merge, which no review has seen.
+ */
+const MERGED = process.env["MERGED"] ?? "";
+
+/**
+ * The PRD PR's progress list (#246), rendered from the PRD branch as it stands
+ * and the parent's sub-issues, twice: with this slice **building**, written into
+ * the PRD PR's body now, and with it **in review**, left in `progress.md` for
+ * the step that asks for its round once the slice is pushed. That one is
+ * rendered over the branch with this slice's commits on it, which is what the
+ * push puts there.
+ *
+ * And for a run that stops once the list shows this slice building, two more,
+ * for `Show the stopped slice in the progress list` to write: `progress_stopped.md`
+ * with nothing pushed, this slice not started and the head's verdict as it now
+ * stands, and `progress_stopped_pushed.md` with this slice pushed and parked,
+ * since no round of it is running. Written before the list goes into the body,
+ * so a list that shows this slice building always has one to undo it.
+ *
+ * The run got past the approval gate, so the verdict on the head is an
+ * approval. Never fails the run: the list is a view of the chain, and a slice
+ * is worth more than it. A list that cannot be rendered or written says so.
+ */
+const writeProgress = (): void => {
+  try {
+    const sub = Number(SUB_NUMBER);
+    const { subIssues, log, ranges } = readPrdBranch(ISSUE_NUMBER, BASE_REF);
+    const pushed = sliceRanges(
+      [{ sha: "(this slice)", parents: [git(["rev-parse", "HEAD"]).trim()], slice: sub }, ...log],
+      subIssues,
+    );
+    const finalReview = "not requested";
+    writeText(
+      "progress.md",
+      renderProgressList({ subIssues, ranges: pushed, verdict: "none", running: { kind: "review" }, finalReview }),
+    );
+    writeText(
+      "progress_stopped.md",
+      renderProgressList({ subIssues, ranges, verdict: MERGED === "" ? "approval" : "none", running: null, finalReview }),
+    );
+    writeText(
+      "progress_stopped_pushed.md",
+      renderProgressList({ subIssues, ranges: pushed, verdict: "none", running: null, finalReview }),
+    );
+    if (PRD_PR === "") return;
+    const building = renderProgressList({
+      subIssues,
+      ranges,
+      verdict: "approval",
+      running: { kind: "build", subIssue: sub },
+      finalReview,
+    });
+    const endpoint = `repos/{owner}/{repo}/pulls/${PRD_PR}`;
+    const body = (JSON.parse(gh(["api", endpoint])) as { body?: string | null }).body ?? "";
+    const spliced = spliceProgressList(body, building);
+    if (spliced === undefined) {
+      console.log(
+        `::warning::PRD PR #${PRD_PR}'s body carries half a progress list, or two, so it was not written. ` +
+          "Restore the missing marker, or delete the markers and the text between them, and the next run writes it again.",
+      );
+      return;
+    }
+    writeJson("progress_edit.json", { body: spliced });
+    gh(["api", "--method", "PATCH", endpoint, "--input", path.join(outputDir(), "progress_edit.json")]);
+    console.log(`PRD PR #${PRD_PR}'s progress list shows sub-issue #${SUB_NUMBER} building.`);
+  } catch (error) {
+    console.log(`::warning::The PRD PR's progress list could not be written, so it is left as it stands: ${firstLine(error)}`);
+  }
+};
 
 /**
  * Read an issue and its collaborator comments into one prompt section.
@@ -62,8 +144,10 @@ try {
   // one sub-issue in isolation would otherwise be missing.
   const prdContext = issueSection(ISSUE_NUMBER, ISSUE_TITLE);
   const subContext = issueSection(SUB_NUMBER, SUB_TITLE);
+  writeProgress();
 
-  // Context fetched; the agent has no legitimate use for the GitHub token.
+  // Context fetched and the progress list written; the agent has no
+  // legitimate use for the GitHub token.
   // Pushing, opening the PRD PR and re-labelling all happen in workflow steps,
   // after this process has exited.
   scrubGitHubTokens();

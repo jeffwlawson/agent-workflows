@@ -215,6 +215,15 @@ jobs:
       # this job declares it, so such a caller is refused before any job starts,
       # on a public repository too (probed, #146).
       checks: read
+      # Reading this commit's workflow runs, which is the only surface a run
+      # that is queued or **waiting for approval** shows on: it has created no
+      # check run yet (#221). Since 2026-06-11 a push made with `GITHUB_TOKEN`
+      # starts runs that wait for approval, so without this the CI wait saw
+      # nothing and read the commit as green. The failure-log tail reads run
+      # logs under the same scope, which #80 once declined it for. Like every
+      # scope here, a caller that does not grant it is refused before any job
+      # starts (#146).
+      actions: read
       contents: read
       # Installing the runner package. GitHub Packages has no anonymous install,
       # so this is needed even though the package is public — and, being a
@@ -578,6 +587,14 @@ jobs:
       # job name instead. Never fails the run: missing CI context degrades the
       # review, it does not invalidate it.
       #
+      # Three surfaces, because each sees something the others cannot: check
+      # runs, commit statuses for CI outside Actions, and the commit's workflow
+      # runs, which are the only place a run that is queued or waiting for
+      # approval shows (#221). The wait ends when nothing it can see is pending,
+      # after a short grace period for a run to appear; a run waiting for
+      # approval is named and reads `unknown`, and so does a check still running
+      # at the ceiling. Neither is green, and neither is a failure.
+      #
       # The exclusion is every *agent* job, not just this one, and that became
       # load-bearing when review joined the shared per-PR concurrency group
       # (jeffwlawson/winget-manifest-lint#102). A `fix` labelled while a review
@@ -649,7 +666,18 @@ jobs:
           # here rather than read from the runner: this step runs long before
           # the runner does, and a test holds the literal to `VERDICT_CONTEXT`.
           VERDICT_CONTEXT: agent-review
+          # This run's id, which the workflow-runs read drops as itself (#221).
+          # The caller's run, since a called workflow contributes none of its
+          # own. Through `env:` like the rest, never interpolated into the script.
+          SELF_RUN_ID: ${{ github.run_id }}
+          # The ceiling, and not a fixed wait: the loop ends as soon as nothing
+          # it can see is pending. Reaching it reads `unknown`, never `red`.
           WAIT_SECONDS: "900"
+          # How long the wait keeps looking when no CI has reported at all,
+          # because a run is created a moment after the push that starts it
+          # (#221). Never longer than `WAIT_SECONDS`.
+          GRACE_SECONDS: "60"
+          POLL_SECONDS: "20"
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP}/ci_status.md"
@@ -714,7 +742,7 @@ jobs:
             : > "$err"
             body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err") || return 0
             printf '%s' "$body" \
-              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\")] | length" \
+              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\" and .status != \"waiting\")] | length" \
               2>>"$err" || true
           }
 
@@ -741,12 +769,87 @@ jobs:
               2>>"${err}.status" || true
           }
 
-          deadline=$(( $(date +%s) + WAIT_SECONDS ))
+          # The third CI surface (#221): this commit's **workflow runs**, which
+          # see what neither of the two above can. A run that is queued, or
+          # waiting for approval, has created no check run yet, so a wait over
+          # check runs and statuses alone saw nothing, ended at once, and called
+          # the commit green with no CI having run. Since 2026-06-11 a push made
+          # with `GITHUB_TOKEN` starts `pull_request` runs that **wait for
+          # approval**, and that is the loop's own no-`AGENT_PAT` fallback.
+          #
+          # The loop's own runs are dropped, on `AGENT_CHECKS`'s grounds and
+          # three ways, each for a case the others miss: this run by its id (the
+          # caller's, since a called workflow contributes no run of its own), an
+          # `Agent …` workflow by its name, as the failure-log tail always has,
+          # and a renamed caller by what it calls, which is how `init` and
+          # `doctor` recognise one too.
+          #
+          # A run is `awaiting` when it needs a maintainer to approve it
+          # (`action_required`, as a status or a conclusion) or a protection
+          # rule holds it (`waiting`). Neither is pending: it cannot start until
+          # a human acts, so waiting for it would spend the whole ceiling on
+          # nothing. The same goes for a job in it whose check run is `waiting`
+          # on an environment's reviewers, which `pending_count` skips for that
+          # reason; the verdict below still reads it as unfinished.
+          #
+          # A run is `failed` when it completed with any conclusion a check run
+          # would read as red, approval aside. Most of those also fail a check
+          # run, but not all: a `startup_failure` (a workflow file GitHub could
+          # not run) creates no job, so no check run, and is seen here or nowhere.
+          ci_runs_filter='[.[].workflow_runs[]
+            | select((.id | tostring) != env.SELF_RUN_ID)
+            | select((.name // "") | startswith("Agent ") | not)
+            | select(any(.referenced_workflows[]?; (.path // "") | test("^[^/]+/agent-workflows/\\.github/workflows/")) | not)
+            | {id, name, status, conclusion, html_url,
+               awaiting: (.status == "action_required" or .status == "waiting" or .conclusion == "action_required"),
+               failed: (.status == "completed" and (.conclusion // "" | IN("success", "neutral", "skipped", "action_required") | not))}]'
+
+          # The filtered runs as one JSON array, or nothing when the read
+          # fails. Gated on gh's exit status, and slurped, for the reasons
+          # `pending_count` gives. *Nothing* reads as no run pending, as an
+          # unreadable status half does: the read after the wait reports it.
+          ci_runs() {
+            body=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" --paginate --slurp 2>"${err}.runs") || return 0
+            printf '%s' "$body" | jq -c "$ci_runs_filter" 2>>"${err}.runs" || true
+          }
+
+          # Whether anything that is CI has reported on this commit at all, on
+          # any of the three surfaces: what the grace period below waits for.
+          # Only asked while nothing is pending, so it costs no call on a commit
+          # whose CI is running. A read that fails counts as nothing seen, which
+          # at worst spends the rest of the grace period looking again.
+          ci_seen() {
+            seen_checks=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>/dev/null \
+              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not)] | length" 2>/dev/null) || seen_checks=0
+            seen_statuses=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>/dev/null \
+              | jq "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT)] | length" 2>/dev/null) || seen_statuses=0
+            seen_runs=$(printf '%s' "$runs" | jq 'length' 2>/dev/null) || seen_runs=0
+            for n in "$seen_checks" "$seen_statuses" "$seen_runs"; do
+              case "$n" in
+                "" | 0 | *[!0-9]*) ;;
+                *) return 0 ;;
+              esac
+            done
+            return 1
+          }
+
+          # A run is created a moment after the push that starts it, so a review
+          # that begins first would see no CI at all and say so. The grace
+          # period is how long the wait keeps looking before it believes that,
+          # never longer than the wait itself.
+          started=$(date +%s)
+          deadline=$(( started + WAIT_SECONDS ))
+          grace=$(( started + (GRACE_SECONDS < WAIT_SECONDS ? GRACE_SECONDS : WAIT_SECONDS) ))
           while :; do
             pending=$(pending_count)
             statuses_pending=$(pending_statuses)
             case "$statuses_pending" in
               "" | *[!0-9]*) statuses_pending=0 ;;
+            esac
+            runs=$(ci_runs)
+            runs_pending=$(printf '%s' "$runs" | jq '[.[] | select(.status != "completed" and (.awaiting | not))] | length' 2>/dev/null)
+            case "$runs_pending" in
+              "" | *[!0-9]*) runs_pending=0 ;;
             esac
 
             # Not a number — the API call failed rather than returning a
@@ -772,14 +875,29 @@ jobs:
 
             # After the arm above, not before it: a sum would turn a failed
             # check-run read into a plausible number.
+            #
+            # Runs are counted apart from checks, not summed into them: a
+            # running workflow has running check runs too, so one sum would
+            # count most CI twice.
             pending=$(( pending + statuses_pending ))
-            [ "$pending" -eq 0 ] && break
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "_Timed out waiting for ${pending} check(s); results below may be incomplete._" >> "$out"
+            if [ "$pending" -eq 0 ] && [ "$runs_pending" -eq 0 ]; then
+              # `if`, not `&& continue`, on the `bash -e` grounds of the arm above.
+              if [ "$(date +%s)" -lt "$grace" ] && ! ci_seen; then
+                echo "No CI has reported on this commit yet; looking again for up to ${GRACE_SECONDS} s in case a run is still being created…"
+                sleep "$POLL_SECONDS"
+                continue
+              fi
               break
             fi
-            echo "Waiting for ${pending} check(s)…"
-            sleep 20
+            # The ceiling is not a failure (#221). A check still running has
+            # not failed, so this reads `unknown` below rather than `red`, and
+            # the evidence says what it was rather than that something broke.
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "_Still running after $(( WAIT_SECONDS / 60 )) minutes: ${pending} check(s) and ${runs_pending} workflow run(s) had not finished, so CI is unknown here rather than failed, and the results below may be incomplete._" >> "$out"
+              break
+            fi
+            echo "Waiting for ${pending} check(s) and ${runs_pending} workflow run(s)…"
+            sleep "$POLL_SECONDS"
           done
 
           # Slurped and piped for the same reason as the count, and `jq -r` to
@@ -831,9 +949,11 @@ jobs:
           # file leaves no file at all, which the runner reads as `unknown`
           # too.
           #
-          # A check that has not *passed* is not green, so a still-pending one
-          # (the timeout arm above) counts with the failures rather than being
-          # waited for twice. A commit with no other checks at all is `none`,
+          # A check that has not *passed* is not green, and one that has not
+          # *finished* has not failed either (#221): a still-pending one (the
+          # ceiling above) is `unknown`, so the evidence and the word both say
+          # it was still running. A failure seen beside it still reads `red`.
+          # A commit with no other checks at all is `none`,
           # which the arm below the statuses turns into a word: green on an
           # ordinary pull request — there is nothing failing, which is the
           # honest reading for an adopter whose repository runs none — and not
@@ -843,7 +963,7 @@ jobs:
           # under `bash -e` a test as the last command of the arm ends the step.
           : > "$err"
           if ! checks=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
-            | jq -r "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | .conclusion // .status] | if length == 0 then \"none\" elif any(. != \"success\" and . != \"neutral\" and . != \"skipped\") then \"red\" else \"green\" end" \
+            | jq -r "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | {status, conclusion}] | if length == 0 then \"none\" elif any(.status == \"completed\" and (.conclusion | IN(\"success\", \"neutral\", \"skipped\") | not)) then \"red\" elif any(.status != \"completed\") then \"unknown\" else \"green\" end" \
             2>>"$err"); then
             checks=unknown
             echo "::warning::Could not decide whether this commit's check runs are green, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
@@ -865,9 +985,9 @@ jobs:
           # — and every "changes recommended" would derive "needs a closer look"
           # one round later, by reading its own answer back.
           #
-          # `pending` counts with the failures for the same reason a queued
-          # check run does: a status that has not passed has not passed, and
-          # this step has already spent its wait.
+          # `pending` is `unknown` for the reason a queued check run is: a
+          # status that has not passed has not passed, and one that has not
+          # finished has not failed. This step has already spent its wait.
           #
           # The combined endpoint rather than the per-post list, because it
           # returns the latest status per context — the list returns one entry
@@ -875,7 +995,7 @@ jobs:
           # read as both.
           : > "$err"
           if ! commit_statuses=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>"$err" \
-            | jq -r "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | .state] | if length == 0 then \"none\" elif any(. == \"failure\" or . == \"error\" or . == \"pending\") then \"red\" else \"green\" end" \
+            | jq -r "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | .state] | if length == 0 then \"none\" elif any(. == \"failure\" or . == \"error\") then \"red\" elif any(. == \"pending\") then \"unknown\" else \"green\" end" \
             2>>"$err"); then
             commit_statuses=unknown
             echo "::warning::Could not read this commit's statuses, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
@@ -884,7 +1004,57 @@ jobs:
             fi
           fi
 
-          # **No CI at all** — `none` from both halves — is green everywhere
+          # And the **workflow runs** (#221), read once more for the word, for the
+          # evidence and for the failure-log tail below. This is the only
+          # surface on which a run waiting for approval shows at all, so it is
+          # the one that keeps such a commit from reading green: a run that
+          # never started has failed nothing and passed nothing, and the
+          # evidence names it with a link a maintainer can approve it from.
+          #
+          # A run that completed without passing is `red` here as well as in the
+          # check runs, because not every such run has a check run to fail: a
+          # `startup_failure` creates no job at all, and with no statuses either
+          # it would otherwise read as no CI, and green. Each one is named with
+          # its conclusion. A run still going at the ceiling is `unknown`, as a
+          # check run is.
+          #
+          # Unreadable is `unknown` rather than skipped: green needs every
+          # surface to have answered, and a run waiting for approval would be
+          # missing from the other two without a word. It is not the grant:
+          # the job declares `actions: read`, so a caller short of it is refused
+          # before any job starts (#146).
+          : > "${err}.runs"
+          if ! runs=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" --paginate --slurp 2>"${err}.runs" \
+            | jq -c "$ci_runs_filter" 2>>"${err}.runs"); then
+            runs="[]"
+            workflow_runs=unknown
+            echo "::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. It is not the \`actions: read\` grant, which a run that started holds. What \`gh\`/\`jq\` said is below."
+            if [ -s "${err}.runs" ]; then
+              cat "${err}.runs"
+            fi
+            echo "_Could not list this commit's workflow runs, so a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._" >> "$out"
+          else
+            workflow_runs=$(printf '%s' "$runs" | jq -r 'if length == 0 then "none" elif any(.failed) then "red" elif any(.awaiting or .status != "completed") then "unknown" else "green" end')
+            failed=$(printf '%s' "$runs" | jq -r '.[] | select(.failed) | "- \(.name): \(.conclusion), \(.html_url)"')
+            if [ -n "$failed" ]; then
+              {
+                echo
+                echo "_Workflow runs that did not pass:_"
+                echo "$failed"
+              } >> "$out"
+            fi
+            awaiting=$(printf '%s' "$runs" | jq -r '.[] | select(.awaiting) | "- \(.name): waiting for approval, \(.html_url)"')
+            if [ -n "$awaiting" ]; then
+              echo "::warning::A CI run on this commit is waiting for approval, so CI is unknown here rather than green."
+              {
+                echo
+                echo "_CI waiting for approval: these runs have not run, so CI is unknown here rather than green. A push made with \`GITHUB_TOKEN\` starts runs that wait for a maintainer to approve them (jeffwlawson/agent-workflows docs/ADOPTING.md §1)._"
+                echo "$awaiting"
+              } >> "$out"
+            fi
+          fi
+
+          # **No CI at all** (`none` from every surface) is green everywhere
           # but a slice PR (#175). A slice PR's base is a PRD branch, not the
           # default branch, so an adopter's CI that filters `pull_request` to
           # the default branch never runs on one. Green there would let a clean
@@ -893,10 +1063,15 @@ jobs:
           # sends the review to a human instead, and the evidence says why and
           # where the one-line fix is.
           #
-          # Both halves, not check runs alone: a slice PR whose CI reports only
+          # Every surface, not check runs alone: a slice PR whose CI reports only
           # through commit statuses had CI run on it. A slice branch is named
           # by `implement-prd`'s *Prepare the slice branch* step.
-          if [ "${checks}/${commit_statuses}" = "none/none" ]; then
+          #
+          # On an ordinary pull request the word stays green (PRD #171, story
+          # 58), so an adopter with no CI anywhere is unchanged, but the
+          # evidence says plainly that nothing ran (#221): "no failures" is not
+          # "CI passed", and the agent is told which one it is reading.
+          if [ "${checks}/${commit_statuses}/${workflow_runs}" = "none/none/none" ]; then
             case "$BRANCH" in
               agent/slice-*)
                 checks=unknown
@@ -904,6 +1079,9 @@ jobs:
                 no_ci="No CI ran on this slice PR: nothing but the loop's own jobs reported on this commit. A slice PR's base is its PRD branch, so a CI workflow that filters \`pull_request\` to the default branch does not run on it. Add \`agent/prd-**\` to that filter's \`branches:\` (jeffwlawson/agent-workflows docs/ADOPTING.md §5, *Slice PRs and your CI*). Until then CI is unknown here, not green, so a clean review asks for a human rather than advancing the chain."
                 echo "::warning::${no_ci}"
                 echo "_${no_ci}_" >> "$out"
+                ;;
+              *)
+                echo "_No CI ran on this commit: nothing but the loop's own jobs reported on it, so there are no CI results to read here, passing or failing._" >> "$out"
                 ;;
             esac
           fi
@@ -913,58 +1091,40 @@ jobs:
           if [ "$commit_statuses" = none ]; then
             commit_statuses=green
           fi
+          if [ "$workflow_runs" = none ]; then
+            workflow_runs=green
+          fi
 
-          # One word out of two, and `red` beats `unknown`: a failure that was
-          # seen is more than the other half failing to be read, and the two
-          # halves fail independently. `green` needs both to have answered it.
-          case "${checks}/${commit_statuses}" in
-            red/* | */red) ci_result=red ;;
-            unknown/* | */unknown) ci_result=unknown ;;
+          # One word out of three, and `red` beats `unknown`: a failure that was
+          # seen is more than another surface failing to be read, and the three
+          # fail independently. `green` needs every one to have answered it.
+          case "${checks}/${commit_statuses}/${workflow_runs}" in
+            red/* | */red/* | */red) ci_result=red ;;
+            unknown/* | */unknown/* | */unknown) ci_result=unknown ;;
             *) ci_result=green ;;
           esac
           echo "$ci_result" > "${RUNNER_TEMP}/ci_result.txt"
-          echo "Checks on this commit are: ${ci_result} (check runs ${checks}, commit statuses ${commit_statuses})."
+          echo "Checks on this commit are: ${ci_result} (check runs ${checks}, commit statuses ${commit_statuses}, workflow runs ${workflow_runs})."
 
           # Tail the failing steps so the agent sees *what* failed, not merely
           # that something did. Capped so a noisy failure cannot swamp the prompt.
           #
-          # Excluded on the same grounds as AGENT_CHECKS above, and it has to be
-          # the same set: a failed `Agent Fix` says nothing about this diff, and
-          # its 60 lines crowd out the CI failure that does. Different namespace
-          # though — these are workflow *run* names, where the agent workflows
-          # are `Agent Review`/`Agent Fix`/`Agent Update Branch`/`Agent
-          # Implement` and the repo's own are `CI` and `Corpus`, so the prefix
-          # is the whole test.
+          # Read off the workflow runs listed above, so excluded on the same
+          # grounds and by the same filter: a failed `Agent Fix` says nothing
+          # about this diff, and its 60 lines crowd out the CI failure that does.
+          # A listing that failed lists nothing here and has already said so in
+          # the evidence; one that answered with no failed run adds nothing.
           #
-          # Being called changes nothing here, and SELF_CHECK is not needed: a
-          # called workflow contributes no run of its own, so this run is the
-          # caller's — named `Agent Review`, matched by the prefix like every
-          # other agent run.
-          #
-          # The listing is gated on gh's exit status, like the count above
-          # (#80). It needs `actions: read`, which this job deliberately does
-          # not declare — run logs can carry an accidentally echoed secret, and
-          # a log tail is not worth that — so on a private repository it is
-          # refused. Fed straight to `for`, that refusal was invisible: a
-          # connection failure iterated nothing, and an HTTP error, whose body
-          # gh prints to stdout unfiltered, iterated its JSON *words* as run
-          # ids. Either way the agent could not tell "no run failed" from "the
-          # runs could not be listed". Now the second says so in the evidence,
-          # and a listing that answered with no failed run still adds nothing.
-          # No remedy is named: the grant is a trust decision, not a fix.
-          : > "${err}.runs"
-          if ! failed_runs=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=50" \
-                               --jq '.workflow_runs[] | select(.conclusion == "failure") | .id' 2>"${err}.runs"); then
-            failed_runs=""
-            echo "::warning::Could not list this commit's workflow runs, so the review has no failure-log output. What \`gh\` said is below."
-            if [ -s "${err}.runs" ]; then
-              cat "${err}.runs"
-            fi
-            echo "_Could not list this commit's workflow runs, so failure-log output is missing here rather than absent: the token likely lacks \`actions: read\`, or the runs are unavailable._" >> "$out"
-          fi
+          # These logs used to be a private repository's to withhold: the job
+          # did not declare `actions: read`, on the grounds that a run log can
+          # carry an accidentally echoed secret and a log tail is not worth that
+          # (#80). The grant is declared now, because seeing a run that waits
+          # for approval needs it (#221), so the tail reads private logs too,
+          # on the failed runs of the repository's own CI only.
+          failed_runs=$(printf '%s' "$runs" | jq -r '.[] | select(.conclusion == "failure") | .id' 2>/dev/null) || failed_runs=""
           for rid in $failed_runs; do
-            rname=$(gh api "repos/${GH_REPO}/actions/runs/${rid}" --jq .name 2>/dev/null || echo "run ${rid}")
-            case "$rname" in "Agent "*) continue ;; esac
+            rname=$(printf '%s' "$runs" | jq -r --arg id "$rid" '.[] | select((.id | tostring) == $id) | .name' 2>/dev/null) || rname=""
+            rname="${rname:-run ${rid}}"
             # `|| echo` on the same grounds as the count above, and it is the
             # same bug: `gh run view --log-failed` exits non-zero whenever a
             # failed run's logs cannot be had — expired, still uploading, a

@@ -128,13 +128,17 @@ Not a code defect and not in any upstream repo's docs, because both had it enabl
 requirement is invisible once satisfied. Using `AGENT_PAT` (below) bypasses it entirely — a user PAT
 is not the Actions bot — which is the better fix.
 
-### `GITHUB_TOKEN` pushes do not trigger workflows
+### `GITHUB_TOKEN` pushes start CI that waits for approval
 
-A branch pushed with the built-in token starts **no** CI run on the resulting PR. Nothing errors;
-the PR simply sits there with no checks, and you verify by hand forever.
+A branch pushed with the built-in token used to start **no** CI run on the resulting PR. Since
+2026-06-11 it starts `pull_request` runs that **require approval**
+([GitHub's docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request)):
+nothing errors, and the PR sits there with CI that has not run until a maintainer approves each run
+from its page.
 
-This is a deliberate GitHub anti-recursion rule. The only fix is pushing under a user identity — the
-PAT again.
+The review sees such a run and reads CI as **unknown**, never green, naming the run in its evidence,
+so a clean review asks for a human rather than recommending approval of code no CI ran on. The
+lasting fix is still pushing under a user identity: the PAT again.
 
 ### `GITHUB_TOKEN` cannot mark a pull request ready for review
 
@@ -918,14 +922,14 @@ jobs:
 
 The permissions per workflow, which are what each job actually spends:
 
-| Caller | `checks` | `contents` | `issues` | `packages` | `pull-requests` | `statuses` |
-|---|---|---|---|---|---|---|
-| `agent-implement` | — | write | write | read | write | — |
-| `agent-implement-prd` | — | write | write | read | write | **read** |
-| `agent-review` | **read** | **write** | — | read | write | **write** |
-| `agent-fix` | — | write | — | read | write | — |
-| `agent-update-branch` | — | write | — | read | write | **write** |
-| `agent-follow-ups` | — | read | **write** | read | write | — |
+| Caller | `actions` | `checks` | `contents` | `issues` | `packages` | `pull-requests` | `statuses` |
+|---|---|---|---|---|---|---|---|
+| `agent-implement` | — | — | write | write | read | write | — |
+| `agent-implement-prd` | — | — | write | write | read | write | **read** |
+| `agent-review` | **read** | **read** | **write** | — | read | write | **write** |
+| `agent-fix` | — | — | write | — | read | write | — |
+| `agent-update-branch` | — | — | write | — | read | write | **write** |
+| `agent-follow-ups` | — | — | read | **write** | read | write | — |
 
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
@@ -1054,8 +1058,9 @@ Four things about that shape are worth knowing before you paste it:
   that goes stale, which nothing in this repository can see from here — *Keeping the pins fresh*,
   at the end of this section, is the other half of the instruction.
 - **Name each workflow `Agent …`.** A called workflow contributes no run of its own, so the run is
-  yours — and review's failure-log collector skips runs whose name starts with `Agent ` on the
-  grounds that a failed agent job is not evidence about the diff.
+  yours, and review's CI wait and failure-log collector skip runs whose name starts with `Agent `
+  on the grounds that an agent job is not evidence about the diff. A renamed one is still
+  recognised by what its `uses:` calls.
 - **Name the secrets rather than `secrets: inherit`.** Inheriting hands the called workflow every
   secret your repository holds. `AGENT_PAT` is declared optional, so passing an unset one is fine —
   it arrives as the empty string, which is what the fallbacks in §1 expect.
@@ -1075,6 +1080,7 @@ jobs:
     # fails the run before any job starts. `contents: write` is the `resolve`
     # job's alone — the review job narrows it back to `read`.
     permissions:
+      actions: read
       checks: read
       contents: write
       packages: read

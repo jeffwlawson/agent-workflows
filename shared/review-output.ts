@@ -1367,7 +1367,9 @@ const noProgress = (progress: FixRoundProgress, open: number): VerdictRow => {
  * Why a review needs a closer look, which decides what the step says (#209).
  * Three ways into one row, and only the first is the one the table's line was
  * written for: a failing check the review could not explain is a check for a
- * human to read, and CI that never reported is one no fix round can repair.
+ * human to read, and CI that never reported, or had not finished (waiting for
+ * approval, or still running at the wait's ceiling, #221), is one no fix round
+ * can repair.
  */
 type CloserLookCause = "needs you" | Exclude<CiResult, "green">;
 
@@ -1395,8 +1397,8 @@ const closerLook = (
             "A check failed and the review found nothing to fix. Read the failing check the review names.",
           ]
         : [
-            `No CI ran on this PR, or its result could not be read, so a fix round cannot help. Make CI run on pull requests into \`${inputs.base}\`, then re-add agent:review.`,
-            "No CI ran on this PR, or it could not be read. Make CI run on PRs into its base, then re-add agent:review.",
+            `CI had not finished, did not run, or could not be read, so a fix round cannot help. Read the CI the review's evidence names: approve a run waiting for approval or let it finish, or make CI run on pull requests into \`${inputs.base}\`. Then re-add agent:review.`,
+            "CI unfinished, absent or unreadable. Approve it, let it finish or make it run, then re-add agent:review.",
           ];
   const nextStep =
     inputs.sliceParent === undefined

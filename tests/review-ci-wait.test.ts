@@ -110,12 +110,37 @@ const CAN_RUN = ["bash", "jq", "node"].every(onPath);
 const HEAD_SHA = "35da2fc0e3a94c2d8b1b0e4e9f1c2d3a4b5c6d7e";
 const SELF_CHECK = "review / review";
 const GH_REPO = "acme/widgets";
+/** This run's own id, which the workflow-runs read has to recognise as itself. */
+const SELF_RUN_ID = 4242;
 const EXPRESSIONS: Readonly<Record<string, string>> = {
   // The commit the pre-flight settled on (#229), which the wait reads rather
   // than the payload's.
   "${{ steps.state.outputs.sha }}": HEAD_SHA,
   "${{ inputs.self-check }}": SELF_CHECK,
+  "${{ github.run_id }}": String(SELF_RUN_ID),
 };
+
+/**
+ * A workflow run, as `actions/runs?head_sha=…` returns one (#221). A run waiting
+ * for approval has created no check run yet, so this endpoint is the only place
+ * it can be seen at all. `status` and `conclusion` are the API's own values:
+ * `completed`/`action_required` is a run that needs a maintainer to approve it,
+ * and `waiting` one held by a protection rule.
+ */
+const workflowRun = (
+  id: number,
+  name: string,
+  status: string,
+  conclusion: string | null = null,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  id,
+  name,
+  status,
+  conclusion,
+  html_url: `https://github.com/${GH_REPO}/actions/runs/${String(id)}`,
+  ...extra,
+});
 
 /**
  * A commit status, as the combined endpoint returns one. The loop's own verdict
@@ -209,6 +234,13 @@ const runWaitStep = (options: {
   /** How the combined-status call fails, when the scenario is about that. */
   readonly statusesUnreadable?: "403" | "unreachable";
   readonly failedRuns?: readonly { readonly id: number; readonly name: string }[];
+  /**
+   * The commit's workflow runs, beside `failedRuns`. One list, or a list per
+   * call to the runs endpoint (`runsByCall`), the last repeating: that is how a
+   * run that appears partway through the wait is written.
+   */
+  readonly runs?: readonly Record<string, unknown>[];
+  readonly runsByCall?: readonly (readonly Record<string, unknown>[])[];
   /** How the workflow-runs listing fails, when the scenario is about that. */
   readonly runsUnreadable?: "403" | "unreachable";
   readonly gh?: string;
@@ -228,7 +260,9 @@ const runWaitStep = (options: {
   fs.writeFileSync(script, waitStep().run ?? "");
   fs.writeFileSync(pages, JSON.stringify(options.pages ?? [PAGE_ONE, page(PAGE_TWO)]));
   fs.writeFileSync(statusPages, JSON.stringify([statusPage(options.statuses ?? [])]));
-  fs.writeFileSync(runs, JSON.stringify((options.failedRuns ?? []).map((run) => ({ ...run, conclusion: "failure" }))));
+  const failed = (options.failedRuns ?? []).map((run) => ({ ...run, status: "completed", conclusion: "failure" }));
+  const snapshots = options.runsByCall ?? [options.runs ?? []];
+  fs.writeFileSync(runs, JSON.stringify(snapshots.map((snapshot) => [...failed, ...snapshot])));
 
   const ghDir = path.resolve(options.gh ?? REPLAY_DIR);
   // The checkout may not carry the execute bit (Windows, or an archive).
@@ -257,7 +291,8 @@ const runWaitStep = (options: {
       ...(options.statusesUnreadable === undefined
         ? {}
         : { GH_REPLAY_STATUS_FAILURE: options.statusesUnreadable }),
-      GH_REPLAY_RUNS: runs,
+      GH_REPLAY_RUNS_BY_CALL: runs,
+      GH_REPLAY_RUNS_COUNTER: path.join(temp, "runs.calls"),
       ...(options.runsUnreadable === undefined ? {} : { GH_REPLAY_RUNS_FAILURE: options.runsUnreadable }),
       GH_REPLAY_COUNTER: path.join(temp, "check-runs.calls"),
       ...(options.unreadable === undefined ? {} : { GH_REPLAY_FAILURE: options.unreadable }),
@@ -316,13 +351,11 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * moment a request is attempted. Reaching *that* error is the assertion: it
    * means the flags parsed.
    *
-   * Five of the step's calls since #107 polled the commit statuses in the
-   * wait as well as reading them for the verdict (#105), and it cannot be more
-   * than five: an unreachable host fails the runs listing, so the loop over
-   * the failed runs it would have named iterates nothing and the two calls in
-   * its body are never composed at all.
-   * Those two are the sibling test below — they are otherwise seen only by the
-   * replay, which is the thing that can drift from the binary.
+   * Every call but one: an unreachable host fails the runs listing, so the
+   * loop over the failed runs it would have named iterates nothing and the
+   * `gh run view` in its body is never composed at all. That one is the
+   * sibling test below; it is otherwise seen only by the replay, which is the
+   * thing that can drift from the binary.
    */
   it.skipIf(!onPath("gh"))("every gh call the wait composes is one gh accepts", () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-gh-"));
@@ -341,6 +374,10 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     // can carry separate flags.
     expect(stderr).toContain("check-runs");
     expect(stderr).toContain(`commits/${HEAD_SHA}/status`);
+    // …and the workflow runs (#221), read with the same `--paginate --slurp`
+    // as the other two, which is a combination the runs listing never used
+    // before it fed the wait.
+    expect(stderr).toContain(`actions/runs?head_sha=${HEAD_SHA}`);
     // Two ways a composed call can be one gh refuses, and only the first has
     // ever happened here. The runs listing below the wait is seen by the real
     // binary *only* through this test — the sibling below spawns the two calls
@@ -357,43 +394,37 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   }, 2 * SUBPROCESS_TIMEOUT);
 
   /**
-   * The failure-log tail's two calls, which no run of the step above can put
-   * in front of the real binary: they live inside a loop whose own `gh api`
+   * The failure-log tail's one call, which no run of the step above can put in
+   * front of the real binary: it lives inside a loop over a runs listing that
    * has already failed against the dead host. Spawned directly instead, at the
    * same `localhost`, where reaching the connection error is again the
-   * assertion that the flags parsed.
+   * assertion that the flags parsed. The run's name is no longer a second call:
+   * since #221 it comes off the same listing as the id.
    *
-   * Each form is asserted to be *the step's* first. A call composed only here
-   * would be a test of a command nothing runs — which is the failure mode this
+   * The form is asserted to be *the step's* first. A call composed only here
+   * would be a test of a command nothing runs, which is the failure mode this
    * whole file exists to answer, one level up.
    */
-  it.skipIf(!onPath("gh"))("gh accepts the two calls the failure-log tail composes", () => {
+  it.skipIf(!onPath("gh"))("gh accepts the call the failure-log tail composes", () => {
     const run = waitStep().run ?? "";
-    const tail = [
-      { inStep: 'gh api "repos/${GH_REPO}/actions/runs/${rid}" --jq .name', argv: ["api", `repos/${GH_REPO}/actions/runs/101`, "--jq", ".name"] },
-      { inStep: 'gh run view "$rid" --log-failed', argv: ["run", "view", "101", "--log-failed"] },
-    ] as const;
 
-    for (const { inStep, argv } of tail) {
-      expect(run).toContain(inStep);
+    expect(run).toContain('gh run view "$rid" --log-failed');
+    expect(run).not.toContain('gh api "repos/${GH_REPO}/actions/runs/${rid}"');
 
-      const attempt = spawnSync("gh", [...argv], {
-        encoding: "utf8",
-        timeout: SUBPROCESS_TIMEOUT,
-        // `GH_REPO` is gh's own repo override, and it is what makes the bare
-        // `gh run view` above resolve a repo at all: the step runs it with no
-        // `-R` and from a checkout of a different repository.
-        env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
-      });
+    const attempt = spawnSync("gh", ["run", "view", "101", "--log-failed"], {
+      encoding: "utf8",
+      timeout: SUBPROCESS_TIMEOUT,
+      // `GH_REPO` is gh's own repo override, and it is what makes the bare
+      // `gh run view` above resolve a repo at all: the step runs it with no
+      // `-R` and from a checkout of a different repository.
+      env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
+    });
 
-      expect(attempt.status).not.toBe(0);
-      expect(attempt.stderr).not.toContain("unknown flag");
-      expect(attempt.stderr).not.toContain("is not supported with");
-      expect(attempt.stderr).toContain("connection refused");
-    }
-    // One bounded spawn per `tail` entry, and there are two — same arithmetic as
-    // the test above.
-  }, 2 * SUBPROCESS_TIMEOUT);
+    expect(attempt.status).not.toBe(0);
+    expect(attempt.stderr).not.toContain("unknown flag");
+    expect(attempt.stderr).not.toContain("is not supported with");
+    expect(attempt.stderr).toContain("connection refused");
+  });
 
   /**
    * The count is **one number over every page**. Per page it is one number per
@@ -412,7 +443,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     // count ever regresses — so the count has to be asserted to be *zero*, not
     // merely to have stopped. Without this a miscount would pass through the
     // deadline branch and look exactly like nothing pending.
-    expect(outcome.evidence).not.toContain("Timed out");
+    expect(outcome.evidence).not.toContain("Still running after");
   });
 
   /**
@@ -427,7 +458,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     const { evidence } = runWaitStep({ waitSeconds: "0" });
     const lines = evidence.split("\n");
 
-    expect(evidence).not.toContain("Timed out");
+    expect(evidence).not.toContain("Still running after");
 
     expect(lines).toContain("Checks on this commit:");
     expect(lines).toContain("- verify: success");
@@ -444,7 +475,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
    * A check still running on the *second* page is the case the per-page filter
    * cannot report: it prints `0` for page one and `1` for page two, and the
    * step reads the pair as no answer at all. Waiting zero seconds so the count
-   * is asserted through the timeout message rather than through a sleep.
+   * is asserted through the ceiling's message rather than through a sleep.
    */
   it("counts a pending check on a later page as one number", () => {
     const outcome = runWaitStep({
@@ -454,10 +485,11 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain("::error::");
-    expect(outcome.evidence).toContain("Timed out waiting for 1 check(s)");
-    // A check that has not passed has not passed: the verdict reads a still
-    // pending one with the failures rather than waiting for it a second time.
-    expect(outcome.ciResult).toBe("red");
+    expect(outcome.evidence).toContain("Still running after 0 minutes: 1 check(s)");
+    // A check that has not passed has not passed, and one that has not
+    // finished has not failed either (#221): the ceiling is `unknown`, and the
+    // evidence says it was still running rather than that it failed.
+    expect(outcome.ciResult).toBe("unknown");
   });
 
   /**
@@ -501,7 +533,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   it.each([
     ["red when a commit status failed", [status("ci/build", "failure")], "red"],
     ["red when one errored", [status("ci/build", "error")], "red"],
-    ["red when one is still pending", [status("ci/build", "pending")], "red"],
+    ["unknown when one is still pending at the ceiling", [status("ci/build", "pending")], "unknown"],
     ["green when every one of them passed", [status("ci/build", "success")], "green"],
   ])("is %s", (_case: string, statuses: readonly Record<string, unknown>[], expected: string) => {
     expect(runWaitStep({ waitSeconds: "0", statuses }).ciResult).toBe(expected);
@@ -536,7 +568,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain("::error::");
-    expect(outcome.evidence).toContain("Timed out waiting for 1 check(s)");
+    expect(outcome.evidence).toContain("Still running after 0 minutes: 1 check(s)");
   });
 
   /**
@@ -550,7 +582,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
       statuses: [status("ci/build", "pending"), status("ci/lint", "pending"), status("ci/docs", "success")],
     });
 
-    expect(outcome.evidence).toContain("Timed out waiting for 3 check(s)");
+    expect(outcome.evidence).toContain("Still running after 0 minutes: 3 check(s)");
   });
 
   /**
@@ -565,7 +597,7 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
 
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain("Waiting for");
-    expect(outcome.evidence).not.toContain("Timed out");
+    expect(outcome.evidence).not.toContain("Still running after");
     expect(outcome.ciResult).toBe("green");
   });
 
@@ -594,13 +626,172 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
     expect(outcome.stdout).toContain("::warning::No CI ran on this slice PR");
   });
 
-  it("is still green on an ordinary pull request that no CI ran on", () => {
+  /**
+   * An adopter with no CI anywhere keeps the verdict it had (PRD #171, story
+   * 58), and the evidence now says plainly that nothing ran, so the agent does
+   * not read "no failures" as "CI passed" (#221).
+   */
+  it("is still green on an ordinary pull request that no CI ran on, and says so", () => {
     const outcome = runWaitStep({ pages: NO_CI, waitSeconds: "0" });
 
     expect(outcome.status).toBe(0);
     expect(outcome.ciResult).toBe("green");
-    expect(outcome.evidence).not.toContain("No CI ran");
+    expect(outcome.evidence).toContain("No CI ran on this commit");
+    expect(outcome.evidence).not.toContain("No CI ran on this slice PR");
     expect(outcome.stdout).not.toContain("::warning::");
+  });
+
+  /**
+   * **A run waiting for approval** (#221) has created no check run, so a wait
+   * over check runs and statuses alone saw nothing, ended at once, and called
+   * the commit green: a review could recommend approving code no CI had run
+   * on. Since 2026-06-11 that is what a `GITHUB_TOKEN` push gets, which is the
+   * loop's own no-`AGENT_PAT` fallback. Both of the API's shapes for it: a
+   * run that needs a maintainer's approval, and one held by a protection rule.
+   *
+   * At the real 900, because the run cannot start until a human acts: waiting
+   * for it would spend the whole ceiling on nothing.
+   */
+  it.each([
+    ["needing approval", workflowRun(201, "CI", "completed", "action_required")],
+    ["held by a protection rule", workflowRun(201, "CI", "waiting")],
+  ])("does not know when a CI run is %s, and names it", (_case, run) => {
+    const outcome = runWaitStep({ pages: NO_CI, runs: [run] });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.ciResult).toBe("unknown");
+    expect(outcome.stdout).not.toContain("Waiting for");
+    expect(outcome.evidence).toContain("waiting for approval");
+    expect(outcome.evidence).toContain("- CI: waiting for approval");
+    expect(outcome.evidence).toContain(`actions/runs/201`);
+    expect(outcome.evidence).not.toContain("No CI ran");
+  });
+
+  /**
+   * …and not green beside checks that passed, either: one workflow finishing
+   * says nothing about another that never started.
+   */
+  it("does not know when one run waits for approval and the rest passed", () => {
+    const outcome = runWaitStep({ runs: [workflowRun(201, "Corpus", "completed", "action_required")] });
+
+    expect(outcome.ciResult).toBe("unknown");
+    expect(outcome.evidence).toContain("- Corpus: waiting for approval");
+  });
+
+  /**
+   * A run still going at the ceiling is `unknown`, never `red` (#221): it has
+   * not failed, and the evidence says it was still running.
+   */
+  it("does not know when a run is still in progress at the ceiling", () => {
+    const outcome = runWaitStep({ pages: NO_CI, waitSeconds: "0", runs: [workflowRun(202, "CI", "in_progress")] });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.ciResult).toBe("unknown");
+    expect(outcome.evidence).toContain("Still running after 0 minutes: 0 check(s) and 1 workflow run(s)");
+    expect(outcome.evidence).not.toContain("No CI ran");
+  });
+
+  /**
+   * A run is created a moment after the push that starts it, so a review that
+   * begins first sees nothing at all. The grace period is what keeps that from
+   * reading as "no CI": the wait keeps looking, finds the run, and waits for
+   * it to finish.
+   */
+  it("waits for a run that appears within the grace period", () => {
+    const outcome = runWaitStep({
+      pages: NO_CI,
+      runsByCall: [[], [workflowRun(203, "CI", "queued")], [workflowRun(203, "CI", "completed", "success")]],
+      extraEnv: { POLL_SECONDS: "0" },
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).toContain("No CI has reported on this commit yet");
+    expect(outcome.stdout).toContain("Waiting for 0 check(s) and 1 workflow run(s)");
+    expect(outcome.ciResult).toBe("green");
+    expect(outcome.evidence).not.toContain("No CI ran");
+    expect(outcome.evidence).not.toContain("Still running after");
+  });
+
+  /** And a grace period that passes with nothing appearing is "no CI". */
+  it("concludes there is no CI once the grace period passes empty", () => {
+    const outcome = runWaitStep({ pages: NO_CI, extraEnv: { POLL_SECONDS: "0", GRACE_SECONDS: "1" } });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).toContain("No CI has reported on this commit yet");
+    expect(outcome.ciResult).toBe("green");
+    expect(outcome.evidence).toContain("No CI ran on this commit");
+  });
+
+  /**
+   * The loop's own workflows are not CI, on the grounds `AGENT_CHECKS` gives
+   * for their check runs: this run is in progress until the wait ends, and a
+   * sibling queued behind it in the per-PR group cannot start until it does.
+   * Recognised three ways, each for a case the others miss: this run by its
+   * id, an `Agent …` workflow by its name, and a renamed caller by what it
+   * calls. At the real 900, so a wait that counted any of them would spin.
+   */
+  it("never waits for the loop's own workflow runs", () => {
+    const outcome = runWaitStep({
+      runs: [
+        workflowRun(SELF_RUN_ID, "Code review", "in_progress"),
+        workflowRun(204, "Agent Fix", "queued"),
+        workflowRun(205, "Bot fixes", "pending", null, {
+          referenced_workflows: [{ path: "jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.7.4" }],
+        }),
+      ],
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).not.toContain("Waiting for");
+    expect(outcome.ciResult).toBe("green");
+  });
+
+  /**
+   * A run that completed without passing is `red` from the runs surface too,
+   * and named with its conclusion. The member that needs it is
+   * `startup_failure`: a workflow file GitHub could not run creates no job, so
+   * no check run, and with no statuses either the commit read as no CI and
+   * green. The rest of the class (`failure`, `cancelled`, `timed_out`,
+   * `stale`) also fails a check run, which reads red already; covered so the
+   * two surfaces agree on every conclusion.
+   */
+  it.each(["startup_failure", "failure", "cancelled", "timed_out", "stale"])(
+    "is red when a run completed as %s, and names it",
+    (conclusion) => {
+      const outcome = runWaitStep({ pages: NO_CI, runs: [workflowRun(206, "CI", "completed", conclusion)] });
+
+      expect(outcome.status).toBe(0);
+      expect(outcome.ciResult).toBe("red");
+      expect(outcome.evidence).toContain(`- CI: ${conclusion}, https://github.com/${GH_REPO}/actions/runs/206`);
+      expect(outcome.evidence).not.toContain("No CI ran");
+    },
+  );
+
+  /** …and a run that passed, was neutral or was skipped is not. */
+  it.each(["success", "neutral", "skipped"])("is green when a run completed as %s", (conclusion) => {
+    const outcome = runWaitStep({ pages: NO_CI, runs: [workflowRun(207, "CI", "completed", conclusion)] });
+
+    expect(outcome.ciResult).toBe("green");
+    expect(outcome.evidence).not.toContain("did not pass");
+  });
+
+  /**
+   * A job held by an environment's required reviewers has a check run whose
+   * status is `waiting`, beside a run that is `waiting` too. Neither can move
+   * until a human acts, so the wait does not count the check run as pending
+   * either: at the real 900 a wait that did would spin the whole ceiling. The
+   * verdict still reads it as unfinished.
+   */
+  it("does not wait for a check run held by a protection rule", () => {
+    const outcome = runWaitStep({
+      pages: [page([running(SELF_CHECK, "in_progress"), running("deploy", "waiting")])],
+      runs: [workflowRun(208, "Deploy", "waiting")],
+    });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).not.toContain("Waiting for");
+    expect(outcome.ciResult).toBe("unknown");
+    expect(outcome.evidence).toContain("- Deploy: waiting for approval");
   });
 
   /**
@@ -757,12 +948,13 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
   });
 
   /**
-   * The listing that feeds the tail needs `actions: read`, which the loop does
-   * not request (#80), so on a private repository it is refused. Fed straight to
-   * `for`, that was silent — or worse: an HTTP error's body reaches stdout
-   * unfiltered, and its JSON words were iterated as run ids. The evidence now
-   * says the tail is missing rather than absent, and names no remedy: the grant
-   * is a trust decision the workflow cannot make.
+   * The runs listing feeds the tail and, since #221, the verdict: a run waiting
+   * for approval shows nowhere else. Fed straight to `for`, a failed listing
+   * was silent, or worse: an HTTP error's body reached stdout unfiltered, and
+   * its JSON words were iterated as run ids (#80). The evidence says what is
+   * missing rather than absent, and the verdict cannot be green on a commit
+   * whose runs nobody could see. Not the grant: the job declares `actions:
+   * read`, so a run that started holds it (#146).
    */
   it.each([
     ["403", "Resource not accessible by integration"],
@@ -772,16 +964,16 @@ describe.skipIf(!CAN_RUN)("agent-review's CI collection, executed", () => {
 
     expect(outcome.status).toBe(0);
     expect(outcome.evidence).toContain("Could not list this commit's workflow runs");
-    expect(outcome.evidence).toContain("actions: read");
-    expect(outcome.evidence).not.toMatch(/grant|must|required/i);
+    expect(outcome.evidence).not.toMatch(/lacks|must|required/i);
     // No run id was invented out of the error body.
     expect(outcome.evidence).not.toContain("### Failure output");
     expect(outcome.stdout).toContain("::warning::Could not list this commit's workflow runs");
     expect(outcome.stdout).toContain(said);
     // …and the step still reaches its end.
     expect(outcome.stdout).toContain("--- collected CI context ---");
-    // The check runs were read, so the verdict's half is unaffected.
-    expect(outcome.ciResult).toBe("green");
+    // The check runs were read and passed, but a run that never started would
+    // not be among them: green needs every surface to have answered.
+    expect(outcome.ciResult).toBe("unknown");
   });
 
   /** A listing that answered with no failed run adds nothing, as before. */

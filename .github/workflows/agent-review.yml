@@ -39,6 +39,11 @@ jobs:
     # `pull-requests: write` is what every `gh pr edit` in it spends, and
     # `packages: read` is explained below.
     permissions:
+      # Reading this commit's workflow runs, which is the only place a CI run
+      # that is queued or waiting for approval shows: it has no check run yet.
+      # Without it the CI wait could read "no CI" as green. The called job
+      # declares it, so omitting it here is refused before any job starts.
+      actions: read
       # Reading the check runs the CI wait polls. A public repository serves that
       # poll without this scope, which is why it reads as optional and why it was
       # missing until v0.1.5 — but the called job declares it, so omitting it

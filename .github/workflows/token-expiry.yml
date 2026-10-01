@@ -36,7 +36,7 @@ jobs:
           set -uo pipefail
 
           if [ -z "$PAT" ]; then
-            echo "::warning::AGENT_PAT is not set. The loop falls back to GITHUB_TOKEN, which cannot create PRs and whose pushes do not trigger CI."
+            echo "::warning::AGENT_PAT is not set. The loop falls back to GITHUB_TOKEN, which cannot create PRs and whose pushes start CI that waits for approval."
             echo "state=unset" >> "$GITHUB_OUTPUT"
             exit 0
           fi

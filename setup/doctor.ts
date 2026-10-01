@@ -339,6 +339,16 @@ export const REQUIRED_PERMISSIONS: readonly {
       "finding (#146)",
   },
   {
+    permission: "actions",
+    value: "read",
+    workflows: ["review"],
+    why:
+      "the CI wait reads the commit's workflow runs, which is the only place a CI run that is " +
+      "queued or waiting for approval shows: it has created no check run yet. Newer than every " +
+      "other grant on this caller (#221), so a caller installed before that release looks " +
+      "complete, and a push made with `GITHUB_TOKEN` starts exactly such a run",
+  },
+  {
     permission: "statuses",
     value: "write",
     workflows: ["review"],
@@ -621,9 +631,9 @@ export const diagnose = (
   // half, so a caller that does not name it does not fail: the secret arrives
   // as the empty string and the `secrets.AGENT_PAT || secrets.GITHUB_TOKEN`
   // fallback on the other side absorbs it. The loop then runs under the
-  // built-in token with the repository secret correctly set — a push that
-  // starts no CI, a label that fires no event, a pull request nothing can mark
-  // ready. Three of §1's failures, from a line an adopter deleted rather than from
+  // built-in token with the repository secret correctly set: a push whose
+  // CI waits for approval, a label that fires no event, a pull request nothing
+  // can mark ready. Three of §1's failures, from a line an adopter deleted rather than from
   // anything they failed to set, which is why the secrets row above cannot see
   // it.
   //
@@ -651,8 +661,9 @@ export const diagnose = (
           ? `declares no \`secrets:\` block at all`
           : `passes only ${named.map((name) => `\`${name}\``).join(", ")}`) +
         `. A called workflow gets only what it is passed, and this one is optional there, so it ` +
-        `arrives as the empty string and the job falls back to \`GITHUB_TOKEN\`: a push that ` +
-        `starts no CI, a label that fires no event, and a pull request nothing can mark ready. ` +
+        `arrives as the empty string and the job falls back to \`GITHUB_TOKEN\`: a push whose ` +
+        `CI waits for approval, a label that fires no event, and a pull request nothing can mark ` +
+        `ready. ` +
         `The secret being set is what makes that invisible.` +
         (unset
           ? ` \`AGENT_PAT\` is not set here either, so this is the wire to add once it is.`
@@ -933,7 +944,8 @@ export const diagnose = (
         check: "secrets",
         problem:
           `The \`AGENT_PAT\` secret is not set. The workflows fall back to \`GITHUB_TOKEN\` and go ` +
-          `on running, but a push made with it starts no CI, a label added with it fires no event, ` +
+          `on running, but a push made with it starts CI that waits for approval, a label added ` +
+          `with it fires no event, ` +
           `and it cannot mark a pull request ready — so the loop looks alive and transitions nothing. ` +
           `Without it, the PRD chain stops after its first slice.`,
         fix: `Set a fine-grained PAT with Contents, Pull requests, Issues and Workflows write.`,

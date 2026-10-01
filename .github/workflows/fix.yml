@@ -57,11 +57,13 @@ on:
           User PAT, used to check the branch out, push it, add the
           `agent:review` that asks for the re-review, mark a pull request
           ready where this run ends the round, and re-add `agent:implement` to
-          a slice PR's parent when it does — neither a push nor a label made
-          with `GITHUB_TOKEN` triggers another workflow, and `GITHUB_TOKEN`
-          cannot convert a draft at all (docs/ADOPTING.md §1). Optional, and
-          every one of those degrades rather than fails: the push still lands
-          and the PR simply gets no checks, the label still goes on but starts
+          a slice PR's parent when it does. A label made with `GITHUB_TOKEN`
+          triggers no workflow, a push made with it starts CI that waits for a
+          maintainer's approval, and `GITHUB_TOKEN` cannot convert a draft at
+          all (docs/ADOPTING.md §1). Optional, and every one of those degrades
+          rather than fails: the push still lands and its CI waits for
+          approval (the review reads that as unknown, never green, #221), the
+          label still goes on but starts
           no review until a human re-adds it, the pull request stays a draft
           under a warning saying so, and a slice PR says which re-label moves
           its chain on by hand.

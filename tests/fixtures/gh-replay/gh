@@ -18,7 +18,7 @@
  * Endpoints recorded:
  *   repos/{owner}/{repo}/commits/{sha}/check-runs  — pages from GH_REPLAY_PAGES
  *   repos/{owner}/{repo}/commits/{sha}/status      — pages from GH_REPLAY_STATUS_PAGES
- *   repos/{owner}/{repo}/actions/runs?…            — runs from GH_REPLAY_RUNS
+ *   repos/{owner}/{repo}/actions/runs?…            : runs from GH_REPLAY_RUNS_BY_CALL
  *   repos/{owner}/{repo}/actions/runs/{id}         —  "     "    "
  *
  *   graphql                                        — the issue from GH_REPLAY_ISSUE, or
@@ -61,7 +61,9 @@
  *   GH_REPLAY_FAILURE     `403` or `unreachable`: how the check-runs call fails
  *   GH_REPLAY_FAILURE_AT  1-based check-runs call to start failing at; default 1
  *   GH_REPLAY_COUNTER     path this process counts check-runs calls in
- *   GH_REPLAY_RUNS        path to a JSON array of workflow runs; default none
+ *   GH_REPLAY_RUNS_BY_CALL  path to a JSON array of workflow-run lists, one per
+ *                         call to the runs listing and the last repeating; default none
+ *   GH_REPLAY_RUNS_COUNTER  path this process counts runs-listing calls in
  *   GH_REPLAY_RUNS_FAILURE  `403` or `unreachable`: how the runs listing fails
  *   GH_REPLAY_ISSUE       path to the `issue` node the graphql query returns
  *   GH_REPLAY_BLOCKED_BY  path to a JSON array of blocking issues; default none
@@ -98,11 +100,29 @@ const die = (message, code) => {
 /** An invocation with no recording. Exit 2, distinct from gh's own failures. */
 const unrecorded = () => die(`gh-replay: no recording for \`gh ${argv.join(" ")}\``, 2);
 
-/** The workflow runs on the commit. Empty unless a scenario supplies some. */
-const runs = () => {
-  const file = process.env["GH_REPLAY_RUNS"];
+/**
+ * The workflow runs on the commit, as one list per call to the runs listing:
+ * a run that appears partway through the review's CI wait is a list that
+ * changes between polls (#221). Empty unless a scenario supplies some.
+ */
+const runSnapshots = () => {
+  const file = process.env["GH_REPLAY_RUNS_BY_CALL"];
+  const snapshots = file === undefined ? [] : JSON.parse(readFileSync(file, "utf8"));
 
-  return file === undefined ? [] : JSON.parse(readFileSync(file, "utf8"));
+  return snapshots.length === 0 ? [[]] : snapshots;
+};
+
+/** Every run any snapshot holds, for the by-id lookup. */
+const runs = () => runSnapshots().flat();
+
+/** The list this call to the runs listing sees, counted across processes. */
+const runsThisCall = () => {
+  const snapshots = runSnapshots();
+  const file = process.env["GH_REPLAY_RUNS_COUNTER"];
+  const n = file === undefined ? 1 : (existsSync(file) ? Number(readFileSync(file, "utf8")) : 0) + 1;
+
+  if (file !== undefined) writeFileSync(file, String(n));
+  return snapshots[Math.min(n, snapshots.length) - 1];
 };
 
 // `gh run view <id> --log-failed`, recorded for a run whose log cannot be had.
@@ -456,8 +476,23 @@ if (/\/actions\/runs\?/.test(endpoint)) {
   //
   // A 403 takes the same path with its own message. An unreachable host writes
   // nothing to stdout — the `Get …: connection refused` line only, exit 1.
+  //
+  // Under `--slurp` the shapes are the check-runs arm's: the error body inside
+  // the outer array, or `[]` for an unreachable host.
   if (failure !== undefined) {
-    if (failure === "403") {
+    if (has("--slurp")) {
+      process.stdout.write(
+        failure === "403"
+          ? `${JSON.stringify([
+              {
+                message: "Resource not accessible by integration",
+                documentation_url: "https://docs.github.com/rest/actions/workflow-runs#list-workflow-runs-for-a-repository",
+                status: "403",
+              },
+            ])}\n`
+          : "[]",
+      );
+    } else if (failure === "403") {
       process.stdout.write(
         `${JSON.stringify(
           {
@@ -478,9 +513,11 @@ if (/\/actions\/runs\?/.test(endpoint)) {
     );
   }
 
-  const workflowRuns = runs();
+  const workflowRuns = runsThisCall();
+  const body = { total_count: workflowRuns.length, workflow_runs: workflowRuns };
 
-  emit({ total_count: workflowRuns.length, workflow_runs: workflowRuns });
+  // One page, which `--slurp` wraps like any other.
+  emit(has("--slurp") ? [body] : body);
   process.exit(0);
 }
 

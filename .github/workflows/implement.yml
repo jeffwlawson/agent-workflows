@@ -44,8 +44,8 @@ on:
       AGENT_PAT:
         description: >-
           User PAT. Three things need it and each fails differently without it:
-          the push (no CI on the resulting PR), `gh pr create` (the Actions bot
-          is forbidden from creating PRs), and the `agent:review` label add
+          the push (CI on the resulting PR waits for a maintainer's approval),
+          `gh pr create` (the Actions bot is forbidden from creating PRs), and the `agent:review` label add
           (a label added with `GITHUB_TOKEN` triggers no workflow, so the
           cascade dies silently). See docs/ADOPTING.md §1. Optional, and every
           site warns rather than failing.
@@ -287,9 +287,11 @@ jobs:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
           # AGENT_PAT is optional. When absent this falls back to GITHUB_TOKEN,
-          # which works — except that pushes made with it do not trigger CI
-          # on the resulting PR. Add the secret later and this starts using it
-          # with no change to the workflow.
+          # which works, except that CI on the resulting PR waits for a
+          # maintainer to approve it: since 2026-06-11 a push made with it
+          # starts `pull_request` runs that require approval (#221). Add the
+          # secret later and this starts using it with no change to the
+          # workflow.
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Compute branch name

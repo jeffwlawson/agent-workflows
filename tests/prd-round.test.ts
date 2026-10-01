@@ -133,7 +133,7 @@ describe("the park comment", () => {
       round,
       prNumber: "300",
       reason,
-      ...(reason === "failed" ? { runUrl: "https://example.test/run/5" } : { detail: "The verdict's own line." }),
+      ...(reason === "failed" || reason === "post failed" ? { runUrl: "https://example.test/run/5" } : { detail: "The verdict's own line." }),
       findings: FINDINGS,
     });
 
@@ -143,6 +143,7 @@ describe("the park comment", () => {
     ["no progress", "no progress: the last fix round closed none of the findings it was given"],
     ["needs a closer look", "the review needs a closer look"],
     ["failed", "the review didn't finish"],
+    ["post failed", "the review finished and its verdict was posted, but a later step of posting it failed"],
   ] as const)("on %s, names the slice, the reason, the open findings and the ways on", (reason, why) => {
     const text = park(reason);
 
@@ -163,6 +164,29 @@ describe("the park comment", () => {
     expect(text).toContain("- add `agent:review` to PRD PR #300 to run the review again;");
     expect(text).toContain("**Open findings from earlier rounds:**");
     expect(park("budget spent")).not.toContain("run the review again");
+  });
+
+  /**
+   * A verdict posted by a posting job that failed after it is not "no
+   * verdict": the comment names it, and lists this round's findings as open
+   * rather than only the earlier rounds'.
+   */
+  it("names the posted verdict where only posting failed after it", () => {
+    const text = renderParkComment({
+      round: slice([]),
+      prNumber: "300",
+      reason: "post failed",
+      detail: "[The verdict](https://example.test/review/9) was *🟡 Changes recommended*.",
+      runUrl: "https://example.test/run/5",
+      findings: FINDINGS,
+    });
+
+    expect(text).toContain("[The verdict](https://example.test/review/9) was *🟡 Changes recommended*.");
+    expect(text).not.toContain("there is no verdict");
+    expect(text).toContain("**Open findings:**");
+    expect(text).not.toContain("from earlier rounds");
+    expect(text).toContain("- add `agent:review` to PRD PR #300 to run the review again;");
+    expect(text).toContain("[Workflow run](https://example.test/run/5)");
   });
 
   it("names the final review, and what follows its approval", () => {

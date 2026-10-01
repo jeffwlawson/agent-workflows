@@ -486,25 +486,44 @@ try {
   // round, the stop and every finding still open, the ones raised here linking
   // the review the posting job is about to post. Written only in that case,
   // so the file's existence is the whole condition, as `follow_ups.md`'s is.
-  const parkReason = round === undefined ? undefined : parkReasonOf(verdict);
-  if (round !== undefined && parkReason !== undefined) {
+  //
+  // Beside it, whatever the verdict, `park_posted.md`: the comment for a round
+  // whose verdict was posted but whose posting job failed after it, which
+  // parks the chain on any verdict. It names the verdict and the same
+  // findings, since the review that raised them is on the pull request.
+  if (round !== undefined) {
+    const openFindings: ParkFinding[] = [
+      ...stillOpen.map(carriedForPark),
+      ...placed.map(
+        (p): ParkFinding => ({
+          title: p.finding.title,
+          anchor: `${p.finding.path}:${p.finding.line}`,
+          url: REVIEW_URL_SLOT,
+        }),
+      ),
+    ];
+    const parkReason = parkReasonOf(verdict);
+    if (parkReason !== undefined) {
+      writeText(
+        "park.md",
+        renderParkComment({
+          round,
+          prNumber: PR_NUMBER,
+          reason: parkReason,
+          detail: verdict.nextStep,
+          findings: openFindings,
+        }),
+      );
+    }
     writeText(
-      "park.md",
+      "park_posted.md",
       renderParkComment({
         round,
         prNumber: PR_NUMBER,
-        reason: parkReason,
-        detail: verdict.nextStep,
-        findings: [
-          ...stillOpen.map(carriedForPark),
-          ...placed.map(
-            (p): ParkFinding => ({
-              title: p.finding.title,
-              anchor: `${p.finding.path}:${p.finding.line}`,
-              url: REVIEW_URL_SLOT,
-            }),
-          ),
-        ],
+        reason: "post failed",
+        detail: `[The verdict](${REVIEW_URL_SLOT}) was *${verdict.heading}*.`,
+        findings: openFindings,
+        ...(runUrl === undefined ? {} : { runUrl }),
       }),
     );
   }

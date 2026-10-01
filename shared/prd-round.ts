@@ -177,9 +177,17 @@ export const renderFinalReviewBrief = (parent: string, branch: string, base: str
  * - `no progress`: the fix round before this review closed none of the
  *   findings it was given.
  * - `needs a closer look`: the review asks for a human.
- * - `failed`: the review, or posting it, did not finish.
+ * - `failed`: the review did not finish, or its verdict was never posted.
+ * - `post failed`: the review finished and its verdict was posted, but a later
+ *   step of the posting job failed, so the chain cannot move on from it.
  */
-export type ParkReason = "changes recommended" | "budget spent" | "no progress" | "needs a closer look" | "failed";
+export type ParkReason =
+  | "changes recommended"
+  | "budget spent"
+  | "no progress"
+  | "needs a closer look"
+  | "failed"
+  | "post failed";
 
 /** An open finding, as the park comment lists it. */
 export interface ParkFinding {
@@ -225,7 +233,9 @@ const REASONS: Readonly<Record<ParkReason, string>> = {
   "budget spent": "the automatic fix rounds are spent",
   "no progress": "no progress: the last fix round closed none of the findings it was given",
   "needs a closer look": "the review needs a closer look",
-  failed: "the review didn't finish, so there is no verdict",
+  failed: "the review didn't finish, or its verdict was never posted, so there is no verdict",
+  "post failed":
+    "the review finished and its verdict was posted, but a later step of posting it failed, so the chain cannot move on from it",
 };
 
 /**
@@ -252,7 +262,9 @@ export const renderParkComment = (inputs: ParkInputs): string => {
       ? `**Open findings:** none${reason === "failed" ? " from earlier rounds" : ""}.`
       : `**Open findings${reason === "failed" ? " from earlier rounds" : ""}:**\n\n${listed.join("\n")}`;
   const ways = [
-    ...(reason === "failed" ? [`- add \`agent:review\` to PRD PR #${prNumber} to run the review again;`] : []),
+    ...(reason === "failed" || reason === "post failed"
+      ? [`- add \`agent:review\` to PRD PR #${prNumber} to run the review again;`]
+      : []),
     `- add \`agent:fix\` to PRD PR #${prNumber} for another fix round;`,
     "- decline a finding by replying to it, then add `agent:review` there;",
     "- push a commit, then add `agent:review` there.",

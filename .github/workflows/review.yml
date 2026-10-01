@@ -1316,7 +1316,8 @@ jobs:
 
       # On a PRD PR, the park comments the runner wrote, handed to the `advance`
       # job (PRD #222): `park.md` where the round ended without approval and
-      # with no fix round starting, and `park_failed.md`, written before the
+      # with no fix round starting, `park_posted.md` for a verdict posted by a
+      # posting job that then failed, and `park_failed.md`, written before the
       # agent ran, for a round that does not finish. Its own artifact and
       # `always()`, because a failed run is one of the endings it is for, and
       # the review's own artifact is uploaded only on success. Either file may
@@ -1328,6 +1329,7 @@ jobs:
           name: agent-review-park
           path: |
             ${{ runner.temp }}/park.md
+            ${{ runner.temp }}/park_posted.md
             ${{ runner.temp }}/park_failed.md
           if-no-files-found: ignore
           retention-days: 7
@@ -2305,10 +2307,15 @@ jobs:
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       # Every other ending but a fix round starting. A run that finished posts
-      # `park.md`, the comment for its verdict; one that did not posts
-      # `park_failed.md`, which the runner wrote before the agent ran. The
-      # findings this round raised link the posted review, whose URL exists only
-      # now, so it goes into the slot the runner left for it.
+      # `park.md`, the comment for its verdict. One whose review finished and
+      # whose verdict was posted, but whose posting job failed after it (a fix
+      # round the verdict announced that did not start, say), posts
+      # `park_posted.md`, which names that verdict and this round's findings:
+      # the review is on the pull request, so "no verdict" would be false. Any
+      # other posts `park_failed.md`, which the runner wrote before the agent
+      # ran: no verdict reached the pull request. The findings this round
+      # raised link the posted review, whose URL exists only now, so it goes
+      # into the slot the runner left for it.
       #
       # MUST use AGENT_PAT for the comment on the parent, which is an issue:
       # the workflow token holds no issue scope here. Without it the comment
@@ -2326,6 +2333,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           ENDED: ${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}
+          REVIEWED: ${{ needs.review.result == 'success' }}
           REVIEW_URL: ${{ needs.post-review.outputs.review-url }}
           # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
           REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
@@ -2343,6 +2351,8 @@ jobs:
           file="${RUNNER_TEMP}/park_failed.md"
           if [ "$ENDED" = "true" ]; then
             file="${RUNNER_TEMP}/park.md"
+          elif [ "$REVIEWED" = "true" ] && [ -n "$REVIEW_URL" ]; then
+            file="${RUNNER_TEMP}/park_posted.md"
           fi
           if [ -f "$file" ]; then
             body=$(cat "$file")

@@ -2512,6 +2512,7 @@ describe("a PRD PR's round ends in one advance job", () => {
     expect(upload?.with?.["name"]).toBe("agent-review-park");
     expect(upload?.with?.["path"]).toContain("park.md");
     expect(upload?.with?.["path"]).toContain("park_failed.md");
+    expect(upload?.with?.["path"]).toContain("park_posted.md");
     expect(step("Fetch the park comment")?.with?.["name"]).toBe("agent-review-park");
     expect(step("Fetch the park comment")?.["continue-on-error"]).toBe(true);
 
@@ -2519,6 +2520,12 @@ describe("a PRD PR's round ends in one advance job", () => {
     expect(run).toContain('file="${RUNNER_TEMP}/park.md"');
     expect(parkStep()?.env?.["ENDED"]).toBe(
       "${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}",
+    );
+    expect(parkStep()?.env?.["REVIEWED"]).toBe("${{ needs.review.result == 'success' }}");
+    // A posting job that failed after the verdict went up parks on that
+    // verdict, not on "no verdict": the posted review's URL is what says so.
+    expect(run).toContain(
+      'elif [ "$REVIEWED" = "true" ] && [ -n "$REVIEW_URL" ]; then\n  file="${RUNNER_TEMP}/park_posted.md"',
     );
     expect(parkStep()?.env?.["REVIEW_URL_SLOT"]).toBe(REVIEW_URL_SLOT);
     expect(parkStep()?.env?.["REVIEW_URL"]).toBe("${{ needs.post-review.outputs.review-url }}");

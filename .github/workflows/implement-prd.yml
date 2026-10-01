@@ -155,6 +155,10 @@ jobs:
       BASE_REF: ${{ inputs.default-branch }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
+      # This run's page, linked from the start comment and from the failure
+      # comment on the parent (#205). One definition, so the two cannot link
+      # different things.
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     steps:
       # The clock the failure step reads a time limit off (#220). A job that
@@ -372,11 +376,15 @@ jobs:
           # One slice PR goes through the merge step: the open one, merged this
           # run and so last in merge order, or failing that the rowless one that
           # merged last. The rest are the backfill, written before it.
+          # `slice_open` says which of the two it is, for the start comment:
+          # the rowless one is merged already, and only has its row written.
           if [ "$open_slices" -eq 1 ]; then
             slice_pr=$(jq -r '.[0].number' <<< "$slice_prs")
+            slice_open=true
             backfill=$(jq -r 'map(tostring) | join(" ")' <<< "$rowless")
           else
             slice_pr=$(jq -r '.[-1] // ""' <<< "$rowless")
+            slice_open=false
             backfill=$(jq -r '.[:-1] | map(tostring) | join(" ")' <<< "$rowless")
           fi
           if [ "$(jq 'length' <<< "$rowless")" -gt 0 ]; then
@@ -432,6 +440,7 @@ jobs:
             {
               echo "sub="
               echo "slice_pr=${slice_pr}"
+              echo "slice_open=${slice_open}"
               echo "backfill=${backfill}"
               echo "finishing=true"
               echo "refused=false"
@@ -503,6 +512,7 @@ jobs:
           {
             echo "sub=$(jq -r '.number' <<< "$next")"
             echo "slice_pr=${slice_pr}"
+            echo "slice_open=${slice_open}"
             echo "backfill=${backfill}"
             echo "sub_title<<PRD_SUB_TITLE_EOF"
             jq -r '.title' <<< "$next"
@@ -515,12 +525,46 @@ jobs:
 
       # The trigger label is consumed, not left in place. Nothing in this run
       # puts it back: the next slice waits on this one's slice PR.
+      #
+      # Then the run links itself on the parent (#205), naming what it is for,
+      # since a chain starts one run per slice on the same parent and the link
+      # alone would not tell them apart. A warning where it cannot be posted,
+      # never a failure: nothing has been done yet that a stopped run would
+      # need to report.
       - name: Transition labels
         if: steps.preflight.outputs.refused == 'false'
+        env:
+          SUB: ${{ steps.preflight.outputs.sub }}
+          SUB_TITLE: ${{ steps.preflight.outputs.sub_title }}
+          SLICE_PR: ${{ steps.preflight.outputs.slice_pr }}
+          SLICE_OPEN: ${{ steps.preflight.outputs.slice_open }}
+          FINISHING: ${{ steps.preflight.outputs.finishing }}
         run: |
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:blocked" || true
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:in-progress"
+          # An open slice PR is merged first. A rowless one has merged
+          # already, and this run only writes its row.
+          slice=""
+          if [ -n "$SLICE_PR" ]; then
+            if [ "$SLICE_OPEN" = "true" ]; then
+              slice="merging slice PR #${SLICE_PR}"
+            else
+              slice="writing the row of slice PR #${SLICE_PR}, already merged"
+            fi
+          fi
+          if [ "$FINISHING" = "true" ]; then
+            what="finishing run started: every sub-issue is built, so this run hands the PRD PR over"
+            if [ -n "$slice" ]; then
+              what="${what} after ${slice}"
+            fi
+          else
+            what="started: building sub-issue #${SUB} (${SUB_TITLE})"
+            if [ -n "$slice" ]; then
+              what="${what}, after ${slice}"
+            fi
+          fi
+          gh issue comment "$ISSUE_NUMBER" --body "\`agent:implement\` ${what}. [Workflow run](${RUN_URL})." || echo "::warning::Could not post the start comment on #${ISSUE_NUMBER}. The run goes on; it is ${RUN_URL}."
 
       # The waiting slice PR, merged into the PRD branch before anything is
       # built, so the next slice is cut from a PRD branch that holds it. Its
@@ -1240,7 +1284,6 @@ jobs:
           SUB: ${{ steps.preflight.outputs.sub }}
           SLICE_PR: ${{ steps.slice_pr.outputs.number }}
           FINISHING: ${{ steps.preflight.outputs.finishing }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           reason="(no reason file written; check workflow logs)"
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then

@@ -5,7 +5,6 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { readSummaryBlock, SUMMARY_END, SUMMARY_START, summaryUpdate } from "../shared/pr-summary.js";
-import { SLICES_END, SLICES_START, spliceSliceRows } from "../shared/slices-table.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -110,6 +109,10 @@ const runStep = (
 
 const RUN_URL = "https://github.com/acme/widgets/actions/runs/4242";
 
+/** The PRD PR's `Closes` block, which `implement-prd` owns and the review splices around. */
+const CLOSES_START = "<!-- agent:closes -->";
+const CLOSES_END = "<!-- /agent:closes -->";
+
 /**
  * The frames, exactly as the issue settled them. Written once by the run that
  * opens the pull request, and never again by anything.
@@ -140,28 +143,35 @@ describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
     );
   });
 
-  it("opens a PRD PR with Closes first, the note, an empty slices table and an unwritten summary", () => {
-    const outcome = runStep(stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"), {
-      ISSUE_NUMBER: "14",
-      ISSUE_TITLE: "A PRD",
-      RUN_URL,
-      BASE_REF: "main",
-      PRD_BRANCH: "agent/prd-14-a-prd",
-      SLICE_PR: "20",
-      HAS_PAT: "true",
-    });
+  it("opens a PRD PR with the Closes block first, the note and an unwritten summary", () => {
+    const outcome = runStep(
+      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      {
+        ISSUE_NUMBER: "14",
+        ISSUE_TITLE: "A PRD",
+        RUN_URL,
+        BASE_REF: "main",
+        PRD_BRANCH: "agent/prd-14-a-prd",
+        HAS_PAT: "true",
+      },
+      {
+        "prd-issue.json": JSON.stringify({
+          subIssues: { nodes: [{ number: 15, state: "OPEN" }, { number: 16, state: "OPEN" }] },
+        }),
+      },
+    );
 
     expect(outcome.status, outcome.stdout).toBe(0);
     expect(outcome.sent).toBe(
       [
+        CLOSES_START,
         "Closes #14",
+        "Closes #15",
+        "Closes #16",
+        CLOSES_END,
         "",
         "> [!NOTE]",
-        "> The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the summary below; the loop never edits them.",
-        "",
-        "## Progress",
-        SLICES_START,
-        SLICES_END,
+        "> The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.",
         "",
         SUMMARY_START,
         "_The final review will summarize the whole PRD here._",
@@ -232,27 +242,26 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
   });
 
   /**
-   * The PRD PR's slices table is outside the block, and is written by another
-   * run between reviews. Both writers keep to their own markers.
+   * The PRD PR's `Closes` block is outside the summary block and is the
+   * chain's, so the review's rewrite carries it over byte for byte: merging
+   * the PRD PR closes what it always said it would.
    */
-  it("leaves the slices table as it is, and the table's writer leaves the summary", () => {
+  it("leaves the PRD PR's Closes block as it is", () => {
     const prd = [
-      "Closes #14\n",
-      "## Progress",
-      SLICES_START,
-      SLICES_END,
+      CLOSES_START,
+      "Closes #14",
+      "Closes #15",
+      CLOSES_END,
       "",
       SUMMARY_START,
       "_The final review will summarize the whole PRD here._",
       SUMMARY_END,
       "",
     ].join("\n");
-    const withRow = spliceSliceRows(prd, ["| Slice (#15) | [#20](u) | 🟢 | none |"]);
-    const written = writeSummary(withRow).request?.body ?? "";
+    const written = writeSummary(prd).request?.body ?? "";
 
-    expect(outside(written)).toEqual(outside(withRow));
-    const again = spliceSliceRows(written, ["| Next (#16) | [#21](u) | 🟢 | none |"]);
-    expect(readSummaryBlock(again)?.text).toContain("It writes the title.");
+    expect(outside(written)).toEqual(outside(prd));
+    expect(written.startsWith(`${CLOSES_START}\nCloses #14\nCloses #15\n${CLOSES_END}\n`)).toBe(true);
   });
 
   /** Rewriting a block a review already wrote replaces it, and only it. */

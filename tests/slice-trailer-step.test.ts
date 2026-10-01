@@ -11,8 +11,8 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * Runs `implement-prd`'s `Mark the slice's commits`, the real `run:` block read
  * out of `.github/workflows/implement-prd.yml`, under `bash -e` in a **real**
  * git checkout shaped like the one the runner leaves: a PRD branch with an
- * earlier slice on the remote, a slice branch cut from it, and the commits this
- * run made on top, one of them a merge of the default branch.
+ * earlier slice on the remote, checked out at its tip, and the commits this run
+ * made on top of it, one of them a merge of the default branch.
  *
  * What it executes is #242: every commit the run made carries exactly one
  * `Agent-Slice: #<sub>` trailer naming the sub-issue it built, and nothing
@@ -80,9 +80,8 @@ const checkout = (): { work: string; published: readonly string[]; mainMoved: st
   git(work, "fetch", "-q", "origin");
   const mainMoved = git(work, "rev-parse", "origin/main");
 
-  // What `Prepare the slice branch` leaves.
+  // What `Prepare the PRD branch` leaves.
   git(work, "checkout", "-q", "-B", PRD_BRANCH, `origin/${PRD_BRANCH}`);
-  git(work, "checkout", "-q", "-b", "agent/slice-222-242-x");
 
   // What the agent leaves: a plain commit, one with a wrong trailer, one with
   // two, a merge of the default branch, two whose bodies hold a `---` line
@@ -107,7 +106,7 @@ const runStep = (cwd: string): { status: number | null; stderr: string } => {
   const result = spawnSync("bash", ["-e", "-c", script], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, PRD_BRANCH, SUB },
+    env: { ...process.env, SUB },
     timeout: SUBPROCESS_TIMEOUT,
   });
   return { status: result.status, stderr: result.stderr };
@@ -133,7 +132,7 @@ const parsed = (cwd: string, sha: string): string =>
 const ceiling = (spawns: number): number => spawns * SUBPROCESS_TIMEOUT;
 
 /** `checkout()`'s spawns, and the step's one. */
-const SETUP_SPAWNS = 34;
+const SETUP_SPAWNS = 33;
 
 describe.skipIf(!CAN_RUN)("implement-prd's Mark the slice's commits", () => {
   let built: ReturnType<typeof checkout>;
@@ -142,7 +141,7 @@ describe.skipIf(!CAN_RUN)("implement-prd's Mark the slice's commits", () => {
 
   beforeAll(() => {
     built = checkout();
-    authors = git(built.work, "log", "--format=%an %ad", `refs/heads/${PRD_BRANCH}..HEAD`, "--not", "--remotes");
+    authors = git(built.work, "log", "--format=%an %ad", "HEAD", "--not", "--remotes");
     ran = runStep(built.work);
   }, ceiling(SETUP_SPAWNS));
 
@@ -150,7 +149,7 @@ describe.skipIf(!CAN_RUN)("implement-prd's Mark the slice's commits", () => {
     const { work, tree } = built;
     expect(ran.status, ran.stderr).toBe(0);
 
-    const made = git(work, "rev-list", "HEAD", "--not", `refs/heads/${PRD_BRANCH}`, "--remotes").split("\n");
+    const made = git(work, "rev-list", "HEAD", "--not", "--remotes").split("\n");
     expect(made).toHaveLength(7);
     for (const sha of made) {
       expect(trailers(work, sha)).toEqual([`${SLICE_TRAILER}: #${SUB}`]);
@@ -161,27 +160,28 @@ describe.skipIf(!CAN_RUN)("implement-prd's Mark the slice's commits", () => {
     expect(git(work, "log", "-1", "--format=%B", "HEAD~6")).toBe(
       `feat: build the slice (#242)\n\nWhy it is built this way.\n\nCo-Authored-By: a <a@example.com>\nAgent-Slice: #${SUB}`,
     );
-    expect(git(work, "log", "--format=%an %ad", `refs/heads/${PRD_BRANCH}..HEAD`, "--not", "--remotes")).toBe(authors);
+    expect(git(work, "log", "--format=%an %ad", "HEAD", "--not", "--remotes")).toBe(authors);
     expect(git(work, "rev-parse", "HEAD^{tree}")).toBe(tree);
   }, ceiling(20));
 
-  it("rewrites nothing published: the PRD branch, the earlier slice and the merged default branch keep their shas", () => {
+  it("rewrites nothing published: the remote PRD branch, the earlier slice and the merged default branch keep their shas", () => {
     const { work, published, mainMoved } = built;
     expect(ran.status, ran.stderr).toBe(0);
 
     const reachable = git(work, "rev-list", "HEAD").split("\n");
     for (const sha of [...published, mainMoved]) expect(reachable).toContain(sha);
     expect(trailers(work, mainMoved)).toEqual([]);
-    expect(git(work, "rev-parse", `refs/heads/${PRD_BRANCH}`)).toBe(published[1]);
+    expect(git(work, "rev-parse", `refs/remotes/origin/${PRD_BRANCH}`)).toBe(published[1]);
   }, ceiling(3));
 
-  it("moves the branch without touching the working tree", () => {
+  it("moves the PRD branch without touching the working tree", () => {
     const { work } = built;
     expect(ran.status, ran.stderr).toBe(0);
 
-    expect(git(work, "symbolic-ref", "--short", "HEAD")).toBe("agent/slice-222-242-x");
+    expect(git(work, "symbolic-ref", "--short", "HEAD")).toBe(PRD_BRANCH);
+    expect(git(work, "rev-parse", `refs/heads/${PRD_BRANCH}`)).toBe(git(work, "rev-parse", "HEAD"));
     expect(git(work, "status", "--porcelain")).toBe("?? uncommitted.txt");
-  }, ceiling(2));
+  }, ceiling(3));
 
   it("sits after the runner and before the push, and writes the trailer the slice ranges read", () => {
     const all = steps();

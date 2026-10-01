@@ -163,8 +163,23 @@ const locate = (body: string): { readonly start: number; readonly end: number } 
   return { start, end: end + SLICES_END.length };
 };
 
-/** Whether `body` already carries a slices table. */
-export const hasSlicesTable = (body: string): boolean => locate(body) !== undefined;
+/** The rows between the markers, header excluded: what the table already says. */
+const rowsIn = (body: string, found: { readonly start: number; readonly end: number }): string[] =>
+  body
+    .slice(found.start + SLICES_START.length, found.end - SLICES_END.length)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("|") && !isHeader(line));
+
+/**
+ * Whether `body`'s slices table has a row yet. Not whether it has the markers:
+ * the PRD PR's frame (#218) opens with an empty pair, and a first merge into it
+ * is the table's first write as much as one into a body with no markers at all.
+ */
+export const hasSliceRows = (body: string): boolean => {
+  const found = locate(body);
+  return found !== undefined && rowsIn(body, found).length > 0;
+};
 
 /**
  * Add `rows` to the slices table in `body`, in order, after the rows already
@@ -187,13 +202,7 @@ export const spliceSliceRows = (body: string, rows: readonly string[]): string =
     return `${body}${separator}${SLICES_HEADING}\n${block(fresh)}\n`;
   }
 
-  const inner = body.slice(found.start + SLICES_START.length, found.end - SLICES_END.length);
-  const existing = inner
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("|") && !isHeader(line));
-
-  return `${body.slice(0, found.start)}${block(dedupe(existing, rows))}${body.slice(found.end)}`;
+  return `${body.slice(0, found.start)}${block(dedupe(rowsIn(body, found), rows))}${body.slice(found.end)}`;
 };
 
 /** `existing`, then every row of `rows` whose sub-issue none before it has. */
@@ -213,13 +222,14 @@ const dedupe = (existing: readonly string[], rows: readonly string[]): string[] 
  * One merge's worth of table: the merged slice's row, preceded by the rows of
  * any slices an earlier run merged and died before writing, and (**the first
  * time the table is written**, and only then) by a row for each slice a
- * pre-upgrade chain built. Each group was merged before the next, so merge
+ * pre-upgrade chain built. "First" is read as a table with no row yet, not as
+ * a body with no markers: the PRD PR's frame opens with an empty pair (#218). Each group was merged before the next, so merge
  * order is the order they are listed in; and once the table exists, a sub-issue
  * closed with no slice PR is not one the chain built before the upgrade.
  */
 export const addMergedSlice = (body: string, update: SlicesUpdate): string =>
   spliceSliceRows(body, [
-    ...(hasSlicesTable(body) ? [] : update.preUpgrade.map(renderPreUpgradeRow)),
+    ...(hasSliceRows(body) ? [] : update.preUpgrade.map(renderPreUpgradeRow)),
     ...update.backfill.map(renderSliceRow),
     renderSliceRow(update.merged),
   ]);

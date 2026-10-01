@@ -8183,3 +8183,102 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
     expect(pushes.map((l) => l.trim().replace(HEADER, "$2 "))).toEqual([push]);
   });
 });
+
+describe("every agent run keeps its session transcript, redacted, for a few days", () => {
+  /**
+   * The runners that start an agent, read off their source rather than listed:
+   * a sixth that calls sandcastle is in the set the moment it imports it. The
+   * list below it is what the derivation must find, so an empty one cannot
+   * pass by asserting over nothing.
+   */
+  const AGENT_COMMANDS = RUNNER_COMMANDS.filter((c) =>
+    fs.readFileSync(path.join(c, `${c}.ts`), "utf8").includes('from "@ai-hero/sandcastle"'),
+  );
+  /** Each workflow's step that runs the agent. */
+  const AGENT_STEPS: Readonly<Record<string, string>> = {
+    fix: "Run fix agent",
+    implement: "Run implementation agent",
+    "implement-prd": "Run implementation agent",
+    review: "Run review agent",
+    "update-branch": "Resolve conflicts",
+  };
+  const REDACT = "Redact the session transcript";
+  const UPLOAD = "Upload the session transcript";
+  const fileOf = (command: string): string => path.join(WORKFLOW_DIR, `${command}.yml`);
+  const stepNamed = (command: string, name: string): Step => {
+    const step = stepsOf(fileOf(command)).find((s) => s.name === name);
+
+    expect(step, `${command} has no \`${name}\` step`).toBeDefined();
+    return step as Step;
+  };
+
+  it("covers every runner that starts an agent", () => {
+    expect([...AGENT_COMMANDS].sort()).toEqual(Object.keys(AGENT_STEPS).sort());
+  });
+
+  it.each(Object.keys(AGENT_STEPS))("%s: declares the retention input, a few days by default", (command) => {
+    const input = workflowOf(fileOf(command)).on?.workflow_call?.inputs?.["transcript-retention-days"];
+
+    expect(input?.type).toBe("number");
+    expect(input?.default).toBe(3);
+    expect(input?.required).toBeUndefined();
+    expect(input?.description).toMatch(/0 turns the upload off/);
+  });
+
+  it.each(Object.keys(AGENT_STEPS))("%s: redacts the transcript right after the agent, however it ended", (command) => {
+    const names = stepsOf(fileOf(command)).map((s) => s.name);
+    const redact = stepNamed(command, REDACT);
+
+    expect(names.indexOf(REDACT)).toBe(names.indexOf(AGENT_STEPS[command]) + 1);
+    expect(redact.id).toBe("transcript");
+    expect(redact.if).toBe("always() && inputs.transcript-retention-days > 0");
+    // The record never fails the run it records.
+    expect(redact["continue-on-error"]).toBe(true);
+    // Every secret the job holds, so the step can take each one out.
+    expect(redact.env).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+      AGENT_PAT: "${{ secrets.AGENT_PAT }}",
+      GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+    });
+    // Found under the home directory, never under a path the checkout decides.
+    expect(redact.run ?? "").toContain('".claude" / "projects"');
+    expect(redact.run ?? "").not.toMatch(/GITHUB_WORKSPACE|\/home\/runner/);
+    // One step, word for word, in every workflow that runs an agent.
+    expect(redact.run).toBe(stepNamed("implement", REDACT).run);
+  });
+
+  it.each(Object.keys(AGENT_STEPS))("%s: uploads only what the redaction wrote, kept as long as the input says", (command) => {
+    const names = stepsOf(fileOf(command)).map((s) => s.name);
+    const upload = stepNamed(command, UPLOAD);
+
+    expect(names.indexOf(UPLOAD)).toBe(names.indexOf(REDACT) + 1);
+    // `always()`, so a failed, cancelled or timed-out run uploads too; and only
+    // after a redaction that finished, so a half-written copy is never sent.
+    expect(upload.if).toBe("always() && steps.transcript.outcome == 'success'");
+    expect(upload["continue-on-error"]).toBe(true);
+    expect(upload.uses).toBe("actions/upload-artifact@v7");
+    expect(upload.with).toEqual({
+      name: "agent-transcript",
+      path: "${{ runner.temp }}/agent-transcript",
+      "if-no-files-found": "ignore",
+      "retention-days": "${{ inputs.transcript-retention-days }}",
+      overwrite: true,
+    });
+  });
+
+  it("starts no upload where no agent runs", () => {
+    const follow = workflowOf(FOLLOW_UPS);
+
+    expect(follow.on?.workflow_call?.inputs?.["transcript-retention-days"]).toBeUndefined();
+    expect(stepsOf(FOLLOW_UPS).map((s) => s.name)).not.toContain(UPLOAD);
+  });
+
+  it("says in the adoption doc what is kept, who can read it and how to turn it off", () => {
+    const doc = fs.readFileSync(path.join("docs", "ADOPTING.md"), "utf8");
+
+    expect(doc).toContain("`agent-transcript`");
+    expect(doc).toContain("transcript-retention-days: 0");
+    expect(doc).toMatch(/\[REDACTED\]/);
+    expect(doc).toMatch(/public repository/);
+  });
+});

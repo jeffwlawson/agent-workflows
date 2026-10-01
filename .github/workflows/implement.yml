@@ -37,6 +37,15 @@ on:
           becomes a shell script.
         type: string
         default: npm ci
+      transcript-retention-days:
+        description: >-
+          Days the agent's Claude Code session transcript is kept, as this
+          run's `agent-transcript` artifact, with every secret the job holds
+          redacted. 0 turns the upload off. On a public repository the
+          artifact is readable by anyone who can see the repository; see
+          docs/ADOPTING.md §2d.
+        type: number
+        default: 3
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: OAuth token the implementation agent runs under.
@@ -398,6 +407,78 @@ jobs:
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.7 -- agent-workflows implement
+
+      # The agent's own record of the session (#269), so a run can be profiled
+      # and debugged from what it did and not only from the log, which shows
+      # some of its tool calls and none of its file reads, edits or thinking.
+      # Claude Code writes it under `~/.claude/projects/`, in a directory named
+      # after the checkout's path, and it goes with the runner unless something
+      # keeps it: sandcastle's own copy does not run without a sandbox.
+      #
+      # **Redacted, never refused.** An artifact on a public repository is
+      # readable by anyone who can see the repository, and the agent's
+      # environment holds `CLAUDE_CODE_OAUTH_TOKEN`, so a transcript where it
+      # printed that environment carries the token. Every secret this job holds
+      # is replaced with `[REDACTED]` in a copy, the two GitHub tokens also in
+      # the basic-auth form a checkout's git config holds them in, and only the
+      # copy is uploaded.
+      #
+      # `always()`, so a failed, cancelled or timed-out run keeps its record
+      # too, and `continue-on-error`, so the record never fails the run it
+      # records. The upload reads the redaction's outcome rather than its own
+      # `always()` alone, so a copy the redaction did not finish is never sent.
+      # `transcript-retention-days` at 0 turns both off.
+      - name: Redact the session transcript
+        id: transcript
+        if: always() && inputs.transcript-retention-days > 0
+        continue-on-error: true
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import base64, os, pathlib, shutil
+
+          source = pathlib.Path.home() / ".claude" / "projects"
+          copy = pathlib.Path(os.environ["RUNNER_TEMP"]) / "agent-transcript"
+          shutil.rmtree(copy, ignore_errors=True)
+
+          secrets = []
+          for name in ("CLAUDE_CODE_OAUTH_TOKEN", "AGENT_PAT", "GITHUB_TOKEN"):
+              value = os.environ.get(name, "").encode()
+              if not value:
+                  continue
+              secrets.append(value)
+              if name != "CLAUDE_CODE_OAUTH_TOKEN":
+                  secrets.append(base64.b64encode(b"x-access-token:" + value))
+
+          files = sorted(source.rglob("*.jsonl")) if source.is_dir() else []
+          if not files:
+              print("No session transcript to upload: the agent never started.")
+          for file in files:
+              text = file.read_bytes()
+              for secret in secrets:
+                  text = text.replace(secret, b"[REDACTED]")
+              out = copy / file.relative_to(source)
+              out.parent.mkdir(parents=True, exist_ok=True)
+              out.write_bytes(text)
+              print(f"Redacted {file.relative_to(source)} for upload.")
+          PY
+
+      # `overwrite`, so a re-run replaces this attempt's copy rather than
+      # failing on the name. Uploading needs no scope: the artifact service
+      # takes the runner's own token.
+      - name: Upload the session transcript
+        if: always() && steps.transcript.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-transcript
+          path: ${{ runner.temp }}/agent-transcript
+          if-no-files-found: ignore
+          retention-days: ${{ inputs.transcript-retention-days }}
+          overwrite: true
 
       # `head` is the commit `Request review` waits for the new PR to show.
       #

@@ -1,7 +1,20 @@
-<?xml version="1.0" encoding="utf-8"?>
-<testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="1" skipped="1" tests="5" time="0.120" timestamp="2026-09-30T10:00:00.000000+00:00" hostname="runner"><testcase classname="tests.test_recipes" name="test_scales_servings" time="0.002"><failure message="AssertionError: assert 2 == 4&#10; +  where 2 = scale(1, 2)">def test_scales_servings():
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="1" skipped="1" tests="5" time="0.028" timestamp="2026-10-01T14:32:21.971349+00:00" hostname="runnervm8df0l"><testcase classname="" name="tests.test_units" time="0.000"><error message="collection failure">ImportError while importing test module '/tmp/recipes/pytest/tests/test_units.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_units.py:1: in &lt;module&gt;
+    from src.units import convert
+E   ImportError: cannot import name 'convert' from 'src.units' (/tmp/recipes/pytest/src/units.py)</error></testcase><testcase classname="tests.test_recipes" name="test_scales_servings" time="0.001"><failure message="assert 2 == 4&#10; +  where 2 = scale(1, 2)">def test_scales_servings():
 &gt;       assert scale(1, 2) == 4
-E       AssertionError: assert 2 == 4</failure></testcase><testcase classname="tests.test_recipes" name="test_keeps_units" time="0.001" /><testcase classname="tests.test_recipes" name="test_needs_a_fixture" time="0.001"><error message="failed on setup with &quot;fixture 'client' not found&quot;">file tests/test_recipes.py, line 20
+E       assert 2 == 4
+E        +  where 2 = scale(1, 2)
+
+tests/test_recipes.py:6: AssertionError</failure></testcase><testcase classname="tests.test_recipes" name="test_keeps_units" time="0.000" /><testcase classname="tests.test_recipes" name="test_needs_a_fixture" time="0.000"><error message="failed on setup with &quot;file /tmp/recipes/pytest/tests/test_recipes.py, line 13&#10;  def test_needs_a_fixture(client):&#10;E       fixture 'client' not found&#10;&gt;       available fixtures: capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, monkeypatch, platformdirs_isolated, pytestconfig, record_property, record_testsuite_property, record_xml_attribute, recwarn, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory&#10;&gt;       use 'pytest --fixtures [testpath]' for help on them.&#10;&#10;/tmp/recipes/pytest/tests/test_recipes.py:13&quot;">file /tmp/recipes/pytest/tests/test_recipes.py, line 13
   def test_needs_a_fixture(client):
-E       fixture 'client' not found</error></testcase><testcase classname="" name="tests.test_units" time="0.000"><error message="collection failure">ImportError while importing test module 'tests/test_units.py'.
-E   ImportError: cannot import name 'convert' from 'src.units'</error></testcase><testcase classname="tests.test_recipes" name="test_later" time="0.000"><skipped type="pytest.skip" message="not yet">tests/test_recipes.py:30: not yet</skipped></testcase></testsuite></testsuites>
+E       fixture 'client' not found
+&gt;       available fixtures: capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, monkeypatch, platformdirs_isolated, pytestconfig, record_property, record_testsuite_property, record_xml_attribute, recwarn, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory
+&gt;       use 'pytest --fixtures [testpath]' for help on them.
+
+/tmp/recipes/pytest/tests/test_recipes.py:13</error></testcase><testcase classname="tests.test_recipes" name="test_later" time="0.000"><skipped type="pytest.skip" message="not yet">/tmp/recipes/pytest/tests/test_recipes.py:17: not yet</skipped></testcase></testsuite></testsuites>

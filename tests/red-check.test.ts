@@ -315,7 +315,18 @@ describe("the red check classifies each test as red, broken or passed", () => {
     expect(classifyStep().shell).toBe("python");
   });
 
-  it.skipIf(!CAN_RUN)("reads an assertion as red with its message, and setup and collection errors as broken", () => {
+  /** Each test's name, classname and result, the shape every case below compares. */
+  const results = (report: Report): { name: string; classname: string; result: string }[] =>
+    report.tests.map(({ name, classname, result }) => ({ name, classname, result }));
+
+  const messageOf = (report: Report, name: string): string => report.tests.find((t) => t.name === name)?.message ?? "";
+
+  /**
+   * pytest 9.1.1 under `--continue-on-collection-errors`, which the class needs
+   * in one report: without it pytest stops at the collection error and the
+   * report holds that alone.
+   */
+  it.skipIf(!CAN_RUN)("reads pytest's assertion as red with its message, and setup and collection errors as broken", () => {
     const report = classify("pytest.xml");
 
     expect(report).toMatchObject({
@@ -326,39 +337,49 @@ describe("the red check classifies each test as red, broken or passed", () => {
       exitCode: 1,
       skipped: 1,
     });
-    expect(report.tests).toEqual([
-      {
-        name: "test_scales_servings",
-        classname: "tests.test_recipes",
-        result: "red",
-        message: "AssertionError: assert 2 == 4\n +  where 2 = scale(1, 2)",
-      },
-      { name: "test_keeps_units", classname: "tests.test_recipes", result: "passed" },
-      {
-        name: "test_needs_a_fixture",
-        classname: "tests.test_recipes",
-        result: "broken",
-        message: "failed on setup with \"fixture 'client' not found\"",
-      },
+    expect(results(report)).toEqual([
       // An import error fails against the merge-base too, and proves nothing.
-      { name: "tests.test_units", classname: "", result: "broken", message: "collection failure" },
+      { name: "tests.test_units", classname: "", result: "broken" },
+      { name: "test_scales_servings", classname: "tests.test_recipes", result: "red" },
+      { name: "test_keeps_units", classname: "tests.test_recipes", result: "passed" },
+      { name: "test_needs_a_fixture", classname: "tests.test_recipes", result: "broken" },
     ]);
+    expect(messageOf(report, "test_scales_servings")).toBe("assert 2 == 4\n +  where 2 = scale(1, 2)");
+    expect(messageOf(report, "tests.test_units")).toBe("collection failure");
+    expect(messageOf(report, "test_needs_a_fixture")).toContain("fixture 'client' not found");
   });
 
-  it.skipIf(!CAN_RUN)("reads the vitest JUnit reporter's failures as red", () => {
-    expect(classify("vitest.xml").tests).toEqual([
-      {
-        name: "scale > doubles a serving",
-        classname: "tests/scale.test.ts",
-        result: "red",
-        message: "expected 2 to be 4 // Object.is equality",
-      },
+  /**
+   * vitest 3.2.4 writes every one of these as a `<failure>`, `errors="0"`: an
+   * import error and a throw at collection as a testcase named by the file, and
+   * a `beforeAll` that threw, nested or not, as one named by its `describe`.
+   */
+  it.skipIf(!CAN_RUN)("reads vitest's import, collection and beforeAll failures as broken, and its assertion as red", () => {
+    const report = classify("vitest.xml");
+
+    expect(results(report)).toEqual([
+      { name: "pantry > opens", classname: "tests/client.test.ts", result: "passed" },
+      { name: "needs a client", classname: "tests/client.test.ts", result: "broken" },
+      { name: "needs a shelf", classname: "tests/client.test.ts", result: "broken" },
+      { name: "tests/collect.test.ts", classname: "tests/collect.test.ts", result: "broken" },
+      { name: "scale > doubles a serving", classname: "tests/scale.test.ts", result: "red" },
       { name: "scale > keeps the unit", classname: "tests/scale.test.ts", result: "passed" },
+      { name: "tests/units.test.ts", classname: "tests/units.test.ts", result: "broken" },
     ]);
+    // The tests under a `beforeAll` that threw never ran.
+    expect(report.skipped).toBe(2);
+    expect(messageOf(report, "scale > doubles a serving")).toBe("expected 2 to be 4 // Object.is equality");
+    expect(messageOf(report, "tests/units.test.ts")).toContain("Cannot find module '../src/units'");
+    expect(messageOf(report, "needs a client")).toBe("no client");
   });
 
-  /** jest-junit writes no `message` attribute, so the message is the body's first line. */
-  it.skipIf(!CAN_RUN)("takes the message from the body where the failure carries none", () => {
+  /**
+   * jest 30 with jest-junit, `reportTestSuiteErrors` and `addFileAttribute` on.
+   * It writes no `message` attribute, so the message is the body's first line,
+   * and a suite that failed to run twice under one name, an `<error>` and a
+   * `<failure>`: one test, and broken.
+   */
+  it.skipIf(!CAN_RUN)("reads jest-junit's suite that failed to run as one broken test, and takes a message from the body", () => {
     expect(classify("jest.xml").tests).toEqual([
       {
         name: "scale doubles a serving",
@@ -366,6 +387,14 @@ describe("the red check classifies each test as red, broken or passed", () => {
         file: "tests/scale.test.js",
         result: "red",
         message: "Error: expect(received).toBe(expected) // Object.is equality",
+      },
+      { name: "scale keeps the unit", classname: "scale keeps the unit", file: "tests/scale.test.js", result: "passed" },
+      {
+        name: "tests/units.test.js",
+        classname: "Test suite failed to run",
+        file: "tests/units.test.js",
+        result: "broken",
+        message: "● Test suite failed to run",
       },
     ]);
   });

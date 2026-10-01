@@ -7069,6 +7069,30 @@ describe("an implement run links itself on the issue when it starts", () => {
   });
 
   /**
+   * The slice PR preflight names is either open, and merged by this run, or
+   * merged already with no row, and only has its row written. The comment
+   * says which, in both the building and the finishing wording, so a
+   * recovery run does not claim to merge a PR that merged before it started.
+   */
+  it("implement-prd.yml: says whether the slice PR is merged by this run or already was", () => {
+    const step = transition(PRD);
+    const run = step.run ?? "";
+    const preflight = stepsOf(PRD).find((s) => s.id === "preflight")?.run ?? "";
+
+    expect(step.env?.["SLICE_OPEN"]).toBe("${{ steps.preflight.outputs.slice_open }}");
+    expect(preflight.match(/echo "slice_open=\$\{slice_open\}"/g)?.length).toBe(
+      preflight.match(/echo "slice_pr=\$\{slice_pr\}"/g)?.length,
+    );
+    expect(preflight).toContain("slice_open=true");
+    expect(preflight).toContain("slice_open=false");
+    expect(run).toContain('if [ "$SLICE_OPEN" = "true" ]; then');
+    expect(run).toContain('slice="merging slice PR #${SLICE_PR}"');
+    expect(run).toContain('slice="writing the row of slice PR #${SLICE_PR}, already merged"');
+    expect(run.match(/merg\w* slice PR #\$\{SLICE_PR\}/g)).toEqual(["merging slice PR #${SLICE_PR}"]);
+    expect(run.match(/what="\$\{what\}[^"]*\$\{slice\}"/g)?.length).toBe(2);
+  });
+
+  /**
    * `implement.yml`'s success outcome is the PR it opens, so that is the
    * comment that carries the link on success, and it is a warning where it
    * fails for the same reason: the PR is open by then, and the review it asks

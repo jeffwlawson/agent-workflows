@@ -1266,8 +1266,9 @@ jobs:
 
       # Everything the runner wrote for posting, handed to the posting job
       # (#257): the review payload and the body's parts, the verdict, the
-      # threads this review closed, and the follow-ups marker's file. A job
-      # cannot read another job's `RUNNER_TEMP`.
+      # threads this review closed, the follow-ups marker's file, and the title
+      # and summary block where this review rewrites them (#218). A job cannot
+      # read another job's `RUNNER_TEMP`.
       #
       # **An artifact rather than an output**, for size. The payload is the
       # body, up to GitHub's 64 KB, plus a thread per finding, and an output
@@ -1289,6 +1290,7 @@ jobs:
             ${{ runner.temp }}/verdict.json
             ${{ runner.temp }}/thread_resolutions.json
             ${{ runner.temp }}/follow_ups.md
+            ${{ runner.temp }}/pr_summary.json
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -1343,10 +1345,12 @@ jobs:
   #  2. post the review, the overview and the new findings in one call, its
   #     *Resolved since last review* listing only the threads step 1 actually
   #     resolved;
-  #  3. the `agent:follow-ups` marker and the `agent-review` verdict status;
-  #  4. mark the pull request ready, unless a fix round is about to start;
-  #  5. take `agent:review` off;
-  #  6. hand off: `agent:review` again where the head moved during the run,
+  #  3. the pull request's title and the summary block in its body, where
+  #     anything was pushed since the summary was last written (#218);
+  #  4. the `agent:follow-ups` marker and the `agent-review` verdict status;
+  #  5. mark the pull request ready, unless a fix round is about to start;
+  #  6. take `agent:review` off;
+  #  7. hand off: `agent:review` again where the head moved during the run,
   #     else `agent:fix` where the verdict announced a round, else the PRD
   #     chain's advance on a slice PR.
   #
@@ -1487,7 +1491,7 @@ jobs:
             gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
           fi
 
-      # The trigger label stays on while the run works and comes off in step 5,
+      # The trigger label stays on while the run works and comes off in step 6,
       # however the run ends (#236), so the one label to take off here is a
       # block an earlier run left. Here rather than as the run starts, because
       # the review job writes nothing; and only on a review that finished, since
@@ -1689,6 +1693,70 @@ jobs:
           fi
           echo "url=${url}" >> "$GITHUB_OUTPUT"
 
+      # Step 3: the pull request's title, and the summary block in its body
+      # (#218). The review wrote both; the workflow writes them, and only where
+      # anything was pushed since the summary was last written, which the runner
+      # decided and said by writing `pr_summary.json` at all.
+      #
+      # **The body is read here, not where the review read it.** A review spends
+      # minutes waiting on CI, and a maintainer's edit outside the block in that
+      # window has to survive. So the splice is against the body as it stands
+      # now: every byte outside the markers is kept as it is, `Closes #N` and
+      # the slices table included, and the review's text goes between them. The
+      # markers come from the runner's file rather than being spelled here, so
+      # there is one copy of them. A body with no block gets one appended; a
+      # body with half of one, or two, is not written at all, since guessing
+      # which marker is the real one is guessing where a maintainer's text ends.
+      # The title is written either way.
+      #
+      # After the review, and never fails the run: a posted review is worth
+      # more than its description, and a warning says so where `|| true`
+      # would not.
+      - name: Write the PR title and summary
+        if: steps.review.outcome == 'success'
+        run: |
+          set -uo pipefail
+          update="${RUNNER_TEMP}/pr_summary.json"
+          [ -f "$update" ] || { echo "Nothing was pushed since the summary was last written, so the title and the summary are left as they are."; exit 0; }
+          current="${RUNNER_TEMP}/pr_current.json"
+          request="${RUNNER_TEMP}/pr_edit.json"
+          if ! gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER}" > "$current"; then
+            echo "::warning::Could not read PR #${PR_NUMBER} to write its title and summary, so both are left as they are. The review is posted."
+            exit 0
+          fi
+          jq --slurpfile update "$update" '
+            $update[0] as $u
+            | (.body // "") as $b
+            | (if $u.summary == null then null
+               else
+                 $u.summary.start as $s | $u.summary.end as $e
+                 | "\($s)\n\($u.summary.inner)\n\($e)" as $block
+                 | if $b == "" then $block
+                   else
+                     ($b | split($s)) as $starts
+                     | ($b | split($e)) as $ends
+                     | if ($starts | length) == 1 and ($ends | length) == 1 then
+                         $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block
+                       elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
+                         $starts[0] + $block + ($starts[1] | split($e))[1]
+                       else null end
+                   end
+               end) as $body
+            | {}
+              + (if $u.title == null then {} else {title: $u.title} end)
+              + (if $body == null then {} else {body: $body} end)
+          ' "$current" > "$request" || { echo "::warning::Could not compose the title and summary for PR #${PR_NUMBER}, so both are left as they are."; exit 0; }
+          if [ "$(jq -r '.summary != null' "$update")" = "true" ] && [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
+            echo "::warning::PR #${PR_NUMBER}'s body carries half a summary block, or two, so the summary was not written. Restore the missing marker, or delete the markers and the text between them, and the next review writes it again."
+          fi
+          if [ "$(jq -r 'length' "$request")" = "0" ]; then
+            echo "Nothing to write."
+            exit 0
+          fi
+          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PR_NUMBER}" --input "$request" > /dev/null \
+            && echo "Wrote $(jq -r 'keys | join(" and ")' "$request") of PR #${PR_NUMBER}." \
+            || echo "::warning::Could not write the title and summary of PR #${PR_NUMBER}. GitHub's reply is above; the review is posted."
+
       # The marker for the filing half (#47): this PR's review recorded
       # out-of-scope findings, and a human still has a say before they become
       # issues. Removing the label is that say.
@@ -1721,7 +1789,7 @@ jobs:
           gh pr edit "$PR_NUMBER" --add-label "agent:follow-ups" \
             || echo "::warning::Could not add \`agent:follow-ups\` to PR #${PR_NUMBER}. Its out-of-scope findings stay in the review body and nothing will file them. If the label does not exist in this repository, create it."
 
-      # Step 3: the verdict, what a maintainer does next, on the commit it is
+      # Step 4: the verdict, what a maintainer does next, on the commit it is
       # about.
       #
       # A commit status rather than a comment or a label, for the one property
@@ -1764,7 +1832,7 @@ jobs:
           gh api "${args[@]}" \
             || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
 
-      # Step 4. Draft means "the automated pipeline has not finished", not "the
+      # Step 5. Draft means "the automated pipeline has not finished", not "the
       # agent is still writing code", so this belongs here rather than at the
       # end of implement. The human's first real decision (act on the review, or
       # merge) only exists once the review is posted; marking ready any earlier
@@ -1916,7 +1984,7 @@ jobs:
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
 
-      # Step 5. The trigger label comes off however the run ends (#236):
+      # Step 6. The trigger label comes off however the run ends (#236):
       # success, failure, refusal, timeout or cancel, so it never outlives the
       # run. `always()` alone, so a pre-flight that died before deciding is
       # covered too; a refusal or a failure took it off already, and removing an
@@ -1984,7 +2052,7 @@ jobs:
           GH_TOKEN="$REQUEST_TOKEN" gh pr edit "$PR_NUMBER" --add-label "agent:review" \
             || echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, and agent:review could not be added again. Add it by hand to review the new head."
 
-      # Step 6, the first hand-off: the automatic fix round (#102, and the
+      # Step 7, the first hand-off: the automatic fix round (#102, and the
       # budget of #201, PRD #200). Where the verdict is *changes recommended,
       # fix round started*, this adds `agent:fix` itself, so a pull request whose
       # fixes the review says are clear reaches a maintainer already fixed and
@@ -2097,7 +2165,7 @@ jobs:
           fi
           echo "Added agent:fix to PR #${PR_NUMBER}: an automatic fix round starts."
 
-      # Step 6, the other hand-off: the PRD chain's advance (#176, PRD #171). A
+      # Step 7, the other hand-off: the PRD chain's advance (#176, PRD #171). A
       # slice PR is one sub-issue of a PRD, opened by `implement-prd` against
       # the PRD branch, and the chain waits for that slice's review round to end
       # before it builds the next one. When the round ends on a verdict the

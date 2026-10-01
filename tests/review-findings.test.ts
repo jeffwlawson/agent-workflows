@@ -853,10 +853,8 @@ describe("an identifier the model smuggled into its output", () => {
   const SMUGGLED = {
     assessment: `The guard and the cache key are each wrong. ${LIVE}`,
     howChecked: `Re-read the thread ${CLOSED} and the guard.`,
-    whatChanged: {
-      summary: `It moves the guard above the return. ${LIVE}`,
-      changes: [`the guard moved ${CLOSED}`, `a test was added ${LIVE}`],
-    },
+    title: `fix: move the guard ${CLOSED}`,
+    summary: `It moves the guard above the return. ${LIVE}\n\n- the guard moved ${CLOSED}`,
     needsYou: `the issue asked for the opposite ${CLOSED}`,
     fixBeforeMerge: [`the guard runs after the return ${LIVE}`],
     findings: [
@@ -910,7 +908,8 @@ describe("an identifier the model smuggled into its output", () => {
 
     expect(output.assessment).toBe("The guard and the cache key are each wrong.");
     expect(output.howChecked).toBe("Re-read the thread  and the guard.");
-    expect(output.whatChanged?.changes).toEqual(["the guard moved", "a test was added"]);
+    expect(output.title).toBe("fix: move the guard");
+    expect(output.summary).toBe("It moves the guard above the return.\n\n- the guard moved");
     expect(output.needsYou).toBe("the issue asked for the opposite");
     expect(output.findings[0]?.title).toBe("the guard runs after the return");
     expect(output.followUps[0]?.location).toBe("src/other.ts:88");
@@ -935,7 +934,6 @@ describe("an identifier the model smuggled into its output", () => {
       resolved: [],
       followUps: output.followUps,
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
     const posted = [body, ...reviewThreads(placed).map((t) => t.body)].join("\n");
 
@@ -965,7 +963,6 @@ describe("an identifier the model smuggled into its output", () => {
       resolved: [],
       followUps: [],
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
 
     const carried = carriedFindings({ threads: [], latestReviewBody: body });

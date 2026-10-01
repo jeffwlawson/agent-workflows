@@ -64,26 +64,18 @@ export interface FollowUp {
 export const MAX_FOLLOW_UPS = 3;
 
 /**
- * What this pull request does, described and never evaluated (#109, decision 8
- * as the maintainer settled it).
- *
- * Two fields rather than one paragraph, and both capped by the schema rather
- * than only asked for in the brief: a prompt-only "under 250 words" is a limit
- * with no enforcement behind it, and the body it produced ran long enough to
- * bury the record above it.
+ * The hard limit on the pull request's `title`, in characters (#218). A title
+ * is one line a reader scans in a list, and the commit subject a squash merge
+ * lands; GitHub's own limit is far past where either reads well.
  */
-export interface WhatChanged {
-  /** One sentence. What this pull request is. */
-  readonly summary: string;
-  /**
-   * What it changes, one line each. Description only — an evaluation belongs in
-   * a finding, where it is counted, or nowhere.
-   */
-  readonly changes: string[];
-}
+export const MAX_TITLE_LENGTH = 100;
 
-/** At most this many `changes` entries, enforced in the schema rather than asked for. */
-export const MAX_WHAT_CHANGED = 5;
+/**
+ * The hard limit on the pull request's `summary`, in words (#218). The brief
+ * asks for something short about what was built; this is where that stops
+ * being a request.
+ */
+export const MAX_SUMMARY_WORDS = 150;
 
 /**
  * The hard limit on `howChecked`, in words. The brief asks for about a hundred;
@@ -146,12 +138,23 @@ export interface ReviewOutput {
    */
   readonly howChecked?: string;
   /**
-   * What the pull request does. Rendered collapsed under *What changed in this
-   * PR*, and **only on some reviews** — see `renderReviewBody`'s
-   * `showWhatChanged`, which is the caller's to decide because it is a fact
-   * about the round rather than about the review.
+   * The pull request's title as the review would have it: one line, true of
+   * the change as it now stands, in the adopter's commit convention (#218).
+   * Written by the workflow, and only where anything was pushed since the
+   * summary was last written (`summaryDue`).
+   *
+   * Capped at `MAX_TITLE_LENGTH`.
    */
-  readonly whatChanged?: WhatChanged;
+  readonly title?: string;
+  /**
+   * What this pull request does, for the **summary block** in its body rather
+   * than for the review comment (#218): the description lives in one place, and
+   * it is the place a reader opens first. Written under the same rule as
+   * `title`, between the block's markers and nowhere else.
+   *
+   * Capped at `MAX_SUMMARY_WORDS`.
+   */
+  readonly summary?: string;
   /**
    * Every problem the review found in this pull request, as the model produced
    * them. Where each one is posted — a line thread or a file-level thread — is
@@ -977,8 +980,8 @@ const unresolvedSentence = (record: ReviewRecord): string => {
 export const BODY_HEADING = "## Agent review";
 
 /**
- * How this was checked, and what changed — the two collapsed sections that
- * replaced one 250-word paragraph.
+ * How this was checked: the collapsed section that, with the summary block in
+ * the pull request's body (#218), replaced one 250-word paragraph.
  *
  * Rendered from fields the schema caps rather than from prose the brief asked
  * to be short, which is the whole of the change: the cap is the part a review
@@ -990,26 +993,6 @@ const renderHowChecked = (howChecked: string | undefined): string | undefined =>
     : ["<details>", "<summary><b>How this was checked</b></summary>", "", howChecked, "", "</details>"].join(
         "\n",
       );
-
-const renderWhatChanged = (whatChanged: WhatChanged | undefined): string | undefined => {
-  if (whatChanged === undefined) return undefined;
-
-  const lines = [
-    ...(whatChanged.summary === "" ? [] : [whatChanged.summary, ""]),
-    ...whatChanged.changes.map((change) => `- ${oneLine(change)}`),
-  ];
-  while (lines[lines.length - 1] === "") lines.pop();
-  if (lines.length === 0) return undefined;
-
-  return [
-    "<details>",
-    "<summary><b>What changed in this PR</b></summary>",
-    "",
-    ...lines,
-    "",
-    "</details>",
-  ].join("\n");
-};
 
 /**
  * GitHub's ceiling on a review body. Over it, `addPullRequestReview` answers
@@ -1091,8 +1074,9 @@ const shedSentence = (shed: Shed): string | undefined => {
  * the review's own sentence naming what is unresolved, the step in italics, the
  * count and — on the rounds that have one — the line saying a finding was moved
  * to the follow-ups, then *Open*, *Previously missed*, *Resolved since last
- * review*, *Follow-ups*, *How this was checked* and *What changed in this PR*,
- * then a rule and the run that produced it. The order is Copilot code review's
+ * review*, *Follow-ups* and *How this was checked*, then a rule and the run
+ * that produced it. What the change *is* is not here: it is the summary block
+ * in the pull request's body (#218), so it is said in one place. The order is Copilot code review's
  * own overview, which is the point — a maintainer who has read one of those
  * already knows where to look.
  *
@@ -1102,7 +1086,7 @@ const shedSentence = (shed: Shed): string | undefined => {
  * folded**: *Open* and *Previously missed* are what the verdict has just told a
  * reader to act on — and *Previously missed* counts toward that verdict, which
  * is why it is not collapsed the way Copilot collapses its equivalent — while
- * *Resolved*, *Follow-ups* and the two prose sections start closed. And **the
+ * *Resolved*, *Follow-ups* and *How this was checked* start closed. And **the
  * only horizontal rule in the body is the one above the run link**: a divider
  * between groups reads as a section break in a list that is one record.
  *
@@ -1275,21 +1259,6 @@ export interface ReviewBodyParts {
    */
   readonly droppedNotes?: readonly DroppedNote[] | undefined;
   /**
-   * Whether *What changed in this PR* is rendered at all.
-   *
-   * The caller's, because it is a fact about the **verdict history** and not
-   * about the review: it belongs on the first review of a pull request and on a
-   * later review with commits on it no verdict has seen that no automatic fix
-   * round made (a human push, a conflict resolution, or a fix round a human
-   * started, which posts no verdict), and nowhere else. The review after an
-   * automatic fix round is answering an earlier review's findings, and a
-   * re-review with nothing pushed
-   * since the last verdict would be describing a change it has already
-   * described. *How this was checked* carries no such rule and appears on every
-   * review.
-   */
-  readonly showWhatChanged: boolean;
-  /**
    * The run that produced this review. Optional — it is a link, and a review
    * that could not name its own run is still a review — so a caller outside
    * Actions renders a body without one rather than failing.
@@ -1357,7 +1326,6 @@ const renderBody = (
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles),
       renderDroppedNotesGroup(parts.droppedNotes ?? []),
       renderHowChecked(parts.output.howChecked),
-      parts.showWhatChanged ? renderWhatChanged(parts.output.whatChanged) : undefined,
       // The only rule in the body, and it is here rather than between the groups
       // because this is the only place the subject changes: everything above is
       // the review, and this is the run that posted it.
@@ -1627,32 +1595,70 @@ const cappedWords = (text: string, limit: number): string => {
 };
 
 /**
- * `whatChanged`, held to `MAX_WHAT_CHANGED` entries.
- *
- * The first five, not a chosen five: the order is the reviewer's account of the
- * change, and re-ranking it here would need a judgement about which parts
- * matter that nothing in this file can make — the same rule the follow-up cap
- * follows.
+ * `cappedWords` for prose whose line breaks are its shape: the summary is
+ * Markdown, a sentence over a few bullets, and joining it on spaces would make
+ * one paragraph of it. Cut at the last word kept, with everything before it
+ * exactly as written.
  */
-const parseWhatChanged = (value: unknown): WhatChanged | undefined => {
-  if (value === undefined || value === null) return undefined;
-
-  // A model prompted for two fields may still answer with the one this
-  // replaced. A bare string is the summary with nothing under it, which renders
-  // as a section rather than being dropped.
-  if (typeof value === "string") {
-    const summary = value.trim();
-    return summary === "" ? undefined : { summary, changes: [] };
+const cappedWordsKeepingLines = (text: string, limit: number): string => {
+  const trimmed = text.trim();
+  let count = 0;
+  for (const word of trimmed.matchAll(/\S+/g)) {
+    count += 1;
+    if (count === limit) {
+      const end = word.index + word[0].length;
+      return end < trimmed.length ? `${trimmed.slice(0, end)}…` : trimmed;
+    }
   }
+  return trimmed;
+};
 
-  const record = asRecord(value, "whatChanged");
-  const summary = record["summary"];
-  return {
-    summary: typeof summary === "string" ? oneLine(summary) : "",
-    changes: asArray(record["changes"] ?? [], "whatChanged changes")
-      .map((change, index) => asString(change, `whatChanged change ${index + 1}`))
-      .slice(0, MAX_WHAT_CHANGED),
-  };
+/**
+ * An HTML comment, taken out of what the review writes into a pull request's
+ * title or body. It renders as nothing, so no reader loses a word, and the
+ * block's own markers are comments: a summary carrying one would end the block
+ * early, or start a second, on the next splice.
+ */
+const withoutComments = (text: string): string => text.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+
+/**
+ * `title`, one line held to `MAX_TITLE_LENGTH` characters. Truncated rather
+ * than refused, as `howChecked` is: a long title is not a broken review.
+ */
+const parseTitle = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const title = oneLine(withoutComments(value));
+  if (title === "") return undefined;
+  const chars = Array.from(title);
+  return chars.length <= MAX_TITLE_LENGTH ? title : `${chars.slice(0, MAX_TITLE_LENGTH - 1).join("").trimEnd()}…`;
+};
+
+/**
+ * `summary`, held to `MAX_SUMMARY_WORDS`.
+ *
+ * Lenient about its shape, because a summary is display and the review it
+ * comes with carries the findings: a model that answers with the
+ * `{ summary, changes }` object this field replaced has its sentence and its
+ * lines kept, and anything else that is not a string is no summary rather than
+ * a refused review.
+ */
+const parseSummary = (value: unknown): string | undefined => {
+  let text: string | undefined;
+  if (typeof value === "string") {
+    text = value;
+  } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const sentence = typeof record["summary"] === "string" ? record["summary"] : "";
+    const changes = Array.isArray(record["changes"])
+      ? record["changes"].filter((change): change is string => typeof change === "string")
+      : [];
+    text = [sentence, changes.map((change) => `- ${oneLine(change)}`).join("\n")]
+      .filter((part) => part.trim() !== "")
+      .join("\n\n");
+  }
+  if (text === undefined) return undefined;
+  const summary = withoutComments(text).trim();
+  return summary === "" ? undefined : cappedWordsKeepingLines(summary, MAX_SUMMARY_WORDS);
 };
 
 /**
@@ -1660,7 +1666,7 @@ const parseWhatChanged = (value: unknown): WhatChanged | undefined => {
  *
  * Every string below this line is the model's, and the whole output goes
  * through the strip before any of it is read — titles and bodies,
- * `assessment`, `howChecked`, `whatChanged` and its bullets, `needsYou`, a
+ * `assessment`, `howChecked`, `title`, `summary`, `needsYou`, a
  * follow-up's title, body and location, and whatever is added next. The
  * per-field version of this stripped `body` alone, so a marker in `howChecked`
  * reached the posted body and carried a closed finding's id into the next
@@ -1674,12 +1680,10 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
   // would put an empty line where the body's one sentence should be.
   const assessment = optionalReason(record["assessment"], "assessment");
   const howChecked = optionalReason(record["howChecked"] ?? record["how_checked"], "howChecked");
-  // `summary` was one 250-word paragraph until the two fields split it, and a
-  // model prompted for the new shape still reaches for the old one. It is read
-  // as *what changed*, never as the assessment: the one thing the brief now
-  // forbids that paragraph is restating the findings, and feeding it to the
-  // sentence under the heading would be putting it back above them.
-  const whatChanged = parseWhatChanged(record["whatChanged"] ?? record["what_changed"] ?? record["summary"]);
+  // `whatChanged` is the field `summary` replaced (#218), and a model prompted
+  // for the new shape may still reach for the old one.
+  const title = parseTitle(record["title"]);
+  const summary = parseSummary(record["summary"] ?? record["whatChanged"] ?? record["what_changed"]);
   const noteRulings = asArray(
     record["noteRulings"] ?? record["note_rulings"] ?? [],
     "noteRulings",
@@ -1687,7 +1691,8 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
   return {
     ...(assessment === undefined ? {} : { assessment }),
     ...(howChecked === undefined ? {} : { howChecked: cappedWords(howChecked, MAX_HOW_CHECKED_WORDS) }),
-    ...(whatChanged === undefined ? {} : { whatChanged }),
+    ...(title === undefined ? {} : { title }),
+    ...(summary === undefined ? {} : { summary }),
     // Both spellings, because the field was `inlineComments` until placement
     // stopped being the model's to state (#110) and a model prompted for one
     // shape still reaches for the other.

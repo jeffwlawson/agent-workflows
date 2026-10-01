@@ -413,6 +413,13 @@ jobs:
           git push --force origin "$BRANCH"
           echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # The body is the **frame** (#218), written here once and never
+      # rewritten: `Closes #N` first, so the issue closes on merge, a note on
+      # what the loop does with the pull request and how to steer it, linking
+      # this run, and the summary block the review writes and keeps current.
+      # The review owns the block and nothing else, so a maintainer's notes
+      # outside it survive every round. The title is the issue's until the
+      # first review writes one true of the change.
       - name: Open draft PR
         if: steps.preflight.outputs.refused == 'false' && success()
         id: open_pr
@@ -429,11 +436,16 @@ jobs:
         run: |
           title="Fix #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
           body_file="${RUNNER_TEMP}/pr-body.md"
-          {
-            echo "Closes #${ISSUE_NUMBER}"
-            echo
-            echo "Implemented by the \`agent:implement\` workflow."
-          } > "$body_file"
+          cat > "$body_file" <<FRAME
+          Closes #${ISSUE_NUMBER}
+
+          > [!NOTE]
+          > Opened by the agent loop from #${ISSUE_NUMBER} ([run](${RUN_URL})). It stays a draft while the loop reviews and fixes it, and leaves draft when it's ready for you. Comment here to steer it. Add your own notes outside the summary below; the loop never edits them.
+
+          <!-- agent:summary -->
+          _The review will summarize this change here after its first pass._
+          <!-- /agent:summary -->
+          FRAME
           pr_url=$(gh pr create --draft --base "$BASE_REF" --head "$BRANCH" \
             --title "${title:0:256}" --body-file "$body_file" | tail -n1)
           echo "number=$(basename "$pr_url")" >> "$GITHUB_OUTPUT"

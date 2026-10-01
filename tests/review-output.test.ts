@@ -24,7 +24,8 @@ import {
   hasFollowUpsBlock,
   MAX_FOLLOW_UPS,
   MAX_HOW_CHECKED_WORDS,
-  MAX_WHAT_CHANGED,
+  MAX_SUMMARY_WORDS,
+  MAX_TITLE_LENGTH,
   parseFollowUpsBlock,
   recordFollowUps,
   renderFollowUpsBlock,
@@ -190,39 +191,67 @@ describe("reviewOutputSchema: the prose beside the findings", () => {
     );
   });
 
-  it("keeps the first five changes and drops the rest from the end", () => {
-    const changes = ["a", "b", "c", "d", "e", "f", "g"];
+  /**
+   * The PR's title and its summary block (#218), capped by the schema like the
+   * other prose fields rather than only asked for in the brief.
+   */
+  it("holds the title to one line and the length cap", () => {
+    expect(parse({ title: "  feat(review):\nwrite the title  " }).title).toBe("feat(review): write the title");
 
-    expect(parse({ whatChanged: { summary: "s", changes } }).whatChanged).toEqual({
-      summary: "s",
-      changes: ["a", "b", "c", "d", "e"],
-    });
-    expect(MAX_WHAT_CHANGED).toBe(5);
+    const long = parse({ title: "x".repeat(MAX_TITLE_LENGTH + 20) }).title ?? "";
+    expect(Array.from(long)).toHaveLength(MAX_TITLE_LENGTH);
+    expect(long.endsWith("…")).toBe(true);
+  });
+
+  it("caps the summary by words and keeps its lines as written", () => {
+    const summary = "Moves the description.\n\n- one\n- two";
+    expect(parse({ summary }).summary).toBe(summary);
+
+    const words = Array.from({ length: MAX_SUMMARY_WORDS + 10 }, (_, i) => `w${i}`);
+    const long = parse({ summary: `${words.slice(0, 5).join(" ")}\n\n- ${words.slice(5).join(" ")}` }).summary ?? "";
+    expect(long.startsWith("w0 w1 w2 w3 w4\n\n- w5 ")).toBe(true);
+    // The bullet's `-` is a word as well, so the last one kept is one sooner.
+    expect(long.endsWith(` w${MAX_SUMMARY_WORDS - 2}…`)).toBe(true);
   });
 
   /**
-   * `summary` was one 250-word paragraph until the two fields split it, and a
-   * model prompted for the new shape still reaches for the old one. It is read
-   * as *what changed* and never as the assessment: the one thing the brief now
-   * forbids that paragraph is restating the findings, and feeding it to the
-   * sentence under the heading would be putting it back above them.
+   * The block's own markers are HTML comments, so a summary carrying one would
+   * end the block early, or open a second, the next time it is spliced.
    */
-  it("reads the field this replaced as what changed, never as the assessment", () => {
-    const out = parse({ summary: "It moves thread resolution to the review." });
-
-    expect(out.whatChanged).toEqual({
-      summary: "It moves thread resolution to the review.",
-      changes: [],
+  it("takes HTML comments out of the title and the summary", () => {
+    const out = parse({
+      title: "fix: <!-- agent:summary -->the guard",
+      summary: "Text.\n<!-- /agent:summary -->\nMore.<!-- unterminated",
     });
+
+    expect(out.title).toBe("fix: the guard");
+    expect(out.summary).toBe("Text.\n\nMore.");
+  });
+
+  /**
+   * `whatChanged` is the field `summary` replaced, and a model prompted for the
+   * new shape may still reach for the old one: its sentence and lines are kept
+   * as the summary, never read as the assessment.
+   */
+  it("reads the field this replaced as the summary, never as the assessment", () => {
+    const out = parse({ whatChanged: { summary: "It moves thread resolution.", changes: ["a", "b"] } });
+
+    expect(out.summary).toBe("It moves thread resolution.\n\n- a\n- b");
     expect(out.assessment).toBeUndefined();
   });
 
-  it("carries none of the three when the model wrote none of them", () => {
+  it("reads a summary that is not prose as no summary rather than refusing the review", () => {
+    expect(parse({ summary: ["a"] }).summary).toBeUndefined();
+    expect(parse({ summary: 3, title: 4 }).title).toBeUndefined();
+  });
+
+  it("carries none of the prose fields when the model wrote none of them", () => {
     const out = parse({});
 
     expect(out.assessment).toBeUndefined();
     expect(out.howChecked).toBeUndefined();
-    expect(out.whatChanged).toBeUndefined();
+    expect(out.title).toBeUndefined();
+    expect(out.summary).toBeUndefined();
   });
 });
 
@@ -1371,7 +1400,6 @@ describe("the posted review body", () => {
     resolved: [],
     followUps: [],
     droppedFollowUps: 0,
-    showWhatChanged: true,
   };
   const render = (over: Partial<Parameters<typeof renderReviewBody>[0]> = {}): string =>
     renderReviewBody({ ...parts, ...over });
@@ -2086,38 +2114,21 @@ describe("the posted review body", () => {
   });
 
   /**
-   * *What changed in this PR* is a sentence and up to five lines, and it is the
-   * last thing in the body before the run — the description a reader wants once
-   * they know what is owed, rather than the paragraph they had to read past.
+   * *What changed in this PR* is gone from the review (#218): the description
+   * is the summary block in the pull request's body, written from the same
+   * output, and a second copy here is the one that goes stale.
    */
-  it("folds what changed last, as a sentence over its bullets", () => {
+  it("carries no description of the change, whatever the output says", () => {
     const body = render({
       output: output({
-        howChecked: "Ran the suite.",
-        whatChanged: { summary: "It moves thread resolution to the review.", changes: ["a", "b"] },
+        title: "feat: move thread resolution",
+        summary: "It moves thread resolution to the review.",
       }),
     });
 
-    expect(body).toContain(
-      "<details>\n<summary><b>What changed in this PR</b></summary>\n\nIt moves thread resolution to the review.\n\n- a\n- b",
-    );
-    expect(body.indexOf("How this was checked")).toBeLessThan(
-      body.indexOf("What changed in this PR"),
-    );
-  });
-
-  /**
-   * And it is omitted where the caller says so — a round-2 verification pass,
-   * or a re-review with nothing pushed since the last verdict. Describing the
-   * change again, at the top, to a reader who was handed that description last
-   * round is the body spending its opening on something already read.
-   */
-  it("omits what changed entirely when the round is not one that describes the change", () => {
-    const whatChanged = { summary: "It moves thread resolution to the review.", changes: [] };
-    const body = render({ output: output({ whatChanged }), showWhatChanged: false });
-
     expect(body).not.toContain("What changed in this PR");
     expect(body).not.toContain("It moves thread resolution to the review.");
+    expect(body).not.toContain("feat: move thread resolution");
   });
 
   /**
@@ -2130,7 +2141,7 @@ describe("the posted review body", () => {
     const body = render({
       placed: placedFinding(),
       followUps: [followUp()],
-      output: output({ howChecked: "Ran the suite.", whatChanged: { summary: "x", changes: [] } }),
+      output: output({ howChecked: "Ran the suite.", summary: "x" }),
       runUrl: "https://github.com/o/r/actions/runs/7",
     });
 
@@ -2181,7 +2192,6 @@ describe("the record and the count are one set", () => {
       resolved: [],
       followUps: [],
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
 
   it("records a labelled finding the list left out, anchored where it was made", () => {
@@ -2334,7 +2344,6 @@ describe("a finding the record does not read a label on", () => {
       resolved: [],
       followUps: [],
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
 
     expect(body).toContain("the cache key omits the tenant");
@@ -2628,7 +2637,6 @@ index 0ff3bbb..c6ca7ae 100644
       resolved: [],
       followUps,
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
 
   it("threads the two the diff reaches and moves the one it does not", () => {
@@ -2719,7 +2727,6 @@ index 0ff3bbb..c6ca7ae 100644
       resolved: [],
       followUps: recorded.followUps,
       droppedFollowUps: recorded.dropped,
-      showWhatChanged: true,
     });
 
     expect(posted).toContain("4 findings were moved to follow-ups");
@@ -2742,7 +2749,6 @@ index 0ff3bbb..c6ca7ae 100644
       resolved: [],
       followUps: [],
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
 
     expect(body).not.toContain("moved to follow-ups");
@@ -2861,11 +2867,14 @@ describe("the review's finding vocabulary", () => {
    * And the field that paragraph became. Two of them, because one 250-word
    * `summary` mixed what the change is with what the reviewer verified — and
    * the assessment sentence is a third, which is what the heading cannot say.
+   * The description of the change is the pull request's `summary` now, beside
+   * its `title` (#218), and `whatChanged` is asked for nowhere.
    */
-  it.each(halves)("%s asks for the three prose fields by name", (_half, text) => {
-    for (const field of ["assessment", "howChecked", "whatChanged"]) {
+  it.each(halves)("%s asks for the prose fields by name", (_half, text) => {
+    for (const field of ["assessment", "howChecked", "title", "summary"]) {
       expect(text, field).toContain(field);
     }
+    expect(text).not.toContain("whatChanged");
   });
 
   /**
@@ -3091,7 +3100,6 @@ describe("a body entry from a v0.4.0 review", () => {
       resolved,
       followUps: [],
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
 
     expect(body).toContain("**Findings:** 1");
@@ -3120,7 +3128,6 @@ describe("a body entry from a v0.4.0 review", () => {
       resolved,
       followUps: [],
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
 
     // Nothing to resolve on GitHub, and nothing left owed.
@@ -3153,7 +3160,6 @@ describe("the review body against GitHub's size limit", () => {
     resolved: [],
     followUps: [],
     droppedFollowUps: 0,
-    showWhatChanged: true,
   };
 
   /** Carried body entries, which carry their whole claim into the Open group. */

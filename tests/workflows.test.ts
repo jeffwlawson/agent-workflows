@@ -3034,6 +3034,7 @@ describe("the review posts last, from one job", () => {
       "Fetch what the review wrote",
       "Resolve the threads this review closed",
       "Post PR review",
+      "Write the PR title and summary",
       "Mark the PR as carrying follow-ups",
       "Post the verdict as a commit status",
       "Mark PR ready for review",
@@ -3056,7 +3057,11 @@ describe("the review posts last, from one job", () => {
 
     expect(step("Resolve the threads this review closed")?.if).toBe("steps.fetch.outcome == 'success'");
     expect(step("Post PR review")?.if).toBe("steps.fetch.outcome == 'success'");
-    for (const name of ["Mark the PR as carrying follow-ups", "Post the verdict as a commit status"]) {
+    for (const name of [
+      "Write the PR title and summary",
+      "Mark the PR as carrying follow-ups",
+      "Post the verdict as a commit status",
+    ]) {
       expect(step(name)?.if, name).toBe("steps.review.outcome == 'success'");
     }
     expect(step("Mark PR ready for review")?.if ?? "").toContain("steps.review.outcome == 'success'");
@@ -5227,7 +5232,8 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
     expect(run).toContain('gh pr list --state open --head "$PRD_BRANCH"');
     expect(run).toContain('gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH"');
-    expect(run).toContain('echo "Closes #${ISSUE_NUMBER}"');
+    // The frame itself, byte for byte, is `tests/pr-body-steps.test.ts`'s.
+    expect(run).toContain("\nCloses #${ISSUE_NUMBER}\n");
     expect(run.indexOf("gh pr list")).toBeLessThan(run.indexOf("gh pr create"));
   });
 
@@ -6451,7 +6457,6 @@ describe("the adoption doc says what to do with each verdict", () => {
         fixBeforeMerge: [],
         verified: [],
         howChecked: "Ran the suite.",
-        whatChanged: { summary: "It moves thread resolution to the review.", changes: [] },
       },
       placed: [
         labelled("f-open", FIX_BEFORE_MERGE_LABEL),
@@ -6469,7 +6474,6 @@ describe("the adoption doc says what to do with each verdict", () => {
         },
       ],
       droppedFollowUps: 0,
-      showWhatChanged: true,
     });
 
     // `<b>` names a group; `Follow-ups` carries a trailing clause in its own
@@ -6482,7 +6486,6 @@ describe("the adoption doc says what to do with each verdict", () => {
       "Resolved since last review",
       "Follow-ups",
       "How this was checked",
-      "What changed in this PR",
     ]);
     for (const group of groups) {
       expect(group).not.toBe("");

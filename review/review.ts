@@ -16,6 +16,7 @@ import {
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import { fetchPrdContext, type PrdContext } from "../shared/prd-context.js";
+import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
@@ -38,7 +39,6 @@ import {
 } from "../shared/review-output.js";
 import {
   describeHistory,
-  describesTheChange,
   fixRoundProgress,
   readReviewHistory,
   unreadableHistoryNote,
@@ -264,6 +264,15 @@ try {
     );
   }
 
+  // The head this review reads, and whether the title and the summary block
+  // are rewritten by it (#218): only where anything was pushed since the
+  // summary was last written, which the block records itself.
+  const headSha = sh("git rev-parse HEAD").trim();
+  const writesSummary = summaryDue(context.prBody, headSha);
+  console.log(
+    `Title and summary: ${writesSummary ? "rewritten, since something was pushed after the summary was last written" : "left as they are, since nothing was pushed after the summary was last written"}.`,
+  );
+
   // All `gh`-based context fetching is done; the review agent must not hold the
   // GitHub token (it has no legitimate use for it, and posting happens in a
   // separate workflow step). Remove it before the unsandboxed agent starts.
@@ -290,6 +299,10 @@ try {
       SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),
       FIX_NOTES: renderNotesForReview(context.fixNotes),
       PR_DIFF: context.diff,
+      CURRENT_SUMMARY: currentSummary(context.prBody),
+      SUMMARY_RULE: writesSummary
+        ? "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours."
+        : "**This review leaves them as they are.** Nothing was pushed since the summary was last written, so the workflow writes neither; omit both fields.",
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),
@@ -338,8 +351,6 @@ try {
     context.carriedFindings,
     output.verified,
   );
-  const headSha = sh("git rev-parse HEAD").trim();
-
   // The third channel, serialised into the body on the way out. It cannot stay
   // a sibling of the findings in the posted artifact: a review has one body, and
   // the body is the only part of a review that is still readable — by a human
@@ -422,12 +433,6 @@ try {
     followUps,
     droppedFollowUps,
     droppedNotes: notes.dropped,
-    // *What changed in this PR* describes the change, so it is rendered where
-    // there is a change nothing has described. Which reviews those are is
-    // `describesTheChange`'s, beside the history it reads: a fact about the
-    // verdicts rather than about the review, and one this file has no test
-    // around it to hold.
-    showWhatChanged: describesTheChange(history),
     runUrl: workflowRunUrl(),
     // What was shed, where the body had to be cut to fit GitHub's limit (#140).
     // A body that cannot be made to fit throws, and the catch below writes the
@@ -474,6 +479,14 @@ try {
   // `resolutionReason` and then exposes it nowhere — and this file is a script
   // with no test around it.
   writeJson("thread_resolutions.json", resolutions);
+
+  // The title and the summary block, for the posting job to write (#218).
+  // Written only where this review rewrites them, so the file's existence is
+  // the whole condition, as `follow_ups.md`'s is. The posting job splices the
+  // summary into the body as it stands then, not as it was read here, so an
+  // edit made outside the block while this review ran survives it.
+  const summary = writesSummary ? summaryUpdate(output, headSha) : undefined;
+  if (summary !== undefined) writeJson("pr_summary.json", summary);
 
   // What the workflow posts the commit status from — context, state and line.
   // A file rather than a step output, for the same reason the payload above is

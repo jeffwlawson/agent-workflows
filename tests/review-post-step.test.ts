@@ -97,7 +97,6 @@ const PARTS = {
   resolved: RESOLVED,
   followUps: [],
   droppedFollowUps: 0,
-  showWhatChanged: false,
 };
 
 interface Outcome {

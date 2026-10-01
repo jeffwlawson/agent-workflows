@@ -32,8 +32,7 @@ export interface ReviewHistory {
    * decision 7), and they are the rounds the early stop exists to bound. A round
    * a human started by adding `agent:fix` posts no verdict of its own, so the
    * review after it reads as following none, exactly as after a human's push:
-   * the brief names it among those cases, and the body renders *What changed
-   * in this PR*. It starts another automatic round where budget is left, and
+   * the brief names it among those cases. It starts another automatic round where budget is left, and
    * that round is judged.
    */
   readonly afterFixRound: boolean;
@@ -42,7 +41,9 @@ export interface ReviewHistory {
    * over**: the whole pull request on its first review, or whatever has landed
    * since the last verdict on a later one.
    *
-   * What reads it is *What changed in this PR*, through `describesTheChange`.
+   * What reads it is `describeHistory`, for the brief. Whether the summary
+   * block is rewritten is not read from here: the block records the head it
+   * was written at (`shared/pr-summary.ts`, #218).
    *
    * **False wherever the history could not be read.** A fact this file could
    * not establish is not one to assert.
@@ -231,22 +232,6 @@ export const fixRoundProgress = (
   const closed = new Set(resolved.map((f) => f.id).filter((id) => given.has(id)));
   return { given: given.size, closed: closed.size };
 };
-
-/**
- * Whether this review's body describes the change: *What changed in this PR*
- * (#109, decision 8 as the maintainer settled it).
- *
- * Where there are commits no verdict has seen that no automatic fix round made:
- * the first review, a human's push, a conflict resolution, or a fix round a
- * human started by adding `agent:fix`. That last posts no verdict, so nothing
- * in the history tells it from a human's push, and it gets the description a
- * push would. Not the review after an automatic fix round, which is answering an earlier review's findings rather
- * than meeting the change, and not a re-review with nothing pushed since the
- * last verdict, which would be handing a reader a description they were handed
- * last time.
- */
-export const describesTheChange = (history: ReviewHistory): boolean =>
-  history.unreviewedCommits && !history.afterFixRound;
 
 /** The one line the prompt carries, so the agent knows which pass it is doing. */
 export const describeHistory = (history: ReviewHistory): string => {

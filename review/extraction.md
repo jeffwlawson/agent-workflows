@@ -69,8 +69,8 @@ Every finding is one of two kinds, and this is the first: the change is wrong, u
 do what the linked issue asked, and must not merge as it stands. Open its `findings` entry's body
 with **fix before merge**, *and* restate it as one line in `fixBeforeMerge`.
 
-Those two places and nowhere else. A finding is never restated in `whatChanged`, in `howChecked` or
-in `assessment`. Those describe the change and the pass, and the record above them is where a
+Those two places and nowhere else. A finding is never restated in `summary`, in `title`, in
+`howChecked` or in `assessment`. Those describe the change and the pass, and the record above them is where a
 finding is read and answered.
 
 Both, not either. **Every finding counts**: the outcome posted to the pull request is derived
@@ -93,9 +93,9 @@ overruled on: leave it out. Anything real but outside this pull request's scope 
 Every finding `body` is under 120 words: the label, then the defect, then its consequence, then the
 code you mean. The examples below are the shape, not the subject matter.
 
-## The three prose fields: `assessment`, `howChecked`, `whatChanged`
+## The prose fields: `assessment`, `howChecked`, `title`, `summary`
 
-They are three different jobs, and **none of them is a place to restate a finding**. Each finding
+They are four different jobs, and **none of them is a place to restate a finding**. Each finding
 is already above them in the posted body, with its severity and a link to where it was raised;
 saying it again here is the same problem read twice.
 
@@ -109,11 +109,17 @@ saying it again here is the same problem read twice.
   actually verified: which checks you ran or read, which behaviour you traced, which files you
   read past the diff. It is what tells a reader how much weight this review carries. It is posted
   on every review.
-- **`whatChanged`**: `summary`, one sentence saying what this pull request is, and `changes`, at
-  most **five** lines saying what it changes. Anything past the fifth is dropped from the end.
-  Description only: what the change *does*, never how well it does it. Some reviews do not post
-  this at all (a verification pass is not describing the change again), and which ones is decided
-  after you.
+- **`title`**: the pull request's title, one line, true of the change as it now stands, in the
+  commit convention `CLAUDE.md` names or conventional-commit style otherwise. The type comes from
+  what the diff does, not from the issue's title. Cut at 100 characters.
+- **`summary`**: the pull request's summary, in Markdown: what the change does, behaviour changes
+  with breaking ones marked, and anything that departs from the linked issue with the reason.
+  About what was built, not what was asked; it does not retell the issue. Under about 150 words,
+  and **truncated** past that. Description only, never an evaluation. It goes into the pull
+  request's body, not the review.
+
+  Both are written only where something was pushed since the summary was last written, which the
+  brief told you. Where it said this review leaves them as they are, omit both.
 
 Do not use em dashes in anything you write, in any field; use a comma, colon, semicolon,
 parentheses, or a new sentence instead.
@@ -179,10 +185,8 @@ A note you omit is filed as a follow-up at `medium`, so omitting one is not a wa
 {
   "assessment": "One sentence, under 200 characters, naming what is unresolved: the subjects, not the count.",
   "howChecked": "Under 100 words. What you actually verified: the checks you ran, the behaviour you traced, the files you read.",
-  "whatChanged": {
-    "summary": "One sentence saying what this pull request is.",
-    "changes": ["What it changes, one line each. At most five. Description only, no evaluation."]
-  },
+  "title": "feat(scope): one line, true of the change as it now stands",
+  "summary": "One sentence on what the change does.\n\n- A behaviour change it makes.\n- **Breaking:** one a caller has to act on.\n- Where it departs from the linked issue, and why.",
   "fixBeforeMerge": [
     "One line per finding that must be fixed before this merges: the same findings the `findings` list carries."
   ],
@@ -209,5 +213,6 @@ A note you omit is filed as a follow-up at `medium`, so omitting one is not a wa
 ```
 
 Use an empty array for any of the five lists with no entries (`verified` is empty when you were
-given no open findings to rule on, and `noteRulings` when you were given no notes), and leave
-`needsYou` out entirely unless it applies.
+given no open findings to rule on, and `noteRulings` when you were given no notes). Leave
+`needsYou` out entirely unless it applies, and `title` and `summary` out where the brief said this
+review leaves them as they are.

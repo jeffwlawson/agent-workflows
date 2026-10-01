@@ -269,7 +269,6 @@ describe("a note's end, in the review body and on merge", () => {
       followUps,
       droppedFollowUps: dropped,
       droppedNotes: ruled.dropped,
-      showWhatChanged: false,
     });
   };
 

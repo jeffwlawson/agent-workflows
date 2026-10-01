@@ -873,8 +873,12 @@ jobs:
       # Its body collects the **slices table** (#174): the runner writes the
       # merged slice's row into it, between markers, from the facts the step
       # above gathered — creating the table in a body that predates it, and
-      # touching nothing outside the markers. So the body opened here is only
-      # the part above the table.
+      # touching nothing outside the markers. So the body opened here is the
+      # **frame** (#218), written once and never rewritten: `Closes #N`, a note
+      # on what the chain does here and that the PR is not to be merged before
+      # it is done, the table's empty markers under *Progress*, and the summary
+      # block the PRD PR's review writes. A maintainer's notes outside the
+      # markers survive every run.
       - name: Open or reuse the PRD PR
         if: steps.preflight.outputs.refused == 'false' && steps.merge.outputs.merged == 'true'
         id: prd_pr
@@ -904,12 +908,20 @@ jobs:
             echo "Reusing PRD PR #${number}."
           else
             body_file="${RUNNER_TEMP}/prd-pr-body.md"
-            {
-              echo "Closes #${ISSUE_NUMBER}"
-              echo
-              echo "The PRD branch \`${PRD_BRANCH}\`, built one slice PR at a time by the \`agent:implement\`"
-              echo "PRD workflow. It stays a draft while the chain is still building."
-            } > "$body_file"
+            cat > "$body_file" <<FRAME
+          Closes #${ISSUE_NUMBER}
+
+          > [!NOTE]
+          > The agent loop builds PRD #${ISSUE_NUMBER} here, one sub-issue at a time, and reviews each before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the summary below; the loop never edits them.
+
+          ## Progress
+          <!-- agent:slices -->
+          <!-- /agent:slices -->
+
+          <!-- agent:summary -->
+          _The final review will summarize the whole PRD here._
+          <!-- /agent:summary -->
+          FRAME
             url=$(gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH" \
               --title "${ISSUE_TITLE:0:256}" --body-file "$body_file" | tail -n1) \
               || if [ "$HAS_PAT" != "true" ]; then

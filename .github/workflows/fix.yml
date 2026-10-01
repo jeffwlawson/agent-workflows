@@ -223,9 +223,9 @@ jobs:
 
       # The trigger label stays on while this run works and comes off in the
       # last step (#236), so the one label to take off here is a block an
-      # earlier run left. The line before it is the permission probe, as in
-      # review's `Transition labels`, where the reason is spelled out: it adds
-      # the label this run already holds, which changes nothing, and is not
+      # earlier run left. The line before it is the permission probe, the label write a short
+      # token feels first, ahead of the agent pass it would otherwise spend: it
+      # adds the label this run already holds, which changes nothing, and is not
       # `|| true`, so a short token fails the run before the checkout.
       - name: Transition labels
         if: steps.state.outputs.proceed == 'true'
@@ -390,7 +390,7 @@ jobs:
       # resolved thread is dropped from the feedback the next review
       # is handed, so the one pass whose job is "did it land?" could not see
       # what it was checking. A thread now closes when a **review** has read the
-      # code and verified it — `review.yml`'s `resolve` job — or when a human
+      # code and verified it (`review.yml`'s posting job) or when a human
       # closes it.
       #
       # A GraphQL mutation keyed on the thread node id, so no REST comment-id
@@ -737,9 +737,9 @@ jobs:
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
 
   # The PRD chain's advance, where this run is what ends a slice PR's round
-  # (#176, PRD #171). `review.yml`'s `advance` job is the one that fires on a
-  # verdict and carries the reasoning; this is the same job, for the round a
-  # fix run ends itself.
+  # (#176, PRD #171). `review.yml`'s posting job is the one that advances on a
+  # verdict and carries the reasoning; this is the same advance, for the round
+  # a fix run ends itself.
   #
   # **Which runs end the round**: one that pushed nothing and posted no
   # out-of-scope note, and so asked for no re-review: the arm *Mark PR ready
@@ -755,8 +755,8 @@ jobs:
   # is the other way round, `!= 'true'`, because unset there is a run that
   # posted no note.
   #
-  # Same shape, same scope, same step as the review's copy — a test holds the
-  # steps equal, so the two cannot come to say different things.
+  # Same scope as the review's posting job spends on it, and the same step:
+  # both run the `advance-prd` action, so there is one copy to say anything.
   advance:
     needs: fix
     if: >-
@@ -767,43 +767,22 @@ jobs:
       needs.fix.outputs.noted != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # No concurrency group, for the reason the review's copy is in none.
+    # No concurrency group, for the reason the review's posting job is in none.
     permissions:
-      # The no-PAT arm's comment on the slice PR, and nothing else — see the
-      # review's copy for why `issues: write` stays out.
+      # The no-PAT arm's comment on the slice PR, and nothing else. The label on
+      # the parent goes on with `AGENT_PAT` or not at all, so the workflow token
+      # is never asked to write an issue and `issues: write` stays out of this
+      # job (docs/parity.md §10) and out of every caller's grant.
       pull-requests: write
-    env:
-      GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
     steps:
-      # MUST use AGENT_PAT, for `auto-fix`'s reason: `agent:implement` added with
-      # `GITHUB_TOKEN` sits on the parent and starts nothing. So without the PAT
-      # nothing is added at all, and the one place a maintainer is already
-      # looking — this slice PR — says which re-label advances the chain by hand.
-      #
-      # `bash -e` and no `|| true` on the add, for `auto-fix`'s reason: a chain
-      # that did not advance under a round that ended is a stall with no other
-      # symptom, and a red job is the only thing that says so.
+      # The one copy of what advancing is (#257), shared with the review's
+      # posting job: `.github/actions/advance-prd`, pinned to this release like
+      # the runner the fix job runs. A composite rather than a second copy of the
+      # script, so the two cannot come to say different things.
       - name: Advance the PRD chain
-        env:
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$HEAD_REF" =~ ^agent/slice-([0-9]+)-[0-9]+- ]]; then
-            echo "::error::Slice PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/slice-<parent>-<sub-issue>-…\`, so its PRD cannot be told. Re-add \`agent:implement\` to the PRD by hand to advance its chain."
-            exit 1
-          fi
-          parent="${BASH_REMATCH[1]}"
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::AGENT_PAT is not set, so the PRD chain was not advanced: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
-            gh pr comment "$PR_NUMBER" --body "This slice's review round has ended, but the PRD chain will not advance on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to merge this slice PR into the PRD branch and move the chain on." \
-              || echo "::warning::…and that could not be said on the pull request either."
-            exit 0
-          fi
-          # Removed first, as every trigger label the loop adds (#236): an add
-          # on a label still there fires nothing, and the chain would stall.
-          gh issue edit "$parent" --remove-label "agent:implement" || true
-          gh issue edit "$parent" --add-label "agent:implement"
-          echo "Re-added agent:implement to #${parent}: the PRD chain advances past slice PR #${PR_NUMBER}."
+        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.4
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          head-ref: ${{ github.event.pull_request.head.ref }}
+          has-pat: ${{ secrets.AGENT_PAT != '' }}
+          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}

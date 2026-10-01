@@ -146,6 +146,28 @@ describe("the pin rewrite is a core init can use", () => {
     expect(rewrite.text).toContain(`/review.yml@v${TARGET}`);
   });
 
+  /**
+   * The third form (#257): a reusable workflow's step naming one of this
+   * repository's composite actions. The `v`-prefixed tag, as a caller's ref is,
+   * and told apart from it, since a caller set and a reusable carry different
+   * ones and the release counts each.
+   */
+  it("tells a composite action's ref from a caller's, and writes it with a `v`", () => {
+    const text = [
+      `        run: npm exec --yes --package=${PACKAGE}@0.0.1 -- agent-workflows review`,
+      `        uses: ${PACKAGE.replace(/^@/, "")}/.github/actions/advance-prd@v0.0.1`,
+    ].join("\n");
+
+    const rewrite = rewritePins(text, { packageName: PACKAGE, version: TARGET });
+
+    expect(rewrite.found).toEqual(["package", "action"]);
+    expect(rewrite.text).toContain(`/.github/actions/advance-prd@v${TARGET}`);
+    // A ref that is not a pin is not one to rewrite.
+    expect(rewritePins(text.replace("@v0.0.1", "@main"), { packageName: PACKAGE, version: TARGET }).found).toEqual([
+      "package",
+    ]);
+  });
+
   /** The one policy it does keep: a version that cannot be written as a pin. */
   it("refuses a version that is not a pin, wherever it is being written", () => {
     expect(() => rewritePins("", { packageName: PACKAGE, version: "latest" })).toThrow(/version/i);

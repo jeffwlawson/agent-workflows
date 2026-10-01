@@ -33,9 +33,15 @@ interface Workflow {
 
 const STEP = "Always remove the trigger label";
 
+/**
+ * The job the step is in: the workflow's own, except the review's, whose
+ * posting job writes every label (#257).
+ */
+const JOB: Readonly<Record<string, string>> = { review: "post-review" };
+
 const runOf = (command: string): string => {
   const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
-  const step = (workflow.jobs[command]?.steps ?? []).find((s) => s.name === STEP);
+  const step = (workflow.jobs[JOB[command] ?? command]?.steps ?? []).find((s) => s.name === STEP);
 
   expect(step?.run, `${command} has no \`${STEP}\` step`).toBeDefined();
   return step?.run ?? "";
@@ -52,6 +58,8 @@ interface Scenario {
   readonly pat?: boolean;
   /** update-branch's `steps.request.outputs.requested`: this run asked for the review of its resolution. */
   readonly requested?: string;
+  /** The review job's result, as its posting job reads it (#257). */
+  readonly reviewed?: "success" | "failure" | "cancelled";
 }
 
 /** Each `gh` call, as `<token> <argv>`, and what the step wrote to `GITHUB_OUTPUT`. */
@@ -92,6 +100,7 @@ const run = (
       PR_NUMBER: "152",
       PROCEEDED: scenario.proceeded ?? "true",
       JOB_STATUS: scenario.status ?? "success",
+      REVIEW_RESULT: scenario.reviewed ?? "success",
       LEFT_SHA: REVIEWED,
       HAS_PAT: String(pat),
       REQUEST_TOKEN: pat ? "pat-token" : "workflow-token",
@@ -197,7 +206,7 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
   });
   /**
    * The review says the head moved, on every arm that found it moved, so that
-   * `auto-fix` and `advance` stand down on a verdict about a commit the pull
+   * its fix-round and advance hand-offs stand down on a verdict about a commit the pull
    * request has left (#236): re-requested, left to a queued run, or left to a
    * human for want of the PAT.
    */
@@ -212,9 +221,22 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
   it.each([
     ["the head did not move", { live: `OPEN ${REVIEWED}` }],
     ["the run failed", { live: `OPEN ${PUSHED}`, status: "failure" }],
+    ["the review job failed", { live: `OPEN ${PUSHED}`, reviewed: "failure" }],
+    ["the review job was cancelled", { live: `OPEN ${PUSHED}`, reviewed: "cancelled" }],
     ["the pull request is closed", { live: `CLOSED ${PUSHED}` }],
   ] as const)("review: says nothing about the head where %s", (_case, scenario) => {
     expect(run("review", scenario).output).not.toContain("moved=");
+  });
+
+  /**
+   * The posting job runs after the review job however it ended (#257), so a
+   * review that failed is a result it reads rather than a status of its own,
+   * and asks for nothing either.
+   */
+  it.each(["failure", "cancelled"] as const)("review: asks for nothing after a review job that ended %s", (reviewed) => {
+    const outcome = run("review", { reviewed, live: `OPEN ${PUSHED}` });
+
+    expect(outcome.gh).toEqual(["workflow-token pr edit 152 --remove-label agent:review"]);
   });
 
   /**

@@ -49,11 +49,11 @@ jobs:
       # missing until v0.1.5 — but the called job declares it, so omitting it
       # here is refused before any job starts, on a public repository too.
       checks: read
-      # `write` for one job only: `resolve`, which closes the threads the review
-      # verified. GitHub refuses `resolveReviewThread` to a token without it
-      # (#133). That job checks nothing out and runs no agent. The review job
-      # itself narrows this back to `read`, so a review still cannot touch the
-      # branch. Not optional and not a degradation: a called job cannot hold
+      # `write` for one job only: `post-review`, which resolves the threads the
+      # review closed before it posts the review. GitHub refuses
+      # `resolveReviewThread` to a token without it (#133). That job checks
+      # nothing out and runs no agent. The review job itself narrows this back
+      # to `read`, so a review still cannot touch the branch. Not optional and not a degradation: a called job cannot hold
       # more than this block grants, and GitHub refuses the elevation by
       # failing the whole run before any job starts — an *Invalid workflow file*
       # annotation, and no job log (probed, #146). Left at `read`, this workflow

@@ -1,9 +1,10 @@
 /**
  * The version pin, and the rewrite both halves of the loop perform on it.
  *
- * A pin names this package and an exact version, in one of two forms: the npm
- * spec a reusable workflow hands to `npm exec`, and the `uses:` ref a caller
- * points at this repository with. Rewriting one is the same operation in two
+ * A pin names this package and an exact version, in one of three forms: the npm
+ * spec a reusable workflow hands to `npm exec`, the `uses:` ref a caller points
+ * at this repository with, and the `uses:` ref a reusable workflow's step names
+ * one of this repository's composite actions with. Rewriting one is the same operation in two
  * places, for opposite reasons.
  *
  * `scripts/sync-version.ts` does it at **release** time, over this repository's
@@ -40,8 +41,18 @@ export const WORKFLOW_DIR = ".github/workflows";
  */
 const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 
-/** Which of the two pin forms a site carries. They are not interchangeable. */
-export type PinForm = "package" | "ref";
+/**
+ * Which pin form a site carries. They are not interchangeable.
+ *
+ * `action` is the third (#257): a reusable workflow's step naming a composite
+ * action in this repository, `owner/repo/.github/actions/<name>@v<version>`.
+ * GitHub fetches it from the tag, as it does the reusable workflow a caller
+ * names, so it is pinned like one and moves with the release.
+ */
+export type PinForm = "package" | "ref" | "action";
+
+/** Where this repository's composite actions live, inside the YAML that names them. */
+export const ACTION_DIR = ".github/actions";
 
 /**
  * What a rewrite is written *for*: the package the pins name, and the version to
@@ -113,6 +124,14 @@ const pinForms = ({ packageName, version }: Pinning): readonly {
     form: "ref",
     pin: new RegExp(
       `(${escapeRe(packageName.replace(/^@/, ""))}/${escapeRe(WORKFLOW_DIR)}/[A-Za-z0-9._-]+\\.yml@)v\\d+\\.\\d+\\.\\d+`,
+      "g",
+    ),
+    replacement: `$1v${version}`,
+  },
+  {
+    form: "action",
+    pin: new RegExp(
+      `(${escapeRe(packageName.replace(/^@/, ""))}/${escapeRe(ACTION_DIR)}/[A-Za-z0-9._-]+@)v\\d+\\.\\d+\\.\\d+`,
       "g",
     ),
     replacement: `$1v${version}`,

@@ -174,13 +174,54 @@ const EVERY_SITE = [
   "examples/callers/update-branch.yml",
 ] as const;
 
+/**
+ * The pins that are not one a file (#257): a reusable workflow's step naming
+ * one of this repository's composite actions, `…/.github/actions/<name>@v<version>`.
+ * GitHub fetches the action from the tag, so it moves with the release like
+ * the workflow that names it. Two files carry one each, beside their `npm
+ * exec` pin, so the release rewrites twenty pins in eighteen files.
+ */
+const ACTION_SITES = [".github/workflows/fix.yml", ".github/workflows/review.yml"] as const;
+const PIN_COUNT = EVERY_SITE.length + ACTION_SITES.length;
+
 describe("the version propagator rewrites every pin", () => {
   it("reports every site it rewrote", () => {
     const root = fixture();
 
-    const files = syncVersion(TARGET, root).map((site) => site.file).sort();
+    const sites = syncVersion(TARGET, root);
 
-    expect(files).toEqual([...EVERY_SITE]);
+    expect([...new Set(sites.map((site) => site.file))].sort()).toEqual([...EVERY_SITE]);
+    expect(sites).toHaveLength(PIN_COUNT);
+    expect(sites.filter((s) => s.form === "action").map((s) => s.file).sort()).toEqual([...ACTION_SITES]);
+  });
+
+  /**
+   * The composite action's pin is the `v`-prefixed ref, as a caller's is: it is
+   * the tag GitHub fetches the action from (#257).
+   */
+  it("writes the composite action's ref with a `v`", () => {
+    const root = fixture();
+
+    syncVersion(TARGET, root);
+
+    for (const file of ACTION_SITES) {
+      expect(read(root, file)).toContain(`jeffwlawson/agent-workflows/.github/actions/advance-prd@v${TARGET}`);
+    }
+  });
+
+  /**
+   * And a step naming one of those actions under anything but a pin is a site
+   * the release would leave behind, so it refuses rather than skipping it.
+   */
+  it("refuses a composite action named under a ref that is not a pin", () => {
+    const root = fixture();
+    write(
+      root,
+      ".github/workflows/fix.yml",
+      read(root, ".github/workflows/fix.yml").replace(/\/advance-prd@v\d+\.\d+\.\d+/, "/advance-prd@main"),
+    );
+
+    expect(() => syncVersion(TARGET, root)).toThrow(/fix\.yml: expected 2 version pins \[package, action\], found 1 \[package\]/);
   });
 
   it("leaves no site still naming the version it replaced", () => {
@@ -275,11 +316,14 @@ describe("the version propagator rewrites every pin", () => {
 
     const sites = syncVersion(TARGET, root);
 
-    expect(sites).toHaveLength(EVERY_SITE.length + 3);
+    // Four pins in three files: the copy of `review.yml` names the advance
+    // action too.
+    expect(sites).toHaveLength(PIN_COUNT + 4);
     expect(sites.filter((s) => s.form === "package")).toHaveLength(7);
     expect(sites.filter((s) => s.form === "ref")).toHaveLength(14);
     expect(sites.filter((s) => s.file.includes("plan")).map((s) => `${s.file} ${s.form}`).sort()).toEqual([
       ".github/workflows/agent-plan.yml ref",
+      ".github/workflows/plan.yml action",
       ".github/workflows/plan.yml package",
       "examples/callers/plan.yml ref",
     ]);
@@ -360,7 +404,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
       `${read(root, ".github/workflows/review.yml")}\n# jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.1.7\n`,
     );
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/found 2 \[package, ref\]/);
+    expect(() => syncVersion(TARGET, root)).toThrow(/found 3 \[package, ref, action\]/);
   });
 
   /**
@@ -651,7 +695,7 @@ describe("the release is one command", () => {
       cwd: root,
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`Synced ${EVERY_SITE.length} version pin(s) to ${TARGET}.`);
+    expect(result.stdout).toContain(`Synced ${PIN_COUNT} version pin(s) to ${TARGET}.`);
 
     return root;
   };

@@ -539,10 +539,9 @@ jobs:
       # The trigger label stays on while this run works and comes off in the
       # last step, however the run ends (#236), so on the parent it is on only
       # during a build. Nothing in this run puts it back: the next slice waits
-      # on this one's slice PR, and review's advance job re-adds it. So the one
+      # on this one's slice PR, and review's advance re-adds it. So the one
       # label to take off here is a block an earlier run left. The line before
-      # it is the permission probe, as in review's `Transition labels`, where
-      # the reason is spelled out: it adds the label this run already holds,
+      # it is the permission probe: it adds the label this run already holds,
       # which changes nothing, and is not `|| true`, so a short token fails the
       # run before the checkout.
       #

@@ -185,8 +185,16 @@ const runGuard = (options: {
   return { status: result.status, stdout: result.stdout ?? "", outputs, writes, before, after };
 };
 
-const comment = (outcome: Outcome): string =>
-  outcome.writes.find((argv) => argv[0] === "pr" && argv[1] === "comment")?.join(" ") ?? "";
+/**
+ * What the refusal says, as the posting job will post it (#257): the pre-flight
+ * runs in the review job, which writes nothing, so it hands the sentence over
+ * and the posting job's *Say why the review didn't run* puts the pattern
+ * around it. It writes nothing to the tracker itself, on any arm.
+ */
+const comment = (outcome: Outcome): string => {
+  expect(outcome.writes).toHaveLength(0);
+  return `**\`agent:review\` didn't run:** ${outcome.outputs["refusal"] ?? ""}`;
+};
 
 describe.skipIf(!CAN_RUN)("agent-review's pre-flight settles on one commit, executed", () => {
   beforeAll(() => {
@@ -235,18 +243,19 @@ describe.skipIf(!CAN_RUN)("agent-review's pre-flight settles on one commit, exec
 
     expect(outcome.outputs["proceed"]).toBe("false");
     expect(outcome.outputs["sha"]).toBeUndefined();
-    expect(comment(outcome)).toBe(`pr comment ${PR} --body ${CHANGED}`);
+    expect(comment(outcome)).toBe(CHANGED);
     expect(outcome.stdout).toContain("moved while this run was queued");
     expect(outcome.stdout).toContain(stale);
     expect(outcome.stdout).toContain(outcome.after);
-    expect(outcome.writes.map((argv) => argv.join(" "))).toContain(`pr edit ${PR} --add-label agent:blocked`);
+    expect(outcome.outputs["blocked"]).toBe("true");
   });
 
   it("refuses, naming both commits in the log, when whether the tip descends cannot be read", () => {
     const outcome = runGuard({ payload: "before", compareUnreadable: true });
 
     expect(outcome.outputs["proceed"]).toBe("false");
-    expect(comment(outcome)).toBe(`pr comment ${PR} --body ${CHANGED}`);
+    expect(comment(outcome)).toBe(CHANGED);
+    expect(outcome.outputs["blocked"]).toBe("true");
     expect(outcome.stdout).toContain(outcome.before);
     expect(outcome.stdout).toContain(outcome.after);
     expect(outcome.stdout).toContain("could not be read");
@@ -258,8 +267,9 @@ describe.skipIf(!CAN_RUN)("agent-review's pre-flight settles on one commit, exec
     expect(outcome.outputs["proceed"]).toBe("false");
     expect(outcome.outputs["sha"]).toBeUndefined();
     expect(comment(outcome)).toBe(
-      `pr comment ${PR} --body ${CHANGED} If the PR still shows the old commit, close and reopen it so GitHub catches up.`,
+      `${CHANGED} If the PR still shows the old commit, close and reopen it so GitHub catches up.`,
     );
+    expect(outcome.outputs["blocked"]).toBe("true");
     expect(outcome.stdout).toContain(`still shows ${outcome.before}`);
     expect(outcome.stdout).toContain(outcome.after);
   });

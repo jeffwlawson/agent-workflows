@@ -286,27 +286,21 @@ const workflowOf = (file: string): Workflow => parse(fs.readFileSync(file, "utf8
  */
 const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
   /**
-   * The thread resolve (#133). `resolveReviewThread` wants `contents: write`,
-   * which the review job must not hold (docs/parity.md §10), so it runs in a
-   * job of its own with no checkout and no agent.
+   * The posting job (#257): everything the review writes, in one job that runs
+   * no model. The review job reads untrusted pull-request content and runs a
+   * model over it, and holds no write scope at all; this job resolves the
+   * threads the review closed (`resolveReviewThread` wants `contents: write`,
+   * #133), posts the review and its verdict, takes the trigger label off and
+   * hands off, spending `AGENT_PAT` on the labels something fires on.
    *
-   * …and the automatic fix (#102), which is the only place this workflow adds
-   * a trigger label and the only place it spends `AGENT_PAT`. Both are kept
-   * out of the job that reads untrusted pull-request content and runs a model,
-   * which is why it is a job rather than a step.
-   *
-   * …and the PRD chain's advance (#176), in `review` and in `fix` alike: it
-   * spends `AGENT_PAT` on the parent issue when a slice PR's round ends, and is
-   * kept out of the job that runs a model for the same reason.
-   *
-   * …and its hand-merge twin (#209), which re-adds the same label when a
-   * slice PR is merged by hand rather than by the chain.
+   * …and the PRD chain's advance past a hand-merged slice (#209), which fires
+   * on the `closed` event rather than on a review.
    *
    * …and the review's time limit (#220), which is its CI wait plus its own
    * time: an expression cannot add, so a job ahead of the review does the sum.
    * It holds no permission at all.
    */
-  [path.join(WORKFLOW_DIR, "review.yml")]: ["time-limit", "resolve", "auto-fix", "advance", "advance-merged"],
+  [path.join(WORKFLOW_DIR, "review.yml")]: ["time-limit", "post-review", "advance-merged"],
   [path.join(WORKFLOW_DIR, "fix.yml")]: ["advance"],
 };
 
@@ -341,6 +335,25 @@ const jobNamed = (file: string, id: string): Job => {
 const jobsOf = (file: string): readonly Job[] => Object.values(workflowOf(file).jobs);
 
 const stepsOf = (file: string): readonly Step[] => jobOf(file).steps ?? [];
+
+/**
+ * The job a workflow writes from, where that is not the job that does its work
+ * (#257). The review job runs the model and holds no write scope, so every
+ * comment, label, status and post the review makes is its posting job's.
+ */
+const POSTING_JOB: Readonly<Record<string, string>> = {
+  [path.join(WORKFLOW_DIR, "review.yml")]: "post-review",
+};
+
+/** The steps a workflow's labels, comments and failure arms live in. */
+const writerStepsOf = (file: string): readonly Step[] => {
+  const posting = POSTING_JOB[file];
+  return posting === undefined ? stepsOf(file) : (jobNamed(file, posting).steps ?? []);
+};
+
+/** The go-ahead a writer step is gated on: its own job's, or the review job's handed over. */
+const writerProceed = (file: string): string =>
+  POSTING_JOB[file] === undefined ? "steps.state.outputs.proceed == 'true'" : "needs.review.outputs.proceed == 'true'";
 
 /**
  * The step every runner workflow's job starts with (#220): it notes the time,
@@ -514,6 +527,9 @@ const triggerTypesOf = (file: string): readonly string[] =>
  * (jeffwlawson/winget-manifest-lint#97).
  */
 const REVIEW = path.join(WORKFLOW_DIR, "review.yml");
+
+/** The one copy of the PRD chain's advance, which review and fix both run (#257). */
+const ADVANCE_ACTION = path.join(".github", "actions", "advance-prd", "action.yml");
 /** …and the caller that triggers it. */
 const REVIEW_CALLER = path.join(CALLER_DIR, "review.yml");
 
@@ -859,8 +875,8 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // the same five names. The property is about the names the loop emits, not
     // how many files happen to emit them.
     //
-    // Every called job, not just the first: `review / resolve` is a check run
-    // on the pull request too (#133).
+    // Every called job, not just the first: `review / post-review` is a check
+    // run on the pull request too (#257).
     const checkRuns = [
       ...new Set(
         callerWorkflows.flatMap((file) =>
@@ -871,15 +887,14 @@ describe("every PR workflow shares one concurrency group per PR", () => {
       ),
     ];
 
-    expect(checkRuns).toHaveLength(12);
-    expect(checkRuns).toContain("review / resolve");
-    // …and the third (#102), on the same footing: it runs after this wait, and
-    // it is not evidence about the diff whenever it does.
-    expect(checkRuns).toContain("review / auto-fix");
-    // …and the fourth (#176), in both workflows whose round can end a slice's.
-    expect(checkRuns).toContain("review / advance");
+    expect(checkRuns).toHaveLength(10);
+    // The posting job (#257): it runs after this wait, and it is not evidence
+    // about the diff whenever it does.
+    expect(checkRuns).toContain("review / post-review");
+    // …and fix's advance (#176), which runs after a fix run ends a slice's
+    // round.
     expect(checkRuns).toContain("fix / advance");
-    // …and its hand-merge twin (#209).
+    // …and the review's hand-merge twin (#209).
     expect(checkRuns).toContain("review / advance-merged");
     // …and the review's time limit (#220), which finishes before the review
     // starts and is no evidence about the diff either.
@@ -889,10 +904,10 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     expect("agent-review / advance-merged").toMatch(excluded);
     // And under a caller job an adopter renamed, where only the second half is
     // ours to know.
-    expect("agent-review / resolve").toMatch(excluded);
-    // `auto-fix` is in the pattern in its own right: `fix` does not match it,
-    // because the alternation is anchored on `/ ` and the name begins `auto-`.
-    expect("agent-review / auto-fix").toMatch(excluded);
+    expect("agent-review / post-review").toMatch(excluded);
+    // Named `post-review` rather than `post`, so a repository's own CI job
+    // called `post` is still CI.
+    expect("CI / post").not.toMatch(excluded);
     // Bare job ids too — an adopter is free to inline a job rather than call
     // one, and the pattern predates the split.
     //
@@ -974,8 +989,8 @@ describe("every PR workflow shares one concurrency group per PR", () => {
 
     expect(halves).toHaveLength(3);
     for (const file of halves) expect(jobOf(file).permissions?.["actions"], file).toBe("read");
-    // Only the review job: `resolve` and the rest read no runs.
-    expect(workflowOf(REVIEW).jobs["resolve"]?.permissions).not.toHaveProperty("actions");
+    // Only the review job: the posting job and the rest read no runs.
+    expect(workflowOf(REVIEW).jobs["post-review"]?.permissions).not.toHaveProperty("actions");
   });
 
   /**
@@ -1093,10 +1108,10 @@ describe("PR workflows refuse a closed or merged PR", () => {
   });
 
   it.each(PR_WORKFLOWS)("%s: the label transition is gated on the guard", (file) => {
-    const labelling = stepsOf(file).filter((s) => s.name === "Transition labels");
+    const labelling = writerStepsOf(file).filter((s) => s.name === "Transition labels");
 
     expect(labelling).toHaveLength(1);
-    for (const step of labelling) expect(step.if ?? "").toContain(PROCEED);
+    for (const step of labelling) expect(step.if ?? "").toContain(writerProceed(file));
   });
 });
 
@@ -1199,9 +1214,14 @@ describe("agent-review settles on one commit and reads nothing else", () => {
 
     expect(named("Checkout PR head")?.with?.["ref"]).toBe(RESOLVED);
     expect(named("Wait for other checks")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
-    expect(named("Post the verdict as a commit status")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
-    expect(named("Post an error verdict")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
-    for (const step of steps.slice(steps.findIndex((s) => s.id === "state") + 1)) {
+    // The posting job reads the same answer, handed over as the review job's
+    // `sha` (#257), and never the payload's.
+    expect(jobOf(REVIEW).outputs?.["sha"]).toBe(RESOLVED);
+    const posting = writerStepsOf(REVIEW);
+    const posted = (prefix: string): Step | undefined => posting.find((s) => (s.name ?? "").startsWith(prefix));
+    expect(posted("Post the verdict as a commit status")?.env?.["HEAD_SHA"]).toBe("${{ needs.review.outputs.sha }}");
+    expect(posted("Post an error verdict")?.env?.["HEAD_SHA"]).toBe("${{ needs.review.outputs.sha }}");
+    for (const step of [...steps.slice(steps.findIndex((s) => s.id === "state") + 1), ...posting]) {
       expect(JSON.stringify(step)).not.toContain("pull_request.head.sha");
     }
   });
@@ -1432,7 +1452,7 @@ describe("agent-review gives a PRD PR an integration review", () => {
  */
 describe("agent-review marks a PR whose review recorded follow-ups", () => {
   const markStep = (): Step | undefined =>
-    stepsOf(REVIEW).find((s) => (s.run ?? "").includes("--add-label \"agent:follow-ups\""));
+    writerStepsOf(REVIEW).find((s) => (s.run ?? "").includes("--add-label \"agent:follow-ups\""));
 
   it("adds the label the review body tells the author to remove", () => {
     // Pinned as a literal on both sides of the seam: the block's opt-out line
@@ -1457,9 +1477,9 @@ describe("agent-review marks a PR whose review recorded follow-ups", () => {
    * nothing — and `success()` is what makes the step's own position mean that.
    */
   it("runs after the review has posted, and only if it did", () => {
-    expect(markStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+    expect(markStep()?.if).toBe("steps.review.outcome == 'success'");
 
-    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+    const names = writerStepsOf(REVIEW).map((s) => s.name ?? "");
 
     expect(names.indexOf(markStep()?.name ?? "")).toBeGreaterThan(names.indexOf("Post PR review"));
   });
@@ -1507,15 +1527,16 @@ describe("agent-review marks a PR whose review recorded follow-ups", () => {
  */
 describe("agent-review posts its verdict as a commit status", () => {
   const stepNamed = (name: string): Step | undefined =>
-    stepsOf(REVIEW).find((s) => s.name === name);
+    [...stepsOf(REVIEW), ...writerStepsOf(REVIEW)].find((s) => s.name === name);
   const postStep = (): Step | undefined => stepNamed("Post the verdict as a commit status");
   const errorStep = (): Step | undefined => stepNamed("Post an error verdict");
 
   /**
    * On the commit the pre-flight settled on (#229), which is the same one the
-   * checkout, the CI wait and the review's own `commitOID` are pinned to.
-   * Reading the payload or the live head here instead would post a verdict
-   * about a diff nobody read.
+   * checkout, the CI wait and the review's own `commitOID` are pinned to, and
+   * which the review job hands the posting job as `sha` (#257). Reading the
+   * payload or the live head here instead would post a verdict about a diff
+   * nobody read.
    */
   it.each([
     ["the verdict", "Post the verdict as a commit status"],
@@ -1523,7 +1544,8 @@ describe("agent-review posts its verdict as a commit status", () => {
   ])("posts %s on the commit that was reviewed", (_case: string, name: string) => {
     const step = stepNamed(name);
 
-    expect(step?.env?.["HEAD_SHA"]).toBe("${{ steps.state.outputs.sha }}");
+    expect(jobOf(REVIEW).outputs?.["sha"]).toBe("${{ steps.state.outputs.sha }}");
+    expect(step?.env?.["HEAD_SHA"]).toBe("${{ needs.review.outputs.sha }}");
     expect(step?.run ?? "").toContain('/statuses/${HEAD_SHA}');
   });
 
@@ -1638,9 +1660,9 @@ describe("agent-review posts its verdict as a commit status", () => {
   });
 
   it("posts the verdict after the review it points at, and only if that posted", () => {
-    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+    const names = writerStepsOf(REVIEW).map((s) => s.name ?? "");
 
-    expect(postStep()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
+    expect(postStep()?.if).toBe("steps.review.outcome == 'success'");
     expect(names.indexOf(postStep()?.name ?? "")).toBeGreaterThan(names.indexOf("Post PR review"));
   });
 
@@ -1654,14 +1676,17 @@ describe("agent-review posts its verdict as a commit status", () => {
     const step = errorStep();
 
     // A cancelled run too, and a timed-out one is cancelled (#220): it leaves
-    // the last verdict standing exactly as a failed one would.
-    expect(step?.if).toBe("steps.state.outputs.proceed == 'true' && (failure() || cancelled())");
+    // the last verdict standing exactly as a failed one would. And a review
+    // job that failed, which is not a failure of this job's own (#257).
+    expect(step?.if).toBe(
+      "needs.review.outputs.proceed == 'true' && (failure() || cancelled() || needs.review.result != 'success')",
+    );
     expect(step?.run ?? "").toContain("state=error");
 
     // Below every step it is the arm for, the verdict's own posting included:
     // a `failure()` step covers what precedes it, so one placed beside the
     // success arm would miss the failure that leaves no status at all.
-    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+    const names = writerStepsOf(REVIEW).map((s) => s.name ?? "");
 
     expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(
       names.indexOf(postStep()?.name ?? ""),
@@ -1751,7 +1776,8 @@ describe("agent-review posts its verdict as a commit status", () => {
  */
 describe("agent-review starts fix rounds itself, within the fix-round budget", () => {
   const AUTO_FIX_VERDICT = "changes recommended, fix round started";
-  const job = (): Job => jobNamed(REVIEW, "auto-fix");
+  /** The posting job (#257), whose hand-off step starts the round. */
+  const job = (): Job => jobNamed(REVIEW, "post-review");
   const startStep = (): Step | undefined =>
     (job().steps ?? []).find((s) => (s.run ?? "").includes('--add-label "agent:fix"'));
   const budgetStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "budget");
@@ -1767,7 +1793,8 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
    */
   it("selects on the verdict key only a round-1 derivation can produce", () => {
     expect(VERDICTS[AUTO_FIX_VERDICT].verdict).toBe(AUTO_FIX_VERDICT);
-    expect(job().if ?? "").toContain(`needs.review.outputs.verdict == '${AUTO_FIX_VERDICT}'`);
+    expect(startStep()?.name).toBe("Start the automatic fix round");
+    expect(startStep()?.if ?? "").toContain(`needs.review.outputs.verdict == '${AUTO_FIX_VERDICT}'`);
   });
 
   /**
@@ -1793,10 +1820,10 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
       'refuse "The repository variable \\`AGENT_MAX_FIX_ROUNDS\\` is \\`${MAX_FIX_ROUNDS}\\`. It must be a whole number (0 or more), or delete it to use the default of 3. Then add \\`agent:review\\` again."',
     );
 
-    // After the labels transition, so a refusal is the ordinary failure path,
-    // and before the runner, which reads the answer.
+    // After the pre-flight, so a refusal is the ordinary failure path, and
+    // before the runner, which reads the answer.
     expect(step?.if).toBe("steps.state.outputs.proceed == 'true'");
-    expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(names.indexOf("Transition labels"));
+    expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(stepsOf(REVIEW).findIndex((s) => s.id === "state"));
     expect(names.indexOf(step?.name ?? "")).toBeLessThan(names.indexOf("Run review agent"));
 
     // And no caller passes it: the reusable reads the caller's variables itself.
@@ -1881,7 +1908,7 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
       AUTO_FIX_VERDICT,
     );
 
-    expect(job().if ?? "").not.toContain("outputs.round");
+    expect(startStep()?.if ?? "").not.toContain("outputs.round");
     expect(jobOf(REVIEW).outputs?.["round"]).toBeUndefined();
     expect(stepsOf(REVIEW).find((s) => s.name === "Hand the verdict to what reads it")?.run ?? "").not.toContain("round");
     expect(jobOf(REVIEW).outputs?.["verdict"]).toBe("${{ steps.verdict.outputs.verdict }}");
@@ -1907,7 +1934,7 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
         file,
       ).not.toContain("agent:auto-fixed");
     }
-    expect(job().if ?? "").not.toContain("labels");
+    expect(startStep()?.if ?? "").not.toContain("labels");
     expect(runnerStep()?.env?.["AUTO_FIXED"]).toBeUndefined();
   });
 
@@ -1929,9 +1956,10 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     expect(labelled).toBeLessThan(add);
 
     expect(step?.env?.["REVIEWED_SHA"]).toBe("${{ needs.review.outputs.sha }}");
-    expect(step?.env?.["REVIEW_URL"]).toBe("${{ needs.review.outputs.url }}");
+    // The review this job posted itself, a few steps up (#257).
+    expect(step?.env?.["REVIEW_URL"]).toBe("${{ steps.review.outputs.url }}");
     expect(jobOf(REVIEW).outputs?.["sha"]).toBe("${{ steps.state.outputs.sha }}");
-    expect(jobOf(REVIEW).outputs?.["url"]).toBe("${{ steps.review.outputs.url }}");
+    expect((job().steps ?? []).find((s) => s.id === "review")?.name).toBe("Post PR review");
     const newer = run.indexOf('!= "$REVIEW_URL" ]');
     // A moved head is not an arm of its own (#240): a clean update-branch
     // copies the verdict on to the new head, where the round still stands, and
@@ -1970,42 +1998,51 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * The two standing guards, restated rather than inherited through `needs:`,
-   * for the reason `resolve` restates them: today a skipped review skips this
-   * job too, but only while this `if:` carries no status function, and a later
-   * `always()` added for some other reason would drop both at once.
+   * The two standing guards, restated rather than inherited through `needs:`:
+   * the posting job is `always()`, so that a failed review still has its
+   * comment written, and a status function drops the implicit "every need
+   * succeeded" that would otherwise have carried both guards over.
    */
   it.each([
     ["the trigger label", "github.event.label.name == 'agent:review'"],
     ["the fork", "github.event.pull_request.head.repo.full_name == github.repository"],
   ])("restates %s guard rather than inheriting it", (_case: string, guard: string) => {
     expect(job().if ?? "").toContain(guard);
-    expect(job().needs).toBe("review");
+    expect(job().if ?? "").toContain("always()");
+    expect(job().needs).toEqual(["time-limit", "review"]);
   });
 
   /**
    * **No checkout and no agent** (decision 2). This job spends `AGENT_PAT`,
    * and it must not be the one that reads untrusted pull-request content and
-   * runs a model over it.
+   * runs a model over it. The two actions it uses fetch what the review wrote
+   * and run the PRD advance, and neither checks anything out.
    */
   it("checks nothing out, installs nothing and runs no model", () => {
     const steps = job().steps ?? [];
 
-    expect(steps).toHaveLength(1);
+    expect(steps.map((s) => s.uses).filter((uses) => uses !== undefined)).toEqual([
+      "actions/download-artifact@v8",
+      `jeffwlawson/agent-workflows/.github/actions/advance-prd@${PIN}`,
+    ]);
     for (const step of steps) {
-      expect(step.uses, "the automatic fix uses no action").toBeUndefined();
       expect(step.run ?? "").not.toContain("npm exec");
       expect(step.run ?? "").not.toContain("claude");
     }
   });
 
   /**
-   * …and holds one scope, narrower than the job it follows. Not `issues:
-   * write`: that covers labels on an *issue*, and the one thing this must never
-   * be able to do is file work (docs/parity.md §10).
+   * …and holds the writes the review's three posting jobs held, and the status
+   * write the review job held, and nothing more (#257). Not `issues: write`:
+   * that covers labels on an *issue*, and the one thing this must never be
+   * able to do is file work (docs/parity.md §10).
    */
-  it("holds the one scope a label add spends", () => {
-    expect(job().permissions).toEqual({ "pull-requests": "write" });
+  it("holds the writes the posting spends, and no others", () => {
+    expect(job().permissions).toEqual({
+      contents: "write",
+      "pull-requests": "write",
+      statuses: "write",
+    });
   });
 
   /**
@@ -2051,37 +2088,30 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
 
     // The second is the PRD chain's advance (#176), and it is not a label on
     // the pull request under review: it goes on the slice PR's **parent
-    // issue**, through `gh issue edit`, and only from the `advance` job. The
-    // third is the review asking for itself again (#236), which is no arrow
-    // of the loop's: only where the head moved on from the commit it reviewed
-    // while it worked, which nothing in the loop does, since every run that
-    // pushes shares the review job's concurrency group. A human pushed.
+    // issue**, through `gh issue edit`, from the `advance-prd` action the
+    // posting job runs and from the hand-merge twin. The third is the review
+    // asking for itself again (#236), which is no arrow of the loop's: only
+    // where the head moved on from the commit it reviewed while it worked,
+    // which nothing in the loop does, since every run that pushes shares the
+    // review job's concurrency group. A human pushed.
     expect([...added].sort()).toEqual(["agent:fix", "agent:implement", "agent:review"]);
-    // …and in these jobs. `stepsOf` reads the review job alone, so its silence
-    // is the assertion: each add is somewhere `jobOf` does not reach.
+    // …and never in the review job, which writes nothing at all (#257).
     for (const step of stepsOf(REVIEW)) {
-      expect(step.run ?? "").not.toContain('--add-label "agent:fix"');
-      expect(step.run ?? "").not.toContain('--add-label "agent:implement"');
+      expect(step.run ?? "").not.toContain("--add-label");
     }
-    // Past the probe opening `Transition labels`, which adds the label this
-    // run already holds and so requests nothing.
-    const rerequests = stepsOf(REVIEW).filter(
-      (s) => s.name !== "Transition labels" && (s.run ?? "").includes('--add-label "agent:review"'),
-    );
+    const rerequests = (job().steps ?? []).filter((s) => (s.run ?? "").includes('--add-label "agent:review"'));
     expect(rerequests.map((s) => s.name)).toEqual(["Always remove the trigger label"]);
     const run = rerequests[0]?.run ?? "";
     expect(run.indexOf('[ "$head" = "$LEFT_SHA" ]')).toBeLessThan(run.indexOf('--add-label "agent:review"'));
-    expect(rerequests[0]?.env?.["LEFT_SHA"]).toBe("${{ steps.state.outputs.sha }}");
+    expect(rerequests[0]?.env?.["LEFT_SHA"]).toBe("${{ needs.review.outputs.sha }}");
     expect(jobOf(REVIEW).concurrency?.group).toBe("agent-pr-${{ github.event.pull_request.number }}");
     expect(startStep()).toBeDefined();
     for (const step of job().steps ?? []) {
       expect(step.run ?? "").not.toContain('--add-label "agent:implement"');
     }
-    expect(
-      (jobNamed(REVIEW, "advance").steps ?? []).some((s) =>
-        (s.run ?? "").includes('gh issue edit "$parent" --add-label "agent:implement"'),
-      ),
-    ).toBe(true);
+    expect(fs.readFileSync(ADVANCE_ACTION, "utf8")).toContain(
+      'gh issue edit "$parent" --add-label "agent:implement"',
+    );
   });
 
   /**
@@ -2091,12 +2121,11 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
    * cannot disagree.
    */
   it("leaves the pull request in draft exactly when the fix round is starting", () => {
-    const ready = stepsOf(REVIEW).find((s) => (s.name ?? "") === "Mark PR ready for review");
+    const ready = (job().steps ?? []).find((s) => (s.name ?? "") === "Mark PR ready for review");
     const condition = (ready?.if ?? "").replace(/\s+/g, " ").trim();
 
     expect(condition).toBe(
-      `steps.state.outputs.proceed == 'true' && success() && ` +
-        `steps.verdict.outputs.verdict != '${AUTO_FIX_VERDICT}'`,
+      `steps.review.outcome == 'success' && ` + `needs.review.outputs.verdict != '${AUTO_FIX_VERDICT}'`,
     );
   });
 
@@ -2119,9 +2148,9 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * In no concurrency group, for the reason `resolve` is in none: the
-   * `agent-pr-*` waiter slot has depth 1 and holds the newest arrival, so
-   * joining would let this job evict a fix a human queued while the review ran.
+   * In no concurrency group: the `agent-pr-*` waiter slot has depth 1 and holds
+   * the newest arrival, so joining would let this job evict a fix a human
+   * queued while the review ran, or be evicted itself and post nothing.
    */
   it("joins no concurrency group", () => {
     expect(job().concurrency).toBeUndefined();
@@ -2401,8 +2430,25 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
     ["review", REVIEW],
     ["fix", FIX],
   ] as const;
+  /** `fix`'s job of its own; the review's advance is a step of its posting job (#257). */
   const advance = (file: string): Job => jobNamed(file, "advance");
-  const condition = (file: string): string => (advance(file).if ?? "").replace(/\s+/g, " ");
+  const posting = (): readonly Step[] => jobNamed(REVIEW, "post-review").steps ?? [];
+  const step = (file: string): Step | undefined =>
+    (file === REVIEW ? posting() : (advance(file).steps ?? [])).find((s) => s.name === "Advance the PRD chain");
+  /** What decides whether it fires: the review step's `if:`, and fix's job's. */
+  const condition = (file: string): string =>
+    ((file === REVIEW ? step(REVIEW)?.if : advance(file).if) ?? "").replace(/\s+/g, " ");
+  /** The guards each restates, which for the review are its posting job's. */
+  const guards = (file: string): string =>
+    ((file === REVIEW ? jobNamed(REVIEW, "post-review").if : advance(file).if) ?? "").replace(/\s+/g, " ");
+
+  interface Action {
+    readonly inputs?: Record<string, { readonly required?: boolean }>;
+    readonly runs?: { readonly using?: string; readonly steps?: readonly Step[] };
+  }
+  /** The one copy of what advancing is: `.github/actions/advance-prd` (#257). */
+  const action = (): Action => parse(fs.readFileSync(ADVANCE_ACTION, "utf8")) as Action;
+  const script = (): string => action().runs?.steps?.[0]?.run ?? "";
 
   /**
    * The verdict keys the chain moves on from: 🟢, and 🟡 with no automatic
@@ -2425,9 +2471,8 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
     expect(parked.sort()).toEqual(["changes recommended, fix round started", "needs a closer look"]);
     // The one `!=` is the moved-head stand-down (#236), whose output is
     // written only as `true`, so unset is the head that did not move.
-    expect(condition(REVIEW)).toContain("needs.review.outputs.moved != 'true'");
-    expect(condition(REVIEW).replace("needs.review.outputs.moved != 'true'", "")).not.toContain("!=");
-    expect(advance(REVIEW).needs).toEqual(["review", "resolve"]);
+    expect(condition(REVIEW)).toContain("steps.trigger.outputs.moved != 'true'");
+    expect(condition(REVIEW).replace("steps.trigger.outputs.moved != 'true'", "")).not.toContain("!=");
   });
 
   /**
@@ -2463,29 +2508,25 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
   });
 
   /**
-   * `review`'s copy waits for `resolve`, because the `implement-prd` run it
-   * starts reads the slice PR's unresolved threads into a row that is never
-   * refreshed — read beside `resolve`, it could link findings this round
-   * verified fixed as open. Waiting on a job that is skipped whenever there is
-   * nothing to close takes a status function, so what `needs:` alone gave —
-   * park on a failed review — is spelled out by result instead: it fires on a
-   * review that succeeded and a `resolve` that succeeded or had nothing to do,
-   * and on nothing else. `!cancelled()`, never `always()`.
+   * `review`'s advance is the posting job's last step, after the threads are
+   * resolved and after `agent:review` is off (#257). The `implement-prd` run
+   * it starts reads the slice PR's unresolved threads into a row that is never
+   * refreshed, so a row written before the resolve would link findings this
+   * round closed as open; and the hand-off label comes after the run's own
+   * label is off. The posting job is `always()`, so a failed review and a
+   * failed post are named in the condition rather than inherited.
    */
-  it("review: waits for resolve, and does not fire on a failed review or resolve", () => {
+  it("review: advances last, and not after a failed review or post", () => {
     const text = condition(REVIEW);
+    const names = posting().map((s) => s.name ?? "");
 
-    expect(text).not.toMatch(/always\(\)|failure\(\)|[^!]cancelled\(\)|success\(\)/);
-    expect(text.startsWith("!cancelled() && ")).toBe(true);
-    expect(text).toContain("needs.review.result == 'success' && ");
-    expect(text).toContain(
-      "(needs.resolve.result == 'success' || needs.resolve.result == 'skipped') && ",
+    expect(text.startsWith("success() && needs.review.result == 'success' && ")).toBe(true);
+    expect(text).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)/);
+    expect(names.indexOf("Advance the PRD chain")).toBe(names.length - 1);
+    expect(names.indexOf("Advance the PRD chain")).toBeGreaterThan(names.indexOf("Always remove the trigger label"));
+    expect(names.indexOf("Always remove the trigger label")).toBeGreaterThan(
+      names.indexOf("Resolve the threads this review closed"),
     );
-    expect([...text.matchAll(/needs\.(\w+)\.result == '(\w+)'/g)].map(([, job, result]) => `${job}:${result}`)).toEqual([
-      "review:success",
-      "resolve:success",
-      "resolve:skipped",
-    ]);
   });
 
   /**
@@ -2496,28 +2537,28 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
   it.each(HOLDERS)("%s: fires on slice PRs only", (_name: string, file: string) => {
     expect(condition(file)).toContain("startsWith(github.event.pull_request.head.ref, 'agent/slice-')");
     expect(condition(file)).not.toContain("agent/prd-");
-    expect(advance(file).env?.["HEAD_REF"]).toBe("${{ github.event.pull_request.head.ref }}");
-    expect(step(file)?.run ?? "").toContain("^agent/slice-([0-9]+)-[0-9]+-");
+    expect(step(file)?.with?.["head-ref"]).toBe("${{ github.event.pull_request.head.ref }}");
+    expect(script()).toContain("^agent/slice-([0-9]+)-[0-9]+-");
   });
 
   it.each(HOLDERS)("%s: restates the trigger label and fork guards", (name: string, file: string) => {
-    expect(condition(file)).toContain(`github.event.label.name == 'agent:${name}'`);
-    expect(condition(file)).toContain("github.event.pull_request.head.repo.full_name == github.repository");
+    expect(guards(file)).toContain(`github.event.label.name == 'agent:${name}'`);
+    expect(guards(file)).toContain("github.event.pull_request.head.repo.full_name == github.repository");
   });
 
-  const step = (file: string): Step | undefined =>
-    (advance(file).steps ?? []).find((s) => s.name === "Advance the PRD chain");
-
   /**
-   * **No checkout and no model**, in `auto-fix`'s shape: this job spends
-   * `AGENT_PAT` and must not be the one that reads untrusted pull-request
-   * content and runs a model over it.
+   * **No checkout and no model**: this spends `AGENT_PAT` and must not be the
+   * one that reads untrusted pull-request content and runs a model over it.
+   * Both run the composite action, which is one shell step and nothing else.
    */
   it.each(HOLDERS)("%s: checks nothing out, installs nothing and runs no model", (_name: string, file: string) => {
-    const steps = advance(file).steps ?? [];
+    expect(step(file)?.uses).toBe(`jeffwlawson/agent-workflows/.github/actions/advance-prd@${PIN}`);
+    expect(step(file)?.run).toBeUndefined();
+    if (file === FIX) expect(advance(FIX).steps).toHaveLength(1);
 
-    expect(steps).toHaveLength(1);
-    for (const s of steps) {
+    expect(action().runs?.using).toBe("composite");
+    expect(action().runs?.steps).toHaveLength(1);
+    for (const s of action().runs?.steps ?? []) {
       expect(s.uses, "the advance uses no action").toBeUndefined();
       expect(s.run ?? "").not.toContain("npm exec");
       expect(s.run ?? "").not.toContain("claude");
@@ -2526,15 +2567,17 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
   });
 
   /**
-   * …and holds one scope, for the no-PAT arm's comment on the slice PR. The
-   * label on the parent is added with the PAT or not at all, so the workflow
-   * token never writes an issue — and `issues: write` would be a scope no
-   * caller of either workflow grants, which GitHub answers by refusing the
-   * whole run.
+   * `fix`'s job holds one scope, for the no-PAT arm's comment on the slice PR.
+   * The label on the parent is added with the PAT or not at all, so the
+   * workflow token never writes an issue, and `issues: write` would be a
+   * scope no caller of either workflow grants, which GitHub answers by refusing
+   * the whole run. The review's posting job holds no issue scope either.
    */
   it.each(HOLDERS)("%s: holds only what it needs", (_name: string, file: string) => {
-    expect(advance(file).permissions).toEqual({ "pull-requests": "write" });
-    expect(advance(file).concurrency).toBeUndefined();
+    const job = file === REVIEW ? jobNamed(REVIEW, "post-review") : advance(file);
+    if (file === FIX) expect(job.permissions).toEqual({ "pull-requests": "write" });
+    expect(job.permissions).not.toHaveProperty("issues");
+    expect(job.concurrency).toBeUndefined();
   });
 
   /**
@@ -2546,10 +2589,13 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
    */
   it.each(HOLDERS)("%s: labels the parent with the PAT, and comments when there is none", (_name: string, file: string) => {
     const s = step(file);
-    const run = s?.run ?? "";
+    const run = script();
 
-    expect(s?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
-    expect(s?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(s?.with?.["token"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(s?.with?.["has-pat"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(s?.with?.["pr-number"]).toBe("${{ github.event.pull_request.number }}");
+    expect(action().runs?.steps?.[0]?.env?.["GH_TOKEN"]).toBe("${{ inputs.token }}");
+    expect(action().runs?.steps?.[0]?.env?.["HAS_PAT"]).toBe("${{ inputs.has-pat }}");
     expect(run).toContain("set -euo pipefail");
 
     const noPat = run.indexOf('if [ "$HAS_PAT" != "true" ]; then');
@@ -2568,13 +2614,19 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
   });
 
   /**
-   * The same job in both files: the review's copy carries the reasoning, and
-   * the fix's is the round a fix run ends. Held equal, so the two cannot come
-   * to advance differently.
+   * One copy in both files (#257): the review's posting job and fix's job run
+   * the same action with the same inputs, so the two cannot come to advance
+   * differently. Every input the action declares is required, and both pass
+   * every one.
    */
   it("is the same step in review and in fix", () => {
-    expect(advance(FIX).steps).toEqual(advance(REVIEW).steps);
-    expect(advance(FIX).env).toEqual(advance(REVIEW).env);
+    const { name: _fixName, ...fix } = step(FIX) ?? {};
+    const { name: _reviewName, if: _if, ...review } = step(REVIEW) ?? {};
+
+    expect(fix).toEqual(review);
+    const inputs = Object.keys(action().inputs ?? {});
+    expect(inputs.sort()).toEqual(Object.keys(step(FIX)?.with ?? {}).sort());
+    for (const input of inputs) expect(action().inputs?.[input]?.required).toBe(true);
   });
 
   /** No caller changes: both callers already grant the one scope it holds. */
@@ -2742,11 +2794,12 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
   const FIX = path.join(WORKFLOW_DIR, "fix.yml");
   const RESOLVE_MUTATION = "resolveReviewThread";
   const REPLY_MUTATION = "addPullRequestReviewThreadReply";
-  const resolveJob = (): Job => jobNamed(REVIEW, "resolve");
-  const resolveRun = (): string =>
-    (resolveJob().steps ?? []).find((s) => s.name === "Resolve the threads this review verified")
-      ?.run ?? "";
-  const handoff = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "resolutions");
+  /** The posting job (#257), which resolves before it posts. */
+  const resolveJob = (): Job => jobNamed(REVIEW, "post-review");
+  const resolveStep = (): Step | undefined =>
+    (resolveJob().steps ?? []).find((s) => s.name === "Resolve the threads this review closed");
+  const resolveRun = (): string => resolveStep()?.run ?? "";
+  const handoff = (): Step | undefined => stepsOf(REVIEW).find((s) => s.name === "Hand the review to the posting job");
 
   /**
    * Over the file's whole text rather than its steps: the mutation is a string
@@ -2794,52 +2847,41 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
   /**
    * **Not in the review job** (#133). `resolveReviewThread` is refused there:
    * an installation token needs `contents: write` for it, and the review job
-   * holds `contents: read` on purpose. The step that tried it replied into
-   * every thread and resolved none, for a release.
+   * holds no write at all (#257). The step that tried it replied into every
+   * thread and resolved none, for a release.
    */
   it("resolves nothing in the review job, which cannot", () => {
     for (const step of stepsOf(REVIEW)) expect(step.run ?? "").not.toContain(RESOLVE_MUTATION);
   });
 
   /**
-   * The review job's half is a handoff: the list the runner wrote, on one line,
-   * after the verdict and only on a review that posted.
+   * The review job's half is a handoff: the list the runner wrote, in the
+   * artifact the posting job fetches, on a review that finished (#257).
    */
-  it("hands the runner's list over after the verdict, only on a posted review", () => {
-    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
-
-    expect(handoff()?.env?.["RESOLUTIONS"]).toBe("${{ runner.temp }}/thread_resolutions.json");
-    expect(handoff()?.run ?? "").toContain("jq -c .");
-    expect(handoff()?.run ?? "").toContain("$GITHUB_OUTPUT");
+  it("hands the runner's list over in the review artifact, only on a finished review", () => {
+    expect(handoff()?.uses).toBe("actions/upload-artifact@v7");
+    expect(handoff()?.with?.["path"] ?? "").toContain("${{ runner.temp }}/thread_resolutions.json");
     expect(handoff()?.if).toBe("steps.state.outputs.proceed == 'true' && success()");
-    expect(names.indexOf(handoff()?.name ?? "")).toBeGreaterThan(
-      names.indexOf("Post the verdict as a commit status"),
-    );
-    expect(jobOf(REVIEW).outputs?.["resolutions"]).toBe(
-      "${{ steps.resolutions.outputs.resolutions }}",
-    );
+    const fetch = (resolveJob().steps ?? []).find((s) => s.id === "fetch");
+    expect(fetch?.uses).toBe("actions/download-artifact@v8");
+    expect(fetch?.with?.["name"]).toBe(handoff()?.with?.["name"]);
+    expect(fetch?.with?.["path"]).toBe("${{ runner.temp }}");
+    expect(resolveStep()?.if).toBe("steps.fetch.outcome == 'success'");
   });
 
   /**
-   * The resolve job holds `contents: write`, so what it *cannot* do is the
+   * The posting job holds `contents: write`, so what it *cannot* do is the
    * point. It has no checkout, no toolchain and no runner, so the scope reaches
-   * nothing but two fixed mutations over data. One of those three added later
+   * nothing but fixed mutations over data. One of those three added later
    * would bring the pull request's own code into a job holding the write.
    */
   it("resolves in a job with nothing to write with", () => {
-    const steps = resolveJob().steps ?? [];
-
-    expect(steps).toHaveLength(1);
-    for (const step of steps) {
-      expect(step.uses).toBeUndefined();
+    for (const step of resolveJob().steps ?? []) {
+      expect(step.uses ?? "").not.toMatch(/checkout|setup-node/);
       // The runner's invocation and any git write, not the words: the warning
       // text names this repository, and that is not a checkout.
       expect(step.run ?? "").not.toMatch(/\bnpm\b|\bnpx\b|\bgit (clone|fetch|checkout|push)\b/);
     }
-  });
-
-  it("holds exactly the two scopes a resolve needs, and nothing else", () => {
-    expect(resolveJob().permissions).toEqual({ contents: "write", "pull-requests": "write" });
   });
 
   /**
@@ -2852,45 +2894,31 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
       .filter(([, job]) => job.permissions?.["contents"] === "write")
       .map(([id]) => id);
 
-    expect(writers).toEqual(["resolve"]);
+    expect(writers).toEqual(["post-review"]);
   });
 
   /**
-   * After the review, on its guards restated rather than inherited, and only
-   * when there is something to close.
-   */
-  it("runs after a review that handed something over, behind both guards", () => {
-    const condition = resolveJob().if ?? "";
-
-    expect(resolveJob().needs).toBe("review");
-    expect(condition).toContain("github.event.label.name == 'agent:review'");
-    expect(condition).toContain(
-      "github.event.pull_request.head.repo.full_name == github.repository",
-    );
-    expect(condition).toContain("needs.review.outputs.resolutions != ''");
-    expect(condition).toContain("needs.review.outputs.resolutions != '[]'");
-    // A status function would run it after a review that failed or was skipped.
-    expect(condition).not.toMatch(/always\(\)|failure\(\)|cancelled\(\)/);
-  });
-
-  /**
-   * **Outside the per-PR group**, and deliberately. The group holds one
-   * waiting run and a newer arrival evicts it silently (docs/parity.md §10), so
-   * joining would put this job in a position to evict a fix a human queued.
-   * Overlap is harmless: a fix no longer sees a verified thread, and a racing
-   * review posts no second reply.
-   */
-  it("joins no concurrency group", () => {
-    expect(resolveJob().concurrency).toBeUndefined();
-  });
-
-  /**
-   * The list arrives through `env:`. A reply quotes a maintainer's words, and
+   * The list is a file, read by path: a reply quotes a maintainer's words, and
    * an expression spliced into the script would make those words a script.
    */
-  it("reads the list through the environment, never interpolated", () => {
-    expect(resolveJob().env?.["RESOLUTIONS"]).toBe("${{ needs.review.outputs.resolutions }}");
+  it("reads the list from the file the runner wrote, never interpolated", () => {
+    expect(resolveStep()?.env?.["RESOLUTIONS"]).toBe("${{ runner.temp }}/thread_resolutions.json");
     expect(resolveRun()).not.toContain("${{");
+  });
+
+  /**
+   * **And writes down what actually resolved** (#257): one thread id a line,
+   * appended only on the arm where the resolve went through, which is what the
+   * overview's *Resolved since last review* is made of.
+   */
+  it("records each thread it resolved, and only those", () => {
+    const run = resolveRun();
+    const resolve = run.lastIndexOf(RESOLVE_MUTATION);
+
+    expect(resolveStep()?.env?.["RESOLVED"]).toBe("${{ runner.temp }}/resolved_threads.txt");
+    expect(run).toContain(': > "$RESOLVED"');
+    expect(run.slice(resolve)).toMatch(/if gh api graphql [^\n]*>\/dev\/null; then\n[^\n]*\n\s*echo "\$tid" >> "\$RESOLVED"\n\s*else/);
+    expect(run.split('>> "$RESOLVED"')).toHaveLength(2);
   });
 
   /**
@@ -2964,10 +2992,85 @@ describe("the reviewer closes a thread, and the fix run never does", () => {
     const run = resolveRun();
     const after = run.slice(run.lastIndexOf(RESOLVE_MUTATION));
 
-    expect(after).toMatch(/\|\| echo "::warning::Could not resolve/);
+    expect(after).toMatch(/else\n\s*echo "::warning::Could not resolve/);
     expect(after).toContain("GitHub's reply is printed above");
     expect(after).toMatch(/not the caller's .*contents:.* grant/);
     expect(run).not.toMatch(/\bexit 1\b/);
+  });
+});
+
+/**
+ * **The review posts last, from one job** (#257). The review job runs the model
+ * and posts nothing; one job that runs no model then answers and resolves the
+ * earlier findings, posts the overview and the new findings, sets the verdict,
+ * marks the pull request ready, takes `agent:review` off and hands off, in that
+ * order, which is the label order settled for every workflow: label on, do the
+ * work, post every result, take your own label off, add the next step's label.
+ * Until then the overview's *Resolved since last review* went out before
+ * anything was resolved, and claimed closures that never happened wherever the
+ * resolve failed.
+ */
+describe("the review posts last, from one job", () => {
+  const posting = (): Job => jobNamed(REVIEW, "post-review");
+
+  it("has one posting job, and no resolve, auto-fix or advance job beside it", () => {
+    const jobs = Object.keys(workflowOf(REVIEW).jobs);
+
+    expect(jobs).toEqual(["time-limit", "review", "post-review", "advance-merged"]);
+    for (const retired of ["resolve", "auto-fix", "advance"]) expect(jobs).not.toContain(retired);
+  });
+
+  /**
+   * The order, step by step. The refusal and the block's removal open it; the
+   * threads are resolved before the review is posted, so their replies are
+   * timestamped ahead of the overview; every result, the failure arm's
+   * included, is posted before the trigger label comes off; and the hand-offs
+   * come after it.
+   */
+  it("resolves, posts, sets the verdict and the ready state, takes its label off, then hands off", () => {
+    expect((posting().steps ?? []).map((s) => s.name)).toEqual([
+      "Say why the review didn't run",
+      "Transition labels",
+      "Fetch what the review wrote",
+      "Resolve the threads this review closed",
+      "Post PR review",
+      "Mark the PR as carrying follow-ups",
+      "Post the verdict as a commit status",
+      "Mark PR ready for review",
+      "Post an error verdict",
+      "Mark blocked on failure",
+      "Always remove the trigger label",
+      "Start the automatic fix round",
+      "Advance the PRD chain",
+    ]);
+  });
+
+  /**
+   * Each posting step runs on the one before it having posted: the overview
+   * only on a fetched review, and the verdict, the marker and the ready state
+   * only on a posted overview, so a review that failed to post leaves the pull
+   * request in draft under an error status.
+   */
+  it("posts each result only on the one before it", () => {
+    const step = (name: string): Step | undefined => (posting().steps ?? []).find((s) => s.name === name);
+
+    expect(step("Resolve the threads this review closed")?.if).toBe("steps.fetch.outcome == 'success'");
+    expect(step("Post PR review")?.if).toBe("steps.fetch.outcome == 'success'");
+    for (const name of ["Mark the PR as carrying follow-ups", "Post the verdict as a commit status"]) {
+      expect(step(name)?.if, name).toBe("steps.review.outcome == 'success'");
+    }
+    expect(step("Mark PR ready for review")?.if ?? "").toContain("steps.review.outcome == 'success'");
+    expect(step("Fetch what the review wrote")?.if).toBe(
+      "needs.review.outputs.proceed == 'true' && needs.review.result == 'success'",
+    );
+  });
+
+  /** And the review job writes nothing: no comment, label, status or review. */
+  it("posts nothing from the job that runs the model", () => {
+    for (const step of stepsOf(REVIEW)) {
+      expect(step.run ?? "", step.name).not.toMatch(/gh pr (comment|edit|ready)|gh api graphql|--method POST|gh issue/);
+    }
+    expect(Object.values(jobOf(REVIEW).permissions ?? {})).not.toContain("write");
   });
 });
 
@@ -3878,7 +3981,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * about a token that is short for some other reason, which is why the
    * assertion is about step order rather than about a grant.
    */
-  it.each(PR_WORKFLOWS)("%s: a 403 on the label transition fails before the checkout", (file) => {
+  it.each(PR_WORKFLOWS.filter((file) => file !== REVIEW))("%s: a 403 on the label transition fails before the checkout", (file) => {
     const steps = stepsOf(file);
     const label = (jobOf(file).if ?? "").match(/github\.event\.label\.name == '(agent:[a-z-]+)'/)?.[1];
     const probe = `gh pr edit "$PR_NUMBER" --add-label "${label}"`;
@@ -3897,7 +4000,23 @@ describe("every workflow in the loop is called rather than copied", () => {
   });
 
   /**
-   * And the sentence that described it. Review is the one workflow whose
+   * Except review, since #257: its agent pass runs in a job that holds no write
+   * scope at all, so there is no write to probe with before the pass is spent,
+   * and its labels move in the posting job afterwards. A caller short of a
+   * scope is still refused before any job starts (#146); what is lost is only
+   * the early failure for a token short for some other reason, which the
+   * posting job now meets after the pass. The review job writes no label.
+   */
+  it("review.yml: probes nothing, because the job that runs the model writes nothing", () => {
+    for (const step of stepsOf(REVIEW)) expect(step.run ?? "").not.toMatch(/gh pr (edit|comment|ready)|--method POST/);
+    expect(stepsOf(REVIEW).map((s) => s.name)).not.toContain("Transition labels");
+    expect(writerStepsOf(REVIEW).find((s) => s.name === "Transition labels")?.run).toBe(
+      'gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true',
+    );
+  });
+
+  /**
+   * And the sentence that describes the bound. Review is the one workflow whose
    * `permissions:` block spells the grant/bound split out at length, so it is
    * the one that can get the cost wrong; the claim also reached #45's issue
    * body and from there `REQUIRED_PERMISSIONS`, which is why the correction is
@@ -3909,7 +4028,7 @@ describe("every workflow in the loop is called rather than copied", () => {
     expect(comment).toBeDefined();
     expect(comment).toContain("grants nothing");
     expect(comment).not.toMatch(/silently transitions no label/i);
-    expect(comment).toMatch(/before the checkout/i);
+    expect(comment).toMatch(/before any job starts/i);
   });
 
   /**
@@ -4069,15 +4188,16 @@ describe("agent-review tells its caller what it cannot know", () => {
 
   /**
    * `contents: read` on the review job is the invariant that bounds what a
-   * wrong review can do (docs/parity.md §10). The generic check above holds the
-   * caller equal to the widest called job; this is the one pair where the
-   * *value* is the point. The caller grants `contents: write`, which only the
-   * `resolve` job spends (#133). The review job narrows it back to `read`.
+   * wrong review can do (docs/parity.md §10), and since #257 the job that runs
+   * the model holds no write scope of any kind. The generic check above holds
+   * the caller equal to the widest called job; this is the one set where the
+   * *values* are the point. The caller grants the writes the posting job
+   * spends, and the review job narrows each of them back to `read`.
    */
   it.each([
     ["the caller grants", REVIEW_CALLER, "write"],
     ["the called job bounds", REVIEW, "read"],
-  ])("%s exactly the permissions the job uses", (_half: string, file: string, contents: string) => {
+  ])("%s exactly the permissions the job uses", (_half: string, file: string, level: string) => {
     expect(jobOf(file).permissions).toEqual({
       // The CI wait reads the commit's workflow runs (#221): a run queued or
       // waiting for approval has no check run yet, so it shows nowhere else.
@@ -4086,18 +4206,40 @@ describe("agent-review tells its caller what it cannot know", () => {
       // without this scope, so every repo in the pilot passed without it and
       // the first private adopter got a 403 that spent the whole wait budget.
       checks: "read",
-      contents,
+      // Resolving a thread wants `contents: write` (#133), and only the
+      // posting job spends it.
+      contents: level,
       // Installing the runner package, not reading the PR — the one scope here
       // that is about the toolchain rather than about the review.
       packages: "read",
-      "pull-requests": "write",
+      // The posting job's review, replies, comments and labels; the review
+      // job's reads of the same.
+      "pull-requests": level,
       // The verdict (#96). A commit status is not a pull-request write, so
-      // nothing this job already held covers it. A caller short of it gets no
-      // run rather than a review with no verdict on it (#146); what looks like
-      // the feature simply being off is a token short for some other reason,
-      // since the step that posts the status warns rather than failing.
-      statuses: "write",
+      // nothing else covers it. A caller short of it gets no run rather than a
+      // review with no verdict on it (#146); what looks like the feature simply
+      // being off is a token short for some other reason, since the step that
+      // posts the status warns rather than failing. The review job reads the
+      // verdicts already posted, to count the fix rounds spent.
+      statuses: level,
     });
+  });
+
+  /**
+   * **The model runs only in a job without write scopes** (#257). Whatever the
+   * caller grants, the job whose steps run the review agent declares nothing
+   * above `read`, and every job that can write runs no agent.
+   */
+  it("runs the model only in a job that can write nothing", () => {
+    const jobs = Object.entries(workflowOf(REVIEW).jobs);
+    const runsModel = (job: Job): boolean =>
+      (job.steps ?? []).some((step) => (step.run ?? "").includes("agent-workflows review"));
+    const writes = (job: Job): boolean => Object.values(job.permissions ?? {}).includes("write");
+
+    expect(jobs.filter(([, job]) => runsModel(job)).map(([id]) => id)).toEqual(["review"]);
+    for (const [id, job] of jobs) {
+      if (runsModel(job)) expect(writes(job), id).toBe(false);
+    }
   });
 
   /**
@@ -5592,7 +5734,7 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
     expect(context).not.toContain("Review adds a trigger label in exactly one case");
     expect(context).toContain("Review adds a trigger label in two cases.");
 
-    const second = context.split(/\n\n/).find((p) => p.includes("**advance job**")) ?? "";
+    const second = context.split(/\n\n/).find((p) => p.includes("**advance**")) ?? "";
     expect(second).toMatch(/second arrow/);
     expect(second).toMatch(/\*\*parent\*\*/);
     expect(second).toMatch(/\*\*bounded by the number of sub-issues\*\*/);
@@ -7022,7 +7164,9 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
     "implement-prd": { name: "Mark blocked on failure", guard: "steps.preflight.outputs.refused != 'true'" },
     fix: { name: "Mark blocked on failure", guard: "steps.state.outputs.proceed == 'true'" },
     "update-branch": { name: "Mark blocked on failure", guard: "steps.state.outputs.proceed == 'true'" },
-    review: { name: "Mark blocked on failure", guard: "steps.state.outputs.proceed == 'true'" },
+    // In the posting job (#257), which also posts for a review job that
+    // failed: that is a result of the job it needs, not a status of its own.
+    review: { name: "Mark blocked on failure", guard: "needs.review.outputs.proceed == 'true'" },
     "follow-ups": { name: "Report the failure on the PR", guard: "" },
   };
 
@@ -7048,7 +7192,7 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
   const fileOf = (command: string): string => path.join(WORKFLOW_DIR, `${command}.yml`);
   const failureStep = (command: string): Step => {
     const want = FAILURE_STEPS[command];
-    const step = stepsOf(fileOf(command)).find((s) => s.name === want?.name);
+    const step = writerStepsOf(fileOf(command)).find((s) => s.name === want?.name);
 
     expect(step, `${command} has no \`${want?.name}\` step`).toBeDefined();
     return step as Step;
@@ -7062,9 +7206,34 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
     const { guard } = FAILURE_STEPS[command] ?? { guard: "" };
     const step = failureStep(command);
 
-    expect(step.if).toBe(guard === "" ? "failure() || cancelled()" : `${guard} && (failure() || cancelled())`);
+    const review = command === "review" ? " || needs.review.result != 'success'" : "";
+    expect(step.if).toBe(guard === "" ? "failure() || cancelled()" : `${guard} && (failure() || cancelled()${review})`);
     expect(step.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
     expect(step.run ?? "").toContain('if [ "$JOB_STATUS" = "cancelled" ]; then');
+  });
+
+  /**
+   * The review's clock is the review job's, so that job decides whether a
+   * cancel was its limit, in an `always()` step, and hands the answer over
+   * with the reasons its steps wrote (#257).
+   */
+  it("review: measures its own limit and hands the outcome over, however it ended", () => {
+    const outcome = stepsOf(fileOf("review")).find((s) => s.id === "outcome");
+    const names = stepsOf(fileOf("review")).map((s) => s.name);
+
+    expect(outcome?.if).toBe("always()");
+    expect(names.indexOf(outcome?.name)).toBe(names.length - 1);
+    expect(outcome?.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
+    expect(outcome?.env?.["TIMEOUT_MINUTES"]).toBe("${{ needs.time-limit.outputs.minutes }}");
+    expect(outcome?.run ?? "").toContain('[ "$JOB_STATUS" = "cancelled" ] && [ -n "${JOB_STARTED:-}" ]');
+    expect(outcome?.run ?? "").toContain("TIMEOUT_MINUTES * 60 - 60");
+    for (const output of ["timed-out", "failure-reason", "refusal-reason"]) {
+      expect(jobOf(fileOf("review")).outputs?.[output]).toBe(`\${{ steps.outcome.outputs.${output} }}`);
+    }
+    const failed = failureStep("review");
+    expect(failed.env?.["TIMED_OUT"]).toBe("${{ needs.review.outputs.timed-out }}");
+    expect(failed.env?.["REVIEW_REASON"]).toBe("${{ needs.review.outputs.failure-reason }}");
+    expect(failed.env?.["REVIEW_REFUSAL"]).toBe("${{ needs.review.outputs.refusal-reason }}");
   });
 
   it.each(RUNNER_COMMANDS)("%s: starts the clock before anything else", (command: string) => {
@@ -7286,6 +7455,10 @@ describe("a trigger label is on while its run works, and off when it ends", () =
     ["update-branch.yml", "agent:update-branch", "always()"],
   ];
   const TRIGGER_LABELS = ["agent:implement", "agent:review", "agent:fix", "agent:update-branch"];
+  /** The steps that add the next step's label after the run's own comes off (#257). */
+  const HANDOFFS: Readonly<Record<string, readonly string[]>> = {
+    "review.yml": ["Start the automatic fix round", "Advance the PRD chain"],
+  };
   const fileOf = (name: string): string => path.join(WORKFLOW_DIR, name);
   const removal = (label: string): RegExp =>
     new RegExp(`gh (?:pr|issue) edit "\\$[A-Z_a-z]+" --remove-label "${label}"`);
@@ -7308,7 +7481,11 @@ describe("a trigger label is on while its run works, and off when it ends", () =
    * label.
    */
   it.each(TRIGGERED)("%s: takes %s off in its last step, however the run ends", (name, label, guard) => {
-    const last = stepsOf(fileOf(name)).at(-1);
+    // The review's hand-offs follow it (#257): the next step's label goes on
+    // after this run's comes off, in the job that posts.
+    const last = writerStepsOf(fileOf(name))
+      .filter((s) => !(HANDOFFS[name] ?? []).includes(s.name ?? ""))
+      .at(-1);
 
     expect(last?.name).toBe("Always remove the trigger label");
     expect(last?.if).toBe(guard);
@@ -7317,9 +7494,17 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   });
 
   it.each(TRIGGERED)("%s: leaves %s on as the run starts", (name, label) => {
-    const transition = stepsOf(fileOf(name)).find((s) => s.name === "Transition labels");
+    const transition = writerStepsOf(fileOf(name)).find((s) => s.name === "Transition labels");
 
     expect(transition).toBeDefined();
+    // The review's job that runs the model writes nothing, so it has no probe,
+    // and its posting job clears the block once the review has finished (#257).
+    if (name === "review.yml") {
+      expect(transition?.run ?? "").not.toMatch(removal(label));
+      expect(transition?.run ?? "").not.toContain("--add-label");
+      expect(transition?.run ?? "").toMatch(removal("agent:blocked"));
+      return;
+    }
     // The probe: the label the run holds, added again, bare, before anything.
     expect((transition?.run ?? "").trim().split("\n")[0]).toMatch(
       new RegExp(`^gh (?:pr|issue) edit "\\$[A-Z_]+" --add-label "${label}"$`),
@@ -7366,19 +7551,31 @@ describe("a trigger label is on while its run works, and off when it ends", () =
    * success: a failure is `agent:blocked` and a human's retry.
    */
   it.each([
-    ["review.yml", "agent:review", "${{ steps.state.outputs.sha }}"],
-    ["update-branch.yml", "agent:update-branch", "${{ steps.push.outputs.head || github.event.pull_request.head.sha }}"],
-  ])("%s: asks for %s again where the head moved while it worked", (name, label, left) => {
-    const last = stepsOf(fileOf(name)).at(-1);
+    [
+      "review.yml",
+      "agent:review",
+      "${{ needs.review.outputs.sha }}",
+      "${{ needs.review.outputs.proceed }}",
+      'if [ "$PROCEEDED" != "true" ] || [ "$REVIEW_RESULT" != "success" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then',
+    ],
+    [
+      "update-branch.yml",
+      "agent:update-branch",
+      "${{ steps.push.outputs.head || github.event.pull_request.head.sha }}",
+      "${{ steps.state.outputs.proceed }}",
+      'if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then',
+    ],
+  ])("%s: asks for %s again where the head moved while it worked", (name, label, left, proceeded, gated) => {
+    const last = writerStepsOf(fileOf(name)).find((s) => s.name === "Always remove the trigger label");
     const run = last?.run ?? "";
     const add = run.indexOf(`GH_TOKEN="$REQUEST_TOKEN" gh pr edit "$PR_NUMBER" --add-label "${label}"`);
 
     expect(last?.env?.["LEFT_SHA"]).toBe(left);
     expect(last?.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
-    expect(last?.env?.["PROCEEDED"]).toBe("${{ steps.state.outputs.proceed }}");
+    expect(last?.env?.["PROCEEDED"]).toBe(proceeded);
     expect(last?.env?.["REQUEST_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
     expect(add).toBeGreaterThan(0);
-    const gate = run.indexOf('if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then');
+    const gate = run.indexOf(gated);
     const moved = run.indexOf('if [ "$state" != "OPEN" ] || [ "$head" = "$LEFT_SHA" ]; then');
     // Another trigger label is a run queued behind this one, and a request
     // would cancel it and strand its label.
@@ -7421,7 +7618,6 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   it.each([
     ["implement.yml", "preflight", 'gh issue comment "$ISSUE_NUMBER"', 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"'],
     ["implement-prd.yml", "preflight", 'gh issue comment "$ISSUE_NUMBER"', 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"'],
-    ["review.yml", "state", 'gh pr comment "$PR_NUMBER"', 'gh pr edit "$PR_NUMBER" --remove-label "agent:review"', 'gh pr edit "$PR_NUMBER" --add-label "agent:blocked"'],
     ["fix.yml", "state", 'gh pr comment "$PR_NUMBER"', 'gh pr edit "$PR_NUMBER" --remove-label "agent:fix"', 'gh pr edit "$PR_NUMBER" --add-label "agent:blocked"'],
   ])("%s: a refusal comments, then takes its label off, then blocks", (name, id, comment, removal, blocked) => {
     const body = bashFunctionBody(runOf(fileOf(name), id), "refuse");
@@ -7434,6 +7630,34 @@ describe("a trigger label is on while its run works, and off when it ends", () =
     // leaves a refused run's label alone, so it would stay on with no run.
     const line = body.split("\n").find((l) => l.includes(comment)) ?? "";
     expect(line).toMatch(/\|\| echo "::warning::[^"]+"$/);
+  });
+
+  /**
+   * The review's pre-flight decides a refusal and cannot say it (#257): the
+   * job that runs the model writes nothing. It hands the sentence and the
+   * block over, and the posting job says it in the same order.
+   */
+  it("review.yml: a refusal comments, then takes its label off, then blocks", () => {
+    const refuse = bashFunctionBody(runOf(REVIEW, "state"), "refuse");
+    const say = writerStepsOf(REVIEW).find((s) => s.name === "Say why the review didn't run");
+    const run = say?.run ?? "";
+    const comment = run.indexOf('gh pr comment "$PR_NUMBER"');
+    const removal = run.indexOf('gh pr edit "$PR_NUMBER" --remove-label "agent:review"');
+    const blocked = run.indexOf('gh pr edit "$PR_NUMBER" --add-label "agent:blocked"');
+
+    expect(refuse).toContain('echo "proceed=false"');
+    expect(refuse).toContain('echo "refusal=$1"');
+    expect(refuse).not.toMatch(/gh pr/);
+    expect(jobOf(REVIEW).outputs?.["refusal"]).toBe("${{ steps.state.outputs.refusal }}");
+    expect(jobOf(REVIEW).outputs?.["blocked"]).toBe("${{ steps.state.outputs.blocked }}");
+    expect(say?.if).toBe("needs.review.outputs.proceed == 'false'");
+    expect(say?.env?.["REFUSAL"]).toBe("${{ needs.review.outputs.refusal }}");
+    expect(comment).toBeGreaterThanOrEqual(0);
+    expect(removal).toBeGreaterThan(comment);
+    expect(blocked).toBeGreaterThan(removal);
+    expect(run.split("\n").find((l) => l.includes('gh pr comment "$PR_NUMBER"')) ?? "").toMatch(
+      /\|\| echo "::warning::[^"]+"$/,
+    );
   });
 
   it("update-branch.yml: a refusal comments, then takes its label off", () => {
@@ -7468,17 +7692,21 @@ describe("a trigger label is on while its run works, and off when it ends", () =
 
   /**
    * A review whose pull request moved while it worked says so, and the two
-   * jobs that act on its verdict stand down: the verdict is about a commit the
-   * pull request has left (#236).
+   * hand-offs that act on its verdict stand down: the verdict is about a commit
+   * the pull request has left (#236). Both come after the trigger label is off
+   * and the moved check made (#257), in the posting job.
    */
-  it("review.yml: auto-fix and advance stand down where the head moved", () => {
-    const review = jobNamed(REVIEW, "review");
-    const trigger = (review.steps ?? []).find((s) => s.name === "Always remove the trigger label");
+  it("review.yml: the fix round and the advance stand down where the head moved", () => {
+    const steps = writerStepsOf(REVIEW);
+    const names = steps.map((s) => s.name ?? "");
+    const trigger = steps.find((s) => s.name === "Always remove the trigger label");
 
     expect(trigger?.id).toBe("trigger");
-    expect((review as { outputs?: Record<string, string> }).outputs?.["moved"]).toBe("${{ steps.trigger.outputs.moved }}");
-    for (const id of ["auto-fix", "advance"]) {
-      expect(jobNamed(REVIEW, id).if ?? "", id).toContain("needs.review.outputs.moved != 'true'");
+    expect(trigger?.run ?? "").toContain('echo "moved=true" >> "$GITHUB_OUTPUT"');
+    for (const name of HANDOFFS["review.yml"] ?? []) {
+      const step = steps.find((s) => s.name === name);
+      expect(step?.if ?? "", name).toContain("steps.trigger.outputs.moved != 'true'");
+      expect(names.indexOf(name), name).toBeGreaterThan(names.indexOf("Always remove the trigger label"));
     }
   });
 
@@ -7530,7 +7758,7 @@ describe("every failure and refusal says so in one of two patterns", () => {
   ] as const;
 
   it.each(STOPPED)("$file: a run that stopped says `$label stopped:`, the reason, the run and what to do", (c) => {
-    const run = stepsOf(c.file).find((s) => s.name === c.step)?.run ?? "";
+    const run = writerStepsOf(c.file).find((s) => s.name === c.step)?.run ?? "";
 
     expect(run).toMatch(
       new RegExp(
@@ -7552,7 +7780,14 @@ describe("every failure and refusal says so in one of two patterns", () => {
       // Less `refuse_shape`'s own forwarding of its argument.
       .filter((line) => /^(refuse|refuse_shape) "/.test(line) && !line.startsWith('refuse "$1"'));
 
-    expect(bashFunctionBody(run, "refuse")).toContain(`--body "**\\\`${c.label}\\\` didn't run:** $1"`);
+    // The review's posting job says it, from the sentence handed over (#257).
+    if (c.file === REVIEW) {
+      expect(writerStepsOf(REVIEW).find((s) => s.name === "Say why the review didn't run")?.run ?? "").toContain(
+        `--body "**\\\`${c.label}\\\` didn't run:** \${REFUSAL}"`,
+      );
+    } else {
+      expect(bashFunctionBody(run, "refuse")).toContain(`--body "**\\\`${c.label}\\\` didn't run:** $1"`);
+    }
     expect(calls.length).toBeGreaterThan(0);
     for (const call of calls) {
       // A capital, or the one shared sentence review keeps in a variable.

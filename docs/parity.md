@@ -136,8 +136,8 @@ trade below records why that changed.
 | A **draft slice PR** per sub-issue, based on the PRD branch, carrying `Part of #<sub-issue>` | ❌ | ➕ | CVM opens one PR per PRD. `Part of`, not `Closes`: the sub-issue's own state is the chain's "built" marker, and must not wait on a merge. Found by its **base**, never its name, and more than one open refuses rather than guessing which to merge |
 | Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ✅ | when its slice PR opens, so "first open sub-issue" still means the next slice to build. The only record tying a closed sub-issue to its code once the slice branch is gone |
 | Adds `agent:review` to **every** slice PR | ❌ | ➕ | CVM adds it once, when no sub-issues remain — the trade below |
-| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance job** in `review` and `fix` does, when a slice PR's round ends on 🟢, or on 🟡 with no fix round starting (§10). It parks on 🔵 and on a failed run, and a human's re-label of the parent is then the acceptance. Without the PAT it warns, and comments on the slice PR naming the by-hand re-label |
-| **Merges the waiting slice PR first**, as a step of its own | ❌ | ➕ | refuses into `agent:blocked`, naming the slice PR, while `agent:review`, `agent:fix` or `agent:update-branch` is on it, or while it is conflicted, pointing at `agent:update-branch` on it. Pinned with `--match-head-commit` to the head it inspected; squash, then rebase, then a merge commit, whichever the repository allows first. It never reads the verdict, so a human's re-label and the advance job's are one path |
+| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance** in `review`'s posting job and `fix`'s `advance` job does, when a slice PR's round ends on 🟢, or on 🟡 with no fix round starting (§10). It parks on 🔵 and on a failed run, and a human's re-label of the parent is then the acceptance. Without the PAT it warns, and comments on the slice PR naming the by-hand re-label |
+| **Merges the waiting slice PR first**, as a step of its own | ❌ | ➕ | refuses into `agent:blocked`, naming the slice PR, while `agent:review`, `agent:fix` or `agent:update-branch` is on it, or while it is conflicted, pointing at `agent:update-branch` on it. Pinned with `--match-head-commit` to the head it inspected; squash, then rebase, then a merge commit, whichever the repository allows first. It never reads the verdict, so a human's re-label and the advance's are one path |
 | A **draft PRD PR**, opened with the first slice merge and carrying `Closes #<parent>` | ✅ | ✅ | CVM's one PR, drafted until the chain finishes. Ours also carries the **slices table**: one row per slice, written by the run that merges it and never refreshed. Merged with `AGENT_PAT` so the PRD PR's CI and Follow-ups see each slice; the `GITHUB_TOKEN` fallback warns that neither ran |
 | A **finishing run** hands the PRD PR over | ❌ | ➕ | no model: merges the last slice PR, writes its row, then adds `agent:review` to the PRD PR for an **integration review** when more than one slice was merged, and marks it ready itself when one was |
 | Label adds and the merge run under `set -e` | — | ➕ | each warn-if-no-PAT `if` returns 0 when the PAT *is* set; without `-e` a failed add exits the step green, `failure()` never fires, and the slice PR sits in draft asking nobody for review |
@@ -173,7 +173,7 @@ else → `agent-implement`. Whichever does not own the shape calls `defer` and e
 nothing:
 
 - **no comment**, or a human sees two bot comments about one event saying opposite things;
-- **no label edit**, and this is the load-bearing half — the advance job re-adds `agent:implement`
+- **no label edit**, and this is the load-bearing half: the advance re-adds `agent:implement`
   to the parent to start the next slice, and a second job racing to remove it eats the chain
   silently.
 
@@ -382,12 +382,12 @@ PRD.
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
-| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the verdicts that announced them; the `auto-fix` input it replaced is a deprecated alias for one release. A job with no checkout, no toolchain and no agent, holding `pull-requests: write`; one of the two `AGENT_PAT` uses in the workflow, beside the advance job below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
-| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance job**, in `review` and in `fix`: re-adds `agent:implement` to the slice PR's **parent** on 🟢 and on 🟡 with no fix round starting — and, in `fix`, when the fix run pushed nothing and posted no out-of-scope note, and so ended the round itself. The same shape as the auto-fix job: no checkout, no model, `pull-requests: write` alone, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
+| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the verdicts that announced them; the `auto-fix` input it replaced is a deprecated alias for one release. The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
+| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance**, a step of the review's posting job and a job in `fix`, both running the composite action `.github/actions/advance-prd` (#257): re-adds `agent:implement` to the slice PR's **parent** on 🟢 and on 🟡 with no fix round starting, and, in `fix`, when the fix run pushed nothing and posted no out-of-scope note, and so ended the round itself. The same shape as the fix round: no checkout, no model, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
-| `contents: read` on the review **job** (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits. The workflow's other job, `resolve`, holds `contents: write` since #133 — closing a verified thread needs it — and checks nothing out and runs no agent (§10) |
+| `contents: read` on the review **job** (structurally cannot mutate the branch) | ❌ | ➕ | CVM needs `write` because it self-commits. The workflow's posting job holds `contents: write` (closing a verified thread needs it, #133), and checks nothing out and runs no agent; since #257 the review job holds no write scope at all (§10) |
 | **Records out-of-scope findings for filing** | ❌ | ➕ | #44. A third output channel beside the summary and the findings, serialised into the review body as a collapsed block with a versioned payload, and capped at three. A run that recorded none posts the payload alone, invisibly: the filing half reads the latest list, so recording nothing has to be sayable or a fixed finding files anyway. The review still cannot file: it marks the PR `agent:follow-ups` and stops (§8), and a separate workflow reads the body on merge (§1) |
 
 ---
@@ -479,7 +479,7 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | Author-association gate on PR comments / reviews / threads | ❌ | ➕ | all world-writable; `agent:fix` pushes code |
 | Explicit trust for our own bot identity | ❌ | ➕ | `github-actions[bot]` **and** `github-actions` — REST and GraphQL spell it differently |
 | GitHub token scrubbed from the agent's environment | ❌ | ➕ | `noSandbox` merges `process.env`; agent has no legitimate `gh` use |
-| `contents: read` on the review **job** | ❌ | ➕ | the job, not the workflow, since #133: the `resolve` job beside it holds `contents: write`, because GitHub refuses `resolveReviewThread` without it. That job runs no agent, checks nothing out and spends the grant on two fixed mutations — §10 |
+| `contents: read` on the review **job** | ❌ | ➕ | the job, not the workflow, since #133: the posting job beside it holds `contents: write`, because GitHub refuses `resolveReviewThread` without it. That job runs no agent, checks nothing out and spends the grant on two fixed mutations; since #257 the review job holds no write scope at all, §10 |
 | Agent never handles the trigger label / PR creation | ✅ | ✅ | workflow owns all state transitions |
 | Model token present in an unsandboxed agent | ⚠️ | ⚠️ | unavoidable under `noSandbox`; see the residual entry in `friction.md` |
 | Network egress restriction | ❌ | ❌ | not available on GitHub-hosted runners |
@@ -706,12 +706,13 @@ expensive to rediscover.
   already started* cannot be posted over a pull request where none did, which is the only way this
   feature can be wrong without anything failing.
 
-  The job itself is where decision 2 lands: `needs:` the review job, no checkout, no toolchain, no
-  agent, `pull-requests: write` alone, and — until the advance job below copied its shape — the only
-  use of `AGENT_PAT` in this workflow, so the PAT is nowhere near the job that reads untrusted
-  pull-request content and runs a model over it.
+  The job it runs in is where decision 2 lands: no checkout, no toolchain, no agent, so the PAT is
+  nowhere near the job that reads untrusted pull-request content and runs a model over it. That
+  was a job of its own, `auto-fix`, holding `pull-requests: write` alone, until #257 folded it into
+  the review's **posting job** as its last step, after `agent:review` comes off. The posting job is
+  in the same shape and holds the writes the posting spends (below).
   Without the PAT no round is announced at all since #201: the budget step starts none, and the
-  verdict asks for the label. And since #201 the job decides from live state: it adds nothing where
+  verdict asks for the label. And since #201 the step decides from live state: it adds nothing where
   `agent:fix` is already on the pull request or a newer verdict stands, and a round it fails to
   start is said on the pull request.
 
@@ -720,15 +721,15 @@ expensive to rediscover.
   adopter sets (and may set to 0), on the one verdict that says no reading is needed.
 
   **And since #176 review adds a second trigger label, on an issue rather than a pull request**
-  (PRD #171). The **advance job** — in `review`, and in `fix` for the round a fix run ends itself by
-  pushing nothing — re-adds `agent:implement` to a **slice PR's parent** when that slice's round
+  (PRD #171). The **advance**, the review's posting job's last step, and a job in `fix` for the
+  round a fix run ends itself by pushing nothing, both running the one composite action
+  `.github/actions/advance-prd` (#257), re-adds `agent:implement` to a **slice PR's parent** when that slice's round
   ends on a verdict the chain moves on from: 🟢, or 🟡 with no fix round starting. It is an arrow for the same reasons the return leg is one. It lands on the parent, never on
   a pull request, so no review round can be started by it. The run it starts either merges the slice
   PR — closing it, so no later round on that PR can fire the job again — or refuses into
   `agent:blocked`. And it is bounded by the number of sub-issues, since a finished PRD refuses the
-  label. It is in `auto-fix`'s shape — no checkout, no model, `pull-requests: write` alone, and
-  `AGENT_PAT` or nothing — and on by default, because it only ever fires on a slice PR, which only
-  the PRD chain opens.
+  label. It is in the fix round's shape (no checkout, no model, and `AGENT_PAT` or nothing), and
+  on by default, because it only ever fires on a slice PR, which only the PRD chain opens.
 - **A trigger label is on while its run works, and never outlives it** (#236). It used to be
   consumed on entry and swapped for `agent:in-progress`; now every run leaves its trigger label on
   and takes it off in its last step, on success, failure, refusal, timeout and cancel alike, which
@@ -752,19 +753,28 @@ expensive to rediscover.
   **Since #133 the invariant is about the review *job*, not the review workflow.** Closing a
   verified thread needs `contents: write`: `resolveReviewThread` is refused to an installation
   token without it, while the reply beside it is not. That was confirmed on a scratch pull request
-  on 2026-09-24. So the resolve runs in a sibling job, `resolve`, which holds `contents: write` and
-  `pull-requests: write` and nothing else. It checks nothing out, installs nothing and runs no agent.
-  Its input is the list the review runner wrote, in which every thread id is one the runner handed
-  the agent. The job that reads untrusted content and runs a model still holds `contents: read`.
-  The job holding the write has nothing to write with. `AGENT_PAT` was the alternative, and was
-  declined because it would have made resolving depend on a secret an adopter may not have set.
+  on 2026-09-24. So the resolve runs in a sibling job, which holds `contents: write`. It checks
+  nothing out, installs nothing and runs no agent. Its input is the list the review runner wrote,
+  in which every thread id is one the runner handed the agent. The job that reads untrusted content
+  and runs a model still holds `contents: read`. The job holding the write has nothing to write
+  with. `AGENT_PAT` was the alternative, and was declined because it would have made resolving
+  depend on a secret an adopter may not have set.
+
+  **Since #257 that sibling is the review's one posting job, and the review job holds no write at
+  all.** The `resolve` job resolved the threads after the review job had already posted the
+  overview, so the overview's *Resolved since last review* claimed closures before they happened,
+  and claimed them for good wherever the resolve failed. Now the review job runs the model and
+  posts nothing, and the posting job, which runs no model, resolves first and posts after: the
+  overview lists what actually resolved. It holds `contents: write`, `pull-requests: write` and
+  `statuses: write`, the union the `resolve`, `auto-fix` and `advance` jobs and the review job's
+  own posting held, so no caller's grant moved. The model never runs in a job with a write scope.
 
   The caller's grant has to move with the pin, and there is no degraded mode to fall back on: a
   called job cannot hold more than its caller granted, and GitHub refuses the elevation by failing
   the whole run before any job starts. `doctor` reports a review caller still on `contents: read`
   as an error for that reason.
 
-  That job is also the one exception to the next invariant: it sits in **no** concurrency group.
+  The posting job is also the one exception to the next invariant: it sits in **no** concurrency group.
   Joining would give it the waiter slot, and it could then evict a fix a human queued while the
   review ran. Overlap costs nothing instead. A fix run shown a thread that already carries its
   closing reply is told the close is the only thing outstanding on it and is not asked to answer
@@ -841,7 +851,7 @@ expensive to rediscover.
   and `agent-implement-prd` both fire on `agent:implement`, and partition by issue shape. Whichever
   does not own the shape defers: no comment, no label edit, `exit 0`. A comment there is a second
   voice contradicting the run that *is* handling the event; a label edit is a race — and the one
-  label at stake is `agent:implement` itself, which the PRD chain's advance job re-adds to start its
+  label at stake is `agent:implement` itself, which the PRD chain's advance re-adds to start its
   next slice.
   So the partition is settled before either preflight says anything at all, ahead of even the
   closed-issue refusal. See §2a; `tests/workflows.test.ts` holds both `defer` bodies to it.

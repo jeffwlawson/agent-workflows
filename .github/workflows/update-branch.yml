@@ -149,9 +149,9 @@ jobs:
 
       # The trigger label stays on while this run works and comes off in the
       # last step (#236), so the one label to take off here is a block an
-      # earlier run left. The line before it is the permission probe, as in
-      # review's `Transition labels`, where the reason is spelled out: it adds
-      # the label this run already holds, which changes nothing, and is not
+      # earlier run left. The line before it is the permission probe, the label write a short
+      # token feels first, ahead of the agent pass it would otherwise spend: it
+      # adds the label this run already holds, which changes nothing, and is not
       # `|| true`, so a short token fails the run before the checkout.
       - name: Transition labels
         if: steps.state.outputs.proceed == 'true'

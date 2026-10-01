@@ -178,10 +178,10 @@ const EVERY_SITE = [
  * The pins that are not one a file (#257): a reusable workflow's step naming
  * one of this repository's composite actions, `…/.github/actions/<name>@v<version>`.
  * GitHub fetches the action from the tag, so it moves with the release like
- * the workflow that names it. Two files carry one each, beside their `npm
- * exec` pin, so the release rewrites twenty pins in eighteen files.
+ * the workflow that names it. One file carries one, beside its `npm exec`
+ * pin, so the release rewrites nineteen pins in eighteen files.
  */
-const ACTION_SITES = [".github/workflows/fix.yml", ".github/workflows/review.yml"] as const;
+const ACTION_SITES = [".github/workflows/review.yml"] as const;
 const PIN_COUNT = EVERY_SITE.length + ACTION_SITES.length;
 
 describe("the version propagator rewrites every pin", () => {
@@ -217,11 +217,11 @@ describe("the version propagator rewrites every pin", () => {
     const root = fixture();
     write(
       root,
-      ".github/workflows/fix.yml",
-      read(root, ".github/workflows/fix.yml").replace(/\/advance-prd@v\d+\.\d+\.\d+/, "/advance-prd@main"),
+      ".github/workflows/review.yml",
+      read(root, ".github/workflows/review.yml").replace(/\/advance-prd@v\d+\.\d+\.\d+/, "/advance-prd@main"),
     );
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/fix\.yml: expected 2 version pins \[package, action\], found 1 \[package\]/);
+    expect(() => syncVersion(TARGET, root)).toThrow(/review\.yml: expected 2 version pins \[package, action\], found 1 \[package\]/);
   });
 
   it("leaves no site still naming the version it replaced", () => {

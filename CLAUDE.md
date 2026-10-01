@@ -87,8 +87,8 @@ commit, and no-ops if the version is already on the registry.
 **That first command is the whole release.** The version appears in twenty files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other eighteen — the `npm exec`
 pin in each of the six reusable workflows, the `uses:` ref in each of the two caller sets, and the
-`uses:` ref a reusable's step names a composite action in `.github/actions/` with (two of those,
-in `review.yml` and `fix.yml`, so twenty pins in the eighteen files). It
+`uses:` ref a reusable's step names a composite action in `.github/actions/` with (one of those,
+in `review.yml`, so nineteen pins in the eighteen files). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
 stages **by path** — the eighteen it wrote, never `-A`: npm's dirty-tree check passes untracked

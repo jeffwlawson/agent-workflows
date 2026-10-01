@@ -376,10 +376,10 @@ jobs:
             build=false
           elif [ "$landed" -gt 0 ]; then
             # **Finished** is read off what the handover leaves, never off the
-            # draft state alone: review marks a PR ready after every round
-            # that does not start a fix (review.yml's `Mark PR ready for
-            # review`), slice rounds on the PRD PR included, so a ready PRD PR
-            # with more than one slice may still be waiting for its handover.
+            # draft state alone: review keeps a PRD PR a draft through every
+            # slice round (review.yml's `Mark PR ready for review`), but a
+            # human can mark one ready by hand, so a ready PRD PR with more
+            # than one slice may still be waiting for its handover.
             # With more than one slice landed, the handover's mark in the body
             # is the test, and the handover takes it back out again if it
             # cannot add the label the mark announces. With one, ready is the
@@ -751,9 +751,11 @@ jobs:
       # a run that finds slices built and no PRD PR open, which is a run that
       # died between its push and here.
       #
-      # A **draft**, meant to stay one until the PRD is done; review still
-      # marks it ready after a slice round today, so nothing here reads the
-      # draft state as "finished" on a PRD of more than one slice. Its body is the **frame** (#218), written once:
+      # A **draft**, which stays one until the PRD is done: review marks it
+      # ready only on the final review's approval, and the finishing run on a
+      # one-slice PRD. Nothing here reads the draft state as "finished" on a
+      # PRD of more than one slice, since a human can still mark it ready by
+      # hand. Its body is the **frame** (#218), written once:
       # the `Closes` block, a note on what the chain does here, and the
       # summary block the PRD PR's review writes. The `Closes` block is
       # workflow-owned, between its own markers, which the review's rewrite of

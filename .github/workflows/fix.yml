@@ -55,18 +55,16 @@ on:
       AGENT_PAT:
         description: >-
           User PAT, used to check the branch out, push it, add the
-          `agent:review` that asks for the re-review, mark a pull request
-          ready where this run ends the round, and re-add `agent:implement` to
-          a slice PR's parent when it does. A label made with `GITHUB_TOKEN`
+          `agent:review` that asks for the re-review, and mark a pull request
+          ready where this run ends the round. A label made with `GITHUB_TOKEN`
           triggers no workflow, a push made with it starts CI that waits for a
           maintainer's approval, and `GITHUB_TOKEN` cannot convert a draft at
           all (docs/ADOPTING.md §1). Optional, and every one of those degrades
           rather than fails: the push still lands and its CI waits for
           approval (the review reads that as unknown, never green, #221), the
           label still goes on but starts
-          no review until a human re-adds it, the pull request stays a draft
-          under a warning saying so, and a slice PR says which re-label moves
-          its chain on by hand.
+          no review until a human re-adds it, and the pull request stays a
+          draft under a warning saying so.
         required: false
 
 jobs:
@@ -96,14 +94,6 @@ jobs:
     concurrency:
       group: agent-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
-    # What the `advance` job below reads: whether this run pushed, and whether
-    # it posted an out-of-scope note (#213). Either asks for a re-review, which
-    # is what ends the round then. A job cannot read another job's steps, so
-    # the only way across is an output. See *Push branch*, which writes its
-    # output on both arms.
-    outputs:
-      pushed: ${{ steps.push.outputs.pushed }}
-      noted: ${{ steps.notes.outputs.posted }}
     # Granted by the caller, bounded here. A called workflow can only *downgrade*
     # the token it is handed, so this block cannot be widened from the caller's
     # side — and the caller's identical block is the grant, without which there
@@ -382,10 +372,10 @@ jobs:
       # `agent:blocked`, and the run ends green. But it is not a round that
       # ended, the way one that declined everything is: nothing was read, so
       # nothing was decided. The output it writes skips the push, so `pushed`
-      # stays unset, and with it `Mark PR ready for review` and the `advance`
-      # job. Otherwise a slice PR whose review failed, given `agent:fix` by
-      # hand, would have its block cleared and the chain would merge it
-      # unreviewed; and a draft PRD PR would be handed over early.
+      # stays unset, and with it `Mark PR ready for review` and the re-review a
+      # PRD PR asks for whatever was pushed. Otherwise a draft would be handed
+      # over with nothing done, and on a PRD PR a review would be asked for
+      # with nothing for it to rule on.
       - name: Say there was nothing to do
         id: nothing
         if: steps.state.outputs.proceed == 'true' && success()
@@ -585,6 +575,18 @@ jobs:
       # the loss #213 was written about. The budget below bounds it as it
       # bounds a push.
       #
+      # **On a PRD PR, every fix run that got as far as the push asks for a
+      # review, whether or not it pushed** (PRD #222). That review is what ends
+      # the round, and on a PRD PR the end of a round is a verdict, which the
+      # review's `advance` job either moves the chain on from or parks it at,
+      # with a comment on the parent. A run that declined every finding and
+      # asked for nothing would end the round with no verdict, and the chain
+      # would sit on "fix round started" saying nothing. `== 'false'`, never
+      # `!= 'true'`: the push writes its output on both arms, and unset is a
+      # run that never reached it. The early stop (#202) bounds the extra
+      # review: a fix round that closed nothing parks rather than starting
+      # another.
+      #
       # This is the `agent:fix` → `agent:review` leg, which docs/parity.md §10
       # already calls safe, and what it rests on is the bounds under it: the
       # review this asks for adds `agent:fix` back only within the pull
@@ -612,7 +614,8 @@ jobs:
       - name: Request re-review
         if: >-
           steps.state.outputs.proceed == 'true' && success() &&
-          (steps.push.outputs.pushed == 'true' || steps.notes.outputs.posted == 'true')
+          (steps.push.outputs.pushed == 'true' || steps.notes.outputs.posted == 'true' ||
+           (startsWith(github.event.pull_request.head.ref, 'agent/prd-') && steps.push.outputs.pushed == 'false'))
         env:
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
@@ -685,6 +688,9 @@ jobs:
       # see whether a human or a review added its label — and on a pull request
       # review already marked ready this is a no-op.
       #
+      # **Never on a PRD PR** (PRD #222), which stays a draft until its final
+      # review approves it, and whose fix runs all hand over to a review above.
+      #
       # MUST use AGENT_PAT, for review's reason: `GITHUB_TOKEN` cannot convert a
       # draft at all, whatever it is granted. A warning rather than a failure,
       # also for review's reason — a pull request stuck in draft is not worth
@@ -694,7 +700,8 @@ jobs:
         if: >-
           steps.state.outputs.proceed == 'true' && success() &&
           steps.push.outputs.pushed != 'true' && steps.notes.outputs.posted != 'true' &&
-          steps.nothing.outputs.nothing != 'true'
+          steps.nothing.outputs.nothing != 'true' &&
+          !startsWith(github.event.pull_request.head.ref, 'agent/prd-')
         env:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
@@ -774,54 +781,3 @@ jobs:
       - name: Always remove the trigger label
         if: always()
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
-
-  # The PRD chain's advance, where this run is what ends a slice PR's round
-  # (#176, PRD #171). `review.yml`'s posting job is the one that advances on a
-  # verdict and carries the reasoning; this is the same advance, for the round
-  # a fix run ends itself.
-  #
-  # **Which runs end the round**: one that pushed nothing and posted no
-  # out-of-scope note, and so asked for no re-review: the arm *Mark PR ready
-  # for review* above hands back to the human. A run that pushed, or posted a
-  # note (#213), has handed the round to the re-review it asked for, and that
-  # review's verdict decides; advancing here too would build the next slice
-  # under a re-review still in flight. So a slice whose fix declined every
-  # finding moves the chain on rather than sitting on "fix round started"
-  # forever. `== 'false'` rather than `!= 'true'`: the push writes the output on
-  # both arms, and an unset one is a run that never got as far as the push —
-  # a refused or failed run, or one with nothing to do (#253), which parks
-  # the chain. A failed run skips this job through `needs:` besides. `noted`
-  # is the other way round, `!= 'true'`, because unset there is a run that
-  # posted no note.
-  #
-  # Same scope as the review's posting job spends on it, and the same step:
-  # both run the `advance-prd` action, so there is one copy to say anything.
-  advance:
-    needs: fix
-    if: >-
-      github.event.label.name == 'agent:fix' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'agent/slice-') &&
-      needs.fix.outputs.pushed == 'false' &&
-      needs.fix.outputs.noted != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # No concurrency group, for the reason the review's posting job is in none.
-    permissions:
-      # The no-PAT arm's comment on the slice PR, and nothing else. The label on
-      # the parent goes on with `AGENT_PAT` or not at all, so the workflow token
-      # is never asked to write an issue and `issues: write` stays out of this
-      # job (docs/parity.md §10) and out of every caller's grant.
-      pull-requests: write
-    steps:
-      # The one copy of what advancing is (#257), shared with the review's
-      # posting job: `.github/actions/advance-prd`, pinned to this release like
-      # the runner the fix job runs. A composite rather than a second copy of the
-      # script, so the two cannot come to say different things.
-      - name: Advance the PRD chain
-        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.5
-        with:
-          pr-number: ${{ github.event.pull_request.number }}
-          head-ref: ${{ github.event.pull_request.head.ref }}
-          has-pat: ${{ secrets.AGENT_PAT != '' }}
-          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}

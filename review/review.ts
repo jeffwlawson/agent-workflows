@@ -37,6 +37,7 @@ import {
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
 import { progressAtRoundEnd } from "../shared/progress-list.js";
+import { describeRedCheck, readRedCheck, renderRedCheck } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
@@ -260,6 +261,13 @@ try {
     }.`,
   );
 
+  // The red check's report (#232), where the caller configured the check: the
+  // `red-check` job's artifact, downloaded beside the CI evidence. Whether it is
+  // configured is the workflow's to say, since a check that is off and one
+  // whose report was lost both leave no file, and only the second is unknown.
+  const redCheck = readRedCheck(process.env["RED_CHECK_CONFIGURED"] === "true", process.env["RED_CHECK_FILE"]);
+  console.log(`Red check: ${describeRedCheck(redCheck)}.`);
+
   // The park comment for a round that does not finish (PRD #222), written now
   // because a failure later has no chance to: the advance job posts it on the
   // PRD's parent if the review or its posting fails. What is open is what was
@@ -359,6 +367,7 @@ try {
       ACCEPTANCE_CRITERIA: renderCriteriaForReview(criteria, context.prBody),
       DISCUSSION: context.discussion || "(no collaborator comments)",
       CI_STATUS: readCiStatus(),
+      RED_CHECK: renderRedCheck(redCheck, headSha),
       HISTORY: describeHistory(history),
       OPEN_FINDINGS: renderCarriedFindings(context.carriedFindings),
       SETTLED_FINDINGS: renderSettledFindings(context.settledFindings),

@@ -7904,4 +7904,26 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
       }
     },
   );
+
+  /**
+   * The review reads the report (#232): fetched only where the check is on,
+   * and never a step that can fail the review, since a report that did not
+   * arrive is a fact the runner reads as unknown. Whether it is on goes to the
+   * runner beside the file, since "off" and "lost" both leave no file.
+   */
+  it("hands the review its report, and whether the check is on", () => {
+    const steps = stepsOf(REVIEW);
+    const fetch = steps.find((s) => s.name === "Fetch the red check's report");
+    const agent = steps.find((s) => s.name === "Run review agent");
+    const names = steps.map((s) => s.name ?? "");
+
+    expect(fetch?.uses).toMatch(/^actions\/download-artifact@/);
+    expect(fetch?.with?.["name"]).toBe("agent-red-check");
+    expect(fetch?.with?.["path"]).toBe("${{ runner.temp }}/red-check");
+    expect(fetch?.if).toBe("steps.state.outputs.proceed == 'true' && inputs.red-check-command != ''");
+    expect(fetch?.["continue-on-error"]).toBe(true);
+    expect(names.indexOf("Fetch the red check's report")).toBeLessThan(names.indexOf("Run review agent"));
+    expect(agent?.env?.["RED_CHECK_CONFIGURED"]).toBe("${{ inputs.red-check-command != '' }}");
+    expect(agent?.env?.["RED_CHECK_FILE"]).toBe("${{ runner.temp }}/red-check/red_check.json");
+  });
 });

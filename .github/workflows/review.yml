@@ -295,11 +295,29 @@ jobs:
           echo "base=${base}" >> "$GITHUB_OUTPUT"
 
           pathspecs=()
+          excludes=()
           while IFS= read -r glob; do
             glob="${glob#"${glob%%[![:space:]]*}"}"
             glob="${glob%"${glob##*[![:space:]]}"}"
-            if [ -n "$glob" ]; then pathspecs+=(":(glob)${glob}"); fi
+            if [ -n "$glob" ]; then
+              pathspecs+=(":(glob)${glob}")
+              excludes+=(":(exclude,glob)${glob}")
+            fi
           done <<< "$TEST_GLOBS"
+
+          # The other half, for the review (#232): every non-test file the PR
+          # changes, deleted ones included, since a behaviour change in one is
+          # what a red test has to cover. Written before the test files are
+          # looked for, so a PR that changes source and no test still says so.
+          sources=()
+          while IFS= read -r -d '' file; do
+            [[ "$file" == *$'\n'* ]] || sources+=("$file")
+          done < <(git diff -z --name-only --no-renames "$base" "$head" -- . "${excludes[@]}")
+          if [ "${#sources[@]}" -gt 0 ]; then
+            printf '%s\n' "${sources[@]}" > "${RUNNER_TEMP}/red_check_source.txt"
+          else
+            : > "${RUNNER_TEMP}/red_check_source.txt"
+          fi
 
           placed=()
           while IFS= read -r -d '' file; do
@@ -480,6 +498,14 @@ jobs:
           if os.path.exists(files):
               with open(files, encoding="utf-8", errors="replace") as listed:
                   report["files"] = [line for line in listed.read().splitlines() if line]
+
+          # The non-test files the PR changes, where the merge-base was found
+          # to list them against. Absent, not empty, where it was not: an empty
+          # list says the PR changes no source.
+          source = os.path.join(temp, "red_check_source.txt")
+          if os.path.exists(source):
+              with open(source, encoding="utf-8", errors="replace") as listed:
+                  report["source"] = [line for line in listed.read().splitlines() if line]
 
           if status == "ready":
               code = os.environ.get("EXIT_CODE", "")
@@ -1579,6 +1605,23 @@ jobs:
           echo "--- collected CI context ---"
           cat "$out"
 
+      # The red check's report (#232), the `red-check` job's artifact, read as
+      # evidence the way the CI results above are. Into a directory of its own,
+      # so nothing it holds lands beside a file this job writes.
+      #
+      # Only where the check is configured, and `continue-on-error`: a report
+      # that never arrived (the job timed out, or failed before its upload)
+      # leaves no file, which the runner reads as *unknown*, never as "no red
+      # tests". `RED_CHECK_CONFIGURED` below is what keeps that apart from a
+      # check that is off, which leaves no file either.
+      - name: Fetch the red check's report
+        if: steps.state.outputs.proceed == 'true' && inputs.red-check-command != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-red-check
+          path: ${{ runner.temp }}/red-check
+
       # The runner package is published to **GitHub Packages**, not npmjs, so the
       # `npx` below resolves from `https://npm.pkg.github.com` and needs a token.
       # `actions/setup-node` writes the `.npmrc` rather than this file doing it by
@@ -1647,6 +1690,11 @@ jobs:
           # the agent reads; the second is what the verdict is derived from, and
           # keeping them apart is what stops the derivation reading prose.
           CI_RESULT_FILE: ${{ runner.temp }}/ci_result.txt
+          # The red check's report and whether it is on (#232). Three cases the
+          # review keeps apart: off, on with no readable report, and ran. Like
+          # the CI evidence, it is never a fact the verdict is derived from.
+          RED_CHECK_CONFIGURED: ${{ inputs.red-check-command != '' }}
+          RED_CHECK_FILE: ${{ runner.temp }}/red-check/red_check.json
           # What *Settle the fix-round budget* decided (#201): whether an
           # automatic fix round starts if this review recommends changes, and
           # the budget and rounds spent it decided from. The derivation adds

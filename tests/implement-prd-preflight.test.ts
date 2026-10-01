@@ -95,6 +95,9 @@ const pull = (
 /** The PRD PR, #201: a draft from the PRD branch into the base. */
 const PRD_PR = pull(201, PRD_BRANCH, "main");
 
+/** What the handover of a PRD of more than one slice leaves in the PRD PR's body. */
+const FINAL_REVIEW = "<!-- agent:final-review requested -->";
+
 /**
  * What the lookups must look past: an ordinary PR into the base branch, and
  * the PRD PR of PRD #1710, whose branch starts with this one's number and is
@@ -500,18 +503,70 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outputOf(outcome, "finishing")).toBe("");
   });
 
-  /** A PRD PR handed over already is a finished PRD. */
-  it("refuses a PRD whose sub-issues are all built and whose PRD PR is ready as finished", () => {
+  /**
+   * A PRD PR handed over already is a finished PRD. With more than one slice,
+   * that is the final-review mark the handover writes, whatever the draft
+   * state: review marks the PRD PR ready after slice rounds too.
+   */
+  it.each([true, false])(
+    "refuses a PRD of several slices whose final review was requested as finished (draft: %s)",
+    (isDraft) => {
+      const outcome = runPreflight({
+        pulls: [...BYSTANDERS, { ...PRD_PR, isDraft, body: `Closes #171\n\n${FINAL_REVIEW}` }],
+        built: [172, 173, 174],
+        statusPages: APPROVED,
+      });
+
+      expect(outputOf(outcome, "refused")).toBe("true");
+      expect(refusal(outcome)).toContain(
+        "Every sub-issue of this PRD is built and the final review of PRD PR #201 was requested",
+      );
+      expect(refusal(outcome)).not.toMatch(/agent:review/);
+      expect(writes(outcome).some((argv) => argv.includes("agent:blocked"))).toBe(false);
+    },
+  );
+
+  /**
+   * The sequence the draft test got wrong: slice 1's round ended and review
+   * marked the PRD PR ready, as it does after any round that starts no fix,
+   * and every later slice was built on it. Ready is not handed over, so the
+   * last approval still makes the finishing run, and the final review is
+   * still asked for.
+   */
+  it("makes the finishing run of a PRD of several slices whose PRD PR review already marked ready", () => {
     const outcome = runPreflight({
-      pulls: [...BYSTANDERS, { ...PRD_PR, isDraft: false }],
+      pulls: [...BYSTANDERS, { ...PRD_PR, isDraft: false, body: "Closes #171" }],
       built: [172, 173, 174],
+      statusPages: APPROVED,
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "finishing")).toBe("true");
+    expect(outputOf(outcome, "landed")).toBe("3");
+    expect(outcome.writes).toEqual([]);
+  });
+
+  /** With one slice, ready is the whole handover, so ready is finished, whoever marked it. */
+  it("refuses a one-slice PRD whose PRD PR is ready as finished", () => {
+    const outcome = runPreflight({
+      issue: issue(["OPEN"]),
+      pulls: [...BYSTANDERS, { ...PRD_PR, isDraft: false }],
+      built: [172],
       statusPages: APPROVED,
     });
 
     expect(outputOf(outcome, "refused")).toBe("true");
     expect(refusal(outcome)).toContain("Every sub-issue of this PRD is built and its PRD PR is ready for you.");
-    expect(refusal(outcome)).not.toMatch(/agent:review/);
     expect(writes(outcome).some((argv) => argv.includes("agent:blocked"))).toBe(false);
+  });
+
+  it("makes the finishing run of a one-slice PRD whose PRD PR is still a draft", () => {
+    const outcome = runPreflight({ issue: issue(["OPEN"]), built: [172], statusPages: APPROVED });
+
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "finishing")).toBe("true");
+    expect(outputOf(outcome, "landed")).toBe("1");
   });
 
   /**
@@ -629,7 +684,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
    */
   it.skipIf(!onPath("gh"))("gh accepts the pr list call the PRD PR lookup composes", () => {
     const run = preflight().run ?? "";
-    const call = 'gh pr list --state open --head "$prd_branch" --limit 100 --json number,headRefOid,isDraft,labels';
+    const call = 'gh pr list --state open --head "$prd_branch" --limit 100 --json number,headRefOid,isDraft,labels,body';
 
     expect(run).toContain(call);
 
@@ -715,8 +770,6 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
   });
 });
 
-const FINAL_REVIEW = "<!-- agent:final-review requested -->";
-
 /** The handover, handed PRD PR #201 and how many slices landed, as the finishing run has them. */
 const runHandover = (landed: number, options: { readonly body?: string; readonly pat?: boolean } = {}): Outcome =>
   runStep("handover", {
@@ -763,6 +816,30 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
 
     expect(writes(outcome).some((argv) => argv[2] === "PATCH")).toBe(false);
     expect(prWrites(outcome)).toHaveLength(2);
+  });
+
+  /**
+   * The mark is what the preflight reads "finished" by, so a label that did
+   * not go on takes it back out: left in, the retry the failure comment
+   * offers would be refused as finished, and no final review would ever run.
+   */
+  it("takes the final-review mark back out when the label does not go on", () => {
+    const outcome = runStep("handover", {
+      pulls: [...BYSTANDERS, { ...PRD_PR, body: "Closes #171" }],
+      env: { PRD_PR: "201", LANDED: "3", HAS_PAT: "true", GH_REPLAY_LABEL_FAILURE: "1" },
+    });
+    const all = writes(outcome);
+    const added = all.findIndex((argv) => argv.includes("--add-label"));
+    const restored = all.findIndex((argv, i) => i > added && argv[2] === "PATCH");
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain("so its final review was not requested. Trying again resumes the handover");
+    expect(all.filter((argv) => argv[2] === "PATCH").map((argv) => argv.at(-1))).toEqual([
+      `body=Closes #171\n\n${FINAL_REVIEW}`,
+      "body=Closes #171",
+    ]);
+    expect(added).toBeGreaterThan(0);
+    expect(restored).toBeGreaterThan(added);
   });
 
   it("refuses without AGENT_PAT rather than add a label that starts nothing, touching nothing", () => {

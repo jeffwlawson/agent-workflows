@@ -350,7 +350,7 @@ jobs:
           # The PRD PR, found by its **head**, the PRD branch.
           prd_pr=""
           if [ -n "$prd_sha" ]; then
-            prd_prs=$(gh pr list --state open --head "$prd_branch" --limit 100 --json number,headRefOid,isDraft,labels) \
+            prd_prs=$(gh pr list --state open --head "$prd_branch" --limit 100 --json number,headRefOid,isDraft,labels,body) \
               || block "Couldn't look for the PRD PR from \`${prd_branch}\`, so nothing was built."
             if [ "$(jq 'length' <<< "$prd_prs")" -gt 1 ]; then
               block "$(jq -r 'map("#\(.number)") | join(", ")' <<< "$prd_prs") are all open from this PRD's branch \`${prd_branch}\`, so it can't tell which one is the PRD PR. Close all but one."
@@ -364,7 +364,8 @@ jobs:
           #   nothing | -                   | checks the links, builds the first slice
           #   some    | none open           | opens it and asks for its review,
           #           |                     |   since a run died after its push
-          #   some    | ready, none left    | refused: the PRD is finished
+          #   some    | handed over, none   | refused: the PRD is finished
+          #           |   left              |
           #   some    | head not approved   | refused, naming the ways on
           #   some    | approved, some left | builds the next slice
           #   some    | approved, none left | finishing: hands the PRD PR over
@@ -374,8 +375,23 @@ jobs:
             echo "Slices of #${ISSUE_NUMBER} are on \`${prd_branch}\` but no PRD PR is open from it; opening one and asking for its review. Nothing is built."
             build=false
           elif [ "$landed" -gt 0 ]; then
-            if [ -z "$next" ] && [ "$(jq -r '.[0].isDraft' <<< "$prd_prs")" != "true" ]; then
-              refuse "Every sub-issue of this PRD is built and its PRD PR is ready for you. To build more, add a sub-issue first."
+            # **Finished** is read off what the handover leaves, never off the
+            # draft state alone: review marks a PR ready after every round
+            # that does not start a fix (review.yml's `Mark PR ready for
+            # review`), slice rounds on the PRD PR included, so a ready PRD PR
+            # with more than one slice may still be waiting for its handover.
+            # With more than one slice landed, the handover's mark in the body
+            # is the test, and the handover takes it back out again if it
+            # cannot add the label the mark announces. With one, ready is the
+            # whole handover, so ready is finished, whoever marked it.
+            if [ -z "$next" ]; then
+              final_review="<!-- agent:final-review requested -->"
+              if [ "$landed" -gt 1 ] && [[ "$(jq -r '.[0].body // ""' <<< "$prd_prs")" == *"$final_review"* ]]; then
+                refuse "Every sub-issue of this PRD is built and the final review of PRD PR #${prd_pr} was requested, so it's yours from here. To build more, add a sub-issue first."
+              fi
+              if [ "$landed" -eq 1 ] && [ "$(jq -r '.[0].isDraft' <<< "$prd_prs")" != "true" ]; then
+                refuse "Every sub-issue of this PRD is built and its PRD PR is ready for you. To build more, add a sub-issue first."
+              fi
             fi
 
             # The ways on from a round that did not end on an approval, said
@@ -735,8 +751,9 @@ jobs:
       # a run that finds slices built and no PRD PR open, which is a run that
       # died between its push and here.
       #
-      # A **draft**, which it stays through every slice round: "ready" means
-      # the whole PRD is ready. Its body is the **frame** (#218), written once:
+      # A **draft**, meant to stay one until the PRD is done; review still
+      # marks it ready after a slice round today, so nothing here reads the
+      # draft state as "finished" on a PRD of more than one slice. Its body is the **frame** (#218), written once:
       # the `Closes` block, a note on what the chain does here, and the
       # summary block the PRD PR's review writes. The `Closes` block is
       # workflow-owned, between its own markers, which the review's rewrite of
@@ -866,7 +883,8 @@ jobs:
       # records that it is requested in the PRD PR's body, where a review of
       # the PRD PR reads it from, and then adds `agent:review`. The record goes
       # first, so the review the label starts finds it, and a retry writes it
-      # once.
+      # once. It is also what the preflight reads the PRD as finished by, so
+      # a label add that fails takes it back out before the step stops.
       #
       # Needs AGENT_PAT either way, and refuses without it rather than doing
       # half. `gh pr ready` cannot convert a draft under GITHUB_TOKEN, and a
@@ -905,8 +923,16 @@ jobs:
             gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
             # Removed first, as every trigger label the loop adds (#236).
             gh pr edit "$PRD_PR" --remove-label "agent:review" || true
-            gh pr edit "$PRD_PR" --add-label "agent:review" \
-              || block "Couldn't add \`agent:review\` to PRD PR #${PRD_PR}, so its final review was not requested. Trying again resumes the handover and builds nothing."
+            # The mark is what the preflight calls this PRD finished by, so a
+            # label that did not go on takes it back out: left in, the retry
+            # would be refused as finished with no final review ever asked for.
+            if ! gh pr edit "$PRD_PR" --add-label "agent:review"; then
+              if [[ "$body" != *"$mark"* ]]; then
+                gh api -X PATCH "repos/${GH_REPO}/pulls/${PRD_PR}" -f body="${body}" >/dev/null \
+                  || block "Couldn't add \`agent:review\` to PRD PR #${PRD_PR}, and couldn't take back out the note that its final review is due. Add \`agent:review\` to PRD PR #${PRD_PR} by hand."
+              fi
+              block "Couldn't add \`agent:review\` to PRD PR #${PRD_PR}, so its final review was not requested. Trying again resumes the handover and builds nothing."
+            fi
             echo "Asked for the final review of PRD PR #${PRD_PR}, over its ${LANDED} slices."
           else
             gh pr ready "$PRD_PR" \

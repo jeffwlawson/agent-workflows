@@ -8087,8 +8087,8 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
  * and is handed no token of its own choosing, and every fetch and push in a job
  * that checks out carries its token on its own command, as a masked header
  * computed in the same step. A push takes the push token from its step's `env:`
- * and a fetch the job's read token, so the PAT is in no step's env but a
- * push's, and never in the agent's.
+ * and a fetch the job's read token, so no fetch holds the PAT, and neither
+ * does the job's `env:` or the agent's step.
  *
  * Over every checkout rather than the code-writing ones, since the rule costs
  * nothing where nothing is pushed and the review job's token is worth keeping
@@ -8150,12 +8150,20 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
   });
 
   /**
-   * The PAT is in a push step's env and nowhere else in the job: not the job's
-   * own `env:`, and above all not the step that runs the agent. That step's
-   * `NODE_AUTH_TOKEN` is the job token, for the install, and the runner
-   * removes it before the agent starts (`scrubGitHubTokens`).
+   * The PAT is never in the job's own `env:`, and above all not in the step
+   * that runs the agent. That step's `NODE_AUTH_TOKEN` is the job token, for
+   * the install, and the runner removes it before the agent starts
+   * (`scrubGitHubTokens`). A step whose env names `PUSH_TOKEN` must push with
+   * it.
+   *
+   * That is all this asserts. Other steps do hold the PAT, and every one of
+   * them runs after the agent: the transcript redaction, which needs it to take
+   * it out of the transcript, and the steps that act on the PR or issue with
+   * it as `GH_TOKEN` (opening, labelling, handing over). The one step that holds it before the agent is
+   * implement-prd's `Merge the default branch into the PRD branch`, a push
+   * that writes nothing into the checkout.
    */
-  it.each(checkingOut.map((j) => [label(j), j] as const))("%s: holds the PAT in no env but a push's", (_, { job }) => {
+  it.each(checkingOut.map((j) => [label(j), j] as const))("%s: keeps the PAT out of the job's env and the agent's step", (_, { job }) => {
     expect(JSON.stringify(job.env ?? {})).not.toContain("AGENT_PAT");
     for (const step of job.steps ?? []) {
       if (step.env?.["PUSH_TOKEN"] !== undefined) {

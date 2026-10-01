@@ -388,9 +388,10 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
 });
 
 /**
- * The progress list's two writers in a workflow (#246), each splicing a list a
+ * The progress list's three writers in a workflow (#246), each splicing a list a
  * runner rendered into the PRD PR's body: the advance job at every ending of a
- * round, and the build run that reuses a PRD PR once its slice is pushed. Both
+ * round, the build run that reuses a PRD PR once its slice is pushed, and the
+ * build run that stops after its runner showed the slice building. All
  * keep the rule `spliceProgressList` keeps, and are held to it here: every
  * byte outside the markers kept, a list appended to a body with none, and
  * half a list, or two, not written.
@@ -501,4 +502,76 @@ describe.skipIf(!CAN_RUN)("the progress list is spliced into the PRD PR's body",
     expect(outcome.status, outcome.stdout).toBe(0);
     expect(outcome.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
   });
+});
+
+/**
+ * A build run that stops after its runner showed the slice building writes
+ * the list back (#246): the one the runner rendered for nothing pushed, or for
+ * the slice pushed, whichever happened. A failed build starts no round, so no
+ * advance job would.
+ */
+describe.skipIf(!CAN_RUN)("a stopped build run writes the progress list back", () => {
+  const building = renderProgressList({ ...PROGRESS, running: { kind: "build", subIssue: 16 }, verdict: "approval" });
+  const bodies: readonly [string, string | null][] = [
+    ["a body with a list", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\n${building}\n\nMine.\r\n`],
+    ["a body with none", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\nMine.`],
+    ["a body ending in a newline", "Mine.\n"],
+    ["no body", null],
+    ["half a list", `Mine.\n${PROGRESS_START}\nrest`],
+    ["two lists", `${building}\n${building}`],
+  ];
+
+  const stopped = (
+    body: string | null,
+    env: Record<string, string> = {},
+    files: Record<string, string> = { "progress_stopped.md": "stopped list", "progress_stopped_pushed.md": "pushed list" },
+  ): Outcome =>
+    runStep(
+      stepRun("implement-prd", "implement-prd", "Show the stopped slice in the progress list"),
+      { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END, ...env },
+      { "pr.json": JSON.stringify({ number: 201, body }), ...files },
+    );
+
+  it.each(bodies)("over %s keeps spliceProgressList's rule", (_case, body) => {
+    const outcome = stopped(body);
+    const expected = spliceProgressList(body ?? "", "stopped list");
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    if (expected === undefined) {
+      expect(outcome.sent).toBeUndefined();
+      expect(outcome.stdout).toContain("half a progress list, or two");
+    } else {
+      expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected });
+    }
+  });
+
+  it.each([
+    ["nothing was pushed", "", "stopped list"],
+    ["the slice was pushed", "0123456789abcdef", "pushed list"],
+  ])("writes the list for a run that stopped where %s", (_case, pushed, written) => {
+    const outcome = stopped("Mine.", { PUSHED: pushed });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: `Mine.\n\n${written}` });
+  });
+
+  it("writes nothing where no PRD PR is open, or the runner never showed the slice building", () => {
+    const unopened = stopped("Mine.", { PRD_PR: "" });
+    expect(unopened.status, unopened.stdout).toBe(0);
+    expect(unopened.gh).toEqual([]);
+
+    const unrendered = stopped("Mine.", {}, {});
+    expect(unrendered.status, unrendered.stdout).toBe(0);
+    expect(unrendered.gh).toEqual([]);
+  }, 2 * SUBPROCESS_TIMEOUT);
+
+  it("goes on with a warning where the list cannot be read or written", () => {
+    const unread = stopped("Mine.", { GH_FAIL: "read" });
+    expect(unread.status, unread.stdout).toBe(0);
+    expect(unread.stdout).toContain("::warning::Could not read PRD PR #201");
+
+    const unwritten = stopped("Mine.", { GH_FAIL: "patch" });
+    expect(unwritten.status, unwritten.stdout).toBe(0);
+    expect(unwritten.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
+  }, 2 * SUBPROCESS_TIMEOUT);
 });

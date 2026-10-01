@@ -65,8 +65,9 @@ name: Agent Implement PRD (reusable)
 #
 # The chain's state is the **progress list** in the PRD PR's body (#246),
 # rendered by `shared/progress-list.ts` from live state: by the runner as a
-# slice starts building and as its round is asked for, and by `review`'s
-# advance job at every ending of a round. A build run comments on the
+# slice starts building and as its round is asked for, by `review`'s advance
+# job at every ending of a round, and by a build run that stops, so no slice
+# is left building with nothing running. A build run comments on the
 # sub-issue it starts and puts one line on the parent; the run past an
 # approval notes the approved slice on its sub-issue. No step adds a label
 # for progress, and no step closes a sub-issue.
@@ -861,6 +862,10 @@ jobs:
           # The PRD PR, whose progress list the runner shows this slice
           # building in (#246); empty on the first slice, which opens it.
           PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
+          # The merge of the default branch pushed before it, which leaves the
+          # PRD PR's head unreviewed: the list a stopped run writes back shows
+          # the slice before this one parked, not approved.
+          MERGED: ${{ steps.catch_up.outputs.merged }}
           OUTPUT_DIR: ${{ runner.temp }}
         # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
         # whole point. `npx pkg@version` reuses a package already present in the
@@ -1309,6 +1314,66 @@ jobs:
             gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
           fi
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
+
+      # A build run that stops leaves no slice building (#246). The runner
+      # showed this sub-issue building in the PRD PR's progress list before
+      # the agent started, and a run that fails or is cancelled after that
+      # starts no round, so no advance job writes the list again. This writes
+      # back the one the runner rendered for a stopped run: the sub-issue not
+      # started where nothing of it was pushed, and parked where it was, with
+      # its review the way on, as the comment above says.
+      #
+      # Only where the runner rendered one, which it does before it writes the
+      # building list, so a list that never showed the slice building is left
+      # alone. Spliced as every writer of the list splices it
+      # (`spliceProgressList`, held equal by a test). Never fails the job, and
+      # after the comment and the labels: the list is a view of the chain.
+      - name: Show the stopped slice in the progress list
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && (failure() || cancelled())
+        env:
+          PUSHED: ${{ steps.push.outputs.head }}
+          PRD_PR: ${{ steps.prd_pr.outputs.number || steps.preflight.outputs.prd_pr }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # `PROGRESS_START` and `PROGRESS_END` in `shared/progress-list.ts`;
+          # a test holds them equal.
+          PROGRESS_START: "<!-- agent:progress -->"
+          PROGRESS_END: "<!-- /agent:progress -->"
+        run: |
+          set -uo pipefail
+          list="${RUNNER_TEMP}/progress_stopped.md"
+          [ -n "$PUSHED" ] && list="${RUNNER_TEMP}/progress_stopped_pushed.md"
+          if [ -z "$PRD_PR" ] || [ ! -f "$list" ]; then
+            echo "No progress list shows this slice building, so none is written."
+            exit 0
+          fi
+          current="${RUNNER_TEMP}/progress_pr.json"
+          request="${RUNNER_TEMP}/progress_edit.json"
+          if ! gh api "repos/{owner}/{repo}/pulls/${PRD_PR}" > "$current"; then
+            echo "::warning::Could not read PRD PR #${PRD_PR}, so its progress list still shows the slice building."
+            exit 0
+          fi
+          jq --rawfile block "$list" '
+            (.body // "") as $b
+            | env.PROGRESS_START as $s | env.PROGRESS_END as $e
+            | (if $b == "" then $block
+               else
+                 ($b | split($s)) as $starts
+                 | ($b | split($e)) as $ends
+                 | if ($starts | length) == 1 and ($ends | length) == 1 then
+                     $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block
+                   elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
+                     $starts[0] + $block + ($starts[1] | split($e))[1]
+                   else null end
+               end) as $body
+            | if $body == null then {} else {body: $body} end
+          ' "$current" > "$request" || { echo "::warning::Could not compose PRD PR #${PRD_PR}'s progress list, so it still shows the slice building."; exit 0; }
+          if [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
+            echo "::warning::PRD PR #${PRD_PR}'s body carries half a progress list, or two, so it was not written. Restore the missing marker, or delete the markers and the text between them, and the next ending of a round writes it again."
+            exit 0
+          fi
+          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PRD_PR}" --input "$request" > /dev/null \
+            && echo "Wrote PRD PR #${PRD_PR}'s progress list: the slice stopped$([ -n "$PUSHED" ] && echo ' after its push')." \
+            || echo "::warning::Could not write PRD PR #${PRD_PR}'s progress list, so it still shows the slice building. GitHub's reply is above."
 
       # The trigger label comes off however the run ends (#236): success,
       # failure, timeout or cancel, so it never outlives the run that decided

@@ -266,7 +266,7 @@ held to its own sub-issue's criteria on its slice PR.
 a pull request writes its **frame** once and never again: `Closes #N` first, a note saying what the
 loop does with it and how to steer it (linking the opening run), on a PRD PR the **progress list**
 between `<!-- agent:progress -->` markers (#246: each sub-issue not started, building, in review,
-parked or approved, re-rendered from live state by every build run and at every ending of a round,
+parked or approved, re-rendered from live state by every build run, including one that stops, and at every ending of a round,
 never edited incrementally, and holding the final review's mark), and a **summary block** between `<!-- agent:summary -->` markers. The
 review writes the block and the title, and nothing else in the body: a maintainer's notes outside
 the markers survive every round byte for byte. The rule is **anything pushed since the summary was

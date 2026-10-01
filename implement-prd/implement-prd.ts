@@ -45,12 +45,25 @@ const BASE_REF = required("BASE_REF");
 const PRD_PR = process.env["PRD_PR"] ?? "";
 
 /**
+ * The merge of the default branch the run pushed before this started (#245),
+ * or "": the PRD PR's head is then that merge, which no review has seen.
+ */
+const MERGED = process.env["MERGED"] ?? "";
+
+/**
  * The PRD PR's progress list (#246), rendered from the PRD branch as it stands
  * and the parent's sub-issues, twice: with this slice **building**, written into
  * the PRD PR's body now, and with it **in review**, left in `progress.md` for
  * the step that asks for its round once the slice is pushed. That one is
  * rendered over the branch with this slice's commits on it, which is what the
  * push puts there.
+ *
+ * And for a run that stops once the list shows this slice building, two more,
+ * for `Show the stopped slice in the progress list` to write: `progress_stopped.md`
+ * with nothing pushed, this slice not started and the head's verdict as it now
+ * stands, and `progress_stopped_pushed.md` with this slice pushed and parked,
+ * since no round of it is running. Written before the list goes into the body,
+ * so a list that shows this slice building always has one to undo it.
  *
  * The run got past the approval gate, so the verdict on the head is an
  * approval. Never fails the run: the list is a view of the chain, and a slice
@@ -68,6 +81,14 @@ const writeProgress = (): void => {
     writeText(
       "progress.md",
       renderProgressList({ subIssues, ranges: pushed, verdict: "none", running: { kind: "review" }, finalReview }),
+    );
+    writeText(
+      "progress_stopped.md",
+      renderProgressList({ subIssues, ranges, verdict: MERGED === "" ? "approval" : "none", running: null, finalReview }),
+    );
+    writeText(
+      "progress_stopped_pushed.md",
+      renderProgressList({ subIssues, ranges: pushed, verdict: "none", running: null, finalReview }),
     );
     if (PRD_PR === "") return;
     const building = renderProgressList({

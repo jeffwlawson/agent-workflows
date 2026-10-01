@@ -7673,7 +7673,8 @@ describe("the PRD chain's progress", () => {
     const prdPr = stepsOf(PRD).find((s) => s.id === "prd_pr");
     const handover = runOf(PRD, "handover");
 
-    for (const env of [progressStep()?.env, prdPr?.env]) {
+    const stopped = stepsOf(PRD).find((s) => s.name === "Show the stopped slice in the progress list");
+    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env]) {
       expect(env?.["PROGRESS_START"]).toBe(PROGRESS_START);
       expect(env?.["PROGRESS_END"]).toBe(PROGRESS_END);
     }
@@ -7714,6 +7715,38 @@ describe("the PRD chain's progress", () => {
     expect(stepsOf(PRD).find((s) => s.name === "Run implementation agent")?.env?.["PRD_PR"]).toBe(
       "${{ steps.preflight.outputs.prd_pr }}",
     );
+  });
+
+  /**
+   * A build run that stops after its runner showed the slice building writes
+   * the list back, since it starts no round and no advance job would: on a
+   * failure or a cancel of a run that builds, after the comment and the
+   * labels, before the trigger label comes off, and never failing the job.
+   * The runner renders what it writes before it shows the slice building.
+   */
+  it("writes the list back where a build run stops", () => {
+    const steps = stepsOf(PRD);
+    const names = steps.map((s) => s.name ?? "");
+    const step = steps.find((s) => s.name === "Show the stopped slice in the progress list");
+    const run = step?.run ?? "";
+    const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
+
+    expect(step?.if).toBe(
+      "steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && (failure() || cancelled())",
+    );
+    expect(names.indexOf("Show the stopped slice in the progress list")).toBe(names.indexOf("Mark blocked on failure") + 1);
+    expect(run).toContain("set -uo pipefail");
+    expect(run).not.toContain("set -e");
+    expect(step?.["continue-on-error"]).toBeUndefined();
+    expect(step?.env?.["PUSHED"]).toBe("${{ steps.push.outputs.head }}");
+    expect(steps.find((s) => s.name === "Run implementation agent")?.env?.["MERGED"]).toBe(
+      "${{ steps.catch_up.outputs.merged }}",
+    );
+    for (const file of ["progress_stopped.md", "progress_stopped_pushed.md"]) {
+      expect(run).toContain(file);
+      expect(implement.indexOf(`"${file}"`)).toBeGreaterThan(-1);
+      expect(implement.indexOf(`"${file}"`)).toBeLessThan(implement.indexOf('"PATCH"'));
+    }
   });
 
   /**

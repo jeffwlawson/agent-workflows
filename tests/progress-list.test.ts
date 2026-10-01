@@ -179,6 +179,23 @@ describe("the rendered list", () => {
   });
 });
 
+/**
+ * What a build run that stops writes back (#246), as its runner renders it:
+ * no round running, and the sub-issue it was building either not pushed or
+ * pushed with no review.
+ */
+describe("the list a stopped build run writes back", () => {
+  it("shows the sub-issue not started where nothing was pushed, and the slice before it as its verdict has it", () => {
+    expect(states(inputs({ built: [10], verdict: "approval" }))).toEqual(["#10 approved", "#11 not started", "#12 not started"]);
+    // A merge of the default branch pushed first leaves the head unreviewed.
+    expect(states(inputs({ built: [10], verdict: "none" }))).toEqual(["#10 parked", "#11 not started", "#12 not started"]);
+  });
+
+  it("shows the sub-issue parked where it was pushed", () => {
+    expect(states(inputs({ built: [10, 11], verdict: "none" }))).toEqual(["#10 approved", "#11 parked", "#12 not started"]);
+  });
+});
+
 describe("the list for each way a round ends", () => {
   it("renders approved, parked and still running from one reading of the branch", () => {
     const branch = { subIssues: SUBS, ranges: sliceRanges(built(10, 11), SUBS), finalReview: "not requested" as const };

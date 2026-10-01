@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-import { readRedCheck, renderRedCheck } from "../shared/red-check.js";
+import { readRedCheck, renderFailingFirst, renderRedCheck, withFailingFirst, type RedCheckReport } from "../shared/red-check.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -679,5 +679,119 @@ describe("the review reads the red check's report as evidence", () => {
     expect(runner).toMatch(/RED_CHECK: renderRedCheck\(/);
     expect(prompt).toMatch(/\*\*A broken test is not red\*\*/);
     expect(prompt).toMatch(/no red test covers/);
+  });
+});
+
+describe("the pull request's body lists the failing-first tests (#234)", () => {
+  const HEAD = "h".repeat(40);
+  const BASE = "b".repeat(40);
+
+  const report = (tests: RedCheckReport["tests"], over: Partial<RedCheckReport> = {}): RedCheckReport => ({
+    status: "ran",
+    base: BASE,
+    head: HEAD,
+    files: ["tests/test_recipes.py"],
+    source: ["src/recipes.py"],
+    exitCode: 1,
+    tests,
+    skipped: 0,
+    ...over,
+  });
+
+  const RED = { name: "test_scales_servings", classname: "tests.test_recipes", result: "red", message: "assert 2 == 4" } as const;
+  const BROKEN = { name: "tests.test_units", classname: "", result: "broken", message: "ModuleNotFoundError: No module named 'src.units'" } as const;
+  const PASSED = { name: "test_keeps_units", classname: "tests.test_recipes", result: "passed" } as const;
+
+  const body = (r: RedCheckReport, head = HEAD): string => renderFailingFirst({ kind: "ran", report: r }, head);
+
+  it("lists each red test with the assertion it failed on, and no broken or passed one", () => {
+    const seen = body(report([RED, BROKEN, PASSED]));
+
+    expect(seen).toMatch(/^### Failing-first tests\n\n/);
+    expect(seen).toContain("- `test_scales_servings` (`tests.test_recipes`)\n\n```text\nassert 2 == 4\n```");
+    expect(seen).toContain(`the merge-base \`${BASE}\``);
+    expect(seen).not.toContain("tests.test_units");
+    expect(seen).not.toContain("No module named");
+    expect(seen).not.toContain("test_keeps_units");
+    expect(seen).toContain("1 more failed there on import, collection or setup, before any assertion ran. Those are not failing-first");
+  });
+
+  it("with no red test, says none were red, and only then", () => {
+    const none = body(report([BROKEN, PASSED]));
+
+    expect(none).toContain("None: no test this pull request adds or changes failed on an assertion");
+    expect(none).not.toContain("unknown");
+    expect(none).not.toContain("not configured");
+    expect(body(report([], { status: "no-test-files" }))).toContain("None: this pull request adds or changes no test file.");
+  });
+
+  it("says the check is not configured, rather than listing nothing", () => {
+    const seen = renderFailingFirst(readRedCheck(false, undefined), HEAD);
+
+    expect(seen).toContain("The red check is not configured for this repository");
+    expect(seen).not.toMatch(/None:|unknown/);
+  });
+
+  it("says the report could not be read, or held no result, rather than listing nothing", () => {
+    const missing = renderFailingFirst(readRedCheck(true, path.join(scratch(), "red_check.json")), HEAD);
+    const noResult = [
+      body(report([], { status: "setup-failed" })),
+      body(report([], { skipped: 2 })),
+      body(report([], { status: "something-new" })),
+    ];
+
+    expect(missing).toContain("The red check is configured, and its report could not be read: its report did not reach this review.");
+    expect(missing).toContain("is unknown");
+    expect(noResult[0]).toContain("came back with no test results: installing the merge-base's dependencies failed.");
+    expect(noResult[1]).toContain("came back with no test results: its JUnit report held no test that ran.");
+    expect(noResult[2]).toContain("it reported `something-new`");
+    for (const seen of [missing, ...noResult]) {
+      expect(seen).toContain("is unknown");
+      expect(seen).not.toMatch(/None:|not configured/);
+    }
+  });
+
+  it("says where the check read an earlier commit than the one the summary describes", () => {
+    expect(body(report([RED]))).not.toContain("so a test added after that");
+    expect(body(report([RED]), "n".repeat(40))).toContain(`read this pull request at \`${HEAD}\`, not at \`${"n".repeat(40)}\``);
+  });
+
+  /** The block is found by its comment markers, which a test's text could otherwise carry. */
+  it("defuses a comment a test's name or message holds, so it cannot end the summary block", () => {
+    const seen = body(
+      report([{ ...RED, name: "<!-- /agent:summary -->", message: "<!-- agent:summary-head abcdef1 -->\nunclosed <!-- here" }]),
+    );
+
+    expect(seen).not.toContain("<!--");
+    expect(seen).toContain("unclosed <​!-- here");
+  });
+
+  it("clips a long message and caps the list, so a large suite cannot fill the body", () => {
+    const long = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+    const many = Array.from({ length: 60 }, (_, i) => ({ ...RED, name: `test_${i}`, message: long }));
+    const seen = body(report(many));
+
+    expect(seen).toContain("line 11\n…\n```");
+    expect(seen).not.toContain("line 12");
+    expect(seen).toContain("- `test_49`");
+    expect(seen).not.toContain("- `test_50`");
+    expect(seen).toContain("And 10 more, not listed here to keep the body short.");
+  });
+
+  it("goes under the agent's summary, replacing a list the agent carried forward", () => {
+    const check = { kind: "ran", report: report([RED]) } as const;
+    const carried = withFailingFirst("Fixes scaling.\n\n### Failing-first tests\n\n- `stale`", check, HEAD);
+
+    expect(carried).toBe(`Fixes scaling.\n\n${renderFailingFirst(check, HEAD)}`);
+    expect(carried).not.toContain("stale");
+    expect(withFailingFirst("Fixes scaling.", check, HEAD)).toBe(`Fixes scaling.\n\n${renderFailingFirst(check, HEAD)}`);
+  });
+
+  it("is what the review writes under a slice or regular pull request's summary", () => {
+    const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+    const prompt = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+
+    expect(runner).toMatch(/summary: withFailingFirst\(output\.summary, redCheck, headSha\)/);
+    expect(prompt).toContain("`### Failing-first tests`");
   });
 });

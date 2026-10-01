@@ -383,6 +383,10 @@ says something (an earlier review's summary, or a maintainer's edit to it), trea
 keep what is still true, in its words where they still fit, and correct whatever the code now
 contradicts. A maintainer's edit is not a lock, and it is not to be thrown away either.
 
+The workflow puts the pull request's **failing-first tests** under your summary, from the red
+check's report, beginning at a `### Failing-first tests` heading. Leave that section out of
+`summary`: it is rewritten from the report every time, and anything you write from it is replaced.
+
 **`title`** is one line, true of the change as it now stands. Use the commit convention `CLAUDE.md`
 names, if it names one; otherwise conventional-commit style, `type(scope): subject`, with the scope
 optional. The **type comes from what the diff does**, not from the issue's title: a change the issue

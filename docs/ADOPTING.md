@@ -1269,6 +1269,11 @@ The review is handed that report, and flags each behaviour change in non-test so
 test covers. Where the report could not be read, or holds no test that ran, what is red is unknown,
 and the review says so rather than flagging anything on the strength of it.
 
+The pull request's body lists the **failing-first tests** under the summary the review writes: each
+red test, with the assertion it failed on. Broken tests are counted there and not listed, and a
+check that is not configured, or whose report could not be read, says which rather than listing
+nothing.
+
 **The contract is JUnit XML.** Your command writes a JUnit XML report, and `<failure>` versus
 `<error>` is the red-versus-broken line, which holds across languages. Any runner that writes one
 will do; three that do:

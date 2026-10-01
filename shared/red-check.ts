@@ -299,3 +299,104 @@ export const describeRedCheck = (check: RedCheck): string => {
     }
   }
 };
+
+/**
+ * `<!--` with a zero-width space after its `<`. The summary block is found by
+ * its comment markers, and the head it was written at by another, so a test's
+ * name or message holding one would end the block early, start a second, or
+ * claim a head on the next splice. Defused rather than removed: an unclosed
+ * comment removed to the end of the text would take the rest of the section.
+ */
+const defused = (text: string): string => text.replaceAll("<!--", "<​!--");
+
+/** How much of a message the body carries: enough for the assertion, not a whole diff. */
+const MAX_MESSAGE_LINES = 12;
+const MAX_MESSAGE_CHARS = 800;
+/** How many failing-first tests the body lists, so a large suite cannot crowd out the rest of it. */
+const MAX_LISTED = 50;
+
+const clipped = (message: string): string => {
+  const lines = message.split(/\r?\n/);
+  const text = lines.slice(0, MAX_MESSAGE_LINES).join("\n");
+  if (lines.length <= MAX_MESSAGE_LINES && text.length <= MAX_MESSAGE_CHARS) return text;
+  return `${text.slice(0, MAX_MESSAGE_CHARS).trimEnd()}\n…`;
+};
+
+const failingFirst = (test: RedCheckTest): string =>
+  test.message
+    ? `- ${describeTest(test)}\n\n${fenced(clipped(test.message))}`
+    : `- ${describeTest(test)} (no assertion reported)`;
+
+export const FAILING_FIRST_HEADING = "### Failing-first tests";
+
+/**
+ * The **failing-first tests** as the pull request's body lists them (#234),
+ * under the summary the review writes: the tests the red check found red
+ * against the merge-base, each with the assertion it failed on.
+ *
+ * Only red tests are listed: a broken test failed before any assertion ran, so
+ * it is counted and said to be not failing-first, never listed beside them. A
+ * check that is off, and one whose report could not be read or held no
+ * result, each say so, because an empty list would read as "none was red".
+ */
+export const renderFailingFirst = (check: RedCheck, reviewedHead: string): string => {
+  const body = ((): string => {
+    switch (check.kind) {
+      case "not-configured":
+        return "The red check is not configured for this repository, so no test here is shown to fail against the code as it was before this change.";
+      case "unreadable":
+        return `The red check is configured, and its report could not be read: ${check.reason}. Which tests fail against the code as it was before this change is unknown.`;
+      case "ran":
+        break;
+    }
+    const report = check.report;
+    if (report.status === "no-test-files") {
+      return "None: this pull request adds or changes no test file.";
+    }
+    if (report.status !== "ran" || report.tests.length === 0) {
+      const why =
+        report.status !== "ran"
+          ? (NOT_RUN[report.status] ?? `it reported ${code(report.status)}`)
+          : "its JUnit report held no test that ran";
+      return `The red check is configured, and came back with no test results: ${why}. Which tests fail against the code as it was before this change is unknown.`;
+    }
+
+    const red = report.tests.filter((test) => test.result === "red");
+    const broken = report.tests.filter((test) => test.result === "broken").length;
+    const parts: string[] = [
+      red.length === 0
+        ? "None: no test this pull request adds or changes failed on an assertion against the code as it was before this change."
+        : `Each of these failed on the assertion shown against the code as it was before this change, ${
+            report.base === null ? "the merge-base" : `the merge-base ${code(report.base)}`
+          }, with this pull request's test files put over it:\n\n${red.slice(0, MAX_LISTED).map(failingFirst).join("\n\n")}`,
+    ];
+    if (red.length > MAX_LISTED) {
+      parts.push(`And ${red.length - MAX_LISTED} more, not listed here to keep the body short.`);
+    }
+    if (broken > 0) {
+      parts.push(
+        `${broken} more failed there on import, collection or setup, before any assertion ran. Those are not failing-first, and are not listed.`,
+      );
+    }
+    if (report.head !== null && report.head !== reviewedHead) {
+      parts.push(
+        `The check read this pull request at ${code(report.head)}, not at ${code(reviewedHead)}, so a test added after that is not listed.`,
+      );
+    }
+    return parts.join("\n\n");
+  })();
+  return defused(`${FAILING_FIRST_HEADING}\n\n${body}`);
+};
+
+/**
+ * The summary the body carries: the agent's text, then the failing-first
+ * tests. The block it rewrites is handed back to it as input, list and all, so
+ * a list it carried forward is cut from its text first rather than kept as a
+ * second, stale copy above the one the report gives.
+ */
+export const withFailingFirst = (summary: string, check: RedCheck, reviewedHead: string): string => {
+  const at = summary.indexOf(FAILING_FIRST_HEADING);
+  const own = (at === -1 ? summary : summary.slice(0, at)).trimEnd();
+  const section = renderFailingFirst(check, reviewedHead);
+  return own === "" ? section : `${own}\n\n${section}`;
+};

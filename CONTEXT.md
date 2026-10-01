@@ -309,7 +309,9 @@ round alike), and nothing pushed leaves both alone. The block carries the head i
 which is how the rule is read: not from the verdict history, which says what a verdict has seen
 rather than what a summary has. A maintainer's edit inside the block is input to the next rewrite,
 kept where it is still true. The agent produces `title` and `summary`; the posting job writes them,
-splicing into the body as it stands then rather than as the review read it. So the review comment
+splicing into the body as it stands then rather than as the review read it. Under the agent's
+summary the runner adds the **failing-first tests** from the red check's report (#234), red ones
+only, or which of *not configured*, *could not be read* and *none red* holds instead. So the review comment
 carries no description of the change, and the description exists in one place.
 
 A PRD PR's **final review** writes both however little was pushed, since the last slice round wrote

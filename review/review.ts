@@ -37,7 +37,7 @@ import {
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
 import { progressAtRoundEnd } from "../shared/progress-list.js";
-import { describeRedCheck, readRedCheck, renderRedCheck } from "../shared/red-check.js";
+import { describeRedCheck, readRedCheck, renderRedCheck, withFailingFirst } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
 import {
   isPreviouslyMissed,
@@ -592,7 +592,13 @@ try {
           followUps,
         }),
       }
-    : output;
+    : output.summary === undefined
+      ? output
+      : // A slice or a regular pull request's body lists its failing-first
+        // tests under the summary (#234), from the red check's report rather
+        // than the agent's word, so the agent's text and the list are kept
+        // apart. The final review's summary is the PRD's and does not.
+        { ...output, summary: withFailingFirst(output.summary, redCheck, headSha) };
   const summary = writesSummary ? summaryUpdate(written, headSha, final) : undefined;
   if (summary !== undefined) writeJson("pr_summary.json", summary);
 

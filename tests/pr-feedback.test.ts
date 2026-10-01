@@ -29,6 +29,7 @@ import {
 } from "../shared/fix-output.js";
 import {
   fetchPullRequestFeedback,
+  nothingToActOn,
   refusalReason,
   surfaceText,
   unreadableNote,
@@ -530,8 +531,9 @@ describe("a selection the author gate reads is trust-bearing", () => {
     // The review is still rendered — with the author it could not establish.
     expect(feedback.summaries).toContain("**@unknown** (COMMENTED)");
     expect(feedback.hasFeedback).toBe(true);
-    // And the consumer that pushes stops anyway, naming the gate.
-    expect(refusalReason(feedback)).toContain("author gate");
+    // And the consumer that pushes stops anyway, saying it could not check
+    // who wrote the comments.
+    expect(refusalReason(feedback)).toContain("Couldn't check who wrote");
   });
 
   /**
@@ -1015,9 +1017,9 @@ describe("a total failure stays distinguishable from a partial one", () => {
     const reason = refusalReason(feedback);
 
     expect(feedback.status).toBe("failed");
-    expect(reason).toContain("could not be read at all");
+    expect(reason).toContain("Couldn't read this PR's review comments at all");
     expect(reason).toContain("Could not resolve to a PullRequest");
-    expect(reason).not.toContain("author gate");
+    expect(reason).not.toContain("Couldn't check who wrote");
   });
 
   /**
@@ -1067,8 +1069,8 @@ describe("a total failure stays distinguishable from a partial one", () => {
     }
 
     const reason = refusalReason(feedback);
-    expect(reason).toContain("could not be read at all");
-    expect(reason).not.toContain("author gate");
+    expect(reason).toContain("Couldn't read this PR's review comments at all");
+    expect(reason).not.toContain("Couldn't check who wrote");
   });
 
   // Nothing resolved and nothing said about why — legal GraphQL, and the state
@@ -1113,7 +1115,10 @@ describe("a total failure stays distinguishable from a partial one", () => {
     const empty = fetchPullRequestFeedback("12");
 
     expect(new Set([failed.status, empty.status]).size).toBe(2);
-    expect(refusalReason(failed)).not.toBe(refusalReason(empty));
+    expect(refusalReason(failed)).toBeDefined();
+    expect(refusalReason(empty)).toBeUndefined();
+    expect(nothingToActOn(failed)).toBe(false);
+    expect(nothingToActOn(empty)).toBe(true);
   });
 });
 
@@ -1121,10 +1126,12 @@ describe("a total failure stays distinguishable from a partial one", () => {
  * The split #76 resolved to: **fail-closed is correct when the gate itself
  * failed, not merely when data was missing.** An empty feedback set is a fine
  * degradation for a re-review; it is not a licence to push commits. So the
- * refusal has four distinct answers, and the fix runner — which holds
- * `contents: write` — takes whichever applies.
+ * refusal has three distinct answers, and the fix runner, which holds
+ * `contents: write`, takes whichever applies. The fourth state, everything
+ * read and nothing owed an answer, is no refusal at all since #253: it is a fix
+ * with nothing to do, and ends green.
  */
-describe("refusalReason names which of the four states it is refusing on", () => {
+describe("refusalReason names which of the three states it is refusing on", () => {
   const feedbackFrom = (answer: () => string) => {
     ghAnswers(answer);
     return fetchPullRequestFeedback("12");
@@ -1134,16 +1141,28 @@ describe("refusalReason names which of the four states it is refusing on", () =>
     expect(refusalReason(feedbackFrom(() => response(pullRequest())))).toBeUndefined();
   });
 
-  it("refuses a genuinely empty result as nothing owed an answer", () => {
-    const reason = refusalReason(
-      feedbackFrom(() =>
-        response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } }),
-      ),
+  it("does not refuse a genuinely empty result: that is nothing to do", () => {
+    const feedback = feedbackFrom(() =>
+      response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } }),
     );
 
-    expect(reason).toContain("owes an answer on");
-    // And crucially it does not claim anything was unreadable.
-    expect(reason).not.toContain("could not be read");
+    expect(refusalReason(feedback)).toBeUndefined();
+    expect(nothingToActOn(feedback)).toBe(true);
+  });
+
+  it("never reads a refused result as nothing to do", () => {
+    const feedback = feedbackFrom(() => {
+      throw exitsNonZero(
+        response({ comments: { nodes: [] }, reviews: null, reviewThreads: { nodes: [] } }, [
+          forbidden(["repository", "pullRequest", "reviews"], "Forbidden"),
+        ]),
+        "gh: Forbidden\n",
+      );
+    });
+
+    expect(feedback.hasFeedback).toBe(false);
+    expect(nothingToActOn(feedback)).toBe(false);
+    expect(refusalReason(feedback)).toBeDefined();
   });
 
   it("refuses a trust-bearing refusal even though feedback did return", () => {
@@ -1160,8 +1179,7 @@ describe("refusalReason names which of the four states it is refusing on", () =>
     const reason = refusalReason(feedback);
     // The reason a human can act on: the selection, by name.
     expect(reason).toContain("repository.collaborators");
-    expect(reason).toContain("author gate");
-    expect(reason).not.toContain("owes an answer on");
+    expect(reason).toContain("Couldn't check who wrote");
   });
 
   it("refuses an empty result that had a selection refused, as the refusal", () => {
@@ -1177,7 +1195,7 @@ describe("refusalReason names which of the four states it is refusing on", () =>
     );
 
     expect(reason).toContain("repository.pullRequest.reviews");
-    expect(reason).not.toContain("owes an answer on");
+    expect(reason).toContain("found nothing to act on");
   });
 
   it("refuses a total failure as no answer rather than as no feedback", () => {
@@ -1188,7 +1206,7 @@ describe("refusalReason names which of the four states it is refusing on", () =>
     );
 
     expect(reason).toContain("could not connect");
-    expect(reason).not.toContain("owes an answer on");
+    expect(reason).toContain("at all");
   });
 });
 
@@ -1210,6 +1228,19 @@ describe("the fix runner refuses through the reason file", () => {
 
   it("no longer branches on hasFeedback alone", () => {
     expect(source).not.toContain("!feedback.hasFeedback");
+  });
+
+  /**
+   * Nothing to act on is not a failure (#253): the runner writes the file the
+   * workflow posts its note on, and exits 0 rather than through `fail()`, after
+   * the refusal is ruled on so a refused read never ends green.
+   */
+  it("ends green with a note file where there is nothing to act on", () => {
+    const refusal = source.indexOf("fail(refusal)");
+    const nothing = source.indexOf("nothingToActOn(feedback)");
+
+    expect(nothing).toBeGreaterThan(refusal);
+    expect(source.slice(nothing)).toMatch(/writeText\("nothing_to_do\.txt"[^)]*\);[\s\S]*?process\.exit\(0\)/);
   });
 
   it("shows the agent each surface through surfaceText, so a refusal is not an empty one", () => {
@@ -2202,8 +2233,9 @@ describe("a thread already carrying this workflow's closing reply", () => {
     expect(feedback.hasFeedback).toBe(false);
     // The reason names this kind, so a maintainer looking at an open thread
     // is not told only that unresolved feedback was absent.
-    expect(refusalReason(feedback)).toContain("owes an answer on");
-    expect(refusalReason(feedback)).toContain("already carrying this workflow's closing reply");
+    // Nothing to do rather than a refusal (#253): every surface was read.
+    expect(refusalReason(feedback)).toBeUndefined();
+    expect(nothingToActOn(feedback)).toBe(true);
   });
 
   /**
@@ -2389,10 +2421,10 @@ describe("a conversation comment the fix run owes an outcome on", () => {
   /**
    * **And it is not feedback to act on** (#160). A pull request whose only
    * conversation is a note that a previous run failed has nothing a fix run
-   * owes an answer on, so it refuses rather than spend a run on the loop's own
-   * status.
+   * owes an answer on, so it has nothing to do rather than spend a run on the
+   * loop's own status (#253: a note, not a refusal).
    */
-  it("refuses a pull request whose only conversation is the loop's own status note", () => {
+  it("has nothing to do on a pull request whose only conversation is the loop's own status note", () => {
     ghAnswers(() =>
       response({
         reviews: { nodes: [] },
@@ -2415,8 +2447,8 @@ describe("a conversation comment the fix run owes an outcome on", () => {
 
     expect(feedback.conversation).toContain("the push was rejected");
     expect(feedback.hasFeedback).toBe(false);
-    expect(refusalReason(feedback)).toContain("owes an answer on");
-    expect(refusalReason(feedback)).toContain("this loop's own status notes");
+    expect(refusalReason(feedback)).toBeUndefined();
+    expect(nothingToActOn(feedback)).toBe(true);
   });
 
   /** Whoever else posts under that login. The bound is the author, not the text. */

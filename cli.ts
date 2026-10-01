@@ -241,7 +241,7 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
       // Reached only by an error a runner did not handle — a failing runner
       // exits through `fail()`, which never returns. The commonest such error is
       // the module not loading at all, which is precisely when the workflow's
-      // failure comment would otherwise read "(no reason file written)".
+      // failure comment would otherwise read "It stopped without giving a reason."
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`${message}\n`);
       writeText("failure_reason.txt", message);

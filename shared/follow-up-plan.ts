@@ -443,7 +443,7 @@ const stubBody = (
     "",
     "---",
     "",
-    `Read from [a review](${review.url}) on #${prNumber}. That review is where this finding was *read*, not necessarily where it was first raised: each review restates its whole list, so an earlier one may have raised it first.`,
+    `Found in [a review](${review.url}) on #${prNumber}. An earlier review on that PR may have raised it first.`,
     // After the provenance and before the key: it qualifies the finding rather
     // than the evidence above it, and it is the last thing a triager reads.
     ...(related === undefined ? [] : ["", relationLine(related, path)]),

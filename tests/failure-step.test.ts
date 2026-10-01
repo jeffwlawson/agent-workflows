@@ -15,7 +15,11 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * that reaches its `timeout-minutes` is **cancelled**, not failed, and before
  * #220 the step ran on `failure()` alone, so a timed-out run posted nothing.
  * Now it runs on both, and says "timed out after N minutes" where the job ran
- * its whole limit, "cancelled" where it did not, and "failed" as it always did.
+ * its whole limit, "cancelled" where it did not, and the reason the runner
+ * wrote where it failed.
+ *
+ * And it executes the one pattern every one of them is written in (#253):
+ * `**\`agent:X\` stopped:** <Reason>.`, then the run and what to do.
  *
  * Skipped where `bash` is not on PATH.
  */
@@ -37,14 +41,14 @@ interface Workflow {
  * no variable is set: today's value, which a timeout comment has to name.
  */
 const CASES = [
-  { command: "implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
-  { command: "implement-prd", step: "Mark blocked on failure", minutes: 30, blocks: true },
-  { command: "fix", step: "Mark blocked on failure", minutes: 30, blocks: true },
-  { command: "update-branch", step: "Mark blocked on failure", minutes: 30, blocks: true },
-  { command: "review", step: "Mark blocked on failure", minutes: 20, blocks: true },
+  { command: "implement", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
+  { command: "implement-prd", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
+  { command: "fix", label: "agent:fix", step: "Mark blocked on failure", minutes: 30, blocks: true },
+  { command: "update-branch", label: "agent:update-branch", step: "Mark blocked on failure", minutes: 30, blocks: true },
+  { command: "review", label: "agent:review", step: "Mark blocked on failure", minutes: 20, blocks: true },
   // No `agent:blocked` on a merged pull request, on a failure or otherwise:
   // there is no pipeline left there to block (see the step's own note).
-  { command: "follow-ups", step: "Report the failure on the PR", minutes: 10, blocks: false },
+  { command: "follow-ups", label: "agent:follow-ups", step: "Report the failure on the PR", minutes: 10, blocks: false },
 ] as const;
 
 type Case = (typeof CASES)[number];
@@ -75,6 +79,8 @@ const run = (
   elapsed: number,
   minutes = String(c.minutes),
   refused = "false",
+  files: Readonly<Record<string, string>> = { "failure_reason.txt": "The runner wrote this.\n" },
+  extra: Readonly<Record<string, string>> = {},
 ): Outcome => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-failure-step-"));
   const bin = path.join(temp, "bin");
@@ -83,7 +89,7 @@ const run = (
 
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, "gh"), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(temp, "failure_reason.txt"), "The runner wrote this.\n");
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(temp, name), text);
   fs.writeFileSync(script, runOf(c));
 
   const result = spawnSync("bash", ["-e", script], {
@@ -101,6 +107,7 @@ const run = (
       JOB_STARTED: String(Math.floor(Date.now() / 1000) - elapsed),
       TIMEOUT_MINUTES: minutes,
       REFUSED: refused,
+      ...extra,
     },
   });
   const comment = path.join(temp, "failure-comment.md");
@@ -135,10 +142,48 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
   it.each(CASES)("$command: a failed run still reads its reason, whatever the clock says", (c: Case) => {
     const outcome = run(c, "failure", c.minutes * 60);
 
-    expect(outcome.comment).toContain("failed");
     expect(outcome.comment).toContain("The runner wrote this.");
     expect(outcome.comment).not.toMatch(/timed out|cancelled/);
     expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(c.blocks);
+  });
+
+  /**
+   * One pattern for every run that stopped (#253), whichever way it stopped:
+   * the label in bold and `stopped:`, the reason as a sentence starting with a
+   * capital and ending in a full stop, then the run's link and what to do.
+   */
+  it.each(CASES)("$command: says it stopped in the one pattern, however it ended", (c: Case) => {
+    const pattern = new RegExp(
+      `^\\*\\*\`${c.label}\` stopped:\\*\\* [A-Z][^\\n]*[.!?]\\n\\n\\[Workflow run\\]\\(https://github\\.com/acme/widgets/actions/runs/1\\) · [A-Z][^\\n]*\\.\\n$`,
+    );
+
+    for (const [status, elapsed] of [["failure", 120], ["cancelled", 120], ["cancelled", c.minutes * 60]] as const) {
+      expect(run(c, status, elapsed).comment, `${status} after ${elapsed}s`).toMatch(pattern);
+    }
+    // A reason written in lower case and with no full stop is made a sentence.
+    const lower = run(c, "failure", 120, String(c.minutes), "false", { "failure_reason.txt": "the push was rejected\n" });
+    expect(lower.comment).toContain("stopped:** The push was rejected.\n");
+    // And one that wrote no reason at all still says so in words.
+    const none = run(c, "failure", 120, String(c.minutes), "false", {});
+    expect(none.comment).toMatch(pattern);
+    expect(none.comment).toContain("It stopped without giving a reason.");
+    // Five spawns, so five spawns' worth of ceiling (`vitest.config.ts`).
+  }, 5 * SUBPROCESS_TIMEOUT);
+
+  /**
+   * The other pattern (#253): a review that refused a repository variable
+   * before it reviewed anything did not run, rather than stopped. It says so
+   * from its own file, with no run link, and is still blocked, since the
+   * maintainer has to change the variable.
+   */
+  it("review: a variable it refused before reviewing says it didn't run, and still blocks", () => {
+    const review = CASES.find((c) => c.command === "review") as Case;
+    const refusal =
+      "The repository variable `AGENT_MAX_FIX_ROUNDS` is `abc`. It must be a whole number (0 or more), or delete it to use the default of 3. Then add `agent:review` again.";
+    const outcome = run(review, "failure", 120, "20", "false", { "refusal_reason.txt": `${refusal}\n` });
+
+    expect(outcome.comment).toBe(`**\`agent:review\` didn't run:** ${refusal}\n`);
+    expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
   });
 
   /**

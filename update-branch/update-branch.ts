@@ -46,7 +46,7 @@ try {
   // conflicted; this script exists only for that case.
   const conflicted = sh("git diff --name-only --diff-filter=U").trim();
   if (!conflicted) {
-    fail("Nothing is conflicted, so update-branch.ts should not have been invoked.");
+    fail("The merge had no conflicts for the agent to resolve, so there was nothing for it to do.");
   }
 
   // Read the PR before the token goes away; the agent has no `gh` afterwards.
@@ -78,10 +78,10 @@ try {
   // untouched and labels the PR blocked.
   const stillConflicted = sh("git diff --name-only --diff-filter=U").trim();
   if (stillConflicted) {
-    fail(`Merge left unresolved conflicts in: ${stillConflicted.split("\n").join(", ")}`);
+    fail(`The agent left conflicts unresolved in: ${stillConflicted.split("\n").join(", ")}.`);
   }
   if (fs.existsSync(path.join(sh("git rev-parse --git-dir").trim(), "MERGE_HEAD"))) {
-    fail("Merge was not committed: the branch is mid-merge.");
+    fail("The agent resolved the conflicts but didn't commit the merge, so nothing was pushed.");
   }
 
   writeText("update_comment.md", result.output.comment);

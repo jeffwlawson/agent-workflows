@@ -51,7 +51,7 @@ describe("diffCommandAgainstBase", () => {
    */
   it("refuses an absent or empty base ref rather than guessing one", () => {
     for (const absent of [undefined, "", "   "]) {
-      expect(() => diffCommandAgainstBase(absent)).toThrow(/BASE_REF/);
+      expect(() => diffCommandAgainstBase(absent)).toThrow(/which branch this PR merges into/);
     }
   });
 
@@ -76,6 +76,6 @@ describe("changedFilesCommandAgainstBase", () => {
   });
 
   it("refuses an empty base the way the diff does", () => {
-    expect(() => changedFilesCommandAgainstBase("  ")).toThrow(/BASE_REF is empty/);
+    expect(() => changedFilesCommandAgainstBase("  ")).toThrow(/didn't say which branch this PR merges into/);
   });
 });

@@ -273,7 +273,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.reason).toContain("2 slice PRs are open");
     expect(outcome.reason).toContain("#210 (`agent/slice-171-173-slice-2`");
     expect(outcome.reason).toContain("#211 (`agent/slice-171-174-slice-3`");
-    expect(outcome.reason).toMatch(/will not guess/);
+    expect(outcome.reason).toMatch(/can't tell which of these lands next/);
     expect(outcome.output).not.toContain("refused=");
     expect(outcome.writes).toEqual([]);
   });
@@ -332,7 +332,17 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     expect(outcome.output).toContain("refused=true\n");
     expect(outcome.output).not.toContain("finishing=");
     expect(outcome.reason).toBe("");
-    expect(outcome.writes.some((w) => w.includes('"comment"') && w.includes("the PRD is finished"))).toBe(true);
+    expect(
+      outcome.writes.some(
+        (w) =>
+          w.includes('"comment"') &&
+          w.includes(
+            "**`agent:implement` didn't run:** Every sub-issue of this PRD is built and its PRD PR is ready for you. To build more, add a sub-issue first.",
+          ),
+      ),
+    ).toBe(true);
+    // A finished PRD is not blocked (#253): nobody has anything to act on.
+    expect(outcome.writes.some((w) => w.includes("agent:blocked"))).toBe(false);
   });
 
   /**
@@ -347,7 +357,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
     });
 
     expect(outcome.output).toContain("refused=true\n");
-    expect(outcome.writes.some((w) => w.includes("the PRD is finished"))).toBe(true);
+    expect(outcome.writes.some((w) => w.includes("Every sub-issue of this PRD is built"))).toBe(true);
   });
 
   /**
@@ -628,10 +638,10 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
       const outcome = runMerge({ labels: [{ name: "agent:follow-ups" }, { name: label }] });
 
       expect(outcome.status).toBe(1);
-      expect(outcome.reason).toContain(`slice PR #${SLICE}`);
+      expect(outcome.reason).toContain(`Slice PR #${SLICE}`);
       expect(outcome.reason).toContain(`\`${label}\``);
       expect(outcome.reason).toMatch(/round has not ended/);
-      expect(outcome.stdout).toContain(`::error::Refused to merge slice PR #${SLICE}`);
+      expect(outcome.stdout).toContain(`::error::Slice PR #${SLICE} still has`);
       expect(outcome.writes).toEqual([]);
       expect(outcome.output).not.toContain("merged=");
     },
@@ -656,7 +666,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     const outcome = runMerge({ state: "CLOSED" });
 
     expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`slice PR #${SLICE}`);
+    expect(outcome.reason).toContain(`Slice PR #${SLICE}`);
     expect(outcome.reason).toContain("closed");
     expect(outcome.writes).toEqual([]);
   });
@@ -718,7 +728,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's merge step, executed", () => {
     const merged = writes.findIndex((argv) => argv[1] === "merge");
 
     expect(outcome.status).toBe(1);
-    expect(outcome.reason).toContain(`Could not merge slice PR #${SLICE}`);
+    expect(outcome.reason).toContain(`Couldn't merge slice PR #${SLICE}`);
     expect(patches.map((argv) => argv.at(-1))).toEqual([
       "body=Part of #172\n\n<!-- agent-chain-merge 0123abc -->",
       "body=Part of #172",
@@ -964,7 +974,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain(`slice PR #${SLICE}`);
     expect(outcome.reason).toContain("Part of #<sub-issue>");
-    expect(outcome.reason).toContain("The merge is not repeated");
+    expect(outcome.reason).toContain("Trying again doesn't repeat the merge.");
     expect(outcome.temp("slices-table.json")).toBe("");
   });
 
@@ -1018,7 +1028,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's slices table row, gathered, exe
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("slice PR #205");
-    expect(outcome.reason).toContain("The merge is not repeated");
+    expect(outcome.reason).toContain("Trying again doesn't repeat the merge.");
     expect(outcome.temp("slices-table.json")).toBe("");
   });
 });

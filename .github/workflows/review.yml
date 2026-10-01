@@ -281,9 +281,10 @@ jobs:
       # AGENT_PAT. That is a real failure mode misreported as a setup problem,
       # which is worse than either.
       #
-      # Unlike the other two this also adds `agent:blocked`. A refusal here is a
-      # run a human asked for and did not get, and the review pipeline already
-      # uses that label for exactly that; the comment alone scrolls away.
+      # A refusal on a moved branch also adds `agent:blocked`: it is a run a
+      # human asked for and did not get, and the comment alone scrolls away. A
+      # closed PR does not (#253): there is nothing left for anyone to act on,
+      # so it gets the note alone, as in fix and update-branch.
       #
       # The rest is settling **which commit this run reviews**, and everything
       # after this step reads that one answer, `steps.state.outputs.sha`: the
@@ -334,15 +335,23 @@ jobs:
           # next step goes on last.
           # The comment is tolerated: under `-e` a failed one would end the step
           # before the removal, and leave the label on with nothing behind it.
+          # One pattern for every refusal (#253): the label that did not run,
+          # then a sentence saying why and what to do, starting with a capital.
           refuse() {
-            gh pr comment "$PR_NUMBER" --body "$1" || echo "::warning::Could not post the refusal comment on PR #${PR_NUMBER}."
+            gh pr comment "$PR_NUMBER" --body "**\`agent:review\` didn't run:** $1" || echo "::warning::Could not post the refusal comment on PR #${PR_NUMBER}."
             gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
-            gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
+            if [ "${2:-}" = "blocked" ]; then
+              gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
+            fi
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           }
+          # One explanation for every way the PR can have moved since the
+          # label (#253): the reader's remedy is the same for all of them.
+          # The commits are named in the log rather than in the comment.
+          changed="The PR changed after \`agent:review\` was added. Add \`agent:review\` again to review the latest version."
 
           if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" = "true" ]; then
-            refuse "Refused to run \`agent:review\`: this PR is not open."
+            refuse "This PR is closed."
             exit 0
           fi
 
@@ -366,11 +375,13 @@ jobs:
             # what the label pointed at.
             relation=$(gh api "repos/${GH_REPO}/compare/${HEAD_SHA}...${tip}" --jq .status 2>/dev/null || echo "")
             if [ -z "$relation" ]; then
-              refuse "Refused to run \`agent:review\`: the label was added at \`${HEAD_SHA}\`, but \`${BRANCH}\` is now at \`${tip}\`, and whether that descends from it could not be read. Re-add \`agent:review\` to review the current head."
+              echo "::warning::The label was added at ${HEAD_SHA}, but ${BRANCH} is now at ${tip}, and whether that descends from it could not be read."
+              refuse "$changed" blocked
               exit 0
             fi
             if [ "$relation" != "ahead" ]; then
-              refuse "Refused to run \`agent:review\`: the branch moved while this run was queued: the label was added at \`${HEAD_SHA}\`, but \`${BRANCH}\` is now at \`${tip}\`, which does not descend from it (\`${relation}\`). Reviewing either would be reviewing a commit nobody asked about. Re-add \`agent:review\` to review the current head."
+              echo "::warning::The branch moved while this run was queued: the label was added at ${HEAD_SHA}, but ${BRANCH} is now at ${tip}, which does not descend from it (${relation})."
+              refuse "$changed" blocked
               exit 0
             fi
 
@@ -378,7 +389,8 @@ jobs:
             deadline=$((SECONDS + HEAD_WAIT_SECONDS))
             until head=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null) && [ "$head" = "$tip" ]; do
               if [ "$SECONDS" -ge "$deadline" ]; then
-                refuse "Refused to run \`agent:review\`: the label was added at \`${HEAD_SHA}\`, and \`${BRANCH}\` has since moved on to \`${tip}\`, but after ${HEAD_WAIT_SECONDS}s this PR still shows \`${head:-an unreadable head}\` as its head, so a review of \`${tip}\` could not be posted against it. Re-add \`agent:review\` to review the current head."
+                echo "::warning::The label was added at ${HEAD_SHA}, and ${BRANCH} has since moved on to ${tip}, but after ${HEAD_WAIT_SECONDS}s this PR still shows ${head:-an unreadable head} as its head, so a review of ${tip} could not be posted against it."
+                refuse "${changed} If the PR still shows the old commit, close and reopen it so GitHub catches up." blocked
                 exit 0
               fi
               sleep "$HEAD_POLL_SECONDS"
@@ -413,8 +425,8 @@ jobs:
         env:
           REVIEW_MINUTES: ${{ vars.AGENT_REVIEW_TIMEOUT_MINUTES }}
         run: |
-          reason="The repository variable \`AGENT_REVIEW_TIMEOUT_MINUTES\` is \`${REVIEW_MINUTES}\`, which is not a positive integer. Set it to the minutes a review may take beyond its CI wait, or delete it for the default of 5, then re-add \`agent:review\`."
-          printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
+          reason="The repository variable \`AGENT_REVIEW_TIMEOUT_MINUTES\` is \`${REVIEW_MINUTES}\`. It must be a whole number of minutes (1 or more), or delete it to use the default of 5. Then add \`agent:review\` again."
+          printf '%s\n' "$reason" > "${RUNNER_TEMP}/refusal_reason.txt"
           echo "::error::${reason}"
           exit 1
 
@@ -470,8 +482,10 @@ jobs:
           STARTED: "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically."
         run: |
           set -uo pipefail
+          # A refusal rather than a stop (#253): nothing was reviewed, so the
+          # failure step says this run didn't run, from its own file.
           refuse() {
-            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/refusal_reason.txt"
             echo "::error::$1"
             exit 1
           }
@@ -480,13 +494,13 @@ jobs:
             case "$AUTO_FIX" in
               true) budget=1 ;;
               false) budget=0 ;;
-              *) refuse "The review caller passes \`auto-fix: ${AUTO_FIX}\`, which is neither \`true\` nor \`false\`. \`auto-fix\` is deprecated: remove it from the caller's \`with:\` block and set the repository variable \`AGENT_MAX_FIX_ROUNDS\` instead, then re-add \`agent:review\`." ;;
+              *) refuse "The review workflow still sets \`auto-fix\`, which has been replaced. Remove it and set the repository variable \`AGENT_MAX_FIX_ROUNDS\` instead, then add \`agent:review\` again." ;;
             esac
             echo "::warning::The \`auto-fix\` input is deprecated and goes away in the next release. It sets this run's fix-round budget to ${budget}, over the repository variable \`AGENT_MAX_FIX_ROUNDS\`. Remove \`auto-fix\` from the review caller's \`with:\` block and set \`AGENT_MAX_FIX_ROUNDS\` instead: \`1\` is what \`auto-fix: true\` did, and \`0\` what \`false\` did."
           else
             budget="${MAX_FIX_ROUNDS:-3}"
             if [[ ! "$budget" =~ ^[0-9]+$ ]]; then
-              refuse "The repository variable \`AGENT_MAX_FIX_ROUNDS\` is \`${MAX_FIX_ROUNDS}\`, which is not a non-negative integer. Set it to the number of automatic fix rounds a pull request may have (\`0\` for none), or delete it for the default of 3, then re-add \`agent:review\`."
+              refuse "The repository variable \`AGENT_MAX_FIX_ROUNDS\` is \`${MAX_FIX_ROUNDS}\`. It must be a whole number (0 or more), or delete it to use the default of 3. Then add \`agent:review\` again."
             fi
             # Leading zeros stripped, and anything past nine digits held at
             # nine: no pull request is going to spend that many, and bash
@@ -1508,7 +1522,7 @@ jobs:
           TIMEOUT_MINUTES: ${{ needs.time-limit.outputs.minutes }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          reason="(no reason file written; check workflow logs)"
+          reason="It stopped without giving a reason. The workflow run's log has the details."
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
@@ -1522,17 +1536,25 @@ jobs:
           # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
           # `bash -e` that would end this step before its comment. A limit the
           # step cannot compare reads as a cancel, which is still said.
-          what="failed"
           if [ "$JOB_STATUS" = "cancelled" ]; then
-            what="was cancelled"
-            reason="The run was cancelled before it finished, by hand or by GitHub."
+            reason="It was cancelled before it finished, by hand or by GitHub."
             if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
-              what="timed out after ${TIMEOUT_MINUTES} minutes"
-              reason="The job reached its time limit of ${TIMEOUT_MINUTES} minutes and was stopped there. The repository variable \`AGENT_REVIEW_TIMEOUT_MINUTES\` raises the review's own time, which its CI wait is added to."
+              reason="It timed out after ${TIMEOUT_MINUTES} minutes. The repository variable \`AGENT_REVIEW_TIMEOUT_MINUTES\` raises the review's own time, which its CI wait is added to."
             fi
           fi
+          # One pattern for every run that stopped (#253): the reason as a
+          # sentence, starting with a capital and ending in a full stop, then
+          # the run and what to do.
+          reason="${reason^}"
+          case "$reason" in *[.!?]) ;; *) reason="${reason}." ;; esac
           body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '`agent:review` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-add `agent:review` to retry.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
+          printf '**`agent:review` stopped:** %s\n\n[Workflow run](%s) · %s\n' "$reason" "$RUN_URL" "To try again, add \`agent:review\`." > "$body_file"
+          # A variable the review refused before it reviewed anything is the
+          # other pattern (#253): it didn't run, and the sentence says what to
+          # do. Still `agent:blocked`, since the maintainer has to fix it.
+          if [ "$JOB_STATUS" != "cancelled" ] && [ -f "${RUNNER_TEMP}/refusal_reason.txt" ]; then
+            printf "**\`agent:review\` didn't run:** %s\n" "$(cat "${RUNNER_TEMP}/refusal_reason.txt")" > "$body_file"
+          fi
           gh pr comment "$PR_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on PR #${PR_NUMBER}."
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true

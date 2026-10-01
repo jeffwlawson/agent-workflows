@@ -189,8 +189,8 @@ jobs:
 
       # A failure has to say what failed where a human will see it, or the run
       # is indistinguishable from the silent no-op that is this job's ordinary
-      # outcome (`CLAUDE.md`, and the `(no reason file written)` signature it
-      # names).
+      # outcome (`CLAUDE.md`, and the "It stopped without giving a reason."
+      # signature it names).
       #
       # No `agent:blocked` here, unlike the three workflows that act on an open
       # pull request: that label is the open pipeline's "a human has to look at
@@ -206,7 +206,7 @@ jobs:
           TIMEOUT_MINUTES: "10"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          reason="(no reason file written; check workflow logs)"
+          reason="It stopped without giving a reason. The workflow run's log has the details."
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
@@ -220,15 +220,17 @@ jobs:
           # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
           # `bash -e` that would end this step before its comment. A limit the
           # step cannot compare reads as a cancel, which is still said.
-          what="failed"
           if [ "$JOB_STATUS" = "cancelled" ]; then
-            what="was cancelled"
-            reason="The run was cancelled before it finished, by hand or by GitHub."
+            reason="It was cancelled before it finished, by hand or by GitHub."
             if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
-              what="timed out after ${TIMEOUT_MINUTES} minutes"
-              reason="The job reached its time limit of ${TIMEOUT_MINUTES} minutes and was stopped there."
+              reason="It timed out after ${TIMEOUT_MINUTES} minutes."
             fi
           fi
+          # One pattern for every run that stopped (#253): the reason as a
+          # sentence, starting with a capital and ending in a full stop, then
+          # the run and what to do.
+          reason="${reason^}"
+          case "$reason" in *[.!?]) ;; *) reason="${reason}." ;; esac
           body_file="${RUNNER_TEMP}/failure-comment.md"
-          printf '`agent:follow-ups` filing run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nNothing was filed, or only part of it was; the run is safe to repeat either way. The marker was left in place, so remove `agent:follow-ups` and add it back to retry.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
+          printf '**`agent:follow-ups` stopped:** %s\n\n[Workflow run](%s) · %s\n' "$reason" "$RUN_URL" "Some follow-up issues may not have been filed. To try again, remove \`agent:follow-ups\` and add it back; nothing is filed twice." > "$body_file"
           gh pr comment "$PR_NUMBER" --body-file "$body_file"

@@ -52,27 +52,20 @@ const listItems = (lines: readonly string[]): string[] => {
   return items.map((parts) => parts.map((part) => part.trim()).join(" ").trim()).filter(Boolean);
 };
 
-/**
- * The criteria in an issue's body: the items of its **acceptance section**, or
- * where it has none with any items, every **checklist** item in it. Nothing
- * otherwise, which is the case the review's section is omitted for.
- *
- * A section opens at a heading or a bold label on a line of its own naming
- * *acceptance*, and runs to the next of either. Where there are two, the
- * **last** wins: triage appends a brief to the issue as filed, and the brief's
- * criteria are the ones the work was scoped to. Nothing inside a code fence is
- * read, since a quoted template is not the issue asking for anything.
- */
-export const extractCriteria = (body: string): string[] => {
+/** A text's lines with everything inside a code fence removed. */
+const unfenced = (text: string): string[] => {
   let fenced = false;
-  const lines = body.split(/\r?\n/).filter((line) => {
+  return text.split(/\r?\n/).filter((line) => {
     if (FENCE.test(line)) {
       fenced = !fenced;
       return false;
     }
     return !fenced;
   });
+};
 
+/** The items of the last acceptance section in one text that lists any, or `undefined`. */
+const acceptanceSection = (lines: readonly string[]): string[] | undefined => {
   const sections: string[][] = [];
   let section: string[] | undefined;
   for (const line of lines) {
@@ -84,14 +77,36 @@ export const extractCriteria = (body: string): string[] => {
     }
     section?.push(line);
   }
-
-  const fromSection = sections
+  return sections
     .map(listItems)
     .filter((items) => items.length > 0)
     .at(-1);
+};
+
+/**
+ * The criteria of a linked issue: the items of its **acceptance section**, or
+ * where it has none with any items, every **checklist** item in its body.
+ * Nothing otherwise, which is the case the review's section is omitted for.
+ *
+ * A section opens at a heading or a bold label on a line of its own naming
+ * *acceptance*, and runs to the next of either. It is looked for in the body
+ * and then in `comments`, the issue's trusted comments oldest first, and the
+ * **last** one found wins: triage posts its brief as a comment on the issue as
+ * filed (or appends it to the body), and the brief's criteria are the ones the
+ * work was scoped to, superseding the body's own. The checklist fallback reads
+ * the body only, since a checklist in a comment is somebody's notes rather
+ * than the issue asking for anything. Nothing inside a code fence is read, for
+ * the same reason: a quoted template is not a request.
+ */
+export const extractCriteria = (body: string, comments: readonly string[] = []): string[] => {
+  const bodyLines = unfenced(body);
+  const fromSection = [bodyLines, ...comments.map(unfenced)]
+    .map(acceptanceSection)
+    .filter((items) => items !== undefined)
+    .at(-1);
   if (fromSection !== undefined) return fromSection;
 
-  return lines
+  return bodyLines
     .map((line) => CHECKLIST_ITEM.exec(line)?.[1]?.trim() ?? "")
     .filter((item) => item !== "");
 };

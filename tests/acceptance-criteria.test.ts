@@ -32,9 +32,9 @@ const parse = (value: unknown): ReviewOutput => {
 };
 
 /**
- * The shape the loop's triage writes: the issue as first filed, then an agent
- * brief whose acceptance criteria supersede it. #72 had this shape, and so does
- * the issue this test was written for.
+ * A brief appended to the body: the issue as first filed, then an agent brief
+ * whose acceptance criteria supersede it. #72 had this shape. Triage more often
+ * posts the brief as a comment, which the tests below it cover.
  */
 const TRIAGED = [
   "# Report failed URLs in bulk import",
@@ -63,6 +63,47 @@ describe("extractCriteria", () => {
       "The caller receives 2 recipes and 1 error naming that slug.",
       "A failed URL is reported with the upstream status.",
       "The PR description says which tests cover the failure path.",
+    ]);
+  });
+
+  /**
+   * The shape #214 itself had: the issue as filed keeps its own `## Acceptance`
+   * in the body, and triage posts the brief as a comment, whose criteria moved
+   * two of the body's out of scope. Reading the body alone ruled on those.
+   */
+  it("prefers a triage brief posted as a comment over the body's acceptance section", () => {
+    const body = ["## Acceptance", "", "- [ ] Retitle the PR.", "- [ ] Note #72 in the body."].join("\n");
+    const brief = [
+      "## Agent Brief",
+      "",
+      "**Acceptance criteria:**",
+      "- [ ] Every review rules on each criterion.",
+      "- [ ] An unmet one is a finding.",
+      "",
+      "**Out of scope:**",
+      "- Retitling the PR (#218).",
+    ].join("\n");
+
+    expect(extractCriteria(body, ["Thanks, triaging.", brief, "Looks good."])).toEqual([
+      "Every review rules on each criterion.",
+      "An unmet one is a finding.",
+    ]);
+  });
+
+  it("takes the latest comment with an acceptance section, and keeps the body's where none has one", () => {
+    const body = "## Acceptance\n- The body's.";
+
+    expect(extractCriteria(body, ["## Acceptance\n- First brief.", "## Acceptance\n- Revised brief."])).toEqual([
+      "Revised brief.",
+    ]);
+    expect(extractCriteria(body, ["A comment.", "## Acceptance\n\nProse only."])).toEqual(["The body's."]);
+  });
+
+  it("reads a comment's acceptance section but never a comment's bare checklist", () => {
+    expect(extractCriteria("No criteria.", ["- [ ] Somebody's to-do."])).toEqual([]);
+    expect(extractCriteria("- [ ] The body's.", ["- [ ] Somebody's to-do."])).toEqual(["The body's."]);
+    expect(extractCriteria("- [ ] The body's.", ["**Acceptance:**\n- [ ] The brief's."])).toEqual([
+      "The brief's.",
     ]);
   });
 

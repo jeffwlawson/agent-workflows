@@ -656,8 +656,9 @@ empty:
 - **Resolved since last review** — findings an earlier review raised that this one checked against
   the current code and closed. Folded on arrival: it is the record's memory rather than your list.
   Nothing else keeps it, because a resolved thread drops out of the next round's view entirely.
-- **Acceptance criteria** — the linked issue's acceptance criteria (its acceptance section, or its
-  checklist where it has none), each marked *met*, *changed* with the reason the change departs
+- **Acceptance criteria** — the linked issue's acceptance criteria (its acceptance section, the
+  latest one in a collaborator's comment where triage posted a brief there, or its checklist where
+  it has none), each marked *met*, *changed* with the reason the change departs
   from it on purpose, *unmet*, or *not checked*. An unmet one is also a finding under *Open*, with
   a thread to answer it on; a changed one is not a finding. Expanded where anything is not met, and
   left out where the pull request has no linked issue or the issue names no criteria.

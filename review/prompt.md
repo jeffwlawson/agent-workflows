@@ -18,8 +18,9 @@ is the full list of what you must not do.
 
 # ACCEPTANCE CRITERIA
 
-The linked issue's acceptance criteria, read off its acceptance section (or its checklist, where it
-has no such section) by the workflow, each under the id a ruling names it by:
+The linked issue's acceptance criteria, read off its acceptance section by the workflow (the latest
+one, where a triage brief posted as a comment on the issue supersedes the body's; or its checklist,
+where it has no such section), each under the id a ruling names it by:
 
 {{ACCEPTANCE_CRITERIA}}
 

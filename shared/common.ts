@@ -431,7 +431,22 @@ export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
  * need the same author gate. Only the first page (~30, oldest-first) is read;
  * that is plenty for steering and avoids pulling a huge thread into the prompt.
  */
-export const fetchTrustedComments = (number: string): string => {
+export const fetchTrustedComments = (number: string): string =>
+  renderTrustedComments(fetchTrustedCommentList(number));
+
+/** One trusted comment, as `fetchTrustedCommentList` returns it. */
+export interface TrustedComment {
+  readonly login: string;
+  readonly body: string;
+}
+
+/**
+ * The same comments as `fetchTrustedComments`, behind the same gate and from
+ * the same page, as a list oldest first, for a caller that reads them rather
+ * than handing them on as one text: the review reads a triage brief's
+ * acceptance criteria out of one (#214).
+ */
+export const fetchTrustedCommentList = (number: string): TrustedComment[] => {
   const ghRepo = process.env["GH_REPO"] ?? "";
   let comments: { body?: string; author_association?: string; user?: { login?: string } }[] = [];
   try {
@@ -441,10 +456,15 @@ export const fetchTrustedComments = (number: string): string => {
   }
   return comments
     .filter((c) => isTrustedAuthor(c.author_association, c.user?.login))
-    .map((c) => `**@${c.user?.login ?? "unknown"}:**\n${(c.body ?? "").trim()}`)
+    .map((c) => ({ login: c.user?.login ?? "unknown", body: (c.body ?? "").trim() }));
+};
+
+/** Trusted comments as the one text a prompt is handed, or "" for none. */
+export const renderTrustedComments = (comments: readonly TrustedComment[]): string =>
+  comments
+    .map((c) => `**@${c.login}:**\n${c.body}`)
     .filter((text) => text.trim().length > 0)
     .join("\n\n---\n\n");
-};
 
 /**
  * The Actions run this process is part of, or `undefined` off a runner.

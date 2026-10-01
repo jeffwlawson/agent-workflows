@@ -253,8 +253,9 @@ paragraph that mixed *what the change is* with *what the reviewer verified* is w
 long enough to bury the record in it.
 
 **Every review checks the linked issue's acceptance criteria one by one** (#214). The workflow
-reads them off the issue (its acceptance section, the last one where triage appended a brief, or
-its checklist where it has none) and hands them over by id; the review rules on each as *met*,
+reads them off the issue (its acceptance section, or where triage posted a brief as a trusted
+comment the latest such section, which supersedes the body's; or its body's checklist where there
+is none) and hands them over by id; the review rules on each as *met*,
 *changed* on purpose with the reason, or *unmet*. An unmet one is a fix-before-merge finding,
 anchored at the change nearest to it like any other; a changed one is not a finding, and is listed
 with its reason in the body's *Acceptance criteria* section, which a pull request with no linked

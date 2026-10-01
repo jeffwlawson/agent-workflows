@@ -931,33 +931,51 @@ describe("every PR workflow shares one concurrency group per PR", () => {
    * diff, and crowding out the CI failure that is. Matched on the workflow
    * *run* name, a different namespace from the check names in `AGENT_CHECKS`:
    * every agent workflow is `name: Agent …` and the repo's own are `CI` and
-   * `Corpus`, so the prefix is the whole test.
+   * `Corpus`, so the prefix is the whole test. Since #221 the tail reads the
+   * same filtered listing the wait does, so the prefix is applied once, there,
+   * beside this run's own id and a renamed caller's `uses:` target.
    */
   it("agent-review tails no agent workflow's failure log", () => {
     const run = waitStep().run ?? "";
 
-    expect(run).toContain('case "$rname" in "Agent "*)');
+    expect(run).toContain('select((.name // "") | startswith("Agent ") | not)');
+    expect(run).toContain("select((.id | tostring) != env.SELF_RUN_ID)");
+    expect(run).toContain("agent-workflows/\\\\.github/workflows/");
+    expect(waitStep().env?.["SELF_RUN_ID"]).toBe("${{ github.run_id }}");
+    expect(run).toMatch(/failed_runs=\$\(printf '%s' "\$runs"/);
     expect(run).not.toContain('[ "$rname" = "Agent Review" ]');
   });
 
   /**
-   * The listing that feeds that tail needs `actions: read`, which the loop
-   * deliberately does not request: run logs can carry an echoed secret, and a
-   * log tail is not worth the scope (#80). So on a private repository the
-   * listing is refused, and fed straight to `for` that was silent. It is gated
-   * on gh's exit status instead, and a failure says in the evidence that the
-   * tail is missing — naming the likely cause, never a remedy. Behaviour is
+   * The runs listing feeds the tail and, since #221, the verdict, and it is
+   * gated on gh's exit status: fed straight to `for`, a refusal was silent, or
+   * iterated an error body's JSON words as run ids (#80). A failure says in the
+   * evidence what is missing, and reads `unknown`. Behaviour is
    * `tests/review-ci-wait.test.ts`'s; this pins the shape and the ceiling.
    */
-  it("agent-review says so when it cannot list the runs to tail", () => {
+  it("agent-review says so when it cannot list the workflow runs", () => {
     const run = waitStep().run ?? "";
 
-    expect(run).toContain('if ! failed_runs=$(gh api "repos/${GH_REPO}/actions/runs?');
+    expect(run).toContain('if ! runs=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}');
     expect(run).toContain("for rid in $failed_runs; do");
     expect(run).not.toMatch(/for rid in \$\(gh api/);
-    expect(run).toMatch(/Could not list this commit's workflow runs[^\n]*actions: read[^\n]*>> "\$out"/);
-    // No grant: the reusable half's ceiling stays without the scope.
-    expect(jobOf(REVIEW).permissions).not.toHaveProperty("actions");
+    expect(run).toMatch(/Could not list this commit's workflow runs[^\n]*>> "\$out"/);
+    expect(run).toMatch(/workflow_runs=unknown/);
+  });
+
+  /**
+   * The grant the workflow-runs read spends (#221), in all three places it has
+   * to be: the reusable half's ceiling, and both caller sets, where it is
+   * actually granted. A run waiting for approval has created no check run, so
+   * without the scope the wait cannot see it and reads "no CI" as green.
+   */
+  it("holds the actions grant in the review ceiling and in every review caller", () => {
+    const halves = [REVIEW, ...callerWorkflows.filter((file) => targetOf(file) === REVIEW)];
+
+    expect(halves).toHaveLength(3);
+    for (const file of halves) expect(jobOf(file).permissions?.["actions"], file).toBe("read");
+    // Only the review job: `resolve` and the rest read no runs.
+    expect(workflowOf(REVIEW).jobs["resolve"]?.permissions).not.toHaveProperty("actions");
   });
 
   /**
@@ -3952,6 +3970,9 @@ describe("agent-review tells its caller what it cannot know", () => {
     ["the called job bounds", REVIEW, "read"],
   ])("%s exactly the permissions the job uses", (_half: string, file: string, contents: string) => {
     expect(jobOf(file).permissions).toEqual({
+      // The CI wait reads the commit's workflow runs (#221): a run queued or
+      // waiting for approval has no check run yet, so it shows nowhere else.
+      actions: "read",
       // The CI wait polls the check-runs API. A public repository serves it
       // without this scope, so every repo in the pilot passed without it and
       // the first private adopter got a 403 that spent the whole wait budget.

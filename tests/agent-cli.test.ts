@@ -1803,6 +1803,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("reads permissions declared above jobs: as the grants the job runs with", async () => {
     const root = adoptedWith([
       "permissions:",
+      "  actions: read",
       "  checks: read",
       "  contents: write",
       "  packages: read",

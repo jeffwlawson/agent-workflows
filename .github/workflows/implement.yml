@@ -287,9 +287,11 @@ jobs:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
           # AGENT_PAT is optional. When absent this falls back to GITHUB_TOKEN,
-          # which works — except that pushes made with it do not trigger CI
-          # on the resulting PR. Add the secret later and this starts using it
-          # with no change to the workflow.
+          # which works, except that CI on the resulting PR waits for a
+          # maintainer to approve it: since 2026-06-11 a push made with it
+          # starts `pull_request` runs that require approval (#221). Add the
+          # secret later and this starts using it with no change to the
+          # workflow.
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Compute branch name

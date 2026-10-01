@@ -214,11 +214,25 @@ const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
     return parts.join("\n\n");
   }
 
+  if (report.files.length > 0) parts.push(`Test files it ran:\n\n${list(report.files)}`);
+
+  // A report with no test that ran says nothing about what is red: every test
+  // was skipped, or the command never ran the files above. Unknown, as for a
+  // report that never arrived, never "none red" with every change uncovered.
+  if (report.tests.length === 0) {
+    const skipped =
+      report.skipped > 0
+        ? `the JUnit report it read held ${report.skipped} skipped test(s) and none that ran`
+        : "the JUnit report it read held no test at all, so the command may not have run the files above";
+    parts.push(`**No test result came back:** ${skipped}.`);
+    parts.push(UNKNOWN);
+    return parts.join("\n\n");
+  }
+
   const red = report.tests.filter((test) => test.result === "red");
   const broken = report.tests.filter((test) => test.result === "broken");
   const passed = report.tests.filter((test) => test.result === "passed");
 
-  if (report.files.length > 0) parts.push(`Test files it ran:\n\n${list(report.files)}`);
   parts.push(
     red.length === 0
       ? "**Red against the merge-base: none.** No test failed there on an assertion."
@@ -233,9 +247,6 @@ const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
     parts.push(
       `**Passed against the merge-base** (${passed.length}): each passes without this pull request's change too, so none is evidence for it.\n\n${passed.map((test) => `- ${describeTest(test)}`).join("\n")}`,
     );
-  }
-  if (report.tests.length === 0) {
-    parts.push("The JUnit report it read held no test at all, so the command may not have run the files above.");
   }
   parts.push(renderSource(report, red.length));
   return parts.join("\n\n");

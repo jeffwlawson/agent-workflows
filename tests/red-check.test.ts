@@ -590,6 +590,27 @@ describe("the review reads the red check's report as evidence", () => {
     expect(reviewSees(classify("missing.xml"))).toContain("wrote no JUnit report");
   });
 
+  /**
+   * A JUnit report that was read and holds no test that ran is unknown too
+   * (vitest 3.2.4: every test skipped, and `--passWithNoTests` with no test
+   * file found), never "none red" with every source change uncovered.
+   */
+  it.skipIf(!CAN_RUN)("reads a report with no test that ran as unknown, not as no red test", () => {
+    for (const [fixture, said] of [
+      ["vitest-all-skipped.xml", "held 2 skipped test(s) and none that ran"],
+      ["vitest-no-tests.xml", "held no test at all"],
+    ] as const) {
+      const report = classify(fixture, {}, "src/scale.ts\n");
+
+      expect(report, fixture).toMatchObject({ status: "ran", tests: [] });
+      const seen = reviewSees(report);
+
+      expect(seen, fixture).toContain(`**No test result came back:** the JUnit report it read ${said}`);
+      expect(seen, fixture).toContain("**Which tests are red is unknown.**");
+      expect(seen, fixture).not.toMatch(/Red against the merge-base|No test is red|is covered by a red test/);
+    }
+  });
+
   /** The job ran on the labelled commit; the review may read a later one (#229). */
   it.skipIf(!CAN_RUN)("says where the check ran on a commit other than the one reviewed", () => {
     const report = classify("pytest.xml", {}, "src/recipes.py\n");

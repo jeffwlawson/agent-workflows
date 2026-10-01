@@ -1,4 +1,10 @@
-import { fetchTrustedComments, fetchTrustedIssue, gh } from "./common.js";
+import { extractCriteria } from "./acceptance-criteria.js";
+import {
+  fetchTrustedCommentList,
+  fetchTrustedIssue,
+  gh,
+  renderTrustedComments,
+} from "./common.js";
 import {
   fetchPullRequestFeedback,
   unreadableNote,
@@ -25,6 +31,13 @@ export interface PullRequestContext {
   readonly issueNumber: string;
   readonly issueTitle: string;
   readonly linkedIssue: string;
+  /**
+   * The linked issue's acceptance criteria, as `extractCriteria` reads them
+   * off its body and its trusted comments, where triage posts its brief (#214). Empty where there is no linked issue, where its
+   * author is untrusted (its text never reaches the agent), or where it names
+   * none.
+   */
+  readonly criteria: readonly string[];
   /** Collaborator-authored conversation comments on the PR and linked issue. */
   readonly discussion: string;
   /**
@@ -98,11 +111,20 @@ export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequ
   // and holds even once community-authored issues enter the backlog.
   let issueTitle = "";
   let linkedIssue = "(no linked issue found)";
+  let criteria: string[] = [];
+  // Read once, for both the discussion below and the criteria: triage posts
+  // its brief, and with it the criteria the work was scoped to, as a comment
+  // on the issue rather than into its body (#214).
+  const trustedIssueComments = issueNumber ? fetchTrustedCommentList(issueNumber) : [];
   if (issueNumber) {
     const issue = fetchTrustedIssue(issueNumber);
     if (issue.trusted) {
       issueTitle = issue.title;
       linkedIssue = issue.body || "(linked issue has no description)";
+      criteria = extractCriteria(
+        issue.body,
+        trustedIssueComments.map((comment) => comment.body),
+      );
     } else {
       linkedIssue = `(linked issue #${issueNumber} was opened by a non-collaborator; its text is omitted so world-writable input never reaches the agent)`;
     }
@@ -113,7 +135,7 @@ export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequ
   // included), and conversation comments. A re-review therefore sees the notes
   // a human left on the previous one instead of repeating itself.
   const feedback = fetchPullRequestFeedback(prNumber);
-  const issueComments = issueNumber ? fetchTrustedComments(issueNumber) : "";
+  const issueComments = renderTrustedComments(trustedIssueComments);
   // A review **degrades** where the fix runner refuses: it holds `contents:
   // read` and produces text, so proceeding on what survived is right. What it
   // must not do is proceed *silently* — a refused selection used to render as an
@@ -122,7 +144,7 @@ export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequ
   // (#76).
   //
   // The note sits with the feedback it qualifies rather than at the end. What
-  // follows it comes from a different fetch — `fetchTrustedComments` on the
+  // follows it comes from a different fetch — `fetchTrustedCommentList` on the
   // linked issue — which the refusal says nothing about, and a caveat that
   // spans a section it has no bearing on is one the agent has to guess the
   // scope of.
@@ -148,6 +170,7 @@ export const fetchPullRequestContext = (prNumber: string, partOf = ""): PullRequ
     issueNumber,
     issueTitle,
     linkedIssue,
+    criteria,
     discussion,
     unreadableFeedback: feedback.unreadable,
     // Assembled here rather than in the fetch, which reads GitHub surfaces and

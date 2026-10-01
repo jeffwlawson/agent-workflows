@@ -1335,6 +1335,51 @@ describe("the review context surfaces what it could not read", () => {
     expect(issue).toBeGreaterThan(-1);
     expect(note).toBeLessThan(issue);
   });
+
+  /**
+   * Triage posts its brief as a comment on the issue, not into its body, and
+   * the brief's criteria supersede the body's (#214). A comment from outside
+   * the trust boundary is never read for them, as it never reaches the agent.
+   */
+  it("reads the linked issue's criteria from a trusted triage brief comment over its body", () => {
+    spawned.mockImplementation(((file: string, args: readonly string[]) => {
+      if (file === "git") return "diff --git a/x b/x\n";
+      if (args[0] === "pr" && args[1] === "view")
+        return JSON.stringify({ title: "A PR", body: "Closes #5" });
+      if (args[0] === "api" && args[1] === "graphql")
+        throw exitsNonZero(
+          response(pullRequest(THREAD_HOLE), [THREAD_HOLE_ERROR]),
+          "gh: Resource not accessible\n",
+        );
+      if (args[1] === "repos/o/r/issues/5")
+        return JSON.stringify({
+          title: "The issue",
+          body: "## Acceptance\n\n- [ ] Retitle the PR.\n- [ ] Pre-triage.",
+          author_association: "OWNER",
+          user: { login: "maintainer" },
+        });
+      if (args[1] === "repos/o/r/issues/5/comments")
+        return JSON.stringify([
+          {
+            body: "## Agent Brief\n\n**Acceptance criteria:**\n- [ ] From the brief.\n\n**Out of scope:**\n- Retitling.",
+            author_association: "OWNER",
+            user: { login: "maintainer" },
+          },
+          {
+            body: "## Acceptance\n- [ ] Injected by a stranger.",
+            author_association: "NONE",
+            user: { login: "stranger" },
+          },
+        ]);
+      throw new Error(`unrecorded gh call: ${args.join(" ")}`);
+    }) as never);
+
+    const context = fetchPullRequestContext("12");
+
+    expect(context.criteria).toEqual(["From the brief."]);
+    expect(context.discussion).toContain("## Agent Brief");
+    expect(context.discussion).not.toContain("Injected by a stranger.");
+  });
 });
 
 /**

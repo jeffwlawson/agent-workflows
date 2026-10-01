@@ -16,6 +16,35 @@ is the full list of what you must not do.
 
 {{LINKED_ISSUE}}
 
+# ACCEPTANCE CRITERIA
+
+The linked issue's acceptance criteria, read off its acceptance section by the workflow (the latest
+one, where a triage brief posted as a comment on the issue supersedes the body's; or its checklist,
+where it has no such section), each under the id a ruling names it by:
+
+{{ACCEPTANCE_CRITERIA}}
+
+**Rule on every one of them, by id, in `criteria`.** Check each against the code in front of you,
+and a criterion about the pull request itself (its title, its description, what its body says)
+against the title at the top of this brief and the body above. Where this review writes the summary,
+the summary you write counts as part of the body.
+
+- **`met`**: the change does what it says.
+- **`changed`**: the change does not do it as written, **on purpose**, and something says why: the
+  pull request's body or summary, a comment in the feedback below, or a reason the code makes plain
+  (the thing it asks for turned out to be impossible, or wrong). Give that reason in one line. It is
+  not a finding: it is recorded on the review, and the title and summary should describe what was
+  actually built.
+- **`unmet`**: the change does not do it, and nothing says why. That is a finding to fix before
+  merge, and the workflow raises it for you: give a one-line `reason` saying what is missing, a
+  `severity`, and a `path` and `line` anchored by the usual rule (at the change nearest to it; a
+  line outside the diff in a changed file is posted on the file). Do **not** also write it into
+  `findings` or `fixBeforeMerge`: ruling it `unmet` is the whole of reporting it, and a second
+  write-up is counted twice.
+
+A criterion you say nothing about is listed as *not checked* on the review, where a reader sees the
+gap, so rule on all of them.
+
 # EXISTING FEEDBACK
 
 Feedback already on this PR: earlier review summaries, unresolved inline threads (replies
@@ -179,7 +208,8 @@ says nothing about a red one leaves the reader with a verdict and no diagnosis.
 
 Read `CONTEXT.md` and `CLAUDE.md` first, then explore the changed files in context.
 
-1. **Correctness against the issue**: does the change do what the linked issue asked?
+1. **Correctness against the issue**: does the change do what the linked issue asked? Its
+   acceptance criteria are ruled on one by one, under *ACCEPTANCE CRITERIA* above.
 2. **Conventions**: the contract `CLAUDE.md` states for a change of this kind. Flag any
    deviation.
 3. **Domain correctness**: does it hold the distinctions `CONTEXT.md` draws, or has it

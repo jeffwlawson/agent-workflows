@@ -180,6 +180,22 @@ given none, which is nearly every review.
 
 A note you omit is filed as a follow-up at `medium`, so omitting one is not a way to drop it.
 
+## The linked issue's acceptance criteria: `criteria`
+
+One entry per criterion you were given under **ACCEPTANCE CRITERIA**, using the `id` exactly as
+given (`C1`, `C2`, …). An id you were not given is dropped. Empty where you were given none.
+
+- `met`: the change does what the criterion says.
+- `changed`: it does not, on purpose, and something says why. Carries a `reason`, one line, which
+  the review body shows beside the criterion. A change with no reason is refused. It is not a
+  finding.
+- `unmet`: it does not, and nothing says why. Carries a one-line `reason` saying what is missing, a
+  `severity`, and the `path` and `line` it is anchored at, by the same rule as a finding's. The
+  workflow raises it as a fix-before-merge finding there, so do **not** also write it into
+  `findings` or `fixBeforeMerge`.
+
+A criterion you omit is listed as not checked.
+
 ```json
 <output>
 {
@@ -207,12 +223,18 @@ A note you omit is filed as a follow-up at `medium`, so omitting one is not a wa
   "noteRulings": [
     { "noteId": "IC_kwDO...", "status": "promoted", "severity": "medium", "location": "src/client.ts:41" },
     { "noteId": "IC_kwDO...", "status": "dropped", "reason": "Already tracked in the issue this pull request links." }
+  ],
+  "criteria": [
+    { "id": "C1", "status": "met" },
+    { "id": "C2", "status": "changed", "reason": "The service answers before the work exists, so the change returns its tracking id instead." },
+    { "id": "C3", "status": "unmet", "reason": "The body does not say which tests cover the failure path.", "severity": "low", "path": "src/example.ts", "line": 42 }
   ]
 }
 </output>
 ```
 
-Use an empty array for any of the five lists with no entries (`verified` is empty when you were
-given no open findings to rule on, and `noteRulings` when you were given no notes). Leave
+Use an empty array for any of the six lists with no entries (`verified` is empty when you were
+given no open findings to rule on, `noteRulings` when you were given no notes, and `criteria` when
+you were given no criteria). Leave
 `needsYou` out entirely unless it applies, and `title` and `summary` out where the brief said this
 review leaves them as they are.

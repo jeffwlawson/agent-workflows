@@ -581,7 +581,7 @@ jobs:
       # review's `advance` job either moves the chain on from or parks it at,
       # with a comment on the parent. A run that declined every finding and
       # asked for nothing would end the round with no verdict, and the chain
-      # would sit on "fix round started" saying nothing. `== 'false'`, never
+      # would sit on the verdict that asked for the round, saying nothing. `== 'false'`, never
       # `!= 'true'`: the push writes its output on both arms, and unset is a
       # run that never reached it. The early stop (#202) bounds the extra
       # review: a fix round that closed nothing parks rather than starting

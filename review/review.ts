@@ -61,6 +61,7 @@ import {
   countFixBeforeMerge,
   dedupeFollowUps,
   deriveVerdict,
+  FIX_ROUND_STATUS,
   followUpsCap,
   MAX_FOLLOW_UPS,
   recordFollowUps,
@@ -165,7 +166,7 @@ const readCiResult = (): CiResult => {
  * changes (#201): what *Settle the fix-round budget* decided from the
  * repository's budget, the rounds this pull request has spent and the PAT.
  * None of those is readable here once the token is gone, and the job that adds
- * `agent:fix` selects on the key this decides, so the step's one answer is
+ * `agent:fix` selects on the field this decides, so the step's one answer is
  * taken rather than a second one worked out.
  *
  * Absent is off: a run that could not say must not claim a fix round started.
@@ -174,8 +175,8 @@ const willAutoFix = (): boolean => process.env["AUTO_FIX"] === "true";
 
 /**
  * The budget and the rounds spent against it, where the same step could count
- * them, for the line a spent budget gets. Anything unreadable is left out, and
- * the verdict falls back to the plain line that asks for the label.
+ * them, for the stop a spent budget records. Anything unreadable is left out,
+ * and the row records no stop.
  */
 const fixRounds = (): FixRounds | undefined => {
   const count = (name: string): number | undefined => {
@@ -500,8 +501,8 @@ try {
 
   // The verdict, derived from the review and the checks rather than written by
   // the agent (#96). Its heading and next-step line open the body, so the
-  // outcome is the first thing a reader sees and the same words the commit
-  // status carries — one statement in two places, not two that can disagree.
+  // outcome is the first thing a reader sees, and the commit status carries
+  // the short form of the same line from the same row (#297).
   const ci = readCiResult();
   const rounds = fixRounds();
   // What the fix round this review follows closed of the findings it was
@@ -515,7 +516,6 @@ try {
     movedToFollowUps: unanchored.length,
     autoFix: willAutoFix(),
     ...(rounds === undefined ? {} : { fixRounds: rounds }),
-    base: BASE_REF,
   });
   // And a history nothing could establish says so in the body as well as in
   // the brief. The agent was told it followed a fix round; what it cannot say,
@@ -638,15 +638,17 @@ try {
   // context that is *not* read from here is the one the failure arm posts,
   // which by definition runs on a review that wrote no file.
   //
-  // `verdict` is the row's key rather than its heading, because the two
-  // *changes recommended* rows share a heading and a reader of this file has to
-  // tell them apart: the automatic fix (#102) fires on exactly one of them,
-  // and the workflow selects on the key this writes.
+  // `verdict` is the row's key rather than its heading, so the workflow
+  // selects on something no rewording moves. `fixRound` is the status that
+  // records a round this review asked for (#297), present only where the
+  // automatic fix (#102) starts one: the posting step posts it beside the
+  // verdict, and the hand-off selects on its presence.
   writeJson("verdict.json", {
     context: VERDICT_CONTEXT,
     verdict: verdict.verdict,
     state: verdict.state,
     description: verdict.description,
+    ...(verdict.startsFixRound === true ? { fixRound: FIX_ROUND_STATUS } : {}),
   });
 
   // And on a PRD PR, what the advance job says on the parent where this round

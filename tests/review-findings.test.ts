@@ -974,7 +974,6 @@ describe("an identifier the model smuggled into its output", () => {
         fixRoundProgress: { given: 0, closed: 0 },
         stillOpen: carried.length,
         movedToFollowUps: 0,
-        base: "main",
       }).verdict,
     ).toBe("approval recommended");
   });

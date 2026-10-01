@@ -373,8 +373,10 @@ export const REVIEW_URL_SLOT = "{{AGENT_REVIEW_URL}}";
 export const parkReasonOf = (verdict: {
   readonly verdict: string;
   readonly stop?: "budget spent" | "no progress";
+  readonly startsFixRound?: true;
 }): ParkReason | undefined => {
   if (verdict.verdict === "needs a closer look") return "needs a closer look";
+  if (verdict.startsFixRound === true) return undefined;
   if (verdict.verdict === "changes recommended") return verdict.stop ?? "changes recommended";
   return undefined;
 };

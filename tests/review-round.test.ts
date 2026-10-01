@@ -17,7 +17,7 @@ import {
   unreadableHistoryNote,
   type ReviewHistory,
 } from "../shared/review-round.js";
-import { VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
+import { FIX_ROUND_STATUS, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
 import type { CarriedFinding } from "../shared/review-verification.js";
 
 /**
@@ -51,16 +51,35 @@ const commit = (sha: string, author = "sandcastle-agent[bot]", parents = 1): unk
   commit: { author: { name: author } },
 });
 
-/** A verdict as the loop posts it: our context, our account, a real state. */
-const verdict = (description = VERDICTS["changes recommended"].description, state = "failure"): unknown => ({
+const REVIEW_URL = "https://github.com/o/r/pull/12#pullrequestreview-1";
+
+/** A verdict as the loop posts it: our context, our account, a real state, the review it links. */
+const verdict = (
+  description = VERDICTS["changes recommended"].description,
+  state = "failure",
+  url = "https://github.com/o/r/pull/12#pullrequestreview-2",
+): unknown => ({
   context: VERDICT_CONTEXT,
   state,
   description,
+  target_url: url,
   creator: { login: "github-actions[bot]" },
 });
 
-/** The verdict that announced an automatic fix round. */
-const started = (): unknown => verdict(VERDICTS["changes recommended, fix round started"].description);
+/** The `agent-fix-round` record (#297) a review that asked for a round posts beside its verdict. */
+const record = (url = REVIEW_URL, login = "github-actions[bot]"): unknown => ({
+  ...FIX_ROUND_STATUS,
+  target_url: url,
+  creator: { login },
+});
+
+/**
+ * A verdict that asked for an automatic fix round, newest first as the
+ * endpoint lists them: its record, then the verdict, both linking one review.
+ * The verdict's line is the plain 🟡 one, the same whether or not a round
+ * started (#297).
+ */
+const started = (): unknown[] => [record(), verdict(undefined, undefined, REVIEW_URL)];
 
 interface Repo {
   /** Pages exactly as `gh api --paginate --slurp` returns them: an array of arrays. */
@@ -145,7 +164,7 @@ describe("readReviewHistory", () => {
   it("follows a fix round when the latest verdict started one and commits have landed since", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
-      statuses: statuses({ [MIDDLE]: [started()] }),
+      statuses: statuses({ [MIDDLE]: started() }),
     });
 
     expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
@@ -163,7 +182,7 @@ describe("readReviewHistory", () => {
   ])("gives the same answer when the commit since is %s", (_case, head) => {
     ghAnswers({
       commits: [[commit(FIRST), commit(MIDDLE), head]],
-      statuses: statuses({ [MIDDLE]: [started()] }),
+      statuses: statuses({ [MIDDLE]: started() }),
     });
     expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
 
@@ -204,15 +223,35 @@ describe("readReviewHistory", () => {
         [FIRST]: () =>
           JSON.stringify([
             [
+              record(REVIEW_URL, "someone-else"),
               {
                 context: VERDICT_CONTEXT,
                 state: "failure",
-                description: VERDICTS["changes recommended, fix round started"].description,
+                description: VERDICTS["changes recommended"].description,
+                target_url: REVIEW_URL,
                 creator: { login: "someone-else" },
               },
             ],
           ]),
       },
+    });
+
+    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
+  });
+
+  /**
+   * The round is the `agent-fix-round` record, not the verdict's line, which
+   * is the same 🟡 line whether or not a round started (#297). So the record
+   * has to be this loop's, and has to link the review the verdict links.
+   */
+  it.each([
+    ["no record", [verdict(undefined, undefined, REVIEW_URL)]],
+    ["a record by another account", [record(REVIEW_URL, "someone-else"), verdict(undefined, undefined, REVIEW_URL)]],
+    ["a record linking another review", [record("https://github.com/o/r/pull/12#pullrequestreview-9"), verdict(undefined, undefined, REVIEW_URL)]],
+  ])("follows no fix round when the verdict has %s", (_case, posted) => {
+    ghAnswers({
+      commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
+      statuses: statuses({ [MIDDLE]: posted }),
     });
 
     expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
@@ -226,7 +265,7 @@ describe("readReviewHistory", () => {
   it("ignores an error status, which is a run that produced no verdict", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(HEAD)]],
-      statuses: statuses({ [FIRST]: [started()], [HEAD]: [verdict("the review failed", "error")] }),
+      statuses: statuses({ [FIRST]: started(), [HEAD]: [verdict("the review failed", "error")] }),
     });
 
     expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
@@ -235,7 +274,7 @@ describe("readReviewHistory", () => {
   it("takes the latest verdict, not the first one it can find", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
-      statuses: statuses({ [FIRST]: [started()], [MIDDLE]: [verdict()] }),
+      statuses: statuses({ [FIRST]: started(), [MIDDLE]: [verdict()] }),
     });
 
     expect(readReviewHistory("12").afterFixRound).toBe(false);
@@ -248,7 +287,7 @@ describe("readReviewHistory", () => {
   it("takes the newest verdict on a commit that carries two", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(HEAD)]],
-      statuses: statuses({ [FIRST]: [verdict(), started()] }),
+      statuses: statuses({ [FIRST]: [verdict(), ...started()] }),
     });
 
     expect(readReviewHistory("12").afterFixRound).toBe(false);
@@ -263,7 +302,7 @@ describe("readReviewHistory", () => {
   it("follows no fix round when the commit being reviewed carries the verdict", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(HEAD)]],
-      statuses: statuses({ [HEAD]: [started()] }),
+      statuses: statuses({ [HEAD]: started() }),
     });
 
     expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: false });
@@ -277,7 +316,7 @@ describe("readReviewHistory", () => {
   it("follows a fix round when the round pushed nothing but posted a note", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(HEAD)]],
-      statuses: statuses({ [HEAD]: [started()] }),
+      statuses: statuses({ [HEAD]: started() }),
     });
 
     expect(readReviewHistory("12", true)).toEqual({ afterFixRound: true, unreviewedCommits: false });
@@ -297,7 +336,7 @@ describe("readReviewHistory", () => {
   it("reads every page, so a long pull request's head is not off the end", () => {
     ghAnswers({
       commits: [[commit(FIRST)], [commit(MIDDLE), commit(HEAD)]],
-      statuses: statuses({ [MIDDLE]: [started()] }),
+      statuses: statuses({ [MIDDLE]: started() }),
     });
 
     expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
@@ -319,7 +358,7 @@ describe("readReviewHistory", () => {
             state: "success",
             creator: { login: "deploy-bot[bot]" },
           })),
-          [started()],
+          started(),
         ],
       }),
     });

@@ -677,8 +677,10 @@ jobs:
       # are about (#229).
       sha: ${{ steps.state.outputs.sha }}
       # The verdict's machine-readable key, out of the file the runner wrote,
-      # which the hand-off selects on. See *Hand the verdict to what reads it*.
+      # and whether the review asked for an automatic fix round, which the
+      # hand-off selects on. See *Hand the verdict to what reads it*.
       verdict: ${{ steps.verdict.outputs.verdict }}
+      fix-round: ${{ steps.verdict.outputs.fix-round }}
       # On a PRD PR, `slice` or `final`, which the ready step and the advance
       # job select on. See *Tell a slice round from the final review*.
       round: ${{ steps.round.outputs.round }}
@@ -905,12 +907,13 @@ jobs:
 
       # The fix-round budget (#201, PRD #200): whether this review, if it
       # recommends changes, starts a fix round itself. Settled **before** the
-      # review, so the verdict announces a round only where one will start, and
-      # the posting job's hand-off starts exactly the rounds announced (the key the
-      # runner derives from `start` is the one it selects on). `start` is a
-      # ceiling, not a promise: the runner still stops the loop where the fix
-      # round this review follows closed none of its findings (#202), and then
-      # derives a key nothing selects on.
+      # review, so the runner asks for a round only where one will start, and
+      # the posting job's hand-off starts exactly the rounds asked for (the
+      # `fix-round` output the runner derives from `start` is what it selects
+      # on). `start` is a ceiling, not a promise: the runner still stops the
+      # loop where the fix round this review follows closed none of its findings
+      # (#202), and then asks for nothing. The verdict's line is the same either
+      # way (#297).
       #
       # **The budget** is the repository variable `AGENT_MAX_FIX_ROUNDS`,
       # automatic fix rounds per pull request, default 3 and `0` for none. A
@@ -927,18 +930,19 @@ jobs:
       # for one release (decision 4): `true` is a budget of 1, `false` of 0.
       #
       # **Rounds spent are counted from the pull request**, not from a marker
-      # label: the verdicts this loop posted on its commits whose status is the
-      # *fix round started* row, word for word. So the count survives a re-run
-      # and a hand edit, and the one-shot marker label #102 kept is retired.
-      # Counted once per posted review, by the review URL the status links to,
-      # because `update-branch` copies a standing verdict, link and all, on to
-      # the merge commit it makes, and a copy is not a second round. A human
-      # adding `agent:fix` posts no such verdict, so only automatic rounds count
-      # (decision 7), and a push resets nothing.
+      # label: the `agent-fix-round` statuses this loop posted on its commits,
+      # one beside each verdict that asked for a round (`FIX_ROUND_STATUS`,
+      # #297). So the count survives a re-run and a hand edit, and the one-shot
+      # marker label #102 kept is retired. Counted once per posted review, by
+      # the review URL the status links to, because `update-branch` copies the
+      # statuses standing on a commit, links and all, on to the merge commit it
+      # makes, and a copy is not a second round. A human adding `agent:fix`
+      # posts no such status, so only automatic rounds count (decision 7), and a
+      # push resets nothing.
       #
       # **And no PAT, no round.** A label added with `GITHUB_TOKEN` starts
       # nothing, so without `AGENT_PAT` the verdict asks for the label instead of
-      # announcing a round that would never run. The same holds for a count that
+      # asking for a round that would never run. The same holds for a count that
       # could not be read: a run that cannot say how many rounds are spent does
       # not start another, and warns.
       - name: Settle the fix-round budget
@@ -948,11 +952,9 @@ jobs:
           MAX_FIX_ROUNDS: ${{ vars.AGENT_MAX_FIX_ROUNDS }}
           AUTO_FIX: ${{ inputs.auto-fix }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          VERDICT_CONTEXT: agent-review
+          # `FIX_ROUND_STATUS.context`; a test holds the two equal.
+          FIX_ROUND_CONTEXT: agent-fix-round
           LOOP_ACCOUNT: github-actions[bot]
-          # `VERDICTS["changes recommended, fix round started"].description`,
-          # verbatim; a test holds the two equal.
-          STARTED: "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically."
         run: |
           set -uo pipefail
           # A refusal rather than a stop (#253): nothing was reviewed, so the
@@ -983,7 +985,7 @@ jobs:
             [ "${#budget}" -le 9 ] || budget=999999999
           fi
 
-          # Every link a *fix round started* verdict of ours carries, one per
+          # Every link an `agent-fix-round` status of ours carries, one per
           # line, over every commit of the pull request; or a failure, which is
           # not the same answer as none.
           started_links() {
@@ -991,7 +993,7 @@ jobs:
             commits=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/commits" --paginate --jq '.[].sha') || return 1
             for sha in $commits; do
               gh api "repos/${GH_REPO}/commits/${sha}/statuses" --paginate --slurp \
-                | jq -r '(add // [])[] | select(.context == env.VERDICT_CONTEXT and .creator.login == env.LOOP_ACCOUNT and .description == env.STARTED) | (.target_url // "status \(.id)")' \
+                | jq -r '(add // [])[] | select(.context == env.FIX_ROUND_CONTEXT and .creator.login == env.LOOP_ACCOUNT) | (.target_url // "status \(.id)")' \
                 || return 1
             done
           }
@@ -1790,9 +1792,10 @@ jobs:
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.6 -- agent-workflows review
 
       # The verdict as something the posting job can select on (#102). The
-      # **key**, not the heading: two rows share a heading and the automatic fix
-      # fires on exactly one of them, so a selector on anything but the key
-      # would fire on both.
+      # **key**, not the heading or the line, so no rewording moves a selector.
+      # And `fix-round`, whether the review asked for an automatic fix round:
+      # the row's line is the same whether or not one starts (#297), so the
+      # file says it separately, and the automatic fix selects on this.
       #
       # An output as well as a file in the artifact, because the posting job's
       # step `if:`s read it, and a step `if:` can read `needs` but not a file.
@@ -1804,7 +1807,7 @@ jobs:
         run: |
           file="${RUNNER_TEMP}/verdict.json"
           [ -f "$file" ] || { echo "No verdict file; nothing to hand over."; exit 0; }
-          jq -r '"verdict=\(.verdict)"' "$file" >> "$GITHUB_OUTPUT"
+          jq -r '"verdict=\(.verdict)", "fix-round=\(.fixRound != null)"' "$file" >> "$GITHUB_OUTPUT"
 
       # Everything the runner wrote for posting, handed to the posting job
       # (#257): the review payload and the body's parts, the verdict, the
@@ -1920,7 +1923,7 @@ jobs:
   #     and on a PRD PR only on the final review's approval;
   #  6. take `agent:review` off;
   #  7. hand off: `agent:review` again where the head moved during the run,
-  #     else `agent:fix` where the verdict announced a round.
+  #     else `agent:fix` where the review asked for a round.
   #
   # On a PRD PR the `advance` job below follows this one, and moves the chain
   # on or parks it.
@@ -2395,7 +2398,11 @@ jobs:
       # commit replaces its own verdict and nothing else.
       #
       # The context, the state and the line all come out of `verdict.json`,
-      # which the runner wrote from a derivation that is unit-tested. Deriving
+      # which the runner wrote from a derivation that is unit-tested. So does
+      # the `agent-fix-round` status posted beside it where the review asked
+      # for an automatic fix round (#297): the record *Settle the fix-round
+      # budget* counts rounds by, linking the same review. The verdict's line
+      # is fixed whatever the state, so it can no longer be that record. Deriving
       # any of them here would be a second copy of that table, in YAML, where
       # nothing can test it — and the line is the whole feature: it is what
       # makes the outcome actionable without reading the review.
@@ -2426,6 +2433,17 @@ jobs:
           fi
           gh api "${args[@]}" \
             || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
+          if jq -e '.fixRound != null' "${RUNNER_TEMP}/verdict.json" >/dev/null; then
+            record=(--method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}"
+                    -f "context=$(jq -r .fixRound.context "${RUNNER_TEMP}/verdict.json")"
+                    -f "state=$(jq -r .fixRound.state "${RUNNER_TEMP}/verdict.json")"
+                    -f "description=$(jq -r .fixRound.description "${RUNNER_TEMP}/verdict.json")")
+            if [ -n "$REVIEW_URL" ]; then
+              record+=(-f "target_url=${REVIEW_URL}")
+            fi
+            gh api "${record[@]}" \
+              || echo "::warning::Could not post the \`agent-fix-round\` status for ${HEAD_SHA}, which is what the fix-round budget counts, so the automatic fix round will not start. GitHub's reply is printed above."
+          fi
 
       # Step 5. Draft means "the automated pipeline has not finished", not "the
       # agent is still writing code", so this belongs here rather than at the
@@ -2485,7 +2503,7 @@ jobs:
       - name: Mark PR ready for review
         if: >-
           steps.review.outcome == 'success' &&
-          needs.review.outputs.verdict != 'changes recommended, fix round started' &&
+          needs.review.outputs.fix-round != 'true' &&
           (!startsWith(github.event.pull_request.head.ref, 'agent/prd-') ||
            (needs.review.outputs.round == 'final' && needs.review.outputs.verdict == 'approval recommended'))
         env:
@@ -2655,8 +2673,9 @@ jobs:
             || echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, and agent:review could not be added again. Add it by hand to review the new head."
 
       # Step 7, the first hand-off: the automatic fix round (#102, and the
-      # budget of #201, PRD #200). Where the verdict is *changes recommended,
-      # fix round started*, this adds `agent:fix` itself, so a pull request whose
+      # budget of #201, PRD #200). Where the verdict is *changes recommended*
+      # and the review asked for a round (`fix-round`, #297), this adds
+      # `agent:fix` itself, so a pull request whose
       # fixes the review says are clear reaches a maintainer already fixed and
       # re-reviewed rather than waiting on a label nobody was asked to think
       # about. After `agent:review` came off (#257), so the timeline never shows
@@ -2664,19 +2683,19 @@ jobs:
       #
       # **Whether a round starts is settled before the review**, by *Settle the
       # fix-round budget*: the rounds this loop already started on the pull
-      # request, counted from its verdicts, against `AGENT_MAX_FIX_ROUNDS`. The
-      # runner derives this key only where that step said a round would start,
-      # so the verdict announces exactly the rounds this step starts, and the
-      # budget is restated nowhere here: a second copy of the comparison could
-      # only disagree with the first.
+      # request, counted from its `agent-fix-round` statuses, against
+      # `AGENT_MAX_FIX_ROUNDS`. The runner asks for a round only where that
+      # step said one would start, so the review asks for exactly the rounds
+      # this step starts, and the budget is restated nowhere here: a second
+      # copy of the comparison could only disagree with the first.
       #
       # **Why it cannot loop.** Two bounds, both ruled on before the key below
-      # is derived. The budget bounds it per pull request, and the count it is
-      # checked against is the verdicts that announced a round, so nothing here
-      # has to be written down for the bound to hold. And the early stop (#202):
-      # a review after a fix round that closed none of the findings it was given
-      # cannot produce the key below, whatever budget is left (`deriveVerdict`,
-      # docs/parity.md §10).
+      # is asked for. The budget bounds it per pull request, and the count it is
+      # checked against is the rounds the reviews asked for, posted before this
+      # step runs, so nothing here has to be written down for the bound to
+      # hold. And the early stop (#202): a review after a fix round that closed
+      # none of the findings it was given cannot ask for a round, whatever
+      # budget is left (`deriveVerdict`, docs/parity.md §10).
       #
       # MUST use AGENT_PAT. A label added with `GITHUB_TOKEN` fires no
       # `labeled` event, so `agent:fix` added with it sits on the pull request
@@ -2696,20 +2715,26 @@ jobs:
       # The head alone decides nothing. A clean `update-branch` moves it and
       # copies this verdict on to the new one, where the round still stands; a
       # push nobody reviewed leaves the head with no verdict, which is a round
-      # announced and not coming, and is said like the failures below.
+      # asked for and not coming, and is said like the failures below.
       #
-      # **Say only what will happen.** The verdict has already announced a
-      # round, so every arm that does not start one when it should, a read
-      # that failed, a verdict that is nowhere on the head, or an add that
-      # failed, says so on the pull request, where the announcement is, and
-      # ends red, with the pull request marked ready, since it is the human's
-      # turn now. Between 2026-09-22 and 09-30 all seven auto-fix jobs here
-      # failed after the verdict had announced a round, and the only record was
-      # a red job nobody opened.
+      # **And no record, no round** (#297). The `agent-fix-round` status the
+      # posting step wrote beside the verdict is what the budget counts, so a
+      # round started without it is one the budget never sees: the bound holds
+      # only while every round it allows is written down first.
+      #
+      # **Say only what will happen.** The verdict's line promises no round
+      # (#297), but the review left the pull request a draft for one, so every
+      # arm that does not start one when it should, a read that failed, a
+      # verdict that is nowhere on the head, or an add that failed, says so on
+      # the pull request and ends red, with the pull request marked ready,
+      # since it is the human's turn now. Between 2026-09-22 and 09-30 all
+      # seven auto-fix jobs here failed after the verdict had announced a
+      # round, and the only record was a red job nobody opened.
       - name: Start the automatic fix round
         if: >-
           success() && needs.review.result == 'success' &&
-          needs.review.outputs.verdict == 'changes recommended, fix round started' &&
+          needs.review.outputs.verdict == 'changes recommended' &&
+          needs.review.outputs.fix-round == 'true' &&
           steps.trigger.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
@@ -2717,16 +2742,18 @@ jobs:
           REVIEW_URL: ${{ steps.review.outputs.url }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           VERDICT_CONTEXT: agent-review
+          # `FIX_ROUND_STATUS.context`; a test holds the two equal.
+          FIX_ROUND_CONTEXT: agent-fix-round
           LOOP_ACCOUNT: github-actions[bot]
         run: |
           set -euo pipefail
-          # The review left the pull request a draft for the round it
-          # announced, so a round that is not coming hands it back as well.
+          # The review left the pull request a draft for the round it asked
+          # for, so a round that is not coming hands it back as well.
           # Not a PRD PR, which stays a draft until its final review approves
           # it (PRD #222): this step ending red parks its chain instead, and
           # the `advance` job says so on the parent.
           no_round() {
-            gh pr comment "$PR_NUMBER" --body "No fix round started, although this PR's review said one had: $1. Add \`agent:fix\` to start one by hand." \
+            gh pr comment "$PR_NUMBER" --body "No automatic fix round started: $1. Add \`agent:fix\` to start one by hand." \
               || echo "::warning::…and that could not be said on the pull request either."
             if [[ "$HEAD_REF" != agent/prd-* ]]; then
               gh pr ready "$PR_NUMBER" \
@@ -2746,7 +2773,7 @@ jobs:
 
           # A head that moved is not a reason on its own (#240): a clean
           # `update-branch` copies this verdict, link and all, on to the merge
-          # commit, and the round it announced still stands there. What decides
+          # commit, and the round it asked for still stands there. What decides
           # is which verdict the head carries, so a moved head is only named.
           head=$(printf '%s' "$live" | jq -r .headRefOid)
           where="the head commit \`${head}\`"
@@ -2758,11 +2785,15 @@ jobs:
           newest=$(printf '%s' "$statuses" \
             | jq -c '(add // []) | map(select(.context == env.VERDICT_CONTEXT and .creator.login == env.LOOP_ACCOUNT))[0] // empty')
           if [ -z "$newest" ]; then
-            no_round "the verdict that announced it is not on ${where}"
+            no_round "the verdict that asked for it is not on ${where}"
           fi
           if [ "$(printf '%s' "$newest" | jq -r '.target_url // ""')" != "$REVIEW_URL" ]; then
-            echo "A newer verdict stands on ${head} than the review that announced this round. Adding nothing."
+            echo "A newer verdict stands on ${head} than the review that asked for this round. Adding nothing."
             exit 0
+          fi
+          if ! printf '%s' "$statuses" \
+            | jq -e '(add // []) | any(.[]; .context == env.FIX_ROUND_CONTEXT and .creator.login == env.LOOP_ACCOUNT and .target_url == env.REVIEW_URL)' >/dev/null; then
+            no_round "the \`agent-fix-round\` status that counts it against the fix-round budget is not on ${where}, and a round the budget cannot see is one nothing bounds"
           fi
 
           # Removed first, as every trigger label the loop adds (#236): an add
@@ -2864,6 +2895,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           ENDED: ${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}
           VERDICT: ${{ needs.review.outputs.verdict }}
+          FIX_ROUND: ${{ needs.review.outputs.fix-round }}
           # `PROGRESS_START` and `PROGRESS_END` in `shared/progress-list.ts`;
           # a test holds them equal.
           PROGRESS_START: "<!-- agent:progress -->"
@@ -2873,7 +2905,7 @@ jobs:
           ending=parked
           if [ "$ENDED" = "true" ] && [ "$VERDICT" = "approval recommended" ]; then
             ending=approved
-          elif [ "$ENDED" = "true" ] && [ "$VERDICT" = "changes recommended, fix round started" ]; then
+          elif [ "$ENDED" = "true" ] && [ "$VERDICT" = "changes recommended" ] && [ "${FIX_ROUND:-}" = "true" ]; then
             ending=running
           fi
           list="${RUNNER_TEMP}/progress_${ending}.md"
@@ -2925,7 +2957,7 @@ jobs:
       # Every other ending but a fix round starting. A run that finished posts
       # `park.md`, the comment for its verdict. One whose review finished and
       # whose verdict was posted, but whose posting job failed after it (a fix
-      # round the verdict announced that did not start, say), posts
+      # round the review asked for that did not start, say), posts
       # `park_posted.md`, which names that verdict and this round's findings:
       # the review is on the pull request, so "no verdict" would be false. Any
       # other posts `park_failed.md`, which the runner wrote before the agent
@@ -2943,7 +2975,7 @@ jobs:
         if: >-
           !(needs.review.result == 'success' && needs.post-review.result == 'success' &&
             (needs.review.outputs.verdict == 'approval recommended' ||
-             needs.review.outputs.verdict == 'changes recommended, fix round started'))
+             (needs.review.outputs.verdict == 'changes recommended' && needs.review.outputs.fix-round == 'true')))
         env:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

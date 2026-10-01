@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { asArray, asRecord, asString } from "./common.js";
+import { embeddableJson } from "./review-output.js";
 
 /**
  * The red check's evidence, as the review reads it (#232, PRD #212).
@@ -49,6 +50,11 @@ export interface RedCheckReport {
    * as listing them, which is not the same as none.
    */
   readonly source?: readonly string[];
+  /**
+   * On a PRD PR's slice round (#235), the slice whose "before" `base` is: the
+   * PRD branch as it stood before that slice, rather than the merge-base.
+   */
+  readonly slice?: number;
   readonly exitCode: number | null;
   readonly tests: readonly RedCheckTest[];
   readonly skipped: number;
@@ -99,6 +105,8 @@ const parseReport = (value: unknown): RedCheckReport => {
   if (exitCode !== null && !Number.isInteger(exitCode)) throw new Error("exitCode must be an integer or null");
   const skipped = record["skipped"];
   if (!Number.isInteger(skipped)) throw new Error("skipped must be an integer");
+  const slice = record["slice"];
+  if (slice !== undefined && !Number.isInteger(slice)) throw new Error("slice must be an integer");
   return {
     status: asString(record["status"], "status"),
     ...(reason === undefined ? {} : { reason }),
@@ -106,6 +114,7 @@ const parseReport = (value: unknown): RedCheckReport => {
     head: nullableString(record["head"], "head"),
     files: strings(record["files"], "files"),
     ...(record["source"] === undefined ? {} : { source: strings(record["source"], "source") }),
+    ...(slice === undefined ? {} : { slice: slice as number }),
     exitCode: exitCode as number | null,
     tests: asArray(record["tests"], "tests").map(parseTest),
     skipped: skipped as number,
@@ -172,7 +181,20 @@ const describeTest = (test: RedCheckTest): string => {
 const withMessage = (test: RedCheckTest): string =>
   test.message ? `- ${describeTest(test)}\n\n${fenced(test.message)}` : `- ${describeTest(test)} (no message reported)`;
 
+/**
+ * What the tests ran against: the merge-base, or on a PRD PR's slice round the
+ * PRD branch as it stood before the slice (#235), which holds every earlier
+ * slice.
+ */
+const before = (report: RedCheckReport): string =>
+  report.slice === undefined ? "the merge-base" : `the PRD branch as it stood before this slice (#${report.slice})`;
+
 const list = (files: readonly string[]): string => files.map((file) => `- ${code(file)}`).join("\n");
+
+/** Whose changes the report covers: the pull request's, or on a slice round the slice's alone. */
+const whose = (report: RedCheckReport): string => (report.slice === undefined ? "this pull request" : "this slice");
+
+const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** The non-test files the PR changes, and what they are owed, given whether any test is red. */
 const renderSource = (report: RedCheckReport, red: number): string => {
@@ -180,12 +202,12 @@ const renderSource = (report: RedCheckReport, red: number): string => {
     return "The report does not list the non-test files this pull request changes; read them off the diff.";
   }
   if (report.source.length === 0) {
-    return "**This pull request changes no non-test file**, so there is no behaviour change for a red test to cover.";
+    return `**${capital(whose(report))} changes no non-test file**, so there is no behaviour change for a red test to cover.`;
   }
   const heading =
     red === 0
-      ? `**No test is red against the merge-base, and this pull request changes ${report.source.length} non-test file(s).** No behaviour change in them is covered by a red test:`
-      : `**Non-test files this pull request changes** (${report.source.length}). Each behaviour change in them needs a red test above that covers it:`;
+      ? `**No test is red against ${before(report)}, and ${whose(report)} changes ${report.source.length} non-test file(s).** No behaviour change in them is covered by a red test:`
+      : `**Non-test files ${whose(report)} changes** (${report.source.length}). Each behaviour change in them needs a red test above that covers it:`;
   return `${heading}\n\n${list(report.source)}`;
 };
 
@@ -198,8 +220,9 @@ const PLACED_AND_RAN: readonly string[] = ["ran", "no-report", "unreadable-repor
 const PLACED_ONLY: readonly string[] = ["setup-failed", "not-run"];
 
 const opening = (report: RedCheckReport): string => {
-  const at = report.base === null ? "the merge-base" : `the merge-base, ${code(report.base)}`;
-  const placed = `took the test files this pull request adds or changes and put them over ${at}, with every other file as it was there`;
+  const at = report.base === null ? before(report) : `${before(report)}, ${code(report.base)}`;
+  const tests = `${whose(report)} adds or changes`;
+  const placed = `took the test files ${tests} and put them over ${at}, with every other file as it was there`;
   if (report.status === "ran") {
     return `The red check ran. It ${placed}, and ran the test command the repository configures for it.`;
   }
@@ -210,7 +233,7 @@ const opening = (report: RedCheckReport): string => {
     return `The red check is configured, and stopped before running its test command. It ${placed}, and never ran the test command.`;
   }
   if (report.status === "no-test-files") {
-    return `The red check is configured, and stopped before running its test command: it looked for the test files this pull request adds or changes against ${at}, and placed and ran nothing.`;
+    return `The red check is configured, and stopped before running its test command: it looked for the test files ${tests} against ${at}, and placed and ran nothing.`;
   }
   return "The red check is configured, and stopped before running its test command: it placed no test file and ran nothing.";
 };
@@ -225,7 +248,9 @@ const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
 
   const status = report.status;
   if (status === "no-test-files") {
-    parts.push("**This pull request adds or changes no test file**, so no test is red against the merge-base.");
+    parts.push(
+      `**${capital(whose(report))} adds or changes no test file**, so no test is red against ${before(report)}.`,
+    );
     parts.push(renderSource(report, 0));
     return parts.join("\n\n");
   }
@@ -257,17 +282,17 @@ const renderRan = (report: RedCheckReport, reviewedHead: string): string => {
 
   parts.push(
     red.length === 0
-      ? "**Red against the merge-base: none.** No test failed there on an assertion."
-      : `**Red against the merge-base** (${red.length}): each failed there on the assertion shown, so each is evidence that it catches the behaviour this pull request changes.\n\n${red.map(withMessage).join("\n\n")}`,
+      ? `**Red against ${before(report)}: none.** No test failed there on an assertion.`
+      : `**Red against ${before(report)}** (${red.length}): each failed there on the assertion shown, so each is evidence that it catches the behaviour this pull request changes.\n\n${red.map(withMessage).join("\n\n")}`,
   );
   if (broken.length > 0) {
     parts.push(
-      `**Broken against the merge-base** (${broken.length}): each failed there on import, collection or setup, before any assertion ran. **A broken test is not red, and is not coverage**, whatever it would assert.\n\n${broken.map(withMessage).join("\n\n")}`,
+      `**Broken against ${before(report)}** (${broken.length}): each failed there on import, collection or setup, before any assertion ran. **A broken test is not red, and is not coverage**, whatever it would assert.\n\n${broken.map(withMessage).join("\n\n")}`,
     );
   }
   if (passed.length > 0) {
     parts.push(
-      `**Passed against the merge-base** (${passed.length}): each passes without this pull request's change too, so none is evidence for it.\n\n${passed.map((test) => `- ${describeTest(test)}`).join("\n")}`,
+      `**Passed against ${before(report)}** (${passed.length}): each passes without this pull request's change too, so none is evidence for it.\n\n${passed.map((test) => `- ${describeTest(test)}`).join("\n")}`,
     );
   }
   parts.push(renderSource(report, red.length));
@@ -367,8 +392,8 @@ export const renderFailingFirst = (check: RedCheck, reviewedHead: string): strin
       red.length === 0
         ? "None: no test this pull request adds or changes failed on an assertion against the code as it was before this change."
         : `Each of these failed on the assertion shown against the code as it was before this change, ${
-            report.base === null ? "the merge-base" : `the merge-base ${code(report.base)}`
-          }, with this pull request's test files put over it:\n\n${red.slice(0, MAX_LISTED).map(failingFirst).join("\n\n")}`,
+            report.base === null ? before(report) : `${before(report)} ${code(report.base)}`
+          }, with ${whose(report)}'s test files put over it:\n\n${red.slice(0, MAX_LISTED).map(failingFirst).join("\n\n")}`,
     ];
     if (red.length > MAX_LISTED) {
       parts.push(`And ${red.length - MAX_LISTED} more, not listed here to keep the body short.`);
@@ -399,4 +424,123 @@ export const withFailingFirst = (summary: string, check: RedCheck, reviewedHead:
   const own = (at === -1 ? summary : summary.slice(0, at)).trimEnd();
   const section = renderFailingFirst(check, reviewedHead);
   return own === "" ? section : `${own}\n\n${section}`;
+};
+
+/**
+ * A slice round's red tests, as its review records them for the final review
+ * (#235): the PRD PR's body is rewritten every round, so the one place a
+ * slice's failing-first tests outlive the next slice is the review of that
+ * slice. Names only, and capped as the body's list is, so the record cannot
+ * crowd a review body toward GitHub's limit: the assertions were in the body
+ * while the slice was under review.
+ *
+ * `known` is false where the check is on and which tests were red is unknown,
+ * which the final review says rather than listing none.
+ */
+export interface RedTestsRecord {
+  readonly known: boolean;
+  readonly red: readonly Pick<RedCheckTest, "name" | "classname" | "file">[];
+  /** Red tests past the cap, counted and not named. */
+  readonly more: number;
+}
+
+/**
+ * What a reader selects the record on: a selector, not a control, as
+ * `FOLLOW_UPS_MARKER` is. Only a review this loop posted is read.
+ */
+export const RED_TESTS_MARKER = "agent-red-tests";
+
+/** Versioned for the reason the follow-ups payload is: a review posted before a release is read after it. */
+export const RED_TESTS_VERSION = 1;
+
+/** The record of a configured check's report. Undefined where the check is not configured: there is nothing to record. */
+export const redTestsRecord = (check: RedCheck): RedTestsRecord | undefined => {
+  if (check.kind === "not-configured") return undefined;
+  if (check.kind === "unreadable") return { known: false, red: [], more: 0 };
+  const report = check.report;
+  if (report.status === "no-test-files") return { known: true, red: [], more: 0 };
+  if (report.status !== "ran" || report.tests.length === 0) return { known: false, red: [], more: 0 };
+  const red = report.tests.filter((test) => test.result === "red");
+  return {
+    known: true,
+    red: red.slice(0, MAX_LISTED).map((test) => ({
+      name: test.name,
+      classname: test.classname,
+      ...(test.file === undefined ? {} : { file: test.file }),
+    })),
+    more: Math.max(0, red.length - MAX_LISTED),
+  };
+};
+
+/** The record as a review body carries it: invisible, and read back by `readRedTestsBlock`. */
+export const renderRedTestsBlock = (record: RedTestsRecord): string =>
+  `<!-- ${RED_TESTS_MARKER} ${embeddableJson({ version: RED_TESTS_VERSION, ...record })} -->`;
+
+const RED_TESTS_BLOCK = new RegExp(`<!-- ${RED_TESTS_MARKER} (.*) -->`, "g");
+
+/**
+ * The record a review body carries, or undefined where it carries none or one
+ * this version cannot read: either way, there is no record of that round to
+ * list. The last match wins, as the follow-ups payload's does.
+ */
+export const readRedTestsBlock = (body: string): RedTestsRecord | undefined => {
+  const raw = [...body.matchAll(RED_TESTS_BLOCK)].pop()?.[1];
+  if (raw === undefined) return undefined;
+  try {
+    const record = asRecord(JSON.parse(raw), "the red tests record");
+    if (record["version"] !== RED_TESTS_VERSION || typeof record["known"] !== "boolean") return undefined;
+    const more = record["more"];
+    return {
+      known: record["known"],
+      red: asArray(record["red"], "red").map((value) => {
+        const test = parseTest({ ...asRecord(value, "a red test"), result: "red" });
+        return { name: test.name, classname: test.classname, ...(test.file === undefined ? {} : { file: test.file }) };
+      }),
+      more: typeof more === "number" && Number.isInteger(more) && more > 0 ? more : 0,
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+/** One landed slice's record, as the final review collects them; undefined where no review of it carried one. */
+export interface SliceRedTests {
+  readonly subIssue: number;
+  readonly record: RedTestsRecord | undefined;
+}
+
+/**
+ * The failing-first tests as the PRD PR's final body lists them (#235): by
+ * slice, each slice's as its own round's red check found them, against the
+ * PRD branch as it stood before that slice. `slices` is undefined where the
+ * PRD branch could not be read.
+ */
+export const renderFailingFirstBySlice = (slices: readonly SliceRedTests[] | undefined): string => {
+  const body = ((): string => {
+    if (slices === undefined) {
+      return "The PRD branch's history could not be read, so the failing-first tests are not listed here by slice.";
+    }
+    if (slices.length === 0) return "No slice has landed, so there are none to list.";
+    const lines = slices.flatMap(({ subIssue, record }): string[] => {
+      if (record === undefined) {
+        return [`- #${subIssue}: no record. No review of this slice recorded what its red check found.`];
+      }
+      if (!record.known) {
+        return [`- #${subIssue}: unknown. Its red check came back with no test results.`];
+      }
+      if (record.red.length === 0) {
+        return [`- #${subIssue}: none. No test it adds or changes failed on an assertion.`];
+      }
+      return [
+        `- #${subIssue} (${record.red.length + record.more}):`,
+        ...record.red.map((test) => `  - ${describeTest({ ...test, result: "red" })}`),
+        ...(record.more > 0 ? [`  - And ${record.more} more, not listed here to keep the body short.`] : []),
+      ];
+    });
+    return [
+      "Each slice's tests that failed on an assertion against the PRD branch as it stood before that slice, as that slice's own round found them:",
+      lines.join("\n"),
+    ].join("\n\n");
+  })();
+  return defused(`${FAILING_FIRST_HEADING}\n\n${body}`);
 };

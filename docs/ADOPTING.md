@@ -1274,6 +1274,13 @@ red test, with the assertion it failed on. Broken tests are counted there and no
 check that is not configured, or whose report could not be read, says which rather than listing
 nothing.
 
+**On a PRD PR**, each slice is built on the slices before it, so a slice round's red check runs
+that slice's test files against the **PRD branch as it stood before the slice**, not the merge-base:
+against the merge-base a test of an earlier slice's code would fail to import, and read as broken
+rather than red. Each slice round records its red tests in its review, since the body's list is
+rewritten by the next slice, and the final review's body lists the failing-first tests **by slice**,
+from those records. The final review's own red check reads the whole PRD PR against the merge-base.
+
 **The contract is JUnit XML.** Your command writes a JUnit XML report, and `<failure>` versus
 `<error>` is the red-versus-broken line, which holds across languages. Any runner that writes one
 will do; three that do:

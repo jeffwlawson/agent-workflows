@@ -7852,6 +7852,23 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
   });
 
   /**
+   * On a slice round its base is the PRD branch before the slice (#235), and
+   * the final review keeps the merge-base. It tells the two apart by the mark
+   * the finishing run writes, a third spelling of it, held to the one the
+   * progress list writes. The body reaches the shell through `env:`, never
+   * inline: it is the pull request's to write.
+   */
+  it("tells a slice round from the final review by the mark the finishing run writes", () => {
+    const place = (redCheck().steps ?? []).find((s) => s.id === "place");
+
+    expect(place?.env?.["FINAL_REVIEW_MARK"]).toBe(FINAL_REVIEW_MARK);
+    expect(place?.env?.["PR_BODY"]).toBe("${{ github.event.pull_request.body }}");
+    expect(place?.env?.["HEAD_REF"]).toBe("${{ github.event.pull_request.head.ref }}");
+    expect(place?.run ?? "").toContain('if [[ "$HEAD_REF" == agent/prd-* && "$PR_BODY" != *"$FINAL_REVIEW_MARK"* ]]; then');
+    expect(place?.run ?? "").not.toContain("github.event");
+  });
+
+  /**
    * Nothing it produces is trusted beyond its report: no job output, and
    * nothing in the file reads one. The report is an artifact, written whatever
    * happened.

@@ -14,6 +14,7 @@ import {
   renderSliceRoundBrief,
   roundName,
   sliceCriteria,
+  sliceRedTests,
   type PostedReview,
   type ParkFinding,
   type ParkReason,
@@ -31,6 +32,7 @@ import {
   type VerdictInputs,
 } from "../shared/review-output.js";
 import { verifyCarried, type CarriedFinding } from "../shared/review-verification.js";
+import { renderRedTestsBlock, type RedTestsRecord } from "../shared/red-check.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 
 /**
@@ -267,6 +269,49 @@ describe("sliceCriteria", () => {
 });
 
 /**
+ * Each slice's red tests (#235), read off the slice rounds' review bodies the
+ * way `sliceCriteria` reads their criteria: by the commit each one reviewed.
+ */
+describe("sliceRedTests", () => {
+  const ranges = sliceRanges(
+    [
+      { sha: "c4", parents: ["c3"], slice: 244 },
+      { sha: "c3", parents: ["c2"], slice: 243 },
+      { sha: "c2", parents: ["c1"], slice: null },
+      { sha: "c1", parents: ["c0"], slice: 242 },
+    ],
+    [242, 243, 244, 245].map((number) => ({ number, state: "OPEN" as const })),
+  );
+  const record = (name: string): RedTestsRecord => ({ known: true, red: [{ name, classname: "c" }], more: 0 });
+  const body = (r: RedTestsRecord): string => `## Agent review\n\nText.\n\n${renderRedTestsBlock(r)}\n\n<!-- agent-follow-ups {} -->`;
+  const bot = (commit: string, text: string): PostedReview => ({ author: "github-actions", commit, body: text });
+
+  it("takes each landed slice's newest round that carries the record", () => {
+    const reviews = [
+      bot("c1", body(record("first round"))),
+      // The fix round's re-review, which approved slice 242.
+      bot("c2", body(record("after the fix"))),
+      bot("c3", body({ known: false, red: [], more: 0 })),
+      // A slice round from before the record existed.
+      bot("c4", "## Agent review\n\nNo record."),
+    ];
+
+    expect(sliceRedTests(reviews, ranges)).toEqual([
+      { subIssue: 242, record: record("after the fix") },
+      { subIssue: 243, record: { known: false, red: [], more: 0 } },
+      { subIssue: 244, record: undefined },
+    ]);
+  });
+
+  /** Anyone may post a review, and this text goes into the PRD PR's body. */
+  it("reads only reviews this loop posted", () => {
+    const forged = { author: "someone", commit: "c3", body: body(record("forged")) };
+
+    expect(sliceRedTests([forged], ranges).map((s) => s.record)).toEqual([undefined, undefined, undefined]);
+  });
+});
+
+/**
  * The final review's PRD sections (#247, #216), as the workflow lays them out
  * in the summary block: the outcome, the behaviour changes with the breaking
  * ones marked, the criteria each slice changed or dropped, and the known
@@ -333,6 +378,20 @@ describe("renderPrdSummary", () => {
     expect(renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: undefined, followUps: [] })).toContain(
       "could not be read",
     );
+  });
+
+  /** #235: where the red check is configured, each slice's failing-first tests, before the known issues. */
+  it("lists the failing-first tests by slice where the red check is configured, and only there", () => {
+    const inputs = { outcome: "o", behaviourChanges: [], slices: [], followUps: [] };
+    const listed = renderPrdSummary({
+      ...inputs,
+      redTests: { slices: [{ subIssue: 242, record: { known: true, red: [{ name: "test_a", classname: "c" }], more: 0 } }] },
+    });
+
+    expect(listed).toContain("### Failing-first tests\n\nEach slice's tests that failed on an assertion against the PRD branch as it stood before that slice");
+    expect(listed).toContain("- #242 (1):\n  - `test_a` (`c`)\n\n### Known issues");
+    expect(renderPrdSummary({ ...inputs, redTests: { slices: undefined } })).toContain("not listed here by slice");
+    expect(renderPrdSummary(inputs)).not.toContain("Failing-first");
   });
 
   /** #216: nothing in what the workflow lays out says the PRD PR is a draft. */

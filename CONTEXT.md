@@ -318,7 +318,10 @@ A PRD PR's **final review** writes both however little was pushed, since the las
 them at the same head (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
 the behaviour changes with the breaking ones marked, the acceptance criteria each slice changed or
 dropped (read off each slice round's record, by the commit it reviewed, through the slice ranges),
-and the known issues, naming the follow-ups filed at merge. The same write removes the frame's
+where the red check is configured each slice's failing-first tests (#235), read off the same rounds,
+and the known issues, naming the follow-ups filed at merge. A slice round's red check runs against
+the PRD branch as it stood before that slice, its slice range's base, rather than the merge-base,
+so each slice's tests run on code holding every earlier slice. The same write removes the frame's
 **draft-only** note, between its own markers, so a PRD PR marked ready says nothing about being a
 draft.
 

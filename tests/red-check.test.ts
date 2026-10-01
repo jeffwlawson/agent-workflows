@@ -5,7 +5,20 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-import { readRedCheck, renderFailingFirst, renderRedCheck, withFailingFirst, type RedCheckReport } from "../shared/red-check.js";
+import {
+  readRedCheck,
+  readRedTestsBlock,
+  redTestsRecord,
+  renderFailingFirst,
+  renderFailingFirstBySlice,
+  renderRedCheck,
+  renderRedTestsBlock,
+  withFailingFirst,
+  type RedCheck,
+  type RedCheckReport,
+  type RedTestsRecord,
+} from "../shared/red-check.js";
+import { renderReviewBody, VERDICTS } from "../shared/review-output.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -189,6 +202,8 @@ const pullRequest = (
 const PLACE = {
   "${{ inputs.red-check-report }}": "junit.xml",
   "${{ inputs.red-check-test-globs }}": "tests/**\n  **/*.test.ts  \n",
+  "${{ github.event.pull_request.head.ref }}": "feature",
+  "${{ github.event.pull_request.body }}": "",
 };
 
 const read = (root: string, file: string): string | undefined =>
@@ -256,6 +271,108 @@ describe("the red check puts only the PR's test files over the merge-base", () =
   });
 });
 
+/**
+ * A PRD PR as the checkout leaves one (#235): the PRD branch, every slice built
+ * on it as commits carrying `implement-prd`'s `Agent-Slice` trailer, and the
+ * default branch merged in before the second slice by the chain's own
+ * catch-up merge. The second slice is two commits, the build and a fix
+ * round's, and only the first carries the trailer.
+ */
+const prdPullRequest = (): {
+  readonly root: string;
+  readonly mergeBase: string;
+  readonly catchUp: string;
+} => {
+  const root = scratch();
+  git(root, "init", "--quiet", "-b", "main");
+  commit(
+    root,
+    {
+      "README.md": "as at the merge-base\n",
+      "src/scale.ts": "the bug\n",
+      "src/units.ts": "no units\n",
+      "tests/scale.test.ts": "the old test\n",
+    },
+    "base",
+  );
+  git(root, "checkout", "--quiet", "-b", "agent/prd-212-red-check");
+  commit(root, { "src/units.ts": "slice one's units\n", "tests/units.test.ts": "slice one's test\n" }, "slice one\n\nAgent-Slice: #231");
+  git(root, "checkout", "--quiet", "main");
+  commit(root, { "README.md": "moved on since\n" }, "main moves on");
+  git(root, "checkout", "--quiet", "agent/prd-212-red-check");
+  git(root, "merge", "--quiet", "--no-ff", "-m", "catch up\n\nAgent-Catch-Up: #232", "main");
+  const catchUp = git(root, "rev-parse", "HEAD");
+  commit(root, { "src/scale.ts": "the fix\n", "tests/scale.test.ts": "slice two's test\n" }, "slice two\n\nAgent-Slice: #232");
+  commit(root, { "tests/added.test.ts": "a fix round's test\n" }, "a fix round");
+  git(root, "update-ref", "refs/remotes/origin/main", "main");
+  const mergeBase = git(root, "merge-base", "HEAD", "main");
+  git(root, "checkout", "--quiet", "--detach", "HEAD");
+  return { root, mergeBase, catchUp };
+};
+
+const PRD_PLACE = { ...PLACE, "${{ github.event.pull_request.head.ref }}": "agent/prd-212-red-check" };
+
+describe("the red check runs a slice round against the PRD branch as it stood before the slice (#235)", () => {
+  it.skipIf(!CAN_RUN)("puts the slice's test files over the slice's base, with every earlier slice in it", () => {
+    const { root, catchUp } = prdPullRequest();
+
+    const ran = runStepIn(placeStep(), root, PRD_PLACE);
+
+    expect(ran.status, ran.stderr).toBe(0);
+    // The base is what the slice was built on: the catch-up merge, so the
+    // default branch's later commits and slice one are both in it.
+    expect(ran.outputs).toMatchObject({ status: "ready", base: catchUp, slice: "232" });
+    expect(read(root, "src/units.ts")).toBe("slice one's units\n");
+    expect(read(root, "README.md")).toBe("moved on since\n");
+    // And the slice's own change to source is not.
+    expect(read(root, "src/scale.ts")).toBe("the bug\n");
+    expect(read(root, "tests/scale.test.ts")).toBe("slice two's test\n");
+    // Only this slice's tests, the fix round's included; slice one's was run
+    // in its own round.
+    expect(fs.readFileSync(path.join(ran.temp, "red_check_files.txt"), "utf8").split("\n").filter(Boolean).sort()).toEqual([
+      "tests/added.test.ts",
+      "tests/scale.test.ts",
+    ]);
+    expect(fs.readFileSync(path.join(ran.temp, "red_check_source.txt"), "utf8")).toBe("src/scale.ts\n");
+  });
+
+  it.skipIf(!CAN_RUN)("keeps the merge-base on the final review, which reads the whole PRD PR", () => {
+    const { root, mergeBase } = prdPullRequest();
+
+    const ran = runStepIn(placeStep(), root, {
+      ...PRD_PLACE,
+      "${{ github.event.pull_request.body }}": "A body.\n<!-- agent:final-review requested -->\n",
+    });
+
+    expect(ran.status, ran.stderr).toBe(0);
+    expect(ran.outputs).toMatchObject({ status: "ready", base: mergeBase });
+    expect(ran.outputs["slice"]).toBeUndefined();
+    expect(read(root, "src/units.ts")).toBe("no units\n");
+  });
+
+  it.skipIf(!CAN_RUN)("keeps the merge-base off a PRD branch, and on one with no slice trailer, saying so", () => {
+    const { root, mergeBase } = prdPullRequest();
+
+    const ordinary = runStepIn(placeStep(), root, PLACE);
+
+    expect(ordinary.outputs).toMatchObject({ status: "ready", base: mergeBase });
+    expect(ordinary.outputs["slice"]).toBeUndefined();
+
+    const { root: untrailered, base } = pullRequest({ "tests/scale.test.ts": "the new test\n" });
+    const ran = runStepIn(placeStep(), untrailered, PRD_PLACE);
+
+    expect(ran.status, ran.stderr).toBe(0);
+    expect(ran.outputs).toMatchObject({ status: "ready", base });
+    expect(ran.outputs["slice"]).toBeUndefined();
+    expect(ran.stdout).toContain("::warning::No commit on this PRD branch carries an `Agent-Slice` trailer");
+  });
+
+  it.skipIf(!CAN_RUN)("records the slice in the report, beside the base it ran against", () => {
+    expect(classify("pytest.xml", { "${{ steps.place.outputs.slice }}": "232" }).slice).toBe(232);
+    expect(classify("pytest.xml").slice).toBeUndefined();
+  });
+});
+
 describe("the red check runs the command and keeps its exit code", () => {
   /**
    * A failing test is what the check looks for, so the command failing does
@@ -291,6 +408,7 @@ interface Report {
   readonly head: string | null;
   readonly files: readonly string[];
   readonly source?: readonly string[];
+  readonly slice?: number;
   readonly exitCode: number | null;
   readonly skipped: number;
   readonly tests: readonly {
@@ -309,6 +427,7 @@ const CLASSIFY = {
   "${{ steps.place.outputs.head }}": "h".repeat(40),
   "${{ steps.setup.outcome }}": "success",
   "${{ steps.run.outputs.exit-code }}": "1",
+  "${{ steps.place.outputs.slice }}": "",
 };
 
 const classify = (report: string, values: Readonly<Record<string, string>> = {}, source?: string): Report => {
@@ -793,5 +912,139 @@ describe("the pull request's body lists the failing-first tests (#234)", () => {
 
     expect(runner).toMatch(/summary: withFailingFirst\(output\.summary, redCheck, headSha\)/);
     expect(prompt).toContain("`### Failing-first tests`");
+  });
+});
+
+/**
+ * Under the PRD-branch model (#235): a slice round's report names the PRD
+ * branch before the slice as what its tests ran against, and its red tests
+ * are recorded in the round's review for the final review to list by slice.
+ */
+describe("a slice round's red check, and its record for the final review (#235)", () => {
+  const HEAD = "h".repeat(40);
+  const BASE = "b".repeat(40);
+  const RED = { name: "test_scales_servings", classname: "tests.test_recipes", result: "red", message: "assert 2 == 4" } as const;
+  const BROKEN = { name: "tests.test_units", classname: "", result: "broken", message: "No module named 'src.units'" } as const;
+
+  const report = (tests: RedCheckReport["tests"], over: Partial<RedCheckReport> = {}): RedCheckReport => ({
+    status: "ran",
+    base: BASE,
+    head: HEAD,
+    slice: 235,
+    files: ["tests/test_recipes.py"],
+    source: ["src/recipes.py"],
+    exitCode: 1,
+    tests,
+    skipped: 0,
+    ...over,
+  });
+  const ran = (r: RedCheckReport): RedCheck => ({ kind: "ran", report: r });
+  const readBack = (r: RedCheckReport): RedCheck => {
+    const file = path.join(scratch(), "red_check.json");
+    fs.writeFileSync(file, JSON.stringify(r));
+    return readRedCheck(true, file);
+  };
+
+  it("tells the review its tests ran against the PRD branch before the slice, not the merge-base", () => {
+    const seen = renderRedCheck(readBack(report([RED])), HEAD);
+
+    expect(seen).toContain(`over the PRD branch as it stood before this slice (#235), \`${BASE}\``);
+    expect(seen).toContain("**Red against the PRD branch as it stood before this slice (#235)** (1)");
+    expect(seen).toContain("**Non-test files this slice changes** (1)");
+    expect(seen).not.toContain("merge-base");
+    expect(renderFailingFirst(ran(report([RED])), HEAD)).toContain(
+      `against the code as it was before this change, the PRD branch as it stood before this slice (#235) \`${BASE}\`, with this slice's test files put over it`,
+    );
+  });
+
+  it("records the red tests by name, invisibly, and reads them back", () => {
+    const record = redTestsRecord(ran(report([RED, BROKEN, { ...RED, name: "a --> b", file: "t.py" }])));
+    const block = renderRedTestsBlock(record as RedTestsRecord);
+
+    expect(block).toMatch(/^<!-- agent-red-tests \{.*\} -->$/);
+    expect(block.slice(4, -4)).not.toContain("-->");
+    expect(readRedTestsBlock(`## Agent review\n\nText.\n\n${block}\n\n<!-- agent-follow-ups {} -->`)).toEqual({
+      known: true,
+      red: [
+        { name: "test_scales_servings", classname: "tests.test_recipes" },
+        { name: "a --> b", classname: "tests.test_recipes", file: "t.py" },
+      ],
+      more: 0,
+    });
+  });
+
+  it("records none, unknown, or nothing, and keeps those apart", () => {
+    expect(redTestsRecord(ran(report([BROKEN])))).toEqual({ known: true, red: [], more: 0 });
+    expect(redTestsRecord(ran(report([], { status: "no-test-files" })))).toEqual({ known: true, red: [], more: 0 });
+    expect(redTestsRecord(ran(report([], { status: "setup-failed" })))).toEqual({ known: false, red: [], more: 0 });
+    expect(redTestsRecord({ kind: "unreadable", reason: "lost" })).toEqual({ known: false, red: [], more: 0 });
+    expect(redTestsRecord(readRedCheck(false, undefined))).toBeUndefined();
+    expect(readRedTestsBlock("## Agent review\n\nNo record.")).toBeUndefined();
+    expect(readRedTestsBlock("<!-- agent-red-tests {\"version\":2,\"known\":true,\"red\":[]} -->")).toBeUndefined();
+  });
+
+  it("goes into the review body invisibly, ahead of the follow-ups payload, and is read back out of it", () => {
+    const record: RedTestsRecord = { known: true, red: [{ name: "test_a", classname: "c" }], more: 0 };
+    const parts = {
+      verdict: VERDICTS["approval recommended"],
+      output: { findings: [], followUps: [], fixBeforeMerge: [], verified: [] },
+      placed: [],
+      movedToFollowUps: 0,
+      stillOpen: [],
+      resolved: [],
+      followUps: [],
+      droppedFollowUps: 0,
+    };
+    const body = renderReviewBody({ ...parts, redTestsBlock: renderRedTestsBlock(record) });
+
+    expect(readRedTestsBlock(body)).toEqual(record);
+    expect(body).toMatch(/<!-- agent-red-tests .* -->\n\n<!-- agent-follow-ups .* -->$/);
+    expect(renderReviewBody(parts)).not.toContain("agent-red-tests");
+  });
+
+  it("caps what it records, and counts the rest", () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ ...RED, name: `test_${i}` }));
+    const record = readRedTestsBlock(renderRedTestsBlock(redTestsRecord(ran(report(many))) as RedTestsRecord));
+
+    expect(record?.red).toHaveLength(50);
+    expect(record?.more).toBe(10);
+  });
+
+  it("lists the failing-first tests grouped by slice, saying which slice has none, which is unknown and which has no record", () => {
+    const seen = renderFailingFirstBySlice([
+      { subIssue: 231, record: { known: true, red: [{ name: "test_a", classname: "tests.a" }, { name: "test_b", classname: "tests.a", file: "tests/a.py" }], more: 0 } },
+      { subIssue: 232, record: { known: true, red: [], more: 0 } },
+      { subIssue: 233, record: { known: false, red: [], more: 0 } },
+      { subIssue: 234, record: undefined },
+      { subIssue: 235, record: { known: true, red: [{ name: "<!-- x -->", classname: "c" }], more: 3 } },
+    ]);
+
+    expect(seen).toBe(
+      [
+        "### Failing-first tests",
+        "Each slice's tests that failed on an assertion against the PRD branch as it stood before that slice, as that slice's own round found them:",
+        [
+          "- #231 (2):",
+          "  - `test_a` (`tests.a`)",
+          "  - `test_b` (`tests.a`, `tests/a.py`)",
+          "- #232: none. No test it adds or changes failed on an assertion.",
+          "- #233: unknown. Its red check came back with no test results.",
+          "- #234: no record. No review of this slice recorded what its red check found.",
+          "- #235 (4):",
+          "  - `<​!-- x -->` (`c`)",
+          "  - And 3 more, not listed here to keep the body short.",
+        ].join("\n"),
+      ].join("\n\n"),
+    );
+    expect(renderFailingFirstBySlice(undefined)).toContain("could not be read");
+  });
+
+  it("is what a slice round records in its review, and what the final review lists", () => {
+    const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+
+    expect(runner).toMatch(/const redTests = round\?\.kind === "slice" \? redTestsRecord\(redCheck\) : undefined;/);
+    expect(runner).toMatch(/redTestsBlock: renderRedTestsBlock\(redTests\)/);
+    expect(runner).toMatch(/slicesRedTests = sliceRedTests\(reviews, prdBranch\.ranges\)/);
+    expect(runner).toMatch(/redTests: \{ slices: slicesRedTests \}/);
   });
 });

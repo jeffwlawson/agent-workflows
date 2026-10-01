@@ -1,5 +1,6 @@
 import { gh, git, isWorkflowBot } from "./common.js";
 import type { ProgressSubIssue } from "./progress-list.js";
+import { readRedTestsBlock, renderFailingFirstBySlice, type RedTestsRecord, type SliceRedTests } from "./red-check.js";
 import {
   readCriteriaChanges,
   type BehaviourChange,
@@ -211,16 +212,36 @@ export interface PostedReview {
 export const sliceCriteria = (reviews: readonly PostedReview[], ranges: SliceRanges): SliceCriteria[] =>
   ranges.slices.flatMap(({ subIssue, range }): SliceCriteria[] => {
     if (range === null) return [];
-    const commits = new Set(range.commits);
-    const ofSlice = reviews.filter(
-      (review) => isWorkflowBot(review.author) && review.commit !== undefined && commits.has(review.commit),
-    );
+    const ofSlice = reviewsOf(reviews, range.commits);
     const recorded = ofSlice
       .map((review) => readCriteriaChanges(review.body))
       .filter((changes): changes is CriterionChange[] => changes !== undefined)
       .pop();
     if (recorded !== undefined) return [{ subIssue, record: { kind: "recorded", changes: recorded } }];
     return [{ subIssue, record: { kind: ofSlice.length > 0 ? "none checked" : "no record" } }];
+  });
+
+/** The reviews this loop posted of one slice: those whose reviewed commit is in its range, oldest first. */
+const reviewsOf = (reviews: readonly PostedReview[], range: readonly string[]): PostedReview[] => {
+  const commits = new Set(range);
+  return reviews.filter(
+    (review) => isWorkflowBot(review.author) && review.commit !== undefined && commits.has(review.commit),
+  );
+};
+
+/**
+ * Each landed slice's red tests (#235), read off the reviews on the PRD PR the
+ * way `sliceCriteria` reads its criteria: the newest review of the slice that
+ * carries the red check's record, which is the round that approved it.
+ */
+export const sliceRedTests = (reviews: readonly PostedReview[], ranges: SliceRanges): SliceRedTests[] =>
+  ranges.slices.flatMap(({ subIssue, range }): SliceRedTests[] => {
+    if (range === null) return [];
+    const record = reviewsOf(reviews, range.commits)
+      .map((review) => readRedTestsBlock(review.body))
+      .filter((found): found is RedTestsRecord => found !== undefined)
+      .pop();
+    return [{ subIssue, record }];
   });
 
 export interface PrdSummaryInputs {
@@ -231,6 +252,12 @@ export interface PrdSummaryInputs {
   readonly slices: readonly SliceCriteria[] | undefined;
   /** The follow-ups this review recorded, which `follow-ups` files when the PRD PR merges. */
   readonly followUps: readonly FollowUp[];
+  /**
+   * Where the red check is configured, each landed slice's red tests (#235),
+   * from `sliceRedTests`; `slices` undefined where the PRD branch could not be
+   * read. Absent where it is not configured, and the section with it.
+   */
+  readonly redTests?: { readonly slices: readonly SliceRedTests[] | undefined } | undefined;
 }
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
@@ -239,10 +266,11 @@ const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
  * The PRD PR's summary as the final review writes it (#247), through #218's
  * splice: the outcome, then the PRD sections. The behaviour changes with the
  * breaking ones marked, the criteria each slice changed or dropped from that
- * slice round's record, and the known issues, naming the follow-ups filed when
- * it merges. The sections are the workflow's to lay out, so a breaking change
- * is marked and a dropped criterion named with its slice whatever the model's
- * formatting.
+ * slice round's record, each slice's failing-first tests where the red check
+ * is configured (#235), from the same rounds, and the known issues, naming the
+ * follow-ups filed when it merges. The sections are the workflow's to lay
+ * out, so a breaking change is marked and a dropped criterion named with its
+ * slice whatever the model's formatting.
  *
  * A criterion its approving round left **unmet** is one a maintainer accepted
  * as it stands, by declining the finding it raised: so it is *dropped* here.
@@ -285,6 +313,7 @@ export const renderPrdSummary = (inputs: PrdSummaryInputs): string => {
       : criteria.length === 0
         ? "None: every slice met its sub-issue's criteria as written."
         : criteria.join("\n"),
+    ...(inputs.redTests === undefined ? [] : [renderFailingFirstBySlice(inputs.redTests.slices)]),
     "### Known issues",
     known.join("\n"),
   ].join("\n\n");

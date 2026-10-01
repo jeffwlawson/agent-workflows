@@ -95,9 +95,10 @@ on:
           jest-junit, set `JEST_JUNIT_REPORT_TEST_SUITE_ERRORS=true`, or a test
           file that fails to import is left out of the report. Empty, the
           default, turns the red check off. It runs on the merge-base's source
-          with the pull request's test files put over it, in a job holding no
-          secrets. The test files are in `RED_CHECK_FILES`, one a line, for a
-          command that runs only those. Like `setup`, this is a *command*:
+          (on a PRD PR's slice round, the PRD branch's as it stood before the
+          slice) with the pull request's test files put over it, in a job
+          holding no secrets. The test files are in `RED_CHECK_FILES`, one a
+          line, for a command that runs only those. Like `setup`, this is a *command*:
           pass a literal from your workflow file, never an expression that
           reads the event.
         type: string
@@ -188,7 +189,9 @@ jobs:
   # **What it runs on.** The merge-base of the pull request's head and its base
   # branch, with the test files the PR adds or changes put over it, and nothing
   # else of the PR's: every non-test file is the merge-base's. What a test file
-  # is, is the adopter's `red-check-test-globs`. Then `red-check-command`, which
+  # is, is the adopter's `red-check-test-globs`. On a PRD PR's slice round, the
+  # PRD branch as it stood before that slice instead (#235), and the test files
+  # that slice adds or changes. Then `red-check-command`, which
   # writes a JUnit XML report, and each test in that report is classified:
   #
   #  - **red**: failed on an assertion, a JUnit `<failure>`, recorded with its
@@ -258,11 +261,31 @@ jobs:
       # dropped with a warning rather than being split in two. The files are
       # put back from the head as literal paths: a file name is the PR's, and a
       # `*` in one is not a pattern.
+      #
+      # **On a slice round of a PRD PR** (#235), "before" is the PRD branch as
+      # it stood before that slice, not the merge-base: every slice is built on
+      # the earlier ones, so against the merge-base each slice's tests would run
+      # on code with none of them, and a test of an earlier slice's code would
+      # be broken there rather than red. The slice is the one started last on
+      # the branch's first-parent log, by the `Agent-Slice` trailer
+      # `implement-prd` gives every commit it builds, and its base is the first
+      # parent of its earliest commit: what `shared/slice-ranges.ts` calls the
+      # slice range's base, and what that slice was built on. Read from the
+      # history alone, since this job holds no token that reads the sub-issues,
+      # which is the same answer wherever the chain builds the slices in order,
+      # as it does. The final review reads the whole PRD PR, so it keeps the
+      # merge-base, and is told apart by the mark the finishing run writes into
+      # the body, as the label event carried it. A PRD branch with no trailered
+      # commit keeps the merge-base too, the direction the review's own brief
+      # fails in where it cannot tell the slice.
       - name: Put the PR's test files over the merge-base
         id: place
         env:
           REPORT_PATH: ${{ inputs.red-check-report }}
           TEST_GLOBS: ${{ inputs.red-check-test-globs }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          FINAL_REVIEW_MARK: "<!-- agent:final-review requested -->"
         run: |
           set -euo pipefail
           files="${RUNNER_TEMP}/red_check_files.txt"
@@ -291,6 +314,29 @@ jobs:
               echo "reason=${reason}"
             } >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          if [[ "$HEAD_REF" == agent/prd-* && "$PR_BODY" != *"$FINAL_REVIEW_MARK"* ]]; then
+            slice=""
+            slice_base=""
+            declare -A started=()
+            while IFS= read -r -d $'\x1e' record; do
+              record="${record#$'\n'}"
+              IFS=$'\x1f' read -r sha parents trailer <<< "$record"
+              [[ "${trailer%%,*}" =~ \#([0-9]+) ]] || continue
+              number="${BASH_REMATCH[1]}"
+              [ -z "${started[$number]:-}" ] || continue
+              started[$number]=1
+              slice="$number"
+              slice_base="${parents%% *}"
+            done < <(git log --first-parent --reverse --format='%H%x1f%P%x1f%(trailers:key=Agent-Slice,valueonly,separator=%x2C)%x1e' "refs/remotes/origin/${BASE_REF}..HEAD")
+            if [ -n "$slice" ] && [ -n "$slice_base" ]; then
+              echo "Slice round of #${slice}: the tests run against the PRD branch as it stood before it, ${slice_base}, not the merge-base ${base}."
+              base="$slice_base"
+              echo "slice=${slice}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::No commit on this PRD branch carries an \`Agent-Slice\` trailer, so the red check runs against the merge-base rather than the PRD branch as it stood before this slice."
+            fi
           fi
           echo "base=${base}" >> "$GITHUB_OUTPUT"
 
@@ -393,6 +439,7 @@ jobs:
           STATUS: ${{ steps.place.outputs.status }}
           REASON: ${{ steps.place.outputs.reason }}
           BASE_SHA: ${{ steps.place.outputs.base }}
+          SLICE: ${{ steps.place.outputs.slice }}
           HEAD_SHA: ${{ steps.place.outputs.head }}
           SETUP_OUTCOME: ${{ steps.setup.outcome }}
           EXIT_CODE: ${{ steps.run.outputs.exit-code }}
@@ -493,6 +540,11 @@ jobs:
           }
           if os.environ.get("REASON"):
               report["reason"] = os.environ["REASON"]
+          # On a slice round (#235), the slice whose "before" `base` is: the
+          # PRD branch as it stood before it. Absent where `base` is the
+          # merge-base.
+          if os.environ.get("SLICE", "").isdigit():
+              report["slice"] = int(os.environ["SLICE"])
 
           files = os.path.join(temp, "red_check_files.txt")
           if os.path.exists(files):

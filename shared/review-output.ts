@@ -1363,6 +1363,13 @@ export interface ReviewBodyParts {
    */
   readonly criteria?: readonly CriterionResult[] | undefined;
   /**
+   * On a PRD PR's slice round, the red check's record of the slice's red tests
+   * (#235), as `renderRedTestsBlock` writes it: invisible, and read back by the
+   * final review, which lists each slice's. Optional, because only a slice
+   * round where the check is configured has one.
+   */
+  readonly redTestsBlock?: string | undefined;
+  /**
    * The run that produced this review. Optional — it is a link, and a review
    * that could not name its own run is still a review — so a caller outside
    * Actions renders a body without one rather than failing.
@@ -1443,6 +1450,8 @@ const renderBody = (
       parts.runUrl === undefined
         ? undefined
         : `---\n\n_Posted by [this workflow run](${parts.runUrl})._`,
+      // Invisible, like the payload after it (#235).
+      parts.redTestsBlock,
       // Last, and invisible. The filing half reads the latest one off the body
       // (#47), so it goes out on every review including the one that recorded
       // nothing — which is how a round retracts an earlier round's list.

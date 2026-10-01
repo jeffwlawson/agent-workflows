@@ -548,11 +548,16 @@ describe("readSliceRound", () => {
       g("checkout", "-q", "-b", "agent/prd-222-x");
       write("one.txt", "one\n");
       const one = commitAll("feat: slice one\n\nAgent-Slice: #10");
+      g("commit", "-q", "--allow-empty", "-m", "Merge main into agent/prd-222-x\n\nAgent-Catch-Up: #11");
+      const caughtUp = g("rev-parse", "HEAD");
 
       const branch = readPrdBranch("222", "main");
 
       expect(branch.subIssues).toEqual(fixture.subIssues);
-      expect(branch.log.map((c) => c.sha)).toEqual([one]);
+      expect(branch.log.map((c) => [c.sha, c.slice, c.catchUp])).toEqual([
+        [caughtUp, null, true],
+        [one, 10, false],
+      ]);
       expect(branch.ranges.current).toEqual({ subIssue: 10, k: 1, n: 2 });
       expect(branch.ranges.next).toBe(11);
     },

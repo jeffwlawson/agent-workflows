@@ -767,9 +767,10 @@ jobs:
       # so rewriting the PRD branch orphans both.
       #
       # A clean merge is pushed **here, before the runner starts**. It is then
-      # on the remote, so `Mark the slice's commits` leaves it untrailered, and
-      # it lands before the slice's first trailered commit: outside every slice
-      # range (`shared/slice-ranges.ts`), so no slice round reviews it.
+      # on the remote, so `Mark the slice's commits` gives it no `Agent-Slice`
+      # trailer, and it carries `Agent-Catch-Up` instead: it lands before the
+      # slice's first trailered commit, outside every slice range
+      # (`shared/slice-ranges.ts`), so no slice round reviews it.
       #
       # A conflict is aborted, builds nothing and pushes nothing, and parks the
       # chain with a refusal naming `agent:update-branch` on the PRD PR, whose
@@ -810,7 +811,12 @@ jobs:
             exit 0
           fi
 
-          if ! git merge --no-ff --no-edit -m "Merge ${BASE_REF} into ${PRD_BRANCH}" "refs/remotes/origin/${BASE_REF}"; then
+          # The `Agent-Catch-Up` trailer (`CATCH_UP_TRAILER` in
+          # `shared/slice-ranges.ts`, held equal by a test) is what keeps this
+          # merge out of every slice range: `update-branch`'s conflict
+          # resolution is a merge of the same shape, and belongs to its slice.
+          message=$(printf 'Merge %s into %s\n\nAgent-Catch-Up: #%s' "$BASE_REF" "$PRD_BRANCH" "$SUB")
+          if ! git merge --no-ff --no-edit -m "$message" "refs/remotes/origin/${BASE_REF}"; then
             conflicts=$(git diff --name-only --diff-filter=U | sed 's/.*/`&`/' | paste -sd ',' - | sed 's/,/, /g')
             git merge --abort || true
             # A merge that stopped on no conflict is git refusing for some

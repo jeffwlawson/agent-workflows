@@ -6,7 +6,7 @@ import {
   type CriterionChange,
   type FollowUp,
 } from "./review-output.js";
-import { SLICE_TRAILER, sliceRanges, type BranchCommit, type SliceRanges } from "./slice-ranges.js";
+import { CATCH_UP_TRAILER, SLICE_TRAILER, sliceRanges, type BranchCommit, type SliceRanges } from "./slice-ranges.js";
 
 /**
  * A review round on a **PRD PR** (PRD #222, #244): what the review is told
@@ -429,16 +429,22 @@ export const readPrdBranch = (parent: string, base: string): PrdBranch => {
   const log = git([
     "log",
     "--first-parent",
-    `--format=%H%x1f%P%x1f%(trailers:key=${SLICE_TRAILER},valueonly,separator=%x2C)%x1f%s%x1e`,
+    `--format=%H%x1f%P%x1f%(trailers:key=${SLICE_TRAILER},valueonly,separator=%x2C)%x1f%(trailers:key=${CATCH_UP_TRAILER},valueonly,separator=%x2C)%x1f%s%x1e`,
     `${base}..HEAD`,
   ])
     .split("\x1e")
     .map((record) => record.replace(/^\n/, ""))
     .filter((record) => record !== "")
     .map((record): PrdBranchCommit => {
-      const [sha = "", parents = "", trailer = "", subject = ""] = record.split("\x1f");
+      const [sha = "", parents = "", trailer = "", catchUp = "", subject = ""] = record.split("\x1f");
       const number = /#(\d+)/.exec(trailer.split(",")[0] ?? "")?.[1];
-      return { sha, parents: parents.split(" ").filter(Boolean), subject, slice: number === undefined ? null : Number(number) };
+      return {
+        sha,
+        parents: parents.split(" ").filter(Boolean),
+        subject,
+        slice: number === undefined ? null : Number(number),
+        catchUp: catchUp.trim() !== "",
+      };
     });
   return { subIssues, log, ranges: sliceRanges(log, subIssues) };
 };

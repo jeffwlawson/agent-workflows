@@ -33,8 +33,9 @@ A sub-issue's commits on the PRD branch are its **slice range**. Every commit a 
 carries an `Agent-Slice: #<sub>` trailer, written by the workflow before the push, and
 `shared/slice-ranges.ts` derives the ranges from the PRD branch's first-parent log: a slice starts
 at the first parent of its earliest trailered commit and ends where the next one starts. Fix, human
-and conflict-resolution commits carry no trailer and belong to the range they fall in; a merge of
-the default branch made before a slice is built falls outside every range. That one function
+and conflict-resolution commits carry no trailer and belong to the range they fall in, a
+resolution at the end of a slice included; the merge of the default branch the chain makes before a
+slice is built carries an `Agent-Catch-Up` trailer instead, and falls outside every range. That one function
 answers every "which slice": the **next** is the first open sub-issue with no range, in the
 sub-issue list's order, never read off which issues are closed; the **current** is the last one
 with a range; and it gives the review its *k of n*. Order is the sub-issue list's (publish order is

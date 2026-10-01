@@ -16,6 +16,16 @@
 /** The trailer key a build run's commits carry, as `Agent-Slice: #<sub>`. */
 export const SLICE_TRAILER = "Agent-Slice";
 
+/**
+ * The trailer key `implement-prd`'s own merge of the default branch carries,
+ * as `Agent-Catch-Up: #<sub>` naming the slice it was made before (#245). The
+ * one mark that tells that merge from `update-branch`'s conflict resolution,
+ * which has the same shape (an untrailered merge of the default branch) and
+ * belongs to the slice whose round it was. Not `Agent-Slice`, so nothing reads
+ * it as a slice's commit.
+ */
+export const CATCH_UP_TRAILER = "Agent-Catch-Up";
+
 /** One commit of the PRD branch's first-parent log. */
 export interface BranchCommit {
   readonly sha: string;
@@ -23,6 +33,8 @@ export interface BranchCommit {
   readonly parents: readonly string[];
   /** The sub-issue its `Agent-Slice` trailer names, or null when it has none. */
   readonly slice: number | null;
+  /** It carries the `Agent-Catch-Up` trailer: the chain's own merge of the default branch. */
+  readonly catchUp?: boolean;
 }
 
 /** One of the parent's sub-issues, as the sub-issues API lists them. */
@@ -74,9 +86,11 @@ export interface SliceRanges {
  * - An untrailered commit belongs to the slice whose range it falls in: a fix
  *   run's commit, a human's push, or a merge that resolved a conflict.
  * - A merge `implement-prd` made of the default branch lands just before the
- *   slice it was building starts. So untrailered merges directly before a
- *   slice's earliest trailered commit fall outside every range, and the last of
- *   them is that slice's base.
+ *   slice it was building starts, and carries the `Agent-Catch-Up` trailer. So
+ *   catch-up merges directly before a slice's earliest trailered commit fall
+ *   outside every range, and the last of them is that slice's base. Only those:
+ *   a merge with no such trailer at the end of a slice is that slice's, a
+ *   conflict resolution whose review may be the one that approved it.
  *
  * A trailer naming no sub-issue in the list starts nothing; its commit is read
  * as untrailered. Commits before the first slice's base are the default
@@ -95,14 +109,15 @@ export const sliceRanges = (log: readonly BranchCommit[], subIssues: readonly Sl
     starts.push({ subIssue: commit.slice, at });
   });
 
-  const isLeadingMerge = (commit: BranchCommit): boolean => commit.slice === null && commit.parents.length > 1;
+  const isCatchUp = (commit: BranchCommit): boolean =>
+    commit.catchUp === true && commit.slice === null && commit.parents.length > 1;
 
   const ranges = new Map<number, SliceRange>();
   starts.forEach(({ subIssue, at }, i) => {
     const following = starts[i + 1];
     let end = following === undefined ? commits.length : following.at;
     if (following !== undefined) {
-      while (end > at + 1 && isLeadingMerge(commits[end - 1] as BranchCommit)) end -= 1;
+      while (end > at + 1 && isCatchUp(commits[end - 1] as BranchCommit)) end -= 1;
     }
     ranges.set(subIssue, {
       base: (commits[at] as BranchCommit).parents[0] ?? null,

@@ -9,14 +9,16 @@ import { sliceRanges, type BranchCommit, type SliceSubIssue } from "../shared/sl
 
 /**
  * A first-parent log from oldest-first entries, returned newest first as `git
- * log --first-parent` prints it. Each entry is `[sha, trailer]`, and a sha
- * starting `merge` gets a second parent off the branch.
+ * log --first-parent` prints it. Each entry is `[sha, trailer]`, a sha
+ * starting `merge` gets a second parent off the branch, and one starting
+ * `merge-catch-up` carries the `Agent-Catch-Up` trailer as well.
  */
 const branch = (...entries: readonly (readonly [string, number | null])[]): BranchCommit[] =>
   entries
     .map(([sha, slice], i): BranchCommit => {
       const first = i === 0 ? "root" : (entries[i - 1] as readonly [string, number | null])[0];
-      return { sha, parents: sha.startsWith("merge") ? [first, `${sha}-side`] : [first], slice };
+      const parents = sha.startsWith("merge") ? [first, `${sha}-side`] : [first];
+      return { sha, parents, slice, ...(sha.startsWith("merge-catch-up") ? { catchUp: true } : {}) };
     })
     .reverse();
 
@@ -52,19 +54,48 @@ describe("sliceRanges", () => {
   });
 
   it("leaves a default-branch merge before a slice's first commit outside every range, as that slice's base", () => {
-    const log = branch(["main-1", null], ["a1", 10], ["fix-a", null], ["merge-main", null], ["b1", 11]);
+    const log = branch(["main-1", null], ["a1", 10], ["fix-a", null], ["merge-catch-up", null], ["b1", 11]);
     const result = sliceRanges(log, open(10, 11));
 
     expect(rangeOf(result, 10)?.commits).toEqual(["a1", "fix-a"]);
-    expect(rangeOf(result, 11)).toEqual({ base: "merge-main", commits: ["b1"] });
-    expect(result.slices.flatMap((s) => s.range?.commits ?? [])).not.toContain("merge-main");
+    expect(rangeOf(result, 11)).toEqual({ base: "merge-catch-up", commits: ["b1"] });
+    expect(result.slices.flatMap((s) => s.range?.commits ?? [])).not.toContain("merge-catch-up");
+  });
+
+  /**
+   * `update-branch`'s conflict resolution has the shape of the chain's own
+   * merge, an untrailered merge of the default branch, and is the last commit
+   * of the slice whose round it was. The approving review of that round was of
+   * it, so it stays in the range when the next slice is built (#242, #247).
+   */
+  it("keeps an untrailered merge at the end of a slice in its range when it is no catch-up merge", () => {
+    const log = branch(["main-1", null], ["a1", 10], ["merge-resolution-a", null], ["b1", 11]);
+    const result = sliceRanges(log, open(10, 11));
+
+    expect(rangeOf(result, 10)?.commits).toEqual(["a1", "merge-resolution-a"]);
+    expect(rangeOf(result, 11)).toEqual({ base: "merge-resolution-a", commits: ["b1"] });
+  });
+
+  it("trims only the catch-up merges after a slice's own trailing resolution", () => {
+    const log = branch(
+      ["main-1", null],
+      ["a1", 10],
+      ["merge-resolution-a", null],
+      ["merge-catch-up-1", null],
+      ["merge-catch-up-2", null],
+      ["b1", 11],
+    );
+    const result = sliceRanges(log, open(10, 11));
+
+    expect(rangeOf(result, 10)?.commits).toEqual(["a1", "merge-resolution-a"]);
+    expect(rangeOf(result, 11)).toEqual({ base: "merge-catch-up-2", commits: ["b1"] });
   });
 
   it("leaves the default branch's history before the first slice outside every range", () => {
-    const log = branch(["main-1", null], ["main-2", null], ["merge-main", null], ["a1", 10]);
+    const log = branch(["main-1", null], ["main-2", null], ["merge-catch-up", null], ["a1", 10]);
     const result = sliceRanges(log, open(10));
 
-    expect(rangeOf(result, 10)).toEqual({ base: "merge-main", commits: ["a1"] });
+    expect(rangeOf(result, 10)).toEqual({ base: "merge-catch-up", commits: ["a1"] });
   });
 
   it("starts a slice at its earliest trailered commit when a later one carries the same trailer", () => {

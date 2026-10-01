@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { CATCH_UP_TRAILER, SLICE_TRAILER } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -222,6 +223,10 @@ describe.skipIf(!CAN_RUN)("implement-prd's Merge the default branch into the PRD
     expect(outcome.status, outcome.stdout).toBe(0);
     expect(git(built.work, "rev-list", "HEAD", "--not", "--remotes")).toBe("");
     expect(git(built.work, "log", "-1", "--format=%B", "HEAD")).not.toMatch(/agent-slice/i);
+    // Marked as the chain's own catch-up merge, as git's own trailer parser
+    // reads it: the mark `sliceRanges` trims by, and nothing else carries.
+    expect(git(built.work, "log", "-1", `--format=%(trailers:key=${CATCH_UP_TRAILER},valueonly)`, "HEAD")).toBe(`#${SUB}`);
+    expect(git(built.work, "log", "-1", `--format=%(trailers:key=${SLICE_TRAILER},valueonly)`, "HEAD")).toBe("");
     expect(git(built.work, "symbolic-ref", "--short", "HEAD")).toBe(PRD_BRANCH);
   }, ceiling(SPAWNS));
 

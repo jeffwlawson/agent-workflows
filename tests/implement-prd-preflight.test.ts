@@ -5,7 +5,15 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { SUMMARY_END, SUMMARY_START } from "../shared/pr-summary.js";
-import { VERDICTS } from "../shared/review-output.js";
+import {
+  FINAL_REVIEW_MARK,
+  FINAL_REVIEW_REQUESTED_LINES,
+  PROGRESS_END,
+  PROGRESS_START,
+  renderProgressList,
+} from "../shared/progress-list.js";
+import { renderCriteriaGroup, VERDICTS, type CriterionResult } from "../shared/review-output.js";
+import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -37,6 +45,7 @@ interface Step {
   readonly id?: string;
   readonly shell?: string;
   readonly run?: string;
+  readonly env?: Record<string, string>;
 }
 interface Workflow {
   readonly jobs: Record<string, { readonly steps?: readonly Step[] }>;
@@ -155,6 +164,12 @@ interface Scenario {
   readonly blockedBy?: Record<string, readonly Record<string, unknown>[]>;
   /** The step's own `env:`, supplied in the expressions' place. */
   readonly env?: Record<string, string>;
+  /** The PRD PR's reviews, keyed by id. */
+  readonly reviews?: Record<string, Record<string, unknown>>;
+  /** Issue comments, an array per issue number. */
+  readonly comments?: Record<string, readonly Record<string, unknown>[]>;
+  /** Files an earlier step left under `RUNNER_TEMP`, by name. */
+  readonly files?: Record<string, string>;
 }
 
 const runStep = (id: string, scenario: Scenario = {}): Outcome => {
@@ -173,6 +188,8 @@ const runStep = (id: string, scenario: Scenario = {}): Outcome => {
       scenario.statusPages ?? [{ state: "pending", total_count: 0, statuses: [] }],
     ],
     GH_REPLAY_BLOCKED_BY: ["blocked-by.json", scenario.blockedBy ?? {}],
+    GH_REPLAY_REVIEWS: ["reviews.json", scenario.reviews ?? {}],
+    GH_REPLAY_COMMENTS: ["comments.json", scenario.comments ?? {}],
   } as const;
   const output = path.join(temp, "output");
   const log = path.join(temp, "writes.log");
@@ -186,6 +203,7 @@ const runStep = (id: string, scenario: Scenario = {}): Outcome => {
   // The snapshot the preflight leaves for the steps after it, as a run that
   // got past the preflight has it.
   if (id !== "preflight") fs.writeFileSync(path.join(temp, "prd-issue.json"), JSON.stringify(scenario.issue ?? issue()));
+  for (const [name, content] of Object.entries(scenario.files ?? {})) fs.writeFileSync(path.join(temp, name), content);
   fs.writeFileSync(output, "");
 
   const ghDir = path.resolve(REPLAY_DIR);
@@ -208,6 +226,8 @@ const runStep = (id: string, scenario: Scenario = {}): Outcome => {
       ...replay,
       GH_REPLAY_LOG: log,
       PATH: `${ghDir}${path.delimiter}${process.env["PATH"] ?? ""}`,
+      // The step's own `env:` where it is a literal rather than an expression.
+      ...Object.fromEntries(Object.entries(stepById(id).env ?? {}).filter(([, value]) => !value.includes("${{"))),
       ...scenario.env,
     },
   });
@@ -728,7 +748,9 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
   /**
    * The frame, byte for byte: the `Closes` block first, closing the parent and
    * every open sub-issue when the PRD PR merges, and nothing before; a closed
-   * sub-issue gets no line. Then the note and the unwritten summary.
+   * sub-issue gets no line. Then the progress list, which a run that built
+   * nothing has none of and says when it is written, the note and the
+   * unwritten summary.
    */
   it("writes the Closes block with the parent and every open sub-issue", () => {
     const outcome = runPrdPr(BYSTANDERS, ["OPEN", "CLOSED", "OPEN", "OPEN"]);
@@ -742,6 +764,10 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
         "Closes #175",
         "<!-- /agent:closes -->",
         "",
+        PROGRESS_START,
+        "_The progress list is written when this slice's review round ends._",
+        PROGRESS_END,
+        "",
         "> [!NOTE]",
         `> The agent loop builds PRD #${PARENT} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.`,
         "",
@@ -751,6 +777,29 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  /**
+   * A build run opens the PRD PR with the progress list its runner rendered,
+   * this slice in review, as it stands between the `Closes` block and the
+   * note.
+   */
+  it("opens it with the progress list the runner rendered", () => {
+    const list = renderProgressList({
+      subIssues: [{ number: 172, title: "Slice 1", state: "OPEN" }],
+      ranges: sliceRanges([{ sha: "a", parents: ["b"], slice: 172 }], [{ number: 172, state: "OPEN" }]),
+      verdict: "none",
+      running: { kind: "review" },
+      finalReview: "not requested",
+    });
+    const outcome = runStep("prd_pr", {
+      pulls: BYSTANDERS,
+      env: { PRD_BRANCH, HAS_PAT: "true" },
+      files: { "progress.md": list },
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.temp("prd-pr-body.md")).toContain(`<!-- /agent:closes -->\n\n${list}\n\n> [!NOTE]`);
   });
 
   it("reuses the PRD PR a run before it opened, rather than a second", () => {
@@ -767,6 +816,169 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("#201, #205");
     expect(prWrites(outcome)).toEqual([]);
+  });
+});
+
+const RUN_URL = "https://github.com/acme/widgets/actions/runs/4242";
+const REVIEW_URL = "https://github.com/acme/widgets/pull/201#pullrequestreview-123";
+
+/** Every comment a step posted, as `[issue, body]`. */
+const comments = (outcome: Outcome): [string, string][] =>
+  writes(outcome)
+    .filter((argv) => argv[0] === "issue" && argv[1] === "comment")
+    .map((argv) => [argv[2] ?? "", argv.at(-1) ?? ""]);
+
+/**
+ * Progress without labels (#246): a build run says on the sub-issue it starts
+ * and on the parent that it started, and the run past an approval notes the
+ * approved slice on its sub-issue. Executed, against the same replay.
+ */
+describe.skipIf(!CAN_RUN)("agent-implement-prd's progress comments, executed", () => {
+  /**
+   * The slice the approval is for is the current one, the last sub-issue in
+   * the list with a slice range, whatever is closed: the one the note goes on.
+   */
+  it("hands the approved slice, its head and its review to the steps after the gate", () => {
+    const statusPages = [
+      {
+        state: "success",
+        total_count: 1,
+        statuses: [
+          { context: "agent-review", state: "success", description: VERDICTS["approval recommended"].description, target_url: REVIEW_URL },
+        ],
+      },
+    ];
+    const outcome = runPreflight({ issue: issue(["CLOSED", "OPEN", "OPEN"]), built: [172, 173], statusPages });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "approved_sub")).toBe("173");
+    expect(outputOf(outcome, "approved_sha")).toBe("sha-of-201");
+    expect(outputOf(outcome, "approved_review")).toBe(REVIEW_URL);
+    expect(outputOf(outcome, "sub")).toBe("174");
+    expect(outputOf(outcome, "sub_k")).toBe("3");
+    expect(outputOf(outcome, "subs")).toBe("3");
+  });
+
+  it("names no approved slice on the first slice, which follows no round", () => {
+    const outcome = runPreflight();
+
+    expect(outputOf(outcome, "sub")).toBe("172");
+    expect(outputOf(outcome, "sub_k")).toBe("1");
+    expect(outputOf(outcome, "approved_sub")).toBe("");
+  });
+
+  const START = {
+    SUB: "173",
+    SUB_TITLE: "Slice 2",
+    SUB_K: "2",
+    SUBS: "3",
+    PRD_BRANCH,
+    BUILD: "true",
+    FINISHING: "false",
+    RUN_URL,
+  };
+
+  it("posts the start comment on the sub-issue a build run starts, and a one-line note on the parent", () => {
+    const outcome = runStep("start", { env: START });
+    const posted = comments(outcome);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(posted.map(([n]) => n)).toEqual([PARENT, "173"]);
+    expect(posted[0]?.[1]).toBe(
+      `**\`agent:implement\` started:** Building sub-issue #173 (Slice 2) on the PRD branch. [Workflow run](${RUN_URL})`,
+    );
+    expect(posted[0]?.[1]).not.toContain("\n");
+    expect(posted[1]?.[1]).toBe(
+      `**\`agent:implement\` started building this sub-issue**, slice 2 of 3 of PRD #${PARENT}, on the PRD branch \`${PRD_BRANCH}\`. [Workflow run](${RUN_URL})`,
+    );
+  });
+
+  it("comments on no sub-issue on a run that builds none", () => {
+    const outcome = runStep("start", { env: { ...START, SUB: "", SUB_K: "", BUILD: "false", FINISHING: "true" } });
+
+    expect(comments(outcome).map(([n]) => n)).toEqual([PARENT]);
+  });
+
+  it("goes on with a warning where neither start comment can be posted", () => {
+    const outcome = runStep("start", { env: { ...START, GH_REPLAY_COMMENT_FAILURE: "1" } });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain(`::warning::Could not post the start comment on #${PARENT}.`);
+    expect(outcome.stdout).toContain("::warning::Could not post the start comment on sub-issue #173.");
+  });
+
+  const HEAD = "0123456789abcdef0123456789abcdef01234567";
+  const NOTE = { APPROVED_SUB: "173", APPROVED_SHA: HEAD, APPROVED_REVIEW: REVIEW_URL, PRD_PR: "201", SERVER_URL: "https://github.com" };
+  /** An approving review's body, its #214 record rendered as the review renders it. */
+  const reviewBody = (criteria: readonly CriterionResult[]): string =>
+    ["## Agent review", "", "Approved.", "", renderCriteriaGroup(criteria) ?? "", "", "Footer."].join("\n");
+
+  it("notes the approved slice on its sub-issue, with the criteria the approving round changed or left unmet", () => {
+    const outcome = runStep("approved_note", {
+      env: NOTE,
+      reviews: {
+        "123": {
+          body: reviewBody([
+            { id: "C1", text: "It renders every state.", status: "met" },
+            { id: "C2", text: "It survives the splice.", status: "changed", reason: "the splice moved" },
+            { id: "C3", text: "No label is added.", status: "unmet" },
+          ]),
+        },
+      },
+    });
+    const posted = comments(outcome);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]?.[0]).toBe("173");
+    expect(posted[0]?.[1]).toBe(
+      [
+        `**Slice approved:** built in [\`0123456\`](https://github.com/${GH_REPO}/commit/${HEAD}), [reviewed](${REVIEW_URL}) on PRD PR #201. This sub-issue stays open until the PRD PR merges.`,
+        "",
+        "**Acceptance criteria changed or unmet:**",
+        "",
+        "- **Changed:** It survives the splice. · the splice moved",
+        "- **Unmet:** No label is added.",
+        "",
+        `<!-- agent:slice-approved ${HEAD} -->`,
+      ].join("\n"),
+    );
+  });
+
+  /** A retry past the same approval, after a run that failed, posts no second note. */
+  it("notes an approved head once", () => {
+    const outcome = runStep("approved_note", {
+      env: NOTE,
+      comments: { "173": [{ body: "Started." }, { body: `**Slice approved:** …\n\n<!-- agent:slice-approved ${HEAD} -->` }] },
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(comments(outcome)).toEqual([]);
+    expect(outcome.stdout).toContain("already has its approved-slice note");
+  });
+
+  it("says none changed or went unmet where the approving round met every criterion", () => {
+    const outcome = runStep("approved_note", {
+      env: NOTE,
+      reviews: { "123": { body: reviewBody([{ id: "C1", text: "It renders every state.", status: "met" }]) } },
+    });
+
+    expect(comments(outcome)[0]?.[1]).toContain("\n\n**Acceptance criteria changed or unmet:** none.\n\n<!-- agent:slice-approved");
+  });
+
+  it("still notes the slice, saying so, where the approving review cannot be read", () => {
+    const outcome = runStep("approved_note", { env: NOTE });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain("::warning::Could not read the review that approved sub-issue #173");
+    expect(comments(outcome)[0]?.[1]).toContain("the approving review couldn't be read");
+  });
+
+  it("goes on with a warning where the note cannot be posted", () => {
+    const outcome = runStep("approved_note", { env: { ...NOTE, GH_REPLAY_COMMENT_FAILURE: "1" } });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain("::warning::Could not post the approved-slice note on sub-issue #173.");
   });
 });
 
@@ -808,6 +1020,42 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
       ["pr", "edit", "201", "--add-label", "agent:review"],
     ]);
     expect(prWrites(outcome).some((argv) => argv[1] === "ready")).toBe(false);
+  });
+
+  /**
+   * The mark goes into the progress list (#246), with the final review shown
+   * in review: what the list rendered for the final review requested is, byte
+   * for byte, the one the last slice's round left with the lines written in
+   * front of its end marker. The handover runs no toolchain, so this is how
+   * it re-renders.
+   */
+  it("records the final review in the progress list as the list renders it", () => {
+    const subIssues = [
+      { number: 172, title: "Slice 1", state: "OPEN" as const },
+      { number: 173, title: "Slice 2", state: "OPEN" as const },
+    ];
+    const ranges = sliceRanges(
+      [
+        { sha: "c", parents: ["b"], slice: 173 },
+        { sha: "b", parents: ["a"], slice: 172 },
+      ],
+      subIssues,
+    );
+    const approved = renderProgressList({ subIssues, ranges, verdict: "approval", running: null, finalReview: "not requested" });
+    const requested = renderProgressList({
+      subIssues,
+      ranges,
+      verdict: "approval",
+      running: { kind: "review" },
+      finalReview: "requested",
+    });
+    const body = (list: string): string => `<!-- agent:closes -->\nCloses #171\n<!-- /agent:closes -->\n\n${list}\n\nMine.`;
+    const outcome = runHandover(2, { body: body(approved) });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(writes(outcome)[0]?.at(-1)).toBe(`body=${body(requested)}`);
+    expect(requested).toContain(FINAL_REVIEW);
+    expect(FINAL_REVIEW_REQUESTED_LINES).toContain(FINAL_REVIEW_MARK);
   });
 
   /** A retry finds the record a run before it wrote, and writes it once. */

@@ -1,5 +1,6 @@
 import { gh, git } from "./common.js";
-import { SLICE_TRAILER, sliceRanges, type BranchCommit, type SliceSubIssue } from "./slice-ranges.js";
+import type { ProgressSubIssue } from "./progress-list.js";
+import { SLICE_TRAILER, sliceRanges, type BranchCommit, type SliceRanges } from "./slice-ranges.js";
 
 /**
  * A review round on a **PRD PR** (PRD #222, #244): what the review is told
@@ -281,33 +282,54 @@ export const renderParkComment = (inputs: ParkInputs): string => {
   ].join("\n\n");
 };
 
+/** One commit of the PRD branch's first-parent log, with its subject. */
+export interface PrdBranchCommit extends BranchCommit {
+  readonly subject: string;
+}
+
+/** The PRD branch as every "which slice" question reads it. */
+export interface PrdBranch {
+  /** The parent's sub-issues, in the sub-issues API's order. */
+  readonly subIssues: readonly ProgressSubIssue[];
+  /** The first-parent log against the base, newest first. */
+  readonly log: readonly PrdBranchCommit[];
+  readonly ranges: SliceRanges;
+}
+
 /**
- * The slice a slice round reviews, read off the PRD branch: its first-parent
- * log against the base and the parent's sub-issues, through `sliceRanges`, the
- * one answer to "which slice". The checkout is the PRD PR's head, with `base`
- * a local ref.
+ * The PRD branch, read: its first-parent log against the base and the
+ * parent's sub-issues, through `sliceRanges`, the one answer to "which slice".
+ * The checkout is the PRD branch, with `base` a local ref. Throws where either
+ * cannot be read.
+ */
+export const readPrdBranch = (parent: string, base: string): PrdBranch => {
+  const subIssues = readSubIssues(parent);
+  const log = git([
+    "log",
+    "--first-parent",
+    `--format=%H%x1f%P%x1f%(trailers:key=${SLICE_TRAILER},valueonly,separator=%x2C)%x1f%s%x1e`,
+    `${base}..HEAD`,
+  ])
+    .split("\x1e")
+    .map((record) => record.replace(/^\n/, ""))
+    .filter((record) => record !== "")
+    .map((record): PrdBranchCommit => {
+      const [sha = "", parents = "", trailer = "", subject = ""] = record.split("\x1f");
+      const number = /#(\d+)/.exec(trailer.split(",")[0] ?? "")?.[1];
+      return { sha, parents: parents.split(" ").filter(Boolean), subject, slice: number === undefined ? null : Number(number) };
+    });
+  return { subIssues, log, ranges: sliceRanges(log, subIssues) };
+};
+
+/**
+ * The slice a slice round reviews, read off the PRD branch by `readPrdBranch`.
  *
  * Never throws. A slice that cannot be told is `slice: undefined` with the
  * reason, which the brief turns into a review of the whole pull request.
  */
 export const readSliceRound = (parent: string, base: string): Extract<PrdRound, { kind: "slice" }> => {
   try {
-    const subIssues = readSubIssues(parent);
-    const log = git([
-      "log",
-      "--first-parent",
-      `--format=%H%x1f%P%x1f%(trailers:key=${SLICE_TRAILER},valueonly,separator=%x2C)%x1f%s%x1e`,
-      `${base}..HEAD`,
-    ])
-      .split("\x1e")
-      .map((record) => record.replace(/^\n/, ""))
-      .filter((record) => record !== "")
-      .map((record) => {
-        const [sha = "", parents = "", trailer = "", subject = ""] = record.split("\x1f");
-        const number = /#(\d+)/.exec(trailer.split(",")[0] ?? "")?.[1];
-        return { sha, parents: parents.split(" ").filter(Boolean), subject, slice: number === undefined ? null : Number(number) };
-      });
-    const ranges = sliceRanges(log satisfies readonly BranchCommit[], subIssues);
+    const { log, ranges } = readPrdBranch(parent, base);
     const current = ranges.current;
     if (current === null) {
       return { kind: "slice", parent, slice: undefined, unknownBecause: `no commit on the branch carries an \`${SLICE_TRAILER}\` trailer` };
@@ -330,10 +352,14 @@ export const readSliceRound = (parent: string, base: string): Extract<PrdRound, 
       kind: "slice",
       parent,
       slice: undefined,
-      unknownBecause: `the PRD branch's history could not be read: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+      unknownBecause: `the PRD branch's history could not be read: ${firstLine(error)}`,
     };
   }
 };
+
+/** An error's first line, for a reason or a warning. */
+export const firstLine = (error: unknown): string =>
+  error instanceof Error ? (error.message.split("\n")[0] ?? "") : String(error);
 
 /** A resolution longer than this is cut, and says where the rest is. */
 const MAX_RESOLUTION_LINES = 200;
@@ -346,7 +372,7 @@ const capped = (diff: string): string => {
 };
 
 /** The parent's sub-issues, in the sub-issues API's order, which is execution order. */
-const readSubIssues = (parent: string): SliceSubIssue[] => {
+const readSubIssues = (parent: string): ProgressSubIssue[] => {
   const repo = process.env["GH_REPO"] ?? "";
   const raw = gh([
     "api",
@@ -358,11 +384,11 @@ const readSubIssues = (parent: string): SliceSubIssue[] => {
     "-F",
     `number=${parent}`,
     "-f",
-    "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { subIssues(first: 100) { nodes { number state } } } } }",
+    "query=query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { subIssues(first: 100) { nodes { number title state } } } } }",
   ]);
   const nodes = (
     JSON.parse(raw) as {
-      data?: { repository?: { issue?: { subIssues?: { nodes?: { number: number; state: "OPEN" | "CLOSED" }[] } } } };
+      data?: { repository?: { issue?: { subIssues?: { nodes?: ProgressSubIssue[] } } } };
     }
   ).data?.repository?.issue?.subIssues?.nodes;
   if (nodes === undefined) throw new Error(`could not read the sub-issues of #${parent}`);

@@ -60,6 +60,16 @@ name: Agent Implement PRD (reusable)
 # marks the PRD PR ready. With more than one, it records that the final review
 # is requested in the PRD PR's body and adds `agent:review`. A human merges the
 # PRD PR. The loop never merges it and never approves.
+#
+# ## Progress is comments and a list, never labels or closed issues
+#
+# The chain's state is the **progress list** in the PRD PR's body (#246),
+# rendered by `shared/progress-list.ts` from live state: by the runner as a
+# slice starts building and as its round is asked for, and by `review`'s
+# advance job at every ending of a round. A build run comments on the
+# sub-issue it starts and puts one line on the parent; the run past an
+# approval notes the approved slice on its sub-issue. No step adds a label
+# for progress, and no step closes a sub-issue.
 
 on:
   workflow_call:
@@ -376,6 +386,9 @@ jobs:
           #   some    | approved, none left | finishing: hands the PRD PR over
           build=true
           finishing=false
+          approved_sub=""
+          approved_sha=""
+          approved_review=""
           if [ "$landed" -gt 0 ] && [ -z "$prd_pr" ]; then
             echo "Slices of #${ISSUE_NUMBER} are on \`${prd_branch}\` but no PRD PR is open from it; opening one and asking for its review. Nothing is built."
             build=false
@@ -424,7 +437,17 @@ jobs:
               | jq -c '[.[].statuses[]? | select(.context == "agent-review")] | .[0] // empty') \
               || block "Couldn't read the review verdict on PRD PR #${prd_pr}'s latest commit, so nothing was built."
             case "$(jq -r '.state // ""' <<< "${verdict:-null}")" in
-              success) echo "PRD PR #${prd_pr}'s latest commit ${head} has an approval; the chain moves on." ;;
+              success)
+                echo "PRD PR #${prd_pr}'s latest commit ${head} has an approval; the chain moves on."
+                # The slice that approval is for, the current one: the last
+                # sub-issue in the list with a slice range. Named on its own
+                # sub-issue by `Note the approved slice`, with the review
+                # whose record says which criteria changed.
+                approved_sub=$(jq -r --argjson built "$built" \
+                  '[.subIssues.nodes[] | select(.number as $n | any($built[]; . == $n))] | last | .number // ""' <<< "$issue")
+                approved_sha="$head"
+                approved_review=$(jq -r '.target_url // ""' <<< "$verdict")
+                ;;
               "") refuse "PRD PR #${prd_pr}'s latest commit hasn't been reviewed, so the next slice wasn't started. ${ways}" ;;
               error) refuse "The review of PRD PR #${prd_pr}'s latest commit didn't finish, so there's no verdict and the next slice wasn't started. ${ways}" ;;
               *) refuse "The review of PRD PR #${prd_pr}'s latest commit didn't recommend approval ($(jq -r '.description // "" | split(". ")[0]' <<< "$verdict")), so the next slice wasn't started. ${ways}" ;;
@@ -517,14 +540,21 @@ jobs:
             echo "prd_branch_exists=$([ -n "$prd_sha" ] && echo true || echo false)"
             echo "prd_pr=${prd_pr}"
             echo "landed=${landed}"
+            echo "approved_sub=${approved_sub}"
+            echo "approved_sha=${approved_sha}"
+            echo "approved_review=${approved_review}"
             if [ "$build" = "true" ]; then
               echo "sub=$(jq -r '.number' <<< "$next")"
+              # Slice k of n, for the comment on the sub-issue it starts.
+              echo "sub_k=$(jq --argjson sub "$(jq '.number' <<< "$next")" '[.subIssues.nodes[].number] | index($sub) + 1' <<< "$issue")"
               echo "sub_title<<PRD_SUB_TITLE_EOF"
               jq -r '.title' <<< "$next"
               echo "PRD_SUB_TITLE_EOF"
             else
               echo "sub="
+              echo "sub_k="
             fi
+            echo "subs=${subs}"
             echo "build=${build}"
             echo "finishing=${finishing}"
             echo "refused=false"
@@ -544,14 +574,21 @@ jobs:
       #
       # Then the run links itself on the parent (#205), naming what it is for,
       # since a chain starts one run per slice on the same parent and the link
-      # alone would not tell them apart. A warning where it cannot be posted,
-      # never a failure: nothing has been done yet that a stopped run would
-      # need to report.
+      # alone would not tell them apart: one line, so the parent's timeline
+      # reads as the chain's log. A build run also comments on the sub-issue
+      # it starts, with the same link (#246), so a running build is found from
+      # the work it is for. Each is a warning where it cannot be posted, never
+      # a failure: nothing has been done yet that a stopped run would need to
+      # report, and a progress note is not worth a build.
       - name: Transition labels
+        id: start
         if: steps.preflight.outputs.refused == 'false'
         env:
           SUB: ${{ steps.preflight.outputs.sub }}
           SUB_TITLE: ${{ steps.preflight.outputs.sub_title }}
+          SUB_K: ${{ steps.preflight.outputs.sub_k }}
+          SUBS: ${{ steps.preflight.outputs.subs }}
+          PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
           BUILD: ${{ steps.preflight.outputs.build }}
           FINISHING: ${{ steps.preflight.outputs.finishing }}
         run: |
@@ -565,6 +602,68 @@ jobs:
             what="The slices built so far are on the PRD branch with no PRD PR open, so this run opens it and asks for its review. It builds nothing"
           fi
           gh issue comment "$ISSUE_NUMBER" --body "**\`agent:implement\` started:** ${what}. [Workflow run](${RUN_URL})" || echo "::warning::Could not post the start comment on #${ISSUE_NUMBER}. The run goes on; it is ${RUN_URL}."
+          if [ "$BUILD" = "true" ]; then
+            gh issue comment "$SUB" --body "**\`agent:implement\` started building this sub-issue**, slice ${SUB_K} of ${SUBS} of PRD #${ISSUE_NUMBER}, on the PRD branch \`${PRD_BRANCH}\`. [Workflow run](${RUN_URL})" || echo "::warning::Could not post the start comment on sub-issue #${SUB}. The run goes on; it is ${RUN_URL}."
+          fi
+
+      # The approved slice, on its own sub-issue (#246): the run the advance
+      # job started has passed its gate, so the slice the PRD PR's head was
+      # approved on is done with, and its sub-issue records what shipped for
+      # it, while the sub-issue itself stays open until the PRD PR merges.
+      # Built in the approved head, reviewed on the PRD PR, and the criteria
+      # the approving round's record (#214) says changed or went unmet, or
+      # that none did.
+      #
+      # The record is the approving review's body, which the verdict links,
+      # read for the lines its *Acceptance criteria* group gives a changed or
+      # unmet criterion (`renderCriteriaGroup` in `shared/review-output.ts`; a
+      # test renders the group and reads it back through this step). Never
+      # fails the run: a note that cannot be read or posted says so in a
+      # warning, and the chain goes on.
+      - name: Note the approved slice
+        id: approved_note
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.approved_sub != ''
+        env:
+          APPROVED_SUB: ${{ steps.preflight.outputs.approved_sub }}
+          APPROVED_SHA: ${{ steps.preflight.outputs.approved_sha }}
+          APPROVED_REVIEW: ${{ steps.preflight.outputs.approved_review }}
+          PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -uo pipefail
+          # Once per approved head: a retry past the same approval, after a
+          # run that failed, finds the note it posted and posts no second.
+          mark="<!-- agent:slice-approved ${APPROVED_SHA} -->"
+          posted=$(gh api "repos/${GH_REPO}/issues/${APPROVED_SUB}/comments" --paginate \
+            --jq "[.[] | select(.body // \"\" | contains(\"${mark}\"))] | length" | jq -s 'add // 0') || posted=""
+          if [ -n "$posted" ] && [ "$posted" -gt 0 ]; then
+            echo "Sub-issue #${APPROVED_SUB} already has its approved-slice note for ${APPROVED_SHA}."
+            exit 0
+          fi
+          criteria="**Acceptance criteria changed or unmet:** none."
+          body=""
+          if [[ "$APPROVED_REVIEW" =~ \#pullrequestreview-([0-9]+)$ ]]; then
+            body=$(gh api "repos/${GH_REPO}/pulls/${PRD_PR}/reviews/${BASH_REMATCH[1]}" --jq '.body // ""') || body=""
+          fi
+          if [ -z "$body" ]; then
+            criteria="**Acceptance criteria changed or unmet:** the approving review couldn't be read, so they aren't listed here; its *Acceptance criteria* section has them."
+            echo "::warning::Could not read the review that approved sub-issue #${APPROVED_SUB} (${APPROVED_REVIEW:-no link}), so its note does not list the criteria."
+          else
+            listed=$(awk '
+              /<summary><b>Acceptance criteria<\/b>/ { inside = 1; next }
+              inside && /^<\/details>/ { inside = 0 }
+              inside && /^- \*\*(Changed|Unmet):\*\* / { print }
+            ' <<< "$body")
+            if [ -n "$listed" ]; then
+              criteria=$(printf '**Acceptance criteria changed or unmet:**\n\n%s' "$listed")
+            fi
+          fi
+          review="reviewed on PRD PR #${PRD_PR}"
+          [ -n "$APPROVED_REVIEW" ] && review="[reviewed](${APPROVED_REVIEW}) on PRD PR #${PRD_PR}"
+          note=$(printf '**Slice approved:** built in [`%s`](%s/%s/commit/%s), %s. This sub-issue stays open until the PRD PR merges.\n\n%s\n\n%s' \
+            "${APPROVED_SHA:0:7}" "$SERVER_URL" "$GH_REPO" "$APPROVED_SHA" "$review" "$criteria" "$mark")
+          gh issue comment "$APPROVED_SUB" --body "$note" \
+            || echo "::warning::Could not post the approved-slice note on sub-issue #${APPROVED_SUB}. The run goes on."
 
       # From here to `Push the PRD branch` is **building a slice**, and only a
       # run that builds one does any of it. The finishing run, and the run
@@ -759,6 +858,9 @@ jobs:
           BRANCH: ${{ steps.preflight.outputs.prd_branch }}
           SUB_NUMBER: ${{ steps.preflight.outputs.sub }}
           SUB_TITLE: ${{ steps.preflight.outputs.sub_title }}
+          # The PRD PR, whose progress list the runner shows this slice
+          # building in (#246); empty on the first slice, which opens it.
+          PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
           OUTPUT_DIR: ${{ runner.temp }}
         # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
         # whole point. `npx pkg@version` reuses a package already present in the
@@ -859,13 +961,23 @@ jobs:
       # one-slice PRD. Nothing here reads the draft state as "finished" on a
       # PRD of more than one slice, since a human can still mark it ready by
       # hand. Its body is the **frame** (#218), written once:
-      # the `Closes` block, a note on what the chain does here, and the
-      # summary block the PRD PR's review writes. The `Closes` block is
-      # workflow-owned, between its own markers, which the review's rewrite of
-      # the summary splices around byte for byte: `Closes #<parent>` and one
+      # the `Closes` block, the progress list, a note on what the chain does
+      # here, and the summary block the PRD PR's review writes. The `Closes`
+      # block and the progress list are workflow-owned, each between its own
+      # markers, which the review's rewrite of the summary splices around byte
+      # for byte. The `Closes` block is `Closes #<parent>` and one
       # `Closes #<sub>` per open sub-issue, so merging the PRD PR closes
       # exactly the work it contains, and nothing closes before that. A
       # maintainer's notes outside the blocks survive every run.
+      #
+      # The **progress list** (#246) is the one the runner rendered for this
+      # slice in review, `progress.md`, which this run is about to ask for:
+      # written into a PRD PR this run opens, and spliced into one it reuses
+      # as the advance job splices it (`spliceProgressList` in
+      # `shared/progress-list.ts`, held equal by a test). A run that built
+      # nothing has none, and opens the PRD PR with a list that says when it
+      # is written. A list that cannot be written into a reused PRD PR is a
+      # warning: the slice is pushed, and its review is what matters now.
       - name: Open or reuse the PRD PR
         if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && steps.catch_up.outputs.parked != 'true' && success()
         id: prd_pr
@@ -876,6 +988,10 @@ jobs:
           # stays identical in a setup without the secret.
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # `PROGRESS_START` and `PROGRESS_END` in `shared/progress-list.ts`;
+          # a test holds them equal.
+          PROGRESS_START: "<!-- agent:progress -->"
+          PROGRESS_END: "<!-- /agent:progress -->"
         run: |
           set -euo pipefail
 
@@ -884,6 +1000,10 @@ jobs:
             echo "::error::$1"
             exit 1
           }
+
+          # The runner's render of this slice in review; absent on a run that
+          # built nothing.
+          progress="${RUNNER_TEMP}/progress.md"
 
           existing=$(gh pr list --state open --head "$PRD_BRANCH" --limit 100 --json number --jq 'map(.number) | join(" ")') \
             || block "Couldn't look for the PRD PR from \`${PRD_BRANCH}\`. The slice is on the PRD branch, and trying again doesn't build it twice."
@@ -894,16 +1014,52 @@ jobs:
           elif [ "$count" -eq 1 ]; then
             number="$existing"
             echo "Reusing PRD PR #${number}."
+            if [ -f "$progress" ]; then
+              current="${RUNNER_TEMP}/progress_pr.json"
+              request="${RUNNER_TEMP}/progress_edit.json"
+              if ! gh api "repos/{owner}/{repo}/pulls/${number}" > "$current"; then
+                echo "::warning::Could not read PRD PR #${number}, so its progress list is left as it stands."
+              elif ! jq --rawfile block "$progress" '
+                  (.body // "") as $b
+                  | env.PROGRESS_START as $s | env.PROGRESS_END as $e
+                  | (if $b == "" then $block
+                     else
+                       ($b | split($s)) as $starts
+                       | ($b | split($e)) as $ends
+                       | if ($starts | length) == 1 and ($ends | length) == 1 then
+                           $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block
+                         elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
+                           $starts[0] + $block + ($starts[1] | split($e))[1]
+                         else null end
+                     end) as $body
+                  | if $body == null then {} else {body: $body} end
+                ' "$current" > "$request"; then
+                echo "::warning::Could not compose PRD PR #${number}'s progress list, so it is left as it stands."
+              elif [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
+                echo "::warning::PRD PR #${number}'s body carries half a progress list, or two, so it was not written. Restore the missing marker, or delete the markers and the text between them, and the next ending of a round writes it again."
+              elif ! gh api --method PATCH "repos/{owner}/{repo}/pulls/${number}" --input "$request" > /dev/null; then
+                echo "::warning::Could not write PRD PR #${number}'s progress list. GitHub's reply is above."
+              else
+                echo "Wrote PRD PR #${number}'s progress list."
+              fi
+            fi
           else
             # From the preflight's snapshot, the one every branch of it ruled on.
             closes=$(jq -r --arg parent "$ISSUE_NUMBER" \
               '"Closes #\($parent)", (.subIssues.nodes[] | select(.state == "OPEN") | "Closes #\(.number)")' \
               "${RUNNER_TEMP}/prd-issue.json")
             body_file="${RUNNER_TEMP}/prd-pr-body.md"
+            if [ -f "$progress" ]; then
+              list=$(cat "$progress")
+            else
+              list=$(printf '%s\n%s\n%s' "$PROGRESS_START" "_The progress list is written when this slice's review round ends._" "$PROGRESS_END")
+            fi
             cat > "$body_file" <<FRAME
           <!-- agent:closes -->
           ${closes}
           <!-- /agent:closes -->
+
+          ${list}
 
           > [!NOTE]
           > The agent loop builds PRD #${ISSUE_NUMBER} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.
@@ -985,7 +1141,7 @@ jobs:
       # One slice landed means its round was a review of the whole PRD PR
       # already, and of the same lines, so the PRD PR is marked ready here and
       # no second review runs. More than one means a **final review**: this
-      # records that it is requested in the PRD PR's body, where a review of
+      # records that it is requested in the PRD PR's progress list, where a review of
       # the PRD PR reads it from, and then adds `agent:review`. The record goes
       # first, so the review the label starts finds it, and a retry writes it
       # once. It is also what the preflight reads the PRD as finished by, so
@@ -1020,7 +1176,20 @@ jobs:
             body=$(gh pr view "$PRD_PR" --json body --jq '.body') \
               || block "Couldn't read PRD PR #${PRD_PR} to ask for its final review. Trying again builds nothing."
             if [[ "$body" != *"$mark"* ]]; then
-              gh api -X PATCH "repos/${GH_REPO}/pulls/${PRD_PR}" -f body="${body}"$'\n\n'"${mark}" >/dev/null \
+              # Into the progress list (#246), with the final review shown in
+              # review: `FINAL_REVIEW_REQUESTED_LINES` in
+              # `shared/progress-list.ts`, which a test holds this copy equal
+              # to. Written in front of the end marker of the list the last
+              # slice's round left, every slice approved, it is the list
+              # rendered for the final review requested. A body with no list,
+              # one opened before #246, gets the mark at its end.
+              lines=$'\n**Final review:** 🔍 in review\n'"${mark}"$'\n'
+              end="<!-- /agent:progress -->"
+              requested="${body}"$'\n\n'"${mark}"
+              if [[ "$body" == *"$end"* ]]; then
+                requested="${body/"$end"/"${lines}${end}"}"
+              fi
+              gh api -X PATCH "repos/${GH_REPO}/pulls/${PRD_PR}" -f body="${requested}" >/dev/null \
                 || block "Couldn't note on PRD PR #${PRD_PR} that its final review is due, so it wasn't requested. Trying again builds nothing."
             fi
             # This run's own label off the parent before the next step's goes

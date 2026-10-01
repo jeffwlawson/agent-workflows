@@ -23,6 +23,12 @@ import {
   VERDICTS,
 } from "../shared/review-output.js";
 import { REVIEW_URL_SLOT } from "../shared/prd-round.js";
+import {
+  FINAL_REVIEW_MARK,
+  FINAL_REVIEW_REQUESTED_LINES,
+  PROGRESS_END,
+  PROGRESS_START,
+} from "../shared/progress-list.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -4825,7 +4831,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(run).toContain('gh api "repos/${GH_REPO}/commits/${head}/status" --paginate --slurp');
     expect(run).toContain('select(.context == "agent-review")');
     expect(run).toContain("head=$(jq -r '.[0].headRefOid' <<< \"$prd_prs\")");
-    expect(run).toMatch(/^\s*success\) echo/m);
+    expect(run).toMatch(/^\s*success\)\n\s*echo "PRD PR #\$\{prd_pr\}'s latest commit \$\{head\} has an approval/m);
     expect(VERDICTS["approval recommended"].state).toBe("success");
     for (const row of Object.values(VERDICTS).filter((r) => r.verdict !== "approval recommended")) {
       expect(row.state).not.toBe("success");
@@ -4930,7 +4936,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(text).not.toMatch(/agent:slices|slices-table|backfill|rowless|slice PRs are open/);
     expect(stepsOf(PRD).map((s) => s.id)).not.toContain("slice_row");
     expect(stepsOf(PRD).map((s) => s.id)).not.toContain("slice_pr");
-    expect(runner).not.toMatch(/slices-table|FINISHING|PRD_PR/);
+    expect(runner).not.toMatch(/slices-table|FINISHING/);
     expect(fs.existsSync(path.join("shared", "slices-table.ts"))).toBe(false);
   });
 
@@ -7004,6 +7010,9 @@ describe("an implement run links itself on the issue when it starts", () => {
   /** The lines of a step's script that post a comment on the triggering issue. */
   const commentLines = (run: string): readonly string[] =>
     run.split("\n").filter((l) => l.includes('gh issue comment "$ISSUE_NUMBER"'));
+  /** Every line of a step's script that posts a comment, on any issue. */
+  const anyCommentLines = (run: string): readonly string[] =>
+    run.split("\n").filter((l) => l.includes("gh issue comment "));
 
   it.each([IMPLEMENT, PRD])("%s: defines the run link once, for the job", (file: string) => {
     expect(jobOf(file).env?.["RUN_URL"]).toBe(RUN_URL);
@@ -7026,20 +7035,43 @@ describe("an implement run links itself on the issue when it starts", () => {
   });
 
   /**
-   * A warning, never a failure: `|| echo "::warning::…"` on the comment line
-   * itself, so the step's `bash -e` cannot end on it, and nothing after it in
-   * the step that could fail in its place.
+   * A warning, never a failure: `|| echo "::warning::…"` on each comment line
+   * itself, so the step's `bash -e` cannot end on it, and nothing after the
+   * first in the step that could fail in its place. On a PRD that is the note
+   * on the parent and the comment on the sub-issue the run starts (#246),
+   * which only a build run posts.
    */
   it.each([IMPLEMENT, PRD])("%s: a start comment that cannot be posted is a warning, not a failure", (file: string) => {
     const step = transition(file);
     const run = step.run ?? "";
+    const comments = anyCommentLines(run);
     const [comment] = commentLines(run);
 
-    expect(comment).toMatch(/\|\| echo "::warning::[^"]+"$/);
+    expect(comments.length).toBeGreaterThan(0);
+    for (const line of comments) expect(line).toMatch(/\|\| echo "::warning::[^"]+"$/);
     expect(step["continue-on-error"]).toBeUndefined();
-    const after = run.slice(run.indexOf(comment ?? "") + (comment ?? "").length).trim();
+    const after = run
+      .slice(run.indexOf(comment ?? "") + (comment ?? "").length)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !comments.some((c) => c.trim() === line));
 
-    expect(after).toBe("");
+    expect(after.every((line) => line === 'if [ "$BUILD" = "true" ]; then' || line === "fi"), after.join("\n")).toBe(true);
+  });
+
+  /**
+   * A build run comments on the sub-issue it starts, with the run link
+   * (#246): a running build is found from the work it is for.
+   */
+  it("implement-prd.yml: comments the run link on the sub-issue a build run starts", () => {
+    const step = transition(PRD);
+    const run = step.run ?? "";
+    const sub = anyCommentLines(run).filter((l) => l.includes('gh issue comment "$SUB"'));
+
+    expect(sub).toHaveLength(1);
+    expect(sub[0]).toContain("[Workflow run](${RUN_URL})");
+    expect(run.indexOf(sub[0] ?? "")).toBeGreaterThan(run.indexOf('if [ "$BUILD" = "true" ]; then'));
+    expect(step.env?.["SUB_K"]).toBe("${{ steps.preflight.outputs.sub_k }}");
   });
 
   it("implement.yml: says the run started on the issue", () => {
@@ -7620,5 +7652,99 @@ describe("what the loop posts names no internal mechanism", () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * Progress without labels (PRD #222, #246). The chain's state is the progress
+ * list in the PRD PR's body and the comments a run posts, never a state label
+ * and never a closed sub-issue.
+ */
+describe("the PRD chain's progress", () => {
+  const advanceSteps = (): readonly Step[] => jobNamed(REVIEW, "advance").steps ?? [];
+  const progressStep = (): Step | undefined => advanceSteps().find((s) => s.name === "Re-render the progress list");
+
+  /**
+   * The list's markers and the final review's mark are spelled in the
+   * workflows, which run no toolchain, and held equal here to the one copy
+   * the renderer uses.
+   */
+  it("spells the list's markers and the final review's mark as the renderer does", () => {
+    const prdPr = stepsOf(PRD).find((s) => s.id === "prd_pr");
+    const handover = runOf(PRD, "handover");
+
+    for (const env of [progressStep()?.env, prdPr?.env]) {
+      expect(env?.["PROGRESS_START"]).toBe(PROGRESS_START);
+      expect(env?.["PROGRESS_END"]).toBe(PROGRESS_END);
+    }
+    expect(handover).toContain(`mark="${FINAL_REVIEW_MARK}"`);
+    expect(handover).toContain(`end="${PROGRESS_END}"`);
+    expect(handover).toContain(`lines=$'\\n**Final review:** 🔍 in review\\n'"\${mark}"$'\\n'`);
+    expect(FINAL_REVIEW_REQUESTED_LINES).toBe(`\n**Final review:** 🔍 in review\n${FINAL_REVIEW_MARK}\n`);
+  });
+
+  /**
+   * The advance job writes the list at every ending of a round, before it
+   * advances or parks, from the files the review rendered: so the review
+   * hands them over, on the artifact that is uploaded however the run ends.
+   */
+  it("re-renders the list first at every ending of a round, from what the review rendered", () => {
+    const names = advanceSteps().map((s) => s.name ?? "");
+    const step = progressStep();
+    const upload = stepsOf(REVIEW).find((s) => s.name === "Hand the park comment to the advance job");
+
+    expect(names.indexOf("Re-render the progress list")).toBe(names.indexOf("Fetch the park comment") + 1);
+    expect(names.indexOf("Re-render the progress list")).toBeLessThan(names.indexOf("Advance the PRD chain"));
+    expect(step?.if).toBeUndefined();
+    expect(step?.["continue-on-error"]).toBeUndefined();
+    for (const ending of ["approved", "parked", "running"]) {
+      expect(String(upload?.with?.["path"] ?? "")).toContain(`\${{ runner.temp }}/progress_${ending}.md`);
+    }
+    expect(jobNamed(REVIEW, "advance").permissions).toEqual({ "pull-requests": "write" });
+  });
+
+  it("renders the list in each runner while the token is still in hand", () => {
+    const review = fs.readFileSync("review/review.ts", "utf8");
+    const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
+
+    expect(review.indexOf("progressAtRoundEnd(")).toBeGreaterThan(-1);
+    expect(review.indexOf("progressAtRoundEnd(")).toBeLessThan(review.indexOf("scrubGitHubTokens();"));
+    expect(implement.indexOf("writeProgress();")).toBeGreaterThan(-1);
+    expect(implement.indexOf("writeProgress();")).toBeLessThan(implement.indexOf("scrubGitHubTokens();"));
+    expect(stepsOf(PRD).find((s) => s.name === "Run implementation agent")?.env?.["PRD_PR"]).toBe(
+      "${{ steps.preflight.outputs.prd_pr }}",
+    );
+  });
+
+  /**
+   * Labels stay triggers: every label the chain adds is one that starts a
+   * run, or `agent:blocked` on a failure, and no step closes a sub-issue.
+   */
+  it("adds no state label for progress, and closes no issue", () => {
+    const added = (text: string): string[] => [...text.matchAll(/--add-label "([^"]+)"/g)].map((m) => m[1] ?? "");
+    const prd = fs.readFileSync(PRD, "utf8");
+    const advance = (jobNamed(REVIEW, "advance").steps ?? []).map((s) => s.run ?? "").join("\n");
+    const action = fs.readFileSync(path.join(".github", "actions", "advance-prd", "action.yml"), "utf8");
+
+    expect(new Set(added(prd))).toEqual(new Set(["agent:implement", "agent:blocked", "agent:review"]));
+    expect(added(advance)).toEqual([]);
+    expect(added(action)).toEqual(["agent:implement"]);
+    for (const text of [prd, advance, action]) expect(text).not.toMatch(/gh issue close|state=closed/);
+  });
+
+  /**
+   * The approved-slice note never fails a run: the comment and the read of
+   * the approving review each end in a warning, and the step is not `-e`.
+   */
+  it("notes the approved slice without being able to fail the run", () => {
+    const step = stepsOf(PRD).find((s) => s.id === "approved_note");
+    const run = step?.run ?? "";
+
+    expect(step?.if).toBe("steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.approved_sub != ''");
+    expect(run).toContain("set -uo pipefail");
+    expect(run).not.toContain("set -e");
+    expect(run).toMatch(/gh issue comment "\$APPROVED_SUB" --body "\$note" \\\n\s*\|\| echo "::warning::/);
+    const names = stepsOf(PRD).map((s) => s.name ?? "");
+    expect(names.indexOf("Note the approved slice")).toBe(names.indexOf("Transition labels") + 1);
   });
 });

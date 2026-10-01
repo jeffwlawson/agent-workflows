@@ -5,6 +5,14 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { readSummaryBlock, SUMMARY_END, SUMMARY_START, summaryUpdate } from "../shared/pr-summary.js";
+import {
+  PROGRESS_END,
+  PROGRESS_START,
+  renderProgressList,
+  spliceProgressList,
+  type ProgressInputs,
+} from "../shared/progress-list.js";
+import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
@@ -25,6 +33,7 @@ const CAN_RUN = ["bash", "jq"].every(onPath);
 interface Step {
   readonly name?: string;
   readonly run?: string;
+  readonly env?: Record<string, string>;
 }
 interface Workflow {
   readonly jobs: Record<string, { readonly steps?: readonly Step[] }>;
@@ -53,7 +62,7 @@ case "$*" in
   *PATCH*) case " $GH_FAIL " in *" patch "*) exit 1 ;; esac; echo '{}' ;;
   "api repos/{owner}/{repo}/pulls/"*) case " $GH_FAIL " in *" read "*) exit 1 ;; esac; cat "$GH_PR" ;;
   "pr create"*) echo "https://github.com/acme/widgets/pull/31" ;;
-  "pr list"*) echo "" ;;
+  "pr list"*) echo "\${GH_PR_LIST:-}" ;;
 esac
 exit 0
 `;
@@ -109,6 +118,25 @@ const runStep = (
 
 const RUN_URL = "https://github.com/acme/widgets/actions/runs/4242";
 
+/** A PRD of two slices, the first approved and the second in review. */
+const PROGRESS_SUBS = [
+  { number: 15, title: "One", state: "OPEN" as const },
+  { number: 16, title: "Two", state: "OPEN" as const },
+];
+const PROGRESS: ProgressInputs = {
+  subIssues: PROGRESS_SUBS,
+  ranges: sliceRanges(
+    [
+      { sha: "c", parents: ["b"], slice: 16 },
+      { sha: "b", parents: ["a"], slice: 15 },
+    ],
+    PROGRESS_SUBS,
+  ),
+  verdict: "none",
+  running: { kind: "review" },
+  finalReview: "not requested",
+};
+
 /** The PRD PR's `Closes` block, which `implement-prd` owns and the review splices around. */
 const CLOSES_START = "<!-- agent:closes -->";
 const CLOSES_END = "<!-- /agent:closes -->";
@@ -143,7 +171,7 @@ describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
     );
   });
 
-  it("opens a PRD PR with the Closes block first, the note and an unwritten summary", () => {
+  it("opens a PRD PR with the Closes block first, the progress list, the note and an unwritten summary", () => {
     const outcome = runStep(
       stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
       {
@@ -153,6 +181,8 @@ describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
         BASE_REF: "main",
         PRD_BRANCH: "agent/prd-14-a-prd",
         HAS_PAT: "true",
+        PROGRESS_START,
+        PROGRESS_END,
       },
       {
         "prd-issue.json": JSON.stringify({
@@ -169,6 +199,10 @@ describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
         "Closes #15",
         "Closes #16",
         CLOSES_END,
+        "",
+        PROGRESS_START,
+        "_The progress list is written when this slice's review round ends._",
+        PROGRESS_END,
         "",
         "> [!NOTE]",
         "> The agent loop builds PRD #14 here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then. Add your own notes outside the blocks the loop writes; it never edits them.",
@@ -264,6 +298,34 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
     expect(written.startsWith(`${CLOSES_START}\nCloses #14\nCloses #15\n${CLOSES_END}\n`)).toBe(true);
   });
 
+  /**
+   * And the progress list beside it (#246), which the chain re-renders and
+   * the review never touches: both blocks come through the rewrite byte for
+   * byte, whatever the summary becomes.
+   */
+  it("leaves the PRD PR's Closes block and progress list as they are", () => {
+    const list = renderProgressList(PROGRESS);
+    const prd = [
+      CLOSES_START,
+      "Closes #14",
+      "Closes #15",
+      CLOSES_END,
+      "",
+      list,
+      "",
+      "> [!NOTE]\r\n> A note.",
+      "",
+      SUMMARY_START,
+      "_The final review will summarize the whole PRD here._",
+      SUMMARY_END,
+      "",
+    ].join("\n");
+    const written = writeSummary(prd).request?.body ?? "";
+
+    expect(outside(written)).toEqual(outside(prd));
+    expect(written.startsWith(`${CLOSES_START}\nCloses #14\nCloses #15\n${CLOSES_END}\n\n${list}\n\n`)).toBe(true);
+  });
+
   /** Rewriting a block a review already wrote replaces it, and only it. */
   it("replaces an earlier summary rather than adding a second", () => {
     const once = writeSummary(FRAME).request?.body ?? "";
@@ -323,4 +385,120 @@ describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary bloc
     expect(unwritten.status, unwritten.stdout).toBe(0);
     expect(unwritten.stdout).toContain("::warning::Could not write the title and summary of PR #152");
   }, CEILING);
+});
+
+/**
+ * The progress list's two writers in a workflow (#246), each splicing a list a
+ * runner rendered into the PRD PR's body: the advance job at every ending of a
+ * round, and the build run that reuses a PRD PR once its slice is pushed. Both
+ * keep the rule `spliceProgressList` keeps, and are held to it here: every
+ * byte outside the markers kept, a list appended to a body with none, and
+ * half a list, or two, not written.
+ */
+describe.skipIf(!CAN_RUN)("the progress list is spliced into the PRD PR's body", () => {
+  const list = renderProgressList(PROGRESS);
+  const stale = renderProgressList({ ...PROGRESS, running: null, verdict: "approval" });
+  const bodies: readonly [string, string | null][] = [
+    ["a body with a list", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\n${stale}\n\nMine.\r\n`],
+    ["a body with none", `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n\nMine.`],
+    ["a body ending in a newline", "Mine.\n"],
+    ["no body", null],
+    ["half a list", `Mine.\n${PROGRESS_START}\nrest`],
+    ["two lists", `${stale}\n${stale}`],
+  ];
+
+  const advance = (body: string | null, env: Record<string, string>, fail = ""): Outcome =>
+    runStep(
+      stepRun("review", "advance", "Re-render the progress list"),
+      { PR_NUMBER: "201", PROGRESS_START, PROGRESS_END, GH_FAIL: fail, ...env },
+      {
+        "pr.json": JSON.stringify({ number: 201, body }),
+        "progress_approved.md": "approved list",
+        "progress_parked.md": "parked list",
+        "progress_running.md": list,
+      },
+    );
+  const RUNNING = { ENDED: "true", VERDICT: "changes recommended, fix round started" };
+
+  it.each(bodies)("the advance job over %s keeps spliceProgressList's rule", (_case, body) => {
+    const outcome = advance(body, RUNNING);
+    const expected = spliceProgressList(body ?? "", list);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    if (expected === undefined) {
+      expect(outcome.sent).toBeUndefined();
+      expect(outcome.stdout).toContain("half a progress list, or two");
+    } else {
+      expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected });
+    }
+  });
+
+  it.each([
+    ["an approval", { ENDED: "true", VERDICT: "approval recommended" }, "approved list"],
+    ["a fix round started", RUNNING, list],
+    ["changes recommended", { ENDED: "true", VERDICT: "changes recommended" }, "parked list"],
+    ["needs a closer look", { ENDED: "true", VERDICT: "needs a closer look" }, "parked list"],
+    ["a run that did not finish", { ENDED: "false", VERDICT: "approval recommended" }, "parked list"],
+  ])("the advance job writes the list for %s", (_case, env, written) => {
+    const outcome = advance("Mine.", env);
+
+    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: `Mine.\n\n${written}` });
+  });
+
+  it("the advance job goes on with a warning where the list cannot be read, written or was not rendered", () => {
+    const unread = advance("Mine.", RUNNING, "read");
+    expect(unread.status, unread.stdout).toBe(0);
+    expect(unread.stdout).toContain("::warning::Could not read PRD PR #201");
+
+    const unwritten = advance("Mine.", RUNNING, "patch");
+    expect(unwritten.status, unwritten.stdout).toBe(0);
+    expect(unwritten.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
+
+    const none = runStep(
+      stepRun("review", "advance", "Re-render the progress list"),
+      { PR_NUMBER: "201", PROGRESS_START, PROGRESS_END, ...RUNNING },
+      { "pr.json": JSON.stringify({ number: 201, body: "Mine." }) },
+    );
+    expect(none.status, none.stdout).toBe(0);
+    expect(none.stdout).toContain("::warning::The review rendered no progress list");
+    expect(none.gh).toEqual([]);
+  }, 3 * SUBPROCESS_TIMEOUT);
+
+  const reuse = (body: string | null, fail = ""): Outcome =>
+    runStep(
+      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      {
+        ISSUE_NUMBER: "14",
+        ISSUE_TITLE: "A PRD",
+        BASE_REF: "main",
+        PRD_BRANCH: "agent/prd-14-a-prd",
+        HAS_PAT: "true",
+        PROGRESS_START,
+        PROGRESS_END,
+        GH_PR_LIST: "201",
+        GH_FAIL: fail,
+      },
+      { "pr.json": JSON.stringify({ number: 201, body }), "progress.md": list },
+    );
+
+  it.each(bodies)("a build run reusing the PRD PR over %s keeps spliceProgressList's rule", (_case, body) => {
+    const outcome = reuse(body);
+    const expected = spliceProgressList(body ?? "", list);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.gh.some((call) => call.startsWith("pr create"))).toBe(false);
+    if (expected === undefined) {
+      expect(outcome.sent).toBeUndefined();
+      expect(outcome.stdout).toContain("half a progress list, or two");
+    } else {
+      expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected });
+    }
+  });
+
+  it("a build run reusing the PRD PR goes on with a warning where the list cannot be written", () => {
+    const outcome = reuse("Mine.", "patch");
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
+  });
 });

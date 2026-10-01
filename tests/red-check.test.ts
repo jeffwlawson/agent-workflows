@@ -374,6 +374,32 @@ describe("the red check classifies each test as red, broken or passed", () => {
   });
 
   /**
+   * vitest 3.2.4 again, on tests that share a `describe`'s title: one before
+   * it, one beside a nested one, one throwing a `TypeError`, and one beside a
+   * `describe` whose `beforeAll` threw, so both are reported under one name.
+   * Every test comes first and the failed `describe`s after the last of them,
+   * whatever the error's type: `ready`'s `beforeAll` failed on an `expect`.
+   */
+  it.skipIf(!CAN_RUN)("reads a vitest test that shares a describe's title as a test, and the describe as broken", () => {
+    const report = classify("vitest-shared-titles.xml");
+
+    expect(results(report).filter((t) => !t.name.includes(" > "))).toEqual([
+      { name: "parse", classname: "t/a.test.ts", result: "red" },
+      { name: "rename", classname: "t/a.test.ts", result: "red" },
+      { name: "deep", classname: "t/a.test.ts", result: "red" },
+      { name: "load", classname: "t/a.test.ts", result: "red" },
+      { name: "load", classname: "t/a.test.ts", result: "broken" },
+      { name: "close", classname: "t/a.test.ts", result: "broken" },
+      { name: "ready", classname: "t/a.test.ts", result: "broken" },
+    ]);
+    expect(report.tests.filter((t) => t.name === "load").map((t) => t.message)).toEqual([
+      "expected 'a' to be 'b' // Object.is equality",
+      "no server",
+    ]);
+    expect(messageOf(report, "parse")).toBe("expected 1 to be 2 // Object.is equality");
+  });
+
+  /**
    * jest 30 with jest-junit, `reportTestSuiteErrors` and `addFileAttribute` on.
    * It writes no `message` attribute, so the message is the body's first line,
    * and a suite that failed to run twice under one name, an `<error>` and a

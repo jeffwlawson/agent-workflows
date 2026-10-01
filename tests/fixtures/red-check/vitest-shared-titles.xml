@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="13" failures="7" errors="0" time="0.014253815">
+    <testsuite name="t/a.test.ts" timestamp="2026-10-01T14:43:20.745Z" hostname="runnervm8df0l" tests="13" failures="7" errors="0" skipped="2" time="0.014253815">
+        <testcase classname="t/a.test.ts" name="parse" time="0.007059536">
+            <failure message="expected 1 to be 2 // Object.is equality" type="AssertionError">
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ t/a.test.ts:3:29
+            </failure>
+        </testcase>
+        <testcase classname="t/a.test.ts" name="parse &gt; handles" time="0.000163977">
+        </testcase>
+        <testcase classname="t/a.test.ts" name="x &gt; rename &gt; keeps" time="0.000140752">
+        </testcase>
+        <testcase classname="t/a.test.ts" name="rename" time="0.000999247">
+            <failure message="Expected values to be strictly equal:
+
+1 !== 2
+" type="AssertionError">
+AssertionError: Expected values to be strictly equal:
+
+1 !== 2
+
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ t/a.test.ts:6:27
+            </failure>
+        </testcase>
+        <testcase classname="t/a.test.ts" name="deep" time="0.000346182">
+            <failure message="nope" type="TypeError">
+TypeError: nope
+ ❯ t/a.test.ts:7:26
+            </failure>
+        </testcase>
+        <testcase classname="t/a.test.ts" name="deep &gt; z" time="0.000115073">
+        </testcase>
+        <testcase classname="t/a.test.ts" name="load" time="0.001127891">
+            <failure message="expected &apos;a&apos; to be &apos;b&apos; // Object.is equality" type="AssertionError">
+AssertionError: expected &apos;a&apos; to be &apos;b&apos; // Object.is equality
+
+Expected: &quot;b&quot;
+Received: &quot;a&quot;
+
+ ❯ t/a.test.ts:9:30
+            </failure>
+        </testcase>
+        <testcase classname="t/a.test.ts" name="load &gt; reads" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="t/a.test.ts" name="close &gt; flushes" time="0.000087562">
+        </testcase>
+        <testcase classname="t/a.test.ts" name="ready &gt; serves" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="t/a.test.ts" name="load" time="0.000419282">
+            <failure message="no server" type="Error">
+Error: no server
+ ❯ t/a.test.ts:10:50
+            </failure>
+        </testcase>
+        <testcase classname="t/a.test.ts" name="close" time="0.000342396">
+            <failure message="left open" type="Error">
+Error: left open
+ ❯ t/a.test.ts:11:50
+            </failure>
+        </testcase>
+        <testcase classname="t/a.test.ts" name="ready" time="0.002171094">
+            <failure message="expected 1 to be 2 // Object.is equality" type="AssertionError">
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ t/a.test.ts:12:55
+            </failure>
+        </testcase>
+    </testsuite>
+</testsuites>

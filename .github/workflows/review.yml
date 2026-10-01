@@ -208,7 +208,9 @@ jobs:
   #    suite out of the report altogether: never red, but never broken either.
   #  - vitest writes everything as `<failure>`. A file that failed to import or
   #    collect is a testcase named by the file, as its classname is, and a
-  #    `beforeAll` that threw is one named by its `describe`; neither is a test.
+  #    `beforeAll` or `afterAll` that threw is one named by its `describe`,
+  #    after every test of the file; neither is a test. A test sharing that
+  #    `describe`'s title comes before the run of them, and reads as a test.
   #
   # A hook that throws for each test (a `beforeEach`, or a jest `beforeAll`) is
   # reported on the test itself, and JUnit cannot tell it from the test
@@ -401,36 +403,63 @@ jobs:
 
           # A testcase that is not a test: vitest reports a file that failed to
           # import or collect as a testcase named by the file, as its classname
-          # and its testsuite are, and a `beforeAll` that threw as one named by
-          # its `describe`, which the tests under it are named after, joined by
-          # ` > `. Either one's failure is the file's or the suite's, not a test's.
-          # (jest-junit names every testcase as its classname, but never its
-          # testsuite, which is why all three are compared.)
-          def is_container(case, suite, names):
+          # and its testsuite are, and a `describe` whose `beforeAll` or
+          # `afterAll` threw as one named by the `describe`, which the tests
+          # under it are named after, joined by ` > `. Either one's failure is
+          # the file's or the suite's, not a test's. (jest-junit names every
+          # testcase as its classname, but never its testsuite, which is why all
+          # three are compared.)
+          #
+          # A test may share a `describe`'s title, so the name alone does not
+          # say which a testcase is. Where it is: vitest writes every test of a
+          # file first and appends the failed `describe`s after the last of
+          # them, so one is a `describe` only if it, and every testcase after
+          # it, is a failure named like one. A test with any testcase after it
+          # that passed, was skipped, or is named like no `describe` is never in
+          # that run. The one left ambiguous, a failing test that shares a
+          # title and is its file's last, reads as broken: evidence lost, never
+          # evidence made up. (Not the error's type: a hook can fail on an
+          # `expect` too, and a test on a `TypeError`.)
+          def names_a_describe(case, names):
+              name = case.get("name", "")
+              prefix = name + " > "
+              return (
+                  bool(name)
+                  and case.find("failure") is not None
+                  and any(other.startswith(prefix) or (" > " + prefix) in other for other in names)
+              )
+
+
+          def is_container(cases, index, suite, names):
+              case = cases[index]
               name = case.get("name", "")
               if name and name == case.get("classname") == suite:
                   return True
-              prefix = name + " > "
-              return bool(name) and any(other.startswith(prefix) or (" > " + prefix) in other for other in names)
+              return all(names_a_describe(later, names) for later in cases[index:])
 
 
           # An error outranks a failure: a test that could not be set up never
-          # reached the assertion it would have failed on.
-          def classify(case, suite, names):
+          # reached the assertion it would have failed on. The third value says
+          # the testcase is a file or a `describe` rather than a test.
+          def classify(cases, index, suite, names):
+              case = cases[index]
               error = case.find("error")
               failure = case.find("failure")
               if error is not None:
-                  return "broken", message(error)
+                  return "broken", message(error), False
               if failure is not None:
-                  return ("broken" if is_container(case, suite, names) else "red"), message(failure)
+                  if is_container(cases, index, suite, names):
+                      return "broken", message(failure), True
+                  return "red", message(failure), False
               if case.find("skipped") is not None:
-                  return "skipped", None
-              return "passed", None
+                  return "skipped", None, False
+              return "passed", None, False
 
 
           # One test reported twice is one test, with the worse result: jest-junit
           # writes a suite that failed to run as an `<error>` and again as a
-          # `<failure>`, under one name.
+          # `<failure>`, under one name. A vitest test and a failed `describe`
+          # that share a title are two, so whether it is a test is in the key.
           RANK = {"passed": 0, "red": 1, "broken": 2}
 
 
@@ -474,8 +503,8 @@ jobs:
                       for parent in root.iter():
                           cases = parent.findall("testcase")
                           names = [case.get("name", "") for case in cases]
-                          for case in cases:
-                              result, said = classify(case, parent.get("name"), names)
+                          for index, case in enumerate(cases):
+                              result, said, container = classify(cases, index, parent.get("name"), names)
                               if result == "skipped":
                                   report["skipped"] += 1
                                   continue
@@ -485,7 +514,7 @@ jobs:
                               test["result"] = result
                               if said is not None:
                                   test["message"] = said
-                              key = (test["name"], test["classname"], test.get("file"))
+                              key = (test["name"], test["classname"], test.get("file"), container)
                               if key not in seen:
                                   seen[key] = test
                                   report["tests"].append(test)

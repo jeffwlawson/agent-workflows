@@ -466,6 +466,7 @@ try {
     dropped: droppedFollowUps,
     moved: movedFollowUps,
     cap: followUpsCapUsed,
+    carried: followUpsCarried,
   } = recordFollowUps(unanchored, [...notes.promoted, ...output.followUps], unplaceable, { cap, carried });
 
   // The verdict, derived from the review and the checks rather than written by
@@ -513,6 +514,7 @@ try {
     followUps,
     droppedFollowUps,
     followUpsCap: followUpsCapUsed,
+    followUpsCarried,
     droppedNotes: notes.dropped,
     criteria: criteriaRulings.results,
     runUrl: workflowRunUrl(),
@@ -662,7 +664,7 @@ try {
   if (followUps.length > 0) {
     writeText(
       "follow_ups.md",
-      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps, followUpsCapUsed),
+      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps, followUpsCapUsed, followUpsCarried),
     );
   }
 

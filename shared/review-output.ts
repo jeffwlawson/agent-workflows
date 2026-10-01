@@ -1341,6 +1341,12 @@ export interface ReviewBodyParts {
    */
   readonly followUpsCap?: number | undefined;
   /**
+   * Whether earlier rounds' entries lead the capped list (#247), from
+   * `recordFollowUps`: the cap then drops the newest rather than the least
+   * serious, and the body says so.
+   */
+  readonly followUpsCarried?: boolean | undefined;
+  /**
    * The fix run's out-of-scope notes this review chose not to file, each with
    * its reason (#213), from `applyNoteRulings`. The promoted ones are in
    * `followUps` above and are not repeated here.
@@ -1422,7 +1428,13 @@ const renderBody = (
         ? RESOLVED_SLOT
         : renderGroup(RESOLVED_GROUP.title, cut(record.resolved), RESOLVED_GROUP.open),
       renderCriteriaGroup(parts.criteria ?? [], shed.titles),
-      renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap),
+      renderFollowUpsGroup(
+        followUps,
+        parts.droppedFollowUps,
+        !shed.followUpTitles,
+        parts.followUpsCap,
+        parts.followUpsCarried,
+      ),
       renderDroppedNotesGroup(parts.droppedNotes ?? []),
       renderHowChecked(parts.output.howChecked),
       // The only rule in the body, and it is here rather than between the groups
@@ -1975,6 +1987,11 @@ export interface RecordedFollowUps {
   readonly dropped: number;
   /** The cap it was held to, written into the payload for the filing end to re-apply (#247). */
   readonly cap: number;
+  /**
+   * Whether earlier rounds' out-of-scope entries lead the capped half (#247),
+   * so the cap drops the newest rather than the least serious.
+   */
+  readonly carried: boolean;
 }
 
 /**
@@ -2053,12 +2070,10 @@ export const recordFollowUps = (
     ...dedupeFollowUps(carried.flatMap((earlier) => earlier.moved), seen),
     ...unanchored.map((finding) => ({ ...movedFollowUp(finding, pathErrors.includes(finding)), id: nextId() })),
   ];
-  const rest = [
-    ...dedupeFollowUps(carried.flatMap((earlier) => earlier.rest), seen),
-    ...followUps.map((followUp) => ({ ...followUp, id: nextId() })),
-  ];
+  const earlierRest = dedupeFollowUps(carried.flatMap((earlier) => earlier.rest), seen);
+  const rest = [...earlierRest, ...followUps.map((followUp) => ({ ...followUp, id: nextId() }))];
   const { kept, dropped } = capFollowUps(rest, cap);
-  return { followUps: [...moved, ...kept], moved: moved.length, dropped, cap };
+  return { followUps: [...moved, ...kept], moved: moved.length, dropped, cap, carried: earlierRest.length > 0 };
 };
 
 /**
@@ -2261,6 +2276,7 @@ export const renderFollowUpsGroup = (
   dropped: number,
   titles = true,
   cap: number = MAX_FOLLOW_UPS,
+  carried = false,
 ): string | undefined => {
   if (kept.length === 0) return undefined;
 
@@ -2288,14 +2304,24 @@ export const renderFollowUpsGroup = (
   // Without titles nothing is listed, and what is kept may be fewer than the
   // cap once the body's size has cut some too (#140) — so that case says only
   // what the cap did, and leaves what the size did to the shed sentence.
+  //
+  // Where earlier rounds' entries lead the list (#247), the cap drops the
+  // newest whatever their severity, and the sentence says that instead: the
+  // order is not re-ranked, so "most serious" would be a claim about it that
+  // no longer holds.
+  const newest = dropped === 1 ? "the newest was" : `the ${dropped} newest were`;
   const truncation =
     dropped === 0
       ? []
       : [
           "",
-          titles
-            ? `Only the ${cap} most serious out-of-scope findings are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`
-            : `The cap keeps the ${cap} most serious out-of-scope findings; ${dropped} more were dropped by it. Raise them here if they matter.`,
+          carried
+            ? titles
+              ? `Only ${cap} out-of-scope findings are listed, earlier rounds' first; ${newest} dropped by the cap, whatever their severity. Raise them here if they matter.`
+              : `The cap keeps ${cap} out-of-scope findings, earlier rounds' first; ${newest} dropped by it, whatever their severity. Raise them here if they matter.`
+            : titles
+              ? `Only the ${cap} most serious out-of-scope findings are listed; ${dropped} more were dropped by the cap. Raise them here if they matter.`
+              : `The cap keeps the ${cap} most serious out-of-scope findings; ${dropped} more were dropped by it. Raise them here if they matter.`,
         ];
 
   return [
@@ -2431,8 +2457,9 @@ export const renderFollowUpsBlock = (
   dropped: number,
   moved: number,
   cap: number = MAX_FOLLOW_UPS,
+  carried = false,
 ): string => {
-  const group = renderFollowUpsGroup(kept, dropped, true, cap);
+  const group = renderFollowUpsGroup(kept, dropped, true, cap, carried);
   const payload = followUpsPayload(kept, dropped, moved, 0, cap);
   return group === undefined ? payload : `${group}\n\n${payload}`;
 };

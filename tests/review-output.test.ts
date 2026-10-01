@@ -30,6 +30,7 @@ import {
   parseFollowUpsBlock,
   recordFollowUps,
   renderFollowUpsBlock,
+  renderFollowUpsGroup,
   renderReviewBody,
   renderReviewPost,
   RESOLVED_GROUP,
@@ -427,6 +428,7 @@ describe("recordFollowUps", () => {
       moved: 0,
       dropped: 0,
       cap: 3,
+      carried: false,
     });
   });
 
@@ -507,6 +509,38 @@ describe("recordFollowUps on a PRD PR", () => {
       "t0",
     ]);
     expect(dropped).toBe(2);
+  });
+
+  /**
+   * The order is not re-ranked, so where earlier rounds lead the list the cap
+   * drops the newest whatever their severity, and the body says that rather
+   * than that it kept the most serious.
+   */
+  it("says the cap dropped the newest, not the least serious, where earlier rounds lead", () => {
+    const earlier = { moved: [], rest: [1, 2, 3].map((n) => entry(`fu-0000000${n}`, { severity: "low" })) };
+    const recorded = recordFollowUps([], [followUp({ title: "new", severity: "high" })], [], {
+      carried: [earlier],
+      nextId: counter(),
+    });
+    const visible = renderFollowUpsBlock(recorded.followUps, recorded.dropped, recorded.moved, recorded.cap, recorded.carried);
+
+    expect(recorded.carried).toBe(true);
+    expect(recorded.followUps.map((f) => f.title)).not.toContain("new");
+    expect(visible).toContain("Only 3 out-of-scope findings are listed, earlier rounds' first; the newest was dropped by the cap");
+    expect(visible).not.toContain("most serious");
+    expect(renderFollowUpsGroup(recorded.followUps, recorded.dropped, false, recorded.cap, recorded.carried)).toContain(
+      "The cap keeps 3 out-of-scope findings, earlier rounds' first; the newest was dropped by it",
+    );
+  });
+
+  /** A PRD PR's first round carries nothing, so its list is the model's own order, most serious first. */
+  it("keeps the most-serious wording where nothing was carried", () => {
+    const recorded = recordFollowUps([], followUps(4), [], { carried: [{ moved: [], rest: [] }] });
+
+    expect(recorded.carried).toBe(false);
+    expect(renderFollowUpsBlock(recorded.followUps, recorded.dropped, recorded.moved, recorded.cap, recorded.carried)).toContain(
+      "Only the 3 most serious out-of-scope findings are listed; 1 more were dropped by the cap.",
+    );
   });
 
   it("records the cap in the payload, where the filing end reads it back", () => {

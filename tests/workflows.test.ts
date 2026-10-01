@@ -2283,9 +2283,11 @@ describe("agent-fix asks for the re-review its own push needs", () => {
     expect(run).toContain("set -euo pipefail");
     expect(run).toContain("failure_reason.txt");
     expect(run).toContain("exit 1");
-    // The one tolerance is the removal before the add (#236): a label that is
-    // not there is not a failure.
+    // The two tolerances are removals (#236): this run's own label, which
+    // comes off before the next step's goes on, and the removal before the
+    // add. A label that is not there is not a failure.
     expect(run.split("\n").filter((l) => l.includes("|| true"))).toEqual([
+      'gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true',
       'gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true',
     ]);
   });
@@ -2364,7 +2366,10 @@ describe("a slice PR's round ends by advancing the PRD chain", () => {
     // added to the table arrives here as a decision rather than as a gap.
     const parked = Object.keys(VERDICTS).filter((key) => !selected.includes(key as Verdict));
     expect(parked.sort()).toEqual(["changes recommended, fix round started", "needs a closer look"]);
-    expect(condition(REVIEW)).not.toContain("!=");
+    // The one `!=` is the moved-head stand-down (#236), whose output is
+    // written only as `true`, so unset is the head that did not move.
+    expect(condition(REVIEW)).toContain("needs.review.outputs.moved != 'true'");
+    expect(condition(REVIEW).replace("needs.review.outputs.moved != 'true'", "")).not.toContain("!=");
     expect(advance(REVIEW).needs).toEqual(["review", "resolve"]);
   });
 
@@ -3201,9 +3206,11 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
     expect(run).toContain("set -euo pipefail");
     expect(run).toContain("failure_reason.txt");
     expect(run).toContain("exit 1");
-    // The one tolerance is the removal before the add (#236): a label that is
-    // not there is not a failure.
+    // The two tolerances are removals (#236): this run's own label, which
+    // comes off before the next step's goes on, and the removal before the
+    // add. A label that is not there is not a failure.
     expect(run.split("\n").filter((l) => l.includes("|| true"))).toEqual([
+      'gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true',
       'gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true',
     ]);
   });
@@ -4641,8 +4648,10 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   it("marks the durable shape refusals blocked, and the finished PRD not", () => {
     const run = runOf(PRD, "preflight");
 
-    expect(bashFunctionBody(run, "refuse_shape")).toContain('--add-label "agent:blocked"');
+    expect(bashFunctionBody(run, "refuse_shape")).toContain('refuse "$1" blocked');
+    expect(bashFunctionBody(run, "refuse")).toContain('--add-label "agent:blocked"');
     expect(armOf(run, "no open sub-issues")).not.toContain("refuse_shape");
+    expect(armOf(run, "no open sub-issues")).not.toContain("blocked");
   });
 
   /**
@@ -4829,7 +4838,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(adds[1]?.id).toBe("handover");
     expect(adds[1]?.run ?? "").toContain('gh pr edit "$PRD_PR" --add-label "agent:review"');
     expect(adds[1]?.if ?? "").toContain("steps.preflight.outputs.finishing == 'true'");
-    expect(runOf(PRD, "handover")).not.toContain("agent:implement\" ");
+    expect(runOf(PRD, "handover")).not.toContain('--add-label "agent:implement"');
     expect(stepsOf(PRD).map((s) => s.id)).not.toContain("remaining");
   });
 
@@ -7305,6 +7314,69 @@ describe("a trigger label is on while its run works, and off when it ends", () =
         if (step.name === "Transition labels") continue;
         expect(step.run ?? "").not.toContain('--add-label "agent:fix"');
       }
+    }
+  });
+
+  /**
+   * **The loop's one order** (#236): label on, do the work, post every
+   * result, take your own label off, add the next step's label. A refusal is
+   * a run that ends at once, so its comment goes first, then its own label
+   * off, then `agent:blocked` where it applies.
+   */
+  it.each([
+    ["implement.yml", "preflight", 'gh issue comment "$ISSUE_NUMBER"', 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"'],
+    ["implement-prd.yml", "preflight", 'gh issue comment "$ISSUE_NUMBER"', 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"'],
+    ["review.yml", "state", 'gh pr comment "$PR_NUMBER"', 'gh pr edit "$PR_NUMBER" --remove-label "agent:review"', 'gh pr edit "$PR_NUMBER" --add-label "agent:blocked"'],
+    ["fix.yml", "state", 'gh pr comment "$PR_NUMBER"', 'gh pr edit "$PR_NUMBER" --remove-label "agent:fix"', 'gh pr edit "$PR_NUMBER" --add-label "agent:blocked"'],
+  ])("%s: a refusal comments, then takes its label off, then blocks", (name, id, comment, removal, blocked) => {
+    const body = bashFunctionBody(runOf(fileOf(name), id), "refuse");
+
+    expect(body.indexOf(comment)).toBeGreaterThanOrEqual(0);
+    expect(body.indexOf(removal)).toBeGreaterThan(body.indexOf(comment));
+    expect(body.indexOf(blocked)).toBeGreaterThan(body.indexOf(removal));
+  });
+
+  it("update-branch.yml: a refusal comments, then takes its label off", () => {
+    const run = runOf(fileOf("update-branch.yml"), "state");
+    const comment = run.indexOf('gh pr comment "$PR_NUMBER"');
+
+    expect(comment).toBeGreaterThanOrEqual(0);
+    expect(run.indexOf('--remove-label "agent:update-branch"')).toBeGreaterThan(comment);
+  });
+
+  /**
+   * And a hand-off takes the run's own label off before it adds the next
+   * step's, in the same step and only on its success path, so the issue or
+   * pull request never carries both.
+   */
+  it.each([
+    ["implement.yml", "Request review", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$NEW_PR" --add-label "agent:review"'],
+    ["implement-prd.yml", "Request review", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$SLICE_PR" --add-label "agent:review"'],
+    ["implement-prd.yml", "handover", 'gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement"', 'gh pr edit "$PRD_PR" --add-label "agent:review"'],
+    ["fix.yml", "Request re-review", 'gh pr edit "$PR_NUMBER" --remove-label "agent:fix"', 'gh pr edit "$PR_NUMBER" --add-label "agent:review"'],
+    ["update-branch.yml", "Request a review of the resolution", 'gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch"', 'gh pr edit "$PR_NUMBER" --add-label "agent:review"'],
+  ])("%s: %s takes its own label off before it adds the next", (name, step, removal, add) => {
+    const found = stepsOf(fileOf(name)).find((s) => s.name === step || s.id === step);
+    const run = found?.run ?? "";
+
+    expect(found?.if ?? "").toContain("success()");
+    expect(run.indexOf(removal)).toBeGreaterThanOrEqual(0);
+    expect(run.indexOf(add)).toBeGreaterThan(run.indexOf(removal));
+  });
+
+  /**
+   * A review whose pull request moved while it worked says so, and the two
+   * jobs that act on its verdict stand down: the verdict is about a commit the
+   * pull request has left (#236).
+   */
+  it("review.yml: auto-fix and advance stand down where the head moved", () => {
+    const review = jobNamed(REVIEW, "review");
+    const trigger = (review.steps ?? []).find((s) => s.name === "Always remove the trigger label");
+
+    expect(trigger?.id).toBe("trigger");
+    expect((review as { outputs?: Record<string, string> }).outputs?.["moved"]).toBe("${{ steps.trigger.outputs.moved }}");
+    for (const id of ["auto-fix", "advance"]) {
+      expect(jobNamed(REVIEW, id).if ?? "", id).toContain("needs.review.outputs.moved != 'true'");
     }
   });
 

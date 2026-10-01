@@ -69,7 +69,13 @@ interface Outcome {
  * that failed would have written it. `minutes` is the limit as the step reads
  * it, the job's own where it is not given.
  */
-const run = (c: Case, status: "failure" | "cancelled", elapsed: number, minutes = String(c.minutes)): Outcome => {
+const run = (
+  c: Case,
+  status: "failure" | "cancelled",
+  elapsed: number,
+  minutes = String(c.minutes),
+  refused = "false",
+): Outcome => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-failure-step-"));
   const bin = path.join(temp, "bin");
   const log = path.join(temp, "gh.log");
@@ -94,6 +100,7 @@ const run = (c: Case, status: "failure" | "cancelled", elapsed: number, minutes 
       JOB_STATUS: status,
       JOB_STARTED: String(Math.floor(Date.now() / 1000) - elapsed),
       TIMEOUT_MINUTES: minutes,
+      REFUSED: refused,
     },
   });
   const comment = path.join(temp, "failure-comment.md");
@@ -157,4 +164,47 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       expect(outcome.gh.some((argv) => / comment /.test(` ${argv} `)), minutes).toBe(true);
     }
   });
+
+  /**
+   * The loop's one order (#236): every result posted, then the run's own
+   * label off, then the label naming the next step, which on a failure is
+   * `agent:blocked`. So nobody sees the issue or pull request blocked with
+   * no word of why, nor blocked while it still reads as a run in progress.
+   */
+  const TRIGGER: Readonly<Record<string, string>> = {
+    implement: "issue edit 135 --remove-label agent:implement",
+    "implement-prd": "issue edit 135 --remove-label agent:implement",
+    fix: "pr edit 152 --remove-label agent:fix",
+    "update-branch": "pr edit 152 --remove-label agent:update-branch",
+    review: "pr edit 152 --remove-label agent:review",
+  };
+
+  it.each(CASES.filter((c) => c.blocks))("$command: comments, then takes its label off, then blocks", (c: Case) => {
+    for (const status of ["failure", "cancelled"] as const) {
+      const outcome = run(c, status, 120);
+      const comment = outcome.gh.findIndex((argv) => / comment /.test(` ${argv} `));
+      const removal = outcome.gh.indexOf(TRIGGER[c.command] ?? "");
+      const blocked = outcome.gh.findIndex((argv) => argv.includes("--add-label agent:blocked"));
+
+      expect(outcome.status, status).toBe(0);
+      expect(comment, status).toBeGreaterThanOrEqual(0);
+      expect(removal, status).toBeGreaterThan(comment);
+      expect(blocked, status).toBeGreaterThan(removal);
+    }
+  });
+
+  /**
+   * Except the label, on an implement run whose preflight died before it
+   * decided the issue was its own: that may be the sibling's event, and the
+   * sibling's run holds the label while it works.
+   */
+  it.each(CASES.filter((c) => c.command === "implement" || c.command === "implement-prd"))(
+    "$command: leaves the label on where the preflight never decided",
+    (c: Case) => {
+      const outcome = run(c, "failure", 120, String(c.minutes), "");
+
+      expect(outcome.gh).not.toContain(TRIGGER[c.command]);
+      expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
+    },
+  );
 });

@@ -387,6 +387,11 @@ again, unless another trigger label is already on it: that is a run queued behin
 request would cancel it before it could take its own label off. `fix` does not: a second fix run would answer the threads this one answered, which stay open
 until a review verifies them.
 
+**A run's own label comes off before the next one goes on.** Every result is posted first, then
+the trigger label comes off, then the next step's label goes on: `agent:review` on a hand-off,
+`agent:blocked` after a failure or a refusal, whose comment comes first. A review that finds the head
+moved while it worked does not start a fix round or advance a PRD chain off its verdict.
+
 **The cursor.** Each `implement-prd` run holds `agent:implement` on the parent while it builds and
 takes it off as it ends, and the chain moves on only when it comes back: review's **advance job** re-adds it when a slice PR's
 round ends on a verdict the chain moves on from (§3b, *The verdict on a slice PR*), and you re-add

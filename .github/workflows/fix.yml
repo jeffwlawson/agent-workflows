@@ -171,12 +171,15 @@ jobs:
         id: state
         run: |
           set -uo pipefail
+          # In the loop's one order (#236): the comment first, then this run's
+          # own label off, then `agent:blocked`, so the label that names the
+          # next step goes on last.
           refuse() {
+            gh pr comment "$PR_NUMBER" --body "$1"
             gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
             if [ "${2:-}" = "blocked" ]; then
               gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
             fi
-            gh pr comment "$PR_NUMBER" --body "$1"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           }
 
@@ -523,6 +526,11 @@ jobs:
             fi
             sleep 5
           done
+          # This run's own label comes off before the next step's goes on
+          # (#236): every reply and comment is posted by now, so what is left
+          # is the hand-off. The last step removes it again, which is nothing
+          # where it is already off.
+          gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
           # Removed first, as every trigger label the loop adds (#236): an add
           # on a label that is somehow still there fires nothing.
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
@@ -585,6 +593,9 @@ jobs:
       # threads are answered by then, and since #111 they stay open until a
       # review verifies the fix, so a second fix run re-reads feedback this one
       # has already acted on and answers it twice.
+      #
+      # In the loop's one order (#236): the comment, then this run's own label
+      # off, then `agent:blocked`.
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
         env:
@@ -622,8 +633,9 @@ jobs:
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           printf '`agent:fix` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\n%s\n' "$what" "$reason" "$RUN_URL" "$outcome" > "$body_file"
+          gh pr comment "$PR_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on PR #${PR_NUMBER}."
+          gh pr edit "$PR_NUMBER" --remove-label "agent:fix" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
-          gh pr comment "$PR_NUMBER" --body-file "$body_file"
 
       # The trigger label comes off however the run ends (#236): success,
       # failure, refusal, timeout or cancel, so it never outlives the run.

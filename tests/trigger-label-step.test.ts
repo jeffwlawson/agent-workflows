@@ -50,14 +50,23 @@ interface Scenario {
   /** What `gh pr view --json state,headRefOid,labels --jq …` prints: state, head and the trigger labels on it, comma-joined. */
   readonly live?: string;
   readonly pat?: boolean;
+  /** update-branch's `steps.request.outputs.requested`: this run asked for the review of its resolution. */
+  readonly requested?: string;
 }
 
-/** Each `gh` call, as `<token> <argv>`. */
-const run = (command: string, scenario: Scenario = {}): { status: number | null; gh: readonly string[] } => {
+/** Each `gh` call, as `<token> <argv>`, and what the step wrote to `GITHUB_OUTPUT`. */
+const run = (
+  command: string,
+  scenario: Scenario = {},
+): { status: number | null; gh: readonly string[]; output: string } => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-trigger-step-"));
   const bin = path.join(temp, "bin");
   const log = path.join(temp, "gh.log");
   const script = path.join(temp, "step.sh");
+  // Its own, never the runner's: a test run inside a workflow job inherits
+  // that job's `GITHUB_OUTPUT`, and would write this step's outputs into it.
+  const output = path.join(temp, "output");
+  fs.writeFileSync(output, "");
 
   fs.mkdirSync(bin);
   fs.writeFileSync(
@@ -75,6 +84,8 @@ const run = (command: string, scenario: Scenario = {}): { status: number | null;
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env["PATH"] ?? ""}`,
       GH_LOG: log,
+      GITHUB_OUTPUT: output,
+      REQUESTED: scenario.requested ?? "",
       GH_TOKEN: "workflow-token",
       GH_VIEW: scenario.live ?? `OPEN ${REVIEWED}`,
       ISSUE_NUMBER: "135",
@@ -87,8 +98,9 @@ const run = (command: string, scenario: Scenario = {}): { status: number | null;
     },
   });
   const gh = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
+  const written = fs.readFileSync(output, "utf8");
   fs.rmSync(temp, { recursive: true, force: true });
-  return { status: result.status, gh };
+  return { status: result.status, gh, output: written };
 };
 
 const TRIGGERS = [
@@ -182,5 +194,38 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
       expect(comment).toContain(PUSHED);
       expect(comment).toContain(`Add \`${label}\` by hand`);
     });
+  });
+  /**
+   * The review says the head moved, on every arm that found it moved, so that
+   * `auto-fix` and `advance` stand down on a verdict about a commit the pull
+   * request has left (#236): re-requested, left to a queued run, or left to a
+   * human for want of the PAT.
+   */
+  it.each([
+    ["re-requested", { live: `OPEN ${PUSHED}` }],
+    ["left to a queued run", { live: `OPEN ${PUSHED} agent:fix` }],
+    ["left to a human without the PAT", { live: `OPEN ${PUSHED}`, pat: false }],
+  ] as const)("review: says the head moved where it was %s", (_case, scenario) => {
+    expect(run("review", scenario).output).toContain("moved=true");
+  });
+
+  it.each([
+    ["the head did not move", { live: `OPEN ${REVIEWED}` }],
+    ["the run failed", { live: `OPEN ${PUSHED}`, status: "failure" }],
+    ["the pull request is closed", { live: `CLOSED ${PUSHED}` }],
+  ] as const)("review: says nothing about the head where %s", (_case, scenario) => {
+    expect(run("review", scenario).output).not.toContain("moved=");
+  });
+
+  /**
+   * update-branch hands off one way or the other, never both: where it asked
+   * for the review of its resolution, that review is queued in the group, and
+   * a second request would cancel it while pending and strand `agent:review`.
+   */
+  it("update-branch: asks for nothing more where it asked for the review of its resolution", () => {
+    const outcome = run("update-branch", { live: `OPEN ${PUSHED}`, requested: "true" });
+
+    expect(outcome.status).toBe(0);
+    expect(outcome.gh).toEqual(["workflow-token pr edit 152 --remove-label agent:update-branch"]);
   });
 });

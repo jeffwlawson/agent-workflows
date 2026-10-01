@@ -49,6 +49,14 @@ on it: that is a run queued behind it, which a new request would cancel and stra
 run would answer the threads it answered. There is no lifetime "in progress" label on an issue:
 an open issue with a linked pull request, a draft, and `agent:blocked` already give that view.
 
+Every run ends in **one order**: post every result, take its own label off, then add the label
+naming the next step. A hand-off removes its trigger label just before it adds `agent:review`; a
+failure comments, then removes it, then adds `agent:blocked`; a refusal does the same. So nothing
+ever carries a run's label and the next step's at once, or `agent:blocked` with no word of why. A
+review that found the head moved hands off one way only, and says so as `moved`: its `auto-fix` and
+`advance` jobs stand down, since its verdict is about a commit the pull request has left, and
+`update-branch` asks for itself again only where it did not just ask for a review.
+
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
 first row. A run that pushed asks for the review of what it pushed, so the round it was given

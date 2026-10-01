@@ -135,9 +135,10 @@ jobs:
       - name: "Pre-flight: refuse if the PR is closed or merged"
         id: state
         run: |
+          # The comment first, then this run's own label off (#236).
           if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" = "true" ]; then
-            gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true
             gh pr comment "$PR_NUMBER" --body "Refused to run \`agent:update-branch\`: this PR is not open."
+            gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           else
             echo "proceed=true" >> "$GITHUB_OUTPUT"
@@ -531,6 +532,7 @@ jobs:
       # is inert here: the merge is already pushed, so a second run finds the
       # branch up to date and does nothing.
       - name: Request a review of the resolution
+        id: request
         if: steps.merge.outputs.status == 'conflicts' && steps.prd.outputs.held != 'true' && success()
         env:
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
@@ -556,6 +558,11 @@ jobs:
             fi
             sleep 5
           done
+          # This run's own label comes off before the next step's goes on
+          # (#236): the resolution is reported by now, so what is left is the
+          # hand-off. The last step removes it again, which is nothing where it
+          # is already off.
+          gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true
           # Removed first, as every trigger label the loop adds (#236): an add
           # on a label that is somehow still there fires nothing.
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
@@ -564,6 +571,8 @@ jobs:
               > "${RUNNER_TEMP}/failure_reason.txt"
             exit 1
           fi
+          # Read by the last step, which asks for nothing more where this asked.
+          echo "requested=true" >> "$GITHUB_OUTPUT"
           if [ "$HAS_PAT" != "true" ]; then
             # On the pull request as well as in the log (#105): a warning
             # annotation is on a run nobody opens, and what is at stake here is
@@ -579,6 +588,9 @@ jobs:
       # was left untouched" is true of every step above the push and false of
       # every one below it, and re-adding the label — which is the whole of the
       # advice — does nothing on a branch that is already merged.
+      #
+      # In the loop's one order (#236): the comment, then this run's own label
+      # off, then `agent:blocked`.
       - name: Mark blocked on failure
         if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
         env:
@@ -616,8 +628,9 @@ jobs:
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           printf '`agent:update-branch` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\n%s\n' "$what" "$reason" "$RUN_URL" "$outcome" > "$body_file"
+          gh pr comment "$PR_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on PR #${PR_NUMBER}."
+          gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:blocked" || true
-          gh pr comment "$PR_NUMBER" --body-file "$body_file"
 
       # The trigger label comes off however the run ends (#236): success,
       # failure, refusal, timeout or cancel, so it never outlives the run.
@@ -634,9 +647,17 @@ jobs:
       # and not while another trigger label is on, since that is a queued run
       # a request now would cancel and strand the label of; review's copy
       # says why.
+      #
+      # **And not where this run asked for a review of its resolution.** The
+      # two are one hand-off or the other, never both: the review is queued in
+      # this pull request's concurrency group, and a second request here would
+      # queue behind it and cancel it while pending, before it could take
+      # `agent:review` off. The busy check below would see that label too; this
+      # says it without a read.
       - name: Always remove the trigger label
         if: always()
         env:
+          REQUESTED: ${{ steps.request.outputs.requested }}
           PROCEEDED: ${{ steps.state.outputs.proceed }}
           JOB_STATUS: ${{ job.status }}
           LEFT_SHA: ${{ steps.push.outputs.head || github.event.pull_request.head.sha }}
@@ -645,6 +666,10 @@ jobs:
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true
           if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
+            exit 0
+          fi
+          if [ "$REQUESTED" = "true" ]; then
+            echo "This run asked for the review of its resolution, so it asks for nothing more."
             exit 0
           fi
           live=$(gh pr view "$PR_NUMBER" --json state,headRefOid,labels --jq '"\(.state) \(.headRefOid) \([.labels[].name | select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")] | join(","))"' 2>/dev/null || echo "")

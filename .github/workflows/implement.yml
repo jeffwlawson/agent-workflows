@@ -146,11 +146,17 @@ jobs:
 
           # The trigger label comes off with every refusal, as with every run
           # that ends (#236), which is what makes a retry a deliberate human
-          # act rather than a re-run.
+          # act rather than a re-run. In the loop's one order: the comment
+          # first, then this run's own label off, then `agent:blocked` where
+          # the refusal is a shape's, so the label that names the next step
+          # goes on last.
           refuse() {
             echo "refused=true" >> "$GITHUB_OUTPUT"
-            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
             gh issue comment "$ISSUE_NUMBER" --body "$1"
+            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+            if [ "${2:-}" = "blocked" ]; then
+              gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
+            fi
             exit 0
           }
 
@@ -161,8 +167,7 @@ jobs:
           # that on the issue itself; the transition step below clears it when a
           # run does start.
           refuse_shape() {
-            gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
-            refuse "$1"
+            refuse "$1" blocked
           }
 
           # Not a refusal, and deliberately touching nothing: the PRD workflow
@@ -477,6 +482,11 @@ jobs:
             fi
             sleep 5
           done
+          # This run's own label comes off before the next step's goes on
+          # (#236): every result is posted by now, the PR link included, so
+          # what is left is the hand-off. The last step removes it again, which
+          # is nothing where it is already off.
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
           # Removed first, as every trigger label the loop adds (#236): an add
           # on a label that is somehow already there fires nothing.
           gh pr edit "$NEW_PR" --remove-label "agent:review" || true
@@ -492,10 +502,15 @@ jobs:
       # issue most needed the comment: nothing on the issue, `agent:implement`
       # still attached, and a red run nobody is watching. Refusals exit 0, so
       # `failure()` keeps them out of here regardless.
+      #
+      # In the loop's one order (#236): the comment, then this run's own label
+      # off, then `agent:blocked`. The removal only where the preflight decided
+      # the issue was this run's, for the last step's reason below.
       - name: Mark blocked on failure
         if: steps.preflight.outputs.refused != 'true' && (failure() || cancelled())
         env:
           JOB_STATUS: ${{ job.status }}
+          REFUSED: ${{ steps.preflight.outputs.refused }}
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
         run: |
           reason="(no reason file written; check workflow logs)"
@@ -529,8 +544,11 @@ jobs:
           # fires no `labeled` event (docs/ADOPTING.md §1), so a literal
           # "re-add" would be inert there. One wording is correct on both paths.
           printf '`agent:implement` run %s.\n\n**Reason:** %s\n\n**Workflow run:** %s\n\nRe-apply `agent:implement` to retry. If it is still attached, remove it first, since adding a label that is already present fires no event.\n' "$what" "$reason" "$RUN_URL" > "$body_file"
+          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file" || echo "::warning::Could not post the failure comment on #${ISSUE_NUMBER}."
+          if [ "$REFUSED" = "false" ]; then
+            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true
+          fi
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
-          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
 
       # The trigger label comes off however the run ends (#236): success,
       # failure, timeout or cancel, so it never outlives the run that decided

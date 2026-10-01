@@ -4882,12 +4882,16 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * **Plain `git push` of the PRD branch, and nothing forced.** It carries every
    * earlier slice, and verdicts and threads are pinned to its commits, so a
    * force push is a chain that eats its own history and orphans its reviews.
+   * Two pushes: the slice's, and before it the merge of the default branch
+   * (#245), which is a **merge**, never a rebase, for the same reason.
    */
-  it("pushes the PRD branch without force, and nothing else", () => {
+  it("pushes the PRD branch without force, and never rebases it", () => {
     const pushes = code().filter((l) => /^\s*git push\b/.test(l));
 
-    expect(pushes).toEqual(['          git push origin "$PRD_BRANCH"']);
-    expect(fs.readFileSync(PRD, "utf8")).not.toMatch(/--force|\bpush -f\b/);
+    expect(pushes.map((l) => l.trim())).toEqual(['git push origin "$PRD_BRANCH" \\', 'git push origin "$PRD_BRANCH"']);
+    expect(fs.readFileSync(PRD, "utf8")).not.toMatch(/--force|\bpush -f\b|\+refs\/heads\/[^:]*:refs\/heads/);
+    expect(code().filter((l) => /\brebase\b|\breset --hard\b|\bpull --rebase\b/.test(l))).toEqual([]);
+    expect(runOf(PRD, "catch_up")).toContain('git merge --no-ff --no-edit');
   });
 
   /**
@@ -4943,7 +4947,9 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     const run = step?.run ?? "";
 
     expect(at).toBeGreaterThan(steps.findIndex((s) => s.id === "push"));
-    expect(step?.if).toBe(`${NOT_REFUSED} && steps.preflight.outputs.finishing == 'false' && success()`);
+    expect(step?.if).toBe(
+      `${NOT_REFUSED} && steps.preflight.outputs.finishing == 'false' && steps.catch_up.outputs.parked != 'true' && success()`,
+    );
     expect(step?.env?.["PRD_BRANCH"]).toBe("${{ steps.preflight.outputs.prd_branch }}");
     expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
     expect(run).toContain('gh pr list --state open --head "$PRD_BRANCH"');

@@ -43,7 +43,12 @@ import type { CliIo } from "../cli.js";
  *   repository is one whose failures nobody has ever seen.
  */
 
-export type Severity = "error" | "warning";
+/**
+ * `note` is neither: a thing `doctor` reports because an adopter asked a
+ * question it can answer, such as whether an optional check is on. It never
+ * changes the exit code and is not counted among the things to know.
+ */
+export type Severity = "error" | "warning" | "note";
 
 export interface Finding {
   readonly severity: Severity;
@@ -798,6 +803,77 @@ export const diagnose = (
     });
   }
 
+  // The red check (#231, #233), optional and off unless `red-check-command` is
+  // set. So each review caller hears which of three it is: configured, which
+  // is a note; not configured, a note too, since off is a choice; and half
+  // configured, a warning naming what is missing. Half configured never stops
+  // a review: with a command and no report path or no globs the job reports
+  // itself misconfigured, and the review reads the red evidence as unknown on
+  // every pull request; with no command, the inputs set are read by nothing.
+  // A warning rather than an error for the same reason the check is evidence
+  // and never a required status.
+  const RED_CHECK_DOCS = `docs/ADOPTING.md §4, *The red check*`;
+  for (const caller of reviews) {
+    const { command, report, testGlobs } = caller.redCheck;
+    const where = `${caller.file}'s \`${caller.jobId}\` job`;
+    if (command === undefined && report === undefined && testGlobs === undefined) {
+      add({
+        severity: "note",
+        check: "red check",
+        problem:
+          `${where} does not configure the red check, so its reviews have no evidence that a ` +
+          `pull request's new tests fail against the code as it was before the change.`,
+        fix:
+          `It is optional. To turn it on, set \`red-check-command\`, \`red-check-report\` and ` +
+          `\`red-check-test-globs\` in that job's \`with:\` block (${RED_CHECK_DOCS}).`,
+      });
+      continue;
+    }
+    if (command === undefined) {
+      const set = [
+        ...(report === undefined ? [] : ["`red-check-report`"]),
+        ...(testGlobs === undefined ? [] : ["`red-check-test-globs`"]),
+      ];
+      add({
+        severity: "warning",
+        check: "red check",
+        problem:
+          `${where} sets ${set.join(" and ")} but not \`red-check-command\`, so the red check is ` +
+          `off and ${set.length === 1 ? "that input is" : "those inputs are"} read by nothing.`,
+        fix:
+          `Set \`red-check-command\` to the command that runs the tests and writes a JUnit XML ` +
+          `report, or remove ${set.join(" and ")} (${RED_CHECK_DOCS}).`,
+      });
+      continue;
+    }
+    const missing = [
+      ...(report === undefined ? ["`red-check-report`"] : []),
+      ...(testGlobs === undefined ? ["`red-check-test-globs`"] : []),
+    ];
+    if (missing.length > 0) {
+      add({
+        severity: "warning",
+        check: "red check",
+        problem:
+          `${where} sets \`red-check-command\` but not ${missing.join(" or ")}, so the red check ` +
+          `is half configured: it runs on every review, reports itself misconfigured, and the ` +
+          `review reads what is red as unknown.`,
+        fix: `Set ${missing.join(" and ")} in that job's \`with:\` block (${RED_CHECK_DOCS}).`,
+      });
+      continue;
+    }
+    add({
+      severity: "note",
+      check: "red check",
+      problem:
+        `${where} configures the red check: \`${command}\`, reading its JUnit XML report from ` +
+        `\`${report}\`.`,
+      fix:
+        `Nothing to fix. It is evidence for the review and never a required status ` +
+        `(${RED_CHECK_DOCS}).`,
+    });
+  }
+
   // GitHub's default rule blocks `pull_request_target` on a public repository
   // with no event policy allowing it, enforced from 2026-11-02 (#219). The
   // blocked run is GitHub's, not ours, so no step of the loop gets to say why:
@@ -1226,8 +1302,10 @@ export interface DoctorOptions {
 const nothingRead = (facts: RepoFacts): boolean =>
   Object.values(facts).every((value) => value === undefined);
 
+const TAGS: Readonly<Record<Severity, string>> = { error: "FAIL", warning: "warn", note: "note" };
+
 const render = (finding: Finding): string =>
-  `${finding.severity === "error" ? "FAIL" : "warn"}  ${finding.check}: ${finding.problem}\n` +
+  `${TAGS[finding.severity]}  ${finding.check}: ${finding.problem}\n` +
   `      fix: ${finding.fix}\n`;
 
 /**
@@ -1247,7 +1325,9 @@ export const runDoctor = async (options: DoctorOptions, io: CliIo): Promise<numb
 
   const errors = findings.filter((finding) => finding.severity === "error");
   const warnings = findings.filter((finding) => finding.severity === "warning");
+  const notes = findings.filter((finding) => finding.severity === "note");
 
+  for (const finding of notes) io.stdout(render(finding));
   for (const finding of warnings) io.stdout(render(finding));
   for (const finding of errors) io.stderr(render(finding));
 

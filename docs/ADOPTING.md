@@ -80,6 +80,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | the labels exist | §3 — a transition that is a silent no-op |
 | no retired label is still here, as a warning with the `gh label delete` that removes it | §3, *Retired labels*: nothing reads it, and it reads as a run in progress that is not |
 | the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; and, as warnings, that a budget above 0 (the default of 3 included) has `AGENT_PAT` behind it, and that no review caller still passes the deprecated `auto-fix` | §3b — a variable the review refuses fails every review; without the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand; and the release after this one fails a caller that passes `auto-fix` before any job starts |
+| whether the review caller configures the red check, as a note either way; and, as a warning, one that is half configured: a `red-check-command` with no `red-check-report` or no `red-check-test-globs`, named, or either of those with no command | §4, *The red check*: half configured, the check reports itself misconfigured on every review and the review reads what is red as unknown; with no command, the other two are read by nothing |
 | the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | §1: from 2026-11-02 a label is added and no run starts |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
@@ -1249,6 +1250,72 @@ origin/<default>` — is in place, so a tag on an unmerged commit is refused.
 > `npm pack` does not reproduce it and neither does npm 10, so a local check passes. `ci.yml` runs
 > `npm publish --dry-run` under the `.nvmrc` Node and fails on that string, which is the only signal
 > there is.
+
+### The red check
+
+A slice's acceptance criteria often say a test must be shown to **fail against the code as it was
+before the fix**. Without the red check the review takes the pull request's word for it. With it, a
+job in `review.yml` proves it: it takes the test files the pull request adds or changes, puts them
+over the **merge-base's** source (every other file is the merge-base's), runs your test command, and
+reports each of those tests as one of three things:
+
+- **red**: failed on an assertion, with the assertion it failed on. Evidence that the test catches
+  the behaviour the pull request changes.
+- **broken**: failed on collection, import or setup. A test that cannot import the function it
+  tests fails against the old code whatever it asserts, so broken is **not** red.
+- **passed**: passes without the change too, so it is no evidence for it.
+
+The review is handed that report, and flags each behaviour change in non-test source that no red
+test covers. Where the report could not be read, or holds no test that ran, what is red is unknown,
+and the review says so rather than flagging anything on the strength of it.
+
+**The contract is JUnit XML.** Your command writes a JUnit XML report, and `<failure>` versus
+`<error>` is the red-versus-broken line, which holds across languages. Any runner that writes one
+will do; three that do:
+
+| Runner | `red-check-command` | `red-check-report` |
+|---|---|---|
+| pytest | `pytest --junitxml=junit.xml` | `junit.xml` |
+| vitest | `npx vitest run --reporter=junit --outputFile=junit.xml` | `junit.xml` |
+| jest, with `jest-junit` installed | `JEST_JUNIT_OUTPUT_FILE=junit.xml JEST_JUNIT_REPORT_TEST_SUITE_ERRORS=true npx jest --ci --reporters=jest-junit` | `junit.xml` |
+
+Under jest-junit, `JEST_JUNIT_REPORT_TEST_SUITE_ERRORS=true` is not optional in practice: without
+it, a test file that fails to import is left out of the report altogether, never red and never
+broken. vitest writes every failure as `<failure>`, and the check reads a file-level or hook-level
+one as broken by its shape, so nothing there needs configuring.
+
+**The three inputs**, in the review caller's `with:` block. The reference caller carries them
+commented out:
+
+```yaml
+    with:
+      self-check: review / review
+      red-check-command: npx vitest run --reporter=junit --outputFile=junit.xml
+      red-check-report: junit.xml
+      red-check-test-globs: |
+        tests/**
+        **/*.test.ts
+```
+
+- `red-check-command`: the command that runs the tests and writes the report. Empty, the default,
+  turns the check off. It runs after `setup`, on the merge-base's dependencies, and the test files
+  it was given are in `RED_CHECK_FILES`, one a line, for a command that runs only those. Like
+  `setup`, it is a literal from your workflow file, never an expression that reads the event.
+- `red-check-report`: where the command writes the report, relative to the repository root.
+- `red-check-test-globs`: globs, one a line, matched the way `.gitignore` matches, that tell test
+  files from source. The pull request's files that match are put over the merge-base; nothing else
+  of the pull request's is.
+
+All three or none. A command with either of the others missing runs on every review, reports itself
+misconfigured, and leaves the review with unknown red evidence; `doctor` warns about it, naming what
+is missing, and notes whether the check is configured at all.
+
+**It is evidence for the review and never a required status.** The job runs the pull request's
+code, so it holds no secret and only `contents: read`, carries the review's fork guard, and nothing
+it produces is trusted beyond its report. The review waits for it but runs whether it passed, failed
+or was skipped, and its check run is excluded from the CI the review waits on, so it never turns the
+CI result red. Do not make it required: a pull request that only refactors has no red test to show,
+and is not wrong for it.
 
 ### Keeping the pins fresh
 

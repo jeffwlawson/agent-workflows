@@ -71,6 +71,18 @@ export interface InstalledCaller {
    */
   readonly autoFix: string | undefined;
   /**
+   * What this caller passes as the red check's three inputs (#231, #233), each
+   * read the way `autoFix` is: `undefined` where it passes nothing, the empty
+   * string or YAML's null, which is the input's own default. The globs are
+   * also `undefined` where they are only whitespace, which is how the
+   * `red-check` job reads them: no glob at all.
+   */
+  readonly redCheck: {
+    readonly command: string | undefined;
+    readonly report: string | undefined;
+    readonly testGlobs: string | undefined;
+  };
+  /**
    * What this job hands the workflow it calls: the names in its `secrets:`
    * block, the literal `"inherit"`, or `undefined` where it declares no block.
    *
@@ -166,17 +178,18 @@ const asStringMap = (value: unknown): Record<string, string> =>
     : {};
 
 /**
- * `auto-fix` as the review receives it, read from the parsed `with:` value
- * rather than out of `asStringMap`, whose `String` turns YAML's null (`auto-fix:`
- * with nothing after it, `~`, `null`) into the word `"null"`. GitHub hands the
- * review the empty string for all of those, and the review tests for empty and
- * nothing else, so each is "not passed". YAML's own boolean still goes through
- * `String`, which is what makes `auto-fix: true` and `auto-fix: "true"` the
- * same answer, as they are to the string input the review declares.
+ * A string input as the called workflow receives it, read from the parsed
+ * `with:` value rather than out of `asStringMap`, whose `String` turns YAML's
+ * null (`auto-fix:` with nothing after it, `~`, `null`) into the word `"null"`.
+ * GitHub hands the called workflow the empty string for all of those, and the
+ * review tests for empty and nothing else, so each is "not passed". YAML's own
+ * boolean still goes through `String`, which is what makes `auto-fix: true` and
+ * `auto-fix: "true"` the same answer, as they are to the string input the
+ * review declares.
  */
-const autoFixOf = (inputs: unknown): string | undefined => {
+const inputOf = (inputs: unknown, name: string): string | undefined => {
   if (typeof inputs !== "object" || inputs === null || Array.isArray(inputs)) return undefined;
-  const held = (inputs as Record<string, unknown>)["auto-fix"];
+  const held = (inputs as Record<string, unknown>)[name];
   if (held === undefined || held === null) return undefined;
   const value = String(held);
   return value === "" ? undefined : value;
@@ -273,6 +286,7 @@ export const callersIn = (
 
     const inputs = asStringMap(job.with);
     const selfCheck = inputs["self-check"];
+    const globs = inputOf(job.with, "red-check-test-globs");
     return [
       {
         file,
@@ -285,7 +299,12 @@ export const callersIn = (
         ref: match[2] ?? "",
         ...grantsFor(job, top, topDeclared),
         selfCheck,
-        autoFix: autoFixOf(job.with),
+        autoFix: inputOf(job.with, "auto-fix"),
+        redCheck: {
+          command: inputOf(job.with, "red-check-command"),
+          report: inputOf(job.with, "red-check-report"),
+          testGlobs: globs?.trim() === "" ? undefined : globs,
+        },
         secrets: secretsOf(job.secrets),
         events,
       },

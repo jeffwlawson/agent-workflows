@@ -47,7 +47,12 @@ export interface SliceRange {
 export interface SliceRanges {
   /** Every sub-issue, in the order given, with its range or null if it has none. */
   readonly slices: readonly { readonly subIssue: number; readonly range: SliceRange | null }[];
-  /** The first open sub-issue with no range: the slice to build next. Null when none is left. */
+  /**
+   * The first open sub-issue with no range: the slice to build next. Null when
+   * none is left. Open, because a closed one with no range landed before the
+   * upgrade (#248), as a slice PR an older release merged with no trailer:
+   * pre-upgrade compatibility, removable under #224.
+   */
   readonly next: number | null;
   /**
    * The last sub-issue with a range, and its place in the list: slice `k` of

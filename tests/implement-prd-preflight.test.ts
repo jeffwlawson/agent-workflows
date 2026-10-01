@@ -356,17 +356,17 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   });
 
   /**
-   * **The next slice is chosen by slice range, not by state.** #173 is open
-   * and built, so it is not built again; #172 is closed and has no range, so
-   * it is not skipped (counting it as landed before an upgrade is a later
-   * rule's to add).
+   * **The next slice is chosen by slice range.** #173 is built, so it is not
+   * built again; #172 is closed with no range, so it landed before the
+   * upgrade (#248) and is not built either. The next is #174, and both count
+   * as landed.
    */
-  it("picks the first sub-issue with no slice range, open or closed", () => {
+  it("picks the first open sub-issue with no slice range", () => {
     const outcome = runPreflight({ issue: issue(["CLOSED", "OPEN", "OPEN"]), built: [173], statusPages: APPROVED });
 
     expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outputOf(outcome, "sub")).toBe("172");
-    expect(outputOf(outcome, "landed")).toBe("1");
+    expect(outputOf(outcome, "sub")).toBe("174");
+    expect(outputOf(outcome, "landed")).toBe("2");
   });
 
   it("does not build again an open sub-issue that has a slice range", () => {
@@ -725,6 +725,177 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight, executed", () => {
   });
 });
 
+/**
+ * **A chain an older release started, at the upgrade** (#248): pre-upgrade
+ * compatibility, removable under #224. That release built each slice as a
+ * slice PR into the PRD branch, merged it with no `Agent-Slice` trailer, and
+ * closed the slice's sub-issue as its slice PR opened.
+ */
+describe.skipIf(!CAN_RUN)("agent-implement-prd's preflight on a chain in flight at the upgrade, executed", () => {
+  /** The slice PR of #173 an older release opened into the PRD branch. */
+  const OLD_SLICE = pull(190, "agent/slice-171-173-slice-2", PRD_BRANCH);
+
+  /**
+   * #172 and #173 are closed with no slice range: landed before the upgrade.
+   * The chain resumes at #174, on the PRD branch and PRD PR it already has,
+   * with no verdict to gate on, since no round on the PRD PR reviewed them;
+   * and the links are not checked, since this is not the first slice.
+   */
+  it("builds the first open sub-issue of a chain whose closed sub-issues have no slice range", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "OPEN"]),
+      blockedBy: { "172": [{ number: 174, state: "open" }] },
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "build")).toBe("true");
+    expect(outputOf(outcome, "sub")).toBe("174");
+    expect(outputOf(outcome, "sub_k")).toBe("3");
+    expect(outputOf(outcome, "landed")).toBe("2");
+    expect(outputOf(outcome, "prd_pr")).toBe("201");
+    expect(outputOf(outcome, "approved_sub")).toBe("");
+    expect(outcome.writes).toEqual([]);
+  });
+
+  /**
+   * The slices that landed before the upgrade count for the handover: one
+   * slice built here beside them was not a review of the whole PRD PR, so the
+   * finishing run asks for the final review rather than marking it ready.
+   */
+  it("counts the slices landed before the upgrade when it finishes", () => {
+    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED", "OPEN"]), built: [174], statusPages: APPROVED });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "finishing")).toBe("true");
+    expect(outputOf(outcome, "landed")).toBe("3");
+    expect(outputOf(outcome, "approved_sub")).toBe("174");
+  });
+
+  /** And "finished" is read off the same count, so the retry of that handover is refused as one. */
+  it("refuses a finished chain whose final review was requested over slices landed before the upgrade", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "OPEN"]),
+      built: [173],
+      pulls: [...BYSTANDERS, { ...PRD_PR, body: `Closes #171\n\n${FINAL_REVIEW}` }],
+      statusPages: APPROVED,
+    });
+
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(refusal(outcome)).toContain("the final review of PRD PR #201 was requested");
+  });
+
+  /** Every sub-issue closed and none built here: nothing to build, and nothing to finish on. */
+  it("refuses a chain whose every sub-issue closed before the upgrade, building nothing", () => {
+    const outcome = runPreflight({ issue: issue(["CLOSED", "CLOSED"]) });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(outputOf(outcome, "build")).toBe("");
+    expect(refusal(outcome)).toContain("closed before this release built any of them");
+    expect(writes(outcome).some((argv) => argv.includes("agent:blocked"))).toBe(false);
+  });
+
+  /**
+   * **An old slice PR still open is refused by name**, and nothing is built
+   * over it: what to do is the maintainer's, and the refusal says what that
+   * is. Before the gate, so a chain whose PRD PR head carries an approval is
+   * refused all the same.
+   */
+  it("refuses an open slice PR into the PRD branch, naming it, and builds nothing", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "CLOSED", "OPEN"]),
+      pulls: [...BYSTANDERS, PRD_PR, OLD_SLICE],
+      statusPages: APPROVED,
+    });
+    const comment = refusal(outcome);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("true");
+    expect(outputOf(outcome, "build")).toBe("");
+    expect(outputOf(outcome, "sub")).toBe("");
+    expect(comment).toContain("#190 (`agent/slice-171-173-slice-2`)");
+    expect(comment).toContain(`\`${PRD_BRANCH}\``);
+    expect(comment).toContain("Merge or close each by hand");
+    expect(comment).toContain("reopen its sub-issue");
+    expect(comment).toContain("Then add `agent:implement` again.");
+    expect(writes(outcome)).toEqual([
+      ["issue", "comment", PARENT, "--body", comment],
+      ["issue", "edit", PARENT, "--remove-label", "agent:implement"],
+      ["issue", "edit", PARENT, "--add-label", "agent:blocked"],
+    ]);
+  });
+
+  it("names every open slice PR into the PRD branch", () => {
+    const outcome = runPreflight({
+      pulls: [...BYSTANDERS, PRD_PR, OLD_SLICE, pull(191, "agent/slice-171-174-slice-3", PRD_BRANCH)],
+    });
+
+    expect(refusal(outcome)).toContain("#190 (`agent/slice-171-173-slice-2`), #191 (`agent/slice-171-174-slice-3`)");
+  });
+
+  /**
+   * Only an **open** PR from an `agent/slice-` branch **into this PRD's
+   * branch**: a merged one is history, a human's PR into the PRD branch is
+   * not a slice, and a slice PR into another PRD's branch is that PRD's.
+   */
+  it("does not refuse over a merged slice PR, a human's PR into the PRD branch, or another PRD's slice PR", () => {
+    const outcome = runPreflight({
+      issue: issue(["CLOSED", "OPEN", "OPEN"]),
+      pulls: [
+        ...BYSTANDERS,
+        PRD_PR,
+        { ...OLD_SLICE, state: "MERGED" },
+        pull(192, "fix/a-typo", PRD_BRANCH),
+        pull(193, "agent/slice-1710-1711-other", "agent/prd-1710-other"),
+      ],
+    });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "sub")).toBe("173");
+  });
+
+  /** "Could not look" is never read as "none open", which would build over one. */
+  it("stops, naming the branch, when it cannot look for open slice PRs", () => {
+    const outcome = runPreflight({ env: { GH_REPLAY_PR_LIST_FAILURE: "1" } });
+
+    expect(outcome.status).toBe(1);
+    expect(outcome.reason).toContain(`Couldn't look for slice PRs still open into \`${PRD_BRANCH}\`, so nothing was built.`);
+    expect(outcome.output).not.toContain("sub=");
+    expect(outcome.writes).toEqual([]);
+  });
+
+  it.skipIf(!onPath("gh"))("gh accepts the pr list call the slice PR lookup composes", () => {
+    const call = 'gh pr list --state open --base "$prd_branch" --limit 100 --json number,headRefName';
+
+    expect(preflight().run ?? "").toContain(call);
+
+    const attempt = spawnSync(
+      "gh",
+      [...call.replace('"$prd_branch"', PRD_BRANCH).split(" ").slice(1), "--jq", "."],
+      {
+        encoding: "utf8",
+        timeout: SUBPROCESS_TIMEOUT,
+        env: { ...process.env, GH_TOKEN: "test-token", GH_HOST: "localhost", GH_REPO },
+      },
+    );
+
+    expect(attempt.status).not.toBe(0);
+    expect(attempt.stderr).not.toContain("unknown flag");
+    expect(attempt.stderr).not.toContain("Unknown JSON field");
+    expect(attempt.stderr).toContain("connection refused");
+  });
+
+  /** On a first run there is no PRD branch, so there is nothing for a slice PR to be into. */
+  it("does not look for slice PRs before the PRD branch exists", () => {
+    const outcome = runPreflight({ branches: [], pulls: [...BYSTANDERS, OLD_SLICE] });
+
+    expect(outputOf(outcome, "refused")).toBe("false");
+    expect(outputOf(outcome, "sub")).toBe("172");
+  });
+});
+
 const prWrites = (outcome: Outcome): string[][] => writes(outcome).filter((argv) => argv[0] === "pr");
 
 const runPrdPr = (pulls: readonly Record<string, unknown>[], states?: readonly string[]): Outcome =>
@@ -1058,6 +1229,23 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
     expect(writes(outcome)[0]?.at(-1)).toBe(`body=${body(requested)}`);
     expect(requested).toContain(FINAL_REVIEW);
     expect(FINAL_REVIEW_REQUESTED_LINES).toContain(FINAL_REVIEW_MARK);
+  });
+
+  /**
+   * A PRD PR an older release opened keeps its slices table as history
+   * (#248): the mark goes in front of the end of the list, and every byte of
+   * the table stays.
+   */
+  it("leaves an old slices table where it is when it records the final review", () => {
+    const table = "<!-- agent:slices -->\n| Slice | PR | Verdict | Open findings |\n|---|---|---|---|\n| One (#172) | #190 | ✅ | none |\n<!-- /agent:slices -->";
+    const body = `Closes #171\n\n## Progress\n${table}\n\n${PROGRESS_START}\n- ✅ **Approved:** #173 Slice 2\n${PROGRESS_END}\n\nMine.`;
+    const outcome = runHandover(2, { body });
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(writes(outcome)[0]?.at(-1)).toBe(
+      `body=${body.replace(PROGRESS_END, `${FINAL_REVIEW_REQUESTED_LINES}${PROGRESS_END}`)}`,
+    );
+    expect(writes(outcome)[0]?.at(-1)).toContain(`## Progress\n${table}\n\n`);
   });
 
   /** A retry finds the record a run before it wrote, and writes it once. */

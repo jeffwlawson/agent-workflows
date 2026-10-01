@@ -85,6 +85,9 @@ const roundState = (inputs: ProgressInputs): FinalReviewState =>
  * - One with no range is **building** where a build run is building it,
  *   **landed before upgrade** where it is closed (a release before #222 closed
  *   each slice's sub-issue as it landed), and **not started** otherwise.
+ *
+ * "Landed before upgrade" is pre-upgrade compatibility, removable under #224
+ * (#248), with its icon below.
  */
 export const sliceStates = (inputs: ProgressInputs): { readonly subIssue: number; readonly state: SliceState }[] => {
   const current = inputs.ranges.current?.subIssue;

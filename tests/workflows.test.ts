@@ -7898,18 +7898,19 @@ describe("the PRD chain's progress", () => {
     expect(handover).toContain(`end="${PROGRESS_END}"`);
     expect(handover).toContain(`status_start="${STATUS_START}"`);
     expect(handover).toContain(`status_end="${STATUS_END}"`);
+    expect(handover).toContain(`quoted=$'\\n> '`);
     const prUrl = "${SERVER_URL}/${GH_REPO}/pull/${PRD_PR}";
     expect(handover).toContain(
       `lines="${finalReviewRequestedLines(prUrl).replace(`\n${FINAL_REVIEW_MARK}\n`, "")}"$'\\n'"\${mark}"$'\\n'`,
     );
     expect(handover).toContain(
-      `\${status_start}${renderPrdStatus({
+      `\${status_start}\${quoted}${renderPrdStatus({
         subIssues: [{ number: 1, title: "", state: "OPEN" }, { number: 2, title: "", state: "OPEN" }],
         ranges: { slices: [], next: null, current: null },
         verdict: "none",
         running: { kind: "review" },
         finalReview: "requested",
-      }).replace("2", "${SUBS}")}\${status_end}`,
+      }).replace("2", "${SUBS}")}\${quoted}\${status_end}`,
     );
   });
 
@@ -7918,8 +7919,8 @@ describe("the PRD chain's progress", () => {
     const step = stepsOf(IMPLEMENT).find((s) => s.name === "Open draft PR");
 
     expect(step?.env?.["OPENING_STATUS"]).toBe(OPENING_STATUS);
-    expect(step?.run).toContain("> <!-- agent:status -->${OPENING_STATUS}<!-- /agent:status -->");
-    expect(statusBlock("x")).toBe("<!-- agent:status -->x<!-- /agent:status -->");
+    expect(step?.run).toContain(`> ${statusBlock("${OPENING_STATUS}")}`);
+    expect(statusBlock("x")).toBe("<!-- agent:status -->\n> x\n> <!-- /agent:status -->");
   });
 
   /** The regular pull request's status line is the posting job's; a PRD PR's is the advance job's. */

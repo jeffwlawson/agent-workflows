@@ -270,7 +270,7 @@ describe("the status line", () => {
     const block = statusBlock("**🔍 Reviewing slice 1 of 2** · #10");
     const body = `> [!NOTE]\n> ${statusBlock("old")}\n>\n> Mine.`;
 
-    expect(block).toBe(`${STATUS_START}**🔍 Reviewing slice 1 of 2** · #10${STATUS_END}`);
+    expect(block).toBe(`${STATUS_START}\n> **🔍 Reviewing slice 1 of 2** · #10\n> ${STATUS_END}`);
     expect(spliceStatus(body, block)).toBe(`> [!NOTE]\n> ${block}\n>\n> Mine.`);
     expect(spliceStatus("Mine.", block)).toBe("Mine.");
     expect(spliceStatus(`${STATUS_START}x`, block)).toBeUndefined();

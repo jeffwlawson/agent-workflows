@@ -588,6 +588,24 @@ jobs:
           name: agent-fix
           path: ${{ runner.temp }}
 
+      # **A finished agent's hand-over must have arrived**, because every step
+      # below reads a missing file as "nothing of that kind": no bundle as no
+      # commits, no outcomes as no replies. Lost whole, it would push nothing,
+      # say nothing and mark the PR ready, green, with the agent's work
+      # dropped. A runner that ends well writes one of these two files every
+      # time, so neither is the hand-over missing, and the run fails into
+      # `Mark blocked on failure` with that said.
+      - name: Check the agent's hand-over arrived
+        if: needs.fix.result == 'success'
+        run: |
+          if [ -f "${RUNNER_TEMP}/thread_outcomes.json" ] || [ -f "${RUNNER_TEMP}/nothing_to_do.txt" ]; then
+            exit 0
+          fi
+          reason="The agent finished, but what it handed over did not arrive, so nothing was pushed or posted."
+          printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
+          echo "::error::${reason}"
+          exit 1
+
       - name: Checkout PR head
         if: needs.fix.result == 'success'
         uses: actions/checkout@v7

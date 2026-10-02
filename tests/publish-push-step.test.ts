@@ -463,3 +463,52 @@ describe.skipIf(!CAN_RUN)("update-branch's publish job pushes a merge it made, o
     CEILING,
   );
 });
+
+/**
+ * fix's publish job reads no bundle as no commits, so it must first know the
+ * hand-over arrived at all: a finished runner always writes its thread
+ * outcomes or its nothing-to-do note, and where neither came, the run fails
+ * with that said rather than marking the PR ready with the work dropped.
+ */
+describe.skipIf(!CAN_RUN)("fix's publish job refuses a finished agent's hand-over that never arrived", () => {
+  const STEP = "Check the agent's hand-over arrived";
+  const step = (): { readonly if?: string; readonly run?: string } => {
+    const workflow = parse(fs.readFileSync(path.join(".github", "workflows", "fix.yml"), "utf8")) as {
+      readonly jobs: Record<string, { readonly steps?: readonly { readonly name?: string; readonly if?: string; readonly run?: string }[] }>;
+    };
+    const steps = workflow.jobs["publish"]?.steps ?? [];
+    const at = steps.findIndex((s) => s.name === STEP);
+
+    expect(at, `fix.yml's publish job has no \`${STEP}\` step`).toBeGreaterThan(-1);
+    // After the fetch, and before anything that reads a missing file as none.
+    expect(steps[at - 1]?.name).toBe("Fetch what the agent handed over");
+    return steps[at] ?? {};
+  };
+
+  const check = (files: readonly string[]): { readonly status: number | null; readonly reason: string } => {
+    const runner = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fix-handover-"));
+    for (const file of files) fs.writeFileSync(path.join(runner, file), "");
+    const result = spawnSync("bash", ["-e", "-c", step().run ?? ""], {
+      encoding: "utf8",
+      timeout: SUBPROCESS_TIMEOUT,
+      env: { ...process.env, RUNNER_TEMP: runner },
+    });
+    const reason = path.join(runner, "failure_reason.txt");
+    return { status: result.status, reason: fs.existsSync(reason) ? fs.readFileSync(reason, "utf8") : "" };
+  };
+
+  it("runs only where the agent's job succeeded", () => {
+    expect(step().if).toBe("needs.fix.result == 'success'");
+  });
+
+  it.each([["thread_outcomes.json"], ["nothing_to_do.txt"]])("goes on where %s arrived", (file) => {
+    expect(check([file])).toEqual({ status: 0, reason: "" });
+  });
+
+  it("fails with a reason where neither arrived, even beside a bundle", () => {
+    const outcome = check(["branch.bundle"]);
+
+    expect(outcome.status).not.toBe(0);
+    expect(outcome.reason).toBe("The agent finished, but what it handed over did not arrive, so nothing was pushed or posted.\n");
+  });
+});

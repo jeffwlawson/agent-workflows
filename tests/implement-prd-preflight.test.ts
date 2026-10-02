@@ -940,7 +940,9 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
     expect(outcome.temp("prd-pr-body.md")).toBe(
       [
         "> [!NOTE]",
-        `> ${STATUS_START}**🔍 In review:** the slices built so far.${STATUS_END}`,
+        `> ${STATUS_START}`,
+        "> **🔍 In review:** the slices built so far.",
+        `> ${STATUS_END}`,
         ">",
         `> ${DRAFT_NOTE_START}The agent loop builds PRD #${PARENT} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.${DRAFT_NOTE_END} Add your own notes outside the blocks the loop writes; it never edits them.`,
         "",

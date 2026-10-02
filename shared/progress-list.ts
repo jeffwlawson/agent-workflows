@@ -288,8 +288,14 @@ export const renderPrStatus = (review: {
 /** The status line a pull request opens with, before its first review. */
 export const OPENING_STATUS = "**🔍 In review:** waiting for its first review.";
 
-/** The status line between its markers: the block a pull request's note opens with. */
-export const statusBlock = (line: string): string => `${STATUS_START}${line}${STATUS_END}`;
+/**
+ * The status line between its markers: the block a pull request's note opens
+ * with. Each marker on a quoted line of its own, since the block sits in the
+ * note's `> [!NOTE]` quote: a line that *starts* `<!--` opens a raw HTML block
+ * in GitHub's markdown, so a marker in front of the status on one line left
+ * its bold and its `[See it]` link printed as literal text.
+ */
+export const statusBlock = (line: string): string => `${STATUS_START}\n> ${line}\n> ${STATUS_END}`;
 
 /**
  * The text between `start` and `end` in `body` replaced by `block`, markers

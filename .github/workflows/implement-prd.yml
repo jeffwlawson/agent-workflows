@@ -1580,7 +1580,7 @@ jobs:
             if [ -f "$status" ]; then
               line=$(cat "$status")
             else
-              line="${STATUS_START}**🔍 In review:** the slices built so far.${STATUS_END}"
+              line="${STATUS_START}"$'\n> '"**🔍 In review:** the slices built so far."$'\n> '"${STATUS_END}"
             fi
             cat > "$body_file" <<FRAME
           > [!NOTE]
@@ -1736,7 +1736,8 @@ jobs:
               status_end="<!-- /agent:status -->"
               rest="${requested#*"$status_start"}"
               if [[ "$requested" == *"$status_start"*"$status_end"* ]] && [[ "$rest" != *"$status_start"* ]] && [[ "${rest#*"$status_end"}" != *"$status_end"* ]]; then
-                requested="${requested%%"$status_start"*}${status_start}**🔍 Final review of all ${SUBS} slices**${status_end}${rest#*"$status_end"}"
+                quoted=$'\n> '
+                requested="${requested%%"$status_start"*}${status_start}${quoted}**🔍 Final review of all ${SUBS} slices**${quoted}${status_end}${rest#*"$status_end"}"
               fi
               gh api -X PATCH "repos/${GH_REPO}/pulls/${PRD_PR}" -f body="${requested}" >/dev/null \
                 || block "Couldn't note on PRD PR #${PRD_PR} that its final review is due, so it wasn't requested. Trying again builds nothing."

@@ -472,8 +472,19 @@ the work, a job that runs the agent with a read-only token and names no PAT anyw
 job on a fresh runner that writes. The agent's job hands over its commits as a `git bundle`, which
 the publish job checks against what the gate read before pushing it. The gate decides the branch and
 the base, never the agent's job, whose outputs the agent can write. One `concurrency:` group at
-workflow level holds the three jobs together. `implement.yml` is split; `implement-prd`, `fix` and
-`update-branch` are not yet, and their agents' jobs still name the PAT.
+workflow level holds the jobs together, and is keyed so that another label's event takes a group of
+its own: a workflow-level group is entered before any job's `if:` is evaluated, so an unkeyed one
+would let any label cancel a run pending there (probed, #309).
+
+All four workflows whose agent writes code are split: `implement.yml` (#307), and `fix`,
+`update-branch` and `implement-prd` (#308). Two differ in shape. `update-branch`'s gate tries the
+merge, so its agent's job runs only on a conflicted one, and its publish job makes a clean merge
+again itself rather than taking one from any other runner. `implement-prd` has a fourth job, the
+**catch-up**, between the gate and the agent's: it merges the default branch into the PRD branch and
+pushes it before any agent runs, on a runner of its own, since the gate names no PAT and the agent's
+job must not. One thing that split costs: the runner can no longer write the PRD PR's progress list
+with the slice *building*, its token being read-only, so the list goes from the last round's ending
+to the slice in review.
 
 ## Base-controlled, and what that now depends on
 

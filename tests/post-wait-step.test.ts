@@ -38,8 +38,9 @@ const STEP = "Wait for a review's posting to finish";
 const COMMANDS = ["fix", "update-branch"] as const;
 
 const stepsOf = (command: string): readonly Step[] =>
-  (parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow).jobs[command]
-    ?.steps ?? [];
+  Object.values((parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow).jobs)
+    // Every step of the run, in the order its jobs run (#308).
+    .flatMap((job) => job.steps ?? []);
 
 const stepOf = (command: string): Step | undefined => stepsOf(command).find((s) => s.name === STEP);
 

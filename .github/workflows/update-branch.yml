@@ -75,45 +75,67 @@ on:
           but starts no review until a human re-adds it.
         required: false
 
+# One group per PR — shared with agent:fix, which pushes the same branch,
+# and agent:review, which reads it while a push would move it
+# (jeffwlawson/winget-manifest-lint#102).
+#
+# On the workflow rather than on a job, because the run is three jobs that
+# hand off to each other (see `implement.yml`'s note on its own group): a
+# job-level group is released between them, and another run on this pull
+# request could push between this run's merge and its push.
+#
+# A workflow-level group is entered before any job's `if:` is evaluated
+# (probed, #309), and a group admits one pending run, cancelling the one it
+# replaces. So an event for any other label takes a group of its own, keyed
+# by its run id: otherwise adding a triage label while a run is in progress
+# would cancel an `agent:update-branch` run waiting behind it, and nothing
+# would say so.
+concurrency:
+  group: agent-pr-${{ github.event.pull_request.number }}${{ github.event.label.name != 'agent:update-branch' && format('-other-{0}', github.run_id) || '' }}
+  cancel-in-progress: false
+
+# **Three jobs, and the agent's holds nothing it could use to write**, for
+# the reason `implement.yml` gives in full: the agent can read every secret
+# its own job names, from the runner process's memory, and leave something
+# behind for a later step on its runner. So `gate` refuses or claims the pull
+# request and tries the merge, which tells it whether there is anything for
+# an agent to do; `update-branch` runs the agent on a conflicted merge only,
+# with a read-only token and no PAT named anywhere, and hands over its
+# resolution as a `git bundle`; and `publish` starts on a fresh runner and
+# pushes: a clean merge it makes again itself, of the base commit the gate
+# merged, and a resolution it checks before it pushes it.
+#
+# The permissions differ per job, and the caller grants the union: what
+# `publish` spends. The caller is unchanged.
 jobs:
-  update-branch:
+  gate:
     # Same two guards as the other PR workflows: the trigger label, and
     # same-repo only so a fork PR never reaches checkout with secrets in scope.
+    # The two jobs after it follow from its outputs, so this is the one guard.
     if: >-
       github.event.label.name == 'agent:update-branch' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
-    # shared by the four jobs that run an agent to write code, and 30 where it
-    # is not. `vars` is among the contexts this key may read, and in a called
-    # workflow it resolves against the caller's repository. `fromJSON` because
-    # a variable is a string and this key wants a number; a value that is not
-    # one fails the job before any step, which `doctor` reports. The failure
-    # step below names the same figure.
-    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
-    # One group per PR — shared with agent:fix, which pushes the same branch,
-    # and agent:review, which reads it while a push would move it
-    # (jeffwlawson/winget-manifest-lint#102).
-    concurrency:
-      group: agent-pr-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
-    # Granted by the caller, bounded here — a called workflow can only downgrade
-    # the token it is handed, and a permission declared only here grants nothing.
+    # API calls, a bounded wait for a review's posting, and a merge; the
+    # agent's own limit is on its job.
+    timeout-minutes: 15
+    # Granted by the caller, bounded here, per job: a called workflow can only
+    # downgrade the token it is handed, and a permission declared only here
+    # grants nothing.
     permissions:
-      contents: write
-      # Installing the runner package. GitHub Packages has no anonymous install,
-      # so this is needed even though the package is public — and, being a
-      # bound, it grants nothing without the caller's own `packages: read`.
-      packages: read
+      # The checkout and the fetch of the base branch.
+      contents: read
+      # The refusal and the label transitions.
       pull-requests: write
-      # Carrying the review's verdict on to the merge commit a clean refresh
-      # creates (#99). A commit status is its own scope rather than part of
-      # `pull-requests: write`, so nothing above covers it. The step that posts
-      # the copy warns rather than failing, the branch having already moved by
-      # then — but a caller omitting the grant does not buy that warning: it
-      # grants less than this block declares, and the run is refused before any
-      # job starts (probed, #146).
-      statuses: write
+    outputs:
+      # `false` where the run goes ahead, `true` where it refused, and empty
+      # where the pre-flight died before deciding: the three `refused` takes
+      # in `implement.yml`, so the jobs after it read one word the same way.
+      refused: ${{ steps.state.outputs.proceed == 'true' && 'false' || steps.state.outputs.proceed == 'false' && 'true' || '' }}
+      status: ${{ steps.merge.outputs.status }}
+      base: ${{ steps.merge.outputs.base_sha }}
+      conflicts: ${{ steps.merge.outputs.conflicts }}
+      started: ${{ steps.clock.outputs.started }}
 
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -126,21 +148,12 @@ jobs:
       # event that somehow carries none, which is the adopter's call to make
       # rather than a literal `main` buried in a shell expansion.
       BASE_REF: ${{ github.event.pull_request.base.ref || inputs.default-branch }}
-      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_STATE: ${{ github.event.pull_request.state }}
       PR_MERGED: ${{ github.event.pull_request.merged }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      # The clock the failure step reads a time limit off (#220). A job that
-      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
-      # the `job` context says which cancellation it was, so that step compares
-      # how long the job ran with its limit. First, so it starts as near the
-      # job's own start as a step can.
-      - name: Start the clock
-        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
-
       - name: "Pre-flight: refuse if the PR is closed or merged"
         id: state
         run: |
@@ -213,12 +226,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          # No credential is left in the checkout for the agent's git, or
-          # anything else it runs, to find. Each fetch and push below passes
-          # its own token on the command line instead.
+          # No credential is left in the checkout, and this job pushes
+          # nothing: the publish job pushes, from a checkout of its own.
           persist-credentials: false
 
-      # The whole job in the common case. Only a conflicted merge goes further.
+      # The whole of the work in the common case. Only a conflicted merge goes further.
       #
       # Shell-safe despite ref names being able to contain `$()`, backticks, `;`,
       # `|` and `&` — see the long note on the fetch step in
@@ -251,7 +263,7 @@ jobs:
           # branch that was never merged. A deleted base branch is a real case
           # once the base is the PR's own, so refuse instead.
           # The checkout persists no credential, so the fetch carries the job's
-          # read token itself, as `Push branch` carries its own.
+          # read token itself, as the publish job's push carries its own.
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           echo "::add-mask::${auth}"
           if ! git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${base}:refs/remotes/origin/${base}"; then
@@ -279,11 +291,96 @@ jobs:
             echo "Conflicts in: $conflicts"
           fi
 
-      # Node and the dependency install are only needed to resolve conflicts, so
-      # the clean path skips ~40s of setup entirely — and both are the adopter's
+      # The clock the failure step reads a time limit off (#220). A job that
+      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
+      # the `needs` context says which cancellation it was, so that step
+      # compares how long the agent's job could have run with its limit. Last
+      # in this job, so it starts as near the agent's job as a step here can,
+      # and is read from this job's outputs rather than the agent's, which a
+      # step there could rewrite.
+      - name: Start the agent's clock
+        if: steps.state.outputs.proceed == 'true'
+        id: clock
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+  update-branch:
+    needs: gate
+    # Only on the conflicts path: a clean merge needs no agent, and the
+    # publish job makes it itself.
+    if: needs.gate.outputs.refused == 'false' && needs.gate.outputs.status == 'conflicts'
+    runs-on: ubuntu-latest
+    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
+    # shared by the four jobs that run an agent to write code, and 30 where it
+    # is not. `vars` is among the contexts this key may read, and in a called
+    # workflow it resolves against the caller's repository. `fromJSON` because
+    # a variable is a string and this key wants a number; a value that is not
+    # one fails the job before any step, which `doctor` reports. The failure
+    # step in `publish` names the same figure.
+    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
+    # **Read-only, and no PAT named anywhere in this job.** Not even in a step
+    # that never runs: a secret is delivered to every job whose text names it.
+    permissions:
+      # The checkout.
+      contents: read
+      # Installing the runner package. GitHub Packages has no anonymous install,
+      # so this is needed even though the package is public — and, being a
+      # bound, it grants nothing without the caller's own `packages: read`.
+      packages: read
+      # The runner reads the pull request's heading for the agent's prompt.
+      pull-requests: read
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      BASE_REF: ${{ github.event.pull_request.base.ref || inputs.default-branch }}
+      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ needs.gate.outputs.base }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          # No credential is left in the checkout for the agent's git, or
+          # anything else it runs, to find. Nothing in this job pushes.
+          persist-credentials: false
+
+      # The gate's merge, made again, so the agent starts from the conflicted
+      # tree the gate found: the same base commit, under the same name, so the
+      # merge and its message are the ones the gate's were. A merge that does
+      # not stop on a conflict here is not the run the gate decided on.
+      - name: Repeat the conflicted merge
+        run: |
+          set -uo pipefail
+          base="$BASE_REF"
+          git config user.name "sandcastle-agent[bot]"
+          git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
+
+          block() {
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "::error::$1"
+            exit 1
+          }
+
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${base}:refs/remotes/origin/${base}" \
+            || block "Couldn't fetch \`${base}\` to merge it again for the agent, so the branch was left untouched."
+          git update-ref "refs/remotes/origin/${base}" "$BASE_SHA" \
+            || block "\`${base}\` no longer holds the commit this run set out to merge, so the branch was left untouched."
+          git checkout -B "$BRANCH"
+          if git merge "origin/${base}" --no-edit; then
+            block "Merging \`${base}\` again didn't conflict, so there was nothing for the agent to resolve and the branch was left untouched."
+          fi
+
+      # Node and the dependency install are only needed to resolve conflicts,
+      # which is the only path this job runs on; and both are the adopter's
       # toolchain besides, so both are also skippable by input.
       - name: Setup Node.js
-        if: steps.merge.outputs.status == 'conflicts' && inputs.node-version-file != ''
+        if: inputs.node-version-file != ''
         uses: actions/setup-node@v7
         with:
           node-version-file: ${{ inputs.node-version-file }}
@@ -294,12 +391,11 @@ jobs:
       # from: a literal in a workflow file, which `pull_request_target` reads
       # from the default branch, and never an expression reading the PR event.
       - name: Install dependencies
-        if: steps.merge.outputs.status == 'conflicts' && inputs.setup != ''
+        if: inputs.setup != ''
         run: |
           ${{ inputs.setup }}
 
       - name: Install Claude Code
-        if: steps.merge.outputs.status == 'conflicts'
         run: npm install -g @anthropic-ai/claude-code
 
       # The runner package lives on GitHub Packages, which has no anonymous
@@ -309,11 +405,7 @@ jobs:
       # `packages: read` in the caller is what makes the token below work. The
       # cache opt-out belongs to the same note: this half declares no toolchain,
       # so it must not infer one.
-      #
-      # Gated on the conflicts path like everything around it: a clean merge
-      # invokes no runner, so it needs no registry either.
       - name: Authenticate to GitHub Packages
-        if: steps.merge.outputs.status == 'conflicts'
         uses: actions/setup-node@v7
         with:
           registry-url: https://npm.pkg.github.com
@@ -321,7 +413,6 @@ jobs:
           package-manager-cache: false
 
       - name: Resolve conflicts
-        if: steps.merge.outputs.status == 'conflicts'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -330,7 +421,7 @@ jobs:
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_MODEL_UPDATE_BRANCH: ${{ vars.AGENT_MODEL_UPDATE_BRANCH }}
           OUTPUT_DIR: ${{ runner.temp }}
-          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          CONFLICTS: ${{ needs.gate.outputs.conflicts }}
         # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
         # whole point. `npx pkg@version` reuses a package already present in the
         # working directory when it satisfies the spec — and in the repository
@@ -356,9 +447,10 @@ jobs:
       # readable by anyone who can see the repository, and the agent's
       # environment holds `CLAUDE_CODE_OAUTH_TOKEN`, so a transcript where it
       # printed that environment carries the token. Every secret this job holds
-      # is replaced with `[REDACTED]` in a copy, the two GitHub tokens also in
-      # the basic-auth form a checkout's git config holds them in, and only the
-      # copy is uploaded.
+      # is replaced with `[REDACTED]` in a copy, the job token also in the
+      # basic-auth form a checkout's git config holds it in, and only the copy
+      # is uploaded. The script is the one every agent workflow runs; it skips
+      # the PAT where its job holds none, as this one does.
       #
       # `always()`, so a failed, cancelled or timed-out run keeps its record
       # too, and `continue-on-error`, so the record never fails the run it
@@ -371,7 +463,6 @@ jobs:
         continue-on-error: true
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          AGENT_PAT: ${{ secrets.AGENT_PAT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'PY'
@@ -417,6 +508,95 @@ jobs:
           retention-days: ${{ inputs.transcript-retention-days }}
           overwrite: true
 
+      # The resolution, as the one thing `publish` pushes on this path. A bundle
+      # rather than a push from here: this job holds no token that can write,
+      # and the runner that ran the agent is not one to spend a token on. Thin,
+      # the pull request's head and the base commit being its prerequisites,
+      # which `publish` has from its own checkout and fetch.
+      - name: Bundle the branch
+        if: success()
+        run: git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}" "^${BASE_SHA}"
+
+      # The bundle, the comment the runner wrote and the reason file on a
+      # failure, as one artifact. `always()`, because a failed run is one of
+      # the outcomes `publish` reports, and any of them may be missing.
+      # Uploading needs no scope: the artifact service takes the runner's own
+      # token, so this job stays read-only. `overwrite`, so a re-run replaces
+      # this attempt's copy rather than failing on the name.
+      #
+      # What this job hands over is the agent's to write, whatever a step here
+      # meant it to be. So `publish` takes nothing from it but this artifact,
+      # which it checks, and reads nothing from this job's outputs.
+      - name: Hand the branch to the publish job
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-update-branch
+          path: |
+            ${{ runner.temp }}/branch.bundle
+            ${{ runner.temp }}/failure_reason.txt
+            ${{ runner.temp }}/update_comment.md
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    needs: [gate, update-branch]
+    # `always()`, so a failed, cancelled or timed-out agent is still reported
+    # and its trigger label still taken off, and so a clean merge, where the
+    # agent's job is skipped, is pushed at all. Not where the gate was skipped
+    # (another label's event, or a fork) or refused: that run said what it
+    # had to. A pre-flight that died before deciding leaves `refused` empty
+    # and comes through, so the label still comes off, as it always has.
+    if: always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
+    runs-on: ubuntu-latest
+    # A clone, a merge, a push and some API calls, and a bounded wait for the
+    # PR's head.
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      # Carrying the review's verdict on to the merge commit a clean refresh
+      # creates (#99). A commit status is its own scope rather than part of
+      # `pull-requests: write`, so nothing above covers it. The step that posts
+      # the copy warns rather than failing, the branch having already moved by
+      # then — but a caller omitting the grant does not buy that warning: it
+      # grants less than this block declares, and the run is refused before any
+      # job starts (probed, #146).
+      statuses: write
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      BASE_REF: ${{ github.event.pull_request.base.ref || inputs.default-branch }}
+      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      # Into `RUNNER_TEMP`, where the steps below look for the runner's files
+      # as they did when the agent ran in this job. Tolerated: an agent's job
+      # that was killed before its upload, or never ran, leaves nothing to
+      # fetch, and the failure step still has to run.
+      - name: Fetch what the agent handed over
+        if: needs.gate.outputs.status == 'conflicts'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-update-branch
+          path: ${{ runner.temp }}
+
+      - name: Checkout PR head
+        if: needs.gate.outputs.status == 'clean' || (needs.gate.outputs.status == 'conflicts' && needs.update-branch.result == 'success')
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          # Nothing the agent touched is on this runner, and the fetch and the
+          # push below pass their tokens on their own commands, as everywhere
+          # else.
+          persist-credentials: false
+
       # Two outputs, both written only where `-e` can already only mean the push
       # worked, and both read by a step below that has no other way to know
       # (#99).
@@ -429,22 +609,71 @@ jobs:
       # `pushed` is what separates the failure arm's two remedies: everything
       # above this step leaves the branch untouched and is retried by re-adding
       # the label, and everything below it does not.
+      #
+      # **What is pushed is never the agent's job's word alone.** A clean merge
+      # is made here, again, of the base commit the gate merged cleanly: a
+      # merge of the same two commits under the same name, so the same merge.
+      # A resolution is the bundle, checked as implement.yml's is: intact,
+      # exactly the pull request's branch and nothing else, and built on both
+      # the head this run was started for and the base commit the gate read.
+      # Its content is the agent's to write and the review's to judge.
       - name: Push branch
         id: push
-        if: steps.merge.outputs.status == 'clean' || steps.merge.outputs.status == 'conflicts'
+        if: (needs.gate.outputs.status == 'clean' || (needs.gate.outputs.status == 'conflicts' && needs.update-branch.result == 'success')) && success()
         # The checkout persists no credential, so the token reaches git here,
         # for the push alone, as a masked header. Why, and what that does not
         # cover, is the note on implement.yml's `Push branch`.
         env:
+          STATUS: ${{ needs.gate.outputs.status }}
+          BASE_SHA: ${{ needs.gate.outputs.base }}
           PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
+          base="$BASE_REF"
+          bundle="${RUNNER_TEMP}/branch.bundle"
+
+          block() {
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "::error::$1"
+            exit 1
+          }
+
+          git config user.name "sandcastle-agent[bot]"
+          git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           echo "::add-mask::${auth}"
-          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${base}:refs/remotes/origin/${base}" \
+            || block "Couldn't fetch \`${base}\` to merge it, so the branch was left untouched."
+          git cat-file -e "${BASE_SHA}^{commit}" \
+            || block "\`${base}\` no longer holds the commit this run set out to merge, so the branch was left untouched."
+
+          if [ "$STATUS" = "clean" ]; then
+            git update-ref "refs/remotes/origin/${base}" "$BASE_SHA"
+            git checkout -B "$BRANCH"
+            git merge "origin/${base}" --no-edit \
+              || block "Merging \`${base}\` again didn't go cleanly, though it did a moment before, so the branch was left untouched."
+          else
+            [ -f "$bundle" ] || block "The agent's job finished without handing over its resolution, so the branch was left untouched."
+            git bundle verify --quiet "$bundle" \
+              || block "The agent's resolution arrived damaged or incomplete, so the branch was left untouched."
+            git bundle unbundle "$bundle" > /dev/null \
+              || block "The agent's resolution arrived damaged or incomplete, so the branch was left untouched."
+            heads=$(git bundle list-heads "$bundle")
+            if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${BRANCH}" ]; then
+              block "The agent's resolution arrived on a branch other than \`${BRANCH}\`, or beside other branches, so the branch was left untouched."
+            fi
+            git update-ref "refs/heads/${BRANCH}" "$(cut -d' ' -f1 <<< "$heads")"
+            git merge-base --is-ancestor "$BRANCH_HEAD_SHA" "refs/heads/${BRANCH}" \
+              && git merge-base --is-ancestor "$BASE_SHA" "refs/heads/${BRANCH}" \
+              || block "The agent's resolution isn't a merge of \`${base}\` into the PR's head as this run found them, so the branch was left untouched."
+          fi
+
+          push_auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${push_auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${push_auth}" push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
           {
             echo "pushed=true"
-            echo "head=$(git rev-parse HEAD)"
+            echo "head=$(git rev-parse "refs/heads/${BRANCH}")"
           } >> "$GITHUB_OUTPUT"
 
       # A verdict is per commit, so the merge commit carries none until
@@ -488,7 +717,7 @@ jobs:
       # pull request nobody has reviewed yet refreshes like any other, and the
       # honest answer for its new head is the absence of one.
       - name: Carry the verdict over to the merge commit
-        if: steps.merge.outputs.status == 'clean' && success()
+        if: needs.gate.outputs.status == 'clean' && success()
         env:
           OLD_SHA: ${{ github.event.pull_request.head.sha }}
           NEW_SHA: ${{ steps.push.outputs.head }}
@@ -568,10 +797,10 @@ jobs:
             || echo "::warning::Could not carry the \`${VERDICT_CONTEXT}\` verdict from ${OLD_SHA} on to ${NEW_SHA}. The merge is pushed; what is missing is the line saying what to do about it, so this pull request now reads as unreviewed. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix. Re-running this workflow recovers none of it: the branch is refreshed already, so the next run has nothing to merge and never reaches this write. The verdict still stands on ${OLD_SHA}; add \`agent:review\` for a fresh one on ${NEW_SHA}."
 
       - name: Comment on the PR
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: needs.gate.result == 'success' && needs.gate.outputs.refused == 'false' && (needs.gate.outputs.status != 'conflicts' || needs.update-branch.result == 'success') && success()
         env:
-          STATUS: ${{ steps.merge.outputs.status }}
-          BASE_SHA: ${{ steps.merge.outputs.base_sha }}
+          STATUS: ${{ needs.gate.outputs.status }}
+          BASE_SHA: ${{ needs.gate.outputs.base }}
         run: |
           set -uo pipefail
           base="$BASE_REF"
@@ -627,7 +856,7 @@ jobs:
       # branch up to date and does nothing.
       - name: Request a review of the resolution
         id: request
-        if: steps.merge.outputs.status == 'conflicts' && success()
+        if: needs.gate.outputs.status == 'conflicts' && needs.update-branch.result == 'success' && success()
         env:
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
@@ -683,12 +912,24 @@ jobs:
       # every one below it, and re-adding the label — which is the whole of the
       # advice — does nothing on a branch that is already merged.
       #
+      # Any of the three jobs, where the gate claimed the pull request: the
+      # gate failing after it did, the agent's job failing, timing out or
+      # being cancelled where it had conflicts to resolve, or a step here.
+      # `failure()` in this job sees an ancestor job's failure too, but not a
+      # cancelled one, so each result is read by name.
+      #
       # In the loop's one order (#236): the comment, then this run's own label
       # off, then `agent:blocked`.
       - name: Mark blocked on failure
-        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
+        if: always() && needs.gate.outputs.refused == 'false' && (failure() || cancelled() || needs.gate.result != 'success' || (needs.gate.outputs.status == 'conflicts' && needs.update-branch.result != 'success'))
         env:
+          # How each job ahead of this one ended, and this job's own status for
+          # a cancel that lands while it runs. `job.status` rather than
+          # `cancelled()`, which GitHub allows only in an `if:`.
+          GATE_RESULT: ${{ needs.gate.result }}
+          AGENT_RESULT: ${{ needs.update-branch.result }}
           JOB_STATUS: ${{ job.status }}
+          JOB_STARTED: ${{ needs.gate.outputs.started }}
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUSHED: ${{ steps.push.outputs.pushed }}
@@ -698,17 +939,27 @@ jobs:
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
           # Cancelled is not failed (#220), and a job that reached its limit
-          # is cancelled too. What tells the two apart is the clock the first
-          # step started: a timed-out job ran its whole limit, less the moment
-          # the runner took to reach that step, hence a minute's slack. A
-          # reason file is not read on either; what wrote one was stopped, not
+          # is cancelled too. What tells the two apart is the clock the gate
+          # started just before the agent's job: a timed-out job ran its whole
+          # limit, and the time since that clock is at least that. A reason
+          # file is not read on either; what wrote one was stopped, not
           # failing. The labels and the retry are a failure's, word for word.
+          #
+          # The clock is read on a failure that left no reason file too: the
+          # agent's result here is the `needs` context's, and a runner that
+          # wrote no reason did not end on its own terms either way.
           # The limit is compared only where it is a positive integer: `fromJSON`
           # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
           # `bash -e` that would end this step before its comment. A limit the
           # step cannot compare reads as a cancel, which is still said.
-          if [ "$JOB_STATUS" = "cancelled" ]; then
+          stopped=false
+          if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
+            stopped=true
             reason="It was cancelled before it finished, by hand or by GitHub."
+          elif [ "$AGENT_RESULT" = "failure" ] && [ ! -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
+            stopped=true
+          fi
+          if [ "$stopped" = "true" ]; then
             if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
               reason="It timed out after ${TIMEOUT_MINUTES} minutes. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises the limit."
             fi
@@ -730,9 +981,9 @@ jobs:
 
       # The trigger label comes off however the run ends (#236): success,
       # failure, refusal, timeout or cancel, so it never outlives the run.
-      # `always()` alone, so a pre-flight that died before deciding is covered
-      # too; a refusal took it off already, and removing an absent label leaves
-      # nothing on the timeline.
+      # `always()` alone, in a job that runs wherever the gate did not refuse,
+      # so a pre-flight that died before deciding is covered too; a refusal
+      # took it off already.
       #
       # **A request made while this run worked is not lost**, as in review's
       # copy of this step, which carries the reasoning. Where the run finished
@@ -754,14 +1005,20 @@ jobs:
         if: always()
         env:
           REQUESTED: ${{ steps.request.outputs.requested }}
-          PROCEEDED: ${{ steps.state.outputs.proceed }}
+          PROCEEDED: ${{ needs.gate.outputs.refused == 'false' }}
+          # How the run ended, across its jobs: this one's own status, and
+          # the gate's and the agent's results, the agent's skipped on a
+          # clean merge or an up-to-date branch, which is not a failure.
           JOB_STATUS: ${{ job.status }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          AGENT_RESULT: ${{ needs.update-branch.result }}
           LEFT_SHA: ${{ steps.push.outputs.head || github.event.pull_request.head.sha }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           REQUEST_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true
-          if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
+          if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ "$GATE_RESULT" != "success" ] \
+            || [ "$AGENT_RESULT" = "failure" ] || [ "$AGENT_RESULT" = "cancelled" ] || [ -z "$LEFT_SHA" ]; then
             exit 0
           fi
           if [ "$REQUESTED" = "true" ]; then

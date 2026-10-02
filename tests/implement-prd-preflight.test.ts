@@ -57,9 +57,11 @@ interface Workflow {
 }
 
 const stepById = (id: string): Step => {
-  const step = ((parse(fs.readFileSync(PRD, "utf8")) as Workflow).jobs["implement-prd"]?.steps ?? []).find(
-    (s) => s.id === id,
-  );
+  // Across the run's jobs (#308): the preflight and the start comments are
+  // the gate's, the PRD PR and the handover the publish job's.
+  const step = Object.values((parse(fs.readFileSync(PRD, "utf8")) as Workflow).jobs)
+    .flatMap((job) => job.steps ?? [])
+    .find((s) => s.id === id);
 
   expect(step).toBeDefined();
   return step as Step;

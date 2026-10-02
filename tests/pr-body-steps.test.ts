@@ -197,7 +197,7 @@ describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
 
   it("opens a PRD PR with the note and its status line, the summary, the progress table, then the Closes line", () => {
     const outcome = runStep(
-      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
       {
         ISSUE_NUMBER: "14",
         ISSUE_TITLE: "A PRD",
@@ -585,7 +585,7 @@ describe.skipIf(!CAN_RUN)("the progress list is spliced into the PRD PR's body",
 
   const reuse = (body: string | null, fail = "", files: Record<string, string> = {}): Outcome =>
     runStep(
-      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
       {
         ISSUE_NUMBER: "14",
         ISSUE_TITLE: "A PRD",
@@ -666,7 +666,7 @@ describe.skipIf(!CAN_RUN)("a stopped build run writes the progress list back", (
     files: Record<string, string> = { "progress_stopped.md": "stopped list", "progress_stopped_pushed.md": "pushed list" },
   ): Outcome =>
     runStep(
-      stepRun("implement-prd", "implement-prd", "Show the stopped slice in the progress list"),
+      stepRun("implement-prd", "publish", "Show the stopped slice in the progress list"),
       { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END, STATUS_START, STATUS_END, ...env },
       { "pr.json": JSON.stringify({ number: 201, body }), ...files },
     );
@@ -757,7 +757,7 @@ describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
 
   it("survives every rewrite of the body, unchanged", () => {
     const reused = runStep(
-      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
       {
         ISSUE_NUMBER: "14",
         ISSUE_TITLE: "A PRD",
@@ -813,7 +813,7 @@ describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
     const afterSliceRound = keepsTable(sliceRound.request?.body);
 
     const stopped = runStep(
-      stepRun("implement-prd", "implement-prd", "Show the stopped slice in the progress list"),
+      stepRun("implement-prd", "publish", "Show the stopped slice in the progress list"),
       { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END, STATUS_START, STATUS_END },
       { "pr.json": JSON.stringify({ number: 201, body: afterSliceRound }), "progress_stopped.md": "stopped list" },
     );
@@ -829,7 +829,7 @@ describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
   it("gets the Closes block once, on the first build run that reuses the PRD PR", () => {
     const withBlock = `${CLOSES_START}\nCloses #14\nCloses #16\n${CLOSES_END}\n\n${OLD}`;
     const outcome = runStep(
-      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
       {
         ISSUE_NUMBER: "14",
         ISSUE_TITLE: "A PRD",
@@ -928,7 +928,7 @@ describe.skipIf(!CAN_RUN)("the status line is spliced into the note", () => {
   it.each(bodies)("a build run reusing the PRD PR over %s keeps spliceStatus's rule", (_case, body) => {
     const withCloses = `${body}\n\n${CLOSES_START}\nCloses #14, closes #16\n${CLOSES_END}`;
     const outcome = runStep(
-      stepRun("implement-prd", "implement-prd", "Open or reuse the PRD PR"),
+      stepRun("implement-prd", "publish", "Open or reuse the PRD PR"),
       {
         ISSUE_NUMBER: "14",
         ISSUE_TITLE: "A PRD",
@@ -958,7 +958,7 @@ describe.skipIf(!CAN_RUN)("the status line is spliced into the note", () => {
 
   it.each(bodies)("a stopped build run over %s keeps spliceStatus's rule", (_case, body) => {
     const outcome = runStep(
-      stepRun("implement-prd", "implement-prd", "Show the stopped slice in the progress list"),
+      stepRun("implement-prd", "publish", "Show the stopped slice in the progress list"),
       { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END, STATUS_START, STATUS_END },
       { "pr.json": JSON.stringify({ number: 201, body }), "progress_stopped.md": list, "status_stopped.md": status },
     );

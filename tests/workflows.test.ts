@@ -8778,7 +8778,6 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
  * moment its job runs one.
  */
 describe("no job that runs an agent names a secret that writes", () => {
-  const ALLOWED = new Set(["CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"]);
   const AGENT_COMMANDS = RUNNER_COMMANDS.filter((c) =>
     fs.readFileSync(path.join(c, `${c}.ts`), "utf8").includes('from "@ai-hero/sandcastle"'),
   );
@@ -8801,13 +8800,41 @@ describe("no job that runs an agent names a secret that writes", () => {
     );
   });
 
-  it.each(agentJobs)("%s: names no secret but the agent's token and the job token", (_, job) => {
-    const text = JSON.stringify(job);
-    const expressions = [...text.matchAll(/\$\{\{.*?\}\}/g)].map((m) => m[0]);
-    const named = expressions.flatMap((e) => [...e.matchAll(/secrets\.([A-Za-z0-9_-]+)/g)].map((m) => m[1]));
+  /**
+   * Every reference to the `secrets` context in an expression that is not one
+   * of the two allowed names, read fail-closed: a name outside the list, an
+   * index, and the whole context (`toJSON(secrets)`, which delivers every
+   * secret at once) are all refused, rather than each spelling being looked
+   * for. Case-blind, as GitHub's expressions are.
+   */
+  const forbidden = (job: unknown): string[] =>
+    [...JSON.stringify(job).matchAll(/\$\{\{.*?\}\}/g)]
+      .map((m) => m[0])
+      .filter((e) => /(?<![\w.-])secrets(?![\w-])(?!\.(?:CLAUDE_CODE_OAUTH_TOKEN|GITHUB_TOKEN)(?![\w-]))/i.test(e));
 
-    expect(expressions.filter((e) => /secrets\s*\[/.test(e))).toEqual([]);
-    expect(named.filter((n) => !ALLOWED.has(n as string))).toEqual([]);
+  it.each([
+    ["a name outside the list", "${{ secrets.AGENT_PAT }}"],
+    ["a comparison against one", "${{ secrets.AGENT_PAT != '' }}"],
+    ["the whole context", "${{ toJSON(secrets) }}"],
+    ["an index", "${{ secrets['AGENT_PAT'] }}"],
+    ["an index by an allowed name", "${{ secrets['GITHUB_TOKEN'] }}"],
+    ["another case", "${{ SECRETS.agent_pat }}"],
+    ["a name an allowed one prefixes", "${{ secrets.GITHUB_TOKEN_2 }}"],
+    ["a second reference beside an allowed one", "${{ secrets.GITHUB_TOKEN || secrets.AGENT_PAT }}"],
+  ])("refuses %s", (_, expression) => {
+    expect(forbidden({ env: { X: expression } })).toEqual([expression]);
+  });
+
+  it.each([
+    ["the agent's token", "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"],
+    ["the job token, in another case", "${{ Secrets.github_token }}"],
+    ["a property merely named for it", "${{ needs.time-limit.outputs.secrets }}"],
+  ])("allows %s", (_, expression) => {
+    expect(forbidden({ env: { X: expression } })).toEqual([]);
+  });
+
+  it.each(agentJobs)("%s: names no secret but the agent's token and the job token", (_, job) => {
+    expect(forbidden(job)).toEqual([]);
   });
 });
 

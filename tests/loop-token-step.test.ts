@@ -273,6 +273,7 @@ describe.skipIf(!CAN_RUN)("the PR side's writes, by the resolver's source", () =
         GH_TOKEN: "job-token",
         LOOP_TOKEN: tokenOf(source),
         TOKEN_SOURCE: source,
+        TOKEN_OUTCOME: "success",
         PR_NUMBER: "330",
         HEAD_REF: "agent/prd-314-a-prd",
         ENDED: "false",
@@ -293,6 +294,59 @@ describe.skipIf(!CAN_RUN)("the PR side's writes, by the resolver's source", () =
       } else {
         expect(calls).toEqual([expect.stringMatching(new RegExp(`^${tokenOf(source)} issue comment 314 `))]);
       }
+    });
+
+    /**
+     * A mint that failed (#330 review): the park still goes on the PRD PR,
+     * with the workflow token and the reason the resolver wrote, and the step
+     * fails, as the job already has. Never on the parent with whatever token
+     * the resolver fell back to: the source still says `app`.
+     */
+    it("parks on the PRD PR with the job's token and the mint's reason where the mint failed", () => {
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-park-"));
+      fs.writeFileSync(path.join(temp, "failure_reason.txt"), "Couldn't mint a token for the loop's GitHub App.\n");
+      const outcome = execute(jobStep("review", "advance", "Park the PRD chain"), {
+        GH_TOKEN: "job-token",
+        LOOP_TOKEN: "pat-token",
+        TOKEN_SOURCE: "app",
+        TOKEN_OUTCOME: "failure",
+        PR_NUMBER: "330",
+        HEAD_REF: "agent/prd-314-a-prd",
+        ENDED: "false",
+        REVIEWED: "false",
+        REVIEW_URL: "",
+        REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}",
+        RUN_URL: "https://example.invalid/run",
+        RUNNER_TEMP: temp,
+      });
+      fs.rmSync(temp, { recursive: true, force: true });
+      const calls = outcome.gh.filter((line) => /^[\w-]+-token /.test(line));
+
+      expect(outcome.status).toBe(1);
+      expect(calls).toEqual([expect.stringMatching(/^job-token pr comment 330 /)]);
+      expect(outcome.gh.join("\n")).toContain("_This was meant for #314, but it could not be posted there: Couldn't mint a token for the loop's GitHub App._");
+    });
+  });
+
+  /** …and the advance skipped by it says on the PRD PR which re-label does it by hand. */
+  describe("review's word on an advance a failed mint skipped", () => {
+    it("names the reason and the re-label, with the job's token", () => {
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-advance-"));
+      fs.writeFileSync(path.join(temp, "failure_reason.txt"), "Couldn't mint a token for the loop's GitHub App.\n");
+      const outcome = execute(jobStep("review", "advance", "Say the PRD chain did not advance"), {
+        GH_TOKEN: "job-token",
+        PR_NUMBER: "330",
+        HEAD_REF: "agent/prd-314-a-prd",
+        RUN_URL: "https://example.invalid/run",
+        RUNNER_TEMP: temp,
+      });
+      fs.rmSync(temp, { recursive: true, force: true });
+      const log = outcome.gh.join("\n");
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      expect(outcome.gh[0]).toMatch(/^job-token pr comment 330 /);
+      expect(log).toContain("the PRD chain did not advance: Couldn't mint a token for the loop's GitHub App.");
+      expect(log).toContain("re-add `agent:implement` to #314 by hand");
     });
   });
 

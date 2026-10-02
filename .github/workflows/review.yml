@@ -2191,21 +2191,6 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
-      # The token the writes below that the workflow token cannot make are
-      # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
-      # that order, and `source` says which. Minted here, at the start of the
-      # job, after the agent finished and on a runner it never ran on.
-      # Reviews, comments and statuses stay the workflow token's, as
-      # `github-actions[bot]`, which is what the loop recognises its own by.
-      - name: Resolve the loop's token
-        id: token
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
-        with:
-          app-id: ${{ secrets.AGENT_APP_ID }}
-          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
-          agent-pat: ${{ secrets.AGENT_PAT }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
       # The pre-flight's refusal, which that job could decide and not say
       # (#257). In the loop's one order (#236): the comment first, then this
       # run's own label off, then `agent:blocked` where a maintainer has to
@@ -2651,6 +2636,32 @@ jobs:
               || echo "::warning::Could not post the \`agent-fix-round\` status for ${HEAD_SHA}, which is what the fix-round budget counts, so the automatic fix round will not start. GitHub's reply is printed above."
           fi
 
+      # The token the writes below that the workflow token cannot make are
+      # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
+      # that order, and `source` says which. Minted here, after the agent
+      # finished and on a runner it never ran on. Reviews, comments and
+      # statuses stay the workflow token's, as `github-actions[bot]`, which is
+      # what the loop recognises its own by.
+      #
+      # **Just before its first use, not at the job's start** (#330 review).
+      # A mint that fails fails the step, and every later step whose `if:`
+      # names no status function is skipped: at the start, that was the
+      # refusal note, the review itself and everything posted after it. Here
+      # the review, its verdict and the labels above are already written, and
+      # a failed mint reaches the failure arms below, whose comment reads the
+      # reason it wrote. Only where a review finished, since every use below
+      # is on one; `always()`, so a posting step that failed above does not
+      # leave the trigger label's re-request without a source to read.
+      - name: Resolve the loop's token
+        id: token
+        if: always() && needs.review.outputs.proceed == 'true' && needs.review.result == 'success'
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # Step 5. Draft means "the automated pipeline has not finished", not "the
       # agent is still writing code", so this belongs here rather than at the
       # end of implement. The human's first real decision (act on the review, or
@@ -3081,18 +3092,6 @@ jobs:
           name: agent-review-park
           path: ${{ runner.temp }}
 
-      # The token everything on the parent is written with: the loop's App's,
-      # `AGENT_PAT`, or the workflow token, which can write nothing there, and
-      # `source` says which. Minted here, at the job's start.
-      - name: Resolve the loop's token
-        id: token
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
-        with:
-          app-id: ${{ secrets.AGENT_APP_ID }}
-          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
-          agent-pat: ${{ secrets.AGENT_PAT }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
       # The PRD PR's **progress list** (#246), re-rendered at every ending of
       # a round: the one the runner rendered for how this round ended, written
       # between its markers in the PRD PR's body. Approved on an approval,
@@ -3180,6 +3179,21 @@ jobs:
             && echo "Wrote PRD PR #${PR_NUMBER}'s progress list: the round ended ${ending}." \
             || echo "::warning::Could not write PRD PR #${PR_NUMBER}'s progress list. GitHub's reply is above."
 
+      # The token everything on the parent is written with: the loop's App's,
+      # `AGENT_PAT`, or the workflow token, which can write nothing there, and
+      # `source` says which. After the progress list, which the workflow token
+      # writes, so a mint that fails cannot cost the list (#330 review); a
+      # failed mint is said on the PRD PR by the two steps after it.
+      - name: Resolve the loop's token
+        id: token
+        if: always()
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # A slice round's approval, and nothing else. The verdict key, matched
       # exactly, and only where the review and its posting both finished: a
       # verdict that was never posted approves nothing.
@@ -3194,6 +3208,32 @@ jobs:
           head-ref: ${{ github.event.pull_request.head.ref }}
           token-source: ${{ steps.token.outputs.source }}
           token: ${{ steps.token.outputs.token }}
+
+      # The advance above is skipped where the mint failed, and the job is
+      # red; this says so where the maintainer is looking, with the workflow
+      # token, which can comment on the PRD PR, and with the reason the
+      # resolver wrote. The same approval, so the same re-label by hand.
+      - name: Say the PRD chain did not advance
+        if: >-
+          failure() && steps.token.outcome == 'failure' &&
+          needs.review.result == 'success' && needs.post-review.result == 'success' &&
+          needs.review.outputs.round == 'slice' &&
+          needs.review.outputs.verdict == 'approval recommended'
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          parent="the PRD's parent issue"
+          if [[ "$HEAD_REF" =~ ^agent/prd-([0-9]+)- ]]; then parent="#${BASH_REMATCH[1]}"; fi
+          reason="Couldn't mint a token for the loop's GitHub App."
+          [ -f "${RUNNER_TEMP}/failure_reason.txt" ] && reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+          gh pr comment "$PR_NUMBER" --body "This slice's round ended on an approval, but the PRD chain did not advance: ${reason} [Workflow run](${RUN_URL})
+
+          Once that is fixed, re-add \`agent:implement\` to ${parent} by hand to build the next slice." \
+            || echo "::warning::Could not say on PRD PR #${PR_NUMBER} that the chain did not advance."
 
       # Every other ending but a fix round starting. A run that finished posts
       # `park.md`, the comment for its verdict. One whose review finished and
@@ -3213,8 +3253,13 @@ jobs:
       # and no `|| true` on the post: a chain that parked without saying so is
       # the silence this job exists to end, and a red job is the only thing
       # left that says it.
+      #
+      # `!cancelled()`, so a failed mint above does not skip it (#330 review):
+      # the park goes on the PRD PR then too, as it does without the App or
+      # the PAT, but with the reason the mint failed, and the job stays red.
       - name: Park the PRD chain
         if: >-
+          !cancelled() &&
           !(needs.review.result == 'success' && needs.post-review.result == 'success' &&
             (needs.review.outputs.verdict == 'approval recommended' ||
              (needs.review.outputs.verdict == 'changes recommended' && needs.review.outputs.fix-round == 'true')))
@@ -3228,6 +3273,7 @@ jobs:
           # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
           REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TOKEN_OUTCOME: ${{ steps.token.outcome }}
           TOKEN_SOURCE: ${{ steps.token.outputs.source }}
           LOOP_TOKEN: ${{ steps.token.outputs.token }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -3253,6 +3299,13 @@ jobs:
             body="**The PRD chain parked** on PRD PR #${PR_NUMBER}: its review didn't finish, so there is no verdict. [Workflow run](${RUN_URL})
 
           To move on, add \`agent:review\` to PRD PR #${PR_NUMBER} to run the review again. The chain moves on once a review of the PRD PR's latest commit recommends approval."
+          fi
+          if [ "$TOKEN_OUTCOME" = "failure" ]; then
+            reason="Couldn't mint a token for the loop's GitHub App."
+            [ -f "${RUNNER_TEMP}/failure_reason.txt" ] && reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+            echo "::error::The loop's App's token was not minted, so the park comment goes on PRD PR #${PR_NUMBER} rather than on #${parent}."
+            gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s' "$body" "_This was meant for #${parent}, but it could not be posted there: ${reason}_")"
+            exit 1
           fi
           if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
             echo "::warning::Neither the loop's App nor AGENT_PAT is set, so the park comment goes on PRD PR #${PR_NUMBER} rather than on #${parent}: the workflow token cannot comment on an issue here."

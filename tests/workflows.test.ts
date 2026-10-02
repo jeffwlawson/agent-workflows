@@ -2214,8 +2214,8 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     const steps = job().steps ?? [];
 
     expect(steps.map((s) => s.uses).filter((uses) => uses !== undefined)).toEqual([
-      `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`,
       "actions/download-artifact@v8",
+      `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`,
     ]);
     for (const step of steps) {
       expect(step.run ?? "").not.toContain("npm exec");
@@ -2737,7 +2737,7 @@ describe("a PRD PR's round ends in one advance job", () => {
    */
   it("parks on every other ending, but does nothing on a fix round starting", () => {
     expect(flat(parkStep()?.if)).toBe(
-      "!(needs.review.result == 'success' && needs.post-review.result == 'success' && " +
+      "!cancelled() && !(needs.review.result == 'success' && needs.post-review.result == 'success' && " +
         "(needs.review.outputs.verdict == 'approval recommended' || " +
         "(needs.review.outputs.verdict == 'changes recommended' && needs.review.outputs.fix-round == 'true')))",
     );
@@ -2748,6 +2748,24 @@ describe("a PRD PR's round ends in one advance job", () => {
     );
     const parked = Object.keys(VERDICTS).filter((key) => !spared.includes(key));
     expect(parked.sort()).toEqual(["changes recommended", "needs a closer look"]);
+  });
+
+  /**
+   * A mint that fails (#330 review) skips the advance, which needs the token,
+   * and a step after it says so on the PRD PR for the same ending, with the
+   * workflow token. The park runs anyway, on `!cancelled()`, and reads the
+   * mint's outcome to post on the PRD PR instead of the parent.
+   */
+  it("says on the PRD PR when a failed mint stopped the advance or the park reaching the parent", () => {
+    const said = step("Say the PRD chain did not advance");
+    const advance = flat(advanceStep()?.if);
+
+    expect(flat(said?.if)).toBe(`failure() && steps.token.outcome == 'failure' && ${advance}`);
+    expect(said?.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(parkStep()?.env?.["TOKEN_OUTCOME"]).toBe("${{ steps.token.outcome }}");
+    const run = parkStep()?.run ?? "";
+    expect(run.indexOf('if [ "$TOKEN_OUTCOME" = "failure" ]; then')).toBeGreaterThan(0);
+    expect(run.indexOf('if [ "$TOKEN_OUTCOME" = "failure" ]; then')).toBeLessThan(run.indexOf('GH_TOKEN="$LOOP_TOKEN"'));
   });
 
   /**
@@ -3195,7 +3213,6 @@ describe("the review posts last, from one job", () => {
    */
   it("resolves, posts, sets the verdict and the ready state, takes its label off, then hands off", () => {
     expect((posting().steps ?? []).map((s) => s.name)).toEqual([
-      "Resolve the loop's token",
       "Say why the review didn't run",
       "Transition labels",
       "Fetch what the review wrote",
@@ -3205,6 +3222,7 @@ describe("the review posts last, from one job", () => {
       "Write the PR status line",
       "Mark the PR as carrying follow-ups",
       "Post the verdict as a commit status",
+      "Resolve the loop's token",
       "Mark PR ready for review",
       "Post an error verdict",
       "Mark blocked on failure",
@@ -8243,9 +8261,9 @@ describe("the PRD chain's progress", () => {
     const step = progressStep();
     const upload = stepsOf(REVIEW).find((s) => s.name === "Hand the park comment to the advance job");
 
-    // Behind only the fetch and the token the job resolves at its start (#320).
-    expect(names.slice(0, 2)).toEqual(["Fetch the park comment", "Resolve the loop's token"]);
-    expect(names.indexOf("Re-render the progress list")).toBe(2);
+    // Behind only the fetch, and ahead of the token (#330 review): the list
+    // is the workflow token's, so a mint that fails cannot cost it.
+    expect(names.slice(0, 3)).toEqual(["Fetch the park comment", "Re-render the progress list", "Resolve the loop's token"]);
     expect(names.indexOf("Re-render the progress list")).toBeLessThan(names.indexOf("Advance the PRD chain"));
     expect(step?.if).toBeUndefined();
     expect(step?.["continue-on-error"]).toBeUndefined();
@@ -8904,15 +8922,29 @@ describe("the loop resolves its token in the jobs that write", () => {
   });
 
   /**
-   * At the job's start: nothing runs before it but the fetches of what the
-   * jobs ahead handed over. A publish job resolves it `always()`, since it
-   * also reports a failed agent and takes the trigger label off after one.
+   * Before the job's first use of it. A gate-side or publish job resolves it
+   * at its start, where nothing runs before it but the fetches of what the
+   * jobs ahead handed over, and a publish job `always()`, since it also
+   * reports a failed agent and takes the trigger label off after one.
+   *
+   * Review's two jobs resolve it **just before** that first use (#330
+   * review), and `always()`: a mint that fails skips every later step whose
+   * `if:` names no status function, and at the start that was the refusal
+   * note, the posted review and the progress list, none of which needs it.
    */
-  it.each(RESOLVING)("%s: resolves the token before the job's first write", (file) => {
+  const LATE: readonly string[] = ["post-review", "advance"];
+  it.each(RESOLVING)("%s: resolves the token before the job's first use of it", (file) => {
     for (const [id, job] of mintingJobs(file)) {
       const steps = job.steps ?? [];
       const at = steps.findIndex(resolves);
+      const first = steps.findIndex((s) => JSON.stringify(s).includes("steps.token.outputs"));
 
+      expect(first, id).toBeGreaterThan(at);
+      if (LATE.includes(id)) {
+        expect(first, `${id}: the resolver is not just before its first use`).toBe(at + 1);
+        expect((steps[at]?.if ?? "").startsWith("always()"), id).toBe(true);
+        continue;
+      }
       for (const before of steps.slice(0, at)) expect(before.uses ?? "", `${id}: ${before.name}`).toMatch(/^actions\/download-artifact@/);
       expect(steps[at]?.if, id).toBe(id === "publish" ? "always()" : undefined);
     }

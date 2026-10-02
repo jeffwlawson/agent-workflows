@@ -14,8 +14,9 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * What it executes is the one promise the artifact makes on a public
  * repository: nothing uploaded carries a secret the job held. The transcript
  * fed in here has `CLAUDE_CODE_OAUTH_TOKEN`'s value in it, as it would where
- * the agent printed its environment, and the GitHub tokens both bare and in the
- * basic-auth form a checkout's git config holds them in.
+ * the agent printed its environment, and the job token both bare and in the
+ * basic-auth form a checkout's git config holds it in. No PAT: no job that runs
+ * an agent holds one (#307, #316), and the step names none to look for.
  *
  * Skipped where `bash` or `python3` is not on PATH.
  */
@@ -46,7 +47,6 @@ const runOf = (command: string): string => {
 };
 
 const OAUTH = "sk-ant-oat01-Abc_def-123456789";
-const PAT = "github_pat_11AAAAAAA0123456789abcdef";
 const GITHUB_TOKEN = "ghs_0123456789abcdefABCDEF";
 const basicAuth = (token: string): string => Buffer.from(`x-access-token:${token}`).toString("base64");
 
@@ -89,7 +89,6 @@ const run = (command: string, transcripts: Record<string, string> | undefined): 
         HOME: home,
         RUNNER_TEMP: runnerTemp,
         CLAUDE_CODE_OAUTH_TOKEN: OAUTH,
-        AGENT_PAT: PAT,
         GITHUB_TOKEN,
       },
     });
@@ -108,21 +107,21 @@ const leaky = (): string =>
       content: [
         {
           type: "tool_result",
-          content: `CLAUDE_CODE_OAUTH_TOKEN=${OAUTH}\nNODE_AUTH_TOKEN=${GITHUB_TOKEN}\nAGENT_PAT=${PAT}\nhttp.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth(PAT)}\nhttp.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth(GITHUB_TOKEN)}`,
+          content: `CLAUDE_CODE_OAUTH_TOKEN=${OAUTH}\nNODE_AUTH_TOKEN=${GITHUB_TOKEN}\nhttp.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth(GITHUB_TOKEN)}`,
         },
       ],
     },
   })}\n`;
 
 describe.skipIf(!CAN_RUN)("the session transcript is uploaded with no secret the job held", () => {
-  it.each(AGENT_JOBS)("%s: redacts the OAuth token and the GitHub tokens from every transcript", (command) => {
+  it.each(AGENT_JOBS)("%s: redacts the OAuth token and the job token from every transcript", (command) => {
     const session = "-home-runner-work-repo-repo/0b0e6c1e-session.jsonl";
     const subagent = "-home-runner-work-repo-repo/0b0e6c1e-session/subagents/agent-1.jsonl";
     const { uploaded } = run(command, { [session]: leaky(), [subagent]: leaky() });
 
     expect(Object.keys(uploaded).sort()).toEqual([session, subagent].sort());
     for (const text of Object.values(uploaded)) {
-      for (const secret of [OAUTH, PAT, GITHUB_TOKEN, basicAuth(PAT), basicAuth(GITHUB_TOKEN)]) {
+      for (const secret of [OAUTH, GITHUB_TOKEN, basicAuth(GITHUB_TOKEN)]) {
         expect(text).not.toContain(secret);
       }
       expect(text).toContain("CLAUDE_CODE_OAUTH_TOKEN=[REDACTED]");

@@ -451,8 +451,8 @@ jobs:
       # printed that environment carries the token. Every secret this job holds
       # is replaced with `[REDACTED]` in a copy, the job token also in the
       # basic-auth form a checkout's git config holds it in, and only the copy
-      # is uploaded. The script is the one every agent workflow runs; it skips
-      # the PAT where its job holds none, as this one does.
+      # is uploaded. The script is the one every agent workflow runs, and names no
+      # PAT: no job that runs an agent holds one (#307, #316).
       #
       # `always()`, so a failed, cancelled or timed-out run keeps its record
       # too, and `continue-on-error`, so the record never fails the run it
@@ -475,7 +475,7 @@ jobs:
           shutil.rmtree(copy, ignore_errors=True)
 
           secrets = []
-          for name in ("CLAUDE_CODE_OAUTH_TOKEN", "AGENT_PAT", "GITHUB_TOKEN"):
+          for name in ("CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"):
               value = os.environ.get(name, "").encode()
               if not value:
                   continue

@@ -1122,6 +1122,55 @@ describe("init allows pull_request_target for the loop's callers on a public rep
   });
 
   /**
+   * An adopter may add a workflow of their own to this policy. What decides an
+   * entry is stale is whether any workflow file still runs on the trigger
+   * there, never whether it holds a caller: a routine re-run that dropped
+   * theirs would block it on a public repository, behind their back. Each way
+   * an entry can name one of theirs (#330 review): by path, by glob, and a file
+   * this cannot parse, whose trigger is unknown rather than absent.
+   */
+  it.each([
+    ["by path", ".github/workflows/deploy-preview.yml", "on:\n  pull_request_target:\n    types: [opened]\njobs: {}\n"],
+    ["by glob", ".github/workflows/deploy-*.yml", "on: [push, pull_request_target]\njobs: {}\n"],
+    ["unparseable", ".github/workflows/deploy-preview.yml", "on: [pull_request_target\n  : : :\n"],
+  ])("keeps an adopter's own workflow on the trigger in its policy, named %s", async (_how, entry, text) => {
+    const root = adopted();
+    await init({ dir: root, github: offline, labels: noLabels });
+    fs.writeFileSync(path.join(root, ".github", "workflows", "deploy-preview.yml"), text);
+    const include = [...triggered, entry].sort();
+    const { surface, sent } = github("public", [
+      { id: 3, name: POLICY_NAME, enforcement: "active", include, exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(sent).toHaveLength(0);
+  });
+
+  /** …and drops one that is still there but no longer runs on the trigger, keeping the rest. */
+  it("drops an adopter's own workflow that no longer runs on the trigger", async () => {
+    const root = adopted();
+    await init({ dir: root, github: offline, labels: noLabels });
+    const dir = path.join(root, ".github", "workflows");
+    fs.writeFileSync(path.join(dir, "deploy-preview.yml"), "on: push\njobs: {}\n");
+    fs.writeFileSync(path.join(dir, "label-preview.yml"), "on:\n  pull_request_target:\njobs: {}\n");
+    const dropped = ".github/workflows/deploy-preview.yml";
+    const kept = ".github/workflows/label-preview.yml";
+    const { surface, sent } = github("public", [
+      { id: 3, name: POLICY_NAME, enforcement: "active", include: [...triggered, dropped, kept], exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
+
+    const policy = changes.find((c) => c.file === POLICY_CHANGE);
+    expect(policy?.action).toBe("updated");
+    expect(policy?.note).toContain(`no longer for ${dropped}`);
+    expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
+    expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...triggered, kept].sort());
+  });
+
+  /**
    * A policy somebody else wrote is theirs: what it names is not this step's
    * to prune, even where a file it names holds no caller.
    */

@@ -5,6 +5,7 @@ import { rewritePins, WORKFLOW_DIR } from "../shared/pins.js";
 import {
   callersIn,
   readInstalledCallers,
+  readWorkflowsOn,
   type InstalledCaller,
   repoSlug,
   selfCheckFor,
@@ -16,6 +17,7 @@ import {
   POLICY_NAME,
   POLICY_SETTINGS,
   staleEntries,
+  TRIGGER,
   triggeredFiles,
   unallowedFiles,
   unreadable,
@@ -474,6 +476,7 @@ export const init = (options: InitOptions): readonly InitChange[] => {
 
   const policy = allowPullRequestTarget(
     readInstalledCallers(dir, PACKAGE_NAME),
+    readWorkflowsOn(dir, TRIGGER),
     options.github,
   );
   if (policy !== undefined) changes.push(policy);
@@ -588,8 +591,9 @@ const convergeLabels = (workflows: readonly string[], github: LabelSurface): rea
  * Idempotent: a policy already allowing it for every caller is `unchanged`,
  * whoever wrote it. One this wrote follows the files holding the callers: one
  * short of a caller file added since is extended in place rather than doubled,
- * and one naming a file that no longer holds a caller, as when an adopter
- * merges their callers by hand (#225), drops it. And it never fails the install: the
+ * and one naming a file that is gone or no longer runs on the trigger, as when
+ * an adopter merges their callers by hand (#225), drops it; a name for a
+ * workflow of the adopter's own that still runs on it is theirs, and stays. And it never fails the install: the
  * callers are on disk by now, and a token that cannot write the policy is a
  * step left to a human, named with the exact call and the settings page.
  *
@@ -597,6 +601,7 @@ const convergeLabels = (workflows: readonly string[], github: LabelSurface): rea
  */
 const allowPullRequestTarget = (
   callers: readonly InstalledCaller[],
+  onTrigger: readonly string[],
   github: PolicySurface,
 ): InitChange | undefined => {
   const triggered = triggeredFiles(callers);
@@ -622,11 +627,13 @@ const allowPullRequestTarget = (
 
   const unallowed = unallowedFiles(callers, policies);
   const ours = policies.find((policy) => policy?.name === POLICY_NAME && policy.id !== undefined);
-  // The policy follows the files (#225): names in our own that no longer hold
-  // a caller are dropped whenever the callers moved, even with every caller
-  // allowed. Only in one this wrote, and only while it is active; anything
-  // else is somebody's decision.
-  const stale = ours?.enforcement === "active" ? staleEntries(callers, ours) : [];
+  // The policy follows the files (#225): names in our own that target no
+  // workflow running on the trigger, the file gone or no longer listening, are
+  // dropped whenever that happens, even with every caller allowed. A name for
+  // any workflow that does still run on it is kept, caller or not: an adopter
+  // may have added one of their own here. Only in one this wrote, and only
+  // while it is active; anything else is somebody's decision.
+  const stale = ours?.enforcement === "active" ? staleEntries(onTrigger, ours) : [];
   if (unallowed.length === 0 && stale.length === 0) {
     return { file: POLICY_CHANGE, action: "unchanged", note: `allows \`pull_request_target\` for ${triggered.join(", ")}` };
   }
@@ -657,7 +664,7 @@ const allowPullRequestTarget = (
     const added = files.filter((file) => !(ours.include ?? []).includes(file));
     const said = [
       ...(added.length === 0 ? [] : [`now allows \`pull_request_target\` for ${added.join(", ")} too`]),
-      ...(stale.length === 0 ? [] : [`no longer for ${stale.join(", ")}, which hold${stale.length === 1 ? "s" : ""} no caller`]),
+      ...(stale.length === 0 ? [] : [`no longer for ${stale.join(", ")}, which no workflow here running on it matches`]),
     ];
     return refused === undefined
       ? { file: POLICY_CHANGE, action: "updated", note: said.join(", and ") }

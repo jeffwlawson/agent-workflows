@@ -349,6 +349,26 @@ const workflowFiles = (dir: string): readonly string[] => {
     .sort();
 };
 
+/**
+ * Every workflow file under `dir` that runs on `event`, caller or not, in
+ * filename order. A file this cannot parse is counted as running on it: what it
+ * triggers on is unknown, and the one reader of this (`init`'s policy pruning)
+ * must not drop an allowance on a guess.
+ */
+export const readWorkflowsOn = (dir: string, event: string): readonly string[] =>
+  workflowFiles(dir)
+    .filter((entry) => {
+      try {
+        const document = parse(fs.readFileSync(path.join(dir, ...WORKFLOW_DIR.split("/"), entry), "utf8")) as {
+          readonly on?: unknown;
+        } | null;
+        return eventsOf(document?.on).includes(event);
+      } catch {
+        return true;
+      }
+    })
+    .map((entry) => `${WORKFLOW_DIR}/${entry}`);
+
 /** Every caller for this package installed under `dir`, in filename order. */
 export const readInstalledCallers = (
   dir: string,

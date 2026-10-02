@@ -35,9 +35,10 @@ const STEP = "Always remove the trigger label";
 
 /**
  * The job the step is in: the workflow's own, except the review's, whose
- * posting job writes every label (#257).
+ * posting job writes every label (#257), and implement's, whose publish job
+ * does, the agent's job holding no token that writes.
  */
-const JOB: Readonly<Record<string, string>> = { review: "post-review" };
+const JOB: Readonly<Record<string, string>> = { review: "post-review", implement: "publish" };
 
 const runOf = (command: string): string => {
   const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;

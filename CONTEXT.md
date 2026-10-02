@@ -448,6 +448,25 @@ repo: it runs with repo secrets and write access. Three things close it, and non
    write-gated and is the stronger of the two.
 3. **The pin** — see below.
 
+### The agent's own runner
+
+The gate above keeps an injection out of what the agent reads, and none of it bounds what an agent
+that *was* steered can do where it runs: unsandboxed, with the runner's passwordless `sudo`. From
+there it can read the memory of the runner process, which holds every secret its job names from the
+job's first step — including one named only in a step that never runs, and none its job does not
+name (probed 2026-10-02). It can also leave something behind, such as a hook, a git config entry, a
+replaced binary or a process watching `/proc`, for a later step on that runner to hand a token to.
+Scrubbing the environment and persisting no checkout credential (#306) close the easy reads, not
+these.
+
+So a workflow that runs an agent is **split**, as `review.yml` was first (#257): a gate that claims
+the work, a job that runs the agent with a read-only token and names no PAT anywhere, and a publish
+job on a fresh runner that writes. The agent's job hands over its commits as a `git bundle`, which
+the publish job checks against what the gate read before pushing it. The gate decides the branch and
+the base, never the agent's job, whose outputs the agent can write. One `concurrency:` group at
+workflow level holds the three jobs together. `implement.yml` is split; `implement-prd`, `fix` and
+`update-branch` are not yet, and their agents' jobs still name the PAT.
+
 ## Base-controlled, and what that now depends on
 
 `pull_request_target` reads workflow YAML from the repository's **default** branch while checking

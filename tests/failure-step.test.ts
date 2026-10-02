@@ -56,9 +56,11 @@ type Case = (typeof CASES)[number];
 /**
  * The job each failure step is in: its workflow's own, except the review's,
  * which is its posting job (#257). The review job runs the model and writes
- * nothing, so it measures how it ended and hands that over.
+ * nothing, so it measures how it ended and hands that over. And implement's,
+ * which is its publish job: the agent's job writes nothing either, and the
+ * publish job reads how it ended from `needs`.
  */
-const JOB: Readonly<Record<string, string>> = { review: "post-review" };
+const JOB: Readonly<Record<string, string>> = { review: "post-review", implement: "publish" };
 
 const stepOf = (command: string, job: string, name: string): string => {
   const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
@@ -180,6 +182,10 @@ const run = (
       PR_NUMBER: "152",
       RUN_URL: "https://github.com/acme/widgets/actions/runs/1",
       JOB_STATUS: status,
+      // How a split run's publish job sees the jobs ahead of it end. Read
+      // only by the steps of a split run, which read `JOB_STATUS` as their own.
+      GATE_RESULT: "success",
+      AGENT_RESULT: status,
       JOB_STARTED: String(Math.floor(Date.now() / 1000) - elapsed),
       TIMEOUT_MINUTES: minutes,
       REFUSED: refused,
@@ -349,6 +355,48 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
     },
   );
+
+  /**
+   * implement's publish job reads the agent's job's end from `needs`, not
+   * from its own status, and a job that reached its limit may read there as
+   * failed. A runner that was killed wrote no reason, so a failure without
+   * one is measured against the clock too; a failure with one never is.
+   */
+  describe("implement, reported from its publish job", () => {
+    const implement = CASES.find((c) => c.command === "implement") as Case;
+
+    it("says a run that failed at its limit with no reason timed out", () => {
+      const outcome = run(implement, "failure", implement.minutes * 60, String(implement.minutes), "false", {});
+
+      expect(outcome.comment).toContain(`timed out after ${implement.minutes} minutes`);
+    });
+
+    it("says a run that failed early with no reason gave none", () => {
+      const outcome = run(implement, "failure", 120, String(implement.minutes), "false", {});
+
+      expect(outcome.comment).toContain("It stopped without giving a reason.");
+      expect(outcome.comment).not.toContain("timed out");
+    });
+
+    it("says a run cancelled while it published was cancelled, though the agent's job succeeded", () => {
+      const outcome = run(implement, "cancelled", 120, String(implement.minutes), "false", {}, {
+        AGENT_RESULT: "success",
+      });
+
+      expect(outcome.comment).toContain("cancelled");
+      expect(outcome.comment).not.toContain("timed out");
+    });
+
+    it("says a run cancelled in its gate was cancelled, though the agent's job never ran", () => {
+      const outcome = run(implement, "failure", 120, String(implement.minutes), "", {}, {
+        GATE_RESULT: "cancelled",
+        AGENT_RESULT: "skipped",
+      });
+
+      expect(outcome.comment).toContain("cancelled");
+      expect(outcome.comment).not.toContain("timed out");
+    });
+  });
 });
 
 /**

@@ -166,7 +166,7 @@ const CLOSES_END = "<!-- /agent:closes -->";
  */
 describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
   it("opens a single-issue PR with the note and its status line, the summary, then Closes", () => {
-    const outcome = runStep(stepRun("implement", "implement", "Open draft PR"), {
+    const outcome = runStep(stepRun("implement", "publish", "Open draft PR"), {
       ISSUE_NUMBER: "123",
       ISSUE_TITLE: "Do the thing",
       RUN_URL,

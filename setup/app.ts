@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
+import * as readline from "node:readline";
 import { safeGh, type GhOptions } from "../shared/common.js";
 import { availableSecrets, parseList } from "./doctor.js";
 
@@ -116,6 +117,12 @@ export interface AppSurface {
   readonly setSecret: (name: string, value: string, placement: SecretPlacement) => string | undefined;
   /** Send the person to the App's install page, to pick its repositories. */
   readonly openInstall: (url: string) => void;
+  /**
+   * Put a question to the person and wait for their line, returned as typed:
+   * judging it is `init`'s, so the default is decided where it is tested.
+   * `undefined` where nobody can answer, which is no TTY, and never a wait.
+   */
+  readonly ask: (question: string) => Promise<string | undefined>;
 }
 
 export const GITHUB_WEB = "https://github.com";
@@ -328,6 +335,25 @@ const openBrowser = (url: string): void => {
 };
 
 /**
+ * One line from the person at the terminal, or `undefined` where there is no
+ * terminal at both ends: a question nobody can see, or an answer nobody can
+ * type, would hang a scripted run. A stream that closes before a line arrives
+ * (Ctrl-D) answers with nothing, which `init` reads as its default.
+ */
+const askOnTerminal = (question: string): Promise<string | undefined> => {
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    const terminal = readline.createInterface({ input: process.stdin, output: process.stdout });
+    let answer = "";
+    terminal.question(question, (line) => {
+      answer = line;
+      terminal.close();
+    });
+    terminal.once("close", () => resolve(answer));
+  });
+};
+
+/**
  * `gh` against the repository `dir` is a checkout of, and no other, for
  * `livePolicySurface`'s reason: `GH_REPO` is set in every agent job this
  * repository runs. `say` is where the flow tells the person what to do in
@@ -405,5 +431,6 @@ export const liveAppSurface = (dir: string, say: (text: string) => void): AppSur
       say(`  Opening ${url}: install the App there, on the repositories it may act on.\n`);
       openBrowser(url);
     },
+    ask: askOnTerminal,
   };
 };

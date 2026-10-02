@@ -414,9 +414,12 @@ class the pair exists to remove.
 the loopback interface posts the manifest to GitHub's create-App page, GitHub sends the browser
 back with a code, and the code is exchanged, unauthenticated and never through `gh`, for the App's
 ID, key and slug. It does so only where the App's secrets are not set and nothing says otherwise:
-`AGENT_PAT` set is kept unless `--app` asks, and a secret list it could not read creates nothing.
-The secrets go on the organization only where the person is shown to be its admin, and on the
-repository otherwise; `AGENT_PAT` is never deleted. Like the policy and the labels, the App is
+`AGENT_PAT` set is offered the switch, never put on it (#323): on a TTY the person is asked,
+defaulting to no, and without one the PAT is kept and `init --app` named, since a question nobody
+can answer must not hang a scripted run; `--app` switches without asking. A secret list it could
+not read creates nothing. The secrets go on the organization only where the person is shown to be
+its admin, and on the repository otherwise; `AGENT_PAT` is never deleted, and after a switch
+`init` says it can be, and the token revoked. Like the policy and the labels, the App is
 reached through an injected surface (`setup/app.ts`) that every call must name.
 
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant

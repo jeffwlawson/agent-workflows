@@ -27,6 +27,7 @@ import type { LabelSurface } from "./labels.js";
 import {
   appManifest,
   appSettingsUrl,
+  GITHUB_WEB,
   installUrl,
   type AppSurface,
   type RegisteredApp,
@@ -520,13 +521,16 @@ const HOMEPAGE = `https://github.com/${repoSlug(PACKAGE_NAME)}`;
  *
  * - the App's two secrets already set: reported, and nothing changes;
  * - `--app`: created, without asking;
- * - `AGENT_PAT` set, half an App's secrets set, or the secrets unreadable:
- *   kept, and `--app` named, since each is an identity this cannot rule out;
+ * - `AGENT_PAT` set: the person is asked whether to switch, defaulting to no,
+ *   and kept with `--app` named on anything short of a yes, no TTY included;
+ * - half an App's secrets set, or the secrets unreadable: kept, and `--app`
+ *   named, since each is an identity this cannot rule out;
  * - otherwise created, since the loop has no identity that can fire a workflow.
  *
  * The secrets go where one setup covers the most and nothing is assumed: on the
  * organization where the person is shown to be its admin, on the repository
- * otherwise. Nothing here deletes `AGENT_PAT`; the surface cannot.
+ * otherwise. Nothing here deletes `AGENT_PAT`; the surface cannot. After a
+ * switch from it, the person is told they can delete it and revoke the token.
  */
 const setUpApp = async (app: AppSurface, requested: boolean): Promise<readonly InitChange[]> => {
   const secrets = app.secrets();
@@ -564,13 +568,25 @@ const setUpApp = async (app: AppSurface, requested: boolean): Promise<readonly I
       ];
     }
     if (secrets.includes("AGENT_PAT")) {
-      return [
-        {
-          file: APP_CHANGE,
-          action: "kept",
-          note: `\`AGENT_PAT\` is set, so the loop writes as the token's owner; run \`init --app\` to create the loop's own GitHub App instead`,
-        },
-      ];
+      // Offered, never forced (#323): a switch changes what every push, PR
+      // and label reads as, so only a yes makes it. No TTY is no answer,
+      // and Enter is no.
+      const answer = await app.ask(
+        `  \`AGENT_PAT\` is set, so the loop writes as the token's owner.\n` +
+          `  Create the loop's own GitHub App and switch to it? [y/N] `,
+      );
+      if (answer === undefined || !/^y(es)?$/i.test(answer.trim())) {
+        return [
+          {
+            file: APP_CHANGE,
+            action: "kept",
+            note:
+              answer === undefined
+                ? `\`AGENT_PAT\` is set, so the loop writes as the token's owner; run \`init --app\` to create the loop's own GitHub App instead`
+                : `\`AGENT_PAT\` is set and stays, as answered; run \`init --app\` to switch to the loop's own GitHub App later`,
+          },
+        ];
+      }
     }
   }
 
@@ -591,14 +607,28 @@ const setUpApp = async (app: AppSurface, requested: boolean): Promise<readonly I
   }
 
   const install = installUrl(registered.slug);
+  const stored = storeAppSecrets(app, owner, registered, secrets ?? []);
   const changes: InitChange[] = [
     {
       file: `${APP_CHANGE} "${registered.name}"`,
       action: "created",
       note: `ID ${registered.id}; install it on the repositories it may act on at ${install}`,
     },
-    ...storeAppSecrets(app, owner, registered, secrets ?? []),
+    ...stored,
   ];
+  // A switch that took: the PAT is now behind the App, and only the person
+  // retires it. Where a secret was refused the PAT is still what the loop
+  // writes with, so nothing is said about letting it go.
+  if (secrets?.includes("AGENT_PAT") === true && stored.every((change) => change.action !== "kept")) {
+    changes.push({
+      file: secretChange("AGENT_PAT"),
+      action: "kept",
+      note:
+        `once the App is installed the loop writes as it, so this secret can be deleted wherever it is set ` +
+        `(\`gh secret delete AGENT_PAT\`, or on the organization if no other repository uses it) and the token revoked ` +
+        `at ${GITHUB_WEB}/settings/personal-access-tokens; init deletes neither`,
+    });
+  }
   app.openInstall(install);
   return changes;
 };

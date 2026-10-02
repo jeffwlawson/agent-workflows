@@ -78,6 +78,9 @@ const noApp: AppSurface = {
   openInstall: () => {
     throw new Error("init opened an install page in a test that is not about it");
   },
+  ask: () => {
+    throw new Error("init asked a question in a test that is not about it");
+  },
 };
 
 /**
@@ -1369,11 +1372,14 @@ describe("init creates the loop's GitHub App", () => {
     secrets: readonly string[] | undefined;
     owner?: RepoOwner | undefined;
     admin?: boolean | undefined;
+    /** What the person types, or `undefined` for no TTY to ask on. */
+    answer?: string | undefined;
   }) => {
     const manifests: AppManifest[] = [];
     const stored: { name: string; value: string; placement: SecretPlacement }[] = [];
     const asked: string[] = [];
     const opened: string[] = [];
+    const questions: string[] = [];
     const surface: AppSurface = {
       secrets: () => scenario.secrets,
       owner: () => ("owner" in scenario ? scenario.owner : { login: "acme", organization: true }),
@@ -1392,8 +1398,12 @@ describe("init creates the loop's GitHub App", () => {
       openInstall: (url) => {
         opened.push(url);
       },
+      ask: async (question) => {
+        questions.push(question);
+        return scenario.answer;
+      },
     };
-    return { surface, manifests, stored, asked, opened };
+    return { surface, manifests, stored, asked, opened, questions };
   };
 
   const run = (surface: AppSurface, createApp?: boolean) =>
@@ -1451,15 +1461,58 @@ describe("init creates the loop's GitHub App", () => {
     expect(JSON.stringify(changes)).not.toContain("PRIVATE KEY-----");
   });
 
-  it("keeps AGENT_PAT without --app, and names the switch", async () => {
-    const { surface, manifests, stored } = app({ secrets: ["AGENT_PAT"] });
+  /**
+   * An existing adopter on `AGENT_PAT` is offered the App, never put on it
+   * (#323). Without a TTY there is nobody to answer, so the PAT stays and the
+   * switch is named rather than waited for.
+   */
+  it("keeps AGENT_PAT without a TTY, and names the switch", async () => {
+    const { surface, manifests, stored, questions } = app({ secrets: ["AGENT_PAT"], answer: undefined });
 
     const changes = await run(surface);
 
     const change = changes.find((c) => c.file === APP_CHANGE);
     expect(change?.action).toBe("kept");
     expect(change?.note).toContain("init --app");
+    expect(questions).toHaveLength(1);
     expect([manifests, stored]).toEqual([[], []]);
+  });
+
+  /** The question defaults to no: Enter, or anything short of a yes, changes nobody's identity. */
+  it.each(["", "  ", "n", "no", "N", "nope", "maybe"])("keeps AGENT_PAT and creates nothing on the answer %j", async (answer) => {
+    const { surface, manifests, stored, opened, questions } = app({ secrets: ["AGENT_PAT"], answer });
+
+    const changes = await run(surface);
+
+    expect(questions).toEqual([expect.stringContaining("[y/N]")]);
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("kept");
+    expect(change?.note).toContain("init --app");
+    expect([manifests, stored, opened]).toEqual([[], [], []]);
+    expect(changes.filter((c) => c.file.includes("AGENT_PAT"))).toEqual([]);
+  });
+
+  it.each(["y", "Y", "yes", " Yes "])("switches to the App on the answer %j, and leaves AGENT_PAT in place", async (answer) => {
+    const { surface, manifests, stored } = app({ secrets: ["AGENT_PAT"], admin: true, answer });
+
+    const changes = await run(surface);
+
+    expect(manifests).toHaveLength(1);
+    expect(changes.find((c) => c.file.startsWith(APP_CHANGE))?.action).toBe("created");
+    expect(stored.map(({ name }) => name)).toEqual(["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"]);
+    const pat = changes.find((c) => c.file === "secret AGENT_PAT");
+    expect(pat?.action).toBe("kept");
+    expect(pat?.note).toMatch(/can be deleted/);
+    expect(pat?.note).toMatch(/revoke/);
+  });
+
+  /** Nobody is asked where there is no PAT to switch from, or an App already. */
+  it.each([[[]], [["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY", "AGENT_PAT"]]])("asks nothing with the secrets %j", async (secrets) => {
+    const { surface, questions } = app({ secrets, admin: true, answer: "y" });
+
+    await run(surface);
+
+    expect(questions).toEqual([]);
   });
 
   /**
@@ -1467,20 +1520,47 @@ describe("init creates the loop's GitHub App", () => {
    * surface has no way to delete a secret, and nothing here writes one but
    * the App's two.
    */
-  it("creates the App with --app, and never deletes or writes AGENT_PAT", async () => {
-    const { surface, manifests, stored } = app({ secrets: ["AGENT_PAT"], admin: true });
+  it("creates the App with --app, without asking, and never deletes or writes AGENT_PAT", async () => {
+    const { surface, manifests, stored, questions } = app({ secrets: ["AGENT_PAT"], admin: true, answer: "n" });
 
     const changes = await run(surface, true);
 
+    expect(questions).toEqual([]);
     expect(manifests).toHaveLength(1);
     expect(changes.find((c) => c.file.startsWith(APP_CHANGE))?.action).toBe("created");
     expect(stored.map(({ name }) => name)).toEqual(["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"]);
-    expect(Object.keys(surface).sort()).toEqual(["openInstall", "orgAdmin", "owner", "register", "secrets", "setSecret"]);
-    expect(changes.filter((c) => c.file.includes("AGENT_PAT"))).toEqual([]);
+    expect(Object.keys(surface).sort()).toEqual(["ask", "openInstall", "orgAdmin", "owner", "register", "secrets", "setSecret"]);
+    // Advice, and no more: the one entry naming the PAT says it can go, and does not make it go.
+    expect(changes.filter((c) => c.file.includes("AGENT_PAT"))).toEqual([
+      {
+        file: "secret AGENT_PAT",
+        action: "kept",
+        note: expect.stringMatching(/can be deleted .* revoke/),
+      },
+    ]);
     // The live surface too: nothing under setup/ asks `gh` to delete a secret.
     for (const entry of fs.readdirSync("setup").filter((name) => name.endsWith(".ts"))) {
       expect(fs.readFileSync(path.join("setup", entry), "utf8")).not.toMatch(/"secret",\s*"(delete|remove)"/);
     }
+  });
+
+  /**
+   * The advice follows a switch that took: with no PAT there is nothing to
+   * retire, and with the App's key refused the PAT is still what the loop
+   * writes with.
+   */
+  it("says nothing about AGENT_PAT where there was none, or where the App's secrets were not both stored", async () => {
+    const fresh = app({ secrets: [], admin: true });
+    expect((await run(fresh.surface)).filter((c) => c.file.includes("AGENT_PAT"))).toEqual([]);
+
+    const refused = app({ secrets: ["AGENT_PAT"], admin: false });
+    const surface: AppSurface = {
+      ...refused.surface,
+      setSecret: (name) => (name === "AGENT_APP_PRIVATE_KEY" ? "HTTP 403: Resource not accessible" : undefined),
+    };
+    const changes = await run(surface, true);
+    expect(changes.find((c) => c.file === "secret AGENT_APP_PRIVATE_KEY")?.action).toBe("kept");
+    expect(changes.filter((c) => c.file.includes("AGENT_PAT"))).toEqual([]);
   });
 
   it("creates no App where the secrets could not be read, short of --app", async () => {

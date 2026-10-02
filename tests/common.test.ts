@@ -23,6 +23,7 @@ import {
   isTrustedAuthor,
   required,
   safeGh,
+  scrubGitHubTokens,
 } from "../shared/common.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
@@ -753,5 +754,31 @@ describe("required — a missing env var says which one, where the workflow can 
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(reasonFile(), "utf8")).toContain(VAR);
+  });
+});
+
+/**
+ * Every name the job's token reaches the agent under. `NODE_AUTH_TOKEN` is the
+ * one that was missed: the runner step is handed it for the package install,
+ * and in a job holding `contents: write` it is a push credential.
+ */
+describe("scrubGitHubTokens — the agent inherits no GitHub token", () => {
+  const NAMES = ["GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN"];
+  const previous = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
+
+  afterEach(() => {
+    for (const n of NAMES) {
+      const value = previous[n];
+      if (value === undefined) delete process.env[n];
+      else process.env[n] = value;
+    }
+  });
+
+  it("removes it under every name the workflow sets", () => {
+    for (const n of NAMES) process.env[n] = "a-token";
+
+    scrubGitHubTokens();
+
+    for (const n of NAMES) expect(process.env[n], n).toBeUndefined();
   });
 });

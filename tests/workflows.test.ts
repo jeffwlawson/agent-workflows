@@ -4939,9 +4939,12 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * (#245), which is a **merge**, never a rebase, for the same reason.
    */
   it("pushes the PRD branch without force, and never rebases it", () => {
-    const pushes = code().filter((l) => /^\s*(if ! )?git push\b/.test(l));
+    const pushes = code().filter((l) => /^\s*(if ! )?git (-c "[^"]*" )?push\b/.test(l));
 
-    expect(pushes.map((l) => l.trim())).toEqual(['if ! git push origin "$PRD_BRANCH"; then', 'git push origin "$PRD_BRANCH"']);
+    expect(pushes.map((l) => l.trim())).toEqual([
+      'if ! git -c "http.extraHeader=AUTHORIZATION: basic ${push_auth}" push origin "$PRD_BRANCH"; then',
+      'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push origin "$PRD_BRANCH"',
+    ]);
     expect(fs.readFileSync(PRD, "utf8")).not.toMatch(/--force|\bpush -f\b|\+refs\/heads\/[^:]*:refs\/heads/);
     expect(code().filter((l) => /\brebase\b|\breset --hard\b|\bpull --rebase\b/.test(l))).toEqual([]);
     expect(runOf(PRD, "catch_up")).toContain('git merge --no-ff --no-edit');
@@ -8069,6 +8072,123 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
     expect(names.indexOf("Fetch the red check's report")).toBeLessThan(names.indexOf("Run review agent"));
     expect(agent?.env?.["RED_CHECK_CONFIGURED"]).toBe("${{ inputs.red-check-command != '' }}");
     expect(agent?.env?.["RED_CHECK_FILE"]).toBe("${{ runner.temp }}/red-check/red_check.json");
+  });
+});
+
+/**
+ * **No checkout an agent runs in leaves a credential behind.** The agent runs
+ * unsandboxed in the checkout, and `scrubGitHubTokens` empties only its
+ * environment. A checkout that persisted its token — from checkout v6 in a
+ * `$RUNNER_TEMP` file `.git/config` includes — handed the agent's own `git`,
+ * and anything that could read the file, `AGENT_PAT`, which carries
+ * Workflows: write.
+ *
+ * So every checkout in every runner workflow sets `persist-credentials: false`
+ * and is handed no token of its own choosing, and every fetch and push in a job
+ * that checks out carries its token on its own command, as a masked header
+ * computed in the same step. A push takes the push token from its step's `env:`
+ * and a fetch the job's read token, so no fetch holds the PAT, and neither
+ * does the job's `env:` or the agent's step.
+ *
+ * Over every checkout rather than the code-writing ones, since the rule costs
+ * nothing where nothing is pushed and the review job's token is worth keeping
+ * from its agent too. The job list is pinned so a new checkout arrives here
+ * with a decision, not past a filter that has gone empty.
+ */
+describe("no checkout an agent runs in leaves a credential behind", () => {
+  const PUSH_TOKEN = "${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}";
+  const isCheckout = (s: Step): boolean => (s.uses ?? "").startsWith("actions/checkout@");
+  const NETWORK = /\bgit\s+(?:-c\s+"[^"]*"\s+)*(push|fetch|pull|ls-remote|clone)\b/;
+  const HEADER = /\bgit -c "http\.extraHeader=AUTHORIZATION: basic \$\{([a-z_]+)\}" (push|fetch) /;
+
+  const checkingOut = runnerWorkflows.flatMap((file) =>
+    Object.entries(workflowOf(file).jobs)
+      .filter(([, job]) => (job.steps ?? []).some(isCheckout))
+      .map(([id, job]) => ({ file, id, job })),
+  );
+  const label = ({ file, id }: { file: string; id: string }): string => `${path.basename(file)} / ${id}`;
+  /** Every line of a step's script that is not a shell comment. */
+  const codeOf = (s: Step): string[] => (s.run ?? "").split("\n").filter((l) => !l.trimStart().startsWith("#"));
+
+  it("is every job that checks something out", () => {
+    expect(checkingOut.map(label).sort()).toEqual([
+      "fix.yml / fix",
+      "implement-prd.yml / implement-prd",
+      "implement.yml / implement",
+      "review.yml / red-check",
+      "review.yml / review",
+      "update-branch.yml / update-branch",
+    ]);
+  });
+
+  it.each(checkingOut.map((j) => [label(j), j] as const))("%s: persists no credential and hands checkout no token", (_, { job }) => {
+    const checkouts = (job.steps ?? []).filter(isCheckout);
+
+    expect(checkouts).not.toHaveLength(0);
+    for (const step of checkouts) {
+      expect(step.with?.["persist-credentials"]).toBe(false);
+      expect(step.with?.["token"]).toBeUndefined();
+    }
+  });
+
+  it.each(checkingOut.map((j) => [label(j), j] as const))("%s: authenticates each fetch and push on its own command", (_, { job }) => {
+    for (const step of job.steps ?? []) {
+      const run = step.run ?? "";
+      for (const line of codeOf(step).filter((l) => NETWORK.test(l))) {
+        const [, auth, verb] = HEADER.exec(line) ?? [];
+        expect(auth, `${step.name}: ${line.trim()}`).toBeDefined();
+
+        // A push spends the push token from its own step's env; a fetch the
+        // job's read token, which is never the PAT.
+        const source = verb === "push" ? "PUSH_TOKEN" : "GH_TOKEN";
+        expect(run).toContain(`${auth}=$(printf 'x-access-token:%s' "$${source}" | base64 | tr -d '\\n')`);
+        expect(run).toContain(`echo "::add-mask::\${${auth}}"`);
+        if (verb === "push") expect(step.env?.["PUSH_TOKEN"], step.name).toBe(PUSH_TOKEN);
+        else expect(job.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+      }
+    }
+  });
+
+  /**
+   * The PAT is never in the job's own `env:`, and above all not in the step
+   * that runs the agent. That step's `NODE_AUTH_TOKEN` is the job token, for
+   * the install, and the runner removes it before the agent starts
+   * (`scrubGitHubTokens`). A step whose env names `PUSH_TOKEN` must push with
+   * it.
+   *
+   * That is all this asserts. Other steps do hold the PAT, and every one of
+   * them runs after the agent: the transcript redaction, which needs it to take
+   * it out of the transcript, and the steps that act on the PR or issue with
+   * it as `GH_TOKEN` (opening, labelling, handing over). The one step that holds it before the agent is
+   * implement-prd's `Merge the default branch into the PRD branch`, a push
+   * that writes nothing into the checkout.
+   */
+  it.each(checkingOut.map((j) => [label(j), j] as const))("%s: keeps the PAT out of the job's env and the agent's step", (_, { job }) => {
+    expect(JSON.stringify(job.env ?? {})).not.toContain("AGENT_PAT");
+    for (const step of job.steps ?? []) {
+      if (step.env?.["PUSH_TOKEN"] !== undefined) {
+        expect(codeOf(step).some((l) => HEADER.exec(l)?.[2] === "push"), step.name).toBe(true);
+      }
+      if ((step.run ?? "").includes("agent-workflows ")) {
+        expect(JSON.stringify(step.env ?? {}), step.name).not.toMatch(/AGENT_PAT|PUSH_TOKEN/);
+      }
+    }
+  });
+
+  /**
+   * Moving the token changed how each push authenticates and nothing about what
+   * it pushes: implement's new branch is forced, fix's and update-branch's
+   * pushes keep the lease on the head the run started from, and the PRD
+   * branch's stay plain (asserted with the chain, above).
+   */
+  it.each([
+    [IMPLEMENT, 'push --force origin "$BRANCH"'],
+    [path.join(WORKFLOW_DIR, "fix.yml"), 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"'],
+    [path.join(WORKFLOW_DIR, "update-branch.yml"), 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"'],
+  ])("%s: pushes with the same force as before", (file, push) => {
+    const pushes = stepsOf(file).flatMap((s) => codeOf(s).filter((l) => HEADER.exec(l)?.[2] === "push"));
+
+    expect(pushes.map((l) => l.trim().replace(HEADER, "$2 "))).toEqual([push]);
   });
 });
 

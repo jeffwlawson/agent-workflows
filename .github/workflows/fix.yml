@@ -277,7 +277,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # No credential is left in the checkout for the agent's git, or
+          # anything else it runs, to find. Each fetch and push below passes
+          # its own token on the command line instead.
+          persist-credentials: false
 
       # Shell-safe despite ref names being able to contain `$()`, backticks, `;`,
       # `|` and `&` — see the long note on the same step in
@@ -299,7 +302,11 @@ jobs:
         if: steps.state.outputs.proceed == 'true'
         run: |
           set -euo pipefail
-          git fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
+          # The checkout persists no credential, so the fetch carries the job's
+          # read token itself, as `Push branch` carries its own.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
           git checkout -B "$BRANCH"
           git config user.name "sandcastle-agent[bot]"
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
@@ -478,6 +485,11 @@ jobs:
       - name: Push branch
         id: push
         if: steps.state.outputs.proceed == 'true' && success() && steps.nothing.outputs.nothing != 'true'
+        # The checkout persists no credential, so the token reaches git here,
+        # for the push alone, as a masked header. Why, and what that does not
+        # cover, is the note on implement.yml's `Push branch`.
+        env:
+          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "$(git log origin/"$BRANCH"..HEAD --oneline 2>/dev/null)" ]; then
@@ -485,7 +497,9 @@ jobs:
             echo "pushed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
+          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
           {
             echo "pushed=true"
             echo "head=$(git rev-parse HEAD)"

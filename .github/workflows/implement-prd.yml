@@ -843,7 +843,7 @@ jobs:
                 | {outcome: "write", progress: (env.PROGRESS_START + $list.inside + env.PROGRESS_END)}
                   + if ($status | type) == "object" and ($status | has("inside")) then
                       {status: (env.STATUS_START + $status.inside + env.STATUS_END),
-                       body: ($status.before + env.STATUS_START + $line + env.STATUS_END + $status.after)}
+                       body: ($status.before + env.STATUS_START + "\n> " + $line + "\n> " + env.STATUS_END + $status.after)}
                     else {body: $body} end
               end
           ' "$current" > "$composed" || { echo "::warning::Could not compose PRD PR #${PRD_PR}'s progress list, so it does not show sub-issue #${SUB} building."; exit 0; }

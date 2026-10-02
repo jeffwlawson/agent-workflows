@@ -60,7 +60,13 @@ type Case = (typeof CASES)[number];
  * which is its publish job: the agent's job writes nothing either, and the
  * publish job reads how it ended from `needs`.
  */
-const JOB: Readonly<Record<string, string>> = { review: "post-review", implement: "publish" };
+const JOB: Readonly<Record<string, string>> = {
+  review: "post-review",
+  implement: "publish",
+  fix: "publish",
+  "update-branch": "publish",
+  "implement-prd": "publish",
+};
 
 const stepOf = (command: string, job: string, name: string): string => {
   const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
@@ -357,13 +363,15 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
   );
 
   /**
-   * implement's publish job reads the agent's job's end from `needs`, not
+   * A split run's publish job reads the agent's job's end from `needs`, not
    * from its own status, and a job that reached its limit may read there as
    * failed. A runner that was killed wrote no reason, so a failure without
    * one is measured against the clock too; a failure with one never is.
+   * implement's since #307, and fix's, update-branch's and implement-prd's
+   * since #308.
    */
-  describe("implement, reported from its publish job", () => {
-    const implement = CASES.find((c) => c.command === "implement") as Case;
+  describe.each(["implement", "fix", "update-branch", "implement-prd"])("%s, reported from its publish job", (command) => {
+    const implement = CASES.find((c) => c.command === command) as Case;
 
     it("says a run that failed at its limit with no reason timed out", () => {
       const outcome = run(implement, "failure", implement.minutes * 60, String(implement.minutes), "false", {});
@@ -396,6 +404,19 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
       expect(outcome.comment).toContain("cancelled");
       expect(outcome.comment).not.toContain("timed out");
     });
+
+    /** implement-prd's catch-up, between its gate and its agent's job. */
+    if (command === "implement-prd") {
+      it("says a run cancelled in its catch-up was cancelled, though the agent's job never ran", () => {
+        const outcome = run(implement, "failure", 120, String(implement.minutes), "false", {}, {
+          CATCH_UP_RESULT: "cancelled",
+          AGENT_RESULT: "skipped",
+        });
+
+        expect(outcome.comment).toContain("cancelled");
+        expect(outcome.comment).not.toContain("timed out");
+      });
+    }
   });
 });
 

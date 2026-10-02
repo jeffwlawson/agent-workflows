@@ -2444,3 +2444,25 @@ It also found a reference nobody had counted. #304's transcript redaction named 
 in the agent's job to take the PAT out of the transcript, which put it on the agent's runner to do
 so. Under the split the agent's job holds no PAT to redact. The habit: when a secret is kept out of
 a job, grep the job for the name, not for the steps meant to use it.
+
+## 2026-10-02: the three splits #307 promised, and the write one of them could not keep
+
+#308 split `fix`, `update-branch` and `implement-prd` the way #307 split `implement`, and each
+workflow's own shape asked something the first split did not. `update-branch` runs no agent on a
+clean merge, so its agent's job became conditional and its publish job had to push a merge no agent
+made; making that merge again on the publish runner, of the commit the gate merged, kept the push
+off every runner but the fresh one. `implement-prd` pushes before its agent runs, and the gate names
+no PAT, so the catch-up became a job of its own.
+
+The one write that did not survive is the runner's own: `implement-prd`'s runner PATCHed the PRD
+PR's progress list to show the slice *building* before the agent started, with the job token. That
+token is read-only now, and the write is refused and logged as a warning the runner already had.
+Keeping it would mean installing the runner in a second job just to render one table, and every
+pin-count check in the release counts one `npm exec` per reusable. Recorded in CONTEXT.md rather
+than worked around.
+
+The suite caught nearly everything by itself, and the shape of what it caught is worth noting:
+most failures were tests that looked a step up in "the" job by its id. A split run's steps are
+spread across jobs, so a lookup by job id fails loudly, which is the good outcome; the quiet one
+was `conditionOf`, which matched a step to its job by name and found the gate's `Checkout PR head`
+for the agent's, until it compared whole steps.

@@ -38,7 +38,13 @@ const STEP = "Always remove the trigger label";
  * posting job writes every label (#257), and implement's, whose publish job
  * does, the agent's job holding no token that writes.
  */
-const JOB: Readonly<Record<string, string>> = { review: "post-review", implement: "publish" };
+const JOB: Readonly<Record<string, string>> = {
+  review: "post-review",
+  implement: "publish",
+  fix: "publish",
+  "update-branch": "publish",
+  "implement-prd": "publish",
+};
 
 const runOf = (command: string): string => {
   const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
@@ -61,6 +67,12 @@ interface Scenario {
   readonly requested?: string;
   /** The review job's result, as its posting job reads it (#257). */
   readonly reviewed?: "success" | "failure" | "cancelled";
+  /**
+   * update-branch's gate's and agent's job's results, as its publish job
+   * reads them (#308). The agent's is skipped on a clean merge.
+   */
+  readonly gate?: "success" | "failure" | "cancelled";
+  readonly agent?: "success" | "failure" | "cancelled" | "skipped";
 }
 
 /** Each `gh` call, as `<token> <argv>`, and what the step wrote to `GITHUB_OUTPUT`. */
@@ -102,6 +114,8 @@ const run = (
       PROCEEDED: scenario.proceeded ?? "true",
       JOB_STATUS: scenario.status ?? "success",
       REVIEW_RESULT: scenario.reviewed ?? "success",
+      GATE_RESULT: scenario.gate ?? "success",
+      AGENT_RESULT: scenario.agent ?? "skipped",
       LEFT_SHA: REVIEWED,
       HAS_PAT: String(pat),
       REQUEST_TOKEN: pat ? "pat-token" : "workflow-token",
@@ -181,6 +195,30 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
 
       expect(outcome.gh).toEqual([`workflow-token pr edit 152 --remove-label ${label}`]);
     });
+
+    /**
+     * update-branch's publish job ends green however its agent's job ended,
+     * so the jobs ahead of it are read by name: a gate or an agent that did
+     * not finish is a failure's, which a human retries.
+     */
+    if (command === "update-branch") {
+      it.each([
+        { gate: "failure" },
+        { gate: "cancelled" },
+        { agent: "failure" },
+        { agent: "cancelled" },
+      ] as const)("asks for nothing after a job ahead of it ended %o", (ended) => {
+        const outcome = run(command, { ...ended, live: `OPEN ${PUSHED}` });
+
+        expect(outcome.gh).toEqual([`workflow-token pr edit 152 --remove-label ${label}`]);
+      });
+
+      it("asks again after a resolution, where the agent's job succeeded", () => {
+        const outcome = run(command, { agent: "success", live: `OPEN ${PUSHED}` });
+
+        expect(outcome.gh.filter((call) => call.includes("--add-label"))).toEqual([`pat-token pr edit 152 --add-label ${label}`]);
+      });
+    }
 
     it("asks for nothing after a refusal", () => {
       const outcome = run(command, { proceeded: "false", live: `OPEN ${PUSHED}` });

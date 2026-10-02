@@ -245,3 +245,270 @@ describe.skipIf(!CAN_RUN)("implement's publish job pushes the agent's bundle onl
     CEILING,
   );
 });
+
+/**
+ * The same check in the three runs split after implement's (#308), each
+ * executed on the arms its own push differs on: what the bundle must build
+ * on, and what the push leases against.
+ */
+const pushStepOf = (file: string): string => {
+  const workflow = parse(fs.readFileSync(path.join(".github", "workflows", file), "utf8")) as Workflow;
+  const run = (workflow.jobs["publish"]?.steps ?? []).find((s) => s.id === "push")?.run;
+
+  expect(run, `${file}'s publish job has no \`push\` step`).toBeDefined();
+  return run ?? "";
+};
+
+const pushWith = (w: World, file: string, env: Readonly<Record<string, string>>): Outcome => {
+  const script = path.join(w.temp, "step.sh");
+  const output = path.join(w.temp, "output");
+  fs.writeFileSync(script, pushStepOf(file));
+  fs.writeFileSync(output, "");
+
+  const result = spawnSync("bash", ["-e", script], {
+    cwd: w.publish,
+    encoding: "utf8",
+    timeout: SUBPROCESS_TIMEOUT,
+    env: {
+      ...process.env,
+      ...IDENTITY,
+      RUNNER_TEMP: w.runner,
+      GITHUB_OUTPUT: output,
+      BASE_REF: "main",
+      GH_TOKEN: "not-a-token",
+      PUSH_TOKEN: "not-a-token",
+      ...env,
+    },
+  });
+  const reason = path.join(w.runner, "failure_reason.txt");
+  const pushed = spawnSync("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${BRANCH}`], {
+    cwd: w.origin,
+    encoding: "utf8",
+    timeout: SUBPROCESS_TIMEOUT,
+  });
+
+  return {
+    status: result.status,
+    reason: fs.existsSync(reason) ? fs.readFileSync(reason, "utf8") : "",
+    head: /^head=(.*)$/m.exec(fs.readFileSync(output, "utf8"))?.[1] ?? "",
+    pushed: pushed.stdout.trim(),
+  };
+};
+
+/** The pull request's branch on `origin` at the base, as a fix or a refresh finds it. */
+const prBranch = (w: World): void => {
+  git(w.agent, "push", "--quiet", "origin", `${w.base}:refs/heads/${BRANCH}`);
+  git(w.publish, "fetch", "--quiet", "origin");
+  git(w.publish, "checkout", "--quiet", "--detach", w.base);
+};
+
+describe.skipIf(!CAN_RUN)("implement-prd's publish job pushes the slice only once it checks out", () => {
+  const env = (w: World): Record<string, string> => ({ PRD_BRANCH: BRANCH, BASE_SHA: w.base });
+
+  it(
+    "pushes the PRD branch at the agent's commit, plainly, and reports it",
+    () => {
+      const w = world();
+      bundle(w, `refs/heads/${BRANCH}`);
+      const outcome = pushWith(w, "implement-prd.yml", env(w));
+      const commit = git(w.agent, "rev-parse", "HEAD");
+
+      expect(outcome.status).toBe(0);
+      expect(outcome.pushed).toBe(commit);
+      expect(outcome.head).toBe(commit);
+    },
+    CEILING,
+  );
+
+  it(
+    "refuses a branch that does not build on the tip the catch-up left",
+    () => {
+      const w = world();
+      git(w.agent, "checkout", "--quiet", "--orphan", "unrelated");
+      git(w.agent, "commit", "--quiet", "-m", "unrelated history");
+      git(w.agent, "branch", "--quiet", "-D", BRANCH);
+      git(w.agent, "branch", "--quiet", "-m", BRANCH);
+      bundle(w, `refs/heads/${BRANCH}`);
+
+      refused(pushWith(w, "implement-prd.yml", env(w)), /don't build on `agent\/issue-7-add-a-widget` as this run left it/);
+    },
+    CEILING,
+  );
+});
+
+describe.skipIf(!CAN_RUN)("fix's publish job pushes the agent's commits only once they check out", () => {
+  const env = (w: World): Record<string, string> => ({ BRANCH, BRANCH_HEAD_SHA: w.base });
+
+  it(
+    "pushes the commits on the pull request's head, under its lease, and reports it",
+    () => {
+      const w = world();
+      prBranch(w);
+      bundle(w, `refs/heads/${BRANCH}`);
+      const outcome = pushWith(w, "fix.yml", env(w));
+      const commit = git(w.agent, "rev-parse", "HEAD");
+
+      expect(outcome.status).toBe(0);
+      expect(outcome.pushed).toBe(commit);
+      expect(outcome.head).toBe(commit);
+    },
+    CEILING,
+  );
+
+  it(
+    "reads no bundle as no commits, and pushes nothing without failing",
+    () => {
+      const w = world();
+      prBranch(w);
+      const outcome = pushWith(w, "fix.yml", env(w));
+
+      expect(outcome.status).toBe(0);
+      expect(outcome.pushed).toBe(w.base);
+      expect(outcome.reason).toBe("");
+    },
+    CEILING,
+  );
+
+  it(
+    "refuses a branch that does not build on the pull request's head",
+    () => {
+      const w = world();
+      prBranch(w);
+      git(w.agent, "checkout", "--quiet", "--orphan", "unrelated");
+      git(w.agent, "commit", "--quiet", "-m", "unrelated history");
+      git(w.agent, "branch", "--quiet", "-D", BRANCH);
+      git(w.agent, "branch", "--quiet", "-m", BRANCH);
+      bundle(w, `refs/heads/${BRANCH}`);
+      const outcome = pushWith(w, "fix.yml", env(w));
+
+      expect(outcome.status).not.toBe(0);
+      expect(outcome.pushed).toBe(w.base);
+      expect(outcome.reason).toMatch(/don't build on the PR's head as this run found it, so nothing was pushed\.\n$/);
+    },
+    CEILING,
+  );
+});
+
+describe.skipIf(!CAN_RUN)("update-branch's publish job pushes a merge it made, or a resolution it checked", () => {
+  /**
+   * The pull request's branch on `origin` at a commit of its own, the agent's
+   * clone's widget, and `main` moved on past the base it was cut from: a
+   * refresh with something to merge. Returns the two commits the merge joins.
+   */
+  const diverged = (w: World): { readonly head: string; readonly merged: string } => {
+    const head = git(w.agent, "rev-parse", "HEAD");
+    git(w.agent, "push", "--quiet", "origin", `${head}:refs/heads/${BRANCH}`);
+    const seed = path.join(w.temp, "seed");
+    fs.writeFileSync(path.join(seed, "CHANGES.md"), "moved\n");
+    git(seed, "add", "CHANGES.md");
+    git(seed, "commit", "--quiet", "-m", "main moves on");
+    git(seed, "push", "--quiet", "origin", "HEAD:refs/heads/main");
+    git(w.publish, "fetch", "--quiet", "origin");
+    git(w.publish, "checkout", "--quiet", "--detach", head);
+    return { head, merged: git(seed, "rev-parse", "HEAD") };
+  };
+  const env = (head: string, merged: string, status: string): Record<string, string> => ({
+    BRANCH,
+    BRANCH_HEAD_SHA: head,
+    BASE_SHA: merged,
+    STATUS: status,
+  });
+
+  it(
+    "makes the clean merge again itself, of the base commit the gate merged, and pushes it",
+    () => {
+      const w = world();
+      const { head, merged } = diverged(w);
+      const outcome = pushWith(w, "update-branch.yml", env(head, merged, "clean"));
+
+      expect(outcome.status).toBe(0);
+      expect(outcome.reason).toBe("");
+      expect(outcome.head).toBe(outcome.pushed);
+      expect(git(w.origin, "rev-list", "--parents", "-n", "1", outcome.pushed).split(" ").slice(1)).toEqual([head, merged]);
+      expect(git(w.origin, "log", "-1", "--format=%s", outcome.pushed)).toBe(`Merge remote-tracking branch 'origin/main' into ${BRANCH}`);
+    },
+    CEILING,
+  );
+
+  it(
+    "pushes a resolution that merges the base into the pull request's head",
+    () => {
+      const w = world();
+      const { head, merged } = diverged(w);
+      git(w.agent, "fetch", "--quiet", "origin");
+      git(w.agent, "merge", "--quiet", "--no-edit", merged);
+      git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${BRANCH}`, `^${head}`, `^${merged}`);
+      const outcome = pushWith(w, "update-branch.yml", env(head, merged, "conflicts"));
+
+      expect(outcome.status).toBe(0);
+      expect(outcome.pushed).toBe(git(w.agent, "rev-parse", "HEAD"));
+    },
+    CEILING,
+  );
+
+  it(
+    "refuses a resolution that does not take the base in",
+    () => {
+      const w = world();
+      const { head, merged } = diverged(w);
+      fs.writeFileSync(path.join(w.agent, "widget.txt"), "resolved, without main\n");
+      git(w.agent, "commit", "--quiet", "-am", "Not a merge");
+      git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), `refs/heads/${BRANCH}`, `^${head}`);
+      const outcome = pushWith(w, "update-branch.yml", env(head, merged, "conflicts"));
+
+      expect(outcome.status).not.toBe(0);
+      expect(outcome.pushed).toBe(head);
+      expect(outcome.reason).toMatch(/isn't a merge of `main` into the PR's head as this run found them, so the branch was left untouched\.\n$/);
+    },
+    CEILING,
+  );
+});
+
+/**
+ * fix's publish job reads no bundle as no commits, so it must first know the
+ * hand-over arrived at all: a finished runner always writes its thread
+ * outcomes or its nothing-to-do note, and where neither came, the run fails
+ * with that said rather than marking the PR ready with the work dropped.
+ */
+describe.skipIf(!CAN_RUN)("fix's publish job refuses a finished agent's hand-over that never arrived", () => {
+  const STEP = "Check the agent's hand-over arrived";
+  const step = (): { readonly if?: string; readonly run?: string } => {
+    const workflow = parse(fs.readFileSync(path.join(".github", "workflows", "fix.yml"), "utf8")) as {
+      readonly jobs: Record<string, { readonly steps?: readonly { readonly name?: string; readonly if?: string; readonly run?: string }[] }>;
+    };
+    const steps = workflow.jobs["publish"]?.steps ?? [];
+    const at = steps.findIndex((s) => s.name === STEP);
+
+    expect(at, `fix.yml's publish job has no \`${STEP}\` step`).toBeGreaterThan(-1);
+    // After the fetch, and before anything that reads a missing file as none.
+    expect(steps[at - 1]?.name).toBe("Fetch what the agent handed over");
+    return steps[at] ?? {};
+  };
+
+  const check = (files: readonly string[]): { readonly status: number | null; readonly reason: string } => {
+    const runner = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fix-handover-"));
+    for (const file of files) fs.writeFileSync(path.join(runner, file), "");
+    const result = spawnSync("bash", ["-e", "-c", step().run ?? ""], {
+      encoding: "utf8",
+      timeout: SUBPROCESS_TIMEOUT,
+      env: { ...process.env, RUNNER_TEMP: runner },
+    });
+    const reason = path.join(runner, "failure_reason.txt");
+    return { status: result.status, reason: fs.existsSync(reason) ? fs.readFileSync(reason, "utf8") : "" };
+  };
+
+  it("runs only where the agent's job succeeded", () => {
+    expect(step().if).toBe("needs.fix.result == 'success'");
+  });
+
+  it.each([["thread_outcomes.json"], ["nothing_to_do.txt"]])("goes on where %s arrived", (file) => {
+    expect(check([file])).toEqual({ status: 0, reason: "" });
+  });
+
+  it("fails with a reason where neither arrived, even beside a bundle", () => {
+    const outcome = check(["branch.bundle"]);
+
+    expect(outcome.status).not.toBe(0);
+    expect(outcome.reason).toBe("The agent finished, but what it handed over did not arrive, so nothing was pushed or posted.\n");
+  });
+});

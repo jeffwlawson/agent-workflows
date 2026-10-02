@@ -43,8 +43,9 @@ interface Workflow {
   readonly jobs: Record<string, { readonly steps?: readonly Step[] }>;
 }
 
+/** Every step of the run, in the order its jobs run (#308). */
 const steps = (): readonly Step[] =>
-  (parse(fs.readFileSync(PRD, "utf8")) as Workflow).jobs["implement-prd"]?.steps ?? [];
+  Object.values((parse(fs.readFileSync(PRD, "utf8")) as Workflow).jobs).flatMap((job) => job.steps ?? []);
 
 const PARENT = "222";
 const PRD_BRANCH = "agent/prd-222-slices";
@@ -347,24 +348,27 @@ describe.skipIf(!CAN_RUN)("implement-prd's Merge the default branch into the PRD
   /**
    * Every step that builds, pushes or asks for a review stands down on a park.
    * The step itself sits after the PRD branch is checked out, and before the
-   * toolchain, the runner and the push.
+   * toolchain, the runner and the push: in a job of its own since #308, ahead
+   * of the agent's, which runs only where it did not park. The publish job's
+   * steps that act on a build need the agent's job to have succeeded, which a
+   * job that never ran did not.
    */
   it("sits after Prepare and before the build, and every later step that builds stands down on a park", () => {
-    const all = steps();
-    const at = all.findIndex((s) => s.name === STEP);
-    const runner = all.findIndex((s) => (s.run ?? "").includes("agent-workflows implement-prd"));
+    const workflow = parse(fs.readFileSync(PRD, "utf8")) as {
+      jobs: Record<string, { if?: string; needs?: string | string[]; steps?: readonly Step[] }>;
+    };
+    const catchUp = workflow.jobs["catch_up"]?.steps ?? [];
+    const at = catchUp.findIndex((s) => s.name === STEP);
+    const publish = workflow.jobs["publish"]?.steps ?? [];
 
-    expect(all[at]?.id).toBe("catch_up");
-    expect(at).toBe(all.findIndex((s) => s.id === "prepare") + 1);
-    expect(at).toBeLessThan(runner);
-    for (const step of all.slice(at + 1)) {
-      if (/steps\.preflight\.outputs\.(build == 'true'|finishing == 'false')/.test(step.if ?? "")) {
-        expect(step.if, step.name).toContain("steps.catch_up.outputs.parked != 'true'");
-      }
+    expect(catchUp[at]?.id).toBe("catch_up");
+    expect(at).toBe(catchUp.findIndex((s) => s.id === "prepare") + 1);
+    expect(workflow.jobs["implement-prd"]?.needs).toEqual(["gate", "catch_up"]);
+    expect(workflow.jobs["implement-prd"]?.if).toContain("needs.catch_up.outputs.parked != 'true'");
+    expect((workflow.jobs["implement-prd"]?.steps ?? []).some((s) => (s.run ?? "").includes("agent-workflows implement-prd"))).toBe(true);
+    for (const id of ["push", "prd_pr"]) {
+      expect(publish.find((s) => s.id === id)?.if, id).toContain("needs.implement-prd.result == 'success'");
     }
-    for (const id of ["push", "prd_pr", "trailer"]) {
-      expect(all.find((s) => s.id === id)?.if, id).toContain("steps.catch_up.outputs.parked != 'true'");
-    }
-    expect(all.find((s) => s.name === "Request review")?.if).toContain("steps.catch_up.outputs.parked != 'true'");
+    expect(publish.find((s) => s.name === "Request review")?.if).toContain("needs.implement-prd.result == 'success'");
   });
 });

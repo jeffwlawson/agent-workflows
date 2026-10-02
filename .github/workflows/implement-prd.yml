@@ -130,49 +130,92 @@ on:
           failing silently.
         required: false
 
+# Per *parent issue*, first-come, so consecutive slices of one PRD never
+# overlap: the chaining step re-labels the parent while this run is still
+# going, and the next run waits for this one to finish every job,
+# including the `always()` label removal, before it starts.
+#
+# On the workflow rather than on a job, because the run is four jobs that
+# hand off to each other (see `implement.yml`'s note on its own group): a
+# job-level group is released between them, and a second run for the same
+# PRD could start between this run's agent and its push.
+#
+# NOT the `agent-pr-<n>` group the three PR workflows share, even though
+# this pushes to a PR's branch. An `issues` event carries no PR number, so
+# the two cannot compute a common key. The residual race that leaves is
+# recorded in docs/parity.md §10 rather than papered over: the happy path
+# does not overlap, because the next run's gate refuses while the PRD PR's
+# round is running.
+#
+# Every label event on the issue starts this workflow, and a workflow-level
+# group is entered before any job's `if:` is evaluated (probed, #309). A group
+# admits one pending run, cancelling the one it replaces, so an event for any
+# other label takes a group of its own, keyed by its run id: otherwise adding
+# `bug` while a run is in progress would cancel an `agent:implement` run
+# waiting behind it.
+concurrency:
+  group: agent-implement-prd-issue-${{ github.event.issue.number }}${{ github.event.label.name != 'agent:implement' && format('-other-{0}', github.run_id) || '' }}
+  cancel-in-progress: false
+
+# **Four jobs, and the agent's holds nothing it could use to write**, for the
+# reason `implement.yml` gives in full: the agent can read every secret its
+# own job names, from the runner process's memory, and leave something behind
+# for a later step on its runner.
+#
+# So `gate` reads the PRD, refuses or claims it, and decides the slice;
+# `catch_up` merges the default branch into the PRD branch and pushes it,
+# before any agent runs and on a runner none has touched; `implement-prd`
+# runs the agent with a read-only token and names no PAT anywhere, and hands
+# over its commits as a `git bundle`; and `publish` starts on a fresh runner,
+# checks the bundle, and pushes, opens or reuses the PRD PR, asks for the
+# round and hands the PRD PR over.
+#
+# One thing the split costs. The runner writes the PRD PR's progress list
+# with the slice **building** as it starts, and its job's token now reads
+# only, so that write is refused and said in a warning: the list shows the
+# slice building no longer, and goes from the last round's ending straight to
+# the slice in review when `publish` asks for it. The sub-issue's start
+# comment and the PRD PR's chapter marker still say it started.
+#
+# The permissions differ per job, and the caller grants the union: what
+# `publish` and `gate` spend. The caller is unchanged.
 jobs:
-  implement-prd:
+  gate:
     # Job-level, for the same reason as agent-implement-reusable.yml — a
     # job-level `if:` skips without provisioning a runner. On this side of the
-    # seam, where a caller can skip it but cannot loosen it.
+    # seam, where a caller can skip it but cannot loosen it. The jobs after it
+    # follow from its outputs, so this is the one guard.
     if: github.event.label.name == 'agent:implement'
     runs-on: ubuntu-latest
-    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
-    # shared by the four jobs that run an agent to write code, and 30 where it
-    # is not. `vars` is among the contexts this key may read, and in a called
-    # workflow it resolves against the caller's repository. `fromJSON` because
-    # a variable is a string and this key wants a number; a value that is not
-    # one fails the job before any step, which `doctor` reports. The failure
-    # step below names the same figure.
-    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
-    # Per *parent issue*, first-come, so consecutive slices of one PRD never
-    # overlap: the chaining step re-labels the parent while this job is still
-    # running, and the next run waits for this one to finish every step —
-    # including the `always()` label removal — before it starts.
-    #
-    # NOT the `agent-pr-<n>` group the three PR workflows share, even though
-    # this pushes to a PR's branch. An `issues` event carries no PR number, so
-    # the two cannot compute a common key. The residual race that leaves is
-    # recorded in docs/parity.md §10 rather than papered over: the happy path
-    # does not overlap, because the next run's gate refuses while the PRD PR's
-    # round is running.
-    concurrency:
-      group: agent-implement-prd-issue-${{ github.event.issue.number }}
-      cancel-in-progress: false
-    # Granted by the caller, bounded here — a called workflow can only downgrade
-    # the token it is handed, and a permission declared only here grants nothing.
+    # API calls and nothing else; the agent's own limit is on its job.
+    timeout-minutes: 10
+    # Granted by the caller, bounded here, per job: a called workflow can only
+    # downgrade the token it is handed, and a permission declared only here
+    # grants nothing.
     permissions:
-      contents: write
+      # The PRD branch's commits, read for which slices are built.
+      contents: read
+      # The refusals, the start comments and the label transitions.
       issues: write
-      # Installing the runner package. GitHub Packages has no anonymous install,
-      # so this is needed even though the package is public — and, being a
-      # bound, it grants nothing without the caller's own `packages: read`.
-      packages: read
+      # The PRD PR's chapter marker, and the open-PR reads in the preflight.
       pull-requests: write
       # The approval gate reads the PRD PR head's `agent-review` verdict from
       # its combined status: its own scope, which a block that leaves it out
       # sets to `none` (#199).
       statuses: read
+    outputs:
+      refused: ${{ steps.preflight.outputs.refused }}
+      prd_branch: ${{ steps.preflight.outputs.prd_branch }}
+      prd_branch_exists: ${{ steps.preflight.outputs.prd_branch_exists }}
+      prd_pr: ${{ steps.preflight.outputs.prd_pr }}
+      landed: ${{ steps.preflight.outputs.landed }}
+      sub: ${{ steps.preflight.outputs.sub }}
+      sub_k: ${{ steps.preflight.outputs.sub_k }}
+      sub_title: ${{ steps.preflight.outputs.sub_title }}
+      subs: ${{ steps.preflight.outputs.subs }}
+      build: ${{ steps.preflight.outputs.build }}
+      finishing: ${{ steps.preflight.outputs.finishing }}
+      started: ${{ steps.clock.outputs.started }}
 
     env:
       # Throughout this file, ISSUE_* is the **parent PRD**. The sub-issue being
@@ -188,19 +231,11 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       # This run's page, linked from the start comment and from the failure
-      # comment on the parent (#205). One definition, so the two cannot link
-      # different things.
+      # comment on the parent (#205). One definition per job that posts, so
+      # the two cannot link different things.
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     steps:
-      # The clock the failure step reads a time limit off (#220). A job that
-      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
-      # the `job` context says which cancellation it was, so that step compares
-      # how long the job ran with its limit. First, so it starts as near the
-      # job's own start as a step can.
-      - name: Start the clock
-        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
-
       # Everything that decides whether this run happens, before checkout and
       # the dependency install, so a refusal costs one API call and nothing else.
       #
@@ -741,19 +776,71 @@ jobs:
           gh issue comment "$APPROVED_SUB" --body "$note" \
             || echo "::warning::Could not post the approved-slice note on sub-issue #${APPROVED_SUB}. The run goes on."
 
-      # From here to `Push the PRD branch` is **building a slice**, and only a
-      # run that builds one does any of it. The finishing run, and the run
-      # that only opens a missing PRD PR, check nothing out, install no
-      # toolchain and run no model.
+      # The preflight's snapshot of the PRD, which `Open or reuse the PRD PR`
+      # writes its `Closes` lines from, and the reason file a `block` in the
+      # preflight writes, handed to `publish`, which reports it. `always()`,
+      # for the second; not on a refusal or a deferral, which hand nothing on.
+      - name: Hand the PRD's snapshot on
+        if: always() && steps.preflight.outputs.refused != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-implement-prd-gate
+          path: |
+            ${{ runner.temp }}/prd-issue.json
+            ${{ runner.temp }}/failure_reason.txt
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
+      # The clock the failure step reads a time limit off (#220). A job that
+      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
+      # the `needs` context says which cancellation it was, so that step
+      # compares how long the agent's job could have run with its limit. Last
+      # in this job, so it starts as near the agent's job as a step here can,
+      # and is read from this job's outputs rather than the agent's, which a
+      # step there could rewrite.
+      - name: Start the agent's clock
+        if: steps.preflight.outputs.refused == 'false'
+        id: clock
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+  # **Keeping up with the default branch**, before the agent runs, and in a job
+  # of its own because it pushes: the gate names no PAT, and the agent's job
+  # must not. Its runner is one no agent has touched, and it is discarded
+  # before the agent's starts.
+  catch_up:
+    needs: gate
+    # From here to `Push the PRD branch` is **building a slice**, and only a
+    # run that builds one does any of it. The finishing run, and the run
+    # that only opens a missing PRD PR, check nothing out, install no
+    # toolchain and run no model.
+    if: needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    # A clone, a merge and a push.
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      # The parked chain's comment and its label removal.
+      issues: write
+    outputs:
+      parked: ${{ steps.catch_up.outputs.parked }}
+      merged: ${{ steps.catch_up.outputs.merged }}
+      head: ${{ steps.tip.outputs.sha }}
+
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      BASE_REF: ${{ inputs.default-branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
       - name: Checkout the base branch
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true'
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.default-branch }}
           fetch-depth: 0
-          # No credential is left in the checkout for the agent's git, or
-          # anything else it runs, to find. Each fetch and push below passes
-          # its own token on the command line instead.
+          # No credential is left in the checkout. Each fetch and push below
+          # passes its own token on the command line instead.
           persist-credentials: false
 
       # Every slice is built **on the PRD branch itself**, at its tip, so slice
@@ -761,12 +848,11 @@ jobs:
       # reused; with none, it is cut from the base branch here and pushed with
       # the first slice.
       - name: Prepare the PRD branch
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true'
         id: prepare
         env:
-          PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
-          EXISTS: ${{ steps.preflight.outputs.prd_branch_exists }}
-          SUB: ${{ steps.preflight.outputs.sub }}
+          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          EXISTS: ${{ needs.gate.outputs.prd_branch_exists }}
+          SUB: ${{ needs.gate.outputs.sub }}
         run: |
           set -euo pipefail
           git config user.name "sandcastle-agent[bot]"
@@ -805,24 +891,23 @@ jobs:
       #
       # The checkout persists no credential, so the fetch carries the job's
       # read token and the push `AGENT_PAT` (or its fallback), each as a masked
-      # header on its own command. This step runs before the agent, which is
-      # why the push token is in its env at all; nothing it does is written
-      # into the checkout.
+      # header on its own command. In a job of its own, before the agent's and
+      # on another runner, which is why the push token is in its env at all;
+      # nothing it does is written into the checkout.
       #
       # A conflict is aborted, builds nothing and pushes nothing, and parks the
       # chain with a refusal naming `agent:update-branch` on the PRD PR, whose
       # agent resolves it and asks for a re-review: a round of the slice
       # already built, whose approval moves the chain on as any other. Not a
-      # failure, so it exits 0, and every step after this one stands down on
+      # failure, so it exits 0, and every job after this one stands down on
       # `parked`.
       - name: Merge the default branch into the PRD branch
         id: catch_up
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true'
         env:
-          PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
-          EXISTS: ${{ steps.preflight.outputs.prd_branch_exists }}
-          PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
-          SUB: ${{ steps.preflight.outputs.sub }}
+          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          EXISTS: ${{ needs.gate.outputs.prd_branch_exists }}
+          PRD_PR: ${{ needs.gate.outputs.prd_pr }}
+          SUB: ${{ needs.gate.outputs.sub }}
           PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -900,12 +985,102 @@ jobs:
           echo "merged=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "Merged \`${BASE_REF}\` into \`${PRD_BRANCH}\` at $(git rev-parse --short HEAD), before building sub-issue #${SUB}."
 
+      # The PRD branch's tip as this job left it, which the agent builds on and
+      # `publish` checks the agent's commits against. Read here, in a job no
+      # agent ran in, and never from the agent's job.
+      - name: Record the PRD branch's tip
+        id: tip
+        if: steps.catch_up.outputs.parked != 'true'
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The reason file a `block` above writes, for `publish` to report.
+      - name: Hand the reason on
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-implement-prd-catch-up
+          path: ${{ runner.temp }}/failure_reason.txt
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
+  implement-prd:
+    needs: [gate, catch_up]
+    if: needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && needs.catch_up.outputs.parked != 'true'
+    runs-on: ubuntu-latest
+    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
+    # shared by the four jobs that run an agent to write code, and 30 where it
+    # is not. `vars` is among the contexts this key may read, and in a called
+    # workflow it resolves against the caller's repository. `fromJSON` because
+    # a variable is a string and this key wants a number; a value that is not
+    # one fails the job before any step, which `doctor` reports. The failure
+    # step in `publish` names the same figure.
+    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
+    # **Read-only, and no PAT named anywhere in this job.** Not even in a step
+    # that never runs: a secret is delivered to every job whose text names it.
+    permissions:
+      # The checkout.
+      contents: read
+      # The runner reads the PRD and the sub-issue, and their comments.
+      issues: read
+      # Installing the runner package. GitHub Packages has no anonymous install,
+      # so this is needed even though the package is public — and, being a
+      # bound, it grants nothing without the caller's own `packages: read`.
+      packages: read
+      # The runner reads the PRD PR's rounds for its progress list.
+      pull-requests: read
+
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_TITLE: ${{ github.event.issue.title }}
+      BASE_REF: ${{ inputs.default-branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout the base branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.default-branch }}
+          fetch-depth: 0
+          # No credential is left in the checkout for the agent's git, or
+          # anything else it runs, to find. Nothing in this job pushes: the
+          # publish job pushes, from a checkout of its own.
+          persist-credentials: false
+
+      # The PRD branch again, as `catch_up` left it: at its tip, with the
+      # default branch merged in where it had moved, or cut from the base
+      # branch where there was none.
+      - name: Prepare the PRD branch
+        id: prepare
+        env:
+          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          EXISTS: ${{ needs.gate.outputs.prd_branch_exists }}
+          SUB: ${{ needs.gate.outputs.sub }}
+        run: |
+          set -euo pipefail
+          git config user.name "sandcastle-agent[bot]"
+          git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
+
+          if [ "$EXISTS" = "true" ]; then
+            # The checkout persists no credential, so the fetch carries the
+            # job's read token itself.
+            auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+            echo "::add-mask::${auth}"
+            git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${PRD_BRANCH}:refs/remotes/origin/${PRD_BRANCH}"
+            git checkout -B "$PRD_BRANCH" "refs/remotes/origin/${PRD_BRANCH}"
+            echo "Building sub-issue #${SUB} on $PRD_BRANCH at $(git rev-parse --short HEAD)."
+          else
+            git checkout -b "$PRD_BRANCH"
+            echo "Created $PRD_BRANCH from ${BASE_REF}; building sub-issue #${SUB} on it, and it is pushed with this slice."
+          fi
+
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
       # agent's own runtime, and every runner image already has the Node it
       # needs for it.
       - name: Setup Node.js
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && inputs.node-version-file != ''
+        if: inputs.node-version-file != ''
         uses: actions/setup-node@v7
         with:
           node-version-file: ${{ inputs.node-version-file }}
@@ -916,12 +1091,11 @@ jobs:
       # from: a literal in a workflow file, never an expression reading the
       # issue event.
       - name: Install dependencies
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && inputs.setup != ''
+        if: inputs.setup != ''
         run: |
           ${{ inputs.setup }}
 
       - name: Install Claude Code
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true'
         run: npm install -g @anthropic-ai/claude-code
 
       # The runner package lives on GitHub Packages, which has no anonymous
@@ -932,7 +1106,6 @@ jobs:
       # cache opt-out belongs to the same note: this half declares no toolchain,
       # so it must not infer one.
       - name: Authenticate to GitHub Packages
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true'
         uses: actions/setup-node@v7
         with:
           registry-url: https://npm.pkg.github.com
@@ -940,7 +1113,6 @@ jobs:
           package-manager-cache: false
 
       - name: Run implementation agent
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -949,16 +1121,16 @@ jobs:
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_MODEL_IMPLEMENT_PRD: ${{ vars.AGENT_MODEL_IMPLEMENT_PRD }}
           # The PRD branch, which the agent commits on and the prompt names.
-          BRANCH: ${{ steps.preflight.outputs.prd_branch }}
-          SUB_NUMBER: ${{ steps.preflight.outputs.sub }}
-          SUB_TITLE: ${{ steps.preflight.outputs.sub_title }}
+          BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          SUB_NUMBER: ${{ needs.gate.outputs.sub }}
+          SUB_TITLE: ${{ needs.gate.outputs.sub_title }}
           # The PRD PR, whose progress list the runner shows this slice
           # building in (#246); empty on the first slice, which opens it.
-          PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
+          PRD_PR: ${{ needs.gate.outputs.prd_pr }}
           # The merge of the default branch pushed before it, which leaves the
           # PRD PR's head unreviewed: the list a stopped run writes back shows
           # the slice before this one parked, not approved.
-          MERGED: ${{ steps.catch_up.outputs.merged }}
+          MERGED: ${{ needs.catch_up.outputs.merged }}
           OUTPUT_DIR: ${{ runner.temp }}
         # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
         # whole point. `npx pkg@version` reuses a package already present in the
@@ -985,9 +1157,10 @@ jobs:
       # readable by anyone who can see the repository, and the agent's
       # environment holds `CLAUDE_CODE_OAUTH_TOKEN`, so a transcript where it
       # printed that environment carries the token. Every secret this job holds
-      # is replaced with `[REDACTED]` in a copy, the two GitHub tokens also in
-      # the basic-auth form a checkout's git config holds them in, and only the
-      # copy is uploaded.
+      # is replaced with `[REDACTED]` in a copy, the job token also in the
+      # basic-auth form a checkout's git config holds it in, and only the copy
+      # is uploaded. The script is the one every agent workflow runs; it skips
+      # the PAT where its job holds none, as this one does.
       #
       # `always()`, so a failed, cancelled or timed-out run keeps its record
       # too, and `continue-on-error`, so the record never fails the run it
@@ -1000,7 +1173,6 @@ jobs:
         continue-on-error: true
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          AGENT_PAT: ${{ secrets.AGENT_PAT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'PY'
@@ -1053,7 +1225,7 @@ jobs:
       # whatever their subject lines say. The agent is not told to write it,
       # so it is written here, and one the agent did write is replaced.
       #
-      # Here, after the runner and before the push, because the commits are
+      # Here, after the runner and before the bundle, because the commits are
       # still local: rewriting them rewrites nothing published. "This run's" is
       # every commit reachable from HEAD and from nothing on the remote, so the
       # PRD branch's earlier slices and a default-branch commit the agent
@@ -1067,9 +1239,9 @@ jobs:
       # parser, which reads the message's last paragraph, never sees it.
       - name: Mark the slice's commits
         id: trailer
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && success()
+        if: success()
         env:
-          SUB: ${{ steps.preflight.outputs.sub }}
+          SUB: ${{ needs.gate.outputs.sub }}
         run: |
           set -euo pipefail
 
@@ -1102,6 +1274,111 @@ jobs:
           git update-ref -m "Agent-Slice: #${SUB}" HEAD "$(mapped "$old")" "$old"
           echo "Marked ${count} commit(s) with Agent-Slice: #${SUB}."
 
+      # The agent's commits, as the one thing `publish` pushes. A bundle rather
+      # than a push from here: this job holds no token that can write, and the
+      # runner that ran the agent is not one to spend a token on. Thin (the
+      # PRD branch's tip `catch_up` left is its prerequisite, which `publish`
+      # has from its own checkout), and holding exactly the PRD branch.
+      - name: Bundle the branch
+        if: success()
+        env:
+          BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          BASE_SHA: ${{ needs.catch_up.outputs.head }}
+        run: git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BASE_SHA}"
+
+      # The bundle, the reason file on a failure, and the progress lists and
+      # status lines the runner rendered for `publish` to write, as one
+      # artifact. `always()`, because a failed run is one of the outcomes
+      # `publish` reports, and any of them may be missing. Uploading needs no
+      # scope: the artifact service takes the runner's own token, so this job
+      # stays read-only. `overwrite`, so a re-run replaces this attempt's copy
+      # rather than failing on the name.
+      #
+      # What this job hands over is the agent's to write, whatever a step here
+      # meant it to be. So `publish` takes nothing from it but this artifact,
+      # which it checks, and reads nothing from this job's outputs.
+      - name: Hand the branch to the publish job
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-implement-prd
+          path: |
+            ${{ runner.temp }}/branch.bundle
+            ${{ runner.temp }}/failure_reason.txt
+            ${{ runner.temp }}/progress.md
+            ${{ runner.temp }}/status.md
+            ${{ runner.temp }}/progress_stopped.md
+            ${{ runner.temp }}/status_stopped.md
+            ${{ runner.temp }}/progress_stopped_pushed.md
+            ${{ runner.temp }}/status_stopped_pushed.md
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    needs: [gate, catch_up, implement-prd]
+    # `always()`, so a failed, cancelled or timed-out agent is still reported
+    # and its trigger label still taken off, and so a run that builds nothing
+    # (the finishing run, or one that only opens a missing PRD PR), where the
+    # two jobs before this one are skipped, does its work at all. Not where
+    # the gate was skipped (another label's event) or refused or deferred:
+    # that run said what it had to, or must say nothing.
+    if: always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
+    runs-on: ubuntu-latest
+    # A clone, a push and some API calls, and a bounded wait for the PR's head.
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_TITLE: ${{ github.event.issue.title }}
+      BASE_REF: ${{ inputs.default-branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      # Into `RUNNER_TEMP`, where every step below looks for the files it reads
+      # as it did when the run was one job: the agent's first, then the
+      # catch-up's and the gate's, which no agent touched. Each tolerated: a
+      # job that was skipped, or killed before its upload, leaves nothing to
+      # fetch, and the failure step still has to run.
+      - name: Fetch what the agent handed over
+        if: needs.gate.outputs.build == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-implement-prd
+          path: ${{ runner.temp }}
+
+      - name: Fetch what the catch-up handed over
+        if: needs.catch_up.result == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-implement-prd-catch-up
+          path: ${{ runner.temp }}
+
+      - name: Fetch what the gate handed over
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-implement-prd-gate
+          path: ${{ runner.temp }}
+
+      - name: Checkout the base branch
+        if: needs.implement-prd.result == 'success'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.default-branch }}
+          fetch-depth: 0
+          # Nothing the agent touched is on this runner, and the push below
+          # passes its token on its own command, as everywhere else.
+          persist-credentials: false
+
       # **Plain**, never forced. The PRD branch carries every earlier slice,
       # and verdicts and review threads are pinned to its commits, so a force
       # push is a chain that silently eats its own history and orphans its
@@ -1112,19 +1389,52 @@ jobs:
       # The checkout persists no credential, so the token reaches git here, for
       # the push alone, as a masked header. Why, and what that does not cover,
       # is the note on implement.yml's `Push branch`.
+      #
+      # The steps here that act on a build read the agent's job's result, and
+      # the ones a run that builds nothing does too read the gate's, by name:
+      # GitHub documents an ancestor job's failure as seen by `failure()`, and
+      # says nothing of `success()`, in a job that runs `always()`.
+      #
+      # **The bundle is checked before anything is pushed from it**, as
+      # implement.yml's is: intact, exactly the PRD branch and nothing else,
+      # and built on the tip `catch_up` left, read there and never from the
+      # agent's job. Its content is the agent's to write and the round's to
+      # judge.
       - name: Push the PRD branch
         id: push
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && success()
+        if: needs.implement-prd.result == 'success' && success()
         env:
-          PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
+          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          BASE_SHA: ${{ needs.catch_up.outputs.head }}
           PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          bundle="${RUNNER_TEMP}/branch.bundle"
+
+          block() {
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "::error::$1"
+            exit 1
+          }
+
+          [ -f "$bundle" ] || block "The agent's job finished without handing over its commits, so nothing was pushed."
+          git bundle verify --quiet "$bundle" \
+            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
+          git bundle unbundle "$bundle" > /dev/null \
+            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
+          heads=$(git bundle list-heads "$bundle")
+          if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${PRD_BRANCH}" ]; then
+            block "The agent's commits arrived on a branch other than \`${PRD_BRANCH}\`, or beside other branches, so nothing was pushed."
+          fi
+          git update-ref "refs/heads/${PRD_BRANCH}" "$(cut -d' ' -f1 <<< "$heads")"
+          git merge-base --is-ancestor "$BASE_SHA" "refs/heads/${PRD_BRANCH}" \
+            || block "The agent's commits don't build on \`${PRD_BRANCH}\` as this run left it, so nothing was pushed."
+
           auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
           echo "::add-mask::${auth}"
           git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push origin "$PRD_BRANCH"
           # The commit `Request review` waits for the PRD PR to show.
-          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "head=$(git rev-parse "refs/heads/${PRD_BRANCH}")" >> "$GITHUB_OUTPUT"
 
       # The PRD PR: PRD branch into the base branch, the one PR of the chain,
       # and the one a human merges. The run that builds the first slice opens
@@ -1174,13 +1484,13 @@ jobs:
       # merges. Nothing else in that body is touched: an old slices table stays
       # where it is, as history.
       - name: Open or reuse the PRD PR
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && steps.catch_up.outputs.parked != 'true' && success()
+        if: needs.gate.result == 'success' && needs.gate.outputs.finishing == 'false' && (needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()
         id: prd_pr
         env:
-          PRD_BRANCH: ${{ steps.preflight.outputs.prd_branch }}
-          SUB: ${{ steps.preflight.outputs.sub }}
-          SUB_K: ${{ steps.preflight.outputs.sub_k }}
-          SUBS: ${{ steps.preflight.outputs.subs }}
+          PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
+          SUB: ${{ needs.gate.outputs.sub }}
+          SUB_K: ${{ needs.gate.outputs.sub_k }}
+          SUBS: ${{ needs.gate.outputs.subs }}
           # The Actions bot may not create a PR. A user PAT is not the Actions
           # bot, so it bypasses that; fall back to GITHUB_TOKEN so the shape
           # stays identical in a setup without the secret.
@@ -1316,7 +1626,7 @@ jobs:
       # for review. So it fails into `Mark blocked on failure`, whose comment
       # names the PRD PR to label by hand.
       - name: Request review
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'false' && steps.catch_up.outputs.parked != 'true' && success()
+        if: needs.gate.result == 'success' && needs.gate.outputs.finishing == 'false' && (needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()
         env:
           PRD_PR: ${{ steps.prd_pr.outputs.number }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
@@ -1379,13 +1689,13 @@ jobs:
       # Needs AGENT_PAT either way, and refuses without it rather than doing
       # half. `gh pr ready` cannot convert a draft under GITHUB_TOKEN, and a
       # label added with it starts no review.
-      - name: "Hand over PRD PR #${{ steps.preflight.outputs.prd_pr }}"
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.finishing == 'true' && success()
+      - name: "Hand over PRD PR #${{ needs.gate.outputs.prd_pr }}"
+        if: needs.gate.result == 'success' && needs.gate.outputs.finishing == 'true' && success()
         id: handover
         env:
-          PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
-          LANDED: ${{ steps.preflight.outputs.landed }}
-          SUBS: ${{ steps.preflight.outputs.subs }}
+          PRD_PR: ${{ needs.gate.outputs.prd_pr }}
+          LANDED: ${{ needs.gate.outputs.landed }}
+          SUBS: ${{ needs.gate.outputs.subs }}
           SERVER_URL: ${{ github.server_url }}
           HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
@@ -1457,43 +1767,70 @@ jobs:
             echo "Marked PRD PR #${PRD_PR} ready: its one slice's round was the review of the whole PR."
           fi
 
+      # Any of the four jobs: `gate` failing (this job's own `if:` lets a
+      # failed gate through, since its `refused` is `!= 'true'` there), the
+      # catch-up failing, the agent's job failing, timing out or being
+      # cancelled, or a step here. `failure()` in this job sees an ancestor
+      # job's failure too, but not a cancelled one, so each result is read by
+      # name. A skipped job is not one of them: the catch-up and the agent's
+      # job are skipped on a run that builds nothing, and the agent's on a
+      # parked chain.
+      #
       # `!= 'true'`, not `== 'false'`: a preflight that fails hard exits before
       # writing the output at all, and `''` is not `'false'` — an equality gate
       # would skip this step precisely when the PRD most needed the comment.
-      # Refusals and deferrals exit 0, so `failure()` keeps them out regardless
-      # — all but the preflight's `block`, which exits 1 to land here.
+      # Refusals and deferrals exit 0 and set `refused`, so neither reaches
+      # this job at all; the preflight's `block` is the exception, which exits
+      # 1 to land here.
       #
       # In the loop's one order (#236): the comment, then this run's own label
       # off, then `agent:blocked`. The removal only where the preflight decided
       # the issue was this run's, for the last step's reason below.
       - name: Mark blocked on failure
-        if: steps.preflight.outputs.refused != 'true' && (failure() || cancelled())
+        if: always() && (failure() || cancelled() || needs.gate.result != 'success' || needs.catch_up.result == 'failure' || needs.catch_up.result == 'cancelled' || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled')
         env:
+          # How each job ahead of this one ended, and this job's own status for
+          # a cancel that lands while it runs. `job.status` rather than
+          # `cancelled()`, which GitHub allows only in an `if:`.
+          GATE_RESULT: ${{ needs.gate.result }}
+          CATCH_UP_RESULT: ${{ needs.catch_up.result }}
+          AGENT_RESULT: ${{ needs.implement-prd.result }}
           JOB_STATUS: ${{ job.status }}
-          REFUSED: ${{ steps.preflight.outputs.refused }}
+          JOB_STARTED: ${{ needs.gate.outputs.started }}
+          REFUSED: ${{ needs.gate.outputs.refused }}
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
-          SUB: ${{ steps.preflight.outputs.sub }}
+          SUB: ${{ needs.gate.outputs.sub }}
           PUSHED: ${{ steps.push.outputs.head }}
-          MERGED: ${{ steps.catch_up.outputs.merged }}
-          PRD_PR: ${{ steps.prd_pr.outputs.number || steps.preflight.outputs.prd_pr }}
-          FINISHING: ${{ steps.preflight.outputs.finishing }}
+          MERGED: ${{ needs.catch_up.outputs.merged }}
+          PRD_PR: ${{ steps.prd_pr.outputs.number || needs.gate.outputs.prd_pr }}
+          FINISHING: ${{ needs.gate.outputs.finishing }}
         run: |
           reason="It stopped without giving a reason. The workflow run's log has the details."
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
           # Cancelled is not failed (#220), and a job that reached its limit
-          # is cancelled too. What tells the two apart is the clock the first
-          # step started: a timed-out job ran its whole limit, less the moment
-          # the runner took to reach that step, hence a minute's slack. A
+          # is cancelled too. What tells the two apart is the clock `gate`
+          # started just before the jobs that build: a timed-out job ran its
+          # whole limit, and the time since that clock is at least that. A
           # reason file is not read on either; what wrote one was stopped, not
           # failing. The labels and the retry are a failure's, word for word.
+          #
+          # The clock is read on a failure that left no reason file too: the
+          # agent's result here is the `needs` context's, and a runner that
+          # wrote no reason did not end on its own terms either way.
           # The limit is compared only where it is a positive integer: `fromJSON`
           # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
           # `bash -e` that would end this step before its comment. A limit the
           # step cannot compare reads as a cancel, which is still said.
-          if [ "$JOB_STATUS" = "cancelled" ]; then
+          stopped=false
+          if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$CATCH_UP_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
+            stopped=true
             reason="It was cancelled before it finished, by hand or by GitHub."
+          elif [ "$AGENT_RESULT" = "failure" ] && [ ! -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
+            stopped=true
+          fi
+          if [ "$stopped" = "true" ]; then
             if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
               reason="It timed out after ${TIMEOUT_MINUTES} minutes. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises the limit."
             fi
@@ -1567,10 +1904,10 @@ jobs:
       # (`spliceProgressList`, held equal by a test). Never fails the job, and
       # after the comment and the labels: the list is a view of the chain.
       - name: Show the stopped slice in the progress list
-        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.catch_up.outputs.parked != 'true' && (failure() || cancelled())
+        if: always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && needs.catch_up.outputs.parked != 'true' && (failure() || cancelled() || needs.catch_up.result != 'success' || needs.implement-prd.result != 'success')
         env:
           PUSHED: ${{ steps.push.outputs.head }}
-          PRD_PR: ${{ steps.prd_pr.outputs.number || steps.preflight.outputs.prd_pr }}
+          PRD_PR: ${{ steps.prd_pr.outputs.number || needs.gate.outputs.prd_pr }}
           GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
           # `PROGRESS_START`, `PROGRESS_END`, `STATUS_START` and `STATUS_END`
           # in `shared/progress-list.ts`; a test holds them equal.
@@ -1632,5 +1969,5 @@ jobs:
       # and holds the label while it works. Such a run leaves it on, as it
       # always has, and the failure comment says to remove it before re-adding.
       - name: Always remove the trigger label
-        if: always() && steps.preflight.outputs.refused == 'false'
+        if: always() && needs.gate.outputs.refused == 'false'
         run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" || true

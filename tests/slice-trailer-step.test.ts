@@ -39,8 +39,9 @@ interface Workflow {
   readonly jobs: Record<string, { readonly steps?: readonly Step[] }>;
 }
 
+/** Every step of the run, in the order its jobs run (#308). */
 const steps = (): readonly Step[] =>
-  (parse(fs.readFileSync(PRD, "utf8")) as Workflow).jobs["implement-prd"]?.steps ?? [];
+  Object.values((parse(fs.readFileSync(PRD, "utf8")) as Workflow).jobs).flatMap((job) => job.steps ?? []);
 
 const PRD_BRANCH = "agent/prd-222-slices";
 const SUB = "242";

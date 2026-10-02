@@ -76,58 +76,73 @@ on:
           draft under a warning saying so.
         required: false
 
+# One group per PR, shared with agent-update-branch (which pushes this same
+# branch) and agent-review (which reads it). Review was outside the group
+# until jeffwlawson/winget-manifest-lint#102 on the grounds that
+# `contents: read` makes it harmless — but the race was never review
+# writing, it was review *reading* mid-push, so a review could describe a
+# tree that never existed. Nothing wants review and a mutate to overlap on
+# one PR.
+#
+# On the workflow rather than on a job, because the run is three jobs that
+# hand off to each other (see `implement.yml`'s note on its own group): a
+# job-level group is released between them, and another run on this pull
+# request could push between this run's agent and its push.
+#
+# A workflow-level group is entered before any job's `if:` is evaluated
+# (probed, #309), and a group admits one pending run, cancelling the one it
+# replaces. So an event for any other label takes a group of its own, keyed
+# by its run id: otherwise adding a triage label while a run is in progress
+# would cancel an `agent:fix` run waiting behind it, and nothing would say so.
+concurrency:
+  group: agent-pr-${{ github.event.pull_request.number }}${{ github.event.label.name != 'agent:fix' && format('-other-{0}', github.run_id) || '' }}
+  cancel-in-progress: false
+
+# **Three jobs, and the agent's holds nothing it could use to write**, for
+# the reason `implement.yml` gives in full: the agent can read every secret
+# its own job names, from the runner process's memory, and leave something
+# behind for a later step on its runner. So `gate` refuses or claims the pull
+# request; `fix` runs the agent with a read-only token, names no PAT anywhere,
+# and hands over its commits as a `git bundle` with the files the runner
+# wrote; and `publish` starts on a fresh runner, checks the bundle, and
+# pushes, replies and asks for the re-review.
+#
+# The permissions differ per job, and the caller grants the union: what
+# `publish` spends. The caller is unchanged.
 jobs:
-  fix:
+  gate:
     # Job-level, so a fork PR skips before a runner is provisioned — no
     # checkout, no dependency install, no secrets. Fails closed: a deleted fork
-    # gives head.repo == null, which also skips.
+    # gives head.repo == null, which also skips. The two jobs after it follow
+    # from its outputs, so this is the one guard.
     if: >-
       github.event.label.name == 'agent:fix' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
-    # shared by the four jobs that run an agent to write code, and 30 where it
-    # is not. `vars` is among the contexts this key may read, and in a called
-    # workflow it resolves against the caller's repository. `fromJSON` because
-    # a variable is a string and this key wants a number; a value that is not
-    # one fails the job before any step, which `doctor` reports. The failure
-    # step below names the same figure.
-    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
-    # One group per PR, shared with agent-update-branch (which pushes this same
-    # branch) and agent-review (which reads it). Review was outside the group
-    # until jeffwlawson/winget-manifest-lint#102 on the grounds that
-    # `contents: read` makes it harmless — but the race was never review
-    # writing, it was review *reading* mid-push, so a review could describe a
-    # tree that never existed. Nothing wants review and a mutate to overlap on
-    # one PR.
-    concurrency:
-      group: agent-pr-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
-    # Granted by the caller, bounded here. A called workflow can only *downgrade*
-    # the token it is handed, so this block cannot be widened from the caller's
-    # side — and the caller's identical block is the grant, without which there
+    # API calls and a bounded wait for a review's posting; the agent's own
+    # limit is on its job.
+    timeout-minutes: 15
+    # Granted by the caller, bounded here, per job. A called workflow can only
+    # *downgrade* the token it is handed, so each job's block is its ceiling
+    # and the caller's grant has to cover the widest of them — without it there
     # is no run to make a `gh` call in: GitHub refuses the elevation rather than
-    # trimming this job to fit, so a caller granting less than this block
-    # declares fails before any job starts (probed, #146).
+    # trimming a job to fit, so a caller granting less than a block declares
+    # fails before any job starts (probed, #146).
     permissions:
-      contents: write
-      # Installing the runner package. GitHub Packages has no anonymous install,
-      # so this is needed even though the package is public — and, being a
-      # bound, it grants nothing without the caller's own `packages: read`.
-      packages: read
+      # The live head, read with `git ls-remote`.
+      contents: read
+      # The refusals and the label transitions.
       pull-requests: write
+    outputs:
+      # `false` where the run goes ahead, `true` where it refused, and empty
+      # where the pre-flight died before deciding: the three `refused` takes
+      # in `implement.yml`, so the jobs after it read one word the same way.
+      refused: ${{ steps.state.outputs.proceed == 'true' && 'false' || steps.state.outputs.proceed == 'false' && 'true' || '' }}
+      started: ${{ steps.clock.outputs.started }}
 
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
-      # The PR's real base branch — pr-feedback.ts diffs HEAD against this for
-      # the DIFF context. A hardcoded `main` describes work the PR does not own
-      # on any PR stacked on another branch
-      # (jeffwlawson/winget-manifest-lint#71). The event field is the source;
-      # `default-branch` is the fallback for an event that somehow carries none,
-      # which is the adopter's call to make rather than a literal `main` buried
-      # in a shell expansion.
-      BASE_REF: ${{ github.event.pull_request.base.ref || inputs.default-branch }}
       BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_STATE: ${{ github.event.pull_request.state }}
       PR_MERGED: ${{ github.event.pull_request.merged }}
@@ -135,15 +150,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
-      # The clock the failure step reads a time limit off (#220). A job that
-      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
-      # the `job` context says which cancellation it was, so that step compares
-      # how long the job ran with its limit. First, so it starts as near the
-      # job's own start as a step can.
-      - name: Start the clock
-        run: echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
-
-      # And refuse if the event's head SHA is not the branch's live head (#188).
+      # Refuse if the event's head SHA is not the branch's live head (#188).
       # Everything after this is pinned to that SHA — the checkout, and the
       # push's `--force-with-lease` — so a run started behind the branch
       # fast-forwards onto work already done, finds nothing to do, and re-posts
@@ -271,15 +278,66 @@ jobs:
             sleep "$POST_POLL_SECONDS"
           done
 
-      - name: Checkout PR head
+      # The clock the failure step reads a time limit off (#220). A job that
+      # reaches its `timeout-minutes` is cancelled, not failed, and nothing in
+      # the `needs` context says which cancellation it was, so that step
+      # compares how long the agent's job could have run with its limit. Last
+      # in this job, so it starts as near the agent's job as a step here can,
+      # and is read from this job's outputs rather than the agent's, which a
+      # step there could rewrite.
+      - name: Start the agent's clock
         if: steps.state.outputs.proceed == 'true'
+        id: clock
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+  fix:
+    needs: gate
+    if: needs.gate.outputs.refused == 'false'
+    runs-on: ubuntu-latest
+    # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
+    # shared by the four jobs that run an agent to write code, and 30 where it
+    # is not. `vars` is among the contexts this key may read, and in a called
+    # workflow it resolves against the caller's repository. `fromJSON` because
+    # a variable is a string and this key wants a number; a value that is not
+    # one fails the job before any step, which `doctor` reports. The failure
+    # step in `publish` names the same figure.
+    timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
+    # **Read-only, and no PAT named anywhere in this job.** Not even in a step
+    # that never runs: a secret is delivered to every job whose text names it.
+    permissions:
+      # The checkout.
+      contents: read
+      # Installing the runner package. GitHub Packages has no anonymous install,
+      # so this is needed even though the package is public — and, being a
+      # bound, it grants nothing without the caller's own `packages: read`.
+      packages: read
+      # The runner reads the pull request's threads and comments.
+      pull-requests: read
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      # The PR's real base branch — pr-feedback.ts diffs HEAD against this for
+      # the DIFF context. A hardcoded `main` describes work the PR does not own
+      # on any PR stacked on another branch
+      # (jeffwlawson/winget-manifest-lint#71). The event field is the source;
+      # `default-branch` is the fallback for an event that somehow carries none,
+      # which is the adopter's call to make rather than a literal `main` buried
+      # in a shell expansion.
+      BASE_REF: ${{ github.event.pull_request.base.ref || inputs.default-branch }}
+      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout PR head
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           # No credential is left in the checkout for the agent's git, or
-          # anything else it runs, to find. Each fetch and push below passes
-          # its own token on the command line instead.
+          # anything else it runs, to find. Nothing in this job pushes: the
+          # publish job pushes, from a checkout of its own.
           persist-credentials: false
 
       # Shell-safe despite ref names being able to contain `$()`, backticks, `;`,
@@ -299,11 +357,10 @@ jobs:
       # run block is an "An expression was expected" startup failure. That is
       # what took this workflow down for two days; see tests/workflows.test.ts.
       - name: Prepare branch and make the PR base available for diffing
-        if: steps.state.outputs.proceed == 'true'
         run: |
           set -euo pipefail
           # The checkout persists no credential, so the fetch carries the job's
-          # read token itself, as `Push branch` carries its own.
+          # read token itself, as the publish job's push carries its own.
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           echo "::add-mask::${auth}"
           git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
@@ -316,7 +373,7 @@ jobs:
       # agent's own runtime, and every runner image already has the Node it
       # needs for it.
       - name: Setup Node.js
-        if: steps.state.outputs.proceed == 'true' && inputs.node-version-file != ''
+        if: inputs.node-version-file != ''
         uses: actions/setup-node@v7
         with:
           node-version-file: ${{ inputs.node-version-file }}
@@ -327,12 +384,11 @@ jobs:
       # from: a literal in a workflow file, which `pull_request_target` reads
       # from the default branch, and never an expression reading the PR event.
       - name: Install dependencies
-        if: steps.state.outputs.proceed == 'true' && inputs.setup != ''
+        if: inputs.setup != ''
         run: |
           ${{ inputs.setup }}
 
       - name: Install Claude Code
-        if: steps.state.outputs.proceed == 'true'
         run: npm install -g @anthropic-ai/claude-code
 
       # The runner package lives on GitHub Packages, which has no anonymous
@@ -343,7 +399,6 @@ jobs:
       # cache opt-out belongs to the same note: this half declares no toolchain,
       # so it must not infer one.
       - name: Authenticate to GitHub Packages
-        if: steps.state.outputs.proceed == 'true'
         uses: actions/setup-node@v7
         with:
           registry-url: https://npm.pkg.github.com
@@ -361,7 +416,6 @@ jobs:
       # a reason to stop — and "nothing was said" must never be the sentence a
       # human is shown for "we were not allowed to look".
       - name: Run fix agent
-        if: steps.state.outputs.proceed == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -395,9 +449,10 @@ jobs:
       # readable by anyone who can see the repository, and the agent's
       # environment holds `CLAUDE_CODE_OAUTH_TOKEN`, so a transcript where it
       # printed that environment carries the token. Every secret this job holds
-      # is replaced with `[REDACTED]` in a copy, the two GitHub tokens also in
-      # the basic-auth form a checkout's git config holds them in, and only the
-      # copy is uploaded.
+      # is replaced with `[REDACTED]` in a copy, the job token also in the
+      # basic-auth form a checkout's git config holds it in, and only the copy
+      # is uploaded. The script is the one every agent workflow runs; it skips
+      # the PAT where its job holds none, as this one does.
       #
       # `always()`, so a failed, cancelled or timed-out run keeps its record
       # too, and `continue-on-error`, so the record never fails the run it
@@ -410,7 +465,6 @@ jobs:
         continue-on-error: true
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          AGENT_PAT: ${{ secrets.AGENT_PAT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'PY'
@@ -456,6 +510,112 @@ jobs:
           retention-days: ${{ inputs.transcript-retention-days }}
           overwrite: true
 
+      # The agent's commits, as the one thing `publish` pushes. A bundle rather
+      # than a push from here: this job holds no token that can write, and the
+      # runner that ran the agent is not one to spend a token on. Thin, the
+      # head this run checked out being its prerequisite, which `publish` has
+      # from its own checkout, and holding exactly the pull request's branch.
+      # No commits is no bundle, which `publish` reads as nothing to push.
+      - name: Bundle the branch
+        if: success()
+        run: |
+          if [ -z "$(git rev-list -n 1 "${BRANCH_HEAD_SHA}..refs/heads/${BRANCH}")" ]; then
+            echo "No new commits, so there is nothing to bundle."
+            exit 0
+          fi
+          git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}"
+
+      # The bundle, and every file the runner wrote for a step that posts: the
+      # reason file on a failure, the nothing-to-do note, the thread replies,
+      # the conversation record, the top-level comments and the out-of-scope
+      # notes. One artifact, `always()`, because a failed run is one of the
+      # outcomes `publish` reports, and any of them may be missing. Uploading
+      # needs no scope: the artifact service takes the runner's own token, so
+      # this job stays read-only. `overwrite`, so a re-run replaces this
+      # attempt's copy rather than failing on the name.
+      #
+      # What this job hands over is the agent's to write, whatever a step here
+      # meant it to be. So `publish` takes nothing from it but this artifact,
+      # which it checks, and reads nothing from this job's outputs.
+      - name: Hand the branch to the publish job
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-fix
+          path: |
+            ${{ runner.temp }}/branch.bundle
+            ${{ runner.temp }}/failure_reason.txt
+            ${{ runner.temp }}/nothing_to_do.txt
+            ${{ runner.temp }}/thread_outcomes.json
+            ${{ runner.temp }}/conversation_outcomes.md
+            ${{ runner.temp }}/top_level_comments.json
+            ${{ runner.temp }}/out_of_scope_notes.json
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    needs: [gate, fix]
+    # `always()`, so a failed, cancelled or timed-out agent is still reported
+    # and its trigger label still taken off. Not where the gate was skipped
+    # (another label's event, or a fork) or refused: that run said what it
+    # had to. A pre-flight that died before deciding leaves `refused` empty
+    # and comes through, so the label still comes off, as it always has.
+    if: always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
+    runs-on: ubuntu-latest
+    # A clone, a push and some API calls, and a bounded wait for the PR's head.
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      # Into `RUNNER_TEMP`, where every step below looks for the runner's files
+      # as it did when the agent ran in this job. Tolerated: an agent's job
+      # that was killed before its upload leaves nothing to fetch, and the
+      # failure step still has to run.
+      - name: Fetch what the agent handed over
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-fix
+          path: ${{ runner.temp }}
+
+      # **A finished agent's hand-over must have arrived**, because every step
+      # below reads a missing file as "nothing of that kind": no bundle as no
+      # commits, no outcomes as no replies. Lost whole, it would push nothing,
+      # say nothing and mark the PR ready, green, with the agent's work
+      # dropped. A runner that ends well writes one of these two files every
+      # time, so neither is the hand-over missing, and the run fails into
+      # `Mark blocked on failure` with that said.
+      - name: Check the agent's hand-over arrived
+        if: needs.fix.result == 'success'
+        run: |
+          if [ -f "${RUNNER_TEMP}/thread_outcomes.json" ] || [ -f "${RUNNER_TEMP}/nothing_to_do.txt" ]; then
+            exit 0
+          fi
+          reason="The agent finished, but what it handed over did not arrive, so nothing was pushed or posted."
+          printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
+          echo "::error::${reason}"
+          exit 1
+
+      - name: Checkout PR head
+        if: needs.fix.result == 'success'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          # Nothing the agent touched is on this runner, and the push below
+          # passes its token on its own command, as everywhere else.
+          persist-credentials: false
+
       # A fix with nothing to act on is a note, not a failure (#253): no
       # `agent:blocked`, and the run ends green. But it is not a round that
       # ended, the way one that declined everything is: nothing was read, so
@@ -466,7 +626,7 @@ jobs:
       # with nothing for it to rule on.
       - name: Say there was nothing to do
         id: nothing
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: needs.fix.result == 'success' && success()
         run: |
           [ -f "${RUNNER_TEMP}/nothing_to_do.txt" ] || exit 0
           echo "nothing=true" >> "$GITHUB_OUTPUT"
@@ -484,25 +644,50 @@ jobs:
       # branch that did not move is not one to ask for a review of.
       - name: Push branch
         id: push
-        if: steps.state.outputs.proceed == 'true' && success() && steps.nothing.outputs.nothing != 'true'
+        if: needs.fix.result == 'success' && success() && steps.nothing.outputs.nothing != 'true'
         # The checkout persists no credential, so the token reaches git here,
         # for the push alone, as a masked header. Why, and what that does not
         # cover, is the note on implement.yml's `Push branch`.
+        #
+        # **The bundle is checked before anything is pushed from it**, as
+        # implement.yml's is: intact, exactly the pull request's branch and
+        # nothing else, and built on the head this run was started for. Its
+        # content is the agent's to write and the review's to judge.
         env:
           PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "$(git log origin/"$BRANCH"..HEAD --oneline 2>/dev/null)" ]; then
+          bundle="${RUNNER_TEMP}/branch.bundle"
+
+          block() {
+            printf '%s\n' "$1" > "${RUNNER_TEMP}/failure_reason.txt"
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [ ! -f "$bundle" ]; then
             echo "No new commits, so there is nothing to push."
             echo "pushed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          git bundle verify --quiet "$bundle" \
+            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
+          git bundle unbundle "$bundle" > /dev/null \
+            || block "The agent's commits arrived damaged or incomplete, so nothing was pushed."
+          heads=$(git bundle list-heads "$bundle")
+          if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${BRANCH}" ]; then
+            block "The agent's commits arrived on a branch other than \`${BRANCH}\`, or beside other branches, so nothing was pushed."
+          fi
+          git update-ref "refs/heads/${BRANCH}" "$(cut -d' ' -f1 <<< "$heads")"
+          git merge-base --is-ancestor "$BRANCH_HEAD_SHA" "refs/heads/${BRANCH}" \
+            || block "The agent's commits don't build on the PR's head as this run found it, so nothing was pushed."
+
           auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
           echo "::add-mask::${auth}"
           git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"
           {
             echo "pushed=true"
-            echo "head=$(git rev-parse HEAD)"
+            echo "head=$(git rev-parse "refs/heads/${BRANCH}")"
           } >> "$GITHUB_OUTPUT"
 
       # Reply into every thread the agent reported on, and resolve **none** of
@@ -521,7 +706,7 @@ jobs:
       # lookup is needed. Runs even when the agent made no commits: "I looked
       # and declined" is still worth saying out loud.
       - name: Reply to review threads
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: needs.fix.result == 'success' && success()
         continue-on-error: true
         env:
           OUTCOMES: ${{ runner.temp }}/thread_outcomes.json
@@ -563,7 +748,7 @@ jobs:
       # it empty when there is nothing to record, so an empty file is "no
       # conversation comments" and an absent one is a runner that never got here.
       - name: Post conversation comment outcomes
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: needs.fix.result == 'success' && success()
         continue-on-error: true
         env:
           RECORD: ${{ runner.temp }}/conversation_outcomes.md
@@ -594,7 +779,7 @@ jobs:
       # deliberately NOT: an agent that raises work does not file it
       # (docs/parity.md §10).
       - name: Post top-level comments
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: needs.fix.result == 'success' && success()
         continue-on-error: true
         env:
           COMMENTS: ${{ runner.temp }}/top_level_comments.json
@@ -629,7 +814,7 @@ jobs:
       # one no review can rule on.
       - name: Post out-of-scope notes
         id: notes
-        if: steps.state.outputs.proceed == 'true' && success()
+        if: needs.fix.result == 'success' && success()
         continue-on-error: true
         env:
           NOTES: ${{ runner.temp }}/out_of_scope_notes.json
@@ -708,7 +893,7 @@ jobs:
       # again. What is missing is the review, so the remedy names the review.
       - name: Request re-review
         if: >-
-          steps.state.outputs.proceed == 'true' && success() &&
+          needs.fix.result == 'success' && success() &&
           (steps.push.outputs.pushed == 'true' || steps.notes.outputs.posted == 'true' ||
            (startsWith(github.event.pull_request.head.ref, 'agent/prd-') && steps.push.outputs.pushed == 'false'))
         env:
@@ -793,7 +978,7 @@ jobs:
       # reply.
       - name: Mark PR ready for review
         if: >-
-          steps.state.outputs.proceed == 'true' && success() &&
+          needs.fix.result == 'success' && success() &&
           steps.push.outputs.pushed != 'true' && steps.notes.outputs.posted != 'true' &&
           steps.nothing.outputs.nothing != 'true' &&
           !startsWith(github.event.pull_request.head.ref, 'agent/prd-')
@@ -813,12 +998,24 @@ jobs:
       # review verifies the fix, so a second fix run re-reads feedback this one
       # has already acted on and answers it twice.
       #
+      # Any of the three jobs, where the gate claimed the pull request: the
+      # gate failing after it did, the agent's job failing, timing out or
+      # being cancelled, or a step here. `failure()` in this job sees an
+      # ancestor job's failure too, but not a cancelled one, so each result is
+      # read by name.
+      #
       # In the loop's one order (#236): the comment, then this run's own label
       # off, then `agent:blocked`.
       - name: Mark blocked on failure
-        if: steps.state.outputs.proceed == 'true' && (failure() || cancelled())
+        if: always() && needs.gate.outputs.refused == 'false' && (failure() || cancelled() || needs.gate.result != 'success' || needs.fix.result != 'success')
         env:
+          # How each job ahead of this one ended, and this job's own status for
+          # a cancel that lands while it runs. `job.status` rather than
+          # `cancelled()`, which GitHub allows only in an `if:`.
+          GATE_RESULT: ${{ needs.gate.result }}
+          AGENT_RESULT: ${{ needs.fix.result }}
           JOB_STATUS: ${{ job.status }}
+          JOB_STARTED: ${{ needs.gate.outputs.started }}
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUSHED: ${{ steps.push.outputs.pushed }}
@@ -829,17 +1026,27 @@ jobs:
             reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
           fi
           # Cancelled is not failed (#220), and a job that reached its limit
-          # is cancelled too. What tells the two apart is the clock the first
-          # step started: a timed-out job ran its whole limit, less the moment
-          # the runner took to reach that step, hence a minute's slack. A
-          # reason file is not read on either; what wrote one was stopped, not
+          # is cancelled too. What tells the two apart is the clock the gate
+          # started just before the agent's job: a timed-out job ran its whole
+          # limit, and the time since that clock is at least that. A reason
+          # file is not read on either; what wrote one was stopped, not
           # failing. The labels and the retry are a failure's, word for word.
+          #
+          # The clock is read on a failure that left no reason file too: the
+          # agent's result here is the `needs` context's, and a runner that
+          # wrote no reason did not end on its own terms either way.
           # The limit is compared only where it is a positive integer: `fromJSON`
           # accepts `1.5` and `1e1`, which bash arithmetic refuses, and under
           # `bash -e` that would end this step before its comment. A limit the
           # step cannot compare reads as a cancel, which is still said.
-          if [ "$JOB_STATUS" = "cancelled" ]; then
+          stopped=false
+          if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
+            stopped=true
             reason="It was cancelled before it finished, by hand or by GitHub."
+          elif [ "$AGENT_RESULT" = "failure" ] && [ ! -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
+            stopped=true
+          fi
+          if [ "$stopped" = "true" ]; then
             if [ -n "${JOB_STARTED:-}" ] && [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] && [ $(( $(date +%s) - JOB_STARTED )) -ge $(( TIMEOUT_MINUTES * 60 - 60 )) ]; then
               reason="It timed out after ${TIMEOUT_MINUTES} minutes. The repository variable \`AGENT_TIMEOUT_MINUTES\` raises the limit."
             fi
@@ -863,9 +1070,9 @@ jobs:
 
       # The trigger label comes off however the run ends (#236): success,
       # failure, refusal, timeout or cancel, so it never outlives the run.
-      # `always()` alone, so a pre-flight that died before deciding is covered
-      # too; a refusal took it off already, and removing an absent label leaves
-      # nothing on the timeline.
+      # `always()` alone, in a job that runs wherever the gate did not refuse,
+      # so a pre-flight that died before deciding is covered too; a refusal
+      # took it off already.
       #
       # Unlike review and update-branch, a fix run whose pull request moved
       # while it worked does **not** ask for itself again. A second fix run

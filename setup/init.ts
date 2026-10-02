@@ -624,16 +624,35 @@ const storeAppSecrets = (
   present: readonly string[],
 ): readonly InitChange[] => {
   const placement = placementFor(app, owner);
-  const where =
-    placement.level === "organization"
-      ? `on the organization ${placement.org}, for every repository in it`
-      : `on this repository`;
+  const whereOf = (at: SecretPlacement): string =>
+    at.level === "organization" ? `on the organization ${at.org}, for every repository in it` : `on this repository`;
   const [id, key] = APP_SECRETS;
+  // An organization that refuses is retried on the repository (#330 review):
+  // an org admin's `gh` commonly lacks the `admin:org` scope an organization
+  // secret needs, and the key exists only here, so a refusal with nowhere
+  // else tried costs the adopter a new key. Every workflow here reads a
+  // repository secret as well as an organization's, so either place works.
   const store = (name: string, value: string, byHand: string): InitChange => {
+    const done = (at: SecretPlacement, note: string): InitChange => ({
+      file: secretChange(name),
+      action: present.includes(name) ? "updated" : "created",
+      note: `${whereOf(at)}${note}`,
+    });
     const refused = app.setSecret(name, value, placement);
-    return refused === undefined
-      ? { file: secretChange(name), action: present.includes(name) ? "updated" : "created", note: where }
-      : { file: secretChange(name), action: "kept", note: `GitHub refused to store it ${where} (${refused}); ${byHand}` };
+    if (refused === undefined) return done(placement, "");
+    if (placement.level === "organization") {
+      const fallback: SecretPlacement = { level: "repository" };
+      const again = app.setSecret(name, value, fallback);
+      if (again === undefined) {
+        return done(fallback, `, since GitHub refused it on the organization ${placement.org} (${refused})`);
+      }
+      return {
+        file: secretChange(name),
+        action: "kept",
+        note: `GitHub refused to store it on the organization ${placement.org} (${refused}) and on this repository (${again}); ${byHand}`,
+      };
+    }
+    return { file: secretChange(name), action: "kept", note: `GitHub refused to store it ${whereOf(placement)} (${refused}); ${byHand}` };
   };
   return [
     store(id, String(registered.id), `set it to ${registered.id}`),

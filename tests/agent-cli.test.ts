@@ -1509,6 +1509,50 @@ describe("init creates the loop's GitHub App", () => {
     );
   });
 
+  /**
+   * An org admin's `gh` commonly lacks `admin:org`, which an organization
+   * secret needs (#330 review): each write refused there is retried on the
+   * repository, which every workflow here also reads.
+   */
+  it("stores on the repository where the organization refuses", async () => {
+    const scenario = app({ secrets: [], admin: true });
+    const tried: string[] = [];
+    const surface: AppSurface = {
+      ...scenario.surface,
+      setSecret: (name, _value, placement) => {
+        tried.push(`${name} ${placement.level}`);
+        return placement.level === "organization" ? "HTTP 403: needs admin:org" : undefined;
+      },
+    };
+
+    const changes = await run(surface);
+
+    expect(tried).toEqual([
+      "AGENT_APP_ID organization",
+      "AGENT_APP_ID repository",
+      "AGENT_APP_PRIVATE_KEY organization",
+      "AGENT_APP_PRIVATE_KEY repository",
+    ]);
+    for (const name of ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"]) {
+      const change = changes.find((c) => c.file === `secret ${name}`);
+      expect(change?.action).toBe("created");
+      expect(change?.note).toContain("on this repository, since GitHub refused it on the organization acme (HTTP 403: needs admin:org)");
+    }
+  });
+
+  it("names where to make a new key when the organization and the repository both refuse", async () => {
+    const scenario = app({ secrets: [], admin: true });
+    const surface: AppSurface = { ...scenario.surface, setSecret: (_n, _v, p) => `HTTP 403: no ${p.level}` };
+
+    const changes = await run(surface);
+
+    const key = changes.find((c) => c.file === "secret AGENT_APP_PRIVATE_KEY");
+    expect(key?.action).toBe("kept");
+    expect(key?.note).toContain("(HTTP 403: no organization) and on this repository (HTTP 403: no repository)");
+    expect(key?.note).toContain("https://github.com/organizations/acme/settings/apps/acme-loop-bot");
+    expect(key?.note).not.toContain("PRIVATE KEY-----");
+  });
+
   it("names where to make a new key when GitHub refuses to store it", async () => {
     const scenario = app({ secrets: [], admin: false });
     const surface: AppSurface = { ...scenario.surface, setSecret: () => "HTTP 403: Resource not accessible" };

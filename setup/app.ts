@@ -242,6 +242,17 @@ export const manifestFlow = (options: ManifestFlowOptions): Promise<RegisteredAp
         response.end(body, after);
       };
 
+      // Every request names the address the server listens on, or is refused
+      // before anything is read or served. A page that rebinds its own
+      // hostname to this port reaches the server with its own name in `Host`,
+      // and could otherwise read the form, `state` and all, and answer the
+      // callback with a code for an App of its choosing (#330 review). The
+      // browser this sent here, and GitHub's redirect back, both name
+      // `127.0.0.1:<port>`.
+      if (base === "" || request.headers.host !== base.replace(/^http:\/\//, "")) {
+        reply(421, donePage("This request was not addressed to the setup that is waiting, so it was ignored."));
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/") {
         const manifest = JSON.stringify({ ...options.manifest, redirect_url: `${base}/callback` });
         reply(200, formPage(createAppUrl(options.owner, options.web, state), manifest));

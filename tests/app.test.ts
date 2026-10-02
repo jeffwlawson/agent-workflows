@@ -127,6 +127,45 @@ describe("the manifest flow creates the loop's App", () => {
     expect((outcome as RegisteredApp).slug).toBe("acme-loop-bot");
   });
 
+  /**
+   * A page that rebinds its hostname to the local port reaches the server
+   * with its own name in `Host` (#330 review). Refused on the form, which
+   * carries `state`, and on the callback, even one carrying the right state.
+   */
+  it("refuses a request addressed to any host but the one it listens on", async () => {
+    const { api, requests } = await fakeGitHub(conversion);
+    const as = (url: string, host: string): Promise<{ status: number; body: string }> =>
+      new Promise((done, fail) => {
+        const target = new URL(url);
+        http
+          .get({ hostname: target.hostname, port: target.port, path: `${target.pathname}${target.search}`, headers: { Host: host } }, (response) => {
+            let body = "";
+            response.on("data", (chunk: Buffer) => (body += chunk.toString()));
+            response.on("end", () => done({ status: response.statusCode ?? 0, body }));
+          })
+          .on("error", fail);
+      });
+
+    const { outcome, seen } = await flow({ login: "acme", organization: true }, api, async (url) => {
+      const form = await readForm(url);
+      const callback = String(form.manifest["redirect_url"]);
+      const page = await as(url, `evil.example:${new URL(url).port}`);
+      const local = await as(url, `localhost:${new URL(url).port}`);
+      const rebound = await as(`${callback}?code=forged&state=${form.state}`, "evil.example");
+      const exchangedBefore = requests.length;
+      await fetch(`${callback}?code=abc&state=${form.state}`);
+      return { page, local: local.status, rebound: rebound.status, exchangedBefore };
+    });
+
+    expect(seen.page.status).toBe(421);
+    expect(seen.page.body).not.toContain("state=");
+    expect(seen.local).toBe(421);
+    expect(seen.rebound).toBe(421);
+    expect(seen.exchangedBefore).toBe(0);
+    expect(requests.map((r) => r.url)).toEqual(["/app-manifests/abc/conversions"]);
+    expect((outcome as RegisteredApp).slug).toBe("acme-loop-bot");
+  });
+
   it("takes the slug and name from the conversion, never from the suggestion", async () => {
     const { api } = await fakeGitHub(conversion);
 

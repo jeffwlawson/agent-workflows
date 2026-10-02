@@ -62,7 +62,8 @@ const runner = (name: string, load: () => Promise<unknown>, summary?: string): C
 });
 
 /**
- * `--dir <path>`, the one option the install path takes, and the only one.
+ * `--dir <path>`, the one option both halves of the install path take, and
+ * the switches one of them knows: `init --app` (PRD #314).
  *
  * Unlike a runner these are typed by a human, in somebody else's checkout, so
  * arguments are the interface rather than a misunderstanding of it. An unknown
@@ -79,10 +80,19 @@ const runner = (name: string, load: () => Promise<unknown>, summary?: string): C
  * is not there" is the same refusal, and the answer is absolute so the report
  * names where it is working.
  */
-const targetDir = (name: string, args: readonly string[]): string => {
+const installArgs = (
+  name: string,
+  args: readonly string[],
+  known: readonly string[] = [],
+): { readonly dir: string; readonly switches: ReadonlySet<string> } => {
   let dir = ".";
+  const switches = new Set<string>();
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
+    if (arg !== undefined && known.includes(arg)) {
+      switches.add(arg);
+      continue;
+    }
     if (arg === "--dir" || arg === "-C") {
       const value = args[i + 1];
       if (value === undefined) throw new UsageError(`\`${name} ${arg}\` needs a directory.`);
@@ -90,7 +100,11 @@ const targetDir = (name: string, args: readonly string[]): string => {
       i += 1;
       continue;
     }
-    throw new UsageError(`\`${name}\` does not know the option ${arg}. The only one is \`--dir <path>\`.`);
+    const options = ["`--dir <path>`", ...known.map((flag) => `\`${flag}\``)];
+    throw new UsageError(
+      `\`${name}\` does not know the option ${arg}. ` +
+        (options.length === 1 ? `The only one is ${options[0]}.` : `It knows ${options.join(" and ")}.`),
+    );
   }
   // Not a directory counts as not there. `init` writes through a recursive
   // mkdir, which turns a path that is a file into an `ENOTDIR` thrown from
@@ -102,7 +116,7 @@ const targetDir = (name: string, args: readonly string[]): string => {
       `\`${name}\`: ${JSON.stringify(dir)} is not a directory. Give \`--dir\` the root of a checkout that already exists.`,
     );
   }
-  return path.resolve(dir);
+  return { dir: path.resolve(dir), switches };
 };
 
 export const COMMANDS: Readonly<Record<string, Command>> = {
@@ -110,7 +124,7 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
     summary: "Check an adopting repo for the setup failures that fail silently.",
     run: async (args, io) => {
       const { runDoctor } = await import("./setup/doctor.js");
-      const dir = targetDir("doctor", args);
+      const { dir } = installArgs("doctor", args);
       // Named, because every finding below is repo-relative and `gh` was asked
       // about whichever repository this directory is — "which repo did that
       // answer come from?" must not depend on remembering what `--dir` said.
@@ -127,14 +141,22 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
   implement: runner("implement", () => import("./implement/implement.js")),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
   init: {
-    summary: "Install the caller workflows into this repo, and say what is left.",
+    summary: "Install the caller workflows into this repo, create the loop's GitHub App, and say what is left.",
     run: async (args, io) => {
       const { init } = await import("./setup/init.js");
       const { livePolicySurface } = await import("./setup/policies.js");
       const { liveLabelSurface } = await import("./setup/labels.js");
-      const dir = targetDir("init", args);
+      const { liveAppSurface } = await import("./setup/app.js");
+      const { dir, switches } = installArgs("init", args, ["--app"]);
       io.stdout(`  in ${dir}\n`);
-      for (const change of init({ dir, github: livePolicySurface(dir), labels: liveLabelSurface(dir) })) {
+      const changes = await init({
+        dir,
+        github: livePolicySurface(dir),
+        labels: liveLabelSurface(dir),
+        app: liveAppSurface(dir, io.stdout),
+        createApp: switches.has("--app"),
+      });
+      for (const change of changes) {
         io.stdout(`  ${change.action.padEnd(9)} ${change.file}${change.note ? ` (${change.note})` : ""}\n`);
       }
     },

@@ -24,6 +24,16 @@ import {
   type PolicySurface,
 } from "./policies.js";
 import type { LabelSurface } from "./labels.js";
+import {
+  appManifest,
+  appSettingsUrl,
+  installUrl,
+  type AppSurface,
+  type RegisteredApp,
+  type RepoOwner,
+  type SecretPlacement,
+} from "./app.js";
+import { APP_SECRETS } from "./doctor.js";
 
 /**
  * The install path: scaffold into an adopter's repository what nothing upstream
@@ -257,6 +267,14 @@ export interface InitOptions {
    * CLI, a stand-in from the tests. Required for the same reason as `github`.
    */
   readonly labels: LabelSurface;
+  /**
+   * Where the loop's GitHub App is created and its secrets stored:
+   * `liveAppSurface(dir, say)` from the CLI, a stand-in from the tests.
+   * Required for the same reason as `github`.
+   */
+  readonly app: AppSurface;
+  /** `--app`: create the App without asking, whatever identity the loop has now. */
+  readonly createApp?: boolean;
 }
 
 /** How the policy step names itself in the list of changes. */
@@ -431,7 +449,7 @@ const referenceWorkflows = (entry: string): readonly string[] =>
  * can be reported as such — and so every refusal is visible rather than being
  * the absence of a line.
  */
-export const init = (options: InitOptions): readonly InitChange[] => {
+export const init = async (options: InitOptions): Promise<readonly InitChange[]> => {
   const { dir } = options;
   const installed = readInstalledCallers(dir, PACKAGE_NAME);
 
@@ -481,7 +499,150 @@ export const init = (options: InitOptions): readonly InitChange[] => {
   );
   if (policy !== undefined) changes.push(policy);
   changes.push(...convergeLabels(workflows, options.labels));
+  // Last, because it is the one step that waits on a person in a browser:
+  // everything that needs nobody is on disk and reported by then.
+  changes.push(...(await setUpApp(options.app, options.createApp === true)));
   return changes;
+};
+
+/** How the App step names itself in the list of changes. */
+export const APP_CHANGE = "GitHub App";
+
+/** How a stored secret names itself in the list of changes. */
+export const secretChange = (name: string): string => `secret ${name}`;
+
+/** This package's repository, the App's homepage. */
+const HOMEPAGE = `https://github.com/${repoSlug(PACKAGE_NAME)}`;
+
+/**
+ * Give the loop its own GitHub App (PRD #314), through GitHub's manifest flow
+ * (`setup/app.ts`), unless it has one or something says not to:
+ *
+ * - the App's two secrets already set: reported, and nothing changes;
+ * - `--app`: created, without asking;
+ * - `AGENT_PAT` set, half an App's secrets set, or the secrets unreadable:
+ *   kept, and `--app` named, since each is an identity this cannot rule out;
+ * - otherwise created, since the loop has no identity that can fire a workflow.
+ *
+ * The secrets go where one setup covers the most and nothing is assumed: on the
+ * organization where the person is shown to be its admin, on the repository
+ * otherwise. Nothing here deletes `AGENT_PAT`; the surface cannot.
+ */
+const setUpApp = async (app: AppSurface, requested: boolean): Promise<readonly InitChange[]> => {
+  const secrets = app.secrets();
+  const set = APP_SECRETS.filter((name) => secrets?.includes(name));
+  if (set.length === APP_SECRETS.length) {
+    return [
+      {
+        file: APP_CHANGE,
+        action: "unchanged",
+        note: `${APP_SECRETS.join(" and ")} are set, so the loop already writes as its App`,
+      },
+    ];
+  }
+
+  if (!requested) {
+    // An unreadable list is no evidence of "no App" or "no PAT": creating one
+    // on it could register a second App beside a working one.
+    if (secrets === undefined) {
+      return [
+        {
+          file: APP_CHANGE,
+          action: "kept",
+          note: `could not read this repository's Actions secrets, so whether the loop already has an App is unknown and none was created; run \`init --app\` to create one`,
+        },
+      ];
+    }
+    const [half] = set;
+    if (half !== undefined) {
+      return [
+        {
+          file: APP_CHANGE,
+          action: "kept",
+          note: `${half} is set without ${APP_SECRETS.find((name) => name !== half)}, so the loop's App is half set up; finish it by hand, or run \`init --app\` to create an App and set both`,
+        },
+      ];
+    }
+    if (secrets.includes("AGENT_PAT")) {
+      return [
+        {
+          file: APP_CHANGE,
+          action: "kept",
+          note: `\`AGENT_PAT\` is set, so the loop writes as the token's owner; run \`init --app\` to create the loop's own GitHub App instead`,
+        },
+      ];
+    }
+  }
+
+  const owner = app.owner();
+  if (owner === undefined) {
+    return [
+      {
+        file: APP_CHANGE,
+        action: "kept",
+        note: `could not read which account owns this repository, which decides where GitHub creates the App; none was created`,
+      },
+    ];
+  }
+
+  const registered = await app.register(owner, appManifest(owner.login, HOMEPAGE));
+  if (typeof registered === "string") {
+    return [{ file: APP_CHANGE, action: "kept", note: `no App was created: ${registered}` }];
+  }
+
+  const install = installUrl(registered.slug);
+  const changes: InitChange[] = [
+    {
+      file: `${APP_CHANGE} "${registered.name}"`,
+      action: "created",
+      note: `ID ${registered.id}; install it on the repositories it may act on at ${install}`,
+    },
+    ...storeAppSecrets(app, owner, registered, secrets ?? []),
+  ];
+  app.openInstall(install);
+  return changes;
+};
+
+/**
+ * On the organization only where the person is shown to be its admin. A
+ * personal account has no account-level Actions secrets, and admin status
+ * that could not be read is not a yes.
+ */
+const placementFor = (app: AppSurface, owner: RepoOwner): SecretPlacement =>
+  owner.organization && app.orgAdmin(owner.login) === true
+    ? { level: "organization", org: owner.login }
+    : { level: "repository" };
+
+/**
+ * Store the App's ID and key. The key exists nowhere else: a refusal here is
+ * named with where to generate a new one, since it cannot be printed.
+ */
+const storeAppSecrets = (
+  app: AppSurface,
+  owner: RepoOwner,
+  registered: RegisteredApp,
+  present: readonly string[],
+): readonly InitChange[] => {
+  const placement = placementFor(app, owner);
+  const where =
+    placement.level === "organization"
+      ? `on the organization ${placement.org}, for every repository in it`
+      : `on this repository`;
+  const [id, key] = APP_SECRETS;
+  const store = (name: string, value: string, byHand: string): InitChange => {
+    const refused = app.setSecret(name, value, placement);
+    return refused === undefined
+      ? { file: secretChange(name), action: present.includes(name) ? "updated" : "created", note: where }
+      : { file: secretChange(name), action: "kept", note: `GitHub refused to store it ${where} (${refused}); ${byHand}` };
+  };
+  return [
+    store(id, String(registered.id), `set it to ${registered.id}`),
+    store(
+      key,
+      registered.pem,
+      `generate a new private key at ${appSettingsUrl(owner, registered.slug)} and set it as ${key}`,
+    ),
+  ];
 };
 
 /** How a label names itself in the list of changes. */

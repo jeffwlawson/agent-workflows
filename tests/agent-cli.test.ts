@@ -9,6 +9,7 @@ import { callersIn, readInstalledCallers, REFERENCE_CALLER_FILES } from "../setu
 import {
   ADVISORY_LABELS,
   advisoryLabelSpecsFor,
+  APP_CHANGE,
   init,
   labelCommand,
   POLICY_CHANGE,
@@ -40,6 +41,7 @@ import {
   type PolicySurface,
 } from "../setup/policies.js";
 import type { LabelSurface, RepoLabel } from "../setup/labels.js";
+import type { AppManifest, AppSurface, RegisteredApp, RepoOwner, SecretPlacement } from "../setup/app.js";
 
 /**
  * The Actions policy step, for the tests that are not about it: a private
@@ -55,6 +57,26 @@ const offline: PolicySurface = {
   },
   update: () => {
     throw new Error("init wrote an Actions policy in a test that is not about it");
+  },
+};
+
+/**
+ * The App step, for the tests that are not about it: a repository whose
+ * secrets could not be listed, which it reports and leaves alone, and a write
+ * that fails the test rather than reaching anything.
+ */
+const noApp: AppSurface = {
+  secrets: () => undefined,
+  owner: () => undefined,
+  orgAdmin: () => undefined,
+  register: () => {
+    throw new Error("init created an App in a test that is not about it");
+  },
+  setSecret: () => {
+    throw new Error("init stored a secret in a test that is not about it");
+  },
+  openInstall: () => {
+    throw new Error("init opened an install page in a test that is not about it");
   },
 };
 
@@ -85,10 +107,10 @@ const noLabels: LabelSurface = {
  * `policies` are served in full from the per-id endpoint, and what `init`
  * wrote is read back from `GH_REPLAY_LOG`, one call per line.
  */
-const replayed = <T>(
+const replayed = async <T>(
   scenario: { visibility?: string; policies?: readonly object[]; unreadable?: readonly number[] },
-  body: () => T,
-): { result: T; writes: unknown[][] } => {
+  body: () => T | Promise<T>,
+): Promise<{ result: T; writes: unknown[][] }> => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-gh-replay-"));
   const log = path.join(temp, "writes.log");
   const policies = path.join(temp, "policies.json");
@@ -103,7 +125,7 @@ const replayed = <T>(
   const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
   try {
-    const result = body();
+    const result = await body();
     const written = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
     return { result, writes: written.map((line) => JSON.parse(line) as unknown[]) };
   } finally {
@@ -491,7 +513,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes one caller file per reference file, pinned to this package's own version", async () => {
     const root = adopted();
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(referenceNames).toEqual(["issue", "pr"]);
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
@@ -518,7 +540,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const six = sixFileTree(root, "v0.0.1");
     expect(six).toHaveLength(6);
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(fs.readdirSync(path.join(root, ".github", "workflows")).sort()).toEqual(
       six.map(({ file }) => path.basename(file)).sort(),
@@ -540,7 +562,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes a self-check naming the job it sits in", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(read(root, ".github/workflows/agent-pr.yml")).toMatch(
       /^\s*self-check: review \/ review$/m,
@@ -563,7 +585,7 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("moves the pin on a re-run and changes nothing else in a caller", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
     const theirs = read(root, ".github/workflows/agent-pr.yml")
       .replace(/^  review:$/m, "  agent_review:")
       .replace(/self-check: review \/ review/, "self-check: agent_review / review")
@@ -572,7 +594,7 @@ describe("init installs the reference callers into an adopting repo", () => {
       .replaceAll(`@v${manifest.version}`, "@v0.0.1");
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-pr.yml"), theirs);
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     const text = read(root, ".github/workflows/agent-pr.yml");
     expect(text).toBe(theirs.replaceAll("@v0.0.1", `@v${manifest.version}`));
@@ -595,12 +617,12 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("does not put back a caller the adopter deleted, and says it did not", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
     const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
     const declined = withoutJob(fs.readFileSync(pr, "utf8"), "update-branch");
     fs.writeFileSync(pr, declined);
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(fs.readFileSync(pr, "utf8")).toBe(declined);
     const kept = changes.filter((c) => c.action === "kept" && c.file.endsWith(".yml"));
@@ -612,10 +634,10 @@ describe("init installs the reference callers into an adopting repo", () => {
   /** …and the same for a whole side declined, which is a caller file never copied. */
   it("does not put back a caller file the adopter deleted, and says it did not", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
     fs.rmSync(path.join(root, ".github", "workflows", "agent-issue.yml"));
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-issue.yml"))).toBe(false);
     const change = changes.find((c) => c.file.endsWith("agent-issue.yml"));
@@ -635,7 +657,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const theirs = "name: Our own PR job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-pr.yml"), theirs);
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(read(root, ".github/workflows/agent-pr.yml")).toBe(theirs);
     expect(changes.find((c) => c.file.endsWith("agent-pr.yml"))?.action).toBe("kept");
@@ -643,9 +665,9 @@ describe("init installs the reference callers into an adopting repo", () => {
 
   it("reports an unchanged caller rather than rewriting it", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "unchanged"),
@@ -661,7 +683,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("emits a SETUP.md prompt for the work it cannot do", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     const setup = read(root, "SETUP.md");
     expect(setup).toContain("CLAUDE_CODE_OAUTH_TOKEN");
@@ -680,7 +702,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: manifest.name }));
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(fs.existsSync(path.join(root, "SETUP.md"))).toBe(false);
     const change = changes.find((c) => c.file === "SETUP.md");
@@ -699,7 +721,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     fs.writeFileSync(path.join(root, "SETUP.md"), "# How we set this repo up\n");
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(read(root, "SETUP.md")).toBe("# How we set this repo up\n");
     const change = changes.find((c) => c.file === "SETUP.md");
@@ -752,6 +774,10 @@ describe("init installs the reference callers into an adopting repo", () => {
     expect(calls).toEqual([
       "GH_REPO= repo view --json visibility --jq .visibility",
       "GH_REPO= label list --limit 1000 --json name,color,description",
+      // The App step: with no secret list to read, nothing says the loop has
+      // no App, so it creates none and asks nothing more.
+      "GH_REPO= repo view --json owner,isInOrganization --jq [.owner.login, .isInOrganization] | @json",
+      "GH_REPO= api repos/{owner}/{repo}/actions/secrets?per_page=100 --jq [.secrets[].name] | @json",
     ]);
   });
 
@@ -760,6 +786,33 @@ describe("init installs the reference callers into an adopting repo", () => {
 
     expect(code).toBe(2);
     expect(err).toContain("--force");
+  });
+
+  /**
+   * `--app` is `init`'s alone (#322). Against a `gh` that answers nothing, it
+   * gets as far as asking who owns the repository, and stops there rather
+   * than starting a flow it cannot finish.
+   */
+  it.skipIf(process.platform === "win32")("takes --app, which doctor refuses", async () => {
+    const root = adopted();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fake-gh-"));
+    roots.push(bin);
+    fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const saved = process.env["PATH"];
+    process.env["PATH"] = `${bin}${path.delimiter}${saved ?? ""}`;
+    try {
+      const { code, out } = await invoke(["init", "--dir", root, "--app"]);
+
+      expect(code).toBe(0);
+      expect(out).toMatch(/kept\s+GitHub App \(could not read which account owns this repository/);
+    } finally {
+      if (saved === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = saved;
+    }
+
+    const { code, err } = await invoke(["doctor", "--dir", root, "--app"]);
+    expect(code).toBe(2);
+    expect(err).toContain("--app");
   });
 
   /**
@@ -816,7 +869,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("leaves no placeholder unsubstituted in the prompt it writes", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(read(root, "SETUP.md")).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
@@ -911,7 +964,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     const conditional = documentedLabels().slice(1).flat();
 
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(byName(advisoryLabelSpecsFor(referenceWorkflows))).toEqual(byName(conditional));
     for (const label of conditional) expect(read(root, "SETUP.md")).toContain(labelCommand(label));
@@ -929,11 +982,11 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("says nothing about them once the caller that wants them is gone", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
     fs.writeFileSync(pr, withoutJob(fs.readFileSync(pr, "utf8"), "follow-ups"));
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     const setup = read(root, "SETUP.md");
     const filing = ADVISORY_LABELS["follow-ups"] ?? [];
@@ -1012,7 +1065,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface, sent } = github("public", []);
 
-    const first = await init({ dir: root, github: surface, labels: noLabels });
+    const first = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(first.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
     expect(sent).toHaveLength(1);
@@ -1025,7 +1078,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     expect(body?.conditions.workflow_path.include).not.toContain(".github/workflows/ci.yml");
     expect(body?.rules).toEqual([{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }]);
 
-    const second = await init({ dir: root, github: surface, labels: noLabels });
+    const second = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(second.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(1);
@@ -1038,12 +1091,12 @@ describe("init allows pull_request_target for the loop's callers on a public rep
    */
   it("lists every event a targeted caller also triggers on", async () => {
     const root = adopted();
-    await init({ dir: root, github: github("private", []).surface, labels: noLabels });
+    await init({ dir: root, app: noApp, github: github("private", []).surface, labels: noLabels });
     const review = path.join(root, ".github", "workflows", "agent-pr.yml");
     fs.writeFileSync(review, fs.readFileSync(review, "utf8").replace(/^on:$/m, "on:\n  workflow_dispatch:"));
     const { surface, sent } = github("public", []);
 
-    await init({ dir: root, github: surface, labels: noLabels });
+    await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(sent[0]?.body.rules[0].parameters.allowed_events).toEqual(["pull_request_target", "workflow_dispatch"]);
   });
@@ -1052,7 +1105,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     // The `review` caller in a file of its own, and the rest of the PR side in
     // the file `init` installs, with the policy covering only the first.
-    await init({ dir: root, github: github("private", []).surface, labels: noLabels });
+    await init({ dir: root, app: noApp, github: github("private", []).surface, labels: noLabels });
     const dir = path.join(root, ".github", "workflows");
     const pr = fs.readFileSync(path.join(dir, "agent-pr.yml"), "utf8");
     fs.writeFileSync(path.join(dir, "agent-pr.yml"), withoutJob(pr, "review"));
@@ -1065,7 +1118,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
       { id: 3, name: POLICY_NAME, enforcement: "active", include: [earlier], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
     expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
@@ -1083,7 +1136,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     sixFileTree(root, `v${manifest.version}`);
     const six = ["review", "fix", "update-branch", "follow-ups"].map((job) => `.github/workflows/agent-${job}.yml`);
     const { surface, sent } = github("public", []);
-    await init({ dir: root, github: surface, labels: noLabels });
+    await init({ dir: root, app: noApp, github: surface, labels: noLabels });
     expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...six].sort());
 
     // Merged by hand: the reference PR-side file in, the four it replaces out.
@@ -1091,7 +1144,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     for (const file of six) fs.rmSync(path.join(root, ...file.split("/")));
     fs.copyFileSync(path.join("examples", "callers", "pr.yml"), path.join(dir, "agent-pr.yml"));
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     const policy = changes.find((c) => c.file === POLICY_CHANGE);
     expect(policy?.action).toBe("updated");
@@ -1099,7 +1152,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "POST" }, { method: "PUT", id: 7 }]);
     expect(sent[1]?.body.conditions.workflow_path.include).toEqual(triggered);
 
-    const again = await init({ dir: root, github: surface, labels: noLabels });
+    const again = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(again.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(2);
@@ -1116,7 +1169,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
       { id: 3, name: POLICY_NAME, enforcement: "active", include: [...triggered, gone], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
     expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
@@ -1137,14 +1190,14 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     ["unparseable", ".github/workflows/deploy-preview.yml", "on: [pull_request_target\n  : : :\n"],
   ])("keeps an adopter's own workflow on the trigger in its policy, named %s", async (_how, entry, text) => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
     fs.writeFileSync(path.join(root, ".github", "workflows", "deploy-preview.yml"), text);
     const include = [...triggered, entry].sort();
     const { surface, sent } = github("public", [
       { id: 3, name: POLICY_NAME, enforcement: "active", include, exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(0);
@@ -1153,7 +1206,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
   /** …and drops one that is still there but no longer runs on the trigger, keeping the rest. */
   it("drops an adopter's own workflow that no longer runs on the trigger", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
     const dir = path.join(root, ".github", "workflows");
     fs.writeFileSync(path.join(dir, "deploy-preview.yml"), "on: push\njobs: {}\n");
     fs.writeFileSync(path.join(dir, "label-preview.yml"), "on:\n  pull_request_target:\njobs: {}\n");
@@ -1163,7 +1216,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
       { id: 3, name: POLICY_NAME, enforcement: "active", include: [...triggered, dropped, kept], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     const policy = changes.find((c) => c.file === POLICY_CHANGE);
     expect(policy?.action).toBe("updated");
@@ -1182,7 +1235,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
       { id: 9, name: "theirs", enforcement: "active", include: [...triggered, ".github/workflows/agent-review.yml"], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(0);
@@ -1194,7 +1247,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
       { id: 9, name: "theirs", enforcement: "active", include: [".github/workflows/agent-*.yml"], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(0);
@@ -1204,7 +1257,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface, sent } = github("private", []);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)).toBeUndefined();
     expect(sent).toHaveLength(0);
@@ -1219,7 +1272,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface } = github("public", [], "HTTP 403: Resource not accessible by integration");
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     const policy = changes.find((c) => c.file === POLICY_CHANGE);
     expect(policy?.action).toBe("kept");
@@ -1235,17 +1288,17 @@ describe("init allows pull_request_target for the loop's callers on a public rep
    * second run reads the policy the first one created from its own endpoint,
    * finds it allows every caller, and writes nothing.
    */
-  it.skipIf(process.platform === "win32")("reads each policy in full, so a re-run leaves its own alone", () => {
+  it.skipIf(process.platform === "win32")("reads each policy in full, so a re-run leaves its own alone", async () => {
     const root = adopted();
 
-    const first = replayed({ visibility: "PUBLIC" }, () => init({ dir: root, github: livePolicySurface(root), labels: noLabels }));
+    const first = await replayed({ visibility: "PUBLIC" }, () => init({ dir: root, app: noApp, github: livePolicySurface(root), labels: noLabels }));
 
     expect(first.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
     expect(first.writes.map((call) => call.slice(0, 3))).toEqual([["api", "--method", "POST"]]);
     const created = { id: 6133, target: "actions", source_type: "Repository", source: "repo", ...(first.writes[0]?.[4] as object) };
 
-    const second = replayed({ visibility: "PUBLIC", policies: [created] }, () =>
-      init({ dir: root, github: livePolicySurface(root), labels: noLabels }),
+    const second = await replayed({ visibility: "PUBLIC", policies: [created] }, () =>
+      init({ dir: root, app: noApp, github: livePolicySurface(root), labels: noLabels }),
     );
 
     expect(second.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
@@ -1257,12 +1310,12 @@ describe("init allows pull_request_target for the loop's callers on a public rep
    * the callers, or this step's own: creating a second beside it, or calling
    * the repository uncovered, would both be verdicts on a fact nobody read.
    */
-  it.skipIf(process.platform === "win32")("leaves the policy to a human where one could not be read", () => {
+  it.skipIf(process.platform === "win32")("leaves the policy to a human where one could not be read", async () => {
     const root = adopted();
     const theirs = { id: 4, name: "theirs", enforcement: "active" };
 
-    const { result, writes } = replayed({ visibility: "PUBLIC", policies: [theirs], unreadable: [4] }, () =>
-      init({ dir: root, github: livePolicySurface(root), labels: noLabels }),
+    const { result, writes } = await replayed({ visibility: "PUBLIC", policies: [theirs], unreadable: [4] }, () =>
+      init({ dir: root, app: noApp, github: livePolicySurface(root), labels: noLabels }),
     );
 
     const policy = result.find((c) => c.file === POLICY_CHANGE);
@@ -1278,12 +1331,194 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface, sent } = github(visibility, policies);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     const policy = changes.find((c) => c.file === POLICY_CHANGE);
     expect(policy?.action).toBe("kept");
     expect(policy?.note).toContain("gh api --method POST");
     expect(sent).toHaveLength(0);
+  });
+});
+
+/**
+ * The loop's GitHub App (#322). `init` creates it through the manifest flow
+ * where nothing says not to, and stores its ID and key where one setup covers
+ * the most without assuming an access it was not shown. Against a stand-in
+ * surface that records every write; the live flow is `tests/app.test.ts`'s.
+ */
+describe("init creates the loop's GitHub App", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
+  const adopted = (): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-init-app-"));
+    fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+    roots.push(root);
+    return root;
+  };
+
+  const registered: RegisteredApp = {
+    id: 4242,
+    slug: "acme-loop-bot",
+    name: "Acme Loop Bot",
+    pem: "-----BEGIN RSA PRIVATE KEY-----\nkey\n-----END RSA PRIVATE KEY-----\n",
+  };
+
+  const app = (scenario: {
+    secrets: readonly string[] | undefined;
+    owner?: RepoOwner | undefined;
+    admin?: boolean | undefined;
+  }) => {
+    const manifests: AppManifest[] = [];
+    const stored: { name: string; value: string; placement: SecretPlacement }[] = [];
+    const asked: string[] = [];
+    const opened: string[] = [];
+    const surface: AppSurface = {
+      secrets: () => scenario.secrets,
+      owner: () => ("owner" in scenario ? scenario.owner : { login: "acme", organization: true }),
+      orgAdmin: (org) => {
+        asked.push(org);
+        return scenario.admin;
+      },
+      register: async (_owner, manifest) => {
+        manifests.push(manifest);
+        return registered;
+      },
+      setSecret: (name, value, placement) => {
+        stored.push({ name, value, placement });
+        return undefined;
+      },
+      openInstall: (url) => {
+        opened.push(url);
+      },
+    };
+    return { surface, manifests, stored, asked, opened };
+  };
+
+  const run = (surface: AppSurface, createApp?: boolean) =>
+    init({
+      dir: adopted(),
+      github: offline,
+      labels: noLabels,
+      app: surface,
+      ...(createApp === undefined ? {} : { createApp }),
+    });
+
+  it.each([false, true])("reports an App whose secrets are set, and changes nothing (--app: %s)", async (createApp) => {
+    const { surface, manifests, stored, opened } = app({ secrets: ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY", "AGENT_PAT"] });
+
+    const changes = await run(surface, createApp);
+
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("unchanged");
+    expect(change?.note).toContain("AGENT_APP_ID and AGENT_APP_PRIVATE_KEY are set");
+    expect([manifests, stored, opened]).toEqual([[], [], []]);
+  });
+
+  it("creates the App where there is neither an App nor AGENT_PAT, and takes its name from GitHub", async () => {
+    const { surface, manifests, stored, opened } = app({ secrets: [], admin: true });
+
+    const changes = await run(surface);
+
+    expect(manifests).toEqual([
+      {
+        name: "acme-agent-loop",
+        url: `https://github.com/${manifest.name.replace(/^@/, "")}`,
+        public: false,
+        default_permissions: {
+          contents: "write",
+          pull_requests: "write",
+          issues: "write",
+          workflows: "write",
+          metadata: "read",
+        },
+        default_events: [],
+      },
+    ]);
+    expect(manifests[0]).not.toHaveProperty("hook_attributes");
+    expect(changes.find((c) => c.file.startsWith(APP_CHANGE))).toEqual({
+      file: `${APP_CHANGE} "Acme Loop Bot"`,
+      action: "created",
+      note: "ID 4242; install it on the repositories it may act on at https://github.com/apps/acme-loop-bot/installations/new",
+    });
+    expect(stored.map(({ name, value }) => [name, value])).toEqual([
+      ["AGENT_APP_ID", "4242"],
+      ["AGENT_APP_PRIVATE_KEY", registered.pem],
+    ]);
+    expect(opened).toEqual(["https://github.com/apps/acme-loop-bot/installations/new"]);
+    // The key is stored, never shown.
+    expect(JSON.stringify(changes)).not.toContain("PRIVATE KEY-----");
+  });
+
+  it("keeps AGENT_PAT without --app, and names the switch", async () => {
+    const { surface, manifests, stored } = app({ secrets: ["AGENT_PAT"] });
+
+    const changes = await run(surface);
+
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("kept");
+    expect(change?.note).toContain("init --app");
+    expect([manifests, stored]).toEqual([[], []]);
+  });
+
+  /**
+   * `--app` creates the App with `AGENT_PAT` set, and the PAT stays: the
+   * surface has no way to delete a secret, and nothing here writes one but
+   * the App's two.
+   */
+  it("creates the App with --app, and never deletes or writes AGENT_PAT", async () => {
+    const { surface, manifests, stored } = app({ secrets: ["AGENT_PAT"], admin: true });
+
+    const changes = await run(surface, true);
+
+    expect(manifests).toHaveLength(1);
+    expect(changes.find((c) => c.file.startsWith(APP_CHANGE))?.action).toBe("created");
+    expect(stored.map(({ name }) => name)).toEqual(["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"]);
+    expect(Object.keys(surface).sort()).toEqual(["openInstall", "orgAdmin", "owner", "register", "secrets", "setSecret"]);
+    expect(changes.filter((c) => c.file.includes("AGENT_PAT"))).toEqual([]);
+    // The live surface too: nothing under setup/ asks `gh` to delete a secret.
+    for (const entry of fs.readdirSync("setup").filter((name) => name.endsWith(".ts"))) {
+      expect(fs.readFileSync(path.join("setup", entry), "utf8")).not.toMatch(/"secret",\s*"(delete|remove)"/);
+    }
+  });
+
+  it("creates no App where the secrets could not be read, short of --app", async () => {
+    const { surface, manifests } = app({ secrets: undefined });
+
+    const changes = await run(surface);
+
+    expect(changes.find((c) => c.file === APP_CHANGE)?.action).toBe("kept");
+    expect(manifests).toEqual([]);
+  });
+
+  it.each([
+    ["an organization admin", { login: "acme", organization: true }, true, { level: "organization", org: "acme" }, ["acme"]],
+    ["an organization non-admin", { login: "acme", organization: true }, false, { level: "repository" }, ["acme"]],
+    ["unreadable admin status", { login: "acme", organization: true }, undefined, { level: "repository" }, ["acme"]],
+    ["a personal account", { login: "octo", organization: false }, true, { level: "repository" }, []],
+  ] as const)("stores the secrets for %s where that is shown to reach", async (_who, owner, admin, placement, asked) => {
+    const scenario = app({ secrets: [], owner, admin });
+
+    const changes = await run(scenario.surface);
+
+    expect(scenario.stored.map((s) => s.placement)).toEqual([placement, placement]);
+    expect(scenario.asked).toEqual(asked);
+    expect(changes.find((c) => c.file === "secret AGENT_APP_ID")?.note).toBe(
+      placement.level === "organization" ? "on the organization acme, for every repository in it" : "on this repository",
+    );
+  });
+
+  it("names where to make a new key when GitHub refuses to store it", async () => {
+    const scenario = app({ secrets: [], admin: false });
+    const surface: AppSurface = { ...scenario.surface, setSecret: () => "HTTP 403: Resource not accessible" };
+
+    const changes = await run(surface);
+
+    const key = changes.find((c) => c.file === "secret AGENT_APP_PRIVATE_KEY");
+    expect(key?.action).toBe("kept");
+    expect(key?.note).toContain("https://github.com/organizations/acme/settings/apps/acme-loop-bot");
+    expect(key?.note).not.toContain("PRIVATE KEY-----");
   });
 });
 
@@ -1357,7 +1592,7 @@ describe("init converges the labels the loop owns", () => {
     const root = adopted();
     const { surface, sent, now } = github(OLD);
 
-    const first = await init({ dir: root, github: offline, labels: surface });
+    const first = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     for (const label of OWNED) {
       expect(first.find((c) => c.file === `label "${label.name}"`)?.action, label.name).toBe("updated");
@@ -1369,7 +1604,7 @@ describe("init converges the labels the loop owns", () => {
     expect(now().map((l) => l.name)).not.toContain("agent:in-progress");
 
     const writes = sent.length;
-    const second = await init({ dir: root, github: offline, labels: surface });
+    const second = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     expect(labelChanges(second).map((c) => c.action)).toEqual(OWNED.map(() => "unchanged"));
     expect(sent).toHaveLength(writes);
@@ -1380,7 +1615,7 @@ describe("init converges the labels the loop owns", () => {
     const root = adopted();
     const { surface, sent } = github(OLD);
 
-    await init({ dir: root, github: offline, labels: surface });
+    await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     expect(sent.filter((write) => !write.includes(" agent:"))).toEqual([]);
   });
@@ -1389,7 +1624,7 @@ describe("init converges the labels the loop owns", () => {
     const root = adopted();
     const { surface, sent } = github(OLD.filter((label) => label.name !== "agent:fix"));
 
-    const changes = await init({ dir: root, github: offline, labels: surface });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     expect(changes.find((c) => c.file === 'label "agent:fix"')?.action).toBe("created");
     expect(sent).toContain("create agent:fix");
@@ -1406,7 +1641,7 @@ describe("init converges the labels the loop owns", () => {
       { "agent:in-progress": [12, 34] },
     );
 
-    const changes = await init({ dir: root, github: offline, labels: surface });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     const kept = changes.find((c) => c.file === 'label "agent:in-progress"');
     expect(kept?.action).toBe("kept");
@@ -1420,7 +1655,7 @@ describe("init converges the labels the loop owns", () => {
     const root = adopted();
     const { surface, sent } = github(OLD, { "agent:in-progress": undefined });
 
-    const changes = await init({ dir: root, github: offline, labels: surface });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     expect(changes.find((c) => c.file === 'label "agent:in-progress"')?.action).toBe("kept");
     expect(sent).not.toContain("delete agent:in-progress");
@@ -1429,7 +1664,7 @@ describe("init converges the labels the loop owns", () => {
   it("says what to run where the labels could not be listed, and writes none", async () => {
     const root = adopted();
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     const kept = changes.find((c) => c.file === "labels");
     expect(kept?.action).toBe("kept");
@@ -1446,6 +1681,7 @@ describe("init converges the labels the loop owns", () => {
 
     const changes = await init({
       dir: root,
+      app: noApp,
       github: offline,
       labels: { ...surface, create: () => "HTTP 403: Resource not accessible by integration" },
     });
@@ -1481,7 +1717,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
     roots.push(root);
     fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
     return root;
   };
 
@@ -1815,7 +2051,7 @@ describe("doctor names the failures that otherwise look like something else", ()
         rules: [{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }],
       };
 
-      const { result: actionsPolicies } = replayed({ policies: [created] }, () => readPolicies(root));
+      const { result: actionsPolicies } = await replayed({ policies: [created] }, () => readPolicies(root));
       const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
 
       expect(actionsPolicies).toEqual([
@@ -1843,7 +2079,7 @@ describe("doctor names the failures that otherwise look like something else", ()
         rules: [{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }],
       };
 
-      const { result: actionsPolicies } = replayed({ policies: [theirs] }, () => readPolicies(root));
+      const { result: actionsPolicies } = await replayed({ policies: [theirs] }, () => readPolicies(root));
       const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
 
       expect(actionsPolicies).toEqual([
@@ -1857,7 +2093,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     it.skipIf(process.platform === "win32")("warns rather than failing where one policy could not be read", async () => {
       const root = await installed();
 
-      const { result: actionsPolicies } = replayed({ policies: [{ id: 4, name: "theirs", enforcement: "active" }], unreadable: [4] }, () =>
+      const { result: actionsPolicies } = await replayed({ policies: [{ id: 4, name: "theirs", enforcement: "active" }], unreadable: [4] }, () =>
         readPolicies(root),
       );
       const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });

@@ -7047,8 +7047,11 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
         "always() && (failure() || cancelled() || needs.gate.result != 'success' || needs.implement.result != 'success')",
       );
       expect(step.env?.["AGENT_RESULT"]).toBe("${{ needs.implement.result }}");
-      expect(step.env?.["RUN_CANCELLED"]).toBe("${{ cancelled() }}");
-      expect(step.run ?? "").toContain('if [ "$RUN_CANCELLED" = "true" ] || [ "$AGENT_RESULT" = "cancelled" ]; then');
+      expect(step.env?.["GATE_RESULT"]).toBe("${{ needs.gate.result }}");
+      expect(step.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
+      expect(step.run ?? "").toContain(
+        'if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then',
+      );
       return;
     }
 
@@ -8192,26 +8195,6 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
 });
 
 /**
- * **No checkout an agent runs in leaves a credential behind.** The agent runs
- * unsandboxed in the checkout, and `scrubGitHubTokens` empties only its
- * environment. A checkout that persisted its token — from checkout v6 in a
- * `$RUNNER_TEMP` file `.git/config` includes — handed the agent's own `git`,
- * and anything that could read the file, `AGENT_PAT`, which carries
- * Workflows: write.
- *
- * So every checkout in every runner workflow sets `persist-credentials: false`
- * and is handed no token of its own choosing, and every fetch and push in a job
- * that checks out carries its token on its own command, as a masked header
- * computed in the same step. A push takes the push token from its step's `env:`
- * and a fetch the job's read token, so no fetch holds the PAT, and neither
- * does the job's `env:` or the agent's step.
- *
- * Over every checkout rather than the code-writing ones, since the rule costs
- * nothing where nothing is pushed and the review job's token is worth keeping
- * from its agent too. The job list is pinned so a new checkout arrives here
- * with a decision, not past a filter that has gone empty.
- */
-/**
  * **The job that runs the agent can write nothing, and the jobs that write run
  * no agent.** The agent runs with the runner's passwordless `sudo`, so it can
  * read the runner process's memory, which holds every secret its job names
@@ -8354,6 +8337,64 @@ describe("a split run keeps every write off the agent's runner", () => {
   });
 });
 
+/**
+ * **A status-check function is allowed only in an `if:`.** GitHub rejects
+ * `success()`, `failure()`, `cancelled()` and `always()` anywhere else, in a
+ * step's `env` or `with` or a job's `outputs`, and rejects the whole file with
+ * it: every run of that workflow fails before any job starts. Nothing in this
+ * suite parses an expression the way GitHub does, so a test that asserts the
+ * text it was written with passes over a file GitHub will not load (#307).
+ * Read over every workflow and composite action, at every key but `if`.
+ */
+describe("a status-check function appears only in an `if:`", () => {
+  const STATUS_CALL = /\$\{\{[^}]*\b(?:success|failure|cancelled|always)\s*\(\s*\)[^}]*\}\}/;
+  const actionFiles = fs
+    .readdirSync(path.join(".github", "actions"))
+    .map((d) => path.join(".github", "actions", d, "action.yml"))
+    .filter((f) => fs.existsSync(f));
+
+  const misplaced = (node: unknown, at: string): string[] => {
+    if (typeof node === "string") return STATUS_CALL.test(node) ? [at] : [];
+    if (Array.isArray(node)) return node.flatMap((n, i) => misplaced(n, `${at}[${i}]`));
+    if (node !== null && typeof node === "object") {
+      return Object.entries(node).flatMap(([k, v]) => (k === "if" ? [] : misplaced(v, `${at}.${k}`)));
+    }
+    return [];
+  };
+
+  it("reads at least one composite action", () => {
+    expect(actionFiles).not.toHaveLength(0);
+  });
+
+  it.each([...workflowFiles, ...actionFiles])("%s", (file) => {
+    expect(misplaced(parse(fs.readFileSync(file, "utf8")), "")).toEqual([]);
+  });
+
+  it("would catch one in a step's env", () => {
+    expect(misplaced({ steps: [{ if: "cancelled()", env: { X: "${{ cancelled() }}" } }] }, "")).toEqual([".steps[0].env.X"]);
+  });
+});
+
+/**
+ * **No checkout an agent runs in leaves a credential behind.** The agent runs
+ * unsandboxed in the checkout, and `scrubGitHubTokens` empties only its
+ * environment. A checkout that persisted its token — from checkout v6 in a
+ * `$RUNNER_TEMP` file `.git/config` includes — handed the agent's own `git`,
+ * and anything that could read the file, `AGENT_PAT`, which carries
+ * Workflows: write.
+ *
+ * So every checkout in every runner workflow sets `persist-credentials: false`
+ * and is handed no token of its own choosing, and every fetch and push in a job
+ * that checks out carries its token on its own command, as a masked header
+ * computed in the same step. A push takes the push token from its step's `env:`
+ * and a fetch the job's read token, so no fetch holds the PAT, and neither
+ * does the job's `env:` or the agent's step.
+ *
+ * Over every checkout rather than the code-writing ones, since the rule costs
+ * nothing where nothing is pushed and the review job's token is worth keeping
+ * from its agent too. The job list is pinned so a new checkout arrives here
+ * with a decision, not past a filter that has gone empty.
+ */
 describe("no checkout an agent runs in leaves a credential behind", () => {
   const PUSH_TOKEN = "${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}";
   const isCheckout = (s: Step): boolean => (s.uses ?? "").startsWith("actions/checkout@");

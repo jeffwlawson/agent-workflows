@@ -825,8 +825,12 @@ jobs:
       - name: Mark blocked on failure
         if: always() && (failure() || cancelled() || needs.gate.result != 'success' || needs.implement.result != 'success')
         env:
+          # How each job ahead of this one ended, and this job's own status for
+          # a cancel that lands while it runs. `job.status` rather than
+          # `cancelled()`, which GitHub allows only in an `if:`.
+          GATE_RESULT: ${{ needs.gate.result }}
           AGENT_RESULT: ${{ needs.implement.result }}
-          RUN_CANCELLED: ${{ cancelled() }}
+          JOB_STATUS: ${{ job.status }}
           JOB_STARTED: ${{ needs.gate.outputs.started }}
           REFUSED: ${{ needs.gate.outputs.refused }}
           TIMEOUT_MINUTES: ${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}
@@ -851,7 +855,7 @@ jobs:
           # `bash -e` that would end this step before its comment. A limit the
           # step cannot compare reads as a cancel, which is still said.
           stopped=false
-          if [ "$RUN_CANCELLED" = "true" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
+          if [ "$JOB_STATUS" = "cancelled" ] || [ "$GATE_RESULT" = "cancelled" ] || [ "$AGENT_RESULT" = "cancelled" ]; then
             stopped=true
             reason="It was cancelled before it finished, by hand or by GitHub."
           elif [ "$AGENT_RESULT" = "failure" ] && [ ! -f "${RUNNER_TEMP}/failure_reason.txt" ]; then

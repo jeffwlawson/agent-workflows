@@ -182,10 +182,10 @@ const run = (
       PR_NUMBER: "152",
       RUN_URL: "https://github.com/acme/widgets/actions/runs/1",
       JOB_STATUS: status,
-      // How a split run's publish job sees the agent's job end. Read only by
-      // the steps of a split run; the rest read `JOB_STATUS`.
+      // How a split run's publish job sees the jobs ahead of it end. Read
+      // only by the steps of a split run, which read `JOB_STATUS` as their own.
+      GATE_RESULT: "success",
       AGENT_RESULT: status,
-      RUN_CANCELLED: "false",
       JOB_STARTED: String(Math.floor(Date.now() / 1000) - elapsed),
       TIMEOUT_MINUTES: minutes,
       REFUSED: refused,
@@ -381,7 +381,16 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
     it("says a run cancelled while it published was cancelled, though the agent's job succeeded", () => {
       const outcome = run(implement, "cancelled", 120, String(implement.minutes), "false", {}, {
         AGENT_RESULT: "success",
-        RUN_CANCELLED: "true",
+      });
+
+      expect(outcome.comment).toContain("cancelled");
+      expect(outcome.comment).not.toContain("timed out");
+    });
+
+    it("says a run cancelled in its gate was cancelled, though the agent's job never ran", () => {
+      const outcome = run(implement, "failure", 120, String(implement.minutes), "", {}, {
+        GATE_RESULT: "cancelled",
+        AGENT_RESULT: "skipped",
       });
 
       expect(outcome.comment).toContain("cancelled");

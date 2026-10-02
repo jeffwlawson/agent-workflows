@@ -7997,12 +7997,13 @@ describe("the PRD chain's progress", () => {
     const handover = runOf(PRD, "handover");
 
     const stopped = stepsOf(PRD).find((s) => s.name === "Show the stopped slice in the progress list");
+    const building = stepsOf(PRD).find((s) => s.name === "Show the slice building in the progress list");
     const prStatus = (jobNamed(REVIEW, "post-review").steps ?? []).find((s) => s.name === "Write the PR status line");
-    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env]) {
+    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, building?.env]) {
       expect(env?.["PROGRESS_START"]).toBe(PROGRESS_START);
       expect(env?.["PROGRESS_END"]).toBe(PROGRESS_END);
     }
-    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, prStatus?.env]) {
+    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, building?.env, prStatus?.env]) {
       expect(env?.["STATUS_START"]).toBe(STATUS_START);
       expect(env?.["STATUS_END"]).toBe(STATUS_END);
     }
@@ -8086,11 +8087,43 @@ describe("the PRD chain's progress", () => {
   });
 
   /**
-   * A build run that stops after its runner showed the slice building writes
+   * The gate shows the slice building (#312), in a job that runs no agent and
+   * already holds the write scope: only on a run that builds and has a PRD PR,
+   * after the run claims its slice, and handing what it replaced to `publish`
+   * on the artifact that is uploaded however the gate ends. The runner writes
+   * nothing to the PRD PR's body.
+   */
+  it("shows the slice building from the gate, never from the agent's job", () => {
+    const gate = jobNamed(PRD, "gate");
+    const names = (gate.steps ?? []).map((s) => s.name ?? "");
+    const step = (gate.steps ?? []).find((s) => s.name === "Show the slice building in the progress list");
+    const upload = (gate.steps ?? []).find((s) => s.name === "Hand the PRD's snapshot on");
+    const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
+
+    expect(step?.if).toBe(
+      "steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.preflight.outputs.prd_pr != ''",
+    );
+    expect(names.indexOf("Show the slice building in the progress list")).toBeGreaterThan(names.indexOf("Transition labels"));
+    expect(names.indexOf("Show the slice building in the progress list")).toBeLessThan(names.indexOf("Hand the PRD's snapshot on"));
+    expect(step?.run).toContain("set -uo pipefail");
+    expect(step?.run).not.toContain("set -e");
+    expect(JSON.stringify(step)).not.toContain("AGENT_PAT");
+    expect(gate.permissions?.["pull-requests"]).toBe("write");
+    for (const file of ["progress_unbuilt.md", "status_unbuilt.md"]) {
+      expect(String(upload?.with?.["path"] ?? "")).toContain(`\${{ runner.temp }}/${file}`);
+    }
+    expect(implement).not.toContain('"PATCH"');
+    expect(implement).not.toContain("could not be written");
+    expect(implement).not.toMatch(/kind: "build"/);
+  });
+
+  /**
+   * A build run that stops after its gate showed the slice building writes
    * the list back, since it starts no round and no advance job would: on a
-   * failure or a cancel of a run that builds, after the comment and the
-   * labels, before the trigger label comes off, and never failing the job.
-   * The runner renders what it writes before it shows the slice building.
+   * park, a failure or a cancel of a run that builds, after the comment and
+   * the labels, before the trigger label comes off, and never failing the
+   * job. The runner's render where it got that far, and what the gate
+   * replaced where it did not.
    */
   it("writes the list back where a build run stops", () => {
     const steps = stepsOf(PRD);
@@ -8102,7 +8135,7 @@ describe("the PRD chain's progress", () => {
     // In the publish job since the split (#308), which runs however the jobs
     // ahead of it ended, so their results are read by name.
     expect(step?.if).toBe(
-      "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && needs.catch_up.outputs.parked != 'true' && (failure() || cancelled() || needs.catch_up.result != 'success' || needs.implement-prd.result != 'success')",
+      "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (failure() || cancelled() || needs.catch_up.result != 'success' || needs.implement-prd.result != 'success')",
     );
     expect(names.indexOf("Show the stopped slice in the progress list")).toBe(names.indexOf("Mark blocked on failure") + 1);
     expect(run).toContain("set -uo pipefail");
@@ -8112,13 +8145,19 @@ describe("the PRD chain's progress", () => {
     expect(steps.find((s) => s.name === "Run implementation agent")?.env?.["MERGED"]).toBe(
       "${{ needs.catch_up.outputs.merged }}",
     );
-    for (const file of ["progress_stopped.md", "progress_stopped_pushed.md", "status_stopped.md", "status_stopped_pushed.md"]) {
+    for (const file of [
+      "progress_stopped.md",
+      "progress_stopped_pushed.md",
+      "status_stopped.md",
+      "status_stopped_pushed.md",
+      "progress_unbuilt.md",
+      "status_unbuilt.md",
+    ]) {
       expect(run).toContain(file);
     }
     // The runner writes `progress<name>.md` and `status<name>.md` for each.
     for (const name of ['"_stopped"', '"_stopped_pushed"']) {
       expect(implement.indexOf(`write(${name}`)).toBeGreaterThan(-1);
-      expect(implement.indexOf(`write(${name}`)).toBeLessThan(implement.indexOf('"PATCH"'));
     }
     expect(implement).toContain("writeText(`progress${name}.md`");
     expect(implement).toContain("writeText(`status${name}.md`");

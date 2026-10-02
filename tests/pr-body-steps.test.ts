@@ -16,6 +16,7 @@ import {
   OPENING_STATUS,
   PROGRESS_END,
   PROGRESS_START,
+  renderPrdStatus,
   renderProgressList,
   spliceProgressList,
   spliceStatus,
@@ -86,12 +87,15 @@ interface Outcome {
   readonly gh: readonly string[];
   /** What a `--input` or `--body-file` sent, or `undefined` where nothing was. */
   readonly sent: string | undefined;
+  /** The files named in `kept`, as the step left them, `undefined` where it wrote none. */
+  readonly kept: Readonly<Record<string, string | undefined>>;
 }
 
 const runStep = (
   script: string,
   env: Record<string, string>,
   files: Record<string, string> = {},
+  kept: readonly string[] = [],
 ): Outcome => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-pr-body-"));
   const bin = path.join(temp, "bin");
@@ -124,6 +128,12 @@ const runStep = (
     stdout: result.stdout + result.stderr,
     gh: fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter((l) => l !== "") : [],
     sent: fs.existsSync(sent) ? fs.readFileSync(sent, "utf8") : undefined,
+    kept: Object.fromEntries(
+      kept.map((name) => {
+        const file = path.join(temp, name);
+        return [name, fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined];
+      }),
+    ),
   };
   fs.rmSync(temp, { recursive: true, force: true });
   return outcome;
@@ -713,6 +723,139 @@ describe.skipIf(!CAN_RUN)("a stopped build run writes the progress list back", (
     expect(unwritten.status, unwritten.stdout).toBe(0);
     expect(unwritten.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
   }, 2 * SUBPROCESS_TIMEOUT);
+});
+
+/**
+ * A build run shows its slice **building** from its gate (#312), which runs no
+ * toolchain: it rewrites the slice's row and the status line in the table the
+ * last round's ending left, and the result is the render, held equal here. It
+ * keeps the table and the status line it found, for a run that stops before
+ * the runner renders its own to write back.
+ */
+describe.skipIf(!CAN_RUN)("a build run's gate shows the slice building", () => {
+  const SUBS = [
+    { number: 15, title: "One", state: "OPEN" as const },
+    { number: 16, title: "Two", state: "OPEN" as const },
+    { number: 17, title: "Three", state: "OPEN" as const },
+  ];
+  const prUrl = "https://github.com/acme/widgets/pull/201";
+  const approved: ProgressInputs = {
+    subIssues: SUBS,
+    ranges: sliceRanges([{ sha: "0123456789abcdef", parents: ["fedcba9876543210"], slice: 15 }], SUBS),
+    verdict: "approval",
+    running: null,
+    finalReview: "not requested",
+    prUrl,
+    rounds: {
+      slices: { 15: { reviews: 2, fixes: 1, latestReview: `${prUrl}#pullrequestreview-9` } },
+      final: { reviews: 0, fixes: 0 },
+      all: { reviews: 2, fixes: 1 },
+    },
+  };
+  const building: ProgressInputs = { ...approved, running: { kind: "build", subIssue: 16 } };
+  const frame = (inputs: ProgressInputs): string =>
+    [
+      `> [!NOTE]\n> ${statusBlock(renderPrdStatus(inputs))}\n> Mine.`,
+      `## Summary\n\n${SUMMARY_START}\nx\n${SUMMARY_END}`,
+      renderProgressList(inputs),
+      `${CLOSES_START}\nCloses #14\n${CLOSES_END}\n`,
+    ].join("\n\n");
+  const UNBUILT = ["progress_unbuilt.md", "status_unbuilt.md"];
+
+  const gate = (body: string | null, fail = ""): Outcome =>
+    runStep(
+      stepRun("implement-prd", "gate", "Show the slice building in the progress list"),
+      { PRD_PR: "201", SUB: "16", SUB_K: "2", SUBS: "3", PROGRESS_START, PROGRESS_END, STATUS_START, STATUS_END, GH_FAIL: fail },
+      { "pr.json": JSON.stringify({ number: 201, body }) },
+      UNBUILT,
+    );
+
+  it("writes the table and the status line the renderer renders with the slice building", () => {
+    const outcome = gate(frame(approved));
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: frame(building) });
+    expect(outcome.kept).toEqual({
+      "progress_unbuilt.md": renderProgressList(approved),
+      "status_unbuilt.md": statusBlock(renderPrdStatus(approved)),
+    });
+  });
+
+  it("writes the table alone where the note has no status line, as the splice leaves one", () => {
+    const body = `Mine.\n\n${renderProgressList(approved)}`;
+    const outcome = gate(body);
+
+    expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: spliceProgressList(body, renderProgressList(building)) });
+    expect(outcome.kept["status_unbuilt.md"]).toBeUndefined();
+  });
+
+  it.each([
+    ["half a list", `Mine.\n${PROGRESS_START}\nrest`, "half a progress list, or two"],
+    ["two lists", `${renderProgressList(approved)}\n${renderProgressList(approved)}`, "half a progress list, or two"],
+    ["a list without the slice's row", renderProgressList({ ...approved, subIssues: SUBS.slice(0, 1) }), "has no row for sub-issue #16"],
+  ])("leaves %s alone, with a warning, and keeps nothing to write back", (_case, body, warning) => {
+    const outcome = gate(body);
+
+    expect(outcome.status, outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain(`::warning::`);
+    expect(outcome.stdout).toContain(warning);
+    expect(outcome.gh.some((call) => call.includes("PATCH"))).toBe(false);
+    expect(outcome.kept).toEqual({ "progress_unbuilt.md": undefined, "status_unbuilt.md": undefined });
+  });
+
+  it("writes nothing to a body with no list, or no body", () => {
+    for (const body of ["Mine.", null]) {
+      const outcome = gate(body);
+      expect(outcome.status, outcome.stdout).toBe(0);
+      expect(outcome.gh.some((call) => call.includes("PATCH"))).toBe(false);
+      expect(outcome.kept["progress_unbuilt.md"]).toBeUndefined();
+    }
+  }, 2 * SUBPROCESS_TIMEOUT);
+
+  it("goes on with a warning where the PRD PR cannot be read or written", () => {
+    const unread = gate(frame(approved), "read");
+    expect(unread.status, unread.stdout).toBe(0);
+    expect(unread.stdout).toContain("::warning::Could not read PRD PR #201");
+    expect(unread.kept["progress_unbuilt.md"]).toBeUndefined();
+
+    const unwritten = gate(frame(approved), "patch");
+    expect(unwritten.status, unwritten.stdout).toBe(0);
+    expect(unwritten.stdout).toContain("::warning::Could not write PRD PR #201's progress list");
+  }, 2 * SUBPROCESS_TIMEOUT);
+
+  /**
+   * A run that stops after the gate's write, in the catch-up or before the
+   * runner rendered anything, has only what the gate kept, and writes that
+   * back: the row is not left building.
+   */
+  it("is undone by a run that stops before the runner renders its own", () => {
+    const written = gate(frame(approved));
+    const after = (JSON.parse(written.sent ?? "{}") as { body: string }).body;
+    const kept = Object.fromEntries(Object.entries(written.kept).filter((e): e is [string, string] => e[1] !== undefined));
+
+    const stopped = runStep(
+      stepRun("implement-prd", "publish", "Show the stopped slice in the progress list"),
+      { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END, STATUS_START, STATUS_END },
+      { "pr.json": JSON.stringify({ number: 201, body: after }), ...kept },
+    );
+
+    expect(stopped.status, stopped.stdout).toBe(0);
+    expect(JSON.parse(stopped.sent ?? "{}")).toEqual({ body: frame(approved) });
+  }, 2 * SUBPROCESS_TIMEOUT);
+
+  it("is undone by the runner's render where the runner got that far", () => {
+    const stopped = runStep(
+      stepRun("implement-prd", "publish", "Show the stopped slice in the progress list"),
+      { PRD_PR: "201", PUSHED: "", PROGRESS_START, PROGRESS_END, STATUS_START, STATUS_END },
+      {
+        "pr.json": JSON.stringify({ number: 201, body: "Mine." }),
+        "progress_stopped.md": "stopped list",
+        "progress_unbuilt.md": "unbuilt list",
+      },
+    );
+
+    expect(JSON.parse(stopped.sent ?? "{}")).toEqual({ body: "Mine.\n\nstopped list" });
+  });
 });
 
 /**

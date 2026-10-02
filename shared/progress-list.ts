@@ -12,9 +12,12 @@ import type { SliceRanges } from "./slice-ranges.js";
  * byte for byte.
  *
  * **Re-rendered from live state, never edited incrementally.** Every
- * `implement-prd` run that builds renders it as the slice starts and again as
- * its round is asked for, and the advance job writes the one the review
- * rendered for how its round ended. So each render is a pure function of the
+ * `implement-prd` run that builds renders it as its round is asked for, and
+ * the advance job writes the one the review rendered for how its round ended.
+ * The two jobs that run no toolchain and still write it, the gate showing a
+ * slice building (#312) and the finishing run requesting the final review,
+ * each rewrite one row in place to exactly what this renders, held equal by a
+ * test. So each render is a pure function of the
  * sub-issues, the slice ranges, the head's verdict, what is running, the
  * finishing state and the rounds counted off the PRD PR, and a render from
  * unchanged state is byte for byte the one before it. The **status line** at

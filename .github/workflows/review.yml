@@ -154,6 +154,12 @@ jobs:
   # output. It runs where the review does, the same two guards, and holds no
   # permission at all: it reads one variable and writes one number.
   #
+  # **And whether `AGENT_PAT` is set** (#316), which the fix-round budget reads.
+  # The review job runs the agent, which can read its runner's memory, and that
+  # memory holds every secret the job names, a comparison against `''`
+  # included. So the comparison is made here, where no agent runs, and only
+  # its answer crosses.
+  #
   # **It never fails.** A failed job here would skip the review silently, which
   # is the class this issue is about. A value that is not a positive integer is
   # summed as the default instead and flagged, and the review refuses it where
@@ -169,6 +175,7 @@ jobs:
     outputs:
       minutes: ${{ steps.limits.outputs.minutes }}
       refused: ${{ steps.limits.outputs.refused }}
+      has-pat: ${{ secrets.AGENT_PAT != '' }}
     steps:
       - name: Add the CI wait to the review's own time
         id: limits
@@ -953,14 +960,15 @@ jobs:
       # nothing, so without `AGENT_PAT` the verdict asks for the label instead of
       # asking for a round that would never run. The same holds for a count that
       # could not be read: a run that cannot say how many rounds are spent does
-      # not start another, and warns.
+      # not start another, and warns. Whether there is a PAT comes from
+      # `time-limit`, so this job never names it (#316).
       - name: Settle the fix-round budget
         id: budget
         if: steps.state.outputs.proceed == 'true'
         env:
           MAX_FIX_ROUNDS: ${{ vars.AGENT_MAX_FIX_ROUNDS }}
           AUTO_FIX: ${{ inputs.auto-fix }}
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
+          HAS_PAT: ${{ needs.time-limit.outputs.has-pat }}
           # `FIX_ROUND_STATUS.context`; a test holds the two equal.
           FIX_ROUND_CONTEXT: agent-fix-round
           # And, for one release, the verdict a round started under 0.7.6
@@ -1831,9 +1839,10 @@ jobs:
       # readable by anyone who can see the repository, and the agent's
       # environment holds `CLAUDE_CODE_OAUTH_TOKEN`, so a transcript where it
       # printed that environment carries the token. Every secret this job holds
-      # is replaced with `[REDACTED]` in a copy, the two GitHub tokens also in
-      # the basic-auth form a checkout's git config holds them in, and only the
-      # copy is uploaded.
+      # is replaced with `[REDACTED]` in a copy, the job token also in the
+      # basic-auth form a checkout's git config holds it in, and only the copy
+      # is uploaded. The script is the one every agent workflow runs, and names no
+      # PAT: no job that runs an agent holds one (#307, #316).
       #
       # `always()`, so a failed, cancelled or timed-out run keeps its record
       # too, and `continue-on-error`, so the record never fails the run it
@@ -1846,7 +1855,6 @@ jobs:
         continue-on-error: true
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          AGENT_PAT: ${{ secrets.AGENT_PAT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'PY'
@@ -1857,7 +1865,7 @@ jobs:
           shutil.rmtree(copy, ignore_errors=True)
 
           secrets = []
-          for name in ("CLAUDE_CODE_OAUTH_TOKEN", "AGENT_PAT", "GITHUB_TOKEN"):
+          for name in ("CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"):
               value = os.environ.get(name, "").encode()
               if not value:
                   continue

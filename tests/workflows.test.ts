@@ -314,7 +314,8 @@ const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
    *
    * …and the review's time limit (#220), which is its CI wait plus its own
    * time: an expression cannot add, so a job ahead of the review does the sum.
-   * It holds no permission at all.
+   * It holds no permission at all. It also says whether `AGENT_PAT` is set, so
+   * the review job, which runs the agent, never names it (#316).
    *
    * …and the red check (#231), which runs the pull request's new and changed
    * tests against the merge-base ahead of the review. It runs the PR's code,
@@ -1965,7 +1966,10 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     const run = step?.run ?? "";
 
     expect(run).toContain('[ "$spent" -lt "$budget" ] && [ "$HAS_PAT" = "true" ]');
-    expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    // Whether there is a PAT, from a job that never runs the agent (#316):
+    // naming the secret here, even to compare it, puts it on the agent's runner.
+    expect(step?.env?.["HAS_PAT"]).toBe("${{ needs.time-limit.outputs.has-pat }}");
+    expect(jobNamed(REVIEW, "time-limit").outputs?.["has-pat"]).toBe("${{ secrets.AGENT_PAT != '' }}");
     expect(step?.env?.["FIX_ROUND_CONTEXT"]).toBe(FIX_ROUND_STATUS.context);
     expect(step?.env?.["STARTED"]).toBeUndefined();
     expect(run).toContain(".context == env.FIX_ROUND_CONTEXT");
@@ -8760,6 +8764,53 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
   });
 });
 
+/**
+ * **No job that runs an agent names a secret that writes** (#307, #316). The
+ * agent runs with `sudo` and can read its runner's memory, which holds every
+ * secret the job names from its first step, a step whose `if:` is false
+ * included. So the only secrets such a job may name are the agent's own token
+ * and the job token, whose reach its `permissions:` decide. Whatever else a run
+ * needs to know about a secret, such as whether it is set, it learns from a
+ * job no agent runs in.
+ *
+ * Every reusable workflow, and every job in it that runs a runner which starts
+ * an agent, read off the runner's source: a new workflow is covered the
+ * moment its job runs one.
+ */
+describe("no job that runs an agent names a secret that writes", () => {
+  const ALLOWED = new Set(["CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"]);
+  const AGENT_COMMANDS = RUNNER_COMMANDS.filter((c) =>
+    fs.readFileSync(path.join(c, `${c}.ts`), "utf8").includes('from "@ai-hero/sandcastle"'),
+  );
+  const reusables = fs
+    .readdirSync(WORKFLOW_DIR)
+    .filter((f) => f.endsWith(".yml") && workflowOf(path.join(WORKFLOW_DIR, f)).on?.workflow_call !== undefined)
+    .sort();
+  const agentJobs = reusables.flatMap((f) => {
+    const file = path.join(WORKFLOW_DIR, f);
+    return Object.entries(workflowOf(file).jobs)
+      .filter(([, job]) =>
+        (job.steps ?? []).some((s) => AGENT_COMMANDS.some((c) => new RegExp(`-- agent-workflows ${c}\\s*$`).test(s.run ?? ""))),
+      )
+      .map(([id, job]) => [`${f} ${id}`, job] as const);
+  });
+
+  it("finds the job of every runner that starts an agent", () => {
+    expect(agentJobs.map(([label]) => label).sort()).toEqual(
+      ["fix.yml fix", "implement-prd.yml implement-prd", "implement.yml implement", "review.yml review", "update-branch.yml update-branch"],
+    );
+  });
+
+  it.each(agentJobs)("%s: names no secret but the agent's token and the job token", (_, job) => {
+    const text = JSON.stringify(job);
+    const expressions = [...text.matchAll(/\$\{\{.*?\}\}/g)].map((m) => m[0]);
+    const named = expressions.flatMap((e) => [...e.matchAll(/secrets\.([A-Za-z0-9_-]+)/g)].map((m) => m[1]));
+
+    expect(expressions.filter((e) => /secrets\s*\[/.test(e))).toEqual([]);
+    expect(named.filter((n) => !ALLOWED.has(n as string))).toEqual([]);
+  });
+});
+
 describe("every agent run keeps its session transcript, redacted, for a few days", () => {
   /**
    * The runners that start an agent, read off their source rather than listed:
@@ -8810,15 +8861,14 @@ describe("every agent run keeps its session transcript, redacted, for a few days
     expect(redact.if).toBe("always() && inputs.transcript-retention-days > 0");
     // The record never fails the run it records.
     expect(redact["continue-on-error"]).toBe(true);
-    // Every secret the job holds, so the step can take each one out — and in a
-    // split run's agent job, which holds no PAT, not that one: naming it here
-    // to redact it would deliver it to the job the split keeps it out of.
-    const split = SPLIT_RUNS[fileOf(command)] !== undefined;
+    // Every secret the job holds, so the step can take each one out, and not
+    // the PAT, which no agent's job holds (#307, #316): naming it here to
+    // redact it would deliver it to the job that must not have it.
     expect(redact.env).toEqual({
       CLAUDE_CODE_OAUTH_TOKEN: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
-      ...(split ? {} : { AGENT_PAT: "${{ secrets.AGENT_PAT }}" }),
       GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
     });
+    expect(JSON.stringify(redact)).not.toContain("AGENT_PAT");
     // Found under the home directory, never under a path the checkout decides.
     expect(redact.run ?? "").toContain('".claude" / "projects"');
     expect(redact.run ?? "").not.toMatch(/GITHUB_WORKSPACE|\/home\/runner/);

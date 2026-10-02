@@ -2423,3 +2423,24 @@ called.
 `docs/parity.md` §2a and §10 still describe the chain on slice PRs, and their tests pin that text. #249
 named `CONTEXT.md` and `docs/ADOPTING.md` as the documents that must describe the chain as it now
 is, and stopped there; the parity rewrite is a follow-up rather than something to fold in here.
+
+## 2026-10-02: the token the agent could read was never the one being passed around
+
+#306 stopped persisting the checkout credential and handed the PAT to the push alone, and its own
+comment said what it did not cover: the push ran on the runner the agent had just left, with `sudo`.
+Designing the fix for that turned up a shorter path than the one it was written about. The runner
+process holds every secret its job names, from the job's first step, and an agent with `sudo` can
+read its memory while it is still running — the route the tj-actions/changed-files compromise took
+in March 2025. So the question was never only what a later step would hand over; it was which
+secrets the agent's *job* names at all.
+
+That had to be measured rather than assumed, and a throwaway probe on a `probe/*` branch did it: a
+secret named only in a step that never ran was in the runner's memory before any step used it, and
+one the job did not name was not, though the called workflow had been handed it. The same probe
+answered the question the split depended on next — whether a `concurrency:` group declared on a
+called workflow holds all its jobs, which it does.
+
+It also found a reference nobody had counted. #304's transcript redaction named `secrets.AGENT_PAT`
+in the agent's job to take the PAT out of the transcript, which put it on the agent's runner to do
+so. Under the split the agent's job holds no PAT to redact. The habit: when a secret is kept out of
+a job, grep the job for the name, not for the steps meant to use it.

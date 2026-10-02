@@ -321,6 +321,31 @@ const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
    * so it holds `contents: read` and no secret.
    */
   [path.join(WORKFLOW_DIR, "review.yml")]: ["time-limit", "red-check", "post-review", "advance"],
+  /**
+   * The gate and the publish job: implement's run split three ways so the job
+   * that runs the agent holds no token that writes and names no PAT. The gate
+   * refuses or claims the issue, and the publish job pushes the agent's
+   * bundled commits and opens the PR from a runner the agent never touched.
+   * See `SPLIT_RUNS`.
+   */
+  [path.join(WORKFLOW_DIR, "implement.yml")]: ["gate", "publish"],
+};
+
+/**
+ * Runs split across jobs that hand off in a fixed order — a gate, the job that
+ * runs the agent, and a publish job — read in that order wherever a check is
+ * about the run's steps. The order is the run's: each job `needs` the one
+ * before it, which a check below asserts, so a step's position in this list
+ * is when it runs.
+ *
+ * The split is a security boundary, not a refactor. The agent runs with
+ * `sudo` and can read every secret its own job names, from memory, and leave
+ * something behind for a later step on the same runner; so the job that runs
+ * it is read-only and names no PAT, and everything that writes runs on a
+ * runner it never touched.
+ */
+const SPLIT_RUNS: Readonly<Record<string, readonly string[]>> = {
+  [path.join(WORKFLOW_DIR, "implement.yml")]: ["gate", "implement", "publish"],
 };
 
 /**
@@ -353,7 +378,30 @@ const jobNamed = (file: string, id: string): Job => {
 /** Every job a file declares: its main one and the declared extras. */
 const jobsOf = (file: string): readonly Job[] => Object.values(workflowOf(file).jobs);
 
-const stepsOf = (file: string): readonly Step[] => jobOf(file).steps ?? [];
+const stepsOf = (file: string): readonly Step[] => {
+  const split = SPLIT_RUNS[file];
+  if (split === undefined) return jobOf(file).steps ?? [];
+  jobOf(file);
+  return split.flatMap((id) => jobNamed(file, id).steps ?? []);
+};
+
+/**
+ * The job that carries a workflow's trigger-label guard: its gate, where the
+ * run is split, since every job after it follows from the gate's outputs.
+ */
+const guardJobOf = (file: string): Job => {
+  const split = SPLIT_RUNS[file];
+  return split === undefined ? jobOf(file) : jobNamed(file, split[0] as string);
+};
+
+/**
+ * Everything a step runs only if: its job's `if:` and its own, joined. Where a
+ * run is split, a step's gate can sit on its job rather than on itself.
+ */
+const conditionOf = (file: string, step: Step): string => {
+  const job = Object.values(workflowOf(file).jobs).find((j) => (j.steps ?? []).some((s) => s.name === step.name && s.run === step.run && s.uses === step.uses));
+  return [job?.if, step.if].filter((c) => c !== undefined).join(" && ");
+};
 
 /**
  * The job a workflow writes from, where that is not the job that does its work
@@ -381,8 +429,20 @@ const writerProceed = (file: string): string =>
  */
 const CLOCK = 'echo "JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"';
 
-/** The step a job's work starts with: the first after the clock. */
+/**
+ * A split run's clock: the gate's last step, an output rather than an env
+ * entry, because the failure step that reads it is in another job. Read from
+ * the gate and never from the agent's job, whose outputs the agent can write.
+ */
+const SPLIT_CLOCK = 'echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"';
+
+/**
+ * The step a job's work starts with: the first after the clock. A split run's
+ * gate has no clock ahead of its work: the limit is the agent's job's, so the
+ * clock starts as the gate hands over, last in it (`SPLIT_CLOCK`).
+ */
 const firstWorkStep = (file: string): Step | undefined => {
+  if (SPLIT_RUNS[file] !== undefined) return stepsOf(file)[0];
   const [clock, first] = stepsOf(file);
 
   expect(clock?.run).toBe(CLOCK);
@@ -900,7 +960,11 @@ describe("every PR workflow shares one concurrency group per PR", () => {
       ),
     ];
 
-    expect(checkRuns).toHaveLength(10);
+    expect(checkRuns).toHaveLength(12);
+    // implement's gate and publish jobs, around the job that runs its agent.
+    // Matched by the caller job's id, as `implement` always was.
+    expect(checkRuns).toContain("implement / gate");
+    expect(checkRuns).toContain("implement / publish");
     // The posting job (#257): it runs after this wait, and it is not evidence
     // about the diff whenever it does.
     expect(checkRuns).toContain("review / post-review");
@@ -1150,7 +1214,10 @@ describe("a run that pushed waits for the PR head before asking for a review", (
     const step = steps.find((s) => s.name === name);
     const run = step?.run ?? "";
 
-    expect(push?.run ?? "").toContain('echo "head=$(git rev-parse HEAD)"');
+    // implement's publish job never checks the agent's branch out: it
+    // unbundles the commits into a ref and pushes the ref.
+    const head = file === "implement.yml" ? '"$(git rev-parse "refs/heads/${BRANCH}")"' : '"$(git rev-parse HEAD)"';
+    expect(push?.run ?? "").toContain(`echo "head=${head.slice(1, -1)}"`);
     expect(step?.env?.["PUSHED_SHA"]).toBe("${{ steps.push.outputs.head }}");
     expect(step?.env?.["HEAD_WAIT_SECONDS"]).toBe("60");
     expect(run).toContain(`gh pr view "$${pr}" --json headRefOid --jq .headRefOid`);
@@ -3803,7 +3870,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * adopter can leave behind.
    */
   it.each(runnerWorkflows)("%s: guards its trigger label on this side of the seam", (file) => {
-    expect(jobOf(file).if ?? "").toMatch(/github\.event\.label\.name == 'agent:[a-z-]+'/);
+    expect(guardJobOf(file).if ?? "").toMatch(/github\.event\.label\.name == 'agent:[a-z-]+'/);
   });
 
   /**
@@ -4364,12 +4431,22 @@ describe("agent-implement refuses a closed issue", () => {
   });
 
   const NOT_REFUSED = "steps.preflight.outputs.refused == 'false'";
+  /**
+   * The same go-ahead across the split: the agent's job runs only where the
+   * gate did not refuse, and the publish job's checkout only after the agent's
+   * job succeeded, which it cannot have where it never ran.
+   */
+  const NOT_REFUSED_SPLIT = ["needs.gate.outputs.refused == 'false'", "needs.implement.result == 'success'"];
+  const gatedOnGoAhead = (step: Step): void => {
+    const condition = conditionOf(FILE, step);
+    expect(NOT_REFUSED_SPLIT.some((c) => condition.includes(c)), `${step.name}: ${condition}`).toBe(true);
+  };
 
   it("checks nothing out when it refuses", () => {
     const checkout = stepsOf(FILE).filter((s) => (s.uses ?? "").startsWith("actions/checkout@"));
 
     expect(checkout).not.toHaveLength(0);
-    for (const step of checkout) expect(step.if ?? "").toContain(NOT_REFUSED);
+    for (const step of checkout) gatedOnGoAhead(step);
   });
 
   it("transitions no label when it refuses", () => {
@@ -4521,9 +4598,13 @@ describe("agent-implement refuses issue shapes it cannot handle", () => {
   it("comments on a preflight that fails rather than refuses", () => {
     // Identified by the reason file, not by `agent:blocked` — the preflight
     // step adds that label too, and it sorts first.
-    const blocked = stepsOf(FILE).find((s) => (s.run ?? "").includes("failure_reason.txt"));
+    const blocked = stepsOf(FILE).find((s) => s.name === "Mark blocked on failure");
+    // On the publish job's `if:`, which a failed gate passes: `refused` is
+    // `!= 'true'` there for the same reason.
+    const condition = conditionOf(FILE, blocked as Step);
 
-    expect(blocked?.if ?? "").toContain("steps.preflight.outputs.refused != 'true'");
+    expect(condition).toContain("needs.gate.outputs.refused != 'true'");
+    expect(condition).toContain("needs.gate.result != 'success'");
     expect(blocked?.if ?? "").toContain("failure()");
   });
 
@@ -4537,7 +4618,8 @@ describe("agent-implement refuses issue shapes it cannot handle", () => {
     const install = stepsOf(FILE).filter(isInstallStep);
 
     expect(install).not.toHaveLength(0);
-    for (const step of install) expect(step.if ?? "").toContain(NOT_REFUSED);
+    // In the agent's job, which runs only where the gate did not refuse.
+    for (const step of install) expect(conditionOf(FILE, step)).toContain("needs.gate.outputs.refused == 'false'");
   });
 
   /**
@@ -4586,7 +4668,7 @@ describe("the two implement workflows partition issue shapes", () => {
     [PRD_CALLER, PRD],
   ])("%s: is triggered by agent:implement on an issue", (callerFile: string, file: string) => {
     expect(workflowOf(callerFile).on?.issues?.types).toEqual(["labeled"]);
-    expect(jobOf(file).if ?? "").toBe("github.event.label.name == 'agent:implement'");
+    expect(guardJobOf(file).if ?? "").toBe("github.event.label.name == 'agent:implement'");
   });
 
   /**
@@ -6957,6 +7039,19 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
     const { guard } = FAILURE_STEPS[command] ?? { guard: "" };
     const step = failureStep(command);
 
+    // A split run reports from its publish job, which runs `always()` after a
+    // gate that did not refuse: what failed or was cancelled may be either job
+    // ahead of it, read by name since `failure()` does not see a cancel there.
+    if (SPLIT_RUNS[fileOf(command)] !== undefined) {
+      expect(step.if).toBe(
+        "always() && (failure() || cancelled() || needs.gate.result != 'success' || needs.implement.result != 'success')",
+      );
+      expect(step.env?.["AGENT_RESULT"]).toBe("${{ needs.implement.result }}");
+      expect(step.env?.["RUN_CANCELLED"]).toBe("${{ cancelled() }}");
+      expect(step.run ?? "").toContain('if [ "$RUN_CANCELLED" = "true" ] || [ "$AGENT_RESULT" = "cancelled" ]; then');
+      return;
+    }
+
     const review = command === "review" ? " || needs.review.result != 'success'" : "";
     expect(step.if).toBe(guard === "" ? "failure() || cancelled()" : `${guard} && (failure() || cancelled()${review})`);
     expect(step.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
@@ -6988,6 +7083,17 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
   });
 
   it.each(RUNNER_COMMANDS)("%s: starts the clock before anything else", (command: string) => {
+    const split = SPLIT_RUNS[fileOf(command)];
+    if (split !== undefined) {
+      const gate = jobNamed(fileOf(command), split[0] as string);
+      const clock = (gate.steps ?? []).at(-1);
+
+      expect(clock?.id).toBe("clock");
+      expect(clock?.run).toBe(SPLIT_CLOCK);
+      expect(gate.outputs?.["started"]).toBe("${{ steps.clock.outputs.started }}");
+      expect(failureStep(command).env?.["JOB_STARTED"]).toBe(`\${{ needs.${split[0]}.outputs.started }}`);
+      return;
+    }
     const [first] = stepsOf(fileOf(command));
 
     expect(first?.if).toBeUndefined();
@@ -7093,7 +7199,17 @@ describe("an implement run links itself on the issue when it starts", () => {
     run.split("\n").filter((l) => l.includes("gh issue comment "));
 
   it.each([IMPLEMENT, PRD])("%s: defines the run link once, for the job", (file: string) => {
-    expect(jobOf(file).env?.["RUN_URL"]).toBe(RUN_URL);
+    // A split run defines it on each job that posts — the gate and the
+    // publish job — and not on the agent's, which posts nothing.
+    const split = SPLIT_RUNS[file];
+    if (split !== undefined) {
+      const [gate, agent, publish] = split.map((id) => jobNamed(file, id));
+      expect(gate?.env?.["RUN_URL"]).toBe(RUN_URL);
+      expect(publish?.env?.["RUN_URL"]).toBe(RUN_URL);
+      expect(agent?.env?.["RUN_URL"]).toBeUndefined();
+    } else {
+      expect(jobOf(file).env?.["RUN_URL"]).toBe(RUN_URL);
+    }
     for (const step of stepsOf(file)) expect(step.env?.["RUN_URL"], step.name).toBeUndefined();
   });
 
@@ -7202,7 +7318,7 @@ describe("an implement run links itself on the issue when it starts", () => {
     const step = steps.find((s, i) => i > opened && commentLines(s.run ?? "").length > 0);
     const [comment] = commentLines(step?.run ?? "");
 
-    expect(step?.if).toBe("steps.preflight.outputs.refused == 'false' && success()");
+    expect(step?.if).toBe("needs.implement.result == 'success' && success()");
     expect(step?.env?.["NEW_PR"]).toBe("${{ steps.open_pr.outputs.number }}");
     expect(steps.indexOf(step as Step)).toBeLessThan(steps.findIndex((s) => s.name === "Request review"));
     expect(step?.run ?? "").toContain("opened PR #${NEW_PR}");
@@ -7220,7 +7336,7 @@ describe("an implement run links itself on the issue when it starts", () => {
  */
 describe("a trigger label is on while its run works, and off when it ends", () => {
   const TRIGGERED: readonly (readonly [string, string, string])[] = [
-    ["implement.yml", "agent:implement", "always() && steps.preflight.outputs.refused == 'false'"],
+    ["implement.yml", "agent:implement", "always() && needs.gate.outputs.refused == 'false'"],
     ["implement-prd.yml", "agent:implement", "always() && steps.preflight.outputs.refused == 'false'"],
     ["review.yml", "agent:review", "always()"],
     ["fix.yml", "agent:fix", "always()"],
@@ -8095,6 +8211,149 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
  * from its agent too. The job list is pinned so a new checkout arrives here
  * with a decision, not past a filter that has gone empty.
  */
+/**
+ * **The job that runs the agent can write nothing, and the jobs that write run
+ * no agent.** The agent runs with the runner's passwordless `sudo`, so it can
+ * read the runner process's memory, which holds every secret its job names
+ * from the job's start — in a step that never runs, too (probed 2026-10-02) —
+ * and it can leave something behind for a later step on the same runner. So
+ * the split, not the scrubbing, is the boundary: the agent's job names no PAT
+ * and holds a read-only token, and everything that writes runs on a runner the
+ * agent never touched, taking from it only an artifact it checks.
+ *
+ * Every assertion here reads the file, not a list of steps, where a PAT named
+ * anywhere would put it on the agent's runner.
+ */
+describe("a split run keeps every write off the agent's runner", () => {
+  const splits = Object.entries(SPLIT_RUNS).map(([file, ids]) => [path.basename(file), file, ids] as const);
+  const PAT_REFERENCE = /secrets\.AGENT_PAT/;
+
+  it("is implement's, for now", () => {
+    expect(splits.map(([name]) => name)).toEqual(["implement.yml"]);
+  });
+
+  it.each(splits)("%s: runs gate, agent and publish in that order", (_, file, [gate, agent, publish]) => {
+    const jobs = workflowOf(file).jobs;
+
+    expect(Object.keys(jobs)).toEqual([gate, agent, publish]);
+    expect(jobs[agent as string]?.needs).toBe(gate);
+    expect(jobs[agent as string]?.if).toBe(`needs.${gate}.outputs.refused == 'false'`);
+    expect(jobs[publish as string]?.needs).toEqual([gate, agent]);
+    // However the agent's job ended, but never for another label's event or
+    // a run the gate refused or deferred.
+    expect(jobs[publish as string]?.if).toBe(
+      `always() && needs.${gate}.result != 'skipped' && needs.${gate}.outputs.refused != 'true'`,
+    );
+  });
+
+  it.each(splits)("%s: runs the agent in the middle job and nowhere else", (_, file, [gate, agent, publish]) => {
+    const runs = (id: string | undefined): boolean =>
+      (jobNamed(file, id as string).steps ?? []).some((s) => (s.run ?? "").includes("agent-workflows "));
+
+    expect([runs(gate), runs(agent), runs(publish)]).toEqual([false, true, false]);
+  });
+
+  it.each(splits)("%s: names no PAT anywhere in the agent's job, nor in the gate", (_, file, [gate, agent]) => {
+    for (const id of [gate, agent]) {
+      expect(JSON.stringify(jobNamed(file, id as string)), id).not.toMatch(PAT_REFERENCE);
+    }
+  });
+
+  it.each(splits)("%s: gives the agent's job a token that writes nothing", (_, file, [, agent]) => {
+    const permissions = jobNamed(file, agent as string).permissions ?? {};
+
+    expect(permissions).toEqual({ contents: "read", issues: "read", packages: "read" });
+  });
+
+  it.each(splits)("%s: writes from the gate only to the issue", (_, file, [gate]) => {
+    const permissions = jobNamed(file, gate as string).permissions ?? {};
+
+    expect(Object.entries(permissions).filter(([, level]) => level === "write")).toEqual([["issues", "write"]]);
+  });
+
+  /**
+   * The agent's job's outputs are the agent's to write, so the publish job
+   * reads none of them, and the agent's job declares none to read. What the
+   * publish job pushes is the artifact; where it pushes it and what it checks
+   * it against come from the gate.
+   */
+  it.each(splits)("%s: takes nothing from the agent's job but its artifact", (_, file, [, agent]) => {
+    expect(jobNamed(file, agent as string).outputs).toBeUndefined();
+    expect(fs.readFileSync(file, "utf8")).not.toContain(`needs.${agent}.outputs`);
+  });
+
+  /**
+   * One group for the whole run, at workflow level, or a second run for the
+   * same issue could start its agent between this run's agent and its push:
+   * a job-level group is released when the job ends. And keyed on the label,
+   * because a group admits one pending run and cancels the one it replaces,
+   * so another label's event would cancel a queued run of this one.
+   */
+  it.each(splits)("%s: holds the whole run in one group, which another label's event cannot take", (_, file) => {
+    const workflow = workflowOf(file);
+
+    expect(workflow.concurrency?.["cancel-in-progress"]).toBe(false);
+    expect(workflow.concurrency?.group).toBe(
+      "agent-implement-issue-${{ github.event.issue.number }}${{ github.event.label.name != 'agent:implement' && format('-other-{0}', github.run_id) || '' }}",
+    );
+    for (const job of jobsOf(file)) expect(job.concurrency).toBeUndefined();
+  });
+
+  it.each(splits)("%s: hands the agent's commits over as a bundle of the one branch, however the job ended", (_, file, [, agent]) => {
+    const steps = jobNamed(file, agent as string).steps ?? [];
+    const names = steps.map((s) => s.name);
+    const bundle = steps.find((s) => s.name === "Bundle the branch");
+    const upload = steps.find((s) => s.name === "Hand the branch to the publish job");
+
+    expect(bundle?.run).toBe('git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^refs/heads/${BASE_REF}"');
+    expect(bundle?.env?.["BRANCH"]).toBe("${{ needs.gate.outputs.branch }}");
+    // Last, so it carries a reason file however the agent's run ended.
+    expect(names.slice(-2)).toEqual(["Bundle the branch", "Hand the branch to the publish job"]);
+    expect(upload?.if).toBe("always()");
+    expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/branch.bundle");
+    expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/failure_reason.txt");
+  });
+
+  /**
+   * The bundle's content is the agent's, as the pushed branch always was; what
+   * the publish job checks is that it is the branch this run was for: intact,
+   * exactly the one branch the gate named, built on the base the gate read.
+   * Every check precedes the push, and none of them reads the agent's job.
+   */
+  it.each(splits)("%s: checks the bundle against the gate before it pushes", (_, file, [, , publish]) => {
+    const push = (jobNamed(file, publish as string).steps ?? []).find((s) => s.id === "push");
+    const run = push?.run ?? "";
+    const at = (needle: string): number => {
+      expect(run, needle).toContain(needle);
+      return run.indexOf(needle);
+    };
+
+    expect(push?.env?.["BRANCH"]).toBe("${{ needs.gate.outputs.branch }}");
+    expect(push?.env?.["BASE_SHA"]).toBe("${{ needs.gate.outputs.base }}");
+    expect(jobNamed(file, "gate").outputs?.["base"]).toBe("${{ steps.base.outputs.sha }}");
+    const pushed = at('push --force origin "$BRANCH"');
+    for (const check of [
+      'git bundle verify --quiet "$bundle"',
+      'git bundle list-heads "$bundle"',
+      '!= "refs/heads/${BRANCH}"',
+      'git bundle unbundle "$bundle"',
+      'git merge-base --is-ancestor "$BASE_SHA" "refs/heads/${BRANCH}"',
+    ]) {
+      expect(at(check), check).toBeLessThan(pushed);
+    }
+    // Each refusal names itself, for the failure comment.
+    expect(run.match(/block "The agent's/g)).toHaveLength(5);
+  });
+
+  it.each(splits)("%s: spends the PAT only in the publish job", (_, file, [, , publish]) => {
+    for (const [id, job] of Object.entries(workflowOf(file).jobs)) {
+      if (id === publish) continue;
+      expect(JSON.stringify(job), id).not.toMatch(PAT_REFERENCE);
+    }
+    expect(JSON.stringify(jobNamed(file, publish as string))).toMatch(PAT_REFERENCE);
+  });
+});
+
 describe("no checkout an agent runs in leaves a credential behind", () => {
   const PUSH_TOKEN = "${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}";
   const isCheckout = (s: Step): boolean => (s.uses ?? "").startsWith("actions/checkout@");
@@ -8115,6 +8374,7 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
       "fix.yml / fix",
       "implement-prd.yml / implement-prd",
       "implement.yml / implement",
+      "implement.yml / publish",
       "review.yml / red-check",
       "review.yml / review",
       "update-branch.yml / update-branch",
@@ -8242,10 +8502,13 @@ describe("every agent run keeps its session transcript, redacted, for a few days
     expect(redact.if).toBe("always() && inputs.transcript-retention-days > 0");
     // The record never fails the run it records.
     expect(redact["continue-on-error"]).toBe(true);
-    // Every secret the job holds, so the step can take each one out.
+    // Every secret the job holds, so the step can take each one out — and in a
+    // split run's agent job, which holds no PAT, not that one: naming it here
+    // to redact it would deliver it to the job the split keeps it out of.
+    const split = SPLIT_RUNS[fileOf(command)] !== undefined;
     expect(redact.env).toEqual({
       CLAUDE_CODE_OAUTH_TOKEN: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
-      AGENT_PAT: "${{ secrets.AGENT_PAT }}",
+      ...(split ? {} : { AGENT_PAT: "${{ secrets.AGENT_PAT }}" }),
       GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
     });
     // Found under the home directory, never under a path the checkout decides.

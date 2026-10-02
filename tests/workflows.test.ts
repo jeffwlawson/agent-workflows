@@ -672,6 +672,16 @@ const REVIEW_CALLER = path.join(CALLER_DIR, "pr.yml");
 const IMPLEMENT = path.join(WORKFLOW_DIR, "implement.yml");
 const PRD = path.join(WORKFLOW_DIR, "implement-prd.yml");
 
+/**
+ * The loop's token resolver (#319, PRD #314): the App's, else `AGENT_PAT`,
+ * else the workflow token. The App's two secrets, and the workflows that
+ * resolve their token through it and so are handed them: the issue side, so
+ * far.
+ */
+const TOKEN_ACTION = path.join(".github", "actions", "loop-token", "action.yml");
+const APP_SECRETS = ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"] as const;
+const RESOLVING: readonly string[] = [IMPLEMENT, PRD];
+
 /** `agent-review`'s CI-collection step, which several checks below pick apart. */
 const waitStep = (): Step => {
   const step = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
@@ -4343,22 +4353,28 @@ describe("every workflow in the loop is called rather than copied", () => {
    * secret the repository holds, including the ones this loop has no use for —
    * and it is the form that reads as tidier, so the list is worth pinning.
    */
-  it.each(eachCaller(wiredCallers()))("%s: passes both secrets by name", (_name, caller) => {
+  it.each(eachCaller(wiredCallers()))("%s: passes every secret by name", (_name, caller) => {
     const declared = callOf(targetOf(caller))?.secrets ?? {};
-
-    expect(Object.keys(declared).sort()).toEqual(["AGENT_PAT", "CLAUDE_CODE_OAUTH_TOKEN"]);
-    // The agent cannot run without its token. The PAT is optional everywhere —
-    // every use of it falls back to `GITHUB_TOKEN` under a warning (§1) — and
-    // an unset optional secret arrives as the empty string, which is what those
-    // fallbacks test.
-    expect(declared["CLAUDE_CODE_OAUTH_TOKEN"]?.required).toBe(true);
-    expect(declared["AGENT_PAT"]?.required).toBe(false);
-
-    expect(caller.job.secrets).not.toBe("inherit");
-    expect(Object.keys(caller.job.secrets ?? {}).sort()).toEqual([
+    // The App's two beside the PAT where the workflow resolves its token
+    // through the loop's resolver (#319).
+    const expected = [
       "AGENT_PAT",
       "CLAUDE_CODE_OAUTH_TOKEN",
-    ]);
+      ...(RESOLVING.includes(targetOf(caller)) ? APP_SECRETS : []),
+    ].sort();
+
+    expect(Object.keys(declared).sort()).toEqual(expected);
+    // The agent cannot run without its token. The PAT and the App are optional
+    // everywhere (every use of them falls back to `GITHUB_TOKEN` under a
+    // warning, §1), and an unset optional secret arrives as the empty string,
+    // which is what those fallbacks test.
+    expect(declared["CLAUDE_CODE_OAUTH_TOKEN"]?.required).toBe(true);
+    for (const name of expected.filter((n) => n !== "CLAUDE_CODE_OAUTH_TOKEN")) {
+      expect(declared[name]?.required, name).toBe(false);
+    }
+
+    expect(caller.job.secrets).not.toBe("inherit");
+    expect(caller.job.secrets ?? {}).toEqual(Object.fromEntries(expected.map((n) => [n, `\${{ secrets.${n} }}`])));
   });
 
   /**
@@ -5309,7 +5325,7 @@ describe("agent-implement-prd works one sub-issue per run", () => {
       `needs.gate.result == 'success' && needs.gate.outputs.finishing == 'false' && (needs.gate.outputs.build == 'false' || ${AGENT_SUCCEEDED}) && success()`,
     );
     expect(step?.env?.["PRD_BRANCH"]).toBe("${{ needs.gate.outputs.prd_branch }}");
-    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
     expect(run).toContain('gh pr list --state open --head "$PRD_BRANCH"');
     expect(run).toContain('gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH"');
     expect(run).toContain('["#\\($parent)", (.subIssues.nodes[] | select(.state == "OPEN") | "#\\(.number)")] | "Closes " + join(", closes ")');
@@ -5346,11 +5362,11 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * rule (docs/ADOPTING.md §1), so the slice would sit asking nobody for
    * review. Warn loudly, and fail where the add itself fails.
    */
-  it("warns loudly when AGENT_PAT is absent for the review label, and fails on a failed add", () => {
+  it("warns loudly when neither the App nor AGENT_PAT is set for the review label, and fails on a failed add", () => {
     const step = stepsOf(PRD).find((s) => s.name === "Request review");
 
-    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
-    expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
+    expect(step?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
     expect(step?.run ?? "").toContain("::warning::");
     expect(step?.run ?? "").toContain("set -euo pipefail");
   });
@@ -5403,8 +5419,9 @@ describe("agent-implement-prd works one sub-issue per run", () => {
   /**
    * The handover. One slice landed: its round reviewed the whole PRD PR, so it
    * is marked ready and no review is asked for. More than one: the final
-   * review is recorded in the PRD PR's body, then asked for. Both need
-   * AGENT_PAT. The loop never merges the PRD PR nor approves anything.
+   * review is recorded in the PRD PR's body, then asked for. Both need the
+   * loop's App or AGENT_PAT. The loop never merges the PRD PR nor approves
+   * anything.
    */
   it("hands the PRD PR over on the finishing run, and never merges or approves it", () => {
     const steps = stepsOf(PRD);
@@ -5418,13 +5435,13 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(conditionOf(PRD, step as Step)).toContain("needs.gate.outputs.refused != 'true'");
     expect(step?.env?.["PRD_PR"]).toBe("${{ needs.gate.outputs.prd_pr }}");
     expect(step?.env?.["LANDED"]).toBe("${{ needs.gate.outputs.landed }}");
-    expect(step?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
-    expect(step?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(step?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
+    expect(step?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
     expect(many).toContain('mark="<!-- agent:final-review requested -->"');
     expect(many.indexOf("gh api -X PATCH")).toBeLessThan(many.indexOf('--add-label "agent:review"'));
     expect(many.slice(many.indexOf("else"))).toContain('gh pr ready "$PRD_PR"');
     expect(many.slice(many.indexOf("else"))).not.toContain("agent:review");
-    expect(run.indexOf('"$HAS_PAT" != "true"')).toBeLessThan(run.indexOf("gh pr edit"));
+    expect(run.indexOf('"$TOKEN_SOURCE" != "app"')).toBeLessThan(run.indexOf("gh pr edit"));
     expect(bashFunctionBody(run, "block")).toContain('> "${RUNNER_TEMP}/failure_reason.txt"');
     expect(code().filter((l) => /\bgh pr (merge|review)\b/.test(l))).toEqual([]);
   });
@@ -8751,6 +8768,216 @@ describe("a split run keeps every write off the agent's runner", () => {
 });
 
 /**
+ * **The issue side writes with the loop's token** (#319, PRD #314). One
+ * composite action, `.github/actions/loop-token`, chooses it: an installation
+ * token minted for the loop's App where its ID and key are both set, else
+ * `AGENT_PAT`, else the workflow token, and says which it chose. Every write
+ * `AGENT_PAT` made on the issue side is now made with what it returns, and a
+ * step deciding whether a label it adds fires anything reads its source.
+ *
+ * It runs only in a job that writes and runs no agent, at that job's start,
+ * and no token passes between jobs. That is what keeps the App's key and
+ * every token minted from it off the agent's runner, which holds every secret
+ * its job names (#307).
+ *
+ * Executed in `tests/loop-token-step.test.ts`; what is asserted here is where
+ * it runs, what it is handed and what reads its outputs.
+ */
+describe("the issue side resolves the loop's token in the jobs that write", () => {
+  interface Action {
+    readonly inputs?: Record<string, { readonly required?: boolean; readonly default?: string }>;
+    readonly outputs?: Record<string, { readonly value?: string }>;
+    readonly runs?: { readonly using?: string; readonly steps?: readonly Step[] };
+  }
+  const action = (): Action => parse(fs.readFileSync(TOKEN_ACTION, "utf8")) as Action;
+  const actionStep = (id: string): Step | undefined => (action().runs?.steps ?? []).find((s) => s.id === id);
+
+  const RESOLVER = `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`;
+  const TOKEN = "${{ steps.token.outputs.token }}";
+  const SOURCE = "${{ steps.token.outputs.source }}";
+  const SECRETS = /AGENT_PAT|AGENT_APP_ID|AGENT_APP_PRIVATE_KEY/;
+  /** Every expression naming a secret but the agent's token or the job token, as `forbidden` reads it below. */
+  const writingSecrets = (node: unknown): string[] =>
+    [...JSON.stringify(node).matchAll(/\$\{\{.*?\}\}/g)]
+      .map((m) => m[0])
+      .filter((e) => /(?<![\w.-])secrets(?![\w-])(?!\.(?:CLAUDE_CODE_OAUTH_TOKEN|GITHUB_TOKEN)(?![\w-]))/i.test(e));
+  const resolves = (s: Step): boolean => (s.uses ?? "").includes("/actions/loop-token@");
+  /** Each workflow's jobs that resolve the token: the ones that write what the workflow token cannot. */
+  const MINTING: Readonly<Record<string, readonly string[]>> = {
+    [IMPLEMENT]: ["publish"],
+    // The catch-up pushes the default branch's merge before the agent runs.
+    [PRD]: ["catch_up", "publish"],
+  };
+  const mintingJobs = (file: string): readonly (readonly [string, Job])[] =>
+    (MINTING[file] ?? []).map((id) => [id, jobNamed(file, id)] as const);
+  /** Every line of a step's script that is not a shell comment. */
+  const codeOf = (s: Step): string => (s.run ?? "").split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
+
+  it("covers the issue side", () => {
+    expect([...RESOLVING].sort()).toEqual(Object.keys(MINTING).sort());
+  });
+
+  it("is named only in the jobs that write and run no agent, once in each", () => {
+    const naming = runnerWorkflows.flatMap((file) =>
+      Object.entries(workflowOf(file).jobs).flatMap(([id, job]) =>
+        (job.steps ?? []).filter(resolves).map(() => `${path.basename(file)} ${id}`),
+      ),
+    );
+
+    expect(naming.sort()).toEqual(
+      Object.entries(MINTING).flatMap(([file, ids]) => ids.map((id) => `${path.basename(file)} ${id}`)).sort(),
+    );
+    for (const file of RESOLVING) {
+      for (const id of MINTING[file] ?? []) expect(id).not.toBe(rolesOf(file).agent);
+    }
+  });
+
+  it.each(RESOLVING)("%s: hands the resolver the App's secrets, the PAT and the job token, at a pin", (file) => {
+    for (const [id, job] of mintingJobs(file)) {
+      const step = (job.steps ?? []).find(resolves);
+
+      expect(step?.uses, id).toBe(RESOLVER);
+      expect(step?.id, id).toBe("token");
+      expect(step?.with, id).toEqual({
+        "app-id": "${{ secrets.AGENT_APP_ID }}",
+        "private-key": "${{ secrets.AGENT_APP_PRIVATE_KEY }}",
+        "agent-pat": "${{ secrets.AGENT_PAT }}",
+        "github-token": "${{ secrets.GITHUB_TOKEN }}",
+      });
+    }
+  });
+
+  /**
+   * At the job's start: nothing runs before it but the fetches of what the
+   * jobs ahead handed over. A publish job resolves it `always()`, since it
+   * also reports a failed agent and writes the progress list after one.
+   */
+  it.each(RESOLVING)("%s: resolves the token before the job's first write", (file) => {
+    for (const [id, job] of mintingJobs(file)) {
+      const steps = job.steps ?? [];
+      const at = steps.findIndex(resolves);
+
+      for (const before of steps.slice(0, at)) expect(before.uses ?? "", `${id}: ${before.name}`).toMatch(/^actions\/download-artifact@/);
+      expect(steps[at]?.if, id).toBe(id === "publish" ? "always()" : undefined);
+    }
+  });
+
+  /**
+   * Only the resolver is handed a secret that writes; every other step takes
+   * the token it returns, and decides on the source it reports. No step asks
+   * whether the PAT is set any more.
+   */
+  it.each(RESOLVING)("%s: names a writing secret only to hand it to the resolver", (file) => {
+    for (const [id, job] of Object.entries(workflowOf(file).jobs)) {
+      expect(writingSecrets(job.env ?? {}), id).toEqual([]);
+      for (const step of job.steps ?? []) {
+        if (resolves(step)) continue;
+        expect(writingSecrets(step), `${id}: ${step.name}`).toEqual([]);
+        expect(step.env?.["HAS_PAT"], `${id}: ${step.name}`).toBeUndefined();
+        for (const name of ["PUSH_TOKEN", "TOKEN_SOURCE"]) {
+          if (step.env?.[name] !== undefined) expect(step.env[name], `${id}: ${step.name}`).toBe(name === "PUSH_TOKEN" ? TOKEN : SOURCE);
+        }
+        const token = step.env?.["GH_TOKEN"];
+        if (token !== undefined) expect([TOKEN, "${{ secrets.GITHUB_TOKEN }}"], `${id}: ${step.name}`).toContain(token);
+      }
+    }
+  });
+
+  /**
+   * The writes `AGENT_PAT` made: every push, `gh pr create`, `gh pr ready`,
+   * and every `agent:review` added. Each is made with the resolved token, and
+   * each `agent:review` add reads the source, to warn or refuse where it is
+   * the workflow token and the label would fire nothing.
+   */
+  it.each(RESOLVING)("%s: makes every write the workflow token cannot with the resolved token", (file) => {
+    const writes = stepsOf(file).filter((s) =>
+      /\bpush (--force )?origin\b|\bgh pr create\b|\bgh pr ready\b|--add-label "agent:review"/.test(codeOf(s)),
+    );
+
+    expect(writes.length).toBeGreaterThan(0);
+    for (const step of writes) {
+      const code = codeOf(step);
+      expect(step.env?.[/\bpush\b/.test(code) ? "PUSH_TOKEN" : "GH_TOKEN"], step.name).toBe(TOKEN);
+      if (code.includes('--add-label "agent:review"')) {
+        expect(step.env?.["TOKEN_SOURCE"], step.name).toBe(SOURCE);
+        expect(code, step.name).toContain('[ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]');
+      }
+    }
+  });
+
+  /** The agent's job names none of them, in any step, run or not (#307). */
+  it.each(RESOLVING)("%s: names neither the App's secrets nor the PAT in the job that runs the agent", (file) => {
+    const job = jobNamed(file, rolesOf(file).agent);
+    const named = [...JSON.stringify(job).matchAll(/\$\{\{.*?\}\}/g)].map((m) => m[0]);
+
+    expect(named.filter((e) => SECRETS.test(e))).toEqual([]);
+    expect(writingSecrets(job)).toEqual([]);
+    expect(JSON.stringify(job)).not.toContain("/actions/loop-token@");
+  });
+
+  it.each(RESOLVING)("%s: declares the App's two secrets, optional", (file) => {
+    const declared = workflowOf(file).on?.workflow_call?.secrets ?? {};
+
+    for (const name of APP_SECRETS) expect(declared[name]?.required, name).toBe(false);
+  });
+
+  /** Every input but the job token is optional, since an unset secret arrives empty. */
+  it("is a composite taking the three optional secrets and the job token", () => {
+    expect(action().runs?.using).toBe("composite");
+    expect(action().inputs).toEqual({
+      "app-id": expect.objectContaining({ required: false, default: "" }),
+      "private-key": expect.objectContaining({ required: false, default: "" }),
+      "agent-pat": expect.objectContaining({ required: false, default: "" }),
+      "github-token": expect.objectContaining({ required: true }),
+    });
+  });
+
+  /** The choice needs no secret: its step is told only whether each is set. */
+  it("chooses from whether each is set, never from a value", () => {
+    expect(actionStep("choose")?.env).toEqual({
+      HAS_APP_ID: "${{ inputs.app-id != '' }}",
+      HAS_APP_KEY: "${{ inputs.private-key != '' }}",
+      HAS_PAT: "${{ inputs.agent-pat != '' }}",
+    });
+  });
+
+  /**
+   * GitHub's own action mints, only for the App, for this repository alone.
+   * Its token is returned in front of the PAT, and the PAT in front of the
+   * job token: the mint runs only where the source is `app`, and the PAT is
+   * set wherever the source is `pat`, so the order follows the choice.
+   */
+  it("mints only for the App, for this repository, and returns what it chose", () => {
+    const mint = actionStep("mint");
+
+    expect(mint?.uses).toMatch(/^actions\/create-github-app-token@v\d+$/);
+    expect(mint?.if).toBe("steps.choose.outputs.source == 'app'");
+    expect(mint?.with).toEqual({
+      "client-id": "${{ inputs.app-id }}",
+      "private-key": "${{ inputs.private-key }}",
+      owner: "${{ github.repository_owner }}",
+      repositories: "${{ github.event.repository.name }}",
+    });
+    expect(action().outputs?.["token"]?.value).toBe("${{ steps.mint.outputs.token || inputs.agent-pat || inputs.github-token }}");
+    expect(action().outputs?.["source"]?.value).toBe("${{ steps.choose.outputs.source }}");
+  });
+
+  /**
+   * A mint that fails fails the job, with a reason the failure comment can
+   * read, and never falls back: an App set up and not used is worth stopping
+   * on. An earlier reason, the agent's, is the one left.
+   */
+  it("says why a mint failed, keeping a reason already there", () => {
+    const said = (action().runs?.steps ?? []).find((s) => (s.run ?? "").includes("failure_reason.txt"));
+
+    expect(said?.if).toBe("failure() && steps.mint.outcome == 'failure'");
+    expect(said?.run).toContain('[ -f "${RUNNER_TEMP}/failure_reason.txt" ] || printf');
+    expect(said?.run).toContain("AGENT_APP_ID");
+    expect(actionStep("mint")?.["continue-on-error"]).toBeUndefined();
+  });
+});
+
+/**
  * **A status-check function is allowed only in an `if:`.** GitHub rejects
  * `success()`, `failure()`, `cancelled()` and `always()` anywhere else, in a
  * step's `env` or `with` or a job's `outputs`, and rejects the whole file with
@@ -8809,7 +9036,12 @@ describe("a status-check function appears only in an `if:`", () => {
  * with a decision, not past a filter that has gone empty.
  */
 describe("no checkout an agent runs in leaves a credential behind", () => {
-  const PUSH_TOKEN = "${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}";
+  /**
+   * The loop's token where the workflow resolves it (#319), and the PAT with
+   * its fallback where it still chooses its own.
+   */
+  const pushTokenOf = (file: string): string =>
+    RESOLVING.includes(file) ? "${{ steps.token.outputs.token }}" : "${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}";
   const isCheckout = (s: Step): boolean => (s.uses ?? "").startsWith("actions/checkout@");
   const NETWORK = /\bgit\s+(?:-c\s+"[^"]*"\s+)*(push|fetch|pull|ls-remote|clone)\b/;
   const HEADER = /\bgit -c "http\.extraHeader=AUTHORIZATION: basic \$\{([a-z_]+)\}" (push|fetch) /;
@@ -8850,7 +9082,7 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
     }
   });
 
-  it.each(checkingOut.map((j) => [label(j), j] as const))("%s: authenticates each fetch and push on its own command", (_, { job }) => {
+  it.each(checkingOut.map((j) => [label(j), j] as const))("%s: authenticates each fetch and push on its own command", (_, { file, job }) => {
     for (const step of job.steps ?? []) {
       const run = step.run ?? "";
       for (const line of codeOf(step).filter((l) => NETWORK.test(l))) {
@@ -8862,7 +9094,7 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
         const source = verb === "push" ? "PUSH_TOKEN" : "GH_TOKEN";
         expect(run).toContain(`${auth}=$(printf 'x-access-token:%s' "$${source}" | base64 | tr -d '\\n')`);
         expect(run).toContain(`echo "::add-mask::\${${auth}}"`);
-        if (verb === "push") expect(step.env?.["PUSH_TOKEN"], step.name).toBe(PUSH_TOKEN);
+        if (verb === "push") expect(step.env?.["PUSH_TOKEN"], step.name).toBe(pushTokenOf(file));
         else expect(job.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
       }
     }

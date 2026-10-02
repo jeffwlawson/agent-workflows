@@ -186,12 +186,22 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * The pins that are not one a file (#257): a reusable workflow's step naming
  * one of this repository's composite actions, `…/.github/actions/<name>@v<version>`.
  * GitHub fetches the action from the tag, so it moves with the release like
- * the workflow that names it. One file carries one, beside its `npm exec`
- * pin, so the release rewrites nineteen pins in ten files.
+ * the workflow that names it.
+ *
+ * Each file's, by action, one entry per step naming it: review's `advance`
+ * job names `advance-prd`, and each job that resolves the loop's token names
+ * `loop-token` (#319), implement's publish job and implement-prd's catch-up
+ * and publish jobs. Four, beside the six `npm exec` pins and the twelve
+ * callers, so the release rewrites twenty-two pins in ten files.
  */
-const ACTION_SITES = [".github/workflows/review.yml"] as const;
+const ACTION_SITES: Readonly<Record<string, readonly string[]>> = {
+  ".github/workflows/implement-prd.yml": ["loop-token", "loop-token"],
+  ".github/workflows/implement.yml": ["loop-token"],
+  ".github/workflows/review.yml": ["advance-prd"],
+};
+const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + actions.length, 0);
 const PACKAGE_COUNT = EVERY_SITE.filter((file) => !/\/(agent-)?(pr|issue)\.yml$/.test(file)).length;
-const PIN_COUNT = PACKAGE_COUNT + REF_COUNT + ACTION_SITES.length;
+const PIN_COUNT = PACKAGE_COUNT + REF_COUNT + ACTION_COUNT;
 
 describe("the version propagator rewrites every pin", () => {
   it("reports every site it rewrote", () => {
@@ -201,7 +211,9 @@ describe("the version propagator rewrites every pin", () => {
 
     expect([...new Set(sites.map((site) => site.file))].sort()).toEqual([...EVERY_SITE]);
     expect(sites).toHaveLength(PIN_COUNT);
-    expect(sites.filter((s) => s.form === "action").map((s) => s.file).sort()).toEqual([...ACTION_SITES]);
+    expect(sites.filter((s) => s.form === "action").map((s) => s.file).sort()).toEqual(
+      Object.entries(ACTION_SITES).flatMap(([file, actions]) => actions.map(() => file)).sort(),
+    );
     for (const [name, count] of Object.entries(CALLERS_PER_FILE)) {
       for (const file of [`.github/workflows/agent-${name}.yml`, `examples/callers/${name}.yml`]) {
         expect(sites.filter((s) => s.file === file && s.form === "ref"), file).toHaveLength(count);
@@ -218,8 +230,11 @@ describe("the version propagator rewrites every pin", () => {
 
     syncVersion(TARGET, root);
 
-    for (const file of ACTION_SITES) {
-      expect(read(root, file)).toContain(`jeffwlawson/agent-workflows/.github/actions/advance-prd@v${TARGET}`);
+    for (const [file, actions] of Object.entries(ACTION_SITES)) {
+      for (const action of new Set(actions)) {
+        const ref = `jeffwlawson/agent-workflows/.github/actions/${action}@v${TARGET}`;
+        expect(read(root, file).split(ref).length - 1, `${file} ${action}`).toBe(actions.filter((a) => a === action).length);
+      }
     }
   });
 
@@ -236,6 +251,20 @@ describe("the version propagator rewrites every pin", () => {
     );
 
     expect(() => syncVersion(TARGET, root)).toThrow(/review\.yml: expected 2 version pins \[package, action\], found 1 \[package\]/);
+  });
+
+  /** The same for the token resolver, in each job of a workflow naming it (#319). */
+  it("refuses the token resolver named under a ref that is not a pin", () => {
+    const root = fixture();
+    write(
+      root,
+      ".github/workflows/implement-prd.yml",
+      read(root, ".github/workflows/implement-prd.yml").replace(/\/loop-token@v\d+\.\d+\.\d+/, "/loop-token@main"),
+    );
+
+    expect(() => syncVersion(TARGET, root)).toThrow(
+      /implement-prd\.yml: expected 3 version pins \[package, action, action\], found 2 \[package, action\]/,
+    );
   });
 
   it("leaves no site still naming the version it replaced", () => {
@@ -306,7 +335,7 @@ describe("the version propagator rewrites every pin", () => {
   });
 
   /**
-   * Nineteen is today's count, not the rule. `EVERY_SITE` above is a written-out
+   * Twenty-two is today's count, not the rule. `EVERY_SITE` above is a written-out
    * list, and so is every refusal below a *half*-landed extra workflow — between
    * them they would all still pass against an implementation holding today's
    * pins hardcoded, which on the day a seventh workflow lands rewrites all but

@@ -316,8 +316,9 @@ what the loop does with it and how to steer it (linking the opening run), openin
 `<!-- agent:summary -->` markers; on a PRD PR the **progress table** between `<!-- agent:progress -->`
 markers (#246: each sub-issue not started, building, in review, fixing, parked or approved, with its
 reviews, fix rounds and a diff of its slice range, and the final review's row; re-rendered from live
-state by every build run, including one that stops, and at every ending of a round, never edited
-incrementally, and holding the final review's mark); and the `Closes` line at the bottom. The status
+state by every build run, including one that stops, and at every ending of a round; edited in place
+only where a job that runs no toolchain writes exactly what the render would, a building slice's row
+and the final review's, held equal to it by a test; and holding the final review's mark); and the `Closes` line at the bottom. The status
 line is rendered beside the table on a PRD PR, and by the review's posting job on a regular one. The
 review writes the summary block and the title, and nothing else in the body: a maintainer's notes outside
 the markers survive every round byte for byte. The rule is **anything pushed since the summary was
@@ -482,9 +483,8 @@ merge, so its agent's job runs only on a conflicted one, and its publish job mak
 again itself rather than taking one from any other runner. `implement-prd` has a fourth job, the
 **catch-up**, between the gate and the agent's: it merges the default branch into the PRD branch and
 pushes it before any agent runs, on a runner of its own, since the gate names no PAT and the agent's
-job must not. One thing that split costs: the runner can no longer write the PRD PR's progress list
-with the slice *building*, its token being read-only, so the list goes from the last round's ending
-to the slice in review.
+job must not. The PRD PR's progress list shows the slice *building* from the gate, which already
+holds the write scope and runs no agent (#312), rather than from the runner, whose token reads only.
 
 ## Base-controlled, and what that now depends on
 

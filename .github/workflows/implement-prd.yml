@@ -72,8 +72,9 @@ name: Agent Implement PRD (reusable)
 #
 # The chain's state is the **progress table** in the PRD PR's body (#246,
 # #298), with the status line at the top of its note, rendered by
-# `shared/progress-list.ts` from live state: by the runner as a slice starts
-# building and as its round is asked for, by `review`'s advance job at every
+# `shared/progress-list.ts` from live state: by the gate as a slice starts
+# building (a rewrite of the slice's row held equal to the render, #312), by
+# the runner as its round is asked for, by `review`'s advance job at every
 # ending of a round, and by a build run that stops, so no slice is left
 # building with nothing running. A build run comments on the sub-issue it
 # starts, with its link, and puts a chapter marker on the PRD PR; the parent
@@ -170,12 +171,10 @@ concurrency:
 # checks the bundle, and pushes, opens or reuses the PRD PR, asks for the
 # round and hands the PRD PR over.
 #
-# One thing the split costs. The runner writes the PRD PR's progress list
-# with the slice **building** as it starts, and its job's token now reads
-# only, so that write is refused and said in a warning: the list shows the
-# slice building no longer, and goes from the last round's ending straight to
-# the slice in review when `publish` asks for it. The sub-issue's start
-# comment and the PRD PR's chapter marker still say it started.
+# The PRD PR's progress list shows the slice **building** from the gate,
+# which holds `pull-requests: write` and runs no agent, once it has claimed
+# the slice (#312): the agent's job reads only, and is given no write scope
+# to say so.
 #
 # The permissions differ per job, and the caller grants the union: what
 # `publish` and `gate` spend. The caller is unchanged.
@@ -776,6 +775,98 @@ jobs:
           gh issue comment "$APPROVED_SUB" --body "$note" \
             || echo "::warning::Could not post the approved-slice note on sub-issue #${APPROVED_SUB}. The run goes on."
 
+      # The slice **building** in the PRD PR's progress table and status line
+      # (#246, #312), written here because this job runs no agent: the agent's
+      # job reads only (#308). Only on a run that builds, once this run has
+      # claimed its slice and before any agent starts; with no PRD PR yet, the
+      # first slice's, there is no table to write.
+      #
+      # No toolchain runs here, so this does not render: it rewrites the
+      # slice's row and the status line in the table the last round's ending
+      # left, and the result is what `renderProgressList` and `renderPrdStatus`
+      # render with the slice building, held equal by a test. A slice with no
+      # range has no counts and no diff, so its row is the same whatever the
+      # rest of the table says. A body with half a list, or two, is left alone,
+      # as is one whose list has no row for the slice, each with a warning.
+      #
+      # The table and status line it replaces are kept, as `progress_unbuilt.md`
+      # and `status_unbuilt.md`, and handed to `publish`, before the write: a
+      # list that shows the slice building always has one to undo it, for a run
+      # that stops before the runner renders its own (`Show the stopped slice in
+      # the progress list`). Never fails the run: the list is a view of the
+      # chain, and a slice is worth more than it.
+      - name: Show the slice building in the progress list
+        if: steps.preflight.outputs.refused == 'false' && steps.preflight.outputs.build == 'true' && steps.preflight.outputs.prd_pr != ''
+        env:
+          SUB: ${{ steps.preflight.outputs.sub }}
+          SUB_K: ${{ steps.preflight.outputs.sub_k }}
+          SUBS: ${{ steps.preflight.outputs.subs }}
+          PRD_PR: ${{ steps.preflight.outputs.prd_pr }}
+          # `PROGRESS_START`, `PROGRESS_END`, `STATUS_START` and `STATUS_END`
+          # in `shared/progress-list.ts`; a test holds them equal.
+          PROGRESS_START: "<!-- agent:progress -->"
+          PROGRESS_END: "<!-- /agent:progress -->"
+          STATUS_START: "<!-- agent:status -->"
+          STATUS_END: "<!-- /agent:status -->"
+        run: |
+          set -uo pipefail
+          current="${RUNNER_TEMP}/progress_pr.json"
+          composed="${RUNNER_TEMP}/progress_building.json"
+          request="${RUNNER_TEMP}/progress_edit.json"
+          if ! gh api "repos/{owner}/{repo}/pulls/${PRD_PR}" > "$current"; then
+            echo "::warning::Could not read PRD PR #${PRD_PR}, so its progress list does not show sub-issue #${SUB} building."
+            exit 0
+          fi
+          # The row and the line `renderProgressList` and `renderPrdStatus`
+          # give a slice that is building.
+          prefix="| ${SUB_K} · #${SUB} |"
+          row="${prefix} 🔨 Building | – | – | – |"
+          line="**🔨 Building slice ${SUB_K} of ${SUBS}** · #${SUB}"
+          jq --arg prefix "$prefix" --arg row "$row" --arg line "$line" '
+            def block($b; $s; $e):
+              ($b | split($s)) as $starts
+              | ($b | split($e)) as $ends
+              | if ($starts | length) == 1 and ($ends | length) == 1 then {}
+                elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
+                  {before: $starts[0], inside: ($starts[1] | split($e))[0], after: ($starts[1] | split($e))[1]}
+                else null end;
+            (.body // "") as $b
+            | block($b; env.PROGRESS_START; env.PROGRESS_END) as $list
+            | if $list == null then {outcome: "half"}
+              elif ($list | has("inside") | not) then {outcome: "none"}
+              elif ([$list.inside | split("\n")[] | select(startswith($prefix))] | length) != 1 then {outcome: "no row"}
+              else
+                ($list.before + env.PROGRESS_START
+                  + ($list.inside | split("\n") | map(if startswith($prefix) then $row else . end) | join("\n"))
+                  + env.PROGRESS_END + $list.after) as $body
+                | block($body; env.STATUS_START; env.STATUS_END) as $status
+                | {outcome: "write", progress: (env.PROGRESS_START + $list.inside + env.PROGRESS_END)}
+                  + if ($status | type) == "object" and ($status | has("inside")) then
+                      {status: (env.STATUS_START + $status.inside + env.STATUS_END),
+                       body: ($status.before + env.STATUS_START + $line + env.STATUS_END + $status.after)}
+                    else {body: $body} end
+              end
+          ' "$current" > "$composed" || { echo "::warning::Could not compose PRD PR #${PRD_PR}'s progress list, so it does not show sub-issue #${SUB} building."; exit 0; }
+          case "$(jq -r '.outcome' "$composed")" in
+            half)
+              echo "::warning::PRD PR #${PRD_PR}'s body carries half a progress list, or two, so it was not written. Restore the missing marker, or delete the markers and the text between them, and the next ending of a round writes it again."
+              exit 0 ;;
+            none)
+              echo "PRD PR #${PRD_PR}'s body carries no progress list, so none shows sub-issue #${SUB} building."
+              exit 0 ;;
+            "no row")
+              echo "::warning::PRD PR #${PRD_PR}'s progress list has no row for sub-issue #${SUB} as slice ${SUB_K}, so it was not written. The next ending of a round writes it again."
+              exit 0 ;;
+          esac
+          jq -j '.progress' "$composed" > "${RUNNER_TEMP}/progress_unbuilt.md"
+          if [ "$(jq -r 'has("status")' "$composed")" = "true" ]; then
+            jq -j '.status' "$composed" > "${RUNNER_TEMP}/status_unbuilt.md"
+          fi
+          jq '{body}' "$composed" > "$request"
+          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PRD_PR}" --input "$request" > /dev/null \
+            && echo "PRD PR #${PRD_PR}'s progress list shows sub-issue #${SUB} building." \
+            || echo "::warning::Could not write PRD PR #${PRD_PR}'s progress list, so it does not show sub-issue #${SUB} building. GitHub's reply is above."
+
       # The preflight's snapshot of the PRD, which `Open or reuse the PRD PR`
       # writes its `Closes` lines from, and the reason file a `block` in the
       # preflight writes, handed to `publish`, which reports it. `always()`,
@@ -788,6 +879,8 @@ jobs:
           path: |
             ${{ runner.temp }}/prd-issue.json
             ${{ runner.temp }}/failure_reason.txt
+            ${{ runner.temp }}/progress_unbuilt.md
+            ${{ runner.temp }}/status_unbuilt.md
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
@@ -1124,8 +1217,8 @@ jobs:
           BRANCH: ${{ needs.gate.outputs.prd_branch }}
           SUB_NUMBER: ${{ needs.gate.outputs.sub }}
           SUB_TITLE: ${{ needs.gate.outputs.sub_title }}
-          # The PRD PR, whose progress list the runner shows this slice
-          # building in (#246); empty on the first slice, which opens it.
+          # The PRD PR, whose rounds the runner counts in the progress list it
+          # renders (#246); empty on the first slice, which opens it.
           PRD_PR: ${{ needs.gate.outputs.prd_pr }}
           # The merge of the default branch pushed before it, which leaves the
           # PRD PR's head unreviewed: the list a stopped run writes back shows
@@ -1890,21 +1983,25 @@ jobs:
           fi
           gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked" || true
 
-      # A build run that stops leaves no slice building (#246). The runner
+      # A build run that stops leaves no slice building (#246). The gate
       # showed this sub-issue building in the PRD PR's progress list before
-      # the agent started, and a run that fails or is cancelled after that
-      # starts no round, so no advance job writes the list again. This writes
-      # back the one the runner rendered for a stopped run: the sub-issue not
-      # started where nothing of it was pushed, and parked where it was, with
-      # its review the way on, as the comment above says.
+      # the catch-up started (#312), and a run that parks, fails or is
+      # cancelled after that starts no round, so no advance job writes the
+      # list again. This writes back the one the runner rendered for a stopped
+      # run: the sub-issue not started where nothing of it was pushed, and
+      # parked where it was, with its review the way on, as the comment above
+      # says. Where the runner never got that far (the catch-up parked or
+      # failed, or the agent's job died before its runner rendered anything),
+      # nothing of the slice was pushed, and it writes back the list and the
+      # status line the gate replaced instead.
       #
-      # Only where the runner rendered one, which it does before it writes the
-      # building list, so a list that never showed the slice building is left
-      # alone. Spliced as every writer of the list splices it
+      # Only where one of those exists, and the gate keeps its own before it
+      # writes the building list, so a list that never showed the slice
+      # building is left alone. Spliced as every writer of the list splices it
       # (`spliceProgressList`, held equal by a test). Never fails the job, and
       # after the comment and the labels: the list is a view of the chain.
       - name: Show the stopped slice in the progress list
-        if: always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && needs.catch_up.outputs.parked != 'true' && (failure() || cancelled() || needs.catch_up.result != 'success' || needs.implement-prd.result != 'success')
+        if: always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (failure() || cancelled() || needs.catch_up.result != 'success' || needs.implement-prd.result != 'success')
         env:
           PUSHED: ${{ steps.push.outputs.head }}
           PRD_PR: ${{ steps.prd_pr.outputs.number || needs.gate.outputs.prd_pr }}
@@ -1919,6 +2016,10 @@ jobs:
           set -uo pipefail
           list="${RUNNER_TEMP}/progress_stopped.md"
           status="${RUNNER_TEMP}/status_stopped.md"
+          if [ ! -f "$list" ]; then
+            list="${RUNNER_TEMP}/progress_unbuilt.md"
+            status="${RUNNER_TEMP}/status_unbuilt.md"
+          fi
           if [ -n "$PUSHED" ]; then
             list="${RUNNER_TEMP}/progress_stopped_pushed.md"
             status="${RUNNER_TEMP}/status_stopped_pushed.md"

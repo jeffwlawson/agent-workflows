@@ -375,6 +375,14 @@ consumer repo                    this repo
 across repos. Reference copies live in [`examples/callers/`](./examples/callers/) and are under
 test.
 
+**Caller, and caller file.** A **caller** is one calling *job*: a `uses:` naming a reusable
+workflow, with that job's grant and secrets. A **caller file** is the workflow file holding one or
+more of them, and the trigger is the file's. A caller's secrets are its own, and so is its grant
+when it declares one; a caller declaring none runs on the file's top-level `permissions:`, shared by
+every such job in the file, and a job-level block replaces that one rather than adding to it
+(`setup/callers.ts`, `permissionsFrom`). Where `CLAUDE.md` says "both caller sets" it means the
+files: `examples/callers/` and `.github/workflows/agent-*.yml`. A caller an adopter does not have is a workflow they declined, whether the file is missing or only the job.
+
 **The reusable workflow** holds everything that bounds what a wrong run can do: the fork guard, the
 permissions ceiling, the concurrency group, the preflight refusals. An adopter *references* it, so
 a fix reaches them without them touching anything.

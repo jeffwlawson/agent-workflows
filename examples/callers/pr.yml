@@ -97,7 +97,7 @@ jobs:
       # `agent:fix` when it recommends changes. Set the repository variable
       # `AGENT_MAX_FIX_ROUNDS` to change that (`0` for none): the reusable
       # workflow reads it from this repository, so nothing goes here. Needs
-      # `AGENT_PAT` (docs/ADOPTING.md §3b).
+      # the loop's App or `AGENT_PAT` (docs/ADOPTING.md §3b).
       # The red check (#231): runs the tests a pull request adds or changes
       # against the code as it was before the change, in a job holding no
       # secrets, and reports to the review which of them fail there on an
@@ -111,12 +111,17 @@ jobs:
       #   tests/**
       #   **/*.test.ts
     # Named rather than `secrets: inherit`, which would hand the called
-    # workflow every secret this repository holds. Both are declared in it;
-    # AGENT_PAT is optional and an absent one arrives as the empty string,
-    # which the mark-ready step already falls back from with a warning.
+    # workflow every secret this repository holds. Each is declared in it;
+    # all but the first are optional, and an absent one arrives as the empty
+    # string, which the loop's token resolver falls back from.
+    # The loop's App's two secrets beside the PAT, all three optional: where
+    # the App's ID and key are both set, its bot makes the writes the PAT
+    # would make, and neither reaches the job that runs the agent.
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 
   fix:
     uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.7.8
@@ -137,12 +142,17 @@ jobs:
     # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
     #
     # Named rather than `secrets: inherit`, which would hand the called workflow
-    # every secret this repository holds. Both are declared in it; AGENT_PAT is
-    # optional and an absent one arrives as the empty string, which the
-    # `secrets.AGENT_PAT || secrets.GITHUB_TOKEN` fallbacks in it already expect.
+    # every secret this repository holds. Each is declared in it; all but the
+    # first are optional, and an absent one arrives as the empty string, which
+    # the loop's token resolver falls back from.
+    # The loop's App's two secrets beside the PAT, all three optional: where
+    # the App's ID and key are both set, its bot makes the writes the PAT
+    # would make, and neither reaches the job that runs the agent.
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 
   update-branch:
     uses: jeffwlawson/agent-workflows/.github/workflows/update-branch.yml@v0.7.8
@@ -168,9 +178,14 @@ jobs:
       statuses: write
     # No `with:`. The three inputs (`default-branch`, `node-version-file`,
     # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
+    # The loop's App's two secrets beside the PAT, all three optional: where
+    # the App's ID and key are both set, its bot makes the writes the PAT
+    # would make, and neither reaches the job that runs the agent.
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 
   # **This job is the off switch** for filing a merged pull request's recorded
   # findings as issues (#50). The reusable ships inert: nothing invokes it

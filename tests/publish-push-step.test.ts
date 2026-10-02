@@ -480,8 +480,9 @@ describe.skipIf(!CAN_RUN)("fix's publish job refuses a finished agent's hand-ove
     const at = steps.findIndex((s) => s.name === STEP);
 
     expect(at, `fix.yml's publish job has no \`${STEP}\` step`).toBeGreaterThan(-1);
-    // After the fetch, and before anything that reads a missing file as none.
-    expect(steps[at - 1]?.name).toBe("Fetch what the agent handed over");
+    // After the fetch and the token's resolution, and before anything that
+    // reads a missing file as none.
+    expect(steps.slice(0, at).map((s) => s.name)).toEqual(["Fetch what the agent handed over", "Resolve the loop's token"]);
     return steps[at] ?? {};
   };
 

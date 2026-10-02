@@ -21,11 +21,19 @@ description: >-
 # **Run only in a job that never runs the agent**, at that job's start, and
 # never handed to another job. A job's runner holds every secret the job names
 # from its first step (#307), so the App's key, the PAT and the token minted
-# from them are named in the gate and publish jobs alone. The token lasts an
-# hour; every job minting one is short, and the publish job starts after the
-# agent has finished.
+# from them are named in the gate-side and publish jobs, and review's
+# `post-review` and `advance`, alone (and review's `time-limit`, which mints
+# nothing; see `choose-only` below). The token lasts an hour; every job
+# minting one is short, and the publish and posting jobs start after the agent
+# has finished.
 #
 # **The token is the caller's to pass in.** A composite cannot read `secrets`.
+#
+# **Or only the source, with `choose-only`.** Review's `time-limit` job asks
+# which token the posting job will write with, so the review job, which runs
+# the agent and names none of these, can tell whether a fix round it asks for
+# would start. That job writes nothing, so nothing is minted for it and it is
+# returned no token: the choice is still made here, and nowhere else.
 inputs:
   app-id:
     description: The loop's App's ID, `AGENT_APP_ID`. Empty where it is not set.
@@ -42,13 +50,20 @@ inputs:
   github-token:
     description: The workflow token, the last resort.
     required: true
+  choose-only:
+    description: >-
+      `true` to report the source and nothing else: no token is minted, and
+      `token` is empty.
+    required: false
+    default: "false"
 
 outputs:
   token:
     description: The token to write with.
     # The mint runs only where the source is `app`, and the PAT is non-empty
     # wherever the source is `pat`, so this follows the choice exactly.
-    value: ${{ steps.mint.outputs.token || inputs.agent-pat || inputs.github-token }}
+    # Empty under `choose-only`, which asked for no token.
+    value: ${{ inputs.choose-only != 'true' && (steps.mint.outputs.token || inputs.agent-pat || inputs.github-token) || '' }}
   source:
     description: >-
       `app`, `pat` or `workflow`: which token `token` is. A label added with the
@@ -96,7 +111,7 @@ runs:
     # `app-id` is the deprecated spelling of the same input.
     - name: Mint the App's token
       id: mint
-      if: steps.choose.outputs.source == 'app'
+      if: steps.choose.outputs.source == 'app' && inputs.choose-only != 'true'
       uses: actions/create-github-app-token@v3
       with:
         client-id: ${{ inputs.app-id }}

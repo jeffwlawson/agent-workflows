@@ -73,7 +73,18 @@ on:
           triggers another workflow (docs/ADOPTING.md §1), which on a refresh is
           the whole point of the refresh. Optional, and both halves degrade
           rather than fail: the push still lands, and the label still goes on
-          but starts no review until a human re-adds it.
+          but starts no review until a human re-adds it. The loop's App, where
+          it is set up, takes its place.
+        required: false
+      AGENT_APP_ID:
+        description: >-
+          The loop's GitHub App's ID. With `AGENT_APP_PRIVATE_KEY`, the publish
+          job mints a token for this repository from the App and makes the
+          writes `AGENT_PAT` would make with it, as the App's bot. Optional;
+          without both, `AGENT_PAT` is used as before.
+        required: false
+      AGENT_APP_PRIVATE_KEY:
+        description: The loop's GitHub App's private key. See `AGENT_APP_ID`.
         required: false
 
 # One group per PR — shared with agent:fix, which pushes the same branch,
@@ -587,6 +598,20 @@ jobs:
           name: agent-update-branch
           path: ${{ runner.temp }}
 
+      # The token every write below that the workflow token cannot make is
+      # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
+      # that order, and `source` says which. Minted here, before the first
+      # write and after the agent finished, and in no other job.
+      - name: Resolve the loop's token
+        id: token
+        if: always()
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Checkout PR head
         if: needs.gate.outputs.status == 'clean' || (needs.gate.outputs.status == 'conflicts' && needs.update-branch.result == 'success')
         uses: actions/checkout@v7
@@ -627,7 +652,7 @@ jobs:
         env:
           STATUS: ${{ needs.gate.outputs.status }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
-          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
           base="$BASE_REF"
@@ -706,8 +731,8 @@ jobs:
       # branch produced no verdict", which a merge does not make untrue, and
       # `verdictOn` already declines to count it as a verdict.
       #
-      # Posted under the job's own `GITHUB_TOKEN` rather than the PAT the
-      # checkout and the push prefer, and that is the whole of why the copy is
+      # Posted under the job's own `GITHUB_TOKEN` rather than the loop's token
+      # the push is made with, and that is the whole of why the copy is
       # worth making: a status created by any other account is one the next
       # round does not recognise, so the carried verdict would be invisible to
       # the reader it exists for.
@@ -846,8 +871,8 @@ jobs:
       # the review reads the pull request, so a round started before this run
       # has finished speaking is a round reading the state before it.
       #
-      # MUST use AGENT_PAT, like every other label this loop adds: a label added
-      # with GITHUB_TOKEN triggers nothing, so the pull request would carry
+      # MUST use the loop's App or AGENT_PAT, like every other label this loop
+      # adds: a label added with GITHUB_TOKEN triggers nothing, so the pull request would carry
       # `agent:review` and simply sit there. Warn loudly rather than pretend it
       # worked.
       #
@@ -859,8 +884,8 @@ jobs:
         id: request
         if: needs.gate.outputs.status == 'conflicts' && needs.update-branch.result == 'success' && success()
         env:
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           # The commit this run pushed, and how long the PR gets to show it as
           # its head before the label goes on anyway (#229).
           PUSHED_SHA: ${{ steps.push.outputs.head }}
@@ -897,12 +922,12 @@ jobs:
           fi
           # Read by the last step, which asks for nothing more where this asked.
           echo "requested=true" >> "$GITHUB_OUTPUT"
-          if [ "$HAS_PAT" != "true" ]; then
+          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
             # On the pull request as well as in the log (#105): a warning
             # annotation is on a run nobody opens, and what is at stake here is
             # a conflict resolution an agent wrote that nothing has reviewed.
-            echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
-            gh pr comment "$PR_NUMBER" --body 'The conflicts are resolved and pushed, but no review of the resolution will start on its own: `AGENT_PAT` is not set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review it.' \
+            echo "::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
+            gh pr comment "$PR_NUMBER" --body "The conflicts are resolved and pushed, but no review of the resolution will start on its own: neither the loop's App nor \`AGENT_PAT\` is set, so the \`agent:review\` label this run added triggers nothing. Remove and re-add \`agent:review\` by hand to review it." \
               || echo "::warning::…and that could not be said on the pull request either."
           fi
 
@@ -990,8 +1015,8 @@ jobs:
       # copy of this step, which carries the reasoning. Where the run finished
       # and the head has moved on from what it left (the merge it pushed, or
       # the head it found up to date), because somebody pushed, it asks for
-      # its own step again: removed above, then added, with `AGENT_PAT` or not
-      # at all. Not on a failure, which is `agent:blocked` and a human's retry,
+      # its own step again: removed above, then added, with the loop's App or
+      # `AGENT_PAT`, or not at all. Not on a failure, which is `agent:blocked` and a human's retry,
       # and not while another trigger label is on, since that is a queued run
       # a request now would cancel and strand the label of; review's copy
       # says why.
@@ -1014,8 +1039,8 @@ jobs:
           GATE_RESULT: ${{ needs.gate.result }}
           AGENT_RESULT: ${{ needs.update-branch.result }}
           LEFT_SHA: ${{ steps.push.outputs.head || github.event.pull_request.head.sha }}
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          REQUEST_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          REQUEST_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true
           if [ "$PROCEEDED" != "true" ] || [ "$JOB_STATUS" != "success" ] || [ "$GATE_RESULT" != "success" ] \
@@ -1035,9 +1060,9 @@ jobs:
             echo "::notice::PR #${PR_NUMBER} moved on to ${head} while this run left ${LEFT_SHA}, but it carries ${busy}, so agent:update-branch was not asked for again: that run is queued, and a new one would cancel it and leave its label on with no run behind it. Add agent:update-branch by hand once ${busy} is off, if the new head still needs it."
             exit 0
           fi
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run left ${LEFT_SHA}, but AGENT_PAT is not set, so agent:update-branch was not asked for again: a label added with GITHUB_TOKEN starts nothing. Add agent:update-branch by hand to refresh the new head."
-            gh pr comment "$PR_NUMBER" --body "This PR moved on to \`${head}\` while \`agent:update-branch\` worked on \`${LEFT_SHA}\`. No refresh of the new head will start on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Add \`agent:update-branch\` by hand to refresh it." \
+          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
+            echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run left ${LEFT_SHA}, but neither the loop's App nor AGENT_PAT is set, so agent:update-branch was not asked for again: a label added with GITHUB_TOKEN starts nothing. Add agent:update-branch by hand to refresh the new head."
+            gh pr comment "$PR_NUMBER" --body "This PR moved on to \`${head}\` while \`agent:update-branch\` worked on \`${LEFT_SHA}\`. No refresh of the new head will start on its own: neither the loop's App nor \`AGENT_PAT\` is set, and a label added with \`GITHUB_TOKEN\` starts nothing. Add \`agent:update-branch\` by hand to refresh it." \
               || echo "::warning::…and that could not be said on the pull request either."
             exit 0
           fi

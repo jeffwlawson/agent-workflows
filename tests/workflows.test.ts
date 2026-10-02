@@ -310,7 +310,7 @@ const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
    * model over it, and holds no write scope at all; this job resolves the
    * threads the review closed (`resolveReviewThread` wants `contents: write`,
    * #133), posts the review and its verdict, takes the trigger label off and
-   * hands off, spending `AGENT_PAT` on the labels something fires on.
+   * hands off, spending the loop's token on the labels something fires on.
    *
    * …and the PRD chain's advance job (PRD #222), which follows the posting
    * job on a PRD PR and moves the chain on from a slice round's approval, or
@@ -318,8 +318,9 @@ const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
    *
    * …and the review's time limit (#220), which is its CI wait plus its own
    * time: an expression cannot add, so a job ahead of the review does the sum.
-   * It holds no permission at all. It also says whether `AGENT_PAT` is set, so
-   * the review job, which runs the agent, never names it (#316).
+   * It holds no permission at all. It also says which token the loop writes
+   * with, minting none, so the review job, which runs the agent, names no
+   * secret that writes (#316, #320).
    *
    * …and the red check (#231), which runs the pull request's new and changed
    * tests against the merge-base ahead of the review. It runs the PR's code,
@@ -675,12 +676,18 @@ const PRD = path.join(WORKFLOW_DIR, "implement-prd.yml");
 /**
  * The loop's token resolver (#319, PRD #314): the App's, else `AGENT_PAT`,
  * else the workflow token. The App's two secrets, and the workflows that
- * resolve their token through it and so are handed them: the issue side, so
- * far.
+ * resolve their token through it and so are handed them: every one that
+ * writes with more than the workflow token, both sides (#320).
  */
 const TOKEN_ACTION = path.join(".github", "actions", "loop-token", "action.yml");
 const APP_SECRETS = ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"] as const;
-const RESOLVING: readonly string[] = [IMPLEMENT, PRD];
+const RESOLVING: readonly string[] = [
+  IMPLEMENT,
+  PRD,
+  path.join(WORKFLOW_DIR, "review.yml"),
+  path.join(WORKFLOW_DIR, "fix.yml"),
+  path.join(WORKFLOW_DIR, "update-branch.yml"),
+];
 
 /** `agent-review`'s CI-collection step, which several checks below pick apart. */
 const waitStep = (): Step => {
@@ -2002,8 +2009,8 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
 
   /**
    * **The comparison.** A round starts where the rounds already spent are fewer
-   * than the budget, and only with `AGENT_PAT`, since a label added without it
-   * starts nothing. Rounds spent are the `agent-fix-round` statuses this loop
+   * than the budget, and only with the loop's App or `AGENT_PAT`, since a
+   * label added with the workflow token starts nothing. Rounds spent are the `agent-fix-round` statuses this loop
    * posted beside the verdicts that asked for a round (#297), matched on the
    * context (held to `FIX_ROUND_STATUS` here, so renaming it cannot silently
    * zero the count) and counted once per review, because `update-branch`
@@ -2013,11 +2020,12 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     const step = budgetStep();
     const run = step?.run ?? "";
 
-    expect(run).toContain('[ "$spent" -lt "$budget" ] && [ "$HAS_PAT" = "true" ]');
-    // Whether there is a PAT, from a job that never runs the agent (#316):
-    // naming the secret here, even to compare it, puts it on the agent's runner.
-    expect(step?.env?.["HAS_PAT"]).toBe("${{ needs.time-limit.outputs.has-pat }}");
-    expect(jobNamed(REVIEW, "time-limit").outputs?.["has-pat"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(run).toContain('[ "$spent" -lt "$budget" ] && { [ "$TOKEN_SOURCE" = "app" ] || [ "$TOKEN_SOURCE" = "pat" ]; }');
+    // Which token the loop writes with, from a job that never runs the agent
+    // (#316, #320): naming a secret here, even to compare it, puts it on the
+    // agent's runner.
+    expect(step?.env?.["TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
+    expect(jobNamed(REVIEW, "time-limit").outputs?.["token-source"]).toBe("${{ steps.token.outputs.source }}");
     expect(step?.env?.["FIX_ROUND_CONTEXT"]).toBe(FIX_ROUND_STATUS.context);
     expect(step?.env?.["STARTED"]).toBeUndefined();
     expect(run).toContain(".context == env.FIX_ROUND_CONTEXT");
@@ -2197,15 +2205,16 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * **No checkout and no agent** (decision 2). This job spends `AGENT_PAT`,
-   * and it must not be the one that reads untrusted pull-request content and
-   * runs a model over it. The one action it uses fetches what the review
-   * wrote, and checks nothing out.
+   * **No checkout and no agent** (decision 2). This job spends the loop's
+   * token, and it must not be the one that reads untrusted pull-request
+   * content and runs a model over it. The two actions it uses resolve that
+   * token and fetch what the review wrote, and check nothing out.
    */
   it("checks nothing out, installs nothing and runs no model", () => {
     const steps = job().steps ?? [];
 
     expect(steps.map((s) => s.uses).filter((uses) => uses !== undefined)).toEqual([
+      `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`,
       "actions/download-artifact@v8",
     ]);
     for (const step of steps) {
@@ -2229,12 +2238,12 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * MUST use `AGENT_PAT`: a label added with `GITHUB_TOKEN` fires no `labeled`
-   * event. The budget step starts no round without it, so the fallback here is
-   * for the comment alone.
+   * MUST use the loop's App or `AGENT_PAT`: a label added with `GITHUB_TOKEN`
+   * fires no `labeled` event. The budget step starts no round without one, so
+   * the resolver's fallback here is for the comment alone.
    */
-  it("labels with the PAT", () => {
-    expect(startStep()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+  it("labels with the loop's token", () => {
+    expect(startStep()?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
   });
 
   /**
@@ -2483,14 +2492,14 @@ describe("agent-fix asks for the re-review its own push needs", () => {
   });
 
   /**
-   * MUST use `AGENT_PAT`, for the reason review's own step does: `GITHUB_TOKEN`
-   * cannot convert a draft at all, whatever it is granted. A warning rather
+   * MUST use the loop's App or `AGENT_PAT`, for the reason review's own step
+   * does: `GITHUB_TOKEN` cannot convert a draft at all, whatever it is granted. A warning rather
    * than a failure, also for review's reason — by this point every thread has
    * its reply, and a pull request stuck in draft is not worth failing the run
    * that answered them.
    */
-  it("marks it ready with the PAT, and warns rather than failing without one", () => {
-    expect(ready()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+  it("marks it ready with the loop's token, and warns rather than failing without the App or the PAT", () => {
+    expect(ready()?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
     expect(ready()?.run ?? "").toContain("::warning::");
     expect(ready()?.run ?? "").not.toContain("|| true");
   });
@@ -2541,15 +2550,15 @@ describe("agent-fix asks for the re-review its own push needs", () => {
   it("says on the pull request, not only in the log, that no review will start", () => {
     const run = request()?.run ?? "";
 
-    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
-    expect(request()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
+    expect(request()?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
     expect(run).toContain("::warning::");
     expect(run).toContain("gh pr comment");
     expect(run).toContain("AGENT_PAT");
     // Inside the arm that knows there is no PAT, not on every run: a comment
     // on the pull requests where the re-review *did* start is noise on the
     // channel this one needs to be read on.
-    const arm = run.slice(run.indexOf('if [ "$HAS_PAT" != "true" ]'));
+    const arm = run.slice(run.indexOf('if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]'));
 
     expect(arm).toContain("gh pr comment");
   });
@@ -2778,20 +2787,21 @@ describe("a PRD PR's round ends in one advance job", () => {
   });
 
   /**
-   * On the parent, which is an issue, so with `AGENT_PAT`: the workflow token
-   * holds no issue scope here. Without it the comment goes on the PRD PR. The
+   * On the parent, which is an issue, so with the loop's App or `AGENT_PAT`:
+   * the workflow token holds no issue scope here. Without either the comment
+   * goes on the PRD PR. The
    * post is under `bash -e` with no `||`: a chain that parked without saying so
    * is what this exists to end.
    */
-  it("parks on the parent with the PAT, and on the PRD PR without it", () => {
+  it("parks on the parent with the loop's token, and on the PRD PR without the App or the PAT", () => {
     const run = parkStep()?.run ?? "";
 
     expect(run).toContain("set -euo pipefail");
     expect(run).toContain("^agent/prd-([0-9]+)-");
-    expect(parkStep()?.env?.["PAT_TOKEN"]).toBe("${{ secrets.AGENT_PAT }}");
-    expect(parkStep()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
-    const noPat = run.indexOf('if [ "$HAS_PAT" != "true" ]; then');
-    const post = run.indexOf('GH_TOKEN="$PAT_TOKEN" gh issue comment "$parent" --body "$body"');
+    expect(parkStep()?.env?.["LOOP_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
+    expect(parkStep()?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
+    const noPat = run.indexOf('if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then');
+    const post = run.indexOf('GH_TOKEN="$LOOP_TOKEN" gh issue comment "$parent" --body "$body"');
     expect(noPat).toBeGreaterThanOrEqual(0);
     expect(post).toBeGreaterThan(noPat);
     const arm = run.slice(noPat, run.indexOf("\nfi", noPat));
@@ -2803,6 +2813,7 @@ describe("a PRD PR's round ends in one advance job", () => {
   it("checks nothing out, installs nothing and runs no model", () => {
     expect((job().steps ?? []).map((s) => s.uses).filter((uses) => uses !== undefined)).toEqual([
       "actions/download-artifact@v8",
+      `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`,
       `jeffwlawson/agent-workflows/.github/actions/advance-prd@${PIN}`,
     ]);
     for (const s of [...(job().steps ?? []), ...(action().runs?.steps ?? [])]) {
@@ -2817,7 +2828,7 @@ describe("a PRD PR's round ends in one advance job", () => {
 
   /**
    * **No new grant.** One scope, for the no-PAT comment on the PRD PR; the
-   * parent is written with the PAT or not at all, so `issues: write` stays out
+   * parent is written with the loop's App or the PAT, or not at all, so `issues: write` stays out
    * of this job and out of every caller's grant, which already holds what it
    * does.
    */
@@ -2831,16 +2842,18 @@ describe("a PRD PR's round ends in one advance job", () => {
   });
 
   /**
-   * MUST use `AGENT_PAT`: `agent:implement` added with `GITHUB_TOKEN` starts
-   * nothing. So without the PAT nothing is added, and the PRD PR is told which
-   * re-label advances the chain by hand. The add itself is under `bash -e`.
+   * MUST use the loop's App or `AGENT_PAT`: `agent:implement` added with
+   * `GITHUB_TOKEN` starts nothing. So without either nothing is added, and the
+   * PRD PR is told which re-label advances the chain by hand. The add itself
+   * is under `bash -e`.
    */
-  it("advances by labelling the parent with the PAT, and comments when there is none", () => {
+  it("advances by labelling the parent with the loop's token, and comments when it is the workflow token", () => {
     const s = advanceStep();
     const run = script();
 
-    expect(s?.with?.["token"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
-    expect(s?.with?.["has-pat"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(s?.with?.["token"]).toBe("${{ steps.token.outputs.token }}");
+    expect(s?.with?.["token-source"]).toBe("${{ steps.token.outputs.source }}");
+    expect(action().runs?.steps?.[0]?.env?.["TOKEN_SOURCE"]).toBe("${{ inputs.token-source }}");
     expect(s?.with?.["pr-number"]).toBe("${{ github.event.pull_request.number }}");
     expect(s?.with?.["head-ref"]).toBe("${{ github.event.pull_request.head.ref }}");
     const inputs = Object.keys(action().inputs ?? {});
@@ -2850,7 +2863,7 @@ describe("a PRD PR's round ends in one advance job", () => {
     expect(run).toContain("set -euo pipefail");
     expect(run).toContain("^agent/prd-([0-9]+)-");
 
-    const noPat = run.indexOf('if [ "$HAS_PAT" != "true" ]; then');
+    const noPat = run.indexOf('if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then');
     const add = run.indexOf('gh issue edit "$parent" --add-label "agent:implement"');
     expect(noPat).toBeGreaterThanOrEqual(0);
     expect(add).toBeGreaterThan(noPat);
@@ -3182,6 +3195,7 @@ describe("the review posts last, from one job", () => {
    */
   it("resolves, posts, sets the verdict and the ready state, takes its label off, then hands off", () => {
     expect((posting().steps ?? []).map((s) => s.name)).toEqual([
+      "Resolve the loop's token",
       "Say why the review didn't run",
       "Transition labels",
       "Fetch what the review wrote",
@@ -3498,12 +3512,12 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
   it("says on the pull request, not only in the log, that no review will start", () => {
     const run = request()?.run ?? "";
 
-    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
-    expect(request()?.env?.["HAS_PAT"]).toBe("${{ secrets.AGENT_PAT != '' }}");
+    expect(request()?.env?.["GH_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
+    expect(request()?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
     expect(run).toContain("::warning::");
     // What is unreviewed here is a conflict resolution an agent wrote, which
     // is the one thing this loop produces that no review has seen (#105).
-    expect(run.slice(run.indexOf('if [ "$HAS_PAT" != "true" ]'))).toContain("gh pr comment");
+    expect(run.slice(run.indexOf('if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]'))).toContain("gh pr comment");
   });
 
   /**
@@ -4356,7 +4370,7 @@ describe("every workflow in the loop is called rather than copied", () => {
   it.each(eachCaller(wiredCallers()))("%s: passes every secret by name", (_name, caller) => {
     const declared = callOf(targetOf(caller))?.secrets ?? {};
     // The App's two beside the PAT where the workflow resolves its token
-    // through the loop's resolver (#319).
+    // through the loop's resolver (#319, #320): every workflow but follow-ups.
     const expected = [
       "AGENT_PAT",
       "CLAUDE_CODE_OAUTH_TOKEN",
@@ -7744,14 +7758,14 @@ describe("a trigger label is on while its run works, and off when it ends", () =
     expect(last?.env?.["LEFT_SHA"]).toBe(left);
     expect(last?.env?.["JOB_STATUS"]).toBe("${{ job.status }}");
     expect(last?.env?.["PROCEEDED"]).toBe(proceeded);
-    expect(last?.env?.["REQUEST_TOKEN"]).toBe("${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}");
+    expect(last?.env?.["REQUEST_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
     expect(add).toBeGreaterThan(0);
     const gate = run.indexOf(gated);
     const moved = run.indexOf('if [ "$state" != "OPEN" ] || [ "$head" = "$LEFT_SHA" ]; then');
     // Another trigger label is a run queued behind this one, and a request
     // would cancel it and strand its label.
     const busy = run.indexOf('if [ -n "$busy" ]; then');
-    const noPat = run.indexOf('if [ "$HAS_PAT" != "true" ]; then');
+    const noPat = run.indexOf('if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then');
     expect(gate).toBeGreaterThan(0);
     expect(moved).toBeGreaterThan(gate);
     expect(run).toContain('select(. == "agent:review" or . == "agent:fix" or . == "agent:update-branch")');
@@ -8229,7 +8243,9 @@ describe("the PRD chain's progress", () => {
     const step = progressStep();
     const upload = stepsOf(REVIEW).find((s) => s.name === "Hand the park comment to the advance job");
 
-    expect(names.indexOf("Re-render the progress list")).toBe(names.indexOf("Fetch the park comment") + 1);
+    // Behind only the fetch and the token the job resolves at its start (#320).
+    expect(names.slice(0, 2)).toEqual(["Fetch the park comment", "Resolve the loop's token"]);
+    expect(names.indexOf("Re-render the progress list")).toBe(2);
     expect(names.indexOf("Re-render the progress list")).toBeLessThan(names.indexOf("Advance the PRD chain"));
     expect(step?.if).toBeUndefined();
     expect(step?.["continue-on-error"]).toBeUndefined();
@@ -8768,22 +8784,24 @@ describe("a split run keeps every write off the agent's runner", () => {
 });
 
 /**
- * **The issue side writes with the loop's token** (#319, PRD #314). One
+ * **The loop writes with the loop's token** (#319, #320, PRD #314). One
  * composite action, `.github/actions/loop-token`, chooses it: an installation
  * token minted for the loop's App where its ID and key are both set, else
  * `AGENT_PAT`, else the workflow token, and says which it chose. Every write
- * `AGENT_PAT` made on the issue side is now made with what it returns, and a
+ * `AGENT_PAT` made, on either side, is now made with what it returns, and a
  * step deciding whether a label it adds fires anything reads its source.
  *
- * It runs only in a job that writes and runs no agent, at that job's start,
+ * It mints only in a job that writes and runs no agent, at that job's start,
  * and no token passes between jobs. That is what keeps the App's key and
  * every token minted from it off the agent's runner, which holds every secret
- * its job names (#307).
+ * its job names (#307). The one other job naming it is review's `time-limit`,
+ * which asks it for the source alone, so that the review job can tell whether
+ * a fix round would start without naming a secret.
  *
  * Executed in `tests/loop-token-step.test.ts`; what is asserted here is where
  * it runs, what it is handed and what reads its outputs.
  */
-describe("the issue side resolves the loop's token in the jobs that write", () => {
+describe("the loop resolves its token in the jobs that write", () => {
   interface Action {
     readonly inputs?: Record<string, { readonly required?: boolean; readonly default?: string }>;
     readonly outputs?: Record<string, { readonly value?: string }>;
@@ -8795,29 +8813,42 @@ describe("the issue side resolves the loop's token in the jobs that write", () =
   const RESOLVER = `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`;
   const TOKEN = "${{ steps.token.outputs.token }}";
   const SOURCE = "${{ steps.token.outputs.source }}";
-  const SECRETS = /AGENT_PAT|AGENT_APP_ID|AGENT_APP_PRIVATE_KEY/;
   /** Every expression naming a secret but the agent's token or the job token, as `forbidden` reads it below. */
   const writingSecrets = (node: unknown): string[] =>
     [...JSON.stringify(node).matchAll(/\$\{\{.*?\}\}/g)]
       .map((m) => m[0])
       .filter((e) => /(?<![\w.-])secrets(?![\w-])(?!\.(?:CLAUDE_CODE_OAUTH_TOKEN|GITHUB_TOKEN)(?![\w-]))/i.test(e));
   const resolves = (s: Step): boolean => (s.uses ?? "").includes("/actions/loop-token@");
-  /** Each workflow's jobs that resolve the token: the ones that write what the workflow token cannot. */
+  /**
+   * Each workflow's jobs that mint: the ones that write what the workflow
+   * token cannot. A gate-side job, a publish job, or one of review's two
+   * posting jobs, and never the agent's.
+   */
   const MINTING: Readonly<Record<string, readonly string[]>> = {
     [IMPLEMENT]: ["publish"],
     // The catch-up pushes the default branch's merge before the agent runs.
     [PRD]: ["catch_up", "publish"],
+    [REVIEW]: ["post-review", "advance"],
+    [path.join(WORKFLOW_DIR, "fix.yml")]: ["publish"],
+    [path.join(WORKFLOW_DIR, "update-branch.yml")]: ["publish"],
   };
+  /** …and the one job that asks it only which token that would be. */
+  const CHOOSING: Readonly<Record<string, readonly string[]>> = { [REVIEW]: ["time-limit"] };
+  const MINTING_ROLES = ["gate", "catch_up", "publish", "post-review", "advance"];
   const mintingJobs = (file: string): readonly (readonly [string, Job])[] =>
     (MINTING[file] ?? []).map((id) => [id, jobNamed(file, id)] as const);
+  const namingJobs = (file: string): readonly (readonly [string, Job])[] =>
+    [...(MINTING[file] ?? []), ...(CHOOSING[file] ?? [])].map((id) => [id, jobNamed(file, id)] as const);
   /** Every line of a step's script that is not a shell comment. */
   const codeOf = (s: Step): string => (s.run ?? "").split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
 
-  it("covers the issue side", () => {
+  it("covers every workflow that writes with more than the workflow token", () => {
     expect([...RESOLVING].sort()).toEqual(Object.keys(MINTING).sort());
+    // follow-ups files its issues with the workflow token, and names no other.
+    expect(runnerWorkflows.filter((f) => !RESOLVING.includes(f)).map((f) => path.basename(f))).toEqual(["follow-ups.yml"]);
   });
 
-  it("is named only in the jobs that write and run no agent, once in each", () => {
+  it("is named only in the jobs that write and run no agent, and review's time limit, once in each", () => {
     const naming = runnerWorkflows.flatMap((file) =>
       Object.entries(workflowOf(file).jobs).flatMap(([id, job]) =>
         (job.steps ?? []).filter(resolves).map(() => `${path.basename(file)} ${id}`),
@@ -8825,16 +8856,24 @@ describe("the issue side resolves the loop's token in the jobs that write", () =
     );
 
     expect(naming.sort()).toEqual(
-      Object.entries(MINTING).flatMap(([file, ids]) => ids.map((id) => `${path.basename(file)} ${id}`)).sort(),
+      RESOLVING.flatMap((file) => namingJobs(file).map(([id]) => `${path.basename(file)} ${id}`)).sort(),
     );
+  });
+
+  /** App tokens are minted in a gate, publish, `post-review` or `advance` job alone. */
+  it("mints only in a gate, publish, post-review or advance job, never the agent's", () => {
     for (const file of RESOLVING) {
-      for (const id of MINTING[file] ?? []) expect(id).not.toBe(rolesOf(file).agent);
+      for (const [id] of mintingJobs(file)) {
+        expect(MINTING_ROLES, `${path.basename(file)} ${id}`).toContain(id);
+        expect(id).not.toBe(path.basename(file, ".yml"));
+      }
     }
   });
 
   it.each(RESOLVING)("%s: hands the resolver the App's secrets, the PAT and the job token, at a pin", (file) => {
-    for (const [id, job] of mintingJobs(file)) {
+    for (const [id, job] of namingJobs(file)) {
       const step = (job.steps ?? []).find(resolves);
+      const choosing = (CHOOSING[file] ?? []).includes(id);
 
       expect(step?.uses, id).toBe(RESOLVER);
       expect(step?.id, id).toBe("token");
@@ -8843,14 +8882,31 @@ describe("the issue side resolves the loop's token in the jobs that write", () =
         "private-key": "${{ secrets.AGENT_APP_PRIVATE_KEY }}",
         "agent-pat": "${{ secrets.AGENT_PAT }}",
         "github-token": "${{ secrets.GITHUB_TOKEN }}",
+        ...(choosing ? { "choose-only": "true" } : {}),
       });
     }
   });
 
   /**
+   * `time-limit` hands the source across, and the review job reads it where
+   * the budget decides whether a round can start: a label the workflow token
+   * adds starts none.
+   */
+  it("tells the review job which token the loop writes with, and nothing else", () => {
+    const budget = (jobNamed(REVIEW, "review").steps ?? []).find((s) => s.id === "budget");
+
+    expect(jobNamed(REVIEW, "time-limit").outputs?.["token-source"]).toBe(SOURCE);
+    expect(budget?.env?.["TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
+    expect(codeOf(budget ?? {})).toContain(
+      '[ "$spent" -lt "$budget" ] && { [ "$TOKEN_SOURCE" = "app" ] || [ "$TOKEN_SOURCE" = "pat" ]; }',
+    );
+    expect(JSON.stringify(jobNamed(REVIEW, "time-limit"))).not.toContain("steps.token.outputs.token");
+  });
+
+  /**
    * At the job's start: nothing runs before it but the fetches of what the
    * jobs ahead handed over. A publish job resolves it `always()`, since it
-   * also reports a failed agent and writes the progress list after one.
+   * also reports a failed agent and takes the trigger label off after one.
    */
   it.each(RESOLVING)("%s: resolves the token before the job's first write", (file) => {
     for (const [id, job] of mintingJobs(file)) {
@@ -8870,12 +8926,16 @@ describe("the issue side resolves the loop's token in the jobs that write", () =
   it.each(RESOLVING)("%s: names a writing secret only to hand it to the resolver", (file) => {
     for (const [id, job] of Object.entries(workflowOf(file).jobs)) {
       expect(writingSecrets(job.env ?? {}), id).toEqual([]);
+      expect(writingSecrets(job.outputs ?? {}), id).toEqual([]);
       for (const step of job.steps ?? []) {
         if (resolves(step)) continue;
         expect(writingSecrets(step), `${id}: ${step.name}`).toEqual([]);
         expect(step.env?.["HAS_PAT"], `${id}: ${step.name}`).toBeUndefined();
-        for (const name of ["PUSH_TOKEN", "TOKEN_SOURCE"]) {
-          if (step.env?.[name] !== undefined) expect(step.env[name], `${id}: ${step.name}`).toBe(name === "PUSH_TOKEN" ? TOKEN : SOURCE);
+        for (const name of ["PUSH_TOKEN", "REQUEST_TOKEN", "LOOP_TOKEN"]) {
+          if (step.env?.[name] !== undefined) expect(step.env[name], `${id}: ${step.name}`).toBe(TOKEN);
+        }
+        if (step.env?.["TOKEN_SOURCE"] !== undefined && id !== "review") {
+          expect(step.env["TOKEN_SOURCE"], `${id}: ${step.name}`).toBe(SOURCE);
         }
         const token = step.env?.["GH_TOKEN"];
         if (token !== undefined) expect([TOKEN, "${{ secrets.GITHUB_TOKEN }}"], `${id}: ${step.name}`).toContain(token);
@@ -8885,34 +8945,46 @@ describe("the issue side resolves the loop's token in the jobs that write", () =
 
   /**
    * The writes `AGENT_PAT` made: every push, `gh pr create`, `gh pr ready`,
-   * and every `agent:review` added. Each is made with the resolved token, and
-   * each `agent:review` add reads the source, to warn or refuse where it is
-   * the workflow token and the label would fire nothing.
+   * every trigger label added for another run to fire on, and whatever a step
+   * writes under a token it names on the command itself. A gate's claim
+   * re-adds the run's own label with the workflow token, on purpose, so that
+   * it fires nothing; a re-request of it is made under a token named on the
+   * command. Each is made with the resolved token, and
+   * each `agent:review` or `agent:update-branch` added, and the park comment
+   * on a PRD's parent, reads the source, to warn or comment instead where it
+   * is the workflow token and the write would fire nothing or be refused.
+   * `agent:fix` is added only where the budget, which read the source, said a
+   * round starts.
    */
   it.each(RESOLVING)("%s: makes every write the workflow token cannot with the resolved token", (file) => {
-    const writes = stepsOf(file).filter((s) =>
-      /\bpush (--force )?origin\b|\bgh pr create\b|\bgh pr ready\b|--add-label "agent:review"/.test(codeOf(s)),
+    const INLINE = /\bGH_TOKEN="\$([A-Z_]+)" gh /;
+    const own = `agent:${path.basename(file, ".yml").replace(/-prd$/, "")}`;
+    const handOff = new RegExp(
+      `--add-label "(?!${own}")agent:(review|fix|implement|update-branch)"`,
     );
+    const writes = Object.values(workflowOf(file).jobs)
+      .flatMap((job) => job.steps ?? [])
+      .filter((s) => /\bpush (--force )?origin\b|\bgh pr create\b|\bgh pr ready\b/.test(codeOf(s)) || handOff.test(codeOf(s)) || INLINE.test(codeOf(s)));
 
     expect(writes.length).toBeGreaterThan(0);
     for (const step of writes) {
       const code = codeOf(step);
-      expect(step.env?.[/\bpush\b/.test(code) ? "PUSH_TOKEN" : "GH_TOKEN"], step.name).toBe(TOKEN);
-      if (code.includes('--add-label "agent:review"')) {
+      const inline = INLINE.exec(code)?.[1];
+      const variable = inline ?? (/\bpush\b/.test(code) ? "PUSH_TOKEN" : "GH_TOKEN");
+      expect(step.env?.[variable], `${step.name}: ${variable}`).toBe(TOKEN);
+      if (/--add-label "agent:(review|update-branch)"|GH_TOKEN="\$[A-Z_]+" gh issue comment\b/.test(code)) {
         expect(step.env?.["TOKEN_SOURCE"], step.name).toBe(SOURCE);
         expect(code, step.name).toContain('[ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]');
       }
     }
   });
 
-  /** The agent's job names none of them, in any step, run or not (#307). */
-  it.each(RESOLVING)("%s: names neither the App's secrets nor the PAT in the job that runs the agent", (file) => {
-    const job = jobNamed(file, rolesOf(file).agent);
-    const named = [...JSON.stringify(job).matchAll(/\$\{\{.*?\}\}/g)].map((m) => m[0]);
+  /** The PRD chain's advance chooses nothing either: it is handed the token and its source. */
+  it("hands the PRD chain's advance the resolved token and its source", () => {
+    const advance = (jobNamed(REVIEW, "advance").steps ?? []).find((s) => (s.uses ?? "").includes("/actions/advance-prd@"));
 
-    expect(named.filter((e) => SECRETS.test(e))).toEqual([]);
-    expect(writingSecrets(job)).toEqual([]);
-    expect(JSON.stringify(job)).not.toContain("/actions/loop-token@");
+    expect(advance?.with?.["token"]).toBe(TOKEN);
+    expect(advance?.with?.["token-source"]).toBe(SOURCE);
   });
 
   it.each(RESOLVING)("%s: declares the App's two secrets, optional", (file) => {
@@ -8921,14 +8993,45 @@ describe("the issue side resolves the loop's token in the jobs that write", () =
     for (const name of APP_SECRETS) expect(declared[name]?.required, name).toBe(false);
   });
 
+  /**
+   * **Only the resolver chooses** (#320). Everywhere else a loop secret is
+   * passed on as it is, `${{ secrets.<name> }}`: never compared, never ORed
+   * with another, and never weighed against the workflow token. Over every
+   * workflow, the callers included, and every composite action but the
+   * resolver.
+   */
+  it("leaves the choice between App, PAT and workflow token to the resolver alone", () => {
+    const actions = fs
+      .readdirSync(path.join(".github", "actions"))
+      .map((name) => path.join(".github", "actions", name, "action.yml"))
+      .filter((file) => file !== TOKEN_ACTION);
+    const files = [...workflowFiles, ...actions];
+
+    expect(actions.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const text = fs.readFileSync(file, "utf8");
+      const expressions = [...text.matchAll(/\$\{\{[\s\S]*?\}\}/g)].map((m) => m[0]);
+      const choosing = expressions.filter(
+        (e) =>
+          /AGENT_PAT|AGENT_APP_ID|AGENT_APP_PRIVATE_KEY/.test(e) &&
+          !/^\$\{\{ secrets\.(AGENT_PAT|AGENT_APP_ID|AGENT_APP_PRIVATE_KEY) \}\}$/.test(e),
+      );
+
+      expect(choosing, file).toEqual([]);
+      expect(expressions.filter((e) => /secrets\.GITHUB_TOKEN\s*\|\||\|\|\s*secrets\.GITHUB_TOKEN/.test(e)), file).toEqual([]);
+      expect(text, file).not.toContain("HAS_PAT");
+    }
+  });
+
   /** Every input but the job token is optional, since an unset secret arrives empty. */
-  it("is a composite taking the three optional secrets and the job token", () => {
+  it("is a composite taking the three optional secrets, the job token and a choose-only switch", () => {
     expect(action().runs?.using).toBe("composite");
     expect(action().inputs).toEqual({
       "app-id": expect.objectContaining({ required: false, default: "" }),
       "private-key": expect.objectContaining({ required: false, default: "" }),
       "agent-pat": expect.objectContaining({ required: false, default: "" }),
       "github-token": expect.objectContaining({ required: true }),
+      "choose-only": expect.objectContaining({ required: false, default: "false" }),
     });
   });
 
@@ -8942,23 +9045,26 @@ describe("the issue side resolves the loop's token in the jobs that write", () =
   });
 
   /**
-   * GitHub's own action mints, only for the App, for this repository alone.
-   * Its token is returned in front of the PAT, and the PAT in front of the
-   * job token: the mint runs only where the source is `app`, and the PAT is
-   * set wherever the source is `pat`, so the order follows the choice.
+   * GitHub's own action mints, only for the App, for this repository alone,
+   * and never under `choose-only`. Its token is returned in front of the PAT,
+   * and the PAT in front of the job token: the mint runs only where the
+   * source is `app`, and the PAT is set wherever the source is `pat`, so the
+   * order follows the choice. Under `choose-only` nothing is returned.
    */
   it("mints only for the App, for this repository, and returns what it chose", () => {
     const mint = actionStep("mint");
 
     expect(mint?.uses).toMatch(/^actions\/create-github-app-token@v\d+$/);
-    expect(mint?.if).toBe("steps.choose.outputs.source == 'app'");
+    expect(mint?.if).toBe("steps.choose.outputs.source == 'app' && inputs.choose-only != 'true'");
     expect(mint?.with).toEqual({
       "client-id": "${{ inputs.app-id }}",
       "private-key": "${{ inputs.private-key }}",
       owner: "${{ github.repository_owner }}",
       repositories: "${{ github.event.repository.name }}",
     });
-    expect(action().outputs?.["token"]?.value).toBe("${{ steps.mint.outputs.token || inputs.agent-pat || inputs.github-token }}");
+    expect(action().outputs?.["token"]?.value).toBe(
+      "${{ inputs.choose-only != 'true' && (steps.mint.outputs.token || inputs.agent-pat || inputs.github-token) || '' }}",
+    );
     expect(action().outputs?.["source"]?.value).toBe("${{ steps.choose.outputs.source }}");
   });
 
@@ -9036,12 +9142,8 @@ describe("a status-check function appears only in an `if:`", () => {
  * with a decision, not past a filter that has gone empty.
  */
 describe("no checkout an agent runs in leaves a credential behind", () => {
-  /**
-   * The loop's token where the workflow resolves it (#319), and the PAT with
-   * its fallback where it still chooses its own.
-   */
-  const pushTokenOf = (file: string): string =>
-    RESOLVING.includes(file) ? "${{ steps.token.outputs.token }}" : "${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}";
+  /** The loop's token, which every workflow that pushes resolves (#319, #320). */
+  const PUSH_TOKEN = "${{ steps.token.outputs.token }}";
   const isCheckout = (s: Step): boolean => (s.uses ?? "").startsWith("actions/checkout@");
   const NETWORK = /\bgit\s+(?:-c\s+"[^"]*"\s+)*(push|fetch|pull|ls-remote|clone)\b/;
   const HEADER = /\bgit -c "http\.extraHeader=AUTHORIZATION: basic \$\{([a-z_]+)\}" (push|fetch) /;
@@ -9094,7 +9196,7 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
         const source = verb === "push" ? "PUSH_TOKEN" : "GH_TOKEN";
         expect(run).toContain(`${auth}=$(printf 'x-access-token:%s' "$${source}" | base64 | tr -d '\\n')`);
         expect(run).toContain(`echo "::add-mask::\${${auth}}"`);
-        if (verb === "push") expect(step.env?.["PUSH_TOKEN"], step.name).toBe(pushTokenOf(file));
+        if (verb === "push") expect(step.env?.["PUSH_TOKEN"], step.name).toBe(PUSH_TOKEN);
         else expect(job.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
       }
     }
@@ -9213,6 +9315,18 @@ describe("no job that runs an agent names a secret that writes", () => {
 
   it.each(agentJobs)("%s: names no secret but the agent's token and the job token", (_, job) => {
     expect(forbidden(job)).toEqual([]);
+  });
+
+  /**
+   * Named outright, beside the rule above that already refuses them: the
+   * App's two secrets, the PAT, and the resolver that would be handed them
+   * (#320). Not even in a step that never runs.
+   */
+  it.each(agentJobs)("%s: names neither the App's secrets nor the PAT, nor resolves a token", (_, job) => {
+    const expressions = [...JSON.stringify(job).matchAll(/\$\{\{.*?\}\}/g)].map((m) => m[0]);
+
+    expect(expressions.filter((e) => /AGENT_PAT|AGENT_APP_ID|AGENT_APP_PRIVATE_KEY/i.test(e))).toEqual([]);
+    expect(JSON.stringify(job)).not.toContain("/actions/loop-token@");
   });
 });
 

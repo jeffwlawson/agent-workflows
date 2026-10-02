@@ -2,7 +2,8 @@ name: Advance the PRD chain
 description: >-
   Re-add `agent:implement` to a PRD PR's parent, so the `implement-prd` run
   that starts builds the next slice on the PRD branch, or finishes the chain.
-  With no `AGENT_PAT`, say on the PRD PR which re-label does it by hand.
+  With neither the loop's App nor `AGENT_PAT`, say on the PRD PR which
+  re-label does it by hand.
 
 # The PRD chain's advance (PRD #222), run by `review.yml`'s `advance` job when
 # a slice round on the PRD PR ends on an approval. Which rounds advance is that
@@ -21,8 +22,9 @@ description: >-
 # builds nothing, and what it starts is bounded by the number of sub-issues.
 #
 # **The token is the caller's.** A composite cannot read `secrets`, so it is
-# handed `AGENT_PAT`, or `GITHUB_TOKEN` where there is none, together with which
-# one it got.
+# handed the loop's token, resolved by `.github/actions/loop-token` in the job
+# that names this, together with the source that action reported. This action
+# chooses nothing.
 inputs:
   pr-number:
     description: The PRD PR whose slice round ended.
@@ -30,18 +32,19 @@ inputs:
   head-ref:
     description: The PRD PR's head, `agent/prd-<parent>-…`, which names its parent.
     required: true
-  has-pat:
-    description: "`true` where `token` is `AGENT_PAT`."
+  token-source:
+    description: "`app`, `pat` or `workflow`: the `source` `loop-token` reported for `token`."
     required: true
   token:
-    description: "`AGENT_PAT`, or `GITHUB_TOKEN` where it is not set."
+    description: The `token` `loop-token` resolved.
     required: true
 
 runs:
   using: composite
   steps:
-    # MUST use AGENT_PAT: `agent:implement` added with `GITHUB_TOKEN` sits on
-    # the parent and starts nothing. So without the PAT nothing is added at all,
+    # MUST use the loop's App or AGENT_PAT: `agent:implement` added with
+    # `GITHUB_TOKEN` sits on the parent and starts nothing. So without either
+    # nothing is added at all,
     # and the one place a maintainer is already looking, the PRD PR, says which
     # re-label advances the chain by hand.
     #
@@ -54,7 +57,7 @@ runs:
         GH_REPO: ${{ github.repository }}
         PR_NUMBER: ${{ inputs.pr-number }}
         HEAD_REF: ${{ inputs.head-ref }}
-        HAS_PAT: ${{ inputs.has-pat }}
+        TOKEN_SOURCE: ${{ inputs.token-source }}
         GH_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
@@ -63,9 +66,9 @@ runs:
           exit 1
         fi
         parent="${BASH_REMATCH[1]}"
-        if [ "$HAS_PAT" != "true" ]; then
-          echo "::warning::AGENT_PAT is not set, so the PRD chain was not advanced: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
-          gh pr comment "$PR_NUMBER" --body "This slice's round ended on an approval, but the PRD chain will not advance on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to build the next slice." \
+        if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
+          echo "::warning::Neither the loop's App nor AGENT_PAT is set, so the PRD chain was not advanced: a label added with GITHUB_TOKEN starts nothing. Re-add agent:implement to #${parent} by hand."
+          gh pr comment "$PR_NUMBER" --body "This slice's round ended on an approval, but the PRD chain will not advance on its own: neither the loop's App nor \`AGENT_PAT\` is set, and a label added with \`GITHUB_TOKEN\` starts nothing. Re-add \`agent:implement\` to #${parent} by hand to build the next slice." \
             || echo "::warning::…and that could not be said on the pull request either."
           exit 0
         fi

@@ -178,3 +178,133 @@ describe.skipIf(!CAN_RUN)("the issue side's review request, by the resolver's so
     });
   });
 });
+
+/** A step's `run:` block, by name, from any job of a reusable workflow. */
+const jobStep = (command: string, job: string, name: string): string => {
+  const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
+  const step = (workflow.jobs[job]?.steps ?? []).find((s) => s.name === name);
+
+  expect(step?.run, `${command} has no \`${name}\` step in ${job}`).toBeDefined();
+  return step?.run ?? "";
+};
+
+/**
+ * The PR side's writes (#320), by the source the resolver reported: the
+ * re-review fix and update-branch ask for, the PRD chain's advance and park,
+ * and the ready-mark. Each is made with the token the resolver produced,
+ * whatever it is, and only the workflow token, which fires nothing on a label
+ * and cannot write to the parent issue, draws the warning and the comment
+ * that say what to do by hand instead.
+ */
+describe.skipIf(!CAN_RUN)("the PR side's writes, by the resolver's source", () => {
+  const PUSHED = "2222222222222222222222222222222222222222";
+  const SOURCES = [
+    ["app", false],
+    ["pat", false],
+    ["workflow", true],
+    ["", true],
+  ] as const;
+  const tokenOf = (source: string): string => `${source || "unknown"}-token`;
+  const fallback = /::warning::.*[Nn]either the loop's App nor AGENT_PAT is set/;
+
+  describe.each([
+    ["fix", "Request re-review"],
+    ["update-branch", "Request a review of the resolution"],
+  ] as const)("%s's %s", (command, name) => {
+    const request = (source: string): Outcome =>
+      execute(jobStep(command, "publish", name), {
+        GH_TOKEN: tokenOf(source),
+        TOKEN_SOURCE: source,
+        PR_NUMBER: "152",
+        PUSHED: "true",
+        PUSHED_SHA: PUSHED,
+        HEAD_WAIT_SECONDS: "0",
+        RUNNER_TEMP: os.tmpdir(),
+      });
+
+    it.each(SOURCES)("adds agent:review with the resolved token, and falls back only where it fires nothing (source %j)", (source, warns) => {
+      const outcome = request(source);
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      expect(outcome.gh).toContain(`${tokenOf(source)} pr edit 152 --add-label agent:review`);
+      for (const call of outcome.gh) expect(call.startsWith(`${tokenOf(source)} `), call).toBe(true);
+      const comments = outcome.gh.filter((call) => call.includes("pr comment 152"));
+      if (warns) {
+        expect(outcome.stdout).toMatch(fallback);
+        expect(comments).toHaveLength(1);
+      } else {
+        expect(outcome.stdout).not.toMatch(fallback);
+        expect(comments).toEqual([]);
+      }
+    });
+  });
+
+  describe("review's advance of the PRD chain", () => {
+    interface Composite {
+      readonly runs: { readonly steps: readonly Step[] };
+    }
+    const advanceRun = (): string =>
+      (parse(fs.readFileSync(path.join(".github", "actions", "advance-prd", "action.yml"), "utf8")) as Composite).runs.steps[0]?.run ?? "";
+
+    it.each(SOURCES)("labels the parent with the resolved token, or says so on the PRD PR (source %j)", (source, warns) => {
+      const outcome = execute(advanceRun(), {
+        GH_TOKEN: tokenOf(source),
+        TOKEN_SOURCE: source,
+        PR_NUMBER: "330",
+        HEAD_REF: "agent/prd-314-a-prd",
+      });
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      for (const call of outcome.gh) expect(call.startsWith(`${tokenOf(source)} `), call).toBe(true);
+      if (warns) {
+        expect(outcome.gh.filter((call) => call.includes("--add-label"))).toEqual([]);
+        expect(outcome.gh.some((call) => call.includes("pr comment 330"))).toBe(true);
+        expect(outcome.stdout).toMatch(fallback);
+      } else {
+        expect(outcome.gh).toContain(`${tokenOf(source)} issue edit 314 --add-label agent:implement`);
+        expect(outcome.stdout).not.toMatch(fallback);
+      }
+    });
+  });
+
+  describe("review's park of the PRD chain", () => {
+    it.each(SOURCES)("comments on the parent with the resolved token, or on the PRD PR with the job's (source %j)", (source, warns) => {
+      const outcome = execute(jobStep("review", "advance", "Park the PRD chain"), {
+        GH_TOKEN: "job-token",
+        LOOP_TOKEN: tokenOf(source),
+        TOKEN_SOURCE: source,
+        PR_NUMBER: "330",
+        HEAD_REF: "agent/prd-314-a-prd",
+        ENDED: "false",
+        REVIEWED: "false",
+        REVIEW_URL: "",
+        REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}",
+        RUN_URL: "https://example.invalid/run",
+        RUNNER_TEMP: os.tmpdir(),
+      });
+
+      // One call, whose multi-line body runs on over the log lines after it.
+      const calls = outcome.gh.filter((line) => /^[\w-]+-token /.test(line));
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      if (warns) {
+        expect(calls).toEqual([expect.stringMatching(/^job-token pr comment 330 /)]);
+        expect(outcome.stdout).toMatch(fallback);
+      } else {
+        expect(calls).toEqual([expect.stringMatching(new RegExp(`^${tokenOf(source)} issue comment 314 `))]);
+      }
+    });
+  });
+
+  describe.each([
+    ["review", "post-review"],
+    ["fix", "publish"],
+  ] as const)("%s's ready-mark", (command, job) => {
+    it.each(["app", "pat", "workflow"])("marks the PR ready with the resolved token (source %j)", (source) => {
+      const outcome = execute(jobStep(command, job, "Mark PR ready for review"), { GH_TOKEN: tokenOf(source), PR_NUMBER: "152" });
+
+      expect(outcome.status, outcome.stdout).toBe(0);
+      expect(outcome.gh).toEqual([`${tokenOf(source)} pr ready 152`]);
+    });
+  });
+});

@@ -73,6 +73,10 @@ export interface RepoFacts {
    * `repos/{owner}/{repo}/actions/secrets` is the repository's alone, and an
    * organization that holds one Claude token and one bot PAT centrally answers
    * it with nothing at all.
+   *
+   * The loop's App's ID and key are read from the same two lists (#321): an
+   * organization that sets them once for every repository holds them in the
+   * second, and the identity rulings ask this list, never a third read.
    */
   readonly secrets: readonly string[] | undefined;
   /** Settings → Actions → General → Allow GitHub Actions to create … pull requests. */
@@ -195,6 +199,14 @@ const isExpression = (value: string): boolean => value.includes("${{");
  * never produce.
  */
 const SECRETLESS_WORKFLOWS: ReadonlySet<string> = new Set(["follow-ups"]);
+
+/**
+ * The loop's GitHub App (PRD #314): its ID and its private key, two secrets a
+ * caller that writes passes on beside `AGENT_PAT`. The loop's token resolver
+ * mints with the App only where both reach it, and otherwise falls back to the
+ * PAT, so half of either is no App at all.
+ */
+export const APP_SECRETS = ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"] as const;
 
 /** An exact release tag, or a full commit SHA. Nothing that can move. */
 const TAG = /^v?\d+\.\d+\.\d+$/;
@@ -540,6 +552,14 @@ export const diagnose = (
   }
 
   const hasPat = facts.secrets?.includes("AGENT_PAT");
+  // Which identity the loop writes as (#321): the App where both its secrets
+  // are set, else the PAT. `undefined` wherever the secrets could not be read,
+  // never folded into either answer.
+  const hasApp =
+    facts.secrets === undefined ? undefined : APP_SECRETS.every((name) => facts.secrets?.includes(name));
+  const hasWriter = facts.secrets === undefined ? undefined : hasApp === true || hasPat === true;
+  const passesApp = (caller: InstalledCaller): boolean =>
+    APP_SECRETS.every((name) => passesSecret(caller, name));
 
   for (const { permission, value, workflows, why } of REQUIRED_PERMISSIONS) {
     for (const caller of callers) {
@@ -735,6 +755,9 @@ export const diagnose = (
   for (const caller of callers) {
     if (SECRETLESS_WORKFLOWS.has(caller.workflow)) continue;
     if (passesSecret(caller, "AGENT_PAT")) continue;
+    // A caller handed a working App writes with it, and the PAT behind it is
+    // never reached, so there is nothing for its absence to cost.
+    if (hasApp === true && passesApp(caller)) continue;
 
     const named =
       caller.secrets === undefined || caller.secrets === "inherit" ? [] : caller.secrets;
@@ -765,6 +788,45 @@ export const diagnose = (
     });
   }
 
+  // The same wire for the App (#321), and the setup it hides is the one an
+  // adopter believes they finished: the App's secrets are set, and a caller
+  // that does not pass them on hands the resolver two empty strings, so that
+  // caller's writes fall back to the PAT, or to `GITHUB_TOKEN`, while every
+  // other caller writes as the App. Nothing fails, and the only trace is whose
+  // login a push or a label carries. In either layout, since it is ruled per
+  // caller, and never on `follow-ups`, which writes with the workflow token and
+  // declares none of these.
+  //
+  // Unreadable secrets are a warning: nobody knows whether there is an App for
+  // this caller to miss, and saying nothing would read as a pass.
+  for (const caller of callers) {
+    if (SECRETLESS_WORKFLOWS.has(caller.workflow)) continue;
+    if (hasApp === false) continue;
+    const missing = APP_SECRETS.filter((name) => !passesSecret(caller, name));
+    if (missing.length === 0) continue;
+
+    const unknown = hasApp === undefined;
+    add({
+      severity: unknown ? "warning" : "error",
+      check: "App secrets wiring",
+      problem:
+        `${caller.file} does not hand ${missing.map((name) => `\`${name}\``).join(" or ")} to ` +
+        `\`${caller.workflow}.yml\` on the \`${caller.jobId}\` job. The App's secrets are optional ` +
+        `there, so ${missing.length === 1 ? "it arrives" : "they arrive"} as the empty string and the ` +
+        `loop's token resolver passes the App over: this caller's pushes, pull requests and labels ` +
+        `are made as \`AGENT_PAT\`'s owner, or with \`GITHUB_TOKEN\` where there is no PAT, while ` +
+        `every caller that does pass them writes as the App.` +
+        (unknown
+          ? ` This repository's secrets could not be read, so this is something to check rather ` +
+            `than a fault: without the App's secrets set, there is nothing to pass.`
+          : ` The App's secrets being set is what makes that invisible.`),
+      fix:
+        `Add ${missing.map((name) => `\`${name}: \${{ secrets.${name} }}\``).join(" and ")} to that ` +
+        `job's \`secrets:\` block, or \`secrets: inherit\`, which hands the called workflow every ` +
+        `secret this repository holds.`,
+    });
+  }
+
   // The fix-round budget (#201, #204). A review with budget left starts a fix
   // round itself by adding `agent:fix`, and without `AGENT_PAT` that label
   // fires no event: the review knows, and asks for the label on every verdict
@@ -776,11 +838,12 @@ export const diagnose = (
   // is 0), and otherwise the variable, 3 where it is unset. A value neither
   // would accept is no budget, and has its own finding below.
   //
-  // A warning, because the loop itself is unharmed and the `AGENT_PAT` row is
-  // already the error for the same secret. It reads `facts.secrets` directly
-  // rather than `hasPat`: that is `undefined` in exactly the case this must not
-  // rule on, and `!hasPat` would collapse it into the failing one. So is an
-  // unreadable variable, which is not an unset one.
+  // A warning, because the loop itself is unharmed and the identity row is
+  // already the error for the same missing secrets. It rules only where
+  // `hasWriter` is `false`: that is `undefined` in exactly the case this must
+  // not rule on, and `!hasWriter` would collapse it into the failing one. So is
+  // an unreadable variable, which is not an unset one. The loop's App fires
+  // events as the PAT does, so either one is a writer (#321).
   const budgetOf = (caller: InstalledCaller): { rounds: number; from: string } | undefined => {
     if (caller.autoFix !== undefined) {
       if (isExpression(caller.autoFix)) return undefined;
@@ -794,7 +857,7 @@ export const diagnose = (
     return { rounds: Number(facts.maxFixRounds), from: `\`${FIX_ROUNDS_VARIABLE}\`` };
   };
   const reviews = callers.filter((caller) => caller.workflow === "review");
-  if (facts.secrets !== undefined && !facts.secrets.includes("AGENT_PAT")) {
+  if (hasWriter === false) {
     for (const caller of reviews) {
       const budget = budgetOf(caller);
       if (budget === undefined || budget.rounds === 0) continue;
@@ -804,11 +867,11 @@ export const diagnose = (
         problem:
           `${caller.file}'s \`${caller.jobId}\` job reviews with a fix-round budget of ` +
           `${budget.rounds} (${budget.from}), so a review that recommends changes starts a fix ` +
-          `round itself by adding \`agent:fix\`. \`AGENT_PAT\` is not set, and a label added with ` +
+          `round itself by adding \`agent:fix\`. Neither the loop's App nor \`AGENT_PAT\` is set, and a label added with ` +
           `\`GITHUB_TOKEN\` fires no event, so no automatic fix round ever starts: every verdict ` +
           `asks for \`agent:fix\` by hand instead.`,
         fix:
-          `Set \`AGENT_PAT\` (above), or set the repository variable \`${FIX_ROUNDS_VARIABLE}\` to ` +
+          `Set up the loop's App or \`AGENT_PAT\` (above), or set the repository variable \`${FIX_ROUNDS_VARIABLE}\` to ` +
           `\`0\` to say that fix rounds here are started by hand.`,
       });
     }
@@ -1021,7 +1084,10 @@ export const diagnose = (
       problem:
         `Could not read the Actions secrets available here — neither this repository's own nor ` +
         `the organization secrets shared with it.`,
-      fix: `Check \`CLAUDE_CODE_OAUTH_TOKEN\` and \`AGENT_PAT\` by hand; reading them needs admin.`,
+      fix:
+        `Check \`CLAUDE_CODE_OAUTH_TOKEN\`, and \`AGENT_APP_ID\` and \`AGENT_APP_PRIVATE_KEY\` or ` +
+        `\`AGENT_PAT\`, by hand; reading them needs admin. Which identity the loop writes as is ` +
+        `unknown until then.`,
     });
   } else {
     if (!facts.secrets.includes("CLAUDE_CODE_OAUTH_TOKEN")) {
@@ -1032,17 +1098,66 @@ export const diagnose = (
         fix: `Set it under Settings → Secrets and variables → Actions.`,
       });
     }
-    if (!facts.secrets.includes("AGENT_PAT")) {
+    // The identity the loop writes as (#321), so that "the label did nothing"
+    // has one fewer unexplained cause: a note naming the App or the PAT, and
+    // the error it always was where there is neither.
+    if (hasApp === true) {
+      add({
+        severity: "note",
+        check: "identity",
+        problem:
+          `The loop writes as its GitHub App: \`AGENT_APP_ID\` and \`AGENT_APP_PRIVATE_KEY\` are ` +
+          `both set, so each run mints a token for this repository alone, and its pushes, pull ` +
+          `requests and trigger labels carry the App's bot login.` +
+          (hasPat ? ` \`AGENT_PAT\` is set too, and is used only by a caller that does not pass the App's secrets.` : ``),
+        fix: `Nothing to fix.`,
+      });
+    } else if (hasPat === true) {
+      add({
+        severity: "note",
+        check: "identity",
+        problem:
+          `The loop writes as \`AGENT_PAT\`'s owner: its pushes, pull requests and trigger labels ` +
+          `carry that account's login, and they stop the day the token expires.`,
+        fix:
+          `Nothing to fix. To have the loop write as a bot of its own, with tokens that need no ` +
+          `renewal, set up a GitHub App and set \`AGENT_APP_ID\` and \`AGENT_APP_PRIVATE_KEY\`.`,
+      });
+    } else {
       add({
         severity: "error",
-        check: "secrets",
+        check: "identity",
         problem:
-          `The \`AGENT_PAT\` secret is not set. The workflows fall back to \`GITHUB_TOKEN\` and go ` +
+          `Neither the loop's GitHub App (\`AGENT_APP_ID\` and \`AGENT_APP_PRIVATE_KEY\`) nor the ` +
+          `\`AGENT_PAT\` secret is set. The workflows fall back to \`GITHUB_TOKEN\` and go ` +
           `on running, but a push made with it starts CI that waits for approval, a label added ` +
           `with it fires no event, ` +
           `and it cannot mark a pull request ready — so the loop looks alive and transitions nothing. ` +
           `Without it, the PRD chain stops after its first slice.`,
-        fix: `Set a fine-grained PAT with Contents, Pull requests, Issues and Workflows write.`,
+        fix:
+          `Set up a GitHub App with Contents, Pull requests, Issues and Workflows write and set ` +
+          `\`AGENT_APP_ID\` and \`AGENT_APP_PRIVATE_KEY\`, or set \`AGENT_PAT\` to a fine-grained ` +
+          `PAT with the same.`,
+      });
+    }
+
+    // Half an App (#321): one of the two secrets without the other. The
+    // resolver cannot mint with it and passes it over with only a warning in a
+    // run's log, so the App an adopter set up is quietly never used.
+    const [set, ...more] = APP_SECRETS.filter((name) => facts.secrets?.includes(name));
+    const unset = APP_SECRETS.find((name) => !facts.secrets?.includes(name));
+    if (set !== undefined && more.length === 0 && unset !== undefined) {
+      add({
+        severity: "error",
+        check: "App secrets",
+        problem:
+          `\`${set}\` is set and \`${unset}\` is not, so the loop's App cannot mint a token and ` +
+          `every run passes it over: the loop writes as ` +
+          (hasPat ? `\`AGENT_PAT\`'s owner` : `\`GITHUB_TOKEN\``) +
+          `, and the App is never used.`,
+        fix:
+          `Set \`${unset}\` to the App's ${unset === "AGENT_APP_ID" ? "ID" : "private key"}, or delete ` +
+          `\`${set}\` if the loop is not meant to use an App.`,
       });
     }
   }
@@ -1055,16 +1170,17 @@ export const diagnose = (
       fix: `Check Settings → Actions → General → Allow GitHub Actions to create and approve pull requests.`,
     });
   } else if (!facts.canCreatePullRequests) {
-    // A user PAT is not the Actions bot, so it bypasses the setting outright.
-    // Which is why this is only an error when there is no PAT behind it.
+    // A user PAT is not the Actions bot, and nor is the loop's App, so either
+    // bypasses the setting outright. Which is why this is only an error when
+    // there is neither behind it.
     add({
-      severity: hasPat ? "warning" : "error",
+      severity: hasWriter ? "warning" : "error",
       check: "actions can open PRs",
       problem:
         `GitHub Actions is not permitted to create pull requests in this repository. The agent ` +
         `does its work correctly and the run dies at \`gh pr create\`.` +
-        (hasPat ? ` \`AGENT_PAT\` is set, which bypasses it.` : ``),
-      fix: `Enable Settings → Actions → General → Allow GitHub Actions to create and approve pull requests, or set \`AGENT_PAT\`.`,
+        (hasApp ? ` The loop's App is set, which bypasses it.` : hasPat ? ` \`AGENT_PAT\` is set, which bypasses it.` : ``),
+      fix: `Enable Settings → Actions → General → Allow GitHub Actions to create and approve pull requests, or set up the loop's App or \`AGENT_PAT\`.`,
     });
   }
 

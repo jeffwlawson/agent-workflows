@@ -411,8 +411,8 @@ a scaffolder that silently reverted a `with:` input would be manufacturing exact
 class the pair exists to remove.
 
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
-the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape
-and its freshness, `self-check`, the labels, an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with no `AGENT_PAT` behind it (the default counts), a caller still passing the deprecated `auto-fix`, and a time limit variable that is not a positive integer (#220) — and reads nothing out of `examples/callers/`, so a
+the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the identity the loop writes as and the loop's App's wire and its two halves (#321), the pin's shape
+and its freshness, `self-check`, the labels, an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with neither the App nor `AGENT_PAT` behind it (the default counts), a caller still passing the deprecated `auto-fix`, and a time limit variable that is not a positive integer (#220) — and reads nothing out of `examples/callers/`, so a
 release that changes a caller *body* is a release that teaches `diagnose` about it in the same
 commit, exactly as a new pin site is a change to `shared/pins.ts` in the same commit. Diffing an
 adopter's caller against the reference is the other design and it is the wrong one here: most of

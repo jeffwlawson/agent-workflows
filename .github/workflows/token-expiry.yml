@@ -8,6 +8,12 @@ name: Token Expiry
 # This turns an invisible expiry into a dated, recurring warning. It is a
 # stopgap: the real fix is a GitHub App with per-run tokens (parity.md §9.4),
 # which retires the expiry problem rather than monitoring it.
+#
+# So where the loop's App is set up (PRD #314), this checks nothing: the loop's
+# token resolver writes with the App wherever its ID and key are both set, and
+# a warning about a token nothing uses is one that trains you to ignore the
+# next. Half an App cannot mint, so the resolver passes it over for the PAT and
+# the PAT is checked as before: the fallback stays safe to rely on.
 on:
   schedule:
     # Weekly, Monday. Offset from corpus.yml's 06:17 so the two do not queue up.
@@ -32,11 +38,21 @@ jobs:
         id: check
         env:
           PAT: ${{ secrets.AGENT_PAT }}
+          # Read only to ask whether each is set, by the rule the loop's token
+          # resolver applies: both, or the App is not used.
+          APP_ID: ${{ secrets.AGENT_APP_ID }}
+          APP_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
         run: |
           set -uo pipefail
 
+          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
+            echo "::notice::The loop writes as its GitHub App, whose tokens last an hour and need no renewal, so AGENT_PAT's expiry is not checked."
+            echo "state=app" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ -z "$PAT" ]; then
-            echo "::warning::AGENT_PAT is not set. The loop falls back to GITHUB_TOKEN, which cannot create PRs and whose pushes start CI that waits for approval."
+            echo "::warning::Neither the loop's GitHub App nor AGENT_PAT is set. The loop falls back to GITHUB_TOKEN, which cannot create PRs and whose pushes start CI that waits for approval."
             echo "state=unset" >> "$GITHUB_OUTPUT"
             exit 0
           fi

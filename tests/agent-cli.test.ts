@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
-import { callersIn, REFERENCE_CALLER_FILES } from "../setup/callers.js";
+import { callersIn, readInstalledCallers, REFERENCE_CALLER_FILES } from "../setup/callers.js";
 import {
   ADVISORY_LABELS,
   advisoryLabelSpecsFor,
@@ -21,11 +21,13 @@ import {
   availableSecrets,
   availableVariable,
   DEFAULT_FIX_ROUNDS,
+  diagnose,
   FIX_ROUNDS_VARIABLE,
   TIMEOUT_VARIABLES,
   parseList,
   REQUIRED_PERMISSIONS,
   runDoctor,
+  type Finding,
   type RepoFacts,
 } from "../setup/doctor.js";
 import {
@@ -2830,6 +2832,180 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * **The loop's identity** (#321, PRD #314): which of the App, the PAT or
+   * neither the loop writes as, the App set up by halves, and a caller that
+   * does not pass the App's secrets on while they are set. Ruled through
+   * `diagnose`, on the callers of a constructed tree and constructed facts, in
+   * both layouts, and with the facts unreadable, which is never a pass.
+   */
+  describe("the loop's identity", () => {
+    const APP = ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"];
+    const withSecrets = (...secrets: string[]): RepoFacts => ({
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN", ...secrets],
+    });
+    const rule = (root: string, facts: RepoFacts): readonly Finding[] =>
+      diagnose(readInstalledCallers(root, manifest.name), facts);
+    const of = (findings: readonly Finding[], check: string): readonly Finding[] =>
+      findings.filter((finding) => finding.check === check);
+    const sixFiles = (): string => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
+      roots.push(root);
+      fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+      sixFileTree(root, `v${manifest.version}`);
+      return root;
+    };
+    /** One caller's secrets, without one of the App's: confined to its job, as `edit` is. */
+    const dropSecret = (root: string, file: string, job: string, name: string): void => {
+      const full = path.join(root, ...file.split("/"));
+      const text = fs.readFileSync(full, "utf8");
+      const { from, to } = jobSpan(text, job) ?? { from: 0, to: 0 };
+      const before = text.slice(from, to);
+      const after = before.replace(new RegExp(`^ *${name}: .*\\n`, "m"), "");
+      expect(after).not.toBe(before);
+      fs.writeFileSync(full, `${text.slice(0, from)}${after}${text.slice(to)}`);
+    };
+
+    it.each([
+      ["the App", [...APP], "note", "The loop writes as its GitHub App"],
+      ["the App, with a PAT behind it", [...APP, "AGENT_PAT"], "note", "The loop writes as its GitHub App"],
+      ["the PAT", ["AGENT_PAT"], "note", "The loop writes as `AGENT_PAT`'s owner"],
+      ["neither", [], "error", "Neither the loop's GitHub App"],
+    ] as const)("reports %s as the identity in use", async (_, secrets, severity, says) => {
+      const said = of(rule(await installed(), withSecrets(...secrets)), "identity");
+
+      expect(said).toHaveLength(1);
+      expect(said[0]?.severity).toBe(severity);
+      expect(said[0]?.problem).toContain(says);
+    });
+
+    it("names no identity where the secrets could not be read, and says it is unknown", async () => {
+      const findings = rule(await installed(), { ...healthy(), secrets: undefined });
+
+      expect(of(findings, "identity")).toEqual([]);
+      expect(of(findings, "App secrets")).toEqual([]);
+      expect(of(findings, "secrets")[0]?.fix).toContain("Which identity the loop writes as is unknown");
+    });
+
+    it.each([
+      ["an ID without a key", "AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"],
+      ["a key without an ID", "AGENT_APP_PRIVATE_KEY", "AGENT_APP_ID"],
+    ])("fails an App with %s, naming the half that is missing", async (_, set, unset) => {
+      const root = await installed();
+
+      for (const pat of [["AGENT_PAT"], []]) {
+        const said = of(rule(root, withSecrets(set, ...pat)), "App secrets");
+        expect(said).toHaveLength(1);
+        expect(said[0]?.severity).toBe("error");
+        expect(said[0]?.problem).toContain(`\`${set}\` is set and \`${unset}\` is not`);
+        expect(said[0]?.problem).toContain(pat.length > 0 ? "`AGENT_PAT`'s owner" : "`GITHUB_TOKEN`");
+        expect(said[0]?.fix).toContain(`Set \`${unset}\``);
+      }
+      // Half an App is no App: the identity is the PAT's.
+      expect(of(rule(root, withSecrets(set, "AGENT_PAT")), "identity")[0]?.problem).toContain("`AGENT_PAT`'s owner");
+    });
+
+    it("finds nothing half-configured in a whole App, or in none", async () => {
+      const root = await installed();
+
+      expect(of(rule(root, withSecrets(...APP)), "App secrets")).toEqual([]);
+      expect(of(rule(root, withSecrets("AGENT_PAT")), "App secrets")).toEqual([]);
+    });
+
+    it("passes a repository init has just set up, on the App", async () => {
+      const { code, out, err } = await check(await installed(), withSecrets(...APP));
+
+      expect(err).toBe("");
+      expect(code).toBe(0);
+      expect(out).toContain("note  identity: The loop writes as its GitHub App");
+    });
+
+    describe.each([
+      ["merged", (): Promise<string> => installed(), ".github/workflows/agent-pr.yml", ".github/workflows/agent-issue.yml"],
+      ["six-file", (): Promise<string> => Promise.resolve(sixFiles()), ".github/workflows/agent-fix.yml", ".github/workflows/agent-implement.yml"],
+    ])("the App's secrets passed through, in the %s layout", (_, tree, fixFile, implementFile) => {
+      it("fails each caller that writes and does not pass them, naming it", async () => {
+        const root = await tree();
+        dropSecret(root, fixFile, "fix", "AGENT_APP_ID");
+        dropSecret(root, implementFile, "implement", "AGENT_APP_PRIVATE_KEY");
+
+        const said = of(rule(root, withSecrets(...APP, "AGENT_PAT")), "App secrets wiring");
+
+        expect(said.map((finding) => finding.severity)).toEqual(["error", "error"]);
+        const fix = said.find((finding) => finding.problem.includes("`fix.yml`"));
+        expect(fix?.problem).toContain(`${fixFile} does not hand \`AGENT_APP_ID\` to \`fix.yml\` on the \`fix\` job`);
+        expect(fix?.fix).toContain("AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}");
+        const implement = said.find((finding) => finding.problem.includes("`implement.yml`"));
+        expect(implement?.problem).toContain(`${implementFile} does not hand \`AGENT_APP_PRIVATE_KEY\``);
+      });
+
+      it("raises nothing about them where the App is not set up", async () => {
+        const root = await tree();
+        dropSecret(root, fixFile, "fix", "AGENT_APP_ID");
+
+        expect(of(rule(root, withSecrets("AGENT_PAT")), "App secrets wiring")).toEqual([]);
+        // Half an App is its own finding, and no caller can make it work.
+        expect(of(rule(root, withSecrets("AGENT_APP_ID", "AGENT_PAT")), "App secrets wiring")).toEqual([]);
+      });
+
+      it("warns rather than passes where the secrets could not be read", async () => {
+        const root = await tree();
+        dropSecret(root, fixFile, "fix", "AGENT_APP_ID");
+
+        const said = of(rule(root, { ...healthy(), secrets: undefined }), "App secrets wiring");
+
+        expect(said).toHaveLength(1);
+        expect(said[0]?.severity).toBe("warning");
+        expect(said[0]?.problem).toContain(fixFile);
+      });
+
+      it("accepts a caller that inherits every secret", async () => {
+        const root = await tree();
+        const full = path.join(root, ...fixFile.split("/"));
+        const text = fs.readFileSync(full, "utf8");
+        const { from, to } = jobSpan(text, "fix") ?? { from: 0, to: 0 };
+        const job = text.slice(from, to).replace(/^    secrets:\n(?:      .*\n)+/m, "    secrets: inherit\n");
+        expect(job).toContain("secrets: inherit");
+        fs.writeFileSync(full, `${text.slice(0, from)}${job}${text.slice(to)}`);
+
+        expect(of(rule(root, withSecrets(...APP)), "App secrets wiring")).toEqual([]);
+      });
+
+      /**
+       * `follow-ups` writes with the workflow token and declares none of the
+       * loop's write secrets, so it passes none, and that is never this error.
+       */
+      it("never raises it on follow-ups", async () => {
+        const root = await tree();
+        const findings = [
+          ...rule(root, withSecrets(...APP)),
+          ...rule(root, { ...healthy(), secrets: undefined }),
+        ];
+
+        expect(findings.filter((finding) => finding.problem.includes("`follow-ups.yml`"))).toEqual([]);
+        expect(of(findings, "App secrets wiring")).toEqual([]);
+      });
+    });
+
+    /**
+     * A caller handed the whole App writes with it, so the PAT it does not
+     * pass is never reached; and the App, like the PAT, is a writer for the
+     * rulings that ask whether a label can fire an event or a PR be opened.
+     */
+    it("asks for no PAT wire, PAT or repository setting where the App does the writing", async () => {
+      const root = await installed();
+      edit(root, "fix", (text) => text.replace(/^ *AGENT_PAT: .*$/m, ""));
+
+      const findings = rule(root, { ...withSecrets(...APP), canCreatePullRequests: false });
+
+      expect(of(findings, "secrets wiring")).toEqual([]);
+      expect(of(findings, "fix rounds without a PAT")).toEqual([]);
+      expect(of(findings, "actions can open PRs")[0]?.severity).toBe("warning");
+      expect(findings.filter((finding) => finding.severity === "error")).toEqual([]);
+    });
+  });
+
+  /**
    * **The fix-round budget without a PAT** (#204, PRD #200). A review with
    * budget left starts a fix round itself by adding `agent:fix`, and a label
    * added with `GITHUB_TOKEN` fires no event, so without the PAT no automatic
@@ -2851,7 +3027,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(out).toContain(FIX_ROUNDS_VARIABLE);
     expect(err).not.toContain("fix rounds without a PAT");
     // The missing PAT itself, which is the acceptance: reported, and failing.
-    expect(err).toMatch(/The `AGENT_PAT` secret is not set/);
+    expect(err).toMatch(/FAIL  identity: Neither the loop's GitHub App .* nor the `AGENT_PAT` secret is set/);
     expect(code).toBe(1);
   });
 

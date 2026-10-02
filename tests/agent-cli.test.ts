@@ -171,6 +171,29 @@ const manifest = JSON.parse(
   fs.readFileSync(path.join(PACKAGE_DIR, "package.json"), "utf8"),
 ) as { name: string; version: string };
 
+/**
+ * The six-file layout, as `init` wrote it before #225: one caller file per
+ * caller, `agent-<job>.yml`, each the reference caller file's trigger and that
+ * caller's job alone, under its own grants rather than a top-level
+ * `permissions: {}`, pinned to `ref`. Written into `root`; returns each file
+ * and the text it was given.
+ */
+const sixFileTree = (root: string, ref: string): readonly { readonly file: string; readonly text: string }[] =>
+  ["issue", "pr"].flatMap((name) => {
+    const reference = fs.readFileSync(path.join("examples", "callers", `${name}.yml`), "utf8");
+    const jobs = callersIn(reference, manifest.name, `${name}.yml`).map((c) => c.jobId);
+    return jobs.map((job) => {
+      const text = jobs
+        .filter((other) => other !== job)
+        .reduce(withoutJob, reference)
+        .replace(/^permissions: \{\}\n/m, "")
+        .replaceAll(`@v${manifest.version}`, `@${ref}`);
+      const file = `.github/workflows/agent-${job}.yml`;
+      fs.writeFileSync(path.join(root, ...file.split("/")), text);
+      return { file, text };
+    });
+  });
+
 interface Captured {
   code: number;
   out: string;
@@ -490,22 +513,7 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("moves only the pins on a six-file tree, and writes no merged file beside it", async () => {
     const root = adopted();
-    const six = referenceNames.flatMap((name) => {
-      const reference = read(".", `examples/callers/${name}.yml`);
-      const jobs = referenceCallers(name).map((c) => c.jobId);
-      return jobs.map((job) => {
-        // One file per caller, as `init` wrote them before #225: the trigger,
-        // and that caller's job alone, on an older pin.
-        const text = jobs
-          .filter((other) => other !== job)
-          .reduce(withoutJob, reference)
-          .replace(/^permissions: \{\}\n/m, "")
-          .replaceAll(`@v${manifest.version}`, "@v0.0.1");
-        const file = `.github/workflows/agent-${job}.yml`;
-        fs.writeFileSync(path.join(root, ...file.split("/")), text);
-        return { file, text };
-      });
-    });
+    const six = sixFileTree(root, "v0.0.1");
     expect(six).toHaveLength(6);
 
     const changes = await init({ dir: root, github: offline, labels: noLabels });
@@ -1040,6 +1048,16 @@ describe("init allows pull_request_target for the loop's callers on a public rep
 
   it("extends its own policy in place when a caller file has been added since", async () => {
     const root = adopted();
+    // The `review` caller in a file of its own, and the rest of the PR side in
+    // the file `init` installs, with the policy covering only the first.
+    await init({ dir: root, github: github("private", []).surface, labels: noLabels });
+    const dir = path.join(root, ".github", "workflows");
+    const pr = fs.readFileSync(path.join(dir, "agent-pr.yml"), "utf8");
+    fs.writeFileSync(path.join(dir, "agent-pr.yml"), withoutJob(pr, "review"));
+    fs.writeFileSync(
+      path.join(dir, "agent-review.yml"),
+      ["fix", "update-branch", "follow-ups"].reduce(withoutJob, pr),
+    );
     const earlier = ".github/workflows/agent-review.yml";
     const { surface, sent } = github("public", [
       { id: 3, name: POLICY_NAME, enforcement: "active", include: [earlier], exclude: [], allowedEvents: ["pull_request_target"] },
@@ -1050,6 +1068,73 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
     expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
     expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...triggered, earlier].sort());
+  });
+
+  /**
+   * The policy follows the files, not the names it was written for (#225): an
+   * adopter who merges the six-file layout by hand leaves its old PR-side
+   * files gone, and a policy still naming them would allow the trigger for
+   * whatever workflow is next given one of those names.
+   */
+  it("drops the files that no longer hold a PR-side caller when the callers are merged by hand", async () => {
+    const root = adopted();
+    sixFileTree(root, `v${manifest.version}`);
+    const six = ["review", "fix", "update-branch", "follow-ups"].map((job) => `.github/workflows/agent-${job}.yml`);
+    const { surface, sent } = github("public", []);
+    await init({ dir: root, github: surface, labels: noLabels });
+    expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...six].sort());
+
+    // Merged by hand: the reference PR-side file in, the four it replaces out.
+    const dir = path.join(root, ".github", "workflows");
+    for (const file of six) fs.rmSync(path.join(root, ...file.split("/")));
+    fs.copyFileSync(path.join("examples", "callers", "pr.yml"), path.join(dir, "agent-pr.yml"));
+
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
+
+    const policy = changes.find((c) => c.file === POLICY_CHANGE);
+    expect(policy?.action).toBe("updated");
+    expect(policy?.note).toContain(".github/workflows/agent-review.yml");
+    expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "POST" }, { method: "PUT", id: 7 }]);
+    expect(sent[1]?.body.conditions.workflow_path.include).toEqual(triggered);
+
+    const again = await init({ dir: root, github: surface, labels: noLabels });
+
+    expect(again.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(sent).toHaveLength(2);
+  });
+
+  /**
+   * Merged into a file the policy already names, so every caller is allowed
+   * and nothing is short: the names left over are still dropped.
+   */
+  it("drops a file that no longer holds a caller even when every caller is already allowed", async () => {
+    const root = adopted();
+    const gone = ".github/workflows/agent-review.yml";
+    const { surface, sent } = github("public", [
+      { id: 3, name: POLICY_NAME, enforcement: "active", include: [...triggered, gone], exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
+    expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
+    expect(sent[0]?.body.conditions.workflow_path.include).toEqual(triggered);
+  });
+
+  /**
+   * A policy somebody else wrote is theirs: what it names is not this step's
+   * to prune, even where a file it names holds no caller.
+   */
+  it("leaves the file list of a policy it did not write alone", async () => {
+    const root = adopted();
+    const { surface, sent } = github("public", [
+      { id: 9, name: "theirs", enforcement: "active", include: [...triggered, ".github/workflows/agent-review.yml"], exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, github: surface, labels: noLabels });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(sent).toHaveLength(0);
   });
 
   it("counts a policy somebody else wrote, if it allows the trigger for every caller", async () => {
@@ -1458,6 +1543,139 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(err).toBe("");
     expect(code).toBe(0);
+  });
+
+  /**
+   * Both caller layouts are supported (#225), and `doctor` says what each one
+   * means: the merged one passes quietly, the six-file one passes with a note
+   * suggesting the merge, and the one shape that does harm, a reusable workflow
+   * called twice, fails whichever files the two callers sit in.
+   */
+  describe("the caller layout", () => {
+    const sixFiles = (): string => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
+      roots.push(root);
+      fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+      sixFileTree(root, `v${manifest.version}`);
+      return root;
+    };
+    const workflowsDir = (root: string): string => path.join(root, ".github", "workflows");
+    const lines = (text: string, tag: string, check: string): readonly string[] =>
+      text.split("\n").filter((line) => line.startsWith(`${tag}  ${check}:`));
+
+    it("says nothing about the layout of a merged install", async () => {
+      const { code, out, err } = await check(await installed(), healthy());
+
+      expect(code).toBe(0);
+      expect(`${out}${err}`).not.toContain("caller layout");
+    });
+
+    it("notes the six-file layout and suggests the merged one, without failing it", async () => {
+      const { code, out, err } = await check(sixFiles(), healthy());
+
+      expect(err).toBe("");
+      expect(code).toBe(0);
+      const said = lines(out, "note", "caller layout");
+      expect(said).toHaveLength(2);
+      const pr = said.find((line) => line.includes("pull request"));
+      for (const job of ["review", "fix", "update-branch", "follow-ups"]) {
+        expect(pr).toContain(`.github/workflows/agent-${job}.yml`);
+      }
+      expect(pr).toContain("4 files");
+      const issue = said.find((line) => line.includes("an issue"));
+      expect(issue).toContain(".github/workflows/agent-implement.yml");
+      expect(issue).toContain(".github/workflows/agent-implement-prd.yml");
+      expect(out).toContain("examples/callers/pr.yml");
+      expect(out).toContain("examples/callers/issue.yml");
+    });
+
+    /**
+     * Declining `follow-ups` is deleting its job from the PR-side caller file,
+     * or not copying its file in the six-file layout, and either is a choice
+     * rather than a fault.
+     */
+    it("reads a missing follow-ups caller as declined in the merged layout", async () => {
+      const root = await installed();
+      const before = await check(root, healthy());
+      const pr = path.join(workflowsDir(root), "agent-pr.yml");
+      fs.writeFileSync(pr, withoutJob(fs.readFileSync(pr, "utf8"), "follow-ups"));
+
+      const after = await check(root, healthy());
+
+      expect(after.code).toBe(0);
+      expect(after.err).toBe("");
+      // One fewer caller counted, and not one finding more.
+      expect(after.out).toBe(before.out.replace("6 caller(s)", "5 caller(s)"));
+    });
+
+    it("reads a missing follow-ups caller as declined in the six-file layout", async () => {
+      const root = sixFiles();
+      fs.rmSync(path.join(workflowsDir(root), "agent-follow-ups.yml"));
+
+      const { code, out, err } = await check(root, healthy());
+
+      expect(code).toBe(0);
+      expect(err).toBe("");
+      expect(out).not.toContain("follow-ups");
+    });
+
+    it("fails a reusable workflow called twice from one caller file, naming both jobs", async () => {
+      const root = await installed();
+      const pr = path.join(workflowsDir(root), "agent-pr.yml");
+      const text = fs.readFileSync(pr, "utf8");
+      const { from, to } = jobSpan(text, "fix") ?? { from: 0, to: 0 };
+      const copy = text.slice(from, to).replace(/^  fix:$/m, "  fix-again:");
+      fs.writeFileSync(pr, `${text.slice(0, to)}${copy}${text.slice(to)}`);
+
+      const { code, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      const said = lines(err, "FAIL", "duplicate caller");
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain("`fix.yml`");
+      expect(said[0]).toContain(".github/workflows/agent-pr.yml's `fix` job");
+      expect(said[0]).toContain(".github/workflows/agent-pr.yml's `fix-again` job");
+    });
+
+    /**
+     * The half-merged tree: a merged caller file copied in beside the six it
+     * replaces. Every caller is then called twice, and the layout note stands
+     * down, since the duplicates' fix is the one that matters.
+     */
+    it("fails a reusable workflow called from two caller files, naming both", async () => {
+      const root = sixFiles();
+      fs.copyFileSync(path.join("examples", "callers", "pr.yml"), path.join(workflowsDir(root), "agent-pr.yml"));
+
+      const { code, out, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      const said = lines(err, "FAIL", "duplicate caller");
+      expect(said).toHaveLength(4);
+      const review = said.find((line) => line.includes("`review.yml`"));
+      expect(review).toContain(".github/workflows/agent-pr.yml's `review` job");
+      expect(review).toContain(".github/workflows/agent-review.yml's `review` job");
+      // The issue side is still spread over two files, and still noted.
+      expect(lines(out, "note", "caller layout")).toHaveLength(1);
+      expect(lines(out, "note", "caller layout")[0]).toContain("an issue");
+    });
+
+    /**
+     * The per-job grant checks apply to each caller inside a merged caller
+     * file: one job short of a scope is named, and its neighbours are not.
+     */
+    it("names the one under-granted job in a merged caller file", async () => {
+      const root = await installed();
+      edit(root, "update-branch", (text) => text.replace(/^ *contents: write$/m, ""));
+
+      const { code, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      const said = err.split("\n").filter((line) => line.startsWith("FAIL"));
+      expect(said.length).toBeGreaterThan(0);
+      for (const line of said) {
+        expect(line).toContain(".github/workflows/agent-pr.yml grants the `update-branch` job no `contents: write`");
+      }
+    });
   });
 
   /**

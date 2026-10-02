@@ -15,6 +15,7 @@ import {
   policyCommand,
   POLICY_NAME,
   POLICY_SETTINGS,
+  staleEntries,
   triggeredFiles,
   unallowedFiles,
   unreadable,
@@ -585,8 +586,10 @@ const convergeLabels = (workflows: readonly string[], github: LabelSurface): rea
  * the shape and why it is that shape.
  *
  * Idempotent: a policy already allowing it for every caller is `unchanged`,
- * whoever wrote it. One this wrote that is short of a caller added since is
- * extended in place rather than doubled. And it never fails the install: the
+ * whoever wrote it. One this wrote follows the files holding the callers: one
+ * short of a caller file added since is extended in place rather than doubled,
+ * and one naming a file that no longer holds a caller, as when an adopter
+ * merges their callers by hand (#225), drops it. And it never fails the install: the
  * callers are on disk by now, and a token that cannot write the policy is a
  * step left to a human, named with the exact call and the settings page.
  *
@@ -618,17 +621,22 @@ const allowPullRequestTarget = (
   if (policies === undefined) return byHand(`Could not read this repository's Actions policies.`, triggered);
 
   const unallowed = unallowedFiles(callers, policies);
-  if (unallowed.length === 0) {
+  const ours = policies.find((policy) => policy?.name === POLICY_NAME && policy.id !== undefined);
+  // The policy follows the files (#225): names in our own that no longer hold
+  // a caller are dropped whenever the callers moved, even with every caller
+  // allowed. Only in one this wrote, and only while it is active; anything
+  // else is somebody's decision.
+  const stale = ours?.enforcement === "active" ? staleEntries(callers, ours) : [];
+  if (unallowed.length === 0 && stale.length === 0) {
     return { file: POLICY_CHANGE, action: "unchanged", note: `allows \`pull_request_target\` for ${triggered.join(", ")}` };
   }
 
   // One that could not be read may be the one allowing them, or this step's
   // own: creating a second beside it is a write on a fact nobody read.
-  if (unreadable(policies)) {
+  if (unallowed.length > 0 && unreadable(policies)) {
     return byHand(`Could not read every Actions policy that applies to this repository.`, unallowed);
   }
 
-  const ours = policies.find((policy) => policy?.name === POLICY_NAME && policy.id !== undefined);
   if (ours?.id !== undefined) {
     // Switched off, or to evaluate, by somebody: that is a decision, and
     // turning it back on behind them is the silent reversion a re-run must
@@ -640,11 +648,20 @@ const allowPullRequestTarget = (
         note: `its enforcement is \`${ours.enforcement}\`, which allows nothing; set it to active under ${POLICY_SETTINGS} if that was not deliberate`,
       };
     }
-    const files = [...new Set([...(ours.include ?? []), ...unallowed])].sort();
+    const kept = (ours.include ?? []).filter((entry) => !stale.includes(entry));
+    // An empty `include` targets every workflow, so a policy whose every name
+    // went stale, with the callers now allowed by another, is pointed at the
+    // callers rather than emptied.
+    const files = kept.length + unallowed.length === 0 ? triggered : [...new Set([...kept, ...unallowed])].sort();
     const refused = github.update(ours.id, policyBody(callers, files, ours.allowedEvents ?? []));
+    const added = files.filter((file) => !(ours.include ?? []).includes(file));
+    const said = [
+      ...(added.length === 0 ? [] : [`now allows \`pull_request_target\` for ${added.join(", ")} too`]),
+      ...(stale.length === 0 ? [] : [`no longer for ${stale.join(", ")}, which hold${stale.length === 1 ? "s" : ""} no caller`]),
+    ];
     return refused === undefined
-      ? { file: POLICY_CHANGE, action: "updated", note: `now allows \`pull_request_target\` for ${unallowed.join(", ")} too` }
-      : byHand(`GitHub refused the update (${refused}).`, unallowed);
+      ? { file: POLICY_CHANGE, action: "updated", note: said.join(", and ") }
+      : byHand(`GitHub refused the update (${refused}).`, files);
   }
 
   const refused = github.create(policyBody(callers, unallowed));

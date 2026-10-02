@@ -146,11 +146,14 @@ const pathPattern = (pattern: string): RegExp =>
       .join(".*")}$`,
   );
 
+/** One `include` entry against one file: `~ALL` matches everything. */
+const includes = (pattern: string, file: string): boolean => pattern === "~ALL" || pathPattern(pattern).test(file);
+
 const targets = (policy: ActionsPolicy, file: string): boolean => {
   if (policy.exclude.some((pattern) => pathPattern(pattern).test(file))) return false;
-  // An empty `include` matches everything not excluded, and `~ALL` everything.
+  // An empty `include` matches everything not excluded.
   if (policy.include === undefined || policy.include.length === 0) return true;
-  return policy.include.some((pattern) => pattern === "~ALL" || pathPattern(pattern).test(file));
+  return policy.include.some((pattern) => includes(pattern, file));
 };
 
 const allows = (policy: ActionsPolicy, file: string): boolean =>
@@ -171,6 +174,19 @@ export const unallowedFiles = (
   policies: readonly (ActionsPolicy | undefined)[],
 ): readonly string[] =>
   triggeredFiles(callers).filter((file) => !policies.some((policy) => policy !== undefined && allows(policy, file)));
+
+/**
+ * The entries of a policy's `include` that target none of the caller files on
+ * the trigger: the names it was written for, left behind once the callers
+ * moved, as when an adopter merges the six-file layout by hand (#225). Each is
+ * an allowance for a file that holds no caller, which the next workflow given
+ * that name would inherit. Pure; an `include` it does not store targets every
+ * workflow, and names nothing to drop.
+ */
+export const staleEntries = (callers: readonly InstalledCaller[], policy: ActionsPolicy): readonly string[] => {
+  const files = triggeredFiles(callers);
+  return (policy.include ?? []).filter((pattern) => !files.some((file) => includes(pattern, file)));
+};
 
 /** Whether any policy in the list could not be read. */
 export const unreadable = (policies: readonly (ActionsPolicy | undefined)[]): boolean =>

@@ -482,6 +482,63 @@ export const diagnose = (
     ];
   }
 
+  // The caller layout (#225). Two are supported, the merged one (one caller
+  // file per side) and the six-file one (a file per caller), and so is any
+  // subset of either: a caller left out, `follow-ups` most of all, is declined
+  // rather than missing, and raises nothing here or anywhere below.
+  //
+  // The one shape that does harm is a reusable workflow called by more than
+  // one caller, in one file or across several, which is what copying the
+  // merged files in beside the six leaves. Nothing refuses it: every event
+  // that starts the workflow starts it once per caller, and each run does the
+  // whole job.
+  const where = (caller: InstalledCaller): string => `${caller.file}'s \`${caller.jobId}\` job`;
+  const byWorkflow = new Map<string, InstalledCaller[]>();
+  for (const caller of callers) {
+    byWorkflow.set(caller.workflow, [...(byWorkflow.get(caller.workflow) ?? []), caller]);
+  }
+  for (const [workflow, calling] of byWorkflow) {
+    if (calling.length < 2) continue;
+    add({
+      severity: "error",
+      check: "duplicate caller",
+      problem:
+        `\`${workflow}.yml\` is called by ${calling.length} callers: ` +
+        `${calling.map(where).join(" and ")}. Every event that starts it starts it once per ` +
+        `caller, so each label it acts on gets ${calling.length} runs of it on the same issue or ` +
+        `pull request, each doing the whole job.`,
+      fix:
+        `Keep one of those jobs and delete the rest, with the file of any that holds nothing else.`,
+    });
+  }
+
+  // The six-file layout works, so it is a note: one caller file per side is
+  // what one label starting one run instead of four (or two) takes. A side
+  // with a duplicate is left to that error, whose fix is the one that matters.
+  // Ruled per side, by the reference file that holds each caller, so a
+  // workflow this was not taught about is no side's.
+  const SIDES: Readonly<Record<string, string>> = { "pr.yml": "a pull request", "issue.yml": "an issue" };
+  for (const [reference, target] of Object.entries(SIDES)) {
+    const side = callers.filter((caller) => REFERENCE_CALLER_FILES[caller.workflow] === reference);
+    if (side.some((caller) => (byWorkflow.get(caller.workflow)?.length ?? 0) > 1)) continue;
+    const files = [...new Set(side.map((caller) => caller.file))];
+    if (files.length < 2) continue;
+    add({
+      severity: "note",
+      check: "caller layout",
+      problem:
+        `The callers that run on ${target} are spread over ${files.length} files (` +
+        `${files.join(", ")}), so every label on ${target} starts ${files.length} caller runs, ` +
+        `most of which only skip. Nothing is broken.`,
+      fix:
+        `It is optional. To have one label start one run, move those jobs into one file, as ` +
+        `examples/callers/${reference} holds them, delete the files they came from, and re-run ` +
+        `\`init\`` +
+        (reference === "pr.yml" ? `, which moves the \`pull_request_target\` policy it wrote to the new file` : ``) +
+        `. A caller you declined stays declined: leave its job out of the merged file.`,
+    });
+  }
+
   const hasPat = facts.secrets?.includes("AGENT_PAT");
 
   for (const { permission, value, workflows, why } of REQUIRED_PERMISSIONS) {

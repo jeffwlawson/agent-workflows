@@ -11,28 +11,62 @@ failure class [`docs/ADOPTING.md`](https://github.com/{{SLUG}}/blob/v{{VERSION}}
 {{CALLERS}}
 ```
 
+The reference layout is **one caller file per side**: `agent-pr.yml` holds the `review`, `fix`,
+`update-branch` and `follow-ups` callers and runs on `pull_request_target`; `agent-issue.yml` holds
+`implement` and `implement-prd` and runs on `issues`. No caller carries a label `if:`, since each
+workflow it calls does its own routing, so one label starts one run per side. Every grant is on its
+job and none at the top level. An older install with a file per caller works too; `doctor` notes it,
+and errors only where the same workflow is called twice.
+
+On a **public** repository, `pull_request_target` runs from 2026-11-02 only where an Actions policy
+allows it. `init` writes one covering the files that hold the pull-request side's callers, whatever
+they are called, and a re-run rewrites its file list when you merge, split or rename them. Where it
+said it could not, it printed the call to make as a repository admin.
+
+`follow-ups`, which files a merged pull request's recorded out-of-scope findings as issues, is
+optional: to decline it, delete its job from `agent-pr.yml`. `doctor` reads a missing `follow-ups`
+job as declined, not broken.
+
 Everything left is either a credential or a judgement, and a scaffolder can supply neither. Work
 through it, then run the check at the bottom — it is the part that tells you whether you got it
 right, and most of these fail *silently* if you did not.
 
-## 1. Two secrets
+## 1. The secrets
 
-Set both as Actions secrets (Settings → Secrets and variables → Actions):
+Set these as Actions secrets (Settings → Secrets and variables → Actions), where `init` did not:
 
 - `CLAUDE_CODE_OAUTH_TOKEN` — without it every workflow fails immediately, which is the one
   failure here that is loud.
-- `AGENT_PAT` — a **fine-grained** personal access token with Contents: write, Pull requests:
-  write, Issues: write and Workflows: write, and an expiry date rather than none. The workflows
-  fall back to `GITHUB_TOKEN` without it and keep running; they just stop triggering each other,
-  because a push or a label add made with the built-in token fires no event. That is three of §1's
-  failures at once, and all three look like the loop working.
+- **The loop's identity**, for the writes that start the next stage: its pushes, the pull requests
+  it opens, marking them ready, and its trigger labels. Made with the built-in `GITHUB_TOKEN`
+  instead, a push starts CI that waits for approval, a label add fires no event, and a pull request
+  cannot be marked ready: three of §1's failures at once, and all three look like the loop working.
+  - **Recommended: the loop's GitHub App**, as `AGENT_APP_ID` and `AGENT_APP_PRIVATE_KEY`. `init`
+    creates it, opening GitHub's create-App page already filled in, and stores both secrets itself:
+    on the organization where you are its admin, on this repository otherwise. Its output said
+    what it did; where it created none and you want one, run
+    `npx --yes {{PACKAGE}}@{{VERSION}} init --app`.
+    Install the App on this repository if you have not. Each run mints a token from it that lasts an
+    hour and works on this repository alone, so nothing expires, and the loop's writes carry the
+    App's bot login rather than yours. Its permissions are Contents, Pull requests, Issues and
+    Workflows write, and Metadata read, with no webhook. Workflows: write is what lets a branch
+    touching `.github/workflows/` be pushed, and it is acceptable because neither the App's key nor a
+    token minted from it is ever on the agent's runner: they are named only in jobs that run no
+    agent. Reviews, comments and commit statuses stay with `github-actions[bot]`.
+  - **Supported fallback: `AGENT_PAT`**, a **fine-grained** personal access token with Contents:
+    write, Pull requests: write, Issues: write and Workflows: write, and an expiry date rather than
+    none. The loop then writes as you, and stops the day the token expires. Where it is set, `init`
+    asks before switching to an App (default no), and `init --app` switches without asking; it never
+    deletes `AGENT_PAT`, and after a switch says you can delete the secret and revoke the token.
+
+  The App is used where both its secrets are set, otherwise `AGENT_PAT`, otherwise `GITHUB_TOKEN`.
 
 ## 2. One repository setting
 
 Settings → Actions → General → **Allow GitHub Actions to create and approve pull requests**. Off by
-default; with it off the agent does its work correctly and the run dies at `gh pr create`. A
-correct `AGENT_PAT` bypasses it entirely — a user token is not the Actions bot — so if you set one
-above, this is belt and braces.
+default; with it off the agent does its work correctly and the run dies at `gh pr create`. The
+loop's App, or a correct `AGENT_PAT`, bypasses it entirely (neither is the Actions bot), so if you
+set either above, this is belt and braces.
 
 ## 3. The labels
 
@@ -82,7 +116,8 @@ npm config set {{SCOPE}}:registry=https://npm.pkg.github.com
 npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
 ```
 
-It exits non-zero on every §1 failure that is detectable from here — a missing secret, the
-repository setting, a caller missing `packages: read`, a pin that is a branch rather than a tag —
-and names the fix for each. Run it before you label the first issue, and again after any release
+It exits non-zero on every §1 failure that is detectable from here (a missing secret, half an App,
+a caller that does not pass the App's secrets on, a workflow called by more than one caller, the
+repository setting, a caller missing `packages: read`, a pin that is a branch rather than a tag) and
+names the fix for each. It also says which identity the loop writes as: its App, `AGENT_PAT`, or neither. Run it before you label the first issue, and again after any release
 you take.

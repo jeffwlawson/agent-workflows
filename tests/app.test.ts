@@ -1,7 +1,16 @@
+import * as fs from "node:fs";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
+import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { appManifest, manifestFlow, suggestedAppName, type RegisteredApp, type RepoOwner } from "../setup/app.js";
+import {
+  APP_PERMISSIONS,
+  appManifest,
+  manifestFlow,
+  suggestedAppName,
+  type RegisteredApp,
+  type RepoOwner,
+} from "../setup/app.js";
 
 /**
  * The live manifest flow (#322), against a stand-in GitHub: a local server
@@ -226,5 +235,34 @@ describe("the suggested App name", () => {
     const long = suggestedAppName("a-very-long-organisation-name-indeed");
     expect(long.length).toBeLessThanOrEqual(34);
     expect(long.endsWith("-agent-loop")).toBe(true);
+  });
+});
+
+/**
+ * The App's permissions are written twice (#324): in the manifest `init`
+ * posts, which is what GitHub registers, and in `docs/ADOPTING.md` §2, which is
+ * what a person approves them against and what someone creating the App by
+ * hand copies. The label table's trick, applied to them: parse the table the
+ * doc ships and compare it by value, so a permission added to the manifest
+ * cannot leave the doc one behind, and the reverse.
+ */
+describe("the App's permissions in the adoption doc", () => {
+  it("are exactly the ones the manifest asks for", () => {
+    const section =
+      fs
+        .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
+        .split(/^(?=### )/m)
+        .find((part) => part.startsWith("### The loop's App")) ?? "";
+    const documented = Object.fromEntries(
+      [...section.matchAll(/^\| ([A-Z][\w ]*): \*\*(read|write)\*\* \|/gm)].map(([, name, access]) => [
+        (name ?? "").toLowerCase().replaceAll(" ", "_"),
+        access,
+      ]),
+    );
+
+    // The table has to still be there: a restructure that moved it would
+    // otherwise make this pass by comparing nothing.
+    expect(Object.keys(documented).length).toBeGreaterThan(0);
+    expect(documented).toEqual(APP_PERMISSIONS);
   });
 });

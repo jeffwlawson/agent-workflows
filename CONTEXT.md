@@ -498,6 +498,29 @@ pushes it before any agent runs, on a runner of its own, since the gate names no
 job must not. The PRD PR's progress list shows the slice *building* from the gate, which already
 holds the write scope and runs no agent (#312), rather than from the runner, whose token reads only.
 
+### The loop's identity
+
+**The loop's identity** is who its writes are made as: the writes the workflow token cannot make
+usefully, because a push, a pull request, a ready-mark or a label made with it starts no workflow
+or is refused outright. Three sources, in order: **the loop's App**, a GitHub App each owner creates
+with `init` (one per account or organization, since minting needs its private key, which no two
+owners can share), reaching a run as `AGENT_APP_ID` and `AGENT_APP_PRIVATE_KEY`; then `AGENT_PAT`,
+the supported fallback; then the workflow token, under the warnings every such write already gives.
+Half an App is no App: both secrets, or the next source.
+
+The **token resolver** is the one place that order is applied: the composite action
+`.github/actions/loop-token` (#319, #320), which every reusable workflow names and none
+reimplements. It mints an installation token scoped to the run's repository where the App is set,
+and reports which source it used (`app`, `pat` or `workflow`), which is what a step reads to
+decide whether to warn, or name the label to add by hand, instead of adding one. It runs only in jobs that run no agent: the gate and
+publish jobs, and review's posting and `advance` jobs. Each job that writes mints its own token at
+its start and hands it to no other, so the key and every token minted from it are on no runner an
+agent ran on, which is what makes the App's Workflows: write acceptable.
+
+The App takes over **writes** only. Reviews, comments, thread replies and commit statuses are still
+the workflow token's, posted as `github-actions[bot]`, so the author gate's workflow-bot login and
+every check that recognises the loop's own earlier posts are unchanged. Moving those is #305.
+
 ## Base-controlled, and what that now depends on
 
 `pull_request_target` reads workflow YAML from the repository's **default** branch while checking

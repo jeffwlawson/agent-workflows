@@ -192,13 +192,11 @@ const ISSUES_WRITE_EXEMPT = new Set([
   // halves of the pair: the called job spends it, and the caller has to *grant*
   // it — a called workflow can only downgrade the token it is handed
   // (jeffwlawson/winget-manifest-lint#98).
-  "agent-implement.yml",
   "implement.yml",
   // Same, plus it closes each sub-issue it finishes and re-labels the parent to
   // chain the next one. Note what it still cannot do: create an issue. Closing
   // one the PRD already lists is not filing work, so "an agent that raises work
   // never files it" (docs/parity.md §10) is untouched.
-  "agent-implement-prd.yml",
   "implement-prd.yml",
   // Files the AGENT_PAT expiry issue. Acts on no PR at all.
   "token-expiry.yml",
@@ -217,12 +215,17 @@ const ISSUES_WRITE_EXEMPT = new Set([
   // model** — this pair installs no Claude Code and invokes a runner whose
   // judgement is a pure function, which is also what keeps reading arbitrary
   // issue bodies with `issues: write` from being a prompt-injection surface.
-  "agent-follow-ups.yml",
   "follow-ups.yml",
 ]);
 
+/**
+ * The caller files (#225) are held to the same rule **per caller** rather than
+ * per file: a caller file holds callers of exempt and unexempt workflows side
+ * by side, so the exemption is the one its reusable half carries, and a caller
+ * of anything else may not grant the scope. See the check beside the file one.
+ */
 const issuesWriteChecked = workflowFiles.filter(
-  (f) => !ISSUES_WRITE_EXEMPT.has(path.basename(f)),
+  (f) => !ISSUES_WRITE_EXEMPT.has(path.basename(f)) && !path.basename(f).startsWith("agent-"),
 );
 
 const indentOf = (s: string): number => s.length - s.trimStart().length;
@@ -293,11 +296,12 @@ const workflowOf = (file: string): Workflow => parse(fs.readFileSync(file, "utf8
 /**
  * The jobs a workflow declares **beside** the one that does its work, keyed by
  * file. This is a declared list rather than a derivation, the same shape as
- * `TRIGGER_TYPES`. A second job in a reusable workflow is a second set of
+ * `CALLER_FILES`. A second job in a reusable workflow is a second set of
  * permissions under the caller's grant, and it should arrive with an entry here
  * that says so, not slip past a check that picks "the" job.
  *
- * Empty for every caller. A caller is a trigger and one `uses:`.
+ * Not for a caller file, which holds one `uses:` job per caller (#225) and is
+ * read through `callersOf` rather than through `jobOf`.
  */
 const EXTRA_JOBS: Readonly<Record<string, readonly string[]>> = {
   /**
@@ -407,6 +411,9 @@ const jobNamed = (file: string, id: string): Job => {
 const jobsOf = (file: string): readonly Job[] => Object.values(workflowOf(file).jobs);
 
 const stepsOf = (file: string): readonly Step[] => {
+  // A caller file holds one `uses:` job per caller and no steps, which the
+  // caller-file checks assert; it has no single job to read them from (#225).
+  if (path.basename(file).startsWith("agent-")) return jobsOf(file).flatMap((job) => job.steps ?? []);
   const split = SPLIT_RUNS[file];
   if (split === undefined) return jobOf(file).steps ?? [];
   jobOf(file);
@@ -488,7 +495,7 @@ const firstWorkStep = (file: string): Step | undefined => {
  */
 const RUNNER_COMMANDS = ["fix", "follow-ups", "implement", "implement-prd", "review", "update-branch"];
 /** Both halves of the loop: what a caller grants and what the called job bounds. */
-const agentWorkflows = (): readonly string[] => [...callerWorkflows, ...runnerWorkflows];
+const agentWorkflows = (): readonly string[] => [...callerFiles, ...runnerWorkflows];
 const runnerWorkflows = RUNNER_COMMANDS.map((c) => path.join(WORKFLOW_DIR, `${c}.yml`));
 
 /**
@@ -556,16 +563,43 @@ const permissionComments = (file: string, scope?: string): readonly string[] => 
  * failure the version-derived `PIN` exists to prevent, reintroduced one
  * directory over.
  */
-const callersIn = (dir: string, prefix = ""): readonly string[] =>
+const callerFilesIn = (dir: string, prefix = ""): readonly string[] =>
   fs
     .readdirSync(dir)
     .filter((f) => f.endsWith(".yml") && f.startsWith(prefix))
     .map((f) => path.join(dir, f));
-const callerWorkflows = [...callersIn(CALLER_DIR), ...callersIn(WORKFLOW_DIR, "agent-")];
+const callerFiles = [...callerFilesIn(CALLER_DIR), ...callerFilesIn(WORKFLOW_DIR, "agent-")];
+
+/**
+ * One **caller**: a calling job, and the caller file it sits in (#225). A
+ * caller file holds one or more of them and owns the trigger; each caller owns
+ * its grant, its inputs and its secrets. So a check about a wire reads the
+ * caller, and a check about the trigger reads the file.
+ */
+interface Caller {
+  readonly file: string;
+  readonly id: string;
+  readonly job: Job;
+}
+
+const callersOf = (file: string): readonly Caller[] =>
+  Object.entries(workflowOf(file).jobs).map(([id, job]) => ({ file, id, job }));
+const callers: readonly Caller[] = callerFiles.flatMap(callersOf);
+
+/** How a caller is named in a test title: its file, then its job. */
+const callerName = (caller: Caller): string => `${caller.file} ${caller.id}`;
+
+/** `it.each` rows for a set of callers, titled by `callerName`. */
+const eachCaller = (set: readonly Caller[]): readonly (readonly [string, Caller])[] =>
+  set.map((caller) => [callerName(caller), caller] as const);
 
 /** The runner half a caller hands over to. */
-const targetOf = (file: string): string =>
-  (jobOf(file).uses ?? "").replace(/^[^/]+\/[^/]+\//, "").replace(/@.*$/, "");
+const targetOf = (caller: Caller): string =>
+  (caller.job.uses ?? "").replace(/^[^/]+\/[^/]+\//, "").replace(/@.*$/, "");
+
+/** Every caller of one reusable workflow, from both caller sets. */
+const callersOfWorkflow = (file: string): readonly Caller[] =>
+  callers.filter((caller) => targetOf(caller) === file);
 
 /**
  * The loop minus its merge-gated half, in both directions.
@@ -584,44 +618,40 @@ const targetOf = (file: string): string =>
  */
 const wiredWorkflows = (): readonly string[] =>
   runnerWorkflows.filter((file) => !MERGE_GATED.includes(file));
-const wiredCallers = (): readonly string[] =>
-  callerWorkflows.filter((file) => !MERGE_GATED.includes(targetOf(file)));
+const wiredCallers = (): readonly Caller[] =>
+  callers.filter((caller) => !MERGE_GATED.includes(targetOf(caller)));
 
 /**
- * What each caller's trigger fires on, keyed by filename (#46). Everything
- * absent takes `TRIGGER_TYPES_DEFAULT`. The review pair is absent on purpose:
- * its `closed` was `advance-merged`'s, which PRD #222 retired with slice PRs,
- * so both caller sets drop it (#249) and exact equality holds them to that.
+ * The caller files, one per side (#225), and what each holds: the trigger it
+ * fires on and the callers in it, by job id. Both caller sets hold exactly
+ * these, the reference one under these names and this repository's own under
+ * `agent-<name>.yml`.
  *
- * It exists ahead of the first entry on purpose. The assertion below ran over
- * every caller with no list at all, which reads as *derived* — the good kind of
- * check in this file — but it was carrying an undeclared premise: that every
- * caller in the loop is label-triggered. The first one that legitimately needs
- * a second event type turns that assertion red with no hint that the premise is
- * what moved, and the cheapest way out of a red derived check is to weaken it.
- * A list announces itself when you add an entry; the entry is where the reason
- * goes.
+ * A declared table rather than a derivation, the same shape as `EXTRA_JOBS`.
+ * `pull_request_target` reaching a job that holds write is a security surface,
+ * so a caller file must not be able to widen its own trigger unnoticed, and
+ * the job ids are the first half of every check-run name the loop produces
+ * (`self-check`'s `review / review` among them), so they must not move either.
  *
- * Exact equality survives, per file: `pull_request_target` reaching a job that
- * holds write is a security surface, so a caller must not be able to widen its
- * own trigger. The exception is declared here rather than dissolved into a
- * subset check, which would let *any* caller grow *any* extra type unnoticed.
+ * `closed` on the PR side is `follow-ups`' (#50): what that feature is *for*,
+ * findings filed when the pull request merges, and **not** a default
+ * `pull_request_target` activity type, so a file that listed only `labeled`
+ * would file nothing on a merge and read exactly like one that did. Every job
+ * of the other three PR-side reusables skips it.
  */
-const TRIGGER_TYPES_DEFAULT: readonly string[] = ["labeled"];
-const TRIGGER_TYPES: Readonly<Record<string, readonly string[]>> = {
-  /**
-   * The filing pair, in both caller sets (#50). `closed` is what the feature is
-   * *for* — findings become issues when the pull request merges — and it is
-   * **not** a default `pull_request_target` activity type, so a caller that
-   * listed only `labeled` would file nothing on a merge and read exactly like
-   * one that did. `labeled` is the manual entry point on an already-closed pull
-   * request: a missed close event, a reconsidered opt-out, a partial failure.
-   */
-  "agent-follow-ups.yml": ["closed", "labeled"],
-  "follow-ups.yml": ["closed", "labeled"],
+const CALLER_FILES: Readonly<
+  Record<string, { readonly event: "pull_request_target" | "issues"; readonly types: readonly string[]; readonly jobs: readonly string[] }>
+> = {
+  "pr.yml": {
+    event: "pull_request_target",
+    types: ["labeled", "closed"],
+    jobs: ["review", "fix", "update-branch", "follow-ups"],
+  },
+  "issue.yml": { event: "issues", types: ["labeled"], jobs: ["implement", "implement-prd"] },
 };
-const triggerTypesOf = (file: string): readonly string[] =>
-  TRIGGER_TYPES[path.basename(file)] ?? TRIGGER_TYPES_DEFAULT;
+
+/** The table's entry for a caller file from either set. */
+const callerFileSpec = (file: string) => CALLER_FILES[path.basename(file).replace(/^agent-/, "")];
 
 /**
  * The review job — the reusable half, where every step now lives
@@ -631,8 +661,8 @@ const REVIEW = path.join(WORKFLOW_DIR, "review.yml");
 
 /** What advancing the PRD chain is, which review's `advance` job runs (#257, PRD #222). */
 const ADVANCE_ACTION = path.join(".github", "actions", "advance-prd", "action.yml");
-/** …and the caller that triggers it. */
-const REVIEW_CALLER = path.join(CALLER_DIR, "review.yml");
+/** …and the reference caller file holding the caller that triggers it. */
+const REVIEW_CALLER = path.join(CALLER_DIR, "pr.yml");
 
 /**
  * The two workflows that share the `agent:implement` label
@@ -641,9 +671,6 @@ const REVIEW_CALLER = path.join(CALLER_DIR, "review.yml");
  */
 const IMPLEMENT = path.join(WORKFLOW_DIR, "implement.yml");
 const PRD = path.join(WORKFLOW_DIR, "implement-prd.yml");
-/** …and their callers, which is where the trigger and the label guard are read. */
-const IMPLEMENT_CALLER = path.join(CALLER_DIR, "implement.yml");
-const PRD_CALLER = path.join(CALLER_DIR, "implement-prd.yml");
 
 /** `agent-review`'s CI-collection step, which several checks below pick apart. */
 const waitStep = (): Step => {
@@ -801,6 +828,18 @@ describe("workflow files", () => {
       .map(({ n }) => `${file}:${n}`);
 
     expect(offenders).toEqual([]);
+  });
+
+  /** …and in a caller file, each caller whose reusable half is not exempt. */
+  it("grants issues: write to no caller of an unexempt workflow", () => {
+    const offenders = callers
+      .filter((caller) => !ISSUES_WRITE_EXEMPT.has(path.basename(targetOf(caller))))
+      .filter((caller) => caller.job.permissions?.["issues"] === "write")
+      .map(callerName);
+
+    expect(offenders).toEqual([]);
+    // Not vacuous: the exempt callers are in the same files and do grant it.
+    expect(callers.filter((caller) => caller.job.permissions?.["issues"] === "write")).toHaveLength(6);
   });
 });
 
@@ -991,10 +1030,8 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // run on the pull request too (#257).
     const checkRuns = [
       ...new Set(
-        callerWorkflows.flatMap((file) =>
-          Object.keys(workflowOf(targetOf(file)).jobs).map(
-            (called) => `${Object.keys(workflowOf(file).jobs)[0]} / ${called}`,
-          ),
+        callers.flatMap((caller) =>
+          Object.keys(workflowOf(targetOf(caller)).jobs).map((called) => `${caller.id} / ${called}`),
         ),
       ),
     ];
@@ -1112,10 +1149,10 @@ describe("every PR workflow shares one concurrency group per PR", () => {
    * without the scope the wait cannot see it and reads "no CI" as green.
    */
   it("holds the actions grant in the review ceiling and in every review caller", () => {
-    const halves = [REVIEW, ...callerWorkflows.filter((file) => targetOf(file) === REVIEW)];
+    const halves = [jobOf(REVIEW), ...callersOfWorkflow(REVIEW).map((caller) => caller.job)];
 
     expect(halves).toHaveLength(3);
-    for (const file of halves) expect(jobOf(file).permissions?.["actions"], file).toBe("read");
+    for (const job of halves) expect(job.permissions?.["actions"]).toBe("read");
     // Only the review job: the posting job and the rest read no runs.
     expect(workflowOf(REVIEW).jobs["post-review"]?.permissions).not.toHaveProperty("actions");
   });
@@ -1947,8 +1984,9 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     expect(names.indexOf(step?.name ?? "")).toBeLessThan(names.indexOf("Run review agent"));
 
     // And no caller passes it: the reusable reads the caller's variables itself.
-    for (const caller of [REVIEW_CALLER, path.join(WORKFLOW_DIR, "agent-review.yml")]) {
-      expect(fs.readFileSync(caller, "utf8")).not.toContain("max-fix-rounds");
+    for (const caller of callersOfWorkflow(REVIEW)) {
+      expect(caller.job.with ?? {}, callerName(caller)).not.toHaveProperty("max-fix-rounds");
+      expect(fs.readFileSync(caller.file, "utf8")).not.toContain("max-fix-rounds");
     }
   });
 
@@ -2325,11 +2363,11 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
    * wherever it is passed, so no caller set carries it.
    */
   it("names the variable in both caller sets, and passes the deprecated input in neither", () => {
-    for (const caller of [REVIEW_CALLER, path.join(WORKFLOW_DIR, "agent-review.yml")]) {
-      const text = fs.readFileSync(caller, "utf8");
-      expect(jobOf(caller).with?.["auto-fix"], caller).toBeUndefined();
-      expect(text, caller).not.toMatch(/auto-fix:/);
-      expect(text, caller).toContain("AGENT_MAX_FIX_ROUNDS");
+    for (const caller of callersOfWorkflow(REVIEW)) {
+      const text = fs.readFileSync(caller.file, "utf8");
+      expect(caller.job.with?.["auto-fix"], callerName(caller)).toBeUndefined();
+      expect(text, caller.file).not.toMatch(/auto-fix:/);
+      expect(text, caller.file).toContain("AGENT_MAX_FIX_ROUNDS");
     }
   });
 });
@@ -2776,9 +2814,9 @@ describe("a PRD PR's round ends in one advance job", () => {
   it("holds only what it needs, and asks no caller for more", () => {
     expect(job().permissions).toEqual({ "pull-requests": "write" });
     expect(job().concurrency).toBeUndefined();
-    for (const caller of callerWorkflows.filter((file) => targetOf(file) === REVIEW)) {
-      expect(jobOf(caller).permissions?.["pull-requests"], caller).toBe("write");
-      expect(jobOf(caller).permissions?.["issues"], caller).toBeUndefined();
+    for (const caller of callersOfWorkflow(REVIEW)) {
+      expect(caller.job.permissions?.["pull-requests"], callerName(caller)).toBe("write");
+      expect(caller.job.permissions?.["issues"], callerName(caller)).toBeUndefined();
     }
   });
 
@@ -3502,15 +3540,12 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
    * job already held covers it.
    */
   it("holds the statuses grant in the ceiling and in every caller", () => {
-    const halves = [UPDATE, ...callerWorkflows.filter((file) => targetOf(file) === UPDATE)];
-
-    expect(halves).toHaveLength(3);
     // In the reusable half, the publish job's: it is the one that posts the
     // copy, the split having put every write there (#308).
-    for (const file of halves) {
-      const job = file === UPDATE ? jobNamed(UPDATE, "publish") : jobOf(file);
-      expect(job.permissions?.["statuses"]).toBe("write");
-    }
+    const halves = [jobNamed(UPDATE, "publish"), ...callersOfWorkflow(UPDATE).map((caller) => caller.job)];
+
+    expect(halves).toHaveLength(3);
+    for (const job of halves) expect(job.permissions?.["statuses"]).toBe("write");
   });
 });
 
@@ -3543,7 +3578,7 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
  */
 describe("the follow-ups workflow files a merged PR rather than refusing it", () => {
   /** Both halves of the pair, found the way every other check here finds them. */
-  const CALLERS = callerWorkflows.filter((file) => targetOf(file) === FOLLOW_UPS);
+  const CALLERS = callersOfWorkflow(FOLLOW_UPS);
 
   /**
    * The file with its YAML comments dropped — what GitHub actually acts on.
@@ -3562,9 +3597,9 @@ describe("the follow-ups workflow files a merged PR rather than refusing it", ()
       .join("\n");
 
   it("has both caller sets pointing at it", () => {
-    expect(CALLERS.map((f) => path.basename(f)).sort()).toEqual([
-      "agent-follow-ups.yml",
-      "follow-ups.yml",
+    expect(CALLERS.map((caller) => `${path.basename(caller.file)} ${caller.id}`).sort()).toEqual([
+      "agent-pr.yml follow-ups",
+      "pr.yml follow-ups",
     ]);
   });
 
@@ -3682,9 +3717,9 @@ describe("the follow-ups workflow files a merged PR rather than refusing it", ()
 
     expect(call?.inputs).toBeUndefined();
     expect(call?.secrets).toBeUndefined();
-    for (const file of CALLERS) {
-      expect(jobOf(file).with).toBeUndefined();
-      expect(jobOf(file).secrets).toBeUndefined();
+    for (const caller of CALLERS) {
+      expect(caller.job.with, callerName(caller)).toBeUndefined();
+      expect(caller.job.secrets, callerName(caller)).toBeUndefined();
     }
   });
 
@@ -3740,11 +3775,10 @@ describe("the follow-ups workflow files a merged PR rather than refusing it", ()
    * no `actions: write`.
    */
   it.each([
-    ["the called job bounds", FOLLOW_UPS],
-    ["agent-follow-ups.yml grants", path.join(WORKFLOW_DIR, "agent-follow-ups.yml")],
-    ["examples/callers/follow-ups.yml grants", path.join(CALLER_DIR, "follow-ups.yml")],
-  ])("%s exactly the four scopes the job spends", (_half: string, file: string) => {
-    expect(jobOf(file).permissions).toEqual({
+    ["the called job bounds", jobOf(FOLLOW_UPS)],
+    ...CALLERS.map((caller): [string, Job] => [`${callerName(caller)} grants`, caller.job]),
+  ] as [string, Job][])("%s exactly the four scopes the job spends", (_half: string, job: Job) => {
+    expect(job.permissions).toEqual({
       contents: "read",
       issues: "write",
       packages: "read",
@@ -3803,14 +3837,115 @@ describe("the follow-ups workflow files a merged PR rather than refusing it", ()
   it("partitions the pull_request_target reusables with the shared set", () => {
     const triggered = [
       ...new Set(
-        callerWorkflows
-          .filter((file) => workflowOf(file).on?.pull_request_target !== undefined)
+        callers
+          .filter((caller) => workflowOf(caller.file).on?.pull_request_target !== undefined)
           .map(targetOf),
       ),
     ].sort();
 
     expect(triggered).toEqual([...PR_WORKFLOWS, ...MERGE_GATED].sort());
     expect(PR_WORKFLOWS.filter((file) => MERGE_GATED.includes(file))).toEqual([]);
+  });
+});
+
+/**
+ * One caller file per side (#225). Every label on a pull request used to start
+ * four caller runs and every label on an issue two, most of them only to skip;
+ * now one label starts one run per side, and an adopter copies two files.
+ *
+ * What merging must not change is asserted here: each caller keeps exactly the
+ * grant and the secrets it had in a file of its own (the generic checks below
+ * hold every caller to its reusable's ceiling and its declared secrets), job
+ * ids stay put, and the file adds no grant and no routing of its own.
+ */
+describe("each caller set holds one caller file per side", () => {
+  it("holds exactly the PR-side and issue-side caller files, in both sets", () => {
+    const names = Object.keys(CALLER_FILES).sort();
+
+    expect(callerFilesIn(CALLER_DIR).map((f) => path.basename(f)).sort()).toEqual(names);
+    expect(callerFilesIn(WORKFLOW_DIR, "agent-").map((f) => path.basename(f)).sort()).toEqual(
+      names.map((name) => `agent-${name}`),
+    );
+  });
+
+  /**
+   * The trigger is the file's, so it is exact per file: `pull_request_target`
+   * reaching a job that holds write is a security surface, and a file must not
+   * be able to widen its own trigger. Nothing else is listed under `on:`.
+   */
+  it.each(callerFiles)("%s: triggers on exactly its side's event and types", (file) => {
+    const spec = callerFileSpec(file);
+    const on = workflowOf(file).on ?? {};
+
+    expect(spec, file).toBeDefined();
+    expect(Object.keys(on)).toEqual([spec?.event]);
+    expect(on[spec?.event ?? "issues"]?.types).toEqual(spec?.types);
+  });
+
+  /**
+   * Nothing at the top level, so every grant is on the job that spends it and
+   * a job added later starts with nothing. A top-level grant would be every
+   * caller's ceiling at once: the review's `contents: write` handed to
+   * `follow-ups`, and `follow-ups`' `issues: write` to the review.
+   */
+  it.each(callerFiles)("%s: grants nothing at the top level, and every caller its own", (file) => {
+    const text = parse(fs.readFileSync(file, "utf8")) as { readonly permissions?: unknown };
+
+    expect(text).toHaveProperty("permissions");
+    expect(text.permissions).toEqual({});
+    for (const caller of callersOf(file)) {
+      expect(Object.keys(caller.job.permissions ?? {}), callerName(caller)).not.toHaveLength(0);
+    }
+  });
+
+  /**
+   * No caller routes. Each reusable's own guard decides whether the event is
+   * its label, as it did when each caller had a file to itself; a label `if:`
+   * here would be a second copy of the routing, and one an adopter can drift.
+   */
+  it.each(callerFiles)("%s: carries no caller-level `if:`", (file) => {
+    for (const caller of callersOf(file)) expect(caller.job.if, callerName(caller)).toBeUndefined();
+  });
+
+  /**
+   * Job ids are the first half of every check-run name the loop produces, so
+   * they are what they were when each caller had a file of its own, in order.
+   */
+  it.each(callerFiles)("%s: holds its side's callers under their job ids", (file) => {
+    expect(callersOf(file).map((caller) => caller.id)).toEqual(callerFileSpec(file)?.jobs);
+    for (const caller of callersOf(file)) {
+      expect(targetOf(caller)).toBe(path.join(WORKFLOW_DIR, `${caller.id}.yml`));
+    }
+  });
+
+  it("keeps `self-check` at `review / review`, in both sets", () => {
+    const reviews = callersOfWorkflow(REVIEW);
+
+    expect(reviews).toHaveLength(2);
+    for (const caller of reviews) expect(caller.job.with?.["self-check"]).toBe("review / review");
+  });
+
+  /**
+   * `follow-ups` runs no model and files with the workflow token, so it is
+   * handed none of the loop's secrets. In a file beside three callers that are
+   * handed the PAT, that is the line a tidy-up would add.
+   */
+  it("hands follow-ups none of the loop's secrets", () => {
+    const filing = callersOfWorkflow(FOLLOW_UPS);
+
+    expect(filing).toHaveLength(2);
+    for (const caller of filing) expect(caller.job.secrets, callerName(caller)).toBeUndefined();
+  });
+
+  /**
+   * The two sets are one design, checked against each other rather than each
+   * against a copy of it: what this repository runs is what an adopter copies,
+   * pin and comments included.
+   */
+  it.each(Object.keys(CALLER_FILES))("%s: the local and the reference copy are the same file", (name) => {
+    expect(fs.readFileSync(path.join(WORKFLOW_DIR, `agent-${name}`), "utf8")).toBe(
+      fs.readFileSync(path.join(CALLER_DIR, name), "utf8"),
+    );
   });
 });
 
@@ -3850,24 +3985,21 @@ describe("every workflow in the loop is called rather than copied", () => {
    * moment you add the third file.
    */
   it("splits every agent workflow into a caller and a runner", () => {
-    expect(callerWorkflows.map((f) => path.basename(f)).sort()).toEqual([
-      "agent-fix.yml",
-      "agent-follow-ups.yml",
-      "agent-implement-prd.yml",
-      "agent-implement.yml",
-      "agent-review.yml",
-      "agent-update-branch.yml",
-      "fix.yml",
-      "follow-ups.yml",
-      "implement-prd.yml",
-      "implement.yml",
-      "review.yml",
-      "update-branch.yml",
+    expect(callerFiles.map((f) => path.basename(f)).sort()).toEqual([
+      "agent-issue.yml",
+      "agent-pr.yml",
+      "issue.yml",
+      "pr.yml",
     ]);
-    // Both caller sets point at the same reusables, so dedupe before
-    // comparing: what matters is that every runner has a caller and every
-    // caller reaches a runner, not the multiplicity.
-    expect([...new Set(callerWorkflows.map(targetOf))].sort()).toEqual(runnerWorkflows.slice().sort());
+    // Each caller set calls every reusable exactly once: a reusable called
+    // twice is every run of it happening twice, and one not called is a
+    // workflow that set's adopters cannot run.
+    for (const dir of [CALLER_DIR, WORKFLOW_DIR]) {
+      expect(
+        callers.filter((caller) => path.dirname(caller.file) === dir).map(targetOf).sort(),
+        dir,
+      ).toEqual(runnerWorkflows.slice().sort());
+    }
   });
 
   /**
@@ -3877,9 +4009,9 @@ describe("every workflow in the loop is called rather than copied", () => {
    * exactly the two-day failure this suite was written for — and the caller it
    * was extracted from would still parse clean.
    */
-  it.each(callerWorkflows)("%s: calls a workflow this suite already checks", (file) => {
-    expect(runnerWorkflows).toContain(targetOf(file));
-    expect(workflowFiles).toContain(targetOf(file));
+  it.each(eachCaller(callers))("%s: calls a workflow this suite already checks", (_name, caller) => {
+    expect(runnerWorkflows).toContain(targetOf(caller));
+    expect(workflowFiles).toContain(targetOf(caller));
   });
 
   /**
@@ -3887,15 +4019,9 @@ describe("every workflow in the loop is called rather than copied", () => {
    * the caller — and nothing else does. A caller with `steps:` is a caller that
    * has started keeping a copy.
    */
-  it.each(callerWorkflows)("%s: is a trigger and nothing else", (file) => {
-    const doc = workflowOf(file);
-    const trigger = doc.on?.pull_request_target ?? doc.on?.issues;
-
-    expect(trigger?.types).toEqual(triggerTypesOf(file));
-    expect(jobOf(file).steps).toBeUndefined();
-    expect(jobOf(file).uses).toBe(
-      `jeffwlawson/agent-workflows/${targetOf(file)}@${PIN}`,
-    );
+  it.each(eachCaller(callers))("%s: is a call and nothing else", (_name, caller) => {
+    expect(caller.job.steps).toBeUndefined();
+    expect(caller.job.uses).toBe(`jeffwlawson/agent-workflows/${targetOf(caller)}@${PIN}`);
   });
 
   /**
@@ -3913,8 +4039,8 @@ describe("every workflow in the loop is called rather than copied", () => {
    * owner's, which makes an unmoved tag a self-trust decision rather than
    * third-party trust. A branch is never accepted.
    */
-  it.each(callerWorkflows)("%s: pins the called workflow to a tag or a SHA", (file) => {
-    const ref = (jobOf(file).uses ?? "").split("@")[1] ?? "";
+  it.each(eachCaller(callers))("%s: pins the called workflow to a tag or a SHA", (_name, caller) => {
+    const ref = (caller.job.uses ?? "").split("@")[1] ?? "";
 
     expect(ref).toMatch(/^(v\d+\.\d+\.\d+|[0-9a-f]{40})$/);
   });
@@ -3926,7 +4052,7 @@ describe("every workflow in the loop is called rather than copied", () => {
    * its own — there is one run, named here. Rename these and every agent run's
    * failure log starts arriving in review's prompt as evidence about the diff.
    */
-  it.each(callerWorkflows)("%s: keeps the name the failure-log filter matches on", (file) => {
+  it.each(callerFiles)("%s: keeps the name the failure-log filter matches on", (file) => {
     expect(workflowOf(file).name ?? "").toMatch(/^Agent /);
   });
 
@@ -4045,11 +4171,11 @@ describe("every workflow in the loop is called rather than copied", () => {
    * job narrows it back to `read` (#133). A grant wider than every job is a
    * scope nothing spends; a narrower one is a run GitHub refuses outright.
    */
-  it.each(callerWorkflows)("%s: grants exactly what the called jobs bound", (file) => {
-    const granted = jobOf(file).permissions;
+  it.each(eachCaller(callers))("%s: grants exactly what the called jobs bound", (_name, caller) => {
+    const granted = caller.job.permissions;
     const RANK: Readonly<Record<string, number>> = { none: 0, read: 1, write: 2 };
     const widest: Record<string, string> = {};
-    for (const job of jobsOf(targetOf(file))) {
+    for (const job of jobsOf(targetOf(caller))) {
       for (const [scope, level] of Object.entries(job.permissions ?? {})) {
         const held = widest[scope];
         if (held === undefined || (RANK[level] ?? 0) > (RANK[held] ?? 0)) widest[scope] = level;
@@ -4217,8 +4343,8 @@ describe("every workflow in the loop is called rather than copied", () => {
    * secret the repository holds, including the ones this loop has no use for —
    * and it is the form that reads as tidier, so the list is worth pinning.
    */
-  it.each(wiredCallers())("%s: passes both secrets by name", (file) => {
-    const declared = callOf(targetOf(file))?.secrets ?? {};
+  it.each(eachCaller(wiredCallers()))("%s: passes both secrets by name", (_name, caller) => {
+    const declared = callOf(targetOf(caller))?.secrets ?? {};
 
     expect(Object.keys(declared).sort()).toEqual(["AGENT_PAT", "CLAUDE_CODE_OAUTH_TOKEN"]);
     // The agent cannot run without its token. The PAT is optional everywhere —
@@ -4228,8 +4354,8 @@ describe("every workflow in the loop is called rather than copied", () => {
     expect(declared["CLAUDE_CODE_OAUTH_TOKEN"]?.required).toBe(true);
     expect(declared["AGENT_PAT"]?.required).toBe(false);
 
-    expect(jobOf(file).secrets).not.toBe("inherit");
-    expect(Object.keys(jobOf(file).secrets ?? {}).sort()).toEqual([
+    expect(caller.job.secrets).not.toBe("inherit");
+    expect(Object.keys(caller.job.secrets ?? {}).sort()).toEqual([
       "AGENT_PAT",
       "CLAUDE_CODE_OAUTH_TOKEN",
     ]);
@@ -4284,7 +4410,7 @@ describe("every workflow in the loop is called rather than copied", () => {
  * (jeffwlawson/winget-manifest-lint#97).
  */
 describe("agent-review tells its caller what it cannot know", () => {
-  const caller = (): Job => jobOf(REVIEW_CALLER);
+  const caller = (): Job => jobNamed(REVIEW_CALLER, "review");
   const call = () => workflowOf(REVIEW).on?.workflow_call;
 
   /**
@@ -4299,7 +4425,7 @@ describe("agent-review tells its caller what it cannot know", () => {
     ["the caller grants", REVIEW_CALLER, "write"],
     ["the called job bounds", REVIEW, "read"],
   ])("%s exactly the permissions the job uses", (_half: string, file: string, level: string) => {
-    expect(jobOf(file).permissions).toEqual({
+    expect((file === REVIEW ? jobOf(file) : caller()).permissions).toEqual({
       // The CI wait reads the commit's workflow runs (#221): a run queued or
       // waiting for approval has no check run yet, so it shows nowhere else.
       actions: "read",
@@ -4425,7 +4551,7 @@ describe("agent-review tells its caller what it cannot know", () => {
    * the input is the deadlock above, and nothing at runtime would say so.
    */
   it("passes the name the two job ids actually produce", () => {
-    const [callerJob] = Object.keys(workflowOf(REVIEW_CALLER).jobs);
+    const callerJob = callersOf(REVIEW_CALLER).find((held) => targetOf(held) === REVIEW)?.id;
     const [calledJob] = Object.keys(workflowOf(REVIEW).jobs).filter(
       (id) => !(EXTRA_JOBS[REVIEW] ?? []).includes(id),
     );
@@ -4729,12 +4855,27 @@ describe("the two implement workflows partition issue shapes", () => {
    * halves, which is what the partition actually depends on: two workflows
    * woken by one event, each deciding for itself whether the shape is theirs.
    */
-  it.each([
-    [IMPLEMENT_CALLER, IMPLEMENT],
-    [PRD_CALLER, PRD],
-  ])("%s: is triggered by agent:implement on an issue", (callerFile: string, file: string) => {
-    expect(workflowOf(callerFile).on?.issues?.types).toEqual(["labeled"]);
-    expect(guardJobOf(file).if ?? "").toBe("github.event.label.name == 'agent:implement'");
+  it.each(eachCaller(callers.filter((caller) => [IMPLEMENT, PRD].includes(targetOf(caller)))))(
+    "%s: is triggered by agent:implement on an issue",
+    (_name, caller) => {
+      expect(workflowOf(caller.file).on?.issues?.types).toEqual(["labeled"]);
+      expect(guardJobOf(targetOf(caller)).if ?? "").toBe("github.event.label.name == 'agent:implement'");
+    },
+  );
+
+  /**
+   * Both callers of the pair sit in one caller file (#225), so one label event
+   * starts one run holding both, and neither can be taken without the other.
+   */
+  it("holds both callers of the pair in one caller file, in each caller set", () => {
+    for (const dir of [CALLER_DIR, WORKFLOW_DIR]) {
+      const files = callers
+        .filter((caller) => path.dirname(caller.file) === dir && [IMPLEMENT, PRD].includes(targetOf(caller)))
+        .map((caller) => caller.file);
+
+      expect(files, dir).toHaveLength(2);
+      expect(new Set(files).size, dir).toBe(1);
+    }
   });
 
   /**
@@ -5308,15 +5449,12 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * the gate: the job's scopes are what they were.
    */
   it("holds the statuses grant the gate spends, in the ceiling and in every caller, and adds none", () => {
-    const halves = [PRD, ...callerWorkflows.filter((file) => targetOf(file) === PRD)];
-
-    expect(halves).toHaveLength(3);
     // In the reusable half, the gate's, which is where the verdict is read
     // since the split (#308).
-    for (const file of halves) {
-      const job = file === PRD ? jobNamed(PRD, "gate") : jobOf(file);
-      expect(job.permissions?.["statuses"]).toBe("read");
-    }
+    const halves = [jobNamed(PRD, "gate"), ...callersOfWorkflow(PRD).map((caller) => caller.job)];
+
+    expect(halves).toHaveLength(3);
+    for (const job of halves) expect(job.permissions?.["statuses"]).toBe("read");
     // Across the split's jobs, each scope at the widest any of them holds it:
     // what the caller has to grant, which the split left as it was.
     const LEVEL = ["none", "read", "write"];
@@ -6068,11 +6206,11 @@ describe("Dependabot watches the caller pins no test here can reach", () => {
    * stops covering on the day that changes.
    */
   it("moves every caller pin in one pull request", () => {
-    const callers = dependenciesIn(callerWorkflows).filter((d) => d.startsWith(LOOP));
+    const pinned = dependenciesIn(callerFiles).filter((d) => d.startsWith(LOOP));
 
-    expect(callers.length).toBeGreaterThan(0);
-    for (const dependency of [...callers, LOOP]) {
-      expect(groupsFor(dependency)).toEqual([groupsFor(callers[0] as string)[0]]);
+    expect(pinned.length).toBeGreaterThan(0);
+    for (const dependency of [...pinned, LOOP]) {
+      expect(groupsFor(dependency)).toEqual([groupsFor(pinned[0] as string)[0]]);
     }
   });
 
@@ -6501,7 +6639,11 @@ describe("the adoption doc counts nothing a release can falsify", () => {
       written?.[1],
       "the grouping paragraph must keep its `a release opens **N** pull requests` sentence",
     ).toBeDefined();
-    expect(NUMBERS[(written?.[1] ?? "").toLowerCase()]).toBe(callersIn(CALLER_DIR).length);
+    // Counted in callers, not caller files: Dependabot reads one dependency
+    // per `uses:`, and the reference set's two caller files hold six (#225).
+    expect(NUMBERS[(written?.[1] ?? "").toLowerCase()]).toBe(
+      callers.filter((caller) => path.dirname(caller.file) === CALLER_DIR).length,
+    );
   });
 
   /**
@@ -6746,8 +6888,12 @@ describe("the runner package is installed from GitHub Packages", () => {
    * and the caller's is the grant, and a permission declared only in the callee
    * grants nothing at all.
    */
-  it.each(agentWorkflows())("%s: grants packages: read", (file) => {
+  it.each(runnerWorkflows)("%s: bounds packages: read", (file) => {
     expect(jobOf(file).permissions?.["packages"]).toBe("read");
+  });
+
+  it.each(eachCaller(callers))("%s: grants packages: read", (_name, caller) => {
+    expect(caller.job.permissions?.["packages"]).toBe("read");
   });
 });
 
@@ -8318,14 +8464,14 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
    * release that may not declare them, and GitHub fails a caller passing an
    * input its reusable does not declare.
    */
-  it.each([REVIEW_CALLER, path.join(WORKFLOW_DIR, "agent-review.yml")])(
+  it.each(eachCaller(callersOfWorkflow(REVIEW)))(
     "%s: shows the inputs commented out",
-    (file) => {
-      const text = fs.readFileSync(file, "utf8");
+    (_name, caller) => {
+      const text = fs.readFileSync(caller.file, "utf8");
 
       for (const name of INPUTS) {
         expect(text).toMatch(new RegExp(`^\\s*# ${name}: \\S`, "m"));
-        expect(jobOf(file).with?.[name]).toBeUndefined();
+        expect(caller.job.with?.[name]).toBeUndefined();
       }
     },
   );

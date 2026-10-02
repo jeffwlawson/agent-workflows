@@ -1,8 +1,8 @@
 name: Agent Follow-ups (reusable)
 
 # File the out-of-scope findings a review recorded, once the pull request has
-# closed (#50). `agent-follow-ups.yml` is the caller — a trigger and a grant,
-# with no inputs and no secrets to wire — and every control stays here, in a
+# closed (#50). The `follow-ups` job in `agent-pr.yml` is the caller (a grant,
+# with no inputs and no secrets to wire), and every control stays here, in a
 # file an adopting repo *references* rather than copies.
 #
 # This is the sixth workflow and the only one in the loop holding

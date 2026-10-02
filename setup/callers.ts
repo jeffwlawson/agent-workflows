@@ -14,10 +14,27 @@ import { escapeRe, WORKFLOW_DIR } from "../shared/pins.js";
  * whatever job ids.
  *
  * So a caller is recognised by **what it calls**, never by its filename. The
- * reference set ships as `agent-<name>.yml`, but `docs/ADOPTING.md` §4 says to
- * rename if you like, and the only thing that actually identifies one is a
- * `uses:` naming this package's repository.
+ * reference set ships as one caller file per side, installed as `agent-pr.yml`
+ * and `agent-issue.yml` (#225), and an earlier install has one file per caller;
+ * `docs/ADOPTING.md` §4 says to rename if you like, and the only thing that
+ * actually identifies one is a `uses:` naming this package's repository.
  */
+
+/**
+ * Which reference caller file holds the caller of each reusable workflow: one
+ * file per side (#225). A fixed list rather than a read of `examples/callers/`,
+ * because `diagnose` is pure and rules on what it was taught; held to the
+ * reference set by `tests/agent-cli.test.ts`, so a caller moved between files
+ * fails by name rather than sending an adopter to the wrong one.
+ */
+export const REFERENCE_CALLER_FILES: Readonly<Record<string, string>> = {
+  review: "pr.yml",
+  fix: "pr.yml",
+  "update-branch": "pr.yml",
+  "follow-ups": "pr.yml",
+  implement: "issue.yml",
+  "implement-prd": "issue.yml",
+};
 
 /** `@owner/repo` on npm is `owner/repo` on GitHub — one literal, not two. */
 export const repoSlug = (packageName: string): string => packageName.replace(/^@/, "");

@@ -1,8 +1,8 @@
 name: Agent Implement PRD (reusable)
 
-# The PRD job itself. `agent-implement-prd.yml` is the caller — a trigger and
-# two wires — and every guard, permission and step stays here, in a file an
-# adopting repo *references* rather than copies
+# The PRD job itself. The `implement-prd` job in `agent-issue.yml` is the
+# caller (two wires, under that file's trigger), and every guard, permission and
+# step stays here, in a file an adopting repo *references* rather than copies
 # (jeffwlawson/winget-manifest-lint#98).
 #
 # The PRD path (jeffwlawson/winget-manifest-lint#92). Labelling a *parent* issue

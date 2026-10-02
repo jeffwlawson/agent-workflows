@@ -1,8 +1,9 @@
 name: Agent Review (reusable)
 
-# The review job itself. `agent-review.yml` is the caller — a trigger and two
-# wires — and everything that bounds what a wrong review can do stays here, in a
-# file an adopting repo *references* rather than copies
+# The review job itself. The `review` job in `agent-pr.yml` is the caller (two
+# wires, under that file's trigger), and everything that bounds what a wrong
+# review can do stays here, in a file an adopting repo *references* rather than
+# copies
 # (jeffwlawson/winget-manifest-lint#97, slice 3 of
 # jeffwlawson/winget-manifest-lint#88).
 #
@@ -2078,7 +2079,7 @@ jobs:
   # What GitHub calls it is an *invalid workflow file*, annotated on the run
   # page as:
   #
-  #   Invalid workflow file: .github/workflows/agent-review.yml#L<the caller's
+  #   Invalid workflow file: .github/workflows/agent-pr.yml#L<the caller's
   #   `uses:` line> — Error calling workflow
   #   '<owner>/<repo>/.github/workflows/review.yml@<sha>'. The nested job
   #   'post-review' is requesting 'contents: write', but is only allowed

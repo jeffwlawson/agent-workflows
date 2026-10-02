@@ -9,8 +9,8 @@ import { rewritePins } from "../shared/pins.js";
  * The shared core, called the way the second caller would.
  *
  * `tests/sync-version.test.ts` covers the **release** half and all of its
- * policy: this repository's three directories, fifteen sites, and a refusal on
- * any count but one. `init` (#6) does the same rewrite for the opposite reason —
+ * policy: this repository's three directories, its pin sites, and a refusal on
+ * any count but the expected one. `init` (#6) does the same rewrite for the opposite reason —
  * it writes **this** package's name and version into *someone else's*
  * repository, over whatever subset of the callers an adopter took, with no
  * `examples/` and no reusable workflows behind them.
@@ -48,7 +48,7 @@ describe("the pin rewrite is a core init can use", () => {
 
   /**
    * An adopter's repository once `init` has copied the callers in: one
-   * `.github/workflows/agent-*.yml` per reference caller, and nothing else this
+   * `.github/workflows/agent-*.yml` per reference caller file, and nothing else this
    * rewrite knows about.
    *
    * The manifest is deliberately somebody else's. An adopter's `package.json`
@@ -84,11 +84,13 @@ describe("the pin rewrite is a core init can use", () => {
 
     // One `ref` pin per caller and no `package` pin anywhere: an adopter's tree
     // holds no reusable half. Derived from the fixture rather than written out,
-    // because the count is the reference set's and moves with it — it went from
-    // five to six when `follow-ups` landed (#50) — while the property being
-    // asserted, one pin of one form per file, does not.
-    expect(found).toEqual(callersIn(root).map(() => "ref"));
-    expect(found.length).toBeGreaterThan(1);
+    // because the count is the reference set's and moves with it (it went from
+    // five to six when `follow-ups` landed, #50, and a caller file holds several
+    // since #225), while the property being asserted, one pin of one form per
+    // caller, does not.
+    const callers = callersIn(root).flatMap((file) => read(root, file).match(/^\s*uses: \S+/gm) ?? []);
+    expect(found).toEqual(callers.map(() => "ref"));
+    expect(found.length).toBeGreaterThan(callersIn(root).length);
     for (const file of callersIn(root)) {
       expect(read(root, file)).toContain(`${PACKAGE.replace(/^@/, "")}/.github/workflows/`);
       expect(read(root, file)).toContain(`.yml@v${TARGET}`);
@@ -105,13 +107,13 @@ describe("the pin rewrite is a core init can use", () => {
   it("is the root syncVersion refuses, which is why the core is separate", () => {
     const root = adopted();
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/reusable workflows for \[\]/);
+    expect(() => syncVersion(TARGET, root)).toThrow(/holds no reusable workflow/);
   });
 
   /** Both parameters, and neither read from anywhere: a different name matches nothing. */
   it("takes the package name as a parameter, and rewrites nothing for another package", () => {
     const root = adopted();
-    const before = read(root, ".github/workflows/agent-review.yml");
+    const before = read(root, ".github/workflows/agent-pr.yml");
 
     const rewrite = rewritePins(before, { packageName: "@someone/else", version: TARGET });
 
@@ -126,10 +128,15 @@ describe("the pin rewrite is a core init can use", () => {
    * the adopter installed.
    */
   it("reports what it found rather than ruling on it", () => {
-    const caller = read(adopted(), ".github/workflows/agent-review.yml");
+    const caller = read(adopted(), ".github/workflows/agent-issue.yml");
 
     expect(rewritePins("", { packageName: PACKAGE, version: TARGET })).toEqual({ text: "", found: [] });
-    expect(rewritePins(caller + caller, { packageName: PACKAGE, version: TARGET }).found).toEqual(["ref", "ref"]);
+    expect(rewritePins(caller + caller, { packageName: PACKAGE, version: TARGET }).found).toEqual([
+      "ref",
+      "ref",
+      "ref",
+      "ref",
+    ]);
   });
 
   /** Both forms, from one text: the reusable's npm spec and the caller's git ref. */

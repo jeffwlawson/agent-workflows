@@ -1,0 +1,78 @@
+name: Agent Issue
+
+# The issue side of the loop: one caller file holding the two callers that run
+# on an issue (#225). Each job is a caller, and each says the facts about *this*
+# repo its reusable workflow cannot read for itself: the token it is granted and
+# the secrets it is handed. Everything else (the label guard, the preflight's
+# refusals, the partition, the chain, the permissions ceiling, the concurrency
+# group, every step) is in the reusable workflow it names, which an adopting
+# repo references instead of copying (jeffwlawson/winget-manifest-lint#98).
+#
+# Take both jobs or neither: `implement` and `implement-prd` share the
+# `agent:implement` label, both start on every label event, and each partitions
+# the work by issue shape, deferring a shape that is not its own to the other.
+#
+# **No job here carries an `if:`.** Every label on an issue starts one run of
+# this file, and each reusable workflow's own guard decides whether it is its
+# label. A guard written here could only skip a job, never loosen one.
+on:
+  issues:
+    types: [labeled]
+
+# Nothing at the top level: every grant is on the job that spends it, so a job
+# added here later starts with nothing rather than with its neighbours' scopes.
+permissions: {}
+
+jobs:
+  implement:
+    uses: jeffwlawson/agent-workflows/.github/workflows/implement.yml@v0.7.8
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs:
+    # `contents: write` to push, `issues: write` for the label transitions on
+    # the issue, `pull-requests: write` to label the PR it opens, and the
+    # `packages: read` explained below.
+    permissions:
+      contents: write
+      issues: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
+      packages: read
+      pull-requests: write
+    # No `with:`. The three inputs (`default-branch`, `node-version-file`,
+    # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}
+
+  implement-prd:
+    uses: jeffwlawson/agent-workflows/.github/workflows/implement-prd.yml@v0.7.8
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs:
+    # `contents: write` to push, `issues: write` to transition the parent's
+    # labels and comment on it and its sub-issues, `pull-requests: write` to
+    # open and label the one PRD PR, `statuses: read` for the approval gate,
+    # which reads the `agent-review` verdict on that PR's head before the next
+    # slice is built, and the `packages: read` explained below.
+    permissions:
+      contents: write
+      issues: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
+      packages: read
+      pull-requests: write
+      statuses: read
+    # No `with:`. The three inputs (`default-branch`, `node-version-file`,
+    # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}

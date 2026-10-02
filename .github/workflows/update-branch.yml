@@ -1,8 +1,9 @@
 name: Agent Update Branch (reusable)
 
-# The update-branch job itself. `agent-update-branch.yml` is the caller — a
-# trigger and two wires — and every control stays here, in a file an adopting
-# repo *references* rather than copies (jeffwlawson/winget-manifest-lint#98).
+# The update-branch job itself. The `update-branch` job in `agent-pr.yml` is the
+# caller (two wires, under that file's trigger), and every control stays here, in
+# a file an adopting repo *references* rather than copies
+# (jeffwlawson/winget-manifest-lint#98).
 #
 # Refresh a stale PR branch from the branch it is based on.
 #

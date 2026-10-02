@@ -8,7 +8,7 @@
  * places, for opposite reasons.
  *
  * `scripts/sync-version.ts` does it at **release** time, over this repository's
- * own fifteen sites, where a count that is not one is a broken release. `init`
+ * own pin sites, where a count other than the expected one is a broken release. `init`
  * (#6) does it at **adoption** time, writing this package's name and version
  * into *someone else's* repository, over whatever subset of the callers an
  * adopter took — where a varying count is the normal case.
@@ -86,7 +86,7 @@ export const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\
 
 /**
  * The one thing this refuses, and it refuses it in both halves: a version that
- * is not a pin. The release wants it raised before the first of fifteen files is
+ * is not a pin. The release wants it raised before the first of its files is
  * opened, so it is reachable on its own as well as through `rewritePins`.
  */
 export const assertPinnable = (version: string): void => {

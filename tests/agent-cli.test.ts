@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
-import { callersIn } from "../setup/callers.js";
+import { callersIn, REFERENCE_CALLER_FILES } from "../setup/callers.js";
 import {
   ADVISORY_LABELS,
   advisoryLabelSpecsFor,
@@ -133,6 +133,26 @@ const replayed = <T>(
  */
 
 const PACKAGE_DIR = ".";
+
+/**
+ * Where one caller's job sits in a caller file's text: from its `  <id>:` line
+ * to the next job's, the comments above that next job included. A caller file
+ * holds several callers (#225), so a scenario that breaks or removes one has to
+ * reach that job and no other.
+ */
+const jobSpan = (text: string, job: string): { readonly from: number; readonly to: number } | undefined => {
+  const from = text.search(new RegExp(`^  ${job}:$`, "m"));
+  if (from === -1) return undefined;
+  const next = text.slice(from + 1).search(/^(  #.*\n)*  [\w-]+:$/m);
+  return { from, to: next === -1 ? text.length : from + 1 + next };
+};
+
+/** A caller file's text with one caller's job taken out. */
+const withoutJob = (text: string, job: string): string => {
+  const span = jobSpan(text, job);
+  expect(span, `no \`${job}\` job to remove`).toBeDefined();
+  return `${text.slice(0, span?.from ?? 0)}${text.slice(span?.to ?? 0)}`;
+};
 
 /**
  * A workflow directory is one holding a runner named after it —
@@ -431,25 +451,74 @@ describe("init installs the reference callers into an adopting repo", () => {
   const read = (root: string, rel: string): string =>
     fs.readFileSync(path.join(root, ...rel.split("/")), "utf8");
 
+  /** The reference caller files, one per side (#225): `issue` and `pr`. */
   const referenceNames = fs
     .readdirSync(path.join("examples", "callers"))
     .filter((entry) => entry.endsWith(".yml"))
     .map((entry) => entry.replace(/\.yml$/, ""))
     .sort();
 
-  it("writes one caller per reference file, pinned to this package's own version", async () => {
+  /** The workflows each of them calls, read the way `init` reads them. */
+  const referenceCallers = (name: string) =>
+    callersIn(read(".", `examples/callers/${name}.yml`), manifest.name, `${name}.yml`);
+  const referenceWorkflows = referenceNames.flatMap((name) => referenceCallers(name).map((c) => c.workflow));
+
+  it("writes one caller file per reference file, pinned to this package's own version", async () => {
     const root = adopted();
 
     const changes = await init({ dir: root, github: offline, labels: noLabels });
 
+    expect(referenceNames).toEqual(["issue", "pr"]);
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "created"),
     );
     for (const name of referenceNames) {
       const text = read(root, `.github/workflows/agent-${name}.yml`);
-      expect(text).toContain(`/.github/workflows/${name}.yml@v${manifest.version}`);
+      for (const { workflow } of referenceCallers(name)) {
+        expect(text).toContain(`/.github/workflows/${workflow}.yml@v${manifest.version}`);
+      }
       expect(text).toContain("packages: read");
     }
+    expect(fs.readdirSync(path.join(root, ".github", "workflows")).sort()).toEqual(["agent-issue.yml", "agent-pr.yml"]);
+  });
+
+  /**
+   * An adopter on the six-file layout has every caller already, so a re-run
+   * moves each file's pin and writes nothing else. A merged file beside the
+   * six would call every reusable twice: two runs of each per label, racing
+   * each other for the same branch (#225).
+   */
+  it("moves only the pins on a six-file tree, and writes no merged file beside it", async () => {
+    const root = adopted();
+    const six = referenceNames.flatMap((name) => {
+      const reference = read(".", `examples/callers/${name}.yml`);
+      const jobs = referenceCallers(name).map((c) => c.jobId);
+      return jobs.map((job) => {
+        // One file per caller, as `init` wrote them before #225: the trigger,
+        // and that caller's job alone, on an older pin.
+        const text = jobs
+          .filter((other) => other !== job)
+          .reduce(withoutJob, reference)
+          .replace(/^permissions: \{\}\n/m, "")
+          .replaceAll(`@v${manifest.version}`, "@v0.0.1");
+        const file = `.github/workflows/agent-${job}.yml`;
+        fs.writeFileSync(path.join(root, ...file.split("/")), text);
+        return { file, text };
+      });
+    });
+    expect(six).toHaveLength(6);
+
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
+
+    expect(fs.readdirSync(path.join(root, ".github", "workflows")).sort()).toEqual(
+      six.map(({ file }) => path.basename(file)).sort(),
+    );
+    for (const { file, text } of six) {
+      expect(read(root, file)).toBe(text.replace("@v0.0.1", `@v${manifest.version}`));
+    }
+    expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => `${c.file} ${c.action}`).sort()).toEqual(
+      six.map(({ file }) => `${file} updated`).sort(),
+    );
   });
 
   /**
@@ -463,7 +532,7 @@ describe("init installs the reference callers into an adopting repo", () => {
 
     await init({ dir: root, github: offline, labels: noLabels });
 
-    expect(read(root, ".github/workflows/agent-review.yml")).toMatch(
+    expect(read(root, ".github/workflows/agent-pr.yml")).toMatch(
       /^\s*self-check: review \/ review$/m,
     );
   });
@@ -485,25 +554,25 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("moves the pin on a re-run and changes nothing else in a caller", async () => {
     const root = adopted();
     await init({ dir: root, github: offline, labels: noLabels });
-    const theirs = read(root, ".github/workflows/agent-review.yml")
+    const theirs = read(root, ".github/workflows/agent-pr.yml")
       .replace(/^  review:$/m, "  agent_review:")
       .replace(/self-check: review \/ review/, "self-check: agent_review / review")
       .replace(/^(    with:)$/m, "$1\n      default-branch: trunk\n      node-version-file: .tool-versions\n      setup: pnpm i --frozen-lockfile")
       .replace(/^      pull-requests: write$/m, "      pull-requests: write\n      issues: write")
-      .replace(`@v${manifest.version}`, "@v0.0.1");
-    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), theirs);
+      .replaceAll(`@v${manifest.version}`, "@v0.0.1");
+    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-pr.yml"), theirs);
 
     const changes = await init({ dir: root, github: offline, labels: noLabels });
 
-    const text = read(root, ".github/workflows/agent-review.yml");
-    expect(text).toBe(theirs.replace("@v0.0.1", `@v${manifest.version}`));
+    const text = read(root, ".github/workflows/agent-pr.yml");
+    expect(text).toBe(theirs.replaceAll("@v0.0.1", `@v${manifest.version}`));
     // Named as well as compared, so an edit above that silently matched
     // nothing cannot leave this asserting that two identical files are equal.
     expect(text).toContain("setup: pnpm i --frozen-lockfile");
     expect(text).toContain("default-branch: trunk");
     expect(text).toContain("issues: write");
     expect(text).toMatch(/^  agent_review:$/m);
-    expect(changes.find((c) => c.file.endsWith("agent-review.yml"))?.action).toBe("updated");
+    expect(changes.find((c) => c.file.endsWith("agent-pr.yml"))?.action).toBe("updated");
   });
 
   /**
@@ -517,33 +586,49 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("does not put back a caller the adopter deleted, and says it did not", async () => {
     const root = adopted();
     await init({ dir: root, github: offline, labels: noLabels });
-    fs.rmSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"));
+    const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
+    const declined = withoutJob(fs.readFileSync(pr, "utf8"), "update-branch");
+    fs.writeFileSync(pr, declined);
 
     const changes = await init({ dir: root, github: offline, labels: noLabels });
 
-    expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"))).toBe(
-      false,
-    );
-    const change = changes.find((c) => c.file.endsWith("agent-update-branch.yml"));
+    expect(fs.readFileSync(pr, "utf8")).toBe(declined);
+    const kept = changes.filter((c) => c.action === "kept" && c.file.endsWith(".yml"));
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.note ?? "").toContain("`update-branch`");
+    expect(kept[0]?.note ?? "").toContain("examples/callers/pr.yml");
+  });
+
+  /** …and the same for a whole side declined, which is a caller file never copied. */
+  it("does not put back a caller file the adopter deleted, and says it did not", async () => {
+    const root = adopted();
+    await init({ dir: root, github: offline, labels: noLabels });
+    fs.rmSync(path.join(root, ".github", "workflows", "agent-issue.yml"));
+
+    const changes = await init({ dir: root, github: offline, labels: noLabels });
+
+    expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-issue.yml"))).toBe(false);
+    const change = changes.find((c) => c.file.endsWith("agent-issue.yml"));
     expect(change?.action).toBe("kept");
-    expect(change?.note ?? "").toContain("examples/callers/update-branch.yml");
+    expect(change?.note ?? "").toContain("`implement`, `implement-prd`");
+    expect(change?.note ?? "").toContain("examples/callers/issue.yml");
   });
 
   /**
    * The filename is ours by convention only. A workflow of an adopter's own
-   * that happens to be called `agent-fix.yml` is a file this never wrote, and
+   * that happens to be called `agent-pr.yml` is a file this never wrote, and
    * overwriting it is the same act the re-run above refuses — with worse
    * consequences, since nothing in it was ever a caller.
    */
   it("refuses to write over a file of the same name that is not a caller", async () => {
     const root = adopted();
-    const theirs = "name: Our own fix job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
-    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-fix.yml"), theirs);
+    const theirs = "name: Our own PR job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
+    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-pr.yml"), theirs);
 
     const changes = await init({ dir: root, github: offline, labels: noLabels });
 
-    expect(read(root, ".github/workflows/agent-fix.yml")).toBe(theirs);
-    expect(changes.find((c) => c.file.endsWith("agent-fix.yml"))?.action).toBe("kept");
+    expect(read(root, ".github/workflows/agent-pr.yml")).toBe(theirs);
+    expect(changes.find((c) => c.file.endsWith("agent-pr.yml"))?.action).toBe("kept");
   });
 
   it("reports an unchanged caller rather than rewriting it", async () => {
@@ -618,7 +703,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const { code, out } = await invoke(["init", "--dir", root]);
 
     expect(code).toBe(0);
-    expect(out).toContain("agent-implement.yml");
+    expect(out).toContain("agent-issue.yml");
     expect(fs.existsSync(path.join(root, "SETUP.md"))).toBe(true);
   });
 
@@ -790,7 +875,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const scaffolded = new Set([...TRIGGER_LABELS, ...STATE_LABELS].map((label) => label.name));
     // The function `doctor` demands from, named rather than inferred from the
     // tables: what must not happen is a preflight erroring over one of these.
-    const demanded = new Set(labelSpecsFor(referenceNames).map((label) => label.name));
+    const demanded = new Set(labelSpecsFor(referenceWorkflows).map((label) => label.name));
 
     expect(conditional.length).toBeGreaterThan(0);
     for (const label of conditional) {
@@ -818,7 +903,7 @@ describe("init installs the reference callers into an adopting repo", () => {
 
     await init({ dir: root, github: offline, labels: noLabels });
 
-    expect(byName(advisoryLabelSpecsFor(referenceNames))).toEqual(byName(conditional));
+    expect(byName(advisoryLabelSpecsFor(referenceWorkflows))).toEqual(byName(conditional));
     for (const label of conditional) expect(read(root, "SETUP.md")).toContain(labelCommand(label));
   });
 
@@ -836,7 +921,8 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     await init({ dir: root, github: offline, labels: noLabels });
 
-    fs.rmSync(path.join(root, ".github", "workflows", "agent-follow-ups.yml"));
+    const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
+    fs.writeFileSync(pr, withoutJob(fs.readFileSync(pr, "utf8"), "follow-ups"));
     await init({ dir: root, github: offline, labels: noLabels });
 
     const setup = read(root, "SETUP.md");
@@ -909,9 +995,8 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     return { surface, sent };
   };
 
-  const triggered = ["agent-fix.yml", "agent-follow-ups.yml", "agent-review.yml", "agent-update-branch.yml"].map(
-    (file) => `.github/workflows/${file}`,
-  );
+  /** The PR-side caller file: the one file `init` installs that runs on the trigger (#225). */
+  const triggered = [".github/workflows/agent-pr.yml"];
 
   it("creates the policy for the callers alone, and a second run reports it unchanged", async () => {
     const root = adopted();
@@ -944,7 +1029,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
   it("lists every event a targeted caller also triggers on", async () => {
     const root = adopted();
     await init({ dir: root, github: github("private", []).surface, labels: noLabels });
-    const review = path.join(root, ".github", "workflows", "agent-review.yml");
+    const review = path.join(root, ".github", "workflows", "agent-pr.yml");
     fs.writeFileSync(review, fs.readFileSync(review, "utf8").replace(/^on:$/m, "on:\n  workflow_dispatch:"));
     const { surface, sent } = github("public", []);
 
@@ -953,17 +1038,18 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     expect(sent[0]?.body.rules[0].parameters.allowed_events).toEqual(["pull_request_target", "workflow_dispatch"]);
   });
 
-  it("extends its own policy in place when a caller has been added since", async () => {
+  it("extends its own policy in place when a caller file has been added since", async () => {
     const root = adopted();
+    const earlier = ".github/workflows/agent-review.yml";
     const { surface, sent } = github("public", [
-      { id: 3, name: POLICY_NAME, enforcement: "active", include: triggered.slice(1), exclude: [], allowedEvents: ["pull_request_target"] },
+      { id: 3, name: POLICY_NAME, enforcement: "active", include: [earlier], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
     const changes = await init({ dir: root, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
     expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
-    expect(sent[0]?.body.conditions.workflow_path.include).toEqual(triggered);
+    expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...triggered, earlier].sort());
   });
 
   it("counts a policy somebody else wrote, if it allows the trigger for every caller", async () => {
@@ -1003,7 +1089,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     expect(policy?.action).toBe("kept");
     expect(policy?.note).toContain("HTTP 403");
     expect(policy?.note).toContain("gh api --method POST repos/{owner}/{repo}/actions/policies --input -");
-    expect(policy?.note).toContain('"workflow_path":{"include":[".github/workflows/agent-fix.yml"');
+    expect(policy?.note).toContain('"workflow_path":{"include":[".github/workflows/agent-pr.yml"]');
     expect(policy?.note).toContain("Settings → Actions → Policies");
     expect(changes.filter((c) => c.file.endsWith(".yml")).every((c) => c.action === "created")).toBe(true);
   });
@@ -1321,18 +1407,33 @@ describe("doctor names the failures that otherwise look like something else", ()
     timeoutMinutes: Object.fromEntries(TIMEOUT_VARIABLES.map((variable) => [variable.name, null])),
   });
 
+  /** The installed caller file holding a job, repo-relative as `doctor` names it. */
+  const callerFileOf = (root: string, job: string): string => {
+    const dir = path.join(root, ".github", "workflows");
+    const file = fs.readdirSync(dir).find((entry) => jobSpan(fs.readFileSync(path.join(dir, entry), "utf8"), job));
+    expect(file, `no installed caller file holds a \`${job}\` job`).toBeDefined();
+    return `.github/workflows/${file ?? ""}`;
+  };
+
   /**
    * Break one caller, and insist that the break landed. Every scenario below is
    * a text edit against the real reference callers, so a comment reworded there
    * would otherwise turn a scenario into a test of nothing that still passes.
+   *
+   * The edit is confined to the caller's own job (#225): `init` installs one
+   * caller file per side, so a scope removed with a file-wide `replace` would
+   * land on whichever caller came first. The job runs from its `  <id>:` line
+   * to the next job's, comments above that next job included.
    */
-  const edit = (root: string, file: string, change: (text: string) => string): void => {
-    const full = path.join(root, ".github", "workflows", file);
-    const before = fs.readFileSync(full, "utf8");
+  const edit = (root: string, job: string, change: (text: string) => string): void => {
+    const full = path.join(root, ...callerFileOf(root, job).split("/"));
+    const text = fs.readFileSync(full, "utf8");
+    const { from, to } = jobSpan(text, job) ?? { from: 0, to: 0 };
+    const before = text.slice(from, to);
     const after = change(before);
 
     expect(after).not.toBe(before);
-    fs.writeFileSync(full, after);
+    fs.writeFileSync(full, `${text.slice(0, from)}${after}${text.slice(to)}`);
   };
 
   const check = async (
@@ -1373,7 +1474,8 @@ describe("doctor names the failures that otherwise look like something else", ()
       allowedEvents: ["pull_request_target"],
       ...overrides,
     });
-    const callers = [".github/workflows/agent-fix.yml", ".github/workflows/agent-follow-ups.yml", ".github/workflows/agent-review.yml", ".github/workflows/agent-update-branch.yml"];
+    /** The one caller file `init` installs that runs on the trigger: the PR side (#225). */
+    const callers = [".github/workflows/agent-pr.yml"];
 
     it("is silent where a policy allows it for every caller", async () => {
       const { code, out, err } = await check(await installed(), {
@@ -1392,22 +1494,22 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(code).toBe(1);
       expect(err).toContain("FAIL  pull_request_target policy");
       for (const file of callers) expect(err).toContain(file);
-      expect(err).not.toContain(".github/workflows/agent-implement.yml");
+      expect(err).not.toContain(".github/workflows/agent-issue.yml");
       expect(err).toContain("gh api --method POST repos/{owner}/{repo}/actions/policies");
       expect(err).toContain("Settings → Actions → Policies");
     });
 
     /** A policy that allows nothing for a caller is no policy for it. */
     it.each([
-      ["one caller missing", allowing(callers.slice(1))],
-      ["excluded", allowing([], { exclude: [".github/workflows/agent-fix.yml"] })],
+      ["one caller file missing", allowing([".github/workflows/agent-review.yml"])],
+      ["excluded", allowing([], { exclude: [".github/workflows/agent-pr.yml"] })],
       ["only in evaluate mode", allowing(callers, { enforcement: "evaluate" })],
       ["another event only", allowing(callers, { allowedEvents: ["push"] })],
     ] as const)("fails on a policy that is %s", async (_what, policy) => {
       const { code, err } = await check(await installed(), { ...healthy(), visibility: "public", actionsPolicies: [policy] });
 
       expect(code).toBe(1);
-      expect(err).toContain(".github/workflows/agent-fix.yml");
+      expect(err).toContain(".github/workflows/agent-pr.yml");
     });
 
     it("counts a policy on every workflow, or a glob over the callers", async () => {
@@ -1545,14 +1647,14 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * The `closed` trigger moved the chain on from a slice PR merged by hand,
-   * and nothing listens for it now. A caller installed before still has it,
-   * which fires a job that skips: harmless, so not worth a word (#249).
+   * and the review listens for it no more (#249). The PR-side caller file
+   * lists it for `follow-ups` (#225), so the review's caller fires on it and
+   * every review job skips: harmless, so not worth a word.
    */
-  it("does not flag a review caller that still listens on closed", async () => {
+  it("does not flag a review caller whose file listens on closed", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace("types: [labeled]", "types: [closed, labeled]"));
-    expect(fs.readFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), "utf8")).toContain(
-      "types: [closed, labeled]",
+    expect(fs.readFileSync(path.join(root, ...callerFileOf(root, "review").split("/")), "utf8")).toContain(
+      "types: [labeled, closed]",
     );
 
     const { code, out, err } = await check(root, healthy());
@@ -1622,13 +1724,13 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   it("fails a caller that dropped packages: read, and names the grant", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(/^ *packages: read$/m, ""));
+    edit(root, "fix", (text) => text.replace(/^ *packages: read$/m, ""));
 
     const { code, err } = await check(root, healthy());
 
     expect(code).toBe(1);
     expect(err).toContain("packages: read");
-    expect(err).toContain("agent-fix.yml");
+    expect(err).toContain(".github/workflows/agent-pr.yml grants the `fix` job no `packages: read`");
   });
 
   /**
@@ -1647,7 +1749,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("fails a review caller without checks: read on a public repository too", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace(/^ *checks: read$/m, ""));
+    edit(root, "review", (text) => text.replace(/^ *checks: read$/m, ""));
 
     for (const visibility of ["private", "public"] as const) {
       const { code, err } = await check(root, { ...healthy(), visibility });
@@ -1735,6 +1837,27 @@ describe("doctor names the failures that otherwise look like something else", ()
       ),
     );
 
+  /**
+   * `doctor` points an adopter at the reference caller file holding a job, from
+   * a fixed list because `diagnose` reads nothing at run time. That list is
+   * the reference set's, file for file (#225).
+   */
+  it("knows which reference caller file holds each caller", () => {
+    const dir = path.join(PACKAGE_DIR, "examples", "callers");
+    const held = Object.fromEntries(
+      fs
+        .readdirSync(dir)
+        .filter((entry) => entry.endsWith(".yml"))
+        .flatMap((entry) =>
+          callersIn(fs.readFileSync(path.join(dir, entry), "utf8"), manifest.name, entry).map(
+            (caller) => [caller.workflow, entry] as const,
+          ),
+        ),
+    );
+
+    expect(REFERENCE_CALLER_FILES).toEqual(held);
+  });
+
   it("demands exactly what the reusable halves bound and the reference callers grant", () => {
     const bound = ceilings();
     // The premise: a restructure that stopped finding the reusables would
@@ -1752,10 +1875,16 @@ describe("doctor names the failures that otherwise look like something else", ()
       }
     }
 
+    // Read by the workflow each caller calls, not by file: a reference caller
+    // file holds one side's callers (#225).
+    const dir = path.join(PACKAGE_DIR, "examples", "callers");
+    const references = fs
+      .readdirSync(dir)
+      .filter((entry) => entry.endsWith(".yml"))
+      .flatMap((entry) => callersIn(fs.readFileSync(path.join(dir, entry), "utf8"), manifest.name, entry));
     const granted = new Map(
       [...bound.keys()].map((name) => {
-        const file = path.join(PACKAGE_DIR, "examples", "callers", `${name}.yml`);
-        const [caller] = callersIn(fs.readFileSync(file, "utf8"), manifest.name, file);
+        const caller = references.find((held) => held.workflow === name);
         return [name, { ...caller?.permissions }];
       }),
     );
@@ -1787,7 +1916,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     "names %s when the caller's own block leaves it out, and fails on it",
     async (_label: string, workflow: string, permission: string, value: string) => {
       const root = await installed();
-      edit(root, `agent-${workflow}.yml`, (text) =>
+      edit(root, workflow, (text) =>
         text.replace(new RegExp(`^ *${permission}: ${value}$`, "m"), ""),
       );
 
@@ -1801,7 +1930,9 @@ describe("doctor names the failures that otherwise look like something else", ()
         const said = err.split("\n").find((line) => line.includes(`${permission}: ${value}:`));
 
         expect(said, `${visibility}: nothing on stderr`).toBeDefined();
-        expect(said).toContain(`agent-${workflow}.yml`);
+        // The file and the job: in a caller file holding several callers, the
+        // file alone does not say which one is short (#225).
+        expect(said).toContain(`${callerFileOf(root, workflow)} grants the \`${workflow}\` job`);
         // And what it says the shortfall costs, which is the correction #146
         // made: the run, before any job starts, rather than the step the scope
         // is spent on.
@@ -1877,7 +2008,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("does not invent a missing grant on a caller that granted everything", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) =>
+    edit(root, "fix", (text) =>
       text.replace(/^    permissions:\n(?:.*\n)*?    # No `with:`/m, "    permissions: write-all\n    # No `with:`"),
     );
 
@@ -1924,7 +2055,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("reports a review caller that still grants contents: read", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace(/^( *)contents: write$/m, "$1contents: read"));
+    edit(root, "review", (text) => text.replace(/^( *)contents: write$/m, "$1contents: read"));
 
     for (const visibility of ["private", "public"] as const) {
       const { code, err } = await check(root, { ...healthy(), visibility });
@@ -1957,7 +2088,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     "tells a caller to change %s rather than add a second key",
     async (_label: string, workflow: string, permission: string, value: string) => {
       const root = await installed();
-      edit(root, `agent-${workflow}.yml`, (text) =>
+      edit(root, workflow, (text) =>
         text.replace(new RegExp(`^( *)${permission}: ${value}$`, "m"), `$1${permission}: none`),
       );
 
@@ -2027,6 +2158,30 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * A caller inside a caller file whose top level grants nothing (#225): a job
+   * there that lost its own block runs with no scope at all. One finding about
+   * the block, naming the job, rather than one per scope telling the adopter to
+   * add each to the top-level block, which would grant it to every caller in
+   * the file.
+   */
+  it("names a job in a caller file that grants nothing above jobs:, and gives it its own block", async () => {
+    const root = await installed();
+    edit(root, "fix", (text) => text.replace(/^    permissions:\n(?:(?:      .*)?\n)*?(?=    #)/m, ""));
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    const said = err.split("\n").filter((line) => line.startsWith("FAIL") && line.includes("`fix` job"));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain(".github/workflows/agent-pr.yml");
+    expect(said[0]).toContain("grants nothing");
+    expect(err).toContain("the `fix` job's in examples/callers/pr.yml");
+    expect(err).not.toMatch(/to the workflow's top-level `permissions:` block/);
+    // The other callers in the file keep their own blocks, and are fine.
+    expect(err).not.toContain("`review` job");
+  });
+
+  /**
    * No grant's severity depends on a fact `gh` may not be able to read any
    * more, so an unreadable visibility raises nothing and assumes nothing —
    * where it used to fail `checks: read` on the assumption that the repository
@@ -2035,7 +2190,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("needs no visibility to rule on a missing grant", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace(/^ *checks: read$/m, ""));
+    edit(root, "review", (text) => text.replace(/^ *checks: read$/m, ""));
 
     const { code, err } = await check(root, { ...healthy(), visibility: undefined });
 
@@ -2074,7 +2229,9 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(1);
     expect(err).toContain("declares no `permissions:` block");
-    expect(err).toContain("examples/callers/review.yml");
+    // The reference caller file holding that job, not one named after the
+    // workflow: a reference file holds one side's callers (#225).
+    expect(err).toContain("the `review` job's in examples/callers/pr.yml");
   });
 
   it("says nothing about a caller inheriting a permissive default token", async () => {
@@ -2148,7 +2305,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   it("fails a caller pinned to a branch rather than a tag or a SHA", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(`@v${manifest.version}`, "@main"));
+    edit(root, "fix", (text) => text.replace(`@v${manifest.version}`, "@main"));
 
     const { code, err } = await check(root, healthy());
 
@@ -2164,7 +2321,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("reports how many releases a pin is behind, without failing on it", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(`@v${manifest.version}`, "@v0.1.1"));
+    edit(root, "fix", (text) => text.replace(`@v${manifest.version}`, "@v0.1.1"));
 
     const { code, out } = await check(root, {
       ...healthy(),
@@ -2183,7 +2340,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("still reports a pin older than the latest tag it could not find in the list", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(`@v${manifest.version}`, "@v0.0.1"));
+    edit(root, "fix", (text) => text.replace(`@v${manifest.version}`, "@v0.0.1"));
 
     const { code, out } = await check(root, { ...healthy(), releases: [`v${manifest.version}`] });
 
@@ -2235,7 +2392,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("fails a self-check that does not name the job it is in", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace(/^  review:$/m, "  reviewer:"));
+    edit(root, "review", (text) => text.replace(/^  review:$/m, "  reviewer:"));
 
     const { code, err } = await check(root, healthy());
 
@@ -2266,7 +2423,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     ["leaves out the spaces around the slash", "self-check: review/review"],
   ])("fails a self-check that %s", async (_case: string, written: string) => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) =>
+    edit(root, "review", (text) =>
       text.replace(/self-check: review \/ review/, written),
     );
 
@@ -2290,7 +2447,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("reads the calling job's display name, not its id, as the first half", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) =>
+    edit(root, "review", (text) =>
       text
         .replace(/^  review:$/m, "  review:\n    name: Agent review")
         .replace("self-check: review / review", "self-check: Agent review / review"),
@@ -2305,7 +2462,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   /** …and the id-shaped one is now the wrong answer on that same caller. */
   it("fails a named job whose self-check still states the job id", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) =>
+    edit(root, "review", (text) =>
       text.replace(/^  review:$/m, "  review:\n    name: Agent review"),
     );
 
@@ -2329,7 +2486,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("fails a caller that does not pass AGENT_PAT to the workflow it calls", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) =>
+    edit(root, "fix", (text) =>
       text.replace(/^ *AGENT_PAT: .*$/m, ""),
     );
 
@@ -2337,7 +2494,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(1);
     expect(err).toContain("AGENT_PAT");
-    expect(err).toContain("agent-fix.yml");
+    expect(err).toContain(".github/workflows/agent-pr.yml does not hand `AGENT_PAT` to `fix.yml`");
     expect(err).toContain("secrets: inherit");
   });
 
@@ -2363,7 +2520,8 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     const { code, out, err } = await check(root, healthy());
 
-    expect(`${out}${err}`).not.toContain("agent-follow-ups.yml");
+    expect(`${out}${err}`).not.toContain("`follow-ups.yml`");
+    expect(`${out}${err}`).not.toContain("`follow-ups` job");
     expect(code).toBe(0);
   });
 
@@ -2375,7 +2533,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("accepts a caller that inherits every secret", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) =>
+    edit(root, "fix", (text) =>
       text.replace(/^    secrets:\n(?:      .*\n)+/m, "    secrets: inherit\n"),
     );
 
@@ -2393,7 +2551,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("reports the missing wire as a warning when the secret is not set either", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(/^ *AGENT_PAT: .*$/m, ""));
+    edit(root, "fix", (text) => text.replace(/^ *AGENT_PAT: .*$/m, ""));
 
     const { out, err } = await check(root, {
       ...healthy(),
@@ -2555,7 +2713,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   const withAutoFix = async (value: string): Promise<string> => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) =>
+    edit(root, "review", (text) =>
       text.replace("self-check: review / review", `self-check: review / review\n      auto-fix: ${value}`),
     );
     return root;
@@ -2639,7 +2797,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   const withRedCheck = async (blocks: readonly string[]): Promise<string> => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => {
+    edit(root, "review", (text) => {
       let after = text;
       for (const block of blocks) {
         const commented = block.split(INDENT).map((line) => `# ${line}`).join(INDENT);
@@ -2658,7 +2816,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("notes that the red check is not configured on a caller init has just installed", async () => {
     const { code, out, err } = await check(await installed(), healthy());
 
-    expect(out).toContain("note  red check: .github/workflows/agent-review.yml's `review` job does not configure the red check");
+    expect(out).toContain("note  red check: .github/workflows/agent-pr.yml's `review` job does not configure the red check");
     expect(out).toContain("red-check-command");
     expect(out).not.toContain("warn  red check");
     expect(err).toBe("");
@@ -2668,7 +2826,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("notes that the red check is configured, naming its command and report", async () => {
     const { code, out, err } = await check(await withRedCheck([COMMAND, REPORT, GLOBS]), healthy());
 
-    expect(out).toContain("note  red check: .github/workflows/agent-review.yml's `review` job configures the red check");
+    expect(out).toContain("note  red check: .github/workflows/agent-pr.yml's `review` job configures the red check");
     expect(out).toContain("`npx vitest run --reporter=junit --outputFile=junit.xml`");
     expect(out).toContain("`junit.xml`");
     expect(out).toContain("never a required status");
@@ -2713,7 +2871,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("reads red check inputs left empty, null or blank as not passed", async () => {
     for (const value of ['""', "~", '"  "']) {
       const root = await withRedCheck([COMMAND, REPORT]);
-      edit(root, "agent-review.yml", (text) =>
+      edit(root, "review", (text) =>
         text.replace(REPORT, `${REPORT}${INDENT}red-check-test-globs: ${value}`),
       );
       const { out } = await check(root, healthy());
@@ -2884,7 +3042,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("writes its reasons where a workflow can read them", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(/^ *packages: read$/m, ""));
+    edit(root, "fix", (text) => text.replace(/^ *packages: read$/m, ""));
 
     await check(root, healthy());
 

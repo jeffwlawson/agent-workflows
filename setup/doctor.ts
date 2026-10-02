@@ -3,6 +3,7 @@ import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
   passesSecret,
   readInstalledCallers,
+  REFERENCE_CALLER_FILES,
   repoSlug,
   selfCheckFor,
   selfCheckMatches,
@@ -452,6 +453,10 @@ const REFUSED =
   `annotation on the run page naming the scope that is short — which \`gh run view\` reports only ` +
   `as a workflow file issue, and which no job log records at all.`;
 
+/** A caller with no block of its own, under a top-level `permissions: {}`. */
+const inheritsNothing = (caller: InstalledCaller): boolean =>
+  caller.permissionsFrom === "workflow" && Object.keys(caller.permissions).length === 0;
+
 /**
  * Rule on the installed callers and the facts. Pure: everything it needs has
  * already been read, and everything it cannot know arrives as `undefined`.
@@ -490,6 +495,11 @@ export const diagnose = (
       // `packages: read`, and a job-level block naming only that would replace
       // the inherited token and drop everything else it holds.
       if (caller.permissionsFrom === "none") continue;
+      // Nor one that inherits a top-level block granting nothing, which is
+      // what a caller file holding several callers declares (#225): told to
+      // add each scope up there, an adopter grants it to every caller in the
+      // file. Ruled on once below, with the block as the fix.
+      if (inheritsNothing(caller)) continue;
       if (!missingPermission(caller, permission, value)) continue;
 
       // A grant can be short in two ways, and they do not take the same
@@ -560,6 +570,29 @@ export const diagnose = (
   // One finding about the block, not a list of scopes, because the fix is the
   // whole block either way: a job-level one replaces the inherited token rather
   // than adding to it, so naming a single scope is how an adopter loses the rest.
+  // A job in a caller file whose top-level block grants nothing, and which
+  // declares none of its own: the shape a caller file holding several callers
+  // takes (#225) once one of its jobs has lost its block. It runs with no scope
+  // at all, whatever the repository's default, so it is refused like any other
+  // short grant. The fix is the job's own block, never the top-level one, which
+  // would hand the scopes to every caller in the file.
+  for (const caller of callers) {
+    if (!inheritsNothing(caller)) continue;
+    add({
+      severity: "error",
+      check: "permissions block",
+      problem:
+        `${caller.file} declares no \`permissions:\` block on the \`${caller.jobId}\` job, and the ` +
+        `one above \`jobs:\` grants nothing, so the job runs with no scope at all: less than the ` +
+        `job this caller calls declares. ${REFUSED}`,
+      fix:
+        `Give the job its own \`permissions:\` block naming every scope it needs: copy the whole ` +
+        `one, the \`${caller.workflow}\` job's in ` +
+        `examples/callers/${REFERENCE_CALLER_FILES[caller.workflow] ?? ""}. Not above \`jobs:\`, where ` +
+        `a grant is every caller's in the file.`,
+    });
+  }
+
   for (const caller of callers) {
     if (caller.permissionsFrom !== "none") continue;
     if (facts.defaultWorkflowPermissions === "write") continue;
@@ -585,7 +618,8 @@ export const diagnose = (
       fix:
         `Give the \`${caller.jobId}\` job a \`permissions:\` block naming every scope it needs. ` +
         `A block replaces the inherited token wholesale rather than adding to it, so copy the ` +
-        `whole one from examples/callers/${caller.workflow}.yml rather than adding a single line.`,
+        `whole one, the \`${caller.workflow}\` job's in ` +
+        `examples/callers/${REFERENCE_CALLER_FILES[caller.workflow] ?? ""}, rather than adding a single line.`,
     });
   }
 

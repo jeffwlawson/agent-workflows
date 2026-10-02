@@ -1,8 +1,8 @@
 name: Agent Fix (reusable)
 
-# The fix job itself. `agent-fix.yml` is the caller — a trigger and two wires —
-# and everything that bounds what a wrong fix can do stays here, in a file an
-# adopting repo *references* rather than copies
+# The fix job itself. The `fix` job in `agent-pr.yml` is the caller (two wires,
+# under that file's trigger), and everything that bounds what a wrong fix can do
+# stays here, in a file an adopting repo *references* rather than copies
 # (jeffwlawson/winget-manifest-lint#98, slice 4 of
 # jeffwlawson/winget-manifest-lint#88; jeffwlawson/winget-manifest-lint#97
 # proved the pattern on review).

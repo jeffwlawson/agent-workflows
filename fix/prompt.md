@@ -4,6 +4,7 @@ Address the review feedback on pull request #{{PR_NUMBER}}.
 
 You are on branch `{{BRANCH}}`, already checked out at the PR head.
 
+{{RESUME}}
 # REVIEW SUMMARIES
 
 {{REVIEW_SUMMARIES}}
@@ -118,6 +119,9 @@ Run the verify command `CLAUDE.md` names before committing. It must pass.
 Make one or more commits on `{{BRANCH}}` with conventional commit messages. The message is the
 only place your reasoning is recorded, so state what you addressed and what you declined, with
 the reason.
+
+Commit as soon as the work first passes the verify command `CLAUDE.md` names, and make later changes
+as further commits. A run can be stopped at its time limit, and only committed work survives that.
 
 A commit that fixed a class rather than the instance a comment named says which class and which
 members it covers. Without that, a reader comparing the commit against the comment cannot tell

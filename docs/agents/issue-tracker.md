@@ -130,7 +130,8 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a
   context pointer to the map's Decisions-so-far.
 - **Close the map**: the map's terminal state, reached only after it has been sliced into a PRD,
-  and never from inside a `/wayfinder` session — step 5 of the path out, in
+  or, for a map that ends in standalone issues, once its last child ticket closes, and never from
+  inside a `/wayfinder` session — step 5 of the path out, in
   [`triage-labels.md`](./triage-labels.md#the-wayfinder-planning-labels), carries the precondition
   and the invocation.
 

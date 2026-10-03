@@ -573,6 +573,13 @@ The ones worth knowing because nothing fails when they break:
   timeout from a hand cancel by how long the job ran, off a clock its first step starts. Before that
   a timed-out run posted nothing, while the `always()` cleanup still took the label marking the run
   off.
+- **A stopped fix or implement-prd run keeps its commits on a rescue branch** (#303):
+  `agent/rescue/fix-<pr>` or `agent/rescue/prd-<parent>`, never the branch the pull request tracks,
+  since a commit there would stand on its head unverified and with no verdict. The next run of the
+  label resumes from it where it still builds on the head that run starts from, sets it aside (and
+  says so) where it does not, and a run that succeeds deletes it either way, except a fix run with
+  nothing to do, which never read it. Rescued work reaches the pull request only through a resumed
+  run's own push, after its verify.
 - **A label set when an issue is *created* fires no `labeled` event.** Label in a separate call,
   always; recovery is remove-then-re-add.
 - **A label added with `GITHUB_TOKEN` is a silent no-op**, which is why `AGENT_PAT` exists.

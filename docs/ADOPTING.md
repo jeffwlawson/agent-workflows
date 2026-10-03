@@ -311,12 +311,14 @@ It has no webhook: nothing listens for one.
 **Workflows: write is acceptable here because neither the key nor a token is ever on the agent's
 runner.** `Contents: write` together with `Workflows: write` is the pair that lets a holder push a
 workflow into a repository whose runs carry secrets. So the App's secrets are named only in jobs
-that never run the agent: the gate and publish jobs of every workflow that writes code, and the
-review's posting and `advance` jobs. A job's runner holds every secret the job names from its first
-step, so the job that runs the agent names none of the App's secrets and no `AGENT_PAT`, not even
-in a step that never runs. Each job that writes mints its own token at its start and hands it to no
-other job, and the publish job starts on a fresh runner after the agent has finished, so a long
-agent run cannot outlast the token that publishes its work.
+that never run the agent: the publish job of every workflow that writes code, `implement-prd`'s
+`catch_up` job, which pushes the default branch's merge before the agent runs, the review's
+`post-review` and `advance` jobs, and the review's `time-limit` job, which only asks which token the
+loop would write with and mints none. A job's runner holds every secret the job names from its
+first step, so the job that runs the agent names none of the App's secrets and no `AGENT_PAT`, not
+even in a step that never runs. Each job that writes mints its own token before its first write
+that needs it and hands it to no other job, and the publish job starts on a fresh runner after the
+agent has finished, so a long agent run cannot outlast the token that publishes its work.
 
 **Where `init` puts the secrets.** On the organization, shared with its repositories, where the
 owner is an organization and you are shown to be its admin; on the repository otherwise: a

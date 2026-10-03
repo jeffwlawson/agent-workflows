@@ -18,12 +18,12 @@ description: >-
 # written by `scripts/sync-version.ts` on release (`shared/pins.ts`, the
 # `action` form).
 #
-# **Run only in a job that never runs the agent**, at that job's start, and
-# never handed to another job. A job's runner holds every secret the job names
-# from its first step (#307), so the App's key, the PAT and the token minted
-# from them are named in the gate-side and publish jobs, and review's
-# `post-review` and `advance`, alone (and review's `time-limit`, which mints
-# nothing; see `choose-only` below). The token lasts an hour; every job
+# **Run only in a job that never runs the agent**, before that job's first
+# write needing it, and never handed to another job. A job's runner holds
+# every secret the job names from its first step (#307), so the App's key, the
+# PAT and the token minted from them are named in the publish jobs,
+# implement-prd's `catch_up`, and review's `post-review` and `advance`, alone
+# (and review's `time-limit`, which mints nothing; see `choose-only` below). The token lasts an hour; every job
 # minting one is short, and the publish and posting jobs start after the agent
 # has finished.
 #

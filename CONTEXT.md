@@ -509,13 +509,15 @@ the supported fallback; then the workflow token, under the warnings every such w
 Half an App is no App: both secrets, or the next source.
 
 The **token resolver** is the one place that order is applied: the composite action
-`.github/actions/loop-token` (#319, #320), which every reusable workflow names and none
+`.github/actions/loop-token` (#319, #320), which every reusable workflow that writes names and none
 reimplements. It mints an installation token scoped to the run's repository where the App is set,
 and reports which source it used (`app`, `pat` or `workflow`), which is what a step reads to
-decide whether to warn, or name the label to add by hand, instead of adding one. It runs only in jobs that run no agent: the gate and
-publish jobs, and review's posting and `advance` jobs. Each job that writes mints its own token at
-its start and hands it to no other, so the key and every token minted from it are on no runner an
-agent ran on, which is what makes the App's Workflows: write acceptable.
+decide whether to warn, or name the label to add by hand, instead of adding one. It runs only in
+jobs that run no agent: every publish job, `implement-prd`'s `catch_up`, and review's
+`post-review` and `advance`, which mint; and review's `time-limit`, which asks for the source alone
+and mints nothing. Each job that writes mints its own token before its first write that needs it
+and hands it to no other, so the key and every token minted from it are on no runner an agent ran
+on, which is what makes the App's Workflows: write acceptable.
 
 The App takes over **writes** only. Reviews, comments, thread replies and commit statuses are still
 the workflow token's, posted as `github-actions[bot]`, so the author gate's workflow-bot login and

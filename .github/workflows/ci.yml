@@ -19,6 +19,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The tags, for the suite's check that this repository's own callers
+          # pass only what the release they pin declares — read with `git show
+          # v<pin>:…`, and a shallow clone has no tag to read it from.
+          fetch-depth: 0
 
       # `.nvmrc` rather than a literal, and it matters here more than usual: the
       # publish check below only reproduces on the npm that ships with Node 24.

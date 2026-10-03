@@ -269,6 +269,55 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   };
 
   /** argv, not a shell string — the convention every variable reaching git follows. */
+  const git = (args: readonly string[]): string =>
+    execFileSync("git", [...args], { cwd: packageDir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+
+  /**
+   * A release is cut from the tip of `origin`'s default branch, and from nowhere
+   * else.
+   *
+   * `publish.yml` already refuses a tag on a commit that branch does not
+   * contain, but only once the tag is pushed — and v0.7.9 was first cut in a
+   * worktree one merge behind, which would have tagged a release missing the
+   * change it was cut to ship. Asked of `origin` itself rather than of a
+   * remote-tracking ref, because a stale `origin/main` is exactly how a
+   * checkout comes to be behind without knowing it; and the branch is the one
+   * origin names, as `publish.yml` takes it from the repository. Ahead is
+   * refused too: a commit that reaches the default branch only inside a release
+   * push is one no pull request reviewed.
+   */
+  const assertReleaseTip = (): void => {
+    let remote = "";
+    let branch = "";
+    let head = "";
+    try {
+      remote = git(["ls-remote", "--symref", "origin", "HEAD"]);
+      branch = git(["branch", "--show-current"]);
+      head = git(["rev-parse", "HEAD"]);
+    } catch (error) {
+      const { stderr } = error as { readonly stderr?: Buffer | string };
+      throw new Error(`Could not ask git where this release would be cut: ${String(stderr ?? error).trim()}.`);
+    }
+    // `ref: refs/heads/<branch>\tHEAD`, then `<sha>\tHEAD`.
+    const base = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(remote)?.[1];
+    const tip = /^([0-9a-f]{40,64})\tHEAD$/m.exec(remote)?.[1];
+    const where =
+      base === undefined || tip === undefined
+        ? "origin names no default branch"
+        : branch !== base
+          ? `the branch here is ${branch === "" ? "a detached HEAD" : `\`${branch}\``}, not \`${base}\``
+          : head !== tip
+            ? `HEAD is ${head.slice(0, 7)} but origin's \`${base}\` is ${tip.slice(0, 7)}`
+            : undefined;
+    if (where !== undefined) {
+      throw new Error(
+        `Refusing to release: ${where}. A release is cut at the tip of origin's default branch, so the ` +
+          `tag carries what is merged and nothing else. Undo npm's bump with ` +
+          `\`git checkout -- package.json package-lock.json\`, bring the checkout level with origin, and retry.`,
+      );
+    }
+  };
+
   const stage = (files: readonly string[]): void => {
     try {
       execFileSync("git", ["add", "--", ...files], {
@@ -285,6 +334,7 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   };
 
   try {
+    assertReleaseTip();
     const sites = syncVersion(version ?? "", packageDir);
     stage(sites.map((site) => site.file));
     console.log(`Synced ${sites.length} version pin(s) to ${version}.`);

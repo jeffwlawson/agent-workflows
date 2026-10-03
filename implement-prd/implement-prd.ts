@@ -12,6 +12,7 @@ import {
   writeText,
 } from "../shared/common.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
+import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { renderPrdStatus, renderProgressList, statusBlock, type ProgressInputs } from "../shared/progress-list.js";
 import { readRoundRecord, roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
@@ -38,6 +39,12 @@ const BRANCH = required("BRANCH");
  * names a ref that exists on a repo whose default branch is not `main`.
  */
 const BASE_REF = required("BASE_REF");
+
+/**
+ * Where a run of this PRD that stopped before it finished left its commits
+ * (#303), and where this one looks for them to resume from.
+ */
+const RESCUE_BRANCH = required("RESCUE_BRANCH");
 
 /** The PRD PR, or "" on the first slice, which opens it once this exits. */
 const PRD_PR = process.env["PRD_PR"] ?? "";
@@ -147,6 +154,18 @@ try {
   // slice nobody implemented.
   const before = git(["rev-parse", "HEAD"]).trim();
 
+  // An earlier run's unpushed commits (#303), where they still build on the
+  // tip this run starts from. After `before`, so they count as this run's,
+  // which they are: none of them was pushed. Set aside, and said so on the
+  // PRD, where the PRD branch moved since they were saved.
+  const resume = resumeFromRescue(RESCUE_BRANCH);
+  if (resume.kind === "resumed") {
+    console.log(`Resuming from ${resume.commits} commit(s) an earlier run saved on ${RESCUE_BRANCH}.`);
+  } else if (resume.kind === "ignored") {
+    console.log(`::warning::${RESCUE_BRANCH} was saved on an older tip of ${BRANCH}, so this run starts fresh.`);
+    writeText("rescue_ignored.md", ignoredNote("agent:implement", RESCUE_BRANCH, "the PRD branch"));
+  }
+
   const result = await sandcastle.run({
     name: `implement-prd-#${ISSUE_NUMBER}-sub-#${SUB_NUMBER}`,
     agent: claudeAgent("implement-prd"),
@@ -164,6 +183,7 @@ try {
       BASE_REF,
       PRD_CONTEXT: prdContext,
       SUB_CONTEXT: subContext,
+      RESUME: resumeSection(resume, RESCUE_BRANCH),
     },
     maxIterations: 1,
   });

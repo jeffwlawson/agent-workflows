@@ -13,6 +13,7 @@ even if the code you are writing would be tidier with it done. Another run does 
 same branch once this slice is reviewed, with this same context, and a slice that quietly absorbs
 its successor leaves that run with nothing to do and a sub-issue nobody can honestly close.
 
+{{RESUME}}
 # THE SLICE
 
 {{SUB_CONTEXT}}
@@ -70,6 +71,8 @@ catch now costs one edit; one the review catches costs a round.
 
 Make one or more commits on `{{BRANCH}}` with conventional commit messages. Name the slice, not
 the PRD: `feat: ... (#{{SUB_NUMBER}})`.
+Commit as soon as the work first passes the verify command `CLAUDE.md` names, and make later changes
+as further commits. A run can be stopped at its time limit, and only committed work survives that.
 Do not use em dashes in anything you write; use a comma, colon, semicolon, parentheses, or a new sentence instead.
 
 Do not push. Do not edit labels. Do not create GitHub comments.

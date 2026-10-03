@@ -337,6 +337,10 @@ jobs:
       # in a shell expansion.
       BASE_REF: ${{ github.event.pull_request.base.ref || inputs.default-branch }}
       BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # Where a run of this pull request that stopped before it finished left
+      # its commits, and where this one looks for them (#303). Fixed, so the
+      # retry finds it by name: the publish job names the same branch.
+      RESCUE_BRANCH: agent/rescue/fix-${{ github.event.pull_request.number }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
@@ -367,6 +371,13 @@ jobs:
       # comment lines included — so a literal empty expression written inside a
       # run block is an "An expression was expected" startup failure. That is
       # what took this workflow down for two days; see tests/workflows.test.ts.
+      #
+      # And the rescue branch an earlier run left (#303), where there is one,
+      # fetched to `refs/rescue/` for the runner to resume from. The runner
+      # decides whether it still builds on this head; this only fetches it.
+      # **An unreadable answer stops the run**, rather than reading as "no
+      # rescue": a run that started over without it, and succeeded, would
+      # delete it.
       - name: Prepare branch and make the PR base available for diffing
         run: |
           set -euo pipefail
@@ -376,6 +387,19 @@ jobs:
           echo "::add-mask::${auth}"
           git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
           git checkout -B "$BRANCH"
+          found=0
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" ls-remote --exit-code origin "refs/heads/${RESCUE_BRANCH}" > /dev/null || found=$?
+          case "$found" in
+            0)
+              git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch --no-tags origin "+refs/heads/${RESCUE_BRANCH}:refs/rescue/${RESCUE_BRANCH}"
+              echo "Fetched ${RESCUE_BRANCH}, which an earlier run left, for the runner to resume from." ;;
+            2) echo "No ${RESCUE_BRANCH}, so there is nothing to resume from." ;;
+            *)
+              reason="Couldn't check whether an earlier run left commits on \`${RESCUE_BRANCH}\`, so this run stopped rather than start over without them."
+              printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
+              echo "::error::${reason}"
+              exit 1 ;;
+          esac
           git config user.name "sandcastle-agent[bot]"
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
 
@@ -527,8 +551,12 @@ jobs:
       # head this run checked out being its prerequisite, which `publish` has
       # from its own checkout, and holding exactly the pull request's branch.
       # No commits is no bundle, which `publish` reads as nothing to push.
+      #
+      # `always()` (#303): a run that failed, was cancelled or timed out hands
+      # its commits over too, for `publish` to rescue to a side branch rather
+      # than push. Commits it resumed from count, so a rescue holds all of them.
       - name: Bundle the branch
-        if: success()
+        if: always()
         run: |
           if [ -z "$(git rev-list -n 1 "${BRANCH_HEAD_SHA}..refs/heads/${BRANCH}")" ]; then
             echo "No new commits, so there is nothing to bundle."
@@ -561,6 +589,7 @@ jobs:
             ${{ runner.temp }}/conversation_outcomes.md
             ${{ runner.temp }}/top_level_comments.json
             ${{ runner.temp }}/out_of_scope_notes.json
+            ${{ runner.temp }}/rescue_ignored.md
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
@@ -584,6 +613,8 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
       BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # The agent's job's, which it looks for to resume from (#303).
+      RESCUE_BRANCH: agent/rescue/fix-${{ github.event.pull_request.number }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
@@ -630,6 +661,18 @@ jobs:
           printf '%s\n' "$reason" > "${RUNNER_TEMP}/failure_reason.txt"
           echo "::error::${reason}"
           exit 1
+
+      # A rescue branch the runner set aside because the pull request's head
+      # moved since it was saved (#303), said on the pull request however the
+      # run ends, so work nobody built on is not dropped silently. The runner
+      # writes the note; it is absent on every other run.
+      - name: Say the rescue was set aside
+        if: always()
+        run: |
+          note="${RUNNER_TEMP}/rescue_ignored.md"
+          [ -f "$note" ] || exit 0
+          gh pr comment "$PR_NUMBER" --body-file "$note" \
+            || echo "::warning::Could not say on PR #${PR_NUMBER} that ${RESCUE_BRANCH} was set aside."
 
       - name: Checkout PR head
         if: needs.fix.result == 'success'
@@ -714,6 +757,25 @@ jobs:
             echo "pushed=true"
             echo "head=$(git rev-parse "refs/heads/${BRANCH}")"
           } >> "$GITHUB_OUTPUT"
+
+      # A run that succeeded leaves no rescue branch behind (#303), whether it
+      # resumed from it, and its commits are now on the pull request with the
+      # rest of this run's, or set it aside. Never fails the run: a branch left
+      # behind is set aside by the next run, whose head has moved past it.
+      #
+      # Not on a run with nothing to do: the runner exits before it reads the
+      # rescue, so it neither resumed it nor set it aside, and the commits on
+      # it are still the next run's to resume from.
+      - name: Delete the rescue branch
+        if: needs.fix.result == 'success' && success() && steps.nothing.outputs.nothing != 'true'
+        run: |
+          if ! gh api "repos/{owner}/{repo}/git/ref/heads/${RESCUE_BRANCH}" --silent 2> /dev/null; then
+            echo "No ${RESCUE_BRANCH} to delete."
+            exit 0
+          fi
+          gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/${RESCUE_BRANCH}" --silent \
+            && echo "Deleted ${RESCUE_BRANCH}: this run succeeded." \
+            || echo "::warning::Could not delete ${RESCUE_BRANCH}. The next run sets it aside; delete it by hand."
 
       # Reply into every thread the agent reported on, and resolve **none** of
       # them (#111, and #109 decision 1). The reply still says whether the run
@@ -1031,6 +1093,77 @@ jobs:
       #
       # In the loop's one order (#236): the comment, then this run's own label
       # off, then `agent:blocked`.
+      #
+      # Ahead of it, the rescue (#303): a run that stopped with commits the
+      # pull request does not have keeps them on a side branch, and the
+      # comment names it.
+      - name: Checkout PR head for the rescue
+        if: always() && needs.gate.outputs.refused == 'false' && (needs.fix.result == 'failure' || needs.fix.result == 'cancelled')
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # **To a side branch with a fixed name, never to the pull request's.** A
+      # commit pushed there would stand on the pull request's head unverified
+      # and with no verdict, so rescued work reaches the pull request only
+      # through the resumed run's own push, after its verify. Nothing else:
+      # no pull request, no review asked for, no label.
+      #
+      # Only where the gate claimed the run, the run stopped (the agent's job
+      # failed, timed out or was cancelled, or a step here failed), and nothing
+      # was pushed to the pull request. The bundle is checked as `Push branch`
+      # checks it, and a bundle that fails a check is not rescued: no bundle at
+      # all is a run with no commits ahead of the head it started from, which
+      # pushes nothing.
+      #
+      # `--force-with-lease`, against the rescue as this step reads it: a run
+      # that stops again overwrites the earlier rescue, which it started from
+      # and so holds all of, and nothing that moved it in between is lost
+      # silently. With the loop's token, as `Push branch` pushes, since the
+      # agent's commits may touch a workflow file.
+      - name: Rescue the agent's commits
+        id: rescue
+        if: always() && needs.gate.outputs.refused == 'false' && (cancelled() || failure() || needs.fix.result == 'failure' || needs.fix.result == 'cancelled') && steps.push.outputs.pushed != 'true'
+        continue-on-error: true
+        env:
+          PUSH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          bundle="${RUNNER_TEMP}/branch.bundle"
+
+          skip() {
+            echo "::warning::$1 Nothing was rescued."
+            exit 0
+          }
+
+          if [ ! -f "$bundle" ]; then
+            echo "No commits ahead of the head this run started from, so there is nothing to rescue."
+            exit 0
+          fi
+          git bundle verify --quiet "$bundle" || skip "The agent's commits arrived damaged or incomplete."
+          git bundle unbundle "$bundle" > /dev/null || skip "The agent's commits arrived damaged or incomplete."
+          heads=$(git bundle list-heads "$bundle")
+          if [ "$(wc -l <<< "$heads")" -ne 1 ] || [ "$(cut -d' ' -f2 <<< "$heads")" != "refs/heads/${BRANCH}" ]; then
+            skip "The agent's commits arrived on a branch other than \`${BRANCH}\`, or beside other branches."
+          fi
+          tip=$(cut -d' ' -f1 <<< "$heads")
+          git merge-base --is-ancestor "$BRANCH_HEAD_SHA" "$tip" \
+            || skip "The agent's commits don't build on the PR's head as this run found it."
+
+          # The rescue as it stands, read with the job's token, is what the
+          # lease holds the push to; none is the lease that it must not exist.
+          read=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${read}"
+          remote=$(git -c "http.extraHeader=AUTHORIZATION: basic ${read}" ls-remote origin "refs/heads/${RESCUE_BRANCH}")
+          current=$(printf '%s\n' "$remote" | awk -v ref="refs/heads/${RESCUE_BRANCH}" '$2 == ref { print $1 }')
+          auth=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${auth}"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"
+          echo "Rescued $(git rev-list --count "${BRANCH_HEAD_SHA}..${tip}") commit(s) to ${RESCUE_BRANCH}."
+          echo "branch=${RESCUE_BRANCH}" >> "$GITHUB_OUTPUT"
+
       - name: Mark blocked on failure
         if: always() && needs.gate.outputs.refused == 'false' && (failure() || cancelled() || needs.gate.result != 'success' || needs.fix.result != 'success')
         env:
@@ -1045,6 +1178,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUSHED: ${{ steps.push.outputs.pushed }}
           NOTED: ${{ steps.notes.outputs.posted }}
+          RESCUED: ${{ steps.rescue.outputs.branch }}
         run: |
           reason="It stopped without giving a reason. The workflow run's log has the details."
           if [ -f "${RUNNER_TEMP}/failure_reason.txt" ]; then
@@ -1086,6 +1220,15 @@ jobs:
             retry="Its changes were pushed before it stopped, so running it again would repeat work. Fix the problem above, then add \`agent:review\`."
           elif [ "$NOTED" = "true" ]; then
             retry="Its out-of-scope notes were posted before it stopped, so running it again would repeat work. Fix the problem above, then add \`agent:review\` to have them ruled on."
+          fi
+          # A rescue (#303) is named whatever else the retry says, and is the
+          # retry where nothing else was: adding the label resumes from it.
+          if [ -n "${RESCUED:-}" ]; then
+            if [ "$retry" = "To try again, add \`agent:fix\`." ]; then
+              retry="Its commits so far are saved on \`${RESCUED}\`. To resume from them, add \`agent:fix\`."
+            else
+              retry="${retry} Its commits so far are saved on \`${RESCUED}\`, and adding \`agent:fix\` resumes from them."
+            fi
           fi
           body_file="${RUNNER_TEMP}/failure-comment.md"
           printf '**`agent:fix` stopped:** %s\n\n[Workflow run](%s) · %s\n' "$reason" "$RUN_URL" "$retry" > "$body_file"

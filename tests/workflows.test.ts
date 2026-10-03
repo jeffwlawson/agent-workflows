@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -26,6 +27,7 @@ import {
   VERDICTS,
 } from "../shared/review-output.js";
 import { REVIEW_URL_SLOT } from "../shared/prd-round.js";
+import { rescueRef } from "../shared/rescue.js";
 import {
   FINAL_REVIEW_MARK,
   finalReviewRequestedLines,
@@ -37,6 +39,7 @@ import {
   PROGRESS_END,
   PROGRESS_START,
 } from "../shared/progress-list.js";
+import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -4406,7 +4409,13 @@ describe("every workflow in the loop is called rather than copied", () => {
     }
 
     expect(caller.job.secrets).not.toBe("inherit");
-    expect(caller.job.secrets ?? {}).toEqual(Object.fromEntries(expected.map((n) => [n, `\${{ secrets.${n} }}`])));
+    // A reference caller ships beside this reusable, so it passes exactly what
+    // this one declares. A local caller runs against the *released* reusable
+    // its pin names, which may not declare a secret added since: it is held to
+    // that release instead, by the describe below.
+    if (caller.file.startsWith(CALLER_DIR)) {
+      expect(caller.job.secrets ?? {}).toEqual(Object.fromEntries(expected.map((n) => [n, `\${{ secrets.${n} }}`])));
+    }
   });
 
   /**
@@ -4449,6 +4458,87 @@ describe("every workflow in the loop is called rather than copied", () => {
     expect(node?.with?.["node-version-file"]).toBe("${{ inputs.node-version-file }}");
     expect(node?.if ?? "").toContain("inputs.node-version-file != ''");
     expect(install?.if ?? "").toContain("inputs.setup != ''");
+  });
+});
+
+/**
+ * This repository's own callers run on `main`, but the reusable each one calls
+ * is the one at its pinned tag — the last release (`CLAUDE.md`, *This repo runs
+ * its own loop*). So a local caller can name a secret or an input its own
+ * branch declares and the release does not, and GitHub refuses the whole caller
+ * file before a job starts: `startup_failure`, no log, every job in the file.
+ * #330 did that by passing the App's two secrets ahead of v0.7.9, and every
+ * agent run here failed to start until the release shipped.
+ *
+ * So the local callers are held to the release they pin, read out of git at
+ * that tag rather than off the working tree: everything they pass is declared
+ * there, and everything declared there as required is passed. A change to a
+ * caller's interface therefore lands in two steps — the reusable, released,
+ * then the local caller — while the reference callers, which ship with the
+ * reusable they sit beside, move in the first.
+ *
+ * Needs the tag in the checkout. A clone with history has it; `ci.yml` checks
+ * out with `fetch-depth: 0` for this. A missing tag fails here by name rather
+ * than passing, since the check that cannot run is the one that would have
+ * caught it.
+ */
+describe("a local caller passes only what the release it pins declares", () => {
+  const localCallers = callers.filter((caller) => caller.file.startsWith(WORKFLOW_DIR));
+
+  const released = new Map<string, Workflow>();
+  const releasedOf = (caller: Caller): Workflow => {
+    const ref = (caller.job.uses ?? "").replace(/^.*@/, "");
+    const key = `${ref}:${targetOf(caller)}`;
+    const cached = released.get(key);
+    if (cached !== undefined) return cached;
+
+    let text: string;
+    try {
+      text = execFileSync("git", ["show", key], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: SUBPROCESS_TIMEOUT,
+      });
+    } catch (error) {
+      const { stderr } = error as { readonly stderr?: string };
+      throw new Error(
+        `${callerName(caller)} pins ${ref}, but \`git show ${key}\` failed: ${String(stderr ?? error).trim()}. ` +
+          `Fetch the tags (\`git fetch --tags\`); a shallow checkout has none.`,
+      );
+    }
+    const workflow = parse(text) as Workflow;
+    released.set(key, workflow);
+    return workflow;
+  };
+
+  it("reads both caller files", () => {
+    expect(new Set(localCallers.map((caller) => path.basename(caller.file)))).toEqual(
+      new Set(Object.keys(CALLER_FILES).map((file) => `agent-${file}`)),
+    );
+  });
+
+  it.each(eachCaller(localCallers))("%s: passes no secret the release does not declare", (_name, caller) => {
+    const declared = releasedOf(caller).on?.workflow_call?.secrets ?? {};
+    const passed = caller.job.secrets === "inherit" ? {} : (caller.job.secrets ?? {});
+
+    expect(Object.keys(passed).filter((name) => !(name in declared))).toEqual([]);
+    expect(
+      Object.entries(declared)
+        .filter(([name, secret]) => secret.required === true && !(name in passed))
+        .map(([name]) => name),
+    ).toEqual([]);
+  });
+
+  it.each(eachCaller(localCallers))("%s: passes no input the release does not declare", (_name, caller) => {
+    const declared = releasedOf(caller).on?.workflow_call?.inputs ?? {};
+    const passed = caller.job.with ?? {};
+
+    expect(Object.keys(passed).filter((name) => !(name in declared))).toEqual([]);
+    expect(
+      Object.entries(declared)
+        .filter(([name, input]) => input.required === true && input.default === undefined && !(name in passed))
+        .map(([name]) => name),
+    ).toEqual([]);
   });
 });
 
@@ -5335,7 +5425,8 @@ describe("agent-implement-prd works one sub-issue per run", () => {
    * earlier slice, and verdicts and threads are pinned to its commits, so a
    * force push is a chain that eats its own history and orphans its reviews.
    * Two pushes: the slice's, and before it the merge of the default branch
-   * (#245), which is a **merge**, never a rebase, for the same reason.
+   * (#245), which is a **merge**, never a rebase, for the same reason. The
+   * third is the rescue (#303), to a side branch and never the PRD branch.
    */
   it("pushes the PRD branch without force, and never rebases it", () => {
     const pushes = code().filter((l) => /^\s*(if ! )?git (-c "[^"]*" )?push\b/.test(l));
@@ -5343,8 +5434,12 @@ describe("agent-implement-prd works one sub-issue per run", () => {
     expect(pushes.map((l) => l.trim())).toEqual([
       'if ! git -c "http.extraHeader=AUTHORIZATION: basic ${push_auth}" push origin "$PRD_BRANCH"; then',
       'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push origin "$PRD_BRANCH"',
+      'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
     ]);
-    expect(fs.readFileSync(PRD, "utf8")).not.toMatch(/--force|\bpush -f\b|\+refs\/heads\/[^:]*:refs\/heads/);
+    // The rescue's lease is the one force in the file, and it is not on the PRD branch.
+    expect(code().filter((l) => /--force|\bpush -f\b|\+refs\/heads\/[^:]*:refs\/heads/.test(l)).map((l) => l.trim())).toEqual([
+      'git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
+    ]);
     expect(code().filter((l) => /\brebase\b|\breset --hard\b|\bpull --rebase\b/.test(l))).toEqual([]);
     expect(runOf(PRD, "catch_up")).toContain('git merge --no-ff --no-edit');
   });
@@ -5489,10 +5584,10 @@ describe("agent-implement-prd works one sub-issue per run", () => {
         ["prepare", "trailer", "push"].includes(s.id ?? ""),
     );
 
-    // Three checkouts (the catch-up's, the agent's and the publish job's), two
-    // `prepare`s (the catch-up's and the agent's), and the agent's toolchain,
-    // runner and trailer, and the push.
-    expect(building).toHaveLength(12);
+    // Four checkouts (the catch-up's, the agent's and the publish job's two,
+    // one to push and one to rescue, #303), two `prepare`s (the catch-up's and
+    // the agent's), and the agent's toolchain, runner and trailer, and the push.
+    expect(building).toHaveLength(13);
     for (const step of building) {
       const condition = conditionOf(PRD, step);
       expect(condition.includes(`${GATE_WENT_AHEAD} && ${BUILDING}`) || condition.includes(AGENT_SUCCEEDED), `${step.name}: ${condition}`).toBe(true);
@@ -8636,6 +8731,7 @@ describe("a split run keeps every write off the agent's runner", () => {
         readonly gateWrites: readonly string[];
         readonly group: string;
         readonly bundle: string;
+        readonly bundleIf: string;
         readonly branch: string;
         readonly ancestors: readonly string[];
         readonly pushed: string;
@@ -8650,6 +8746,7 @@ describe("a split run keeps every write off the agent's runner", () => {
       gateWrites: ["issues"],
       group: `agent-implement-issue-\${{ github.event.issue.number }}${otherLabel("agent:implement")}`,
       bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^refs/heads/${BASE_REF}"',
+      bundleIf: "success()",
       branch: "BRANCH",
       ancestors: ["$BASE_SHA"],
       pushed: 'push --force origin "$BRANCH"',
@@ -8662,6 +8759,8 @@ describe("a split run keeps every write off the agent's runner", () => {
       gateWrites: ["pull-requests"],
       group: `agent-pr-\${{ github.event.pull_request.number }}${otherLabel("agent:fix")}`,
       bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}"',
+      // However the job ended (#303): a stopped run's commits are rescued.
+      bundleIf: "always()",
       branch: "BRANCH",
       ancestors: ["$BRANCH_HEAD_SHA"],
       pushed: 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"',
@@ -8675,6 +8774,7 @@ describe("a split run keeps every write off the agent's runner", () => {
       gateWrites: ["pull-requests"],
       group: `agent-pr-\${{ github.event.pull_request.number }}${otherLabel("agent:update-branch")}`,
       bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}" "^${BASE_SHA}"',
+      bundleIf: "success()",
       branch: "BRANCH",
       ancestors: ["$BRANCH_HEAD_SHA", "$BASE_SHA"],
       pushed: 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"',
@@ -8687,6 +8787,8 @@ describe("a split run keeps every write off the agent's runner", () => {
       gateWrites: ["issues", "pull-requests"],
       group: `agent-implement-prd-issue-\${{ github.event.issue.number }}${otherLabel("agent:implement")}`,
       bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BASE_SHA}"',
+      // However the job ended (#303): a stopped run's commits are rescued.
+      bundleIf: "always()",
       branch: "PRD_BRANCH",
       ancestors: ["$BASE_SHA"],
       pushed: 'push origin "$PRD_BRANCH"',
@@ -8790,7 +8892,7 @@ describe("a split run keeps every write off the agent's runner", () => {
     const upload = steps.find((s) => s.name === "Hand the branch to the publish job");
 
     expect(bundle?.run ?? "").toContain(specOf(name).bundle);
-    expect(bundle?.if).toBe("success()");
+    expect(bundle?.if).toBe(specOf(name).bundleIf);
     // Last, so it carries a reason file however the agent's run ended.
     expect(names.slice(-2)).toEqual(["Bundle the branch", "Hand the branch to the publish job"]);
     expect(upload?.if).toBe("always()");
@@ -9229,7 +9331,7 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
   const PUSH_TOKEN = "${{ steps.token.outputs.token }}";
   const isCheckout = (s: Step): boolean => (s.uses ?? "").startsWith("actions/checkout@");
   const NETWORK = /\bgit\s+(?:-c\s+"[^"]*"\s+)*(push|fetch|pull|ls-remote|clone)\b/;
-  const HEADER = /\bgit -c "http\.extraHeader=AUTHORIZATION: basic \$\{([a-z_]+)\}" (push|fetch) /;
+  const HEADER = /\bgit -c "http\.extraHeader=AUTHORIZATION: basic \$\{([a-z_]+)\}" (push|fetch|ls-remote) /;
 
   const checkingOut = runnerWorkflows.flatMap((file) =>
     Object.entries(workflowOf(file).jobs)
@@ -9318,12 +9420,17 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
    */
   it.each([
     [IMPLEMENT, 'push --force origin "$BRANCH"'],
-    [path.join(WORKFLOW_DIR, "fix.yml"), 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"'],
+    [
+      path.join(WORKFLOW_DIR, "fix.yml"),
+      'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"',
+      // The rescue (#303), to a side branch and never the pull request's.
+      'push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"',
+    ],
     [path.join(WORKFLOW_DIR, "update-branch.yml"), 'push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH"'],
-  ])("%s: pushes with the same force as before", (file, push) => {
+  ])("%s: pushes with the same force as before", (file, ...push) => {
     const pushes = stepsOf(file).flatMap((s) => codeOf(s).filter((l) => HEADER.exec(l)?.[2] === "push"));
 
-    expect(pushes.map((l) => l.trim().replace(HEADER, "$2 "))).toEqual([push]);
+    expect(pushes.map((l) => l.trim().replace(HEADER, "$2 "))).toEqual(push);
   });
 });
 
@@ -9511,5 +9618,112 @@ describe("every agent run keeps its session transcript, redacted, for a few days
     expect(doc).toContain("transcript-retention-days: 0");
     expect(doc).toMatch(/\[REDACTED\]/);
     expect(doc).toMatch(/public repository/);
+  });
+});
+
+/**
+ * Rescue and resume (#303). A fix or implement-prd run that stops before it
+ * finishes keeps the commits it made on a side branch with a fixed name, the
+ * failure comment names it, and the next run of the label resumes from it.
+ * What is asserted here is the shape that keeps a rescue from being anything
+ * else: it runs only on a stopped run the preflight claimed, before the
+ * failure comment that names it, with a lease, and it opens no pull request,
+ * asks for no review and moves no label. `tests/rescue-step.test.ts` executes
+ * the steps themselves.
+ */
+describe("rescue and resume for fix and implement-prd", () => {
+  const CASES = [
+    {
+      file: path.join(WORKFLOW_DIR, "fix.yml"),
+      agent: "fix",
+      rescue: "agent/rescue/fix-${{ github.event.pull_request.number }}",
+      prepare: "Prepare branch and make the PR base available for diffing",
+      condition:
+        "always() && needs.gate.outputs.refused == 'false' && (cancelled() || failure() || needs.fix.result == 'failure' || needs.fix.result == 'cancelled') && steps.push.outputs.pushed != 'true'",
+      // Not on a nothing-to-do run, which exits before it reads the rescue.
+      deleteIf: "needs.fix.result == 'success' && success() && steps.nothing.outputs.nothing != 'true'",
+      label: "agent:fix",
+    },
+    {
+      file: PRD,
+      agent: "implement-prd",
+      rescue: "agent/rescue/prd-${{ github.event.issue.number }}",
+      prepare: "Prepare the PRD branch",
+      condition:
+        "always() && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && (cancelled() || failure() || needs.implement-prd.result == 'failure' || needs.implement-prd.result == 'cancelled') && steps.push.outputs.head == ''",
+      deleteIf: "needs.implement-prd.result == 'success' && success()",
+      label: "agent:implement",
+    },
+  ] as const;
+  const named = (steps: readonly Step[], name: string): number => {
+    const at = steps.findIndex((s) => s.name === name);
+    expect(at, name).toBeGreaterThan(-1);
+    return at;
+  };
+  /** Every line of a step's script that is not a shell comment. */
+  const code = (step: Step | undefined): string =>
+    (step?.run ?? "").split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
+
+  it.each(CASES)("$agent: names one rescue branch in the job that resumes and the job that rescues", (c) => {
+    expect(jobNamed(c.file, c.agent).env?.["RESCUE_BRANCH"]).toBe(c.rescue);
+    expect(jobNamed(c.file, "publish").env?.["RESCUE_BRANCH"]).toBe(c.rescue);
+  });
+
+  it.each(CASES)("$agent: rescues only a stopped run the preflight claimed, before the failure comment", (c) => {
+    const steps = jobNamed(c.file, "publish").steps ?? [];
+    const at = named(steps, "Rescue the agent's commits");
+    const step = steps[at];
+
+    expect(step?.id).toBe("rescue");
+    expect(step?.if).toBe(c.condition);
+    // A rescue that cannot be made must not cost the run its failure comment.
+    expect(step?.["continue-on-error"]).toBe(true);
+    expect(at).toBeLessThan(named(steps, "Mark blocked on failure"));
+    expect(steps.find((s) => s.name === "Mark blocked on failure")?.env?.["RESCUED"]).toBe("${{ steps.rescue.outputs.branch }}");
+  });
+
+  it.each(CASES)("$agent: pushes the rescue with a lease, to the rescue branch alone", (c) => {
+    const run = code((jobNamed(c.file, "publish").steps ?? []).find((s) => s.id === "rescue"));
+    const pushes = run.split("\n").filter((l) => /\bgit\b.*\bpush\b/.test(l));
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain('push --force-with-lease="refs/heads/${RESCUE_BRANCH}:${current}" origin "${tip}:refs/heads/${RESCUE_BRANCH}"');
+    expect(run).toContain('git bundle verify --quiet "$bundle"');
+    expect(run).toContain('echo "branch=${RESCUE_BRANCH}" >> "$GITHUB_OUTPUT"');
+  });
+
+  it.each(CASES)("$agent: opens no pull request, asks for no review and moves no label in the rescue", (c) => {
+    const run = code((jobNamed(c.file, "publish").steps ?? []).find((s) => s.id === "rescue"));
+
+    expect(run).not.toContain("gh pr create");
+    expect(run).not.toContain("agent:review");
+    expect(run).not.toMatch(/\bgh\b/);
+    expect(run).not.toMatch(/--(add|remove)-label/);
+  });
+
+  it.each(CASES)("$agent: hands a stopped run's commits over, and fetches the rescue where the runner looks", (c) => {
+    const steps = jobNamed(c.file, c.agent).steps ?? [];
+    const upload = steps.find((s) => s.name === "Hand the branch to the publish job");
+
+    expect(steps.find((s) => s.name === "Bundle the branch")?.if).toBe("always()");
+    expect(upload?.with?.["path"]).toContain("${{ runner.temp }}/rescue_ignored.md");
+    expect(code(steps[named(steps, c.prepare)])).toContain(`"+refs/heads/\${RESCUE_BRANCH}:${rescueRef("${RESCUE_BRANCH}")}"`);
+  });
+
+  it.each(CASES)("$agent: deletes the rescue branch once a run succeeds, after its push", (c) => {
+    const steps = jobNamed(c.file, "publish").steps ?? [];
+    const at = named(steps, "Delete the rescue branch");
+    const run = code(steps[at]);
+
+    expect(steps[at]?.if).toBe(c.deleteIf);
+    expect(at).toBeGreaterThan(steps.findIndex((s) => s.id === "push"));
+    expect(run).toContain('gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/${RESCUE_BRANCH}"');
+  });
+
+  it.each(CASES)("$agent: says so where it set a rescue aside, however the run ends", (c) => {
+    const step = (jobNamed(c.file, "publish").steps ?? []).find((s) => s.name === "Say the rescue was set aside");
+
+    expect(step?.if).toBe("always()");
+    expect(code(step)).toContain('note="${RUNNER_TEMP}/rescue_ignored.md"');
   });
 });

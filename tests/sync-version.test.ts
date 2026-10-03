@@ -720,25 +720,20 @@ describe("the release is one command", () => {
   });
 
   /**
-   * What `released` below spawns: six `git` calls to build the scratch
-   * repository, and the hook itself. Its callers add their own reads on top and
-   * ceiling the sum, since a test bounded below what it spawns fails while
-   * every child is still inside its own bound.
+   * What `committed` below spawns: eight `git` calls to build the scratch
+   * repository and its origin. `released` adds the hook itself. Their callers
+   * add their own spawns on top and ceiling the sum, since a test bounded below
+   * what it spawns fails while every child is still inside its own bound.
    */
-  const RELEASED_SPAWNS = 7;
+  const COMMITTED_SPAWNS = 8;
+  const RELEASED_SPAWNS = COMMITTED_SPAWNS + 1;
 
   /**
-   * And the rest of the hook, run the way `npm version` runs it: over a scratch
-   * repository already committed at its current version, with the manifest
-   * bumped in the working tree and a stray untracked file lying beside it.
-   *
-   * The stray is the point. `npm version` refuses a tree with *tracked*
-   * modifications and lets untracked files straight through, so a `git add -A`
-   * in this hook carries whatever happens to be there into the release commit
-   * and the tag `publish.yml` fires on — a thirteenth file inside a release,
-   * which `PIN` cannot see and no check downstream reads.
+   * A scratch repository committed at its current version on `main`, pushed to
+   * a bare origin whose default branch is `main` — what the hook asks of a
+   * checkout before it writes anything is that it stand at that origin's tip.
    */
-  const released = (): string => {
+  const committed = (): string => {
     const root = fixture();
     // Both files: the hook imports the shared core from `shared/`, and a scratch
     // copy missing it fails at module resolution — which is the one failure
@@ -748,21 +743,48 @@ describe("the release is one command", () => {
     fs.copyFileSync("scripts/sync-version.ts", path.join(root, "scripts", "sync-version.ts"));
     fs.copyFileSync("shared/pins.ts", path.join(root, "shared", "pins.ts"));
 
+    // Beside the tree rather than in it, so `git add -A` does not take it in;
+    // inside the fixture's own temporary directory would, so a sibling.
+    const origin = `${root}.origin.git`;
+    scratches.push(origin);
+
     git(root, ["init", "-b", "main"]);
     git(root, ["config", "user.email", "scratch@example.invalid"]);
     git(root, ["config", "user.name", "scratch"]);
     git(root, ["config", "commit.gpgsign", "false"]);
     git(root, ["add", "-A"]);
     git(root, ["commit", "-m", "the tree at its current version"]);
+    git(root, ["init", "--bare", "-b", "main", origin]);
+    git(root, ["push", "--quiet", origin, "main"]);
+    // Set by config rather than `remote add` + push, which would be one spawn
+    // more for the same state.
+    fs.appendFileSync(path.join(root, ".git", "config"), `[remote "origin"]\n\turl = ${origin}\n`);
 
+    return root;
+  };
+
+  /**
+   * The hook, run the way `npm version` runs it: the manifest bumped in the
+   * working tree and a stray untracked file lying beside it.
+   *
+   * The stray is the point. `npm version` refuses a tree with *tracked*
+   * modifications and lets untracked files straight through, so a `git add -A`
+   * in this hook carries whatever happens to be there into the release commit
+   * and the tag `publish.yml` fires on — a thirteenth file inside a release,
+   * which `PIN` cannot see and no check downstream reads.
+   */
+  const runHook = (root: string): SpawnSyncReturns<string> => {
     // What npm has already done by the time the hook runs: the manifest bumped,
     // unstaged. npm stages that one and the lockfile itself, afterwards.
     write(root, "package.json", read(root, "package.json").replace(/"version": "[^"]+"/, `"version": "${TARGET}"`));
     write(root, "STRAY-NOTES.md", "left lying around\n");
 
-    const result = bounded(process.execPath, [path.join(root, "scripts", "sync-version.ts")], {
-      cwd: root,
-    });
+    return bounded(process.execPath, [path.join(root, "scripts", "sync-version.ts")], { cwd: root });
+  };
+
+  const released = (): string => {
+    const root = committed();
+    const result = runHook(root);
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain(`Synced ${PIN_COUNT} version pin(s) to ${TARGET}.`);
 
@@ -793,6 +815,48 @@ describe("the release is one command", () => {
     expect(git(root, ["rev-list", "--count", "HEAD"]).trim()).toBe("1");
     expect(git(root, ["tag", "--list"]).trim()).toBe("");
   }, ceiling(RELEASED_SPAWNS + 2));
+
+  /**
+   * A release cut anywhere but the tip of origin's default branch is refused
+   * before a file is written. v0.7.9 was first cut in a worktree one merge
+   * behind `main`; `publish.yml` would have refused the tag, but only after it
+   * was pushed, and the tag in the local tree carried a release missing the
+   * change it was cut to ship.
+   *
+   * Each case leaves the pins exactly as they were: the refusal comes first.
+   */
+  const refused = (root: string, message: RegExp): void => {
+    const before = read(root, ".github/workflows/review.yml");
+    const result = runHook(root);
+
+    expect(result.status, result.stdout).toBe(1);
+    expect(result.stderr).toMatch(message);
+    expect(result.stderr).toContain("git checkout -- package.json package-lock.json");
+    expect(read(root, ".github/workflows/review.yml")).toBe(before);
+  };
+
+  it("refuses a checkout behind origin's default branch", () => {
+    const root = committed();
+    git(root, ["commit", "--quiet", "--allow-empty", "-m", "merged since"]);
+    git(root, ["push", "--quiet", "origin", "main"]);
+    git(root, ["reset", "--quiet", "--hard", "HEAD~1"]);
+
+    refused(root, /HEAD is [0-9a-f]{7} but origin's `main` is [0-9a-f]{7}/);
+  }, ceiling(COMMITTED_SPAWNS + 4));
+
+  it("refuses a checkout ahead of origin's default branch", () => {
+    const root = committed();
+    git(root, ["commit", "--quiet", "--allow-empty", "-m", "never reviewed"]);
+
+    refused(root, /HEAD is [0-9a-f]{7} but origin's `main` is [0-9a-f]{7}/);
+  }, ceiling(COMMITTED_SPAWNS + 2));
+
+  it("refuses a branch other than origin's default, even at the same commit", () => {
+    const root = committed();
+    git(root, ["switch", "--quiet", "-c", "claude/some-worktree"]);
+
+    refused(root, /the branch here is `claude\/some-worktree`, not `main`/);
+  }, ceiling(COMMITTED_SPAWNS + 2));
 });
 
 /**

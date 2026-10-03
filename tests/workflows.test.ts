@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -37,6 +38,7 @@ import {
   PROGRESS_END,
   PROGRESS_START,
 } from "../shared/progress-list.js";
+import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here
@@ -4406,7 +4408,13 @@ describe("every workflow in the loop is called rather than copied", () => {
     }
 
     expect(caller.job.secrets).not.toBe("inherit");
-    expect(caller.job.secrets ?? {}).toEqual(Object.fromEntries(expected.map((n) => [n, `\${{ secrets.${n} }}`])));
+    // A reference caller ships beside this reusable, so it passes exactly what
+    // this one declares. A local caller runs against the *released* reusable
+    // its pin names, which may not declare a secret added since: it is held to
+    // that release instead, by the describe below.
+    if (caller.file.startsWith(CALLER_DIR)) {
+      expect(caller.job.secrets ?? {}).toEqual(Object.fromEntries(expected.map((n) => [n, `\${{ secrets.${n} }}`])));
+    }
   });
 
   /**
@@ -4449,6 +4457,87 @@ describe("every workflow in the loop is called rather than copied", () => {
     expect(node?.with?.["node-version-file"]).toBe("${{ inputs.node-version-file }}");
     expect(node?.if ?? "").toContain("inputs.node-version-file != ''");
     expect(install?.if ?? "").toContain("inputs.setup != ''");
+  });
+});
+
+/**
+ * This repository's own callers run on `main`, but the reusable each one calls
+ * is the one at its pinned tag — the last release (`CLAUDE.md`, *This repo runs
+ * its own loop*). So a local caller can name a secret or an input its own
+ * branch declares and the release does not, and GitHub refuses the whole caller
+ * file before a job starts: `startup_failure`, no log, every job in the file.
+ * #330 did that by passing the App's two secrets ahead of v0.7.9, and every
+ * agent run here failed to start until the release shipped.
+ *
+ * So the local callers are held to the release they pin, read out of git at
+ * that tag rather than off the working tree: everything they pass is declared
+ * there, and everything declared there as required is passed. A change to a
+ * caller's interface therefore lands in two steps — the reusable, released,
+ * then the local caller — while the reference callers, which ship with the
+ * reusable they sit beside, move in the first.
+ *
+ * Needs the tag in the checkout. A clone with history has it; `ci.yml` checks
+ * out with `fetch-depth: 0` for this. A missing tag fails here by name rather
+ * than passing, since the check that cannot run is the one that would have
+ * caught it.
+ */
+describe("a local caller passes only what the release it pins declares", () => {
+  const localCallers = callers.filter((caller) => caller.file.startsWith(WORKFLOW_DIR));
+
+  const released = new Map<string, Workflow>();
+  const releasedOf = (caller: Caller): Workflow => {
+    const ref = (caller.job.uses ?? "").replace(/^.*@/, "");
+    const key = `${ref}:${targetOf(caller)}`;
+    const cached = released.get(key);
+    if (cached !== undefined) return cached;
+
+    let text: string;
+    try {
+      text = execFileSync("git", ["show", key], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: SUBPROCESS_TIMEOUT,
+      });
+    } catch (error) {
+      const { stderr } = error as { readonly stderr?: string };
+      throw new Error(
+        `${callerName(caller)} pins ${ref}, but \`git show ${key}\` failed: ${String(stderr ?? error).trim()}. ` +
+          `Fetch the tags (\`git fetch --tags\`); a shallow checkout has none.`,
+      );
+    }
+    const workflow = parse(text) as Workflow;
+    released.set(key, workflow);
+    return workflow;
+  };
+
+  it("reads both caller files", () => {
+    expect(new Set(localCallers.map((caller) => path.basename(caller.file)))).toEqual(
+      new Set(Object.keys(CALLER_FILES).map((file) => `agent-${file}`)),
+    );
+  });
+
+  it.each(eachCaller(localCallers))("%s: passes no secret the release does not declare", (_name, caller) => {
+    const declared = releasedOf(caller).on?.workflow_call?.secrets ?? {};
+    const passed = caller.job.secrets === "inherit" ? {} : (caller.job.secrets ?? {});
+
+    expect(Object.keys(passed).filter((name) => !(name in declared))).toEqual([]);
+    expect(
+      Object.entries(declared)
+        .filter(([name, secret]) => secret.required === true && !(name in passed))
+        .map(([name]) => name),
+    ).toEqual([]);
+  });
+
+  it.each(eachCaller(localCallers))("%s: passes no input the release does not declare", (_name, caller) => {
+    const declared = releasedOf(caller).on?.workflow_call?.inputs ?? {};
+    const passed = caller.job.with ?? {};
+
+    expect(Object.keys(passed).filter((name) => !(name in declared))).toEqual([]);
+    expect(
+      Object.entries(declared)
+        .filter(([name, input]) => input.required === true && input.default === undefined && !(name in passed))
+        .map(([name]) => name),
+    ).toEqual([]);
   });
 });
 

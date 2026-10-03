@@ -48,6 +48,13 @@ is covered elsewhere — `npm run verify` and CI gate the working tree, and cons
 the released loop. Dogfooding here answers "does the loop function end to end", not "does my
 unreleased change work".
 
+The pin covers the reusable half only. The **callers** are read from `main`, so a caller change is
+live the moment it merges, against the *released* reusable. A caller passing a secret or input that
+release does not declare is refused by GitHub before any job starts — every job in the file, no log
+(#330 did this ahead of v0.7.9). `tests/workflows.test.ts` holds the local callers to the release
+they pin, read with `git show v<pin>:…`, so a change to a caller's interface lands in two steps:
+the reusable, released, then the local caller.
+
 **Do not break the gate.** If `npm run verify` stops working, every agent run in every consuming
 repo loses the instruction the prompts depend on.
 
@@ -58,7 +65,9 @@ repo loses the instruction the prompts depend on.
 2. Edit `.github/workflows/<name>.yml`. Never add a step to a caller.
 3. If a caller must change too, update **both** sets: `examples/callers/` is what adopters copy,
    and `.github/workflows/agent-*.yml` is what this repo runs. `tests/workflows.test.ts` reads both
-   — deliberately, so a change to one cannot silently leave the other behind.
+   — deliberately, so a change to one cannot silently leave the other behind. The exception is a
+   new secret or input: the reference caller moves with the reusable, and the local caller waits
+   for the release that declares it (see *This repo runs its own loop*).
 4. `tests/workflows.test.ts` asserts over both halves. Add the assertion in the same change; a
    workflow defect has no unit test to catch it and usually no error message either.
 5. A **new** workflow is a reusable plus a caller of it in each caller set, all three carrying a
@@ -101,6 +110,10 @@ files, so `-A` would carry a stray one into the tag `publish.yml` fires on, and 
 see it. It propagates and never decides: the version is read from `package.json`, never passed in,
 and nothing there commits or tags — `npm version` does both, and a second tagging path is a second
 way to publish.
+
+It refuses to run anywhere but the tip of origin's default branch — on that branch, at the commit
+origin has, asked of origin rather than of a possibly stale `origin/main`. `publish.yml` refuses an
+unmerged tag too, but only after the push; v0.7.9 was first cut in a worktree one merge behind.
 
 It refuses rather than doing part of the job. Both caller sets must hold the same caller files,
 each set must call every reusable exactly once, and each file must carry exactly the pins expected

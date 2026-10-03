@@ -312,8 +312,8 @@ describe.skipIf(!CAN_RUN)("implement-prd's Merge the default branch into the PRD
    * A rejected push of the merge is a failure. Where the merge brings in a
    * workflow file, the likeliest cause is a token without Workflows: write,
    * the `GITHUB_TOKEN` fallback included, which every retry hits again: the
-   * reason names it and `AGENT_PAT`. A remote whose `pre-receive` refuses
-   * every push stands in for GitHub's refusal.
+   * reason names it, and the loop's App and `AGENT_PAT`. A remote whose
+   * `pre-receive` refuses every push stands in for GitHub's refusal.
    */
   const rejecting = (moves: MainMoves): Checkout => {
     const built = checkout(moves);
@@ -332,7 +332,7 @@ describe.skipIf(!CAN_RUN)("implement-prd's Merge the default branch into the PRD
     expect(outputOf(outcome, "merged")).toBe("");
     expect(outcome.reason).toContain(`Couldn't push the merge of \`main\` into \`${PRD_BRANCH}\`, so nothing was built.`);
     expect(outcome.reason).toContain(`The merge changes \`${CI.split(path.sep).join("/")}\``);
-    expect(outcome.reason).toContain("until `AGENT_PAT` is set with Workflows: write");
+    expect(outcome.reason).toContain("until the loop pushes with a token that has Workflows: write: the loop's App, or `AGENT_PAT`.");
   }, ceiling(SPAWNS));
 
   it("names only the moved PRD branch when a push of a merge changing no workflow file is rejected", () => {

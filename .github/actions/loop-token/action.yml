@@ -1,0 +1,132 @@
+name: Resolve the loop's token
+description: >-
+  Choose the token the loop writes with: an installation token minted for the
+  loop's GitHub App where its ID and private key are both set, else
+  `AGENT_PAT`, else the workflow token. Say which one it chose.
+
+# The loop's identity (PRD #314). The writes that need more than the workflow
+# token, because a push, a PR, a ready-mark or a label made with it starts no
+# workflow or is refused outright, are made with whatever this returns: the
+# App's bot where the adopter set the App up, the PAT's owner where they did
+# not, and the workflow token, under the warnings every such step already
+# gives, where they set neither. The same order today's
+# `AGENT_PAT || GITHUB_TOKEN` fallback had, with the App in front of it.
+#
+# **A composite action, pinned like a workflow** (#257), as `advance-prd` is:
+# fetched from the same tag as the workflow naming it,
+# `jeffwlawson/agent-workflows/.github/actions/loop-token@v<version>`, and
+# written by `scripts/sync-version.ts` on release (`shared/pins.ts`, the
+# `action` form).
+#
+# **Run only in a job that never runs the agent**, before that job's first
+# write needing it, and never handed to another job. A job's runner holds
+# every secret the job names from its first step (#307), so the App's key, the
+# PAT and the token minted from them are named in the publish jobs,
+# implement-prd's `catch_up`, and review's `post-review` and `advance`, alone
+# (and review's `time-limit`, which mints nothing; see `choose-only` below). The token lasts an hour; every job
+# minting one is short, and the publish and posting jobs start after the agent
+# has finished.
+#
+# **The token is the caller's to pass in.** A composite cannot read `secrets`.
+#
+# **Or only the source, with `choose-only`.** Review's `time-limit` job asks
+# which token the posting job will write with, so the review job, which runs
+# the agent and names none of these, can tell whether a fix round it asks for
+# would start. That job writes nothing, so nothing is minted for it and it is
+# returned no token: the choice is still made here, and nowhere else.
+inputs:
+  app-id:
+    description: The loop's App's ID, `AGENT_APP_ID`. Empty where it is not set.
+    required: false
+    default: ""
+  private-key:
+    description: The loop's App's private key, `AGENT_APP_PRIVATE_KEY`. Empty where it is not set.
+    required: false
+    default: ""
+  agent-pat:
+    description: "`AGENT_PAT`. Empty where it is not set."
+    required: false
+    default: ""
+  github-token:
+    description: The workflow token, the last resort.
+    required: true
+  choose-only:
+    description: >-
+      `true` to report the source and nothing else: no token is minted, and
+      `token` is empty.
+    required: false
+    default: "false"
+
+outputs:
+  token:
+    description: The token to write with.
+    # The mint runs only where the source is `app`, and the PAT is non-empty
+    # wherever the source is `pat`, so this follows the choice exactly.
+    # Empty under `choose-only`, which asked for no token.
+    value: ${{ inputs.choose-only != 'true' && (steps.mint.outputs.token || inputs.agent-pat || inputs.github-token) || '' }}
+  source:
+    description: >-
+      `app`, `pat` or `workflow`: which token `token` is. A label added with the
+      workflow token starts nothing, so a step that would add one reads this to
+      warn, or to say on the pull request which label to add by hand, instead.
+    value: ${{ steps.choose.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    # Whether each is set, never its value: the choice needs no secret.
+    #
+    # An App with an ID and no key, or a key and no ID, cannot mint, so it
+    # falls through to the PAT as if it were not there, and says so: a
+    # half-finished setup is named, not quietly ignored.
+    - name: Choose the token's source
+      id: choose
+      shell: bash
+      env:
+        HAS_APP_ID: ${{ inputs.app-id != '' }}
+        HAS_APP_KEY: ${{ inputs.private-key != '' }}
+        HAS_PAT: ${{ inputs.agent-pat != '' }}
+      run: |
+        set -euo pipefail
+        if [ "$HAS_APP_ID" = "true" ] && [ "$HAS_APP_KEY" = "true" ]; then
+          source=app
+        else
+          if [ "$HAS_APP_ID" = "true" ]; then
+            echo "::warning::AGENT_APP_ID is set but AGENT_APP_PRIVATE_KEY is not, so the loop's App is not used."
+          elif [ "$HAS_APP_KEY" = "true" ]; then
+            echo "::warning::AGENT_APP_PRIVATE_KEY is set but AGENT_APP_ID is not, so the loop's App is not used."
+          fi
+          if [ "$HAS_PAT" = "true" ]; then
+            source=pat
+          else
+            source=workflow
+          fi
+        fi
+        echo "source=${source}" >> "$GITHUB_OUTPUT"
+        echo "The loop writes with: ${source}."
+
+    # GitHub's own action, which masks the token and revokes it when the job
+    # ends. Scoped to this repository alone, whatever else the App is
+    # installed on. `client-id` takes the App's ID as well as its client ID;
+    # `app-id` is the deprecated spelling of the same input.
+    - name: Mint the App's token
+      id: mint
+      if: steps.choose.outputs.source == 'app' && inputs.choose-only != 'true'
+      uses: actions/create-github-app-token@v3
+      with:
+        client-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ github.event.repository.name }}
+
+    # A mint that failed fails the job, and its failure comment reads the
+    # reason from here rather than saying it stopped without one. Never a
+    # silent fall back to the PAT: an App the adopter set up and the loop did
+    # not use is the misconfiguration worth stopping on. A reason already
+    # there is an earlier job's, the agent's included, and is the cause the
+    # human needs first, so it is left as it is.
+    - name: Say why the App's token was not minted
+      if: failure() && steps.mint.outcome == 'failure'
+      shell: bash
+      run: |
+        [ -f "${RUNNER_TEMP}/failure_reason.txt" ] || printf '%s\n' "Couldn't mint a token for the loop's GitHub App, so nothing was written with it. Check that \`AGENT_APP_ID\` and \`AGENT_APP_PRIVATE_KEY\` belong to the same App, and that the App is installed on this repository." > "${RUNNER_TEMP}/failure_reason.txt"

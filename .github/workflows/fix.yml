@@ -1,8 +1,8 @@
 name: Agent Fix (reusable)
 
-# The fix job itself. `agent-fix.yml` is the caller — a trigger and two wires —
-# and everything that bounds what a wrong fix can do stays here, in a file an
-# adopting repo *references* rather than copies
+# The fix job itself. The `fix` job in `agent-pr.yml` is the caller (two wires,
+# under that file's trigger), and everything that bounds what a wrong fix can do
+# stays here, in a file an adopting repo *references* rather than copies
 # (jeffwlawson/winget-manifest-lint#98, slice 4 of
 # jeffwlawson/winget-manifest-lint#88; jeffwlawson/winget-manifest-lint#97
 # proved the pattern on review).
@@ -73,7 +73,18 @@ on:
           approval (the review reads that as unknown, never green, #221), the
           label still goes on but starts
           no review until a human re-adds it, and the pull request stays a
-          draft under a warning saying so.
+          draft under a warning saying so. The loop's App, where it is set up,
+          takes its place.
+        required: false
+      AGENT_APP_ID:
+        description: >-
+          The loop's GitHub App's ID. With `AGENT_APP_PRIVATE_KEY`, the publish
+          job mints a token for this repository from the App and makes the
+          writes `AGENT_PAT` would make with it, as the App's bot. Optional;
+          without both, `AGENT_PAT` is used as before.
+        required: false
+      AGENT_APP_PRIVATE_KEY:
+        description: The loop's GitHub App's private key. See `AGENT_APP_ID`.
         required: false
 
 # One group per PR, shared with agent-update-branch (which pushes this same
@@ -588,6 +599,20 @@ jobs:
           name: agent-fix
           path: ${{ runner.temp }}
 
+      # The token every write below that the workflow token cannot make is
+      # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
+      # that order, and `source` says which. Minted here, before the first
+      # write and after the agent finished, and in no other job.
+      - name: Resolve the loop's token
+        id: token
+        if: always()
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # **A finished agent's hand-over must have arrived**, because every step
       # below reads a missing file as "nothing of that kind": no bundle as no
       # commits, no outcomes as no replies. Lost whole, it would push nothing,
@@ -654,7 +679,7 @@ jobs:
         # nothing else, and built on the head this run was started for. Its
         # content is the agent's to write and the review's to judge.
         env:
-          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
           bundle="${RUNNER_TEMP}/branch.bundle"
@@ -880,8 +905,8 @@ jobs:
       # second-round review barred from recommending another, is retired (PRD
       # #200 decision 6).
       #
-      # MUST use AGENT_PAT, like every other label this loop adds: a label
-      # added with GITHUB_TOKEN triggers nothing, so the PR would carry
+      # MUST use the loop's App or AGENT_PAT, like every other label this loop
+      # adds: a label added with GITHUB_TOKEN triggers nothing, so the PR would carry
       # `agent:review` and simply sit there. Warn loudly rather than pretend it
       # worked.
       #
@@ -897,8 +922,8 @@ jobs:
           (steps.push.outputs.pushed == 'true' || steps.notes.outputs.posted == 'true' ||
            (startsWith(github.event.pull_request.head.ref, 'agent/prd-') && steps.push.outputs.pushed == 'false'))
         env:
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           PUSHED: ${{ steps.push.outputs.pushed }}
           # The commit this run pushed, and how long the PR gets to show it as
           # its head before the label goes on anyway (#229).
@@ -937,15 +962,15 @@ jobs:
               > "${RUNNER_TEMP}/failure_reason.txt"
             exit 1
           fi
-          if [ "$HAS_PAT" != "true" ]; then
+          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
             # Both, and the comment is the one that reaches anybody (#105). The
             # verdict this run's fix was made against promised "a re-review
-            # follows automatically", and without the PAT it does not: the label goes
+            # follows automatically", and without the App or the PAT it does not: the label goes
             # on, nothing fires, and the only sign of it is a warning annotation
             # on a run nobody opens. One line on the pull request, where the
             # maintainer who added `agent:fix` is already looking.
-            echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
-            gh pr comment "$PR_NUMBER" --body 'This run asked for a re-review, but none will start on its own: `AGENT_PAT` is not set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review the fix and rule on any out-of-scope notes.' \
+            echo "::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${PR_NUMBER}."
+            gh pr comment "$PR_NUMBER" --body "This run asked for a re-review, but none will start on its own: neither the loop's App nor \`AGENT_PAT\` is set, so the \`agent:review\` label this run added triggers nothing. Remove and re-add \`agent:review\` by hand to review the fix and rule on any out-of-scope notes." \
               || echo "::warning::…and that could not be said on the pull request either."
           fi
 
@@ -971,7 +996,7 @@ jobs:
       # **Never on a PRD PR** (PRD #222), which stays a draft until its final
       # review approves it, and whose fix runs all hand over to a review above.
       #
-      # MUST use AGENT_PAT, for review's reason: `GITHUB_TOKEN` cannot convert a
+      # MUST use the loop's App or AGENT_PAT, for review's reason: `GITHUB_TOKEN` cannot convert a
       # draft at all, whatever it is granted. A warning rather than a failure,
       # also for review's reason — a pull request stuck in draft is not worth
       # failing a run over, and by this point every thread already has its
@@ -983,10 +1008,10 @@ jobs:
           steps.nothing.outputs.nothing != 'true' &&
           !startsWith(github.event.pull_request.head.ref, 'agent/prd-')
         env:
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           gh pr ready "$PR_NUMBER" \
-            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
+            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If neither the loop's App nor AGENT_PAT is set this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
 
       # The remedy depends on whether the branch moved, the way
       # `update-branch.yml`'s does — and it has to, because this step's own

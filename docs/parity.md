@@ -32,10 +32,10 @@ third execution model in §2b.
 | `agent-implement-prd` — work sub-issues in sequence | ✅ | ✅ | **the execution half, shipped** (jeffwlawson/winget-manifest-lint#92). Shares the `agent:implement` label with `agent-implement`; the two partition by issue shape. See §2a |
 | `agent-promote-queued` — auto-promote when blockers close | ✅ | ❌ | **deferred: nothing to sequence between PRDs yet.** jeffwlawson/winget-manifest-lint#91, detached from jeffwlawson/winget-manifest-lint#87 so the chain would not build a slice nobody wanted. Not blocked on missing edges — `/wayfinder` records blockers as native dependencies, and on a `/to-tickets` batch `docs/agents/ticket-shape.md` requires them (upstream's skill writes a prose line, so they are added and verified by hand) — the point is that this tier sequences **top-level** issues, and ordering *within* a PRD is already carried by creation order (§2a). Its label is retired (§8): native "blocked by" links carry the dependency, and `implement` refuses while one is open |
 | `architecture-review` — scheduled survey that files its own issues | ✅ | 📋 | the autonomy tier; revisit once the rest are boring. The only *scheduled agent* in either upstream repo |
-| `agent-follow-ups` — file a merged PR's recorded findings | — | ➕ | #44. The review agent records what it cannot fix in the PR in front of it; this files each finding as a `needs-triage` stub once that PR merges. The only workflow here that turns an agent's output into **new issues** — `token-expiry` files a fixed one about the loop itself, and the `implement` pair only label and close — and the only one in the loop that runs **no model**, which is what makes holding `issues: write` while reading issue bodies safe. Optional per adopter: the caller file is the off switch. See §10 |
+| `agent-follow-ups` — file a merged PR's recorded findings | — | ➕ | #44. The review agent records what it cannot fix in the PR in front of it; this files each finding as a `needs-triage` stub once that PR merges. The only workflow here that turns an agent's output into **new issues** — `token-expiry` files a fixed one about the loop itself, and the `implement` pair only label and close — and the only one in the loop that runs **no model**, which is what makes holding `issues: write` while reading issue bodies safe. Optional per adopter: its caller is the off switch, a job in the pull-request side's caller file since #225, deleted to decline it. See §10 |
 | `ci` — typecheck + test | ✅ | ✅ | |
 | `corpus` — lint a pinned winget-pkgs snapshot | — | ➕ | see §7 |
-| `token-expiry` — warn before `AGENT_PAT` lapses | — | ➕ | weekly; jeffwlawson/winget-manifest-lint#70 |
+| `token-expiry` — warn before `AGENT_PAT` lapses | — | ➕ | weekly; jeffwlawson/winget-manifest-lint#70. Checks nothing where the loop's App is set up (#321), since the PAT is then the fallback nothing reaches; kept for the installs still on it |
 
 **5 of CVM's 8 agent workflows** since jeffwlawson/winget-manifest-lint#92 — but measured against
 `mattpocock/sandcastle`, which ships five and has no PRD tier at all, it is still **4 of 5**:
@@ -103,7 +103,7 @@ claims in primary sources at authoring time is what actually closed it before
 | Refuses a `wayfinder:*` **planning artifact** | ❌ | ➕ | maps and decision tickets describe work rather than being it. CVM has no equivalent because its PRDs *are* issues on the tracker; ours are planned in a skill (§1) and land labelled |
 | Issue body passed in by the runner (agent never calls `gh`) | ✅ | ✅ | |
 | **Agent-authored PR title + body** (`write-pr.ts`) | ✅ | ✅ | since #218, and by the **review** rather than by `implement`: the opening run writes a fixed frame (`Closes #N`, a note on what the loop does, the run link) around a summary block, and every review that meets a push rewrites the block and the title, so a fix round that changes the approach changes the description too. The workflow writes both from the review's validated output; the agent writes neither. See §9.2 |
-| **Auto-cascade: adds `agent:review` to the new PR** | ✅ | ✅ | needs `AGENT_PAT`; warns loudly if absent, since a `GITHUB_TOKEN` label add is a silent no-op |
+| **Auto-cascade: adds `agent:review` to the new PR** | ✅ | ✅ | needs the loop's App or `AGENT_PAT` (PRD #314); warns loudly if neither is set, since a `GITHUB_TOKEN` label add is a silent no-op |
 | `failure_reason.txt` → issue comment on failure | ✅ | ✅ | |
 | Opens the PR as a draft | ✅ | ✅ | |
 
@@ -477,7 +477,8 @@ write access + trust collaborators"; ours adds structural gates because this rep
 | Fork guard on `pull_request_target` (`head.repo.full_name == github.repository`) | ❌ | ➕ | without it, a fork PR runs with secrets in scope |
 | Author-association gate on issue text | ❌ | ➕ | anyone can *open* an issue on a public repo |
 | Author-association gate on PR comments / reviews / threads | ❌ | ➕ | all world-writable; `agent:fix` pushes code |
-| Explicit trust for our own bot identity | ❌ | ➕ | `github-actions[bot]` **and** `github-actions` — REST and GraphQL spell it differently |
+| Explicit trust for our own bot identity | ❌ | ➕ | `github-actions[bot]` **and** `github-actions` — REST and GraphQL spell it differently. Unchanged by the loop's App (PRD #314): reviews, comments and statuses are still posted as `github-actions[bot]`, so this is still the login the loop's own earlier posts carry. Moving them is #305 |
+| The loop writes under an identity of its own, not a person's | ❌ | ➕ | PRD #314. A GitHub App each owner creates with `init`, minting an hour-long token scoped to one repository per job; CVM writes with a PAT, as ours did. The App's key, the token and `AGENT_PAT` are named only in jobs that run no agent, which is what makes its Workflows: write acceptable. `AGENT_PAT` stays the supported fallback |
 | GitHub token scrubbed from the agent's environment | ❌ | ➕ | `noSandbox` merges `process.env`; agent has no legitimate `gh` use |
 | `contents: read` on the review **job** | ❌ | ➕ | the job, not the workflow, since #133: the posting job beside it holds `contents: write`, because GitHub refuses `resolveReviewThread` without it. That job runs no agent, checks nothing out and spends the grant on two fixed mutations; since #257 the review job holds no write scope at all, §10 |
 | Agent never handles the trigger label / PR creation | ✅ | ✅ | workflow owns all state transitions |
@@ -569,8 +570,18 @@ write access sits below everything that does not, regardless of how useful it lo
    automate because it fires *once per PR*; fix → review fires *every iteration*, and keeping a
    human on that leg is what makes "should we act on this feedback?" a decision rather than a
    reflex.
-4. **GitHub App identity** (📋, "D") — retires the untracked `AGENT_PAT` expiry via per-run tokens,
-   and may occupy the Reviewers sidebar the way Copilot's App does.
+4. **GitHub App identity** (✅ **for writes** since PRD #314; the rest is #305): retires the
+   untracked `AGENT_PAT` expiry via per-run tokens, and may occupy the Reviewers sidebar the way
+   Copilot's App does. **Closed for writes:** the loop's pushes, the pull requests it opens, marking
+   them ready, its trigger labels and the PRD chain's comment on the parent are made as an App each
+   owner creates with `init` (manifest flow, no form, no key file to handle), with a token minted per
+   job for one repository and lasting an hour, in jobs that never run the agent. One composite
+   action, `loop-token`, chooses App, then `AGENT_PAT`, then `GITHUB_TOKEN`, so the PAT stays a
+   supported fallback and no install had to move. **Still open, as #305:** reviews, top-level
+   comments, thread replies and commit statuses are posted as `github-actions[bot]`, which the
+   author gate and every check that recognises the loop's own posts read by that login. Moving them
+   means deriving the loop's login from the App's slug, and that half is also the one the Reviewers
+   sidebar would need.
 5. **Review self-improvement** (❌) — biggest capability gain, but flips review to
    `contents: write`. Deliberately declined: a reviewer that can commit on the strength of a
    confidently-wrong claim is worse than one that can only say it (see
@@ -1333,8 +1344,9 @@ expensive to rediscover.
   human or a review added its label, and where review has already marked it ready the call is a
   no-op.
 
-  **This invariant depends on `AGENT_PAT`.** `GITHUB_TOKEN` cannot convert a draft PR at all —
-  `Resource not accessible by integration (markPullRequestReadyForReview)` — so without the PAT
+  **This invariant depends on `AGENT_PAT`, or since PRD #314 the loop's App.** `GITHUB_TOKEN`
+  cannot convert a draft PR at all —
+  `Resource not accessible by integration (markPullRequestReadyForReview)` — so without either
   every reviewed PR stays in draft and "still draft" stops meaning anything. It was silently false
   for the first three PRs after it was written, because the step swallowed the error with
   `|| true`. An invariant that depends on a secret being set is only as true as the setup, which is

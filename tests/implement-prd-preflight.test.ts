@@ -909,7 +909,7 @@ const runPrdPr = (pulls: readonly Record<string, unknown>[], states?: readonly s
   runStep("prd_pr", {
     pulls,
     ...(states === undefined ? {} : { issue: issue(states) }),
-    env: { PRD_BRANCH, HAS_PAT: "true", SUB: "", SUB_K: "", SUBS: "3" },
+    env: { PRD_BRANCH, TOKEN_SOURCE: "pat", SUB: "", SUB_K: "", SUBS: "3" },
   });
 
 /**
@@ -980,7 +980,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
     const status = statusBlock(renderPrdStatus(inputs));
     const outcome = runStep("prd_pr", {
       pulls: BYSTANDERS,
-      env: { PRD_BRANCH, HAS_PAT: "true", SUB: "172", SUB_K: "1", SUBS: "3" },
+      env: { PRD_BRANCH, TOKEN_SOURCE: "pat", SUB: "172", SUB_K: "1", SUBS: "3" },
       files: { "progress.md": list, "status.md": status },
     });
 
@@ -1199,10 +1199,13 @@ const HANDOVER_ENV = {
   RUN_URL: "https://github.com/acme/widgets/actions/runs/7",
 };
 
-const runHandover = (landed: number, options: { readonly body?: string; readonly pat?: boolean } = {}): Outcome =>
+/** Which token the loop's resolver chose (#319): `app` and `pat` fire events, `workflow` does not. */
+type TokenSource = "app" | "pat" | "workflow";
+
+const runHandover = (landed: number, options: { readonly body?: string; readonly source?: TokenSource } = {}): Outcome =>
   runStep("handover", {
     pulls: [...BYSTANDERS, { ...PRD_PR, body: options.body ?? "Closes #171" }],
-    env: { ...HANDOVER_ENV, LANDED: String(landed), SUBS: String(landed), HAS_PAT: String(options.pat ?? true) },
+    env: { ...HANDOVER_ENV, LANDED: String(landed), SUBS: String(landed), TOKEN_SOURCE: options.source ?? "pat" },
   });
 
 /**
@@ -1270,7 +1273,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
       `> [!NOTE]\n> ${statusBlock(renderPrdStatus(inputs))}\n\n${renderProgressList(inputs)}\n\nMine.`;
     const outcome = runStep("handover", {
       pulls: [...BYSTANDERS, { ...PRD_PR, body: body(approved) }],
-      env: { ...HANDOVER_ENV, LANDED: "2", SUBS: "2", HAS_PAT: "true" },
+      env: { ...HANDOVER_ENV, LANDED: "2", SUBS: "2", TOKEN_SOURCE: "pat" },
     });
 
     expect(outcome.status, outcome.stdout).toBe(0);
@@ -1283,7 +1286,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
   it("posts the final review's start comment on the PRD PR, with its link", () => {
     const outcome = runStep("handover", {
       pulls: [...BYSTANDERS, { ...PRD_PR, body: "Closes #171" }],
-      env: { ...HANDOVER_ENV, LANDED: "3", SUBS: "3", HAS_PAT: "true" },
+      env: { ...HANDOVER_ENV, LANDED: "3", SUBS: "3", TOKEN_SOURCE: "pat" },
     });
 
     expect(outcome.status, outcome.stdout).toBe(0);
@@ -1312,7 +1315,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
   it("takes the final-review mark back out when the label does not go on", () => {
     const outcome = runStep("handover", {
       pulls: [...BYSTANDERS, { ...PRD_PR, body: "Closes #171" }],
-      env: { ...HANDOVER_ENV, LANDED: "3", SUBS: "3", HAS_PAT: "true", GH_REPLAY_LABEL_FAILURE: "1" },
+      env: { ...HANDOVER_ENV, LANDED: "3", SUBS: "3", TOKEN_SOURCE: "pat", GH_REPLAY_LABEL_FAILURE: "1" },
     });
     const all = writes(outcome);
     const added = all.findIndex((argv) => argv.includes("--add-label"));
@@ -1328,14 +1331,32 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's handover, executed", () => {
     expect(restored).toBeGreaterThan(added);
   });
 
-  it("refuses without AGENT_PAT rather than add a label that starts nothing, touching nothing", () => {
-    const outcome = runHandover(2, { pat: false });
+  it("refuses on the workflow token rather than add a label that starts nothing, touching nothing", () => {
+    const outcome = runHandover(2, { source: "workflow" });
 
     expect(outcome.status).toBe(1);
     expect(outcome.reason).toContain("PRD PR #201");
     expect(outcome.reason).toContain("AGENT_PAT");
     expect(outcome.reason).toContain("resumes the handover");
     expect(outcome.writes).toEqual([]);
+  });
+
+  /**
+   * The App's token fires events as the PAT does, so it hands over the same
+   * way (#319). A source the resolver never reported, an empty one from a
+   * step that did not run among them, is read as the workflow token.
+   */
+  it("hands over on the loop's App's token, and refuses on a source it does not know", () => {
+    const app = runHandover(1, { source: "app" });
+    const unknown = runStep("handover", {
+      pulls: [...BYSTANDERS, { ...PRD_PR, body: "Closes #171" }],
+      env: { ...HANDOVER_ENV, LANDED: "1", SUBS: "1", TOKEN_SOURCE: "" },
+    });
+
+    expect(app.status, app.stdout).toBe(0);
+    expect(prWrites(app)).toEqual([["pr", "ready", "201"]]);
+    expect(unknown.status).toBe(1);
+    expect(unknown.writes).toEqual([]);
   });
 
   it("never merges the PRD PR, and never approves", () => {

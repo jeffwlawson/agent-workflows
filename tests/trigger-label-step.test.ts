@@ -62,7 +62,8 @@ interface Scenario {
   readonly proceeded?: string;
   /** What `gh pr view --json state,headRefOid,labels --jq …` prints: state, head and the trigger labels on it, comma-joined. */
   readonly live?: string;
-  readonly pat?: boolean;
+  /** The loop's token resolver's `source` (#320): `app`, `pat` or `workflow`. */
+  readonly source?: "app" | "pat" | "workflow";
   /** update-branch's `steps.request.outputs.requested`: this run asked for the review of its resolution. */
   readonly requested?: string;
   /** The review job's result, as its posting job reads it (#257). */
@@ -97,7 +98,7 @@ const run = (
   );
   fs.writeFileSync(script, runOf(command));
 
-  const pat = scenario.pat ?? true;
+  const source = scenario.source ?? "pat";
   const result = spawnSync("bash", ["-e", script], {
     encoding: "utf8",
     timeout: SUBPROCESS_TIMEOUT,
@@ -117,8 +118,8 @@ const run = (
       GATE_RESULT: scenario.gate ?? "success",
       AGENT_RESULT: scenario.agent ?? "skipped",
       LEFT_SHA: REVIEWED,
-      HAS_PAT: String(pat),
-      REQUEST_TOKEN: pat ? "pat-token" : "workflow-token",
+      TOKEN_SOURCE: source,
+      REQUEST_TOKEN: `${source}-token`,
     },
   });
   const gh = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
@@ -232,9 +233,18 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
       expect(outcome.gh.filter((call) => call.includes("--add-label"))).toEqual([]);
     });
 
+    /** The App's token fires the label as the PAT's does (#320). */
+    it(`asks for ${label} again with the App's token, where the App is set up`, () => {
+      const outcome = run(command, { live: `OPEN ${PUSHED}`, source: "app" });
+
+      expect(outcome.status).toBe(0);
+      expect(outcome.gh.filter((call) => call.includes("--add-label"))).toEqual([`app-token pr edit 152 --add-label ${label}`]);
+      expect(outcome.gh.filter((call) => call.includes("pr comment"))).toEqual([]);
+    });
+
     /** A label added with `GITHUB_TOKEN` starts nothing, so it says so instead of adding one. */
-    it("says so on the pull request rather than adding a label that starts nothing, without the PAT", () => {
-      const outcome = run(command, { live: `OPEN ${PUSHED}`, pat: false });
+    it("says so on the pull request rather than adding a label that starts nothing, with neither the App nor the PAT", () => {
+      const outcome = run(command, { live: `OPEN ${PUSHED}`, source: "workflow" });
 
       expect(outcome.status).toBe(0);
       expect(outcome.gh.filter((call) => call.includes("--add-label"))).toEqual([]);
@@ -252,7 +262,7 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
   it.each([
     ["re-requested", { live: `OPEN ${PUSHED}` }],
     ["left to a queued run", { live: `OPEN ${PUSHED} agent:fix` }],
-    ["left to a human without the PAT", { live: `OPEN ${PUSHED}`, pat: false }],
+    ["left to a human without the App or the PAT", { live: `OPEN ${PUSHED}`, source: "workflow" }],
   ] as const)("review: says the head moved where it was %s", (_case, scenario) => {
     expect(run("review", scenario).output).toContain("moved=true");
   });

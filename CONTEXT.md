@@ -410,9 +410,21 @@ changed *inside* a caller is `doctor`'s to name, with the fix, rather than `init
 a scaffolder that silently reverted a `with:` input would be manufacturing exactly the failure
 class the pair exists to remove.
 
+`init` also gives the loop its own GitHub App (#322), through GitHub's App manifest flow: a page on
+the loopback interface posts the manifest to GitHub's create-App page, GitHub sends the browser
+back with a code, and the code is exchanged, unauthenticated and never through `gh`, for the App's
+ID, key and slug. It does so only where the App's secrets are not set and nothing says otherwise:
+`AGENT_PAT` set is offered the switch, never put on it (#323): on a TTY the person is asked,
+defaulting to no, and without one the PAT is kept and `init --app` named, since a question nobody
+can answer must not hang a scripted run; `--app` switches without asking. A secret list it could
+not read creates nothing. The secrets go on the organization only where the person is shown to be
+its admin, and on the repository otherwise; `AGENT_PAT` is never deleted, and after a switch
+`init` says it can be, and the token revoked. Like the policy and the labels, the App is
+reached through an injected surface (`setup/app.ts`) that every call must name.
+
 `doctor` names it only where it was taught to. `diagnose` rules on a **fixed list** — every grant
-the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the pin's shape
-and its freshness, `self-check`, the labels, an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with no `AGENT_PAT` behind it (the default counts), a caller still passing the deprecated `auto-fix`, and a time limit variable that is not a positive integer (#220) — and reads nothing out of `examples/callers/`, so a
+the job a caller calls spends, an absent `permissions:` block, the `AGENT_PAT` wire, the identity the loop writes as and the loop's App's wire and its two halves (#321), the pin's shape
+and its freshness, `self-check`, the labels, an Actions policy letting `pull_request_target` run on a public repository (#219), and the fix-round budget (#204): a variable the review would refuse, a budget above 0 with neither the App nor `AGENT_PAT` behind it (the default counts), a caller still passing the deprecated `auto-fix`, and a time limit variable that is not a positive integer (#220) — and reads nothing out of `examples/callers/`, so a
 release that changes a caller *body* is a release that teaches `diagnose` about it in the same
 commit, exactly as a new pin site is a change to `shared/pins.ts` in the same commit. Diffing an
 adopter's caller against the reference is the other design and it is the wrong one here: most of
@@ -485,6 +497,31 @@ again itself rather than taking one from any other runner. `implement-prd` has a
 pushes it before any agent runs, on a runner of its own, since the gate names no PAT and the agent's
 job must not. The PRD PR's progress list shows the slice *building* from the gate, which already
 holds the write scope and runs no agent (#312), rather than from the runner, whose token reads only.
+
+### The loop's identity
+
+**The loop's identity** is who its writes are made as: the writes the workflow token cannot make
+usefully, because a push, a pull request, a ready-mark or a label made with it starts no workflow
+or is refused outright. Three sources, in order: **the loop's App**, a GitHub App each owner creates
+with `init` (one per account or organization, since minting needs its private key, which no two
+owners can share), reaching a run as `AGENT_APP_ID` and `AGENT_APP_PRIVATE_KEY`; then `AGENT_PAT`,
+the supported fallback; then the workflow token, under the warnings every such write already gives.
+Half an App is no App: both secrets, or the next source.
+
+The **token resolver** is the one place that order is applied: the composite action
+`.github/actions/loop-token` (#319, #320), which every reusable workflow that writes names and none
+reimplements. It mints an installation token scoped to the run's repository where the App is set,
+and reports which source it used (`app`, `pat` or `workflow`), which is what a step reads to
+decide whether to warn, or name the label to add by hand, instead of adding one. It runs only in
+jobs that run no agent: every publish job, `implement-prd`'s `catch_up`, and review's
+`post-review` and `advance`, which mint; and review's `time-limit`, which asks for the source alone
+and mints nothing. Each job that writes mints its own token before its first write that needs it
+and hands it to no other, so the key and every token minted from it are on no runner an agent ran
+on, which is what makes the App's Workflows: write acceptable.
+
+The App takes over **writes** only. Reviews, comments, thread replies and commit statuses are still
+the workflow token's, posted as `github-actions[bot]`, so the author gate's workflow-bot login and
+every check that recognises the loop's own earlier posts are unchanged. Moving those is #305.
 
 ## Base-controlled, and what that now depends on
 

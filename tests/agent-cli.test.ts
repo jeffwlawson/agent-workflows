@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { copyAssets } from "../scripts/copy-assets.js";
-import { callersIn } from "../setup/callers.js";
+import { callersIn, readInstalledCallers, REFERENCE_CALLER_FILES } from "../setup/callers.js";
 import {
   ADVISORY_LABELS,
   advisoryLabelSpecsFor,
+  APP_CHANGE,
   init,
   labelCommand,
   POLICY_CHANGE,
@@ -21,11 +22,13 @@ import {
   availableSecrets,
   availableVariable,
   DEFAULT_FIX_ROUNDS,
+  diagnose,
   FIX_ROUNDS_VARIABLE,
   TIMEOUT_VARIABLES,
   parseList,
   REQUIRED_PERMISSIONS,
   runDoctor,
+  type Finding,
   type RepoFacts,
 } from "../setup/doctor.js";
 import {
@@ -38,6 +41,7 @@ import {
   type PolicySurface,
 } from "../setup/policies.js";
 import type { LabelSurface, RepoLabel } from "../setup/labels.js";
+import type { AppManifest, AppSurface, RegisteredApp, RepoOwner, SecretPlacement } from "../setup/app.js";
 
 /**
  * The Actions policy step, for the tests that are not about it: a private
@@ -53,6 +57,29 @@ const offline: PolicySurface = {
   },
   update: () => {
     throw new Error("init wrote an Actions policy in a test that is not about it");
+  },
+};
+
+/**
+ * The App step, for the tests that are not about it: a repository whose
+ * secrets could not be listed, which it reports and leaves alone, and a write
+ * that fails the test rather than reaching anything.
+ */
+const noApp: AppSurface = {
+  secrets: () => undefined,
+  owner: () => undefined,
+  orgAdmin: () => undefined,
+  register: () => {
+    throw new Error("init created an App in a test that is not about it");
+  },
+  setSecret: () => {
+    throw new Error("init stored a secret in a test that is not about it");
+  },
+  openInstall: () => {
+    throw new Error("init opened an install page in a test that is not about it");
+  },
+  ask: () => {
+    throw new Error("init asked a question in a test that is not about it");
   },
 };
 
@@ -83,10 +110,10 @@ const noLabels: LabelSurface = {
  * `policies` are served in full from the per-id endpoint, and what `init`
  * wrote is read back from `GH_REPLAY_LOG`, one call per line.
  */
-const replayed = <T>(
+const replayed = async <T>(
   scenario: { visibility?: string; policies?: readonly object[]; unreadable?: readonly number[] },
-  body: () => T,
-): { result: T; writes: unknown[][] } => {
+  body: () => T | Promise<T>,
+): Promise<{ result: T; writes: unknown[][] }> => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-gh-replay-"));
   const log = path.join(temp, "writes.log");
   const policies = path.join(temp, "policies.json");
@@ -101,7 +128,7 @@ const replayed = <T>(
   const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
   try {
-    const result = body();
+    const result = await body();
     const written = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
     return { result, writes: written.map((line) => JSON.parse(line) as unknown[]) };
   } finally {
@@ -135,6 +162,26 @@ const replayed = <T>(
 const PACKAGE_DIR = ".";
 
 /**
+ * Where one caller's job sits in a caller file's text: from its `  <id>:` line
+ * to the next job's, the comments above that next job included. A caller file
+ * holds several callers (#225), so a scenario that breaks or removes one has to
+ * reach that job and no other.
+ */
+const jobSpan = (text: string, job: string): { readonly from: number; readonly to: number } | undefined => {
+  const from = text.search(new RegExp(`^  ${job}:$`, "m"));
+  if (from === -1) return undefined;
+  const next = text.slice(from + 1).search(/^(  #.*\n)*  [\w-]+:$/m);
+  return { from, to: next === -1 ? text.length : from + 1 + next };
+};
+
+/** A caller file's text with one caller's job taken out. */
+const withoutJob = (text: string, job: string): string => {
+  const span = jobSpan(text, job);
+  expect(span, `no \`${job}\` job to remove`).toBeDefined();
+  return `${text.slice(0, span?.from ?? 0)}${text.slice(span?.to ?? 0)}`;
+};
+
+/**
  * A workflow directory is one holding a runner named after it —
  * `implement/implement.ts`. Found by walking, so a runner added later is held to
  * the same rule on arrival: `shared/` and `scripts/` have no such file and drop
@@ -150,6 +197,29 @@ const runnerDirs = fs
 const manifest = JSON.parse(
   fs.readFileSync(path.join(PACKAGE_DIR, "package.json"), "utf8"),
 ) as { name: string; version: string };
+
+/**
+ * The six-file layout, as `init` wrote it before #225: one caller file per
+ * caller, `agent-<job>.yml`, each the reference caller file's trigger and that
+ * caller's job alone, under its own grants rather than a top-level
+ * `permissions: {}`, pinned to `ref`. Written into `root`; returns each file
+ * and the text it was given.
+ */
+const sixFileTree = (root: string, ref: string): readonly { readonly file: string; readonly text: string }[] =>
+  ["issue", "pr"].flatMap((name) => {
+    const reference = fs.readFileSync(path.join("examples", "callers", `${name}.yml`), "utf8");
+    const jobs = callersIn(reference, manifest.name, `${name}.yml`).map((c) => c.jobId);
+    return jobs.map((job) => {
+      const text = jobs
+        .filter((other) => other !== job)
+        .reduce(withoutJob, reference)
+        .replace(/^permissions: \{\}\n/m, "")
+        .replaceAll(`@v${manifest.version}`, `@${ref}`);
+      const file = `.github/workflows/agent-${job}.yml`;
+      fs.writeFileSync(path.join(root, ...file.split("/")), text);
+      return { file, text };
+    });
+  });
 
 interface Captured {
   code: number;
@@ -431,25 +501,59 @@ describe("init installs the reference callers into an adopting repo", () => {
   const read = (root: string, rel: string): string =>
     fs.readFileSync(path.join(root, ...rel.split("/")), "utf8");
 
+  /** The reference caller files, one per side (#225): `issue` and `pr`. */
   const referenceNames = fs
     .readdirSync(path.join("examples", "callers"))
     .filter((entry) => entry.endsWith(".yml"))
     .map((entry) => entry.replace(/\.yml$/, ""))
     .sort();
 
-  it("writes one caller per reference file, pinned to this package's own version", async () => {
+  /** The workflows each of them calls, read the way `init` reads them. */
+  const referenceCallers = (name: string) =>
+    callersIn(read(".", `examples/callers/${name}.yml`), manifest.name, `${name}.yml`);
+  const referenceWorkflows = referenceNames.flatMap((name) => referenceCallers(name).map((c) => c.workflow));
+
+  it("writes one caller file per reference file, pinned to this package's own version", async () => {
     const root = adopted();
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
+    expect(referenceNames).toEqual(["issue", "pr"]);
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "created"),
     );
     for (const name of referenceNames) {
       const text = read(root, `.github/workflows/agent-${name}.yml`);
-      expect(text).toContain(`/.github/workflows/${name}.yml@v${manifest.version}`);
+      for (const { workflow } of referenceCallers(name)) {
+        expect(text).toContain(`/.github/workflows/${workflow}.yml@v${manifest.version}`);
+      }
       expect(text).toContain("packages: read");
     }
+    expect(fs.readdirSync(path.join(root, ".github", "workflows")).sort()).toEqual(["agent-issue.yml", "agent-pr.yml"]);
+  });
+
+  /**
+   * An adopter on the six-file layout has every caller already, so a re-run
+   * moves each file's pin and writes nothing else. A merged file beside the
+   * six would call every reusable twice: two runs of each per label, racing
+   * each other for the same branch (#225).
+   */
+  it("moves only the pins on a six-file tree, and writes no merged file beside it", async () => {
+    const root = adopted();
+    const six = sixFileTree(root, "v0.0.1");
+    expect(six).toHaveLength(6);
+
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
+
+    expect(fs.readdirSync(path.join(root, ".github", "workflows")).sort()).toEqual(
+      six.map(({ file }) => path.basename(file)).sort(),
+    );
+    for (const { file, text } of six) {
+      expect(read(root, file)).toBe(text.replace("@v0.0.1", `@v${manifest.version}`));
+    }
+    expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => `${c.file} ${c.action}`).sort()).toEqual(
+      six.map(({ file }) => `${file} updated`).sort(),
+    );
   });
 
   /**
@@ -461,9 +565,9 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("writes a self-check naming the job it sits in", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
-    expect(read(root, ".github/workflows/agent-review.yml")).toMatch(
+    expect(read(root, ".github/workflows/agent-pr.yml")).toMatch(
       /^\s*self-check: review \/ review$/m,
     );
   });
@@ -484,26 +588,26 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("moves the pin on a re-run and changes nothing else in a caller", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
-    const theirs = read(root, ".github/workflows/agent-review.yml")
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
+    const theirs = read(root, ".github/workflows/agent-pr.yml")
       .replace(/^  review:$/m, "  agent_review:")
       .replace(/self-check: review \/ review/, "self-check: agent_review / review")
       .replace(/^(    with:)$/m, "$1\n      default-branch: trunk\n      node-version-file: .tool-versions\n      setup: pnpm i --frozen-lockfile")
       .replace(/^      pull-requests: write$/m, "      pull-requests: write\n      issues: write")
-      .replace(`@v${manifest.version}`, "@v0.0.1");
-    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), theirs);
+      .replaceAll(`@v${manifest.version}`, "@v0.0.1");
+    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-pr.yml"), theirs);
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
-    const text = read(root, ".github/workflows/agent-review.yml");
-    expect(text).toBe(theirs.replace("@v0.0.1", `@v${manifest.version}`));
+    const text = read(root, ".github/workflows/agent-pr.yml");
+    expect(text).toBe(theirs.replaceAll("@v0.0.1", `@v${manifest.version}`));
     // Named as well as compared, so an edit above that silently matched
     // nothing cannot leave this asserting that two identical files are equal.
     expect(text).toContain("setup: pnpm i --frozen-lockfile");
     expect(text).toContain("default-branch: trunk");
     expect(text).toContain("issues: write");
     expect(text).toMatch(/^  agent_review:$/m);
-    expect(changes.find((c) => c.file.endsWith("agent-review.yml"))?.action).toBe("updated");
+    expect(changes.find((c) => c.file.endsWith("agent-pr.yml"))?.action).toBe("updated");
   });
 
   /**
@@ -516,41 +620,57 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("does not put back a caller the adopter deleted, and says it did not", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
-    fs.rmSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"));
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
+    const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
+    const declined = withoutJob(fs.readFileSync(pr, "utf8"), "update-branch");
+    fs.writeFileSync(pr, declined);
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
-    expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-update-branch.yml"))).toBe(
-      false,
-    );
-    const change = changes.find((c) => c.file.endsWith("agent-update-branch.yml"));
+    expect(fs.readFileSync(pr, "utf8")).toBe(declined);
+    const kept = changes.filter((c) => c.action === "kept" && c.file.endsWith(".yml"));
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.note ?? "").toContain("`update-branch`");
+    expect(kept[0]?.note ?? "").toContain("examples/callers/pr.yml");
+  });
+
+  /** …and the same for a whole side declined, which is a caller file never copied. */
+  it("does not put back a caller file the adopter deleted, and says it did not", async () => {
+    const root = adopted();
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
+    fs.rmSync(path.join(root, ".github", "workflows", "agent-issue.yml"));
+
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
+
+    expect(fs.existsSync(path.join(root, ".github", "workflows", "agent-issue.yml"))).toBe(false);
+    const change = changes.find((c) => c.file.endsWith("agent-issue.yml"));
     expect(change?.action).toBe("kept");
-    expect(change?.note ?? "").toContain("examples/callers/update-branch.yml");
+    expect(change?.note ?? "").toContain("`implement`, `implement-prd`");
+    expect(change?.note ?? "").toContain("examples/callers/issue.yml");
   });
 
   /**
    * The filename is ours by convention only. A workflow of an adopter's own
-   * that happens to be called `agent-fix.yml` is a file this never wrote, and
+   * that happens to be called `agent-pr.yml` is a file this never wrote, and
    * overwriting it is the same act the re-run above refuses — with worse
    * consequences, since nothing in it was ever a caller.
    */
   it("refuses to write over a file of the same name that is not a caller", async () => {
     const root = adopted();
-    const theirs = "name: Our own fix job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
-    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-fix.yml"), theirs);
+    const theirs = "name: Our own PR job\non: workflow_dispatch\njobs:\n  fix:\n    runs-on: ubuntu-latest\n";
+    fs.writeFileSync(path.join(root, ".github", "workflows", "agent-pr.yml"), theirs);
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
-    expect(read(root, ".github/workflows/agent-fix.yml")).toBe(theirs);
-    expect(changes.find((c) => c.file.endsWith("agent-fix.yml"))?.action).toBe("kept");
+    expect(read(root, ".github/workflows/agent-pr.yml")).toBe(theirs);
+    expect(changes.find((c) => c.file.endsWith("agent-pr.yml"))?.action).toBe("kept");
   });
 
   it("reports an unchanged caller rather than rewriting it", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(changes.filter((c) => c.file.endsWith(".yml")).map((c) => c.action)).toEqual(
       referenceNames.map(() => "unchanged"),
@@ -566,7 +686,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("emits a SETUP.md prompt for the work it cannot do", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     const setup = read(root, "SETUP.md");
     expect(setup).toContain("CLAUDE_CODE_OAUTH_TOKEN");
@@ -585,7 +705,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: manifest.name }));
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(fs.existsSync(path.join(root, "SETUP.md"))).toBe(false);
     const change = changes.find((c) => c.file === "SETUP.md");
@@ -604,7 +724,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     fs.writeFileSync(path.join(root, "SETUP.md"), "# How we set this repo up\n");
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(read(root, "SETUP.md")).toBe("# How we set this repo up\n");
     const change = changes.find((c) => c.file === "SETUP.md");
@@ -618,7 +738,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const { code, out } = await invoke(["init", "--dir", root]);
 
     expect(code).toBe(0);
-    expect(out).toContain("agent-implement.yml");
+    expect(out).toContain("agent-issue.yml");
     expect(fs.existsSync(path.join(root, "SETUP.md"))).toBe(true);
   });
 
@@ -657,6 +777,10 @@ describe("init installs the reference callers into an adopting repo", () => {
     expect(calls).toEqual([
       "GH_REPO= repo view --json visibility --jq .visibility",
       "GH_REPO= label list --limit 1000 --json name,color,description",
+      // The App step: with no secret list to read, nothing says the loop has
+      // no App, so it creates none and asks nothing more.
+      "GH_REPO= repo view --json owner,isInOrganization --jq [.owner.login, .isInOrganization] | @json",
+      "GH_REPO= api repos/{owner}/{repo}/actions/secrets?per_page=100 --jq [.secrets[].name] | @json",
     ]);
   });
 
@@ -665,6 +789,33 @@ describe("init installs the reference callers into an adopting repo", () => {
 
     expect(code).toBe(2);
     expect(err).toContain("--force");
+  });
+
+  /**
+   * `--app` is `init`'s alone (#322). Against a `gh` that answers nothing, it
+   * gets as far as asking who owns the repository, and stops there rather
+   * than starting a flow it cannot finish.
+   */
+  it.skipIf(process.platform === "win32")("takes --app, which doctor refuses", async () => {
+    const root = adopted();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fake-gh-"));
+    roots.push(bin);
+    fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const saved = process.env["PATH"];
+    process.env["PATH"] = `${bin}${path.delimiter}${saved ?? ""}`;
+    try {
+      const { code, out } = await invoke(["init", "--dir", root, "--app"]);
+
+      expect(code).toBe(0);
+      expect(out).toMatch(/kept\s+GitHub App \(could not read which account owns this repository/);
+    } finally {
+      if (saved === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = saved;
+    }
+
+    const { code, err } = await invoke(["doctor", "--dir", root, "--app"]);
+    expect(code).toBe(2);
+    expect(err).toContain("--app");
   });
 
   /**
@@ -721,7 +872,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("leaves no placeholder unsubstituted in the prompt it writes", async () => {
     const root = adopted();
 
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     expect(read(root, "SETUP.md")).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
@@ -790,7 +941,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const scaffolded = new Set([...TRIGGER_LABELS, ...STATE_LABELS].map((label) => label.name));
     // The function `doctor` demands from, named rather than inferred from the
     // tables: what must not happen is a preflight erroring over one of these.
-    const demanded = new Set(labelSpecsFor(referenceNames).map((label) => label.name));
+    const demanded = new Set(labelSpecsFor(referenceWorkflows).map((label) => label.name));
 
     expect(conditional.length).toBeGreaterThan(0);
     for (const label of conditional) {
@@ -816,9 +967,9 @@ describe("init installs the reference callers into an adopting repo", () => {
     const root = adopted();
     const conditional = documentedLabels().slice(1).flat();
 
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
-    expect(byName(advisoryLabelSpecsFor(referenceNames))).toEqual(byName(conditional));
+    expect(byName(advisoryLabelSpecsFor(referenceWorkflows))).toEqual(byName(conditional));
     for (const label of conditional) expect(read(root, "SETUP.md")).toContain(labelCommand(label));
   });
 
@@ -834,10 +985,11 @@ describe("init installs the reference callers into an adopting repo", () => {
    */
   it("says nothing about them once the caller that wants them is gone", async () => {
     const root = adopted();
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
-    fs.rmSync(path.join(root, ".github", "workflows", "agent-follow-ups.yml"));
-    await init({ dir: root, github: offline, labels: noLabels });
+    const pr = path.join(root, ".github", "workflows", "agent-pr.yml");
+    fs.writeFileSync(pr, withoutJob(fs.readFileSync(pr, "utf8"), "follow-ups"));
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     const setup = read(root, "SETUP.md");
     const filing = ADVISORY_LABELS["follow-ups"] ?? [];
@@ -909,15 +1061,14 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     return { surface, sent };
   };
 
-  const triggered = ["agent-fix.yml", "agent-follow-ups.yml", "agent-review.yml", "agent-update-branch.yml"].map(
-    (file) => `.github/workflows/${file}`,
-  );
+  /** The PR-side caller file: the one file `init` installs that runs on the trigger (#225). */
+  const triggered = [".github/workflows/agent-pr.yml"];
 
   it("creates the policy for the callers alone, and a second run reports it unchanged", async () => {
     const root = adopted();
     const { surface, sent } = github("public", []);
 
-    const first = await init({ dir: root, github: surface, labels: noLabels });
+    const first = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(first.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
     expect(sent).toHaveLength(1);
@@ -930,7 +1081,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     expect(body?.conditions.workflow_path.include).not.toContain(".github/workflows/ci.yml");
     expect(body?.rules).toEqual([{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }]);
 
-    const second = await init({ dir: root, github: surface, labels: noLabels });
+    const second = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(second.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(1);
@@ -943,27 +1094,154 @@ describe("init allows pull_request_target for the loop's callers on a public rep
    */
   it("lists every event a targeted caller also triggers on", async () => {
     const root = adopted();
-    await init({ dir: root, github: github("private", []).surface, labels: noLabels });
-    const review = path.join(root, ".github", "workflows", "agent-review.yml");
+    await init({ dir: root, app: noApp, github: github("private", []).surface, labels: noLabels });
+    const review = path.join(root, ".github", "workflows", "agent-pr.yml");
     fs.writeFileSync(review, fs.readFileSync(review, "utf8").replace(/^on:$/m, "on:\n  workflow_dispatch:"));
     const { surface, sent } = github("public", []);
 
-    await init({ dir: root, github: surface, labels: noLabels });
+    await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(sent[0]?.body.rules[0].parameters.allowed_events).toEqual(["pull_request_target", "workflow_dispatch"]);
   });
 
-  it("extends its own policy in place when a caller has been added since", async () => {
+  it("extends its own policy in place when a caller file has been added since", async () => {
     const root = adopted();
+    // The `review` caller in a file of its own, and the rest of the PR side in
+    // the file `init` installs, with the policy covering only the first.
+    await init({ dir: root, app: noApp, github: github("private", []).surface, labels: noLabels });
+    const dir = path.join(root, ".github", "workflows");
+    const pr = fs.readFileSync(path.join(dir, "agent-pr.yml"), "utf8");
+    fs.writeFileSync(path.join(dir, "agent-pr.yml"), withoutJob(pr, "review"));
+    fs.writeFileSync(
+      path.join(dir, "agent-review.yml"),
+      ["fix", "update-branch", "follow-ups"].reduce(withoutJob, pr),
+    );
+    const earlier = ".github/workflows/agent-review.yml";
     const { surface, sent } = github("public", [
-      { id: 3, name: POLICY_NAME, enforcement: "active", include: triggered.slice(1), exclude: [], allowedEvents: ["pull_request_target"] },
+      { id: 3, name: POLICY_NAME, enforcement: "active", include: [earlier], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
+    expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
+    expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...triggered, earlier].sort());
+  });
+
+  /**
+   * The policy follows the files, not the names it was written for (#225): an
+   * adopter who merges the six-file layout by hand leaves its old PR-side
+   * files gone, and a policy still naming them would allow the trigger for
+   * whatever workflow is next given one of those names.
+   */
+  it("drops the files that no longer hold a PR-side caller when the callers are merged by hand", async () => {
+    const root = adopted();
+    sixFileTree(root, `v${manifest.version}`);
+    const six = ["review", "fix", "update-branch", "follow-ups"].map((job) => `.github/workflows/agent-${job}.yml`);
+    const { surface, sent } = github("public", []);
+    await init({ dir: root, app: noApp, github: surface, labels: noLabels });
+    expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...six].sort());
+
+    // Merged by hand: the reference PR-side file in, the four it replaces out.
+    const dir = path.join(root, ".github", "workflows");
+    for (const file of six) fs.rmSync(path.join(root, ...file.split("/")));
+    fs.copyFileSync(path.join("examples", "callers", "pr.yml"), path.join(dir, "agent-pr.yml"));
+
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
+
+    const policy = changes.find((c) => c.file === POLICY_CHANGE);
+    expect(policy?.action).toBe("updated");
+    expect(policy?.note).toContain(".github/workflows/agent-review.yml");
+    expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "POST" }, { method: "PUT", id: 7 }]);
+    expect(sent[1]?.body.conditions.workflow_path.include).toEqual(triggered);
+
+    const again = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
+
+    expect(again.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(sent).toHaveLength(2);
+  });
+
+  /**
+   * Merged into a file the policy already names, so every caller is allowed
+   * and nothing is short: the names left over are still dropped.
+   */
+  it("drops a file that no longer holds a caller even when every caller is already allowed", async () => {
+    const root = adopted();
+    const gone = ".github/workflows/agent-review.yml";
+    const { surface, sent } = github("public", [
+      { id: 3, name: POLICY_NAME, enforcement: "active", include: [...triggered, gone], exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("updated");
     expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
     expect(sent[0]?.body.conditions.workflow_path.include).toEqual(triggered);
+  });
+
+  /**
+   * An adopter may add a workflow of their own to this policy. What decides an
+   * entry is stale is whether any workflow file still runs on the trigger
+   * there, never whether it holds a caller: a routine re-run that dropped
+   * theirs would block it on a public repository, behind their back. Each way
+   * an entry can name one of theirs (#330 review): by path, by glob, and a file
+   * this cannot parse, whose trigger is unknown rather than absent.
+   */
+  it.each([
+    ["by path", ".github/workflows/deploy-preview.yml", "on:\n  pull_request_target:\n    types: [opened]\njobs: {}\n"],
+    ["by glob", ".github/workflows/deploy-*.yml", "on: [push, pull_request_target]\njobs: {}\n"],
+    ["unparseable", ".github/workflows/deploy-preview.yml", "on: [pull_request_target\n  : : :\n"],
+  ])("keeps an adopter's own workflow on the trigger in its policy, named %s", async (_how, entry, text) => {
+    const root = adopted();
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
+    fs.writeFileSync(path.join(root, ".github", "workflows", "deploy-preview.yml"), text);
+    const include = [...triggered, entry].sort();
+    const { surface, sent } = github("public", [
+      { id: 3, name: POLICY_NAME, enforcement: "active", include, exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(sent).toHaveLength(0);
+  });
+
+  /** …and drops one that is still there but no longer runs on the trigger, keeping the rest. */
+  it("drops an adopter's own workflow that no longer runs on the trigger", async () => {
+    const root = adopted();
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
+    const dir = path.join(root, ".github", "workflows");
+    fs.writeFileSync(path.join(dir, "deploy-preview.yml"), "on: push\njobs: {}\n");
+    fs.writeFileSync(path.join(dir, "label-preview.yml"), "on:\n  pull_request_target:\njobs: {}\n");
+    const dropped = ".github/workflows/deploy-preview.yml";
+    const kept = ".github/workflows/label-preview.yml";
+    const { surface, sent } = github("public", [
+      { id: 3, name: POLICY_NAME, enforcement: "active", include: [...triggered, dropped, kept], exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
+
+    const policy = changes.find((c) => c.file === POLICY_CHANGE);
+    expect(policy?.action).toBe("updated");
+    expect(policy?.note).toContain(`no longer for ${dropped}`);
+    expect(sent.map(({ method, id }) => ({ method, id }))).toEqual([{ method: "PUT", id: 3 }]);
+    expect(sent[0]?.body.conditions.workflow_path.include).toEqual([...triggered, kept].sort());
+  });
+
+  /**
+   * A policy somebody else wrote is theirs: what it names is not this step's
+   * to prune, even where a file it names holds no caller.
+   */
+  it("leaves the file list of a policy it did not write alone", async () => {
+    const root = adopted();
+    const { surface, sent } = github("public", [
+      { id: 9, name: "theirs", enforcement: "active", include: [...triggered, ".github/workflows/agent-review.yml"], exclude: [], allowedEvents: ["pull_request_target"] },
+    ]);
+
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
+
+    expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
+    expect(sent).toHaveLength(0);
   });
 
   it("counts a policy somebody else wrote, if it allows the trigger for every caller", async () => {
@@ -972,7 +1250,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
       { id: 9, name: "theirs", enforcement: "active", include: [".github/workflows/agent-*.yml"], exclude: [], allowedEvents: ["pull_request_target"] },
     ]);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
     expect(sent).toHaveLength(0);
@@ -982,7 +1260,7 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface, sent } = github("private", []);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     expect(changes.find((c) => c.file === POLICY_CHANGE)).toBeUndefined();
     expect(sent).toHaveLength(0);
@@ -997,13 +1275,13 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface } = github("public", [], "HTTP 403: Resource not accessible by integration");
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     const policy = changes.find((c) => c.file === POLICY_CHANGE);
     expect(policy?.action).toBe("kept");
     expect(policy?.note).toContain("HTTP 403");
     expect(policy?.note).toContain("gh api --method POST repos/{owner}/{repo}/actions/policies --input -");
-    expect(policy?.note).toContain('"workflow_path":{"include":[".github/workflows/agent-fix.yml"');
+    expect(policy?.note).toContain('"workflow_path":{"include":[".github/workflows/agent-pr.yml"]');
     expect(policy?.note).toContain("Settings → Actions → Policies");
     expect(changes.filter((c) => c.file.endsWith(".yml")).every((c) => c.action === "created")).toBe(true);
   });
@@ -1013,17 +1291,17 @@ describe("init allows pull_request_target for the loop's callers on a public rep
    * second run reads the policy the first one created from its own endpoint,
    * finds it allows every caller, and writes nothing.
    */
-  it.skipIf(process.platform === "win32")("reads each policy in full, so a re-run leaves its own alone", () => {
+  it.skipIf(process.platform === "win32")("reads each policy in full, so a re-run leaves its own alone", async () => {
     const root = adopted();
 
-    const first = replayed({ visibility: "PUBLIC" }, () => init({ dir: root, github: livePolicySurface(root), labels: noLabels }));
+    const first = await replayed({ visibility: "PUBLIC" }, () => init({ dir: root, app: noApp, github: livePolicySurface(root), labels: noLabels }));
 
     expect(first.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("created");
     expect(first.writes.map((call) => call.slice(0, 3))).toEqual([["api", "--method", "POST"]]);
     const created = { id: 6133, target: "actions", source_type: "Repository", source: "repo", ...(first.writes[0]?.[4] as object) };
 
-    const second = replayed({ visibility: "PUBLIC", policies: [created] }, () =>
-      init({ dir: root, github: livePolicySurface(root), labels: noLabels }),
+    const second = await replayed({ visibility: "PUBLIC", policies: [created] }, () =>
+      init({ dir: root, app: noApp, github: livePolicySurface(root), labels: noLabels }),
     );
 
     expect(second.result.find((c) => c.file === POLICY_CHANGE)?.action).toBe("unchanged");
@@ -1035,12 +1313,12 @@ describe("init allows pull_request_target for the loop's callers on a public rep
    * the callers, or this step's own: creating a second beside it, or calling
    * the repository uncovered, would both be verdicts on a fact nobody read.
    */
-  it.skipIf(process.platform === "win32")("leaves the policy to a human where one could not be read", () => {
+  it.skipIf(process.platform === "win32")("leaves the policy to a human where one could not be read", async () => {
     const root = adopted();
     const theirs = { id: 4, name: "theirs", enforcement: "active" };
 
-    const { result, writes } = replayed({ visibility: "PUBLIC", policies: [theirs], unreadable: [4] }, () =>
-      init({ dir: root, github: livePolicySurface(root), labels: noLabels }),
+    const { result, writes } = await replayed({ visibility: "PUBLIC", policies: [theirs], unreadable: [4] }, () =>
+      init({ dir: root, app: noApp, github: livePolicySurface(root), labels: noLabels }),
     );
 
     const policy = result.find((c) => c.file === POLICY_CHANGE);
@@ -1056,12 +1334,315 @@ describe("init allows pull_request_target for the loop's callers on a public rep
     const root = adopted();
     const { surface, sent } = github(visibility, policies);
 
-    const changes = await init({ dir: root, github: surface, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: surface, labels: noLabels });
 
     const policy = changes.find((c) => c.file === POLICY_CHANGE);
     expect(policy?.action).toBe("kept");
     expect(policy?.note).toContain("gh api --method POST");
     expect(sent).toHaveLength(0);
+  });
+});
+
+/**
+ * The loop's GitHub App (#322). `init` creates it through the manifest flow
+ * where nothing says not to, and stores its ID and key where one setup covers
+ * the most without assuming an access it was not shown. Against a stand-in
+ * surface that records every write; the live flow is `tests/app.test.ts`'s.
+ */
+describe("init creates the loop's GitHub App", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
+  const adopted = (): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-init-app-"));
+    fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+    roots.push(root);
+    return root;
+  };
+
+  const registered: RegisteredApp = {
+    id: 4242,
+    slug: "acme-loop-bot",
+    name: "Acme Loop Bot",
+    pem: "-----BEGIN RSA PRIVATE KEY-----\nkey\n-----END RSA PRIVATE KEY-----\n",
+  };
+
+  const app = (scenario: {
+    secrets: readonly string[] | undefined;
+    owner?: RepoOwner | undefined;
+    admin?: boolean | undefined;
+    /** What the person types, or `undefined` for no TTY to ask on. */
+    answer?: string | undefined;
+  }) => {
+    const manifests: AppManifest[] = [];
+    const stored: { name: string; value: string; placement: SecretPlacement }[] = [];
+    const asked: string[] = [];
+    const opened: string[] = [];
+    const questions: string[] = [];
+    const surface: AppSurface = {
+      secrets: () => scenario.secrets,
+      owner: () => ("owner" in scenario ? scenario.owner : { login: "acme", organization: true }),
+      orgAdmin: (org) => {
+        asked.push(org);
+        return scenario.admin;
+      },
+      register: async (_owner, manifest) => {
+        manifests.push(manifest);
+        return registered;
+      },
+      setSecret: (name, value, placement) => {
+        stored.push({ name, value, placement });
+        return undefined;
+      },
+      openInstall: (url) => {
+        opened.push(url);
+      },
+      ask: async (question) => {
+        questions.push(question);
+        return scenario.answer;
+      },
+    };
+    return { surface, manifests, stored, asked, opened, questions };
+  };
+
+  const run = (surface: AppSurface, createApp?: boolean) =>
+    init({
+      dir: adopted(),
+      github: offline,
+      labels: noLabels,
+      app: surface,
+      ...(createApp === undefined ? {} : { createApp }),
+    });
+
+  it.each([false, true])("reports an App whose secrets are set, and changes nothing (--app: %s)", async (createApp) => {
+    const { surface, manifests, stored, opened } = app({ secrets: ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY", "AGENT_PAT"] });
+
+    const changes = await run(surface, createApp);
+
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("unchanged");
+    expect(change?.note).toContain("AGENT_APP_ID and AGENT_APP_PRIVATE_KEY are set");
+    expect([manifests, stored, opened]).toEqual([[], [], []]);
+  });
+
+  it("creates the App where there is neither an App nor AGENT_PAT, and takes its name from GitHub", async () => {
+    const { surface, manifests, stored, opened } = app({ secrets: [], admin: true });
+
+    const changes = await run(surface);
+
+    expect(manifests).toEqual([
+      {
+        name: "acme-agent-loop",
+        url: `https://github.com/${manifest.name.replace(/^@/, "")}`,
+        public: false,
+        default_permissions: {
+          contents: "write",
+          pull_requests: "write",
+          issues: "write",
+          workflows: "write",
+          metadata: "read",
+        },
+        default_events: [],
+      },
+    ]);
+    expect(manifests[0]).not.toHaveProperty("hook_attributes");
+    expect(changes.find((c) => c.file.startsWith(APP_CHANGE))).toEqual({
+      file: `${APP_CHANGE} "Acme Loop Bot"`,
+      action: "created",
+      note: "ID 4242; install it on the repositories it may act on at https://github.com/apps/acme-loop-bot/installations/new",
+    });
+    expect(stored.map(({ name, value }) => [name, value])).toEqual([
+      ["AGENT_APP_ID", "4242"],
+      ["AGENT_APP_PRIVATE_KEY", registered.pem],
+    ]);
+    expect(opened).toEqual(["https://github.com/apps/acme-loop-bot/installations/new"]);
+    // The key is stored, never shown.
+    expect(JSON.stringify(changes)).not.toContain("PRIVATE KEY-----");
+  });
+
+  /**
+   * An existing adopter on `AGENT_PAT` is offered the App, never put on it
+   * (#323). Without a TTY there is nobody to answer, so the PAT stays and the
+   * switch is named rather than waited for.
+   */
+  it("keeps AGENT_PAT without a TTY, and names the switch", async () => {
+    const { surface, manifests, stored, questions } = app({ secrets: ["AGENT_PAT"], answer: undefined });
+
+    const changes = await run(surface);
+
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("kept");
+    expect(change?.note).toContain("init --app");
+    expect(questions).toHaveLength(1);
+    expect([manifests, stored]).toEqual([[], []]);
+  });
+
+  /** The question defaults to no: Enter, or anything short of a yes, changes nobody's identity. */
+  it.each(["", "  ", "n", "no", "N", "nope", "maybe"])("keeps AGENT_PAT and creates nothing on the answer %j", async (answer) => {
+    const { surface, manifests, stored, opened, questions } = app({ secrets: ["AGENT_PAT"], answer });
+
+    const changes = await run(surface);
+
+    expect(questions).toEqual([expect.stringContaining("[y/N]")]);
+    const change = changes.find((c) => c.file === APP_CHANGE);
+    expect(change?.action).toBe("kept");
+    expect(change?.note).toContain("init --app");
+    expect([manifests, stored, opened]).toEqual([[], [], []]);
+    expect(changes.filter((c) => c.file.includes("AGENT_PAT"))).toEqual([]);
+  });
+
+  it.each(["y", "Y", "yes", " Yes "])("switches to the App on the answer %j, and leaves AGENT_PAT in place", async (answer) => {
+    const { surface, manifests, stored } = app({ secrets: ["AGENT_PAT"], admin: true, answer });
+
+    const changes = await run(surface);
+
+    expect(manifests).toHaveLength(1);
+    expect(changes.find((c) => c.file.startsWith(APP_CHANGE))?.action).toBe("created");
+    expect(stored.map(({ name }) => name)).toEqual(["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"]);
+    const pat = changes.find((c) => c.file === "secret AGENT_PAT");
+    expect(pat?.action).toBe("kept");
+    expect(pat?.note).toMatch(/can be deleted/);
+    expect(pat?.note).toMatch(/revoke/);
+  });
+
+  /** Nobody is asked where there is no PAT to switch from, or an App already. */
+  it.each([[[]], [["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY", "AGENT_PAT"]]])("asks nothing with the secrets %j", async (secrets) => {
+    const { surface, questions } = app({ secrets, admin: true, answer: "y" });
+
+    await run(surface);
+
+    expect(questions).toEqual([]);
+  });
+
+  /**
+   * `--app` creates the App with `AGENT_PAT` set, and the PAT stays: the
+   * surface has no way to delete a secret, and nothing here writes one but
+   * the App's two.
+   */
+  it("creates the App with --app, without asking, and never deletes or writes AGENT_PAT", async () => {
+    const { surface, manifests, stored, questions } = app({ secrets: ["AGENT_PAT"], admin: true, answer: "n" });
+
+    const changes = await run(surface, true);
+
+    expect(questions).toEqual([]);
+    expect(manifests).toHaveLength(1);
+    expect(changes.find((c) => c.file.startsWith(APP_CHANGE))?.action).toBe("created");
+    expect(stored.map(({ name }) => name)).toEqual(["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"]);
+    expect(Object.keys(surface).sort()).toEqual(["ask", "openInstall", "orgAdmin", "owner", "register", "secrets", "setSecret"]);
+    // Advice, and no more: the one entry naming the PAT says it can go, and does not make it go.
+    expect(changes.filter((c) => c.file.includes("AGENT_PAT"))).toEqual([
+      {
+        file: "secret AGENT_PAT",
+        action: "kept",
+        note: expect.stringMatching(/can be deleted .* revoke/),
+      },
+    ]);
+    // The live surface too: nothing under setup/ asks `gh` to delete a secret.
+    for (const entry of fs.readdirSync("setup").filter((name) => name.endsWith(".ts"))) {
+      expect(fs.readFileSync(path.join("setup", entry), "utf8")).not.toMatch(/"secret",\s*"(delete|remove)"/);
+    }
+  });
+
+  /**
+   * The advice follows a switch that took: with no PAT there is nothing to
+   * retire, and with the App's key refused the PAT is still what the loop
+   * writes with.
+   */
+  it("says nothing about AGENT_PAT where there was none, or where the App's secrets were not both stored", async () => {
+    const fresh = app({ secrets: [], admin: true });
+    expect((await run(fresh.surface)).filter((c) => c.file.includes("AGENT_PAT"))).toEqual([]);
+
+    const refused = app({ secrets: ["AGENT_PAT"], admin: false });
+    const surface: AppSurface = {
+      ...refused.surface,
+      setSecret: (name) => (name === "AGENT_APP_PRIVATE_KEY" ? "HTTP 403: Resource not accessible" : undefined),
+    };
+    const changes = await run(surface, true);
+    expect(changes.find((c) => c.file === "secret AGENT_APP_PRIVATE_KEY")?.action).toBe("kept");
+    expect(changes.filter((c) => c.file.includes("AGENT_PAT"))).toEqual([]);
+  });
+
+  it("creates no App where the secrets could not be read, short of --app", async () => {
+    const { surface, manifests } = app({ secrets: undefined });
+
+    const changes = await run(surface);
+
+    expect(changes.find((c) => c.file === APP_CHANGE)?.action).toBe("kept");
+    expect(manifests).toEqual([]);
+  });
+
+  it.each([
+    ["an organization admin", { login: "acme", organization: true }, true, { level: "organization", org: "acme" }, ["acme"]],
+    ["an organization non-admin", { login: "acme", organization: true }, false, { level: "repository" }, ["acme"]],
+    ["unreadable admin status", { login: "acme", organization: true }, undefined, { level: "repository" }, ["acme"]],
+    ["a personal account", { login: "octo", organization: false }, true, { level: "repository" }, []],
+  ] as const)("stores the secrets for %s where that is shown to reach", async (_who, owner, admin, placement, asked) => {
+    const scenario = app({ secrets: [], owner, admin });
+
+    const changes = await run(scenario.surface);
+
+    expect(scenario.stored.map((s) => s.placement)).toEqual([placement, placement]);
+    expect(scenario.asked).toEqual(asked);
+    expect(changes.find((c) => c.file === "secret AGENT_APP_ID")?.note).toBe(
+      placement.level === "organization" ? "on the organization acme, for every repository in it" : "on this repository",
+    );
+  });
+
+  /**
+   * An org admin's `gh` commonly lacks `admin:org`, which an organization
+   * secret needs (#330 review): each write refused there is retried on the
+   * repository, which every workflow here also reads.
+   */
+  it("stores on the repository where the organization refuses", async () => {
+    const scenario = app({ secrets: [], admin: true });
+    const tried: string[] = [];
+    const surface: AppSurface = {
+      ...scenario.surface,
+      setSecret: (name, _value, placement) => {
+        tried.push(`${name} ${placement.level}`);
+        return placement.level === "organization" ? "HTTP 403: needs admin:org" : undefined;
+      },
+    };
+
+    const changes = await run(surface);
+
+    expect(tried).toEqual([
+      "AGENT_APP_ID organization",
+      "AGENT_APP_ID repository",
+      "AGENT_APP_PRIVATE_KEY organization",
+      "AGENT_APP_PRIVATE_KEY repository",
+    ]);
+    for (const name of ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"]) {
+      const change = changes.find((c) => c.file === `secret ${name}`);
+      expect(change?.action).toBe("created");
+      expect(change?.note).toContain("on this repository, since GitHub refused it on the organization acme (HTTP 403: needs admin:org)");
+    }
+  });
+
+  it("names where to make a new key when the organization and the repository both refuse", async () => {
+    const scenario = app({ secrets: [], admin: true });
+    const surface: AppSurface = { ...scenario.surface, setSecret: (_n, _v, p) => `HTTP 403: no ${p.level}` };
+
+    const changes = await run(surface);
+
+    const key = changes.find((c) => c.file === "secret AGENT_APP_PRIVATE_KEY");
+    expect(key?.action).toBe("kept");
+    expect(key?.note).toContain("(HTTP 403: no organization) and on this repository (HTTP 403: no repository)");
+    expect(key?.note).toContain("https://github.com/organizations/acme/settings/apps/acme-loop-bot");
+    expect(key?.note).not.toContain("PRIVATE KEY-----");
+  });
+
+  it("names where to make a new key when GitHub refuses to store it", async () => {
+    const scenario = app({ secrets: [], admin: false });
+    const surface: AppSurface = { ...scenario.surface, setSecret: () => "HTTP 403: Resource not accessible" };
+
+    const changes = await run(surface);
+
+    const key = changes.find((c) => c.file === "secret AGENT_APP_PRIVATE_KEY");
+    expect(key?.action).toBe("kept");
+    expect(key?.note).toContain("https://github.com/organizations/acme/settings/apps/acme-loop-bot");
+    expect(key?.note).not.toContain("PRIVATE KEY-----");
   });
 });
 
@@ -1135,7 +1716,7 @@ describe("init converges the labels the loop owns", () => {
     const root = adopted();
     const { surface, sent, now } = github(OLD);
 
-    const first = await init({ dir: root, github: offline, labels: surface });
+    const first = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     for (const label of OWNED) {
       expect(first.find((c) => c.file === `label "${label.name}"`)?.action, label.name).toBe("updated");
@@ -1147,7 +1728,7 @@ describe("init converges the labels the loop owns", () => {
     expect(now().map((l) => l.name)).not.toContain("agent:in-progress");
 
     const writes = sent.length;
-    const second = await init({ dir: root, github: offline, labels: surface });
+    const second = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     expect(labelChanges(second).map((c) => c.action)).toEqual(OWNED.map(() => "unchanged"));
     expect(sent).toHaveLength(writes);
@@ -1158,7 +1739,7 @@ describe("init converges the labels the loop owns", () => {
     const root = adopted();
     const { surface, sent } = github(OLD);
 
-    await init({ dir: root, github: offline, labels: surface });
+    await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     expect(sent.filter((write) => !write.includes(" agent:"))).toEqual([]);
   });
@@ -1167,7 +1748,7 @@ describe("init converges the labels the loop owns", () => {
     const root = adopted();
     const { surface, sent } = github(OLD.filter((label) => label.name !== "agent:fix"));
 
-    const changes = await init({ dir: root, github: offline, labels: surface });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     expect(changes.find((c) => c.file === 'label "agent:fix"')?.action).toBe("created");
     expect(sent).toContain("create agent:fix");
@@ -1184,7 +1765,7 @@ describe("init converges the labels the loop owns", () => {
       { "agent:in-progress": [12, 34] },
     );
 
-    const changes = await init({ dir: root, github: offline, labels: surface });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     const kept = changes.find((c) => c.file === 'label "agent:in-progress"');
     expect(kept?.action).toBe("kept");
@@ -1198,7 +1779,7 @@ describe("init converges the labels the loop owns", () => {
     const root = adopted();
     const { surface, sent } = github(OLD, { "agent:in-progress": undefined });
 
-    const changes = await init({ dir: root, github: offline, labels: surface });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: surface });
 
     expect(changes.find((c) => c.file === 'label "agent:in-progress"')?.action).toBe("kept");
     expect(sent).not.toContain("delete agent:in-progress");
@@ -1207,7 +1788,7 @@ describe("init converges the labels the loop owns", () => {
   it("says what to run where the labels could not be listed, and writes none", async () => {
     const root = adopted();
 
-    const changes = await init({ dir: root, github: offline, labels: noLabels });
+    const changes = await init({ dir: root, app: noApp, github: offline, labels: noLabels });
 
     const kept = changes.find((c) => c.file === "labels");
     expect(kept?.action).toBe("kept");
@@ -1224,6 +1805,7 @@ describe("init converges the labels the loop owns", () => {
 
     const changes = await init({
       dir: root,
+      app: noApp,
       github: offline,
       labels: { ...surface, create: () => "HTTP 403: Resource not accessible by integration" },
     });
@@ -1259,7 +1841,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
     roots.push(root);
     fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
-    await init({ dir: root, github: offline, labels: noLabels });
+    await init({ dir: root, app: noApp, github: offline, labels: noLabels });
     return root;
   };
 
@@ -1321,18 +1903,33 @@ describe("doctor names the failures that otherwise look like something else", ()
     timeoutMinutes: Object.fromEntries(TIMEOUT_VARIABLES.map((variable) => [variable.name, null])),
   });
 
+  /** The installed caller file holding a job, repo-relative as `doctor` names it. */
+  const callerFileOf = (root: string, job: string): string => {
+    const dir = path.join(root, ".github", "workflows");
+    const file = fs.readdirSync(dir).find((entry) => jobSpan(fs.readFileSync(path.join(dir, entry), "utf8"), job));
+    expect(file, `no installed caller file holds a \`${job}\` job`).toBeDefined();
+    return `.github/workflows/${file ?? ""}`;
+  };
+
   /**
    * Break one caller, and insist that the break landed. Every scenario below is
    * a text edit against the real reference callers, so a comment reworded there
    * would otherwise turn a scenario into a test of nothing that still passes.
+   *
+   * The edit is confined to the caller's own job (#225): `init` installs one
+   * caller file per side, so a scope removed with a file-wide `replace` would
+   * land on whichever caller came first. The job runs from its `  <id>:` line
+   * to the next job's, comments above that next job included.
    */
-  const edit = (root: string, file: string, change: (text: string) => string): void => {
-    const full = path.join(root, ".github", "workflows", file);
-    const before = fs.readFileSync(full, "utf8");
+  const edit = (root: string, job: string, change: (text: string) => string): void => {
+    const full = path.join(root, ...callerFileOf(root, job).split("/"));
+    const text = fs.readFileSync(full, "utf8");
+    const { from, to } = jobSpan(text, job) ?? { from: 0, to: 0 };
+    const before = text.slice(from, to);
     const after = change(before);
 
     expect(after).not.toBe(before);
-    fs.writeFileSync(full, after);
+    fs.writeFileSync(full, `${text.slice(0, from)}${after}${text.slice(to)}`);
   };
 
   const check = async (
@@ -1360,6 +1957,139 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * Both caller layouts are supported (#225), and `doctor` says what each one
+   * means: the merged one passes quietly, the six-file one passes with a note
+   * suggesting the merge, and the one shape that does harm, a reusable workflow
+   * called twice, fails whichever files the two callers sit in.
+   */
+  describe("the caller layout", () => {
+    const sixFiles = (): string => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
+      roots.push(root);
+      fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+      sixFileTree(root, `v${manifest.version}`);
+      return root;
+    };
+    const workflowsDir = (root: string): string => path.join(root, ".github", "workflows");
+    const lines = (text: string, tag: string, check: string): readonly string[] =>
+      text.split("\n").filter((line) => line.startsWith(`${tag}  ${check}:`));
+
+    it("says nothing about the layout of a merged install", async () => {
+      const { code, out, err } = await check(await installed(), healthy());
+
+      expect(code).toBe(0);
+      expect(`${out}${err}`).not.toContain("caller layout");
+    });
+
+    it("notes the six-file layout and suggests the merged one, without failing it", async () => {
+      const { code, out, err } = await check(sixFiles(), healthy());
+
+      expect(err).toBe("");
+      expect(code).toBe(0);
+      const said = lines(out, "note", "caller layout");
+      expect(said).toHaveLength(2);
+      const pr = said.find((line) => line.includes("pull request"));
+      for (const job of ["review", "fix", "update-branch", "follow-ups"]) {
+        expect(pr).toContain(`.github/workflows/agent-${job}.yml`);
+      }
+      expect(pr).toContain("4 files");
+      const issue = said.find((line) => line.includes("an issue"));
+      expect(issue).toContain(".github/workflows/agent-implement.yml");
+      expect(issue).toContain(".github/workflows/agent-implement-prd.yml");
+      expect(out).toContain("examples/callers/pr.yml");
+      expect(out).toContain("examples/callers/issue.yml");
+    });
+
+    /**
+     * Declining `follow-ups` is deleting its job from the PR-side caller file,
+     * or not copying its file in the six-file layout, and either is a choice
+     * rather than a fault.
+     */
+    it("reads a missing follow-ups caller as declined in the merged layout", async () => {
+      const root = await installed();
+      const before = await check(root, healthy());
+      const pr = path.join(workflowsDir(root), "agent-pr.yml");
+      fs.writeFileSync(pr, withoutJob(fs.readFileSync(pr, "utf8"), "follow-ups"));
+
+      const after = await check(root, healthy());
+
+      expect(after.code).toBe(0);
+      expect(after.err).toBe("");
+      // One fewer caller counted, and not one finding more.
+      expect(after.out).toBe(before.out.replace("6 caller(s)", "5 caller(s)"));
+    });
+
+    it("reads a missing follow-ups caller as declined in the six-file layout", async () => {
+      const root = sixFiles();
+      fs.rmSync(path.join(workflowsDir(root), "agent-follow-ups.yml"));
+
+      const { code, out, err } = await check(root, healthy());
+
+      expect(code).toBe(0);
+      expect(err).toBe("");
+      expect(out).not.toContain("follow-ups");
+    });
+
+    it("fails a reusable workflow called twice from one caller file, naming both jobs", async () => {
+      const root = await installed();
+      const pr = path.join(workflowsDir(root), "agent-pr.yml");
+      const text = fs.readFileSync(pr, "utf8");
+      const { from, to } = jobSpan(text, "fix") ?? { from: 0, to: 0 };
+      const copy = text.slice(from, to).replace(/^  fix:$/m, "  fix-again:");
+      fs.writeFileSync(pr, `${text.slice(0, to)}${copy}${text.slice(to)}`);
+
+      const { code, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      const said = lines(err, "FAIL", "duplicate caller");
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain("`fix.yml`");
+      expect(said[0]).toContain(".github/workflows/agent-pr.yml's `fix` job");
+      expect(said[0]).toContain(".github/workflows/agent-pr.yml's `fix-again` job");
+    });
+
+    /**
+     * The half-merged tree: a merged caller file copied in beside the six it
+     * replaces. Every caller is then called twice, and the layout note stands
+     * down, since the duplicates' fix is the one that matters.
+     */
+    it("fails a reusable workflow called from two caller files, naming both", async () => {
+      const root = sixFiles();
+      fs.copyFileSync(path.join("examples", "callers", "pr.yml"), path.join(workflowsDir(root), "agent-pr.yml"));
+
+      const { code, out, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      const said = lines(err, "FAIL", "duplicate caller");
+      expect(said).toHaveLength(4);
+      const review = said.find((line) => line.includes("`review.yml`"));
+      expect(review).toContain(".github/workflows/agent-pr.yml's `review` job");
+      expect(review).toContain(".github/workflows/agent-review.yml's `review` job");
+      // The issue side is still spread over two files, and still noted.
+      expect(lines(out, "note", "caller layout")).toHaveLength(1);
+      expect(lines(out, "note", "caller layout")[0]).toContain("an issue");
+    });
+
+    /**
+     * The per-job grant checks apply to each caller inside a merged caller
+     * file: one job short of a scope is named, and its neighbours are not.
+     */
+    it("names the one under-granted job in a merged caller file", async () => {
+      const root = await installed();
+      edit(root, "update-branch", (text) => text.replace(/^ *contents: write$/m, ""));
+
+      const { code, err } = await check(root, healthy());
+
+      expect(code).toBe(1);
+      const said = err.split("\n").filter((line) => line.startsWith("FAIL"));
+      expect(said.length).toBeGreaterThan(0);
+      for (const line of said) {
+        expect(line).toContain(".github/workflows/agent-pr.yml grants the `update-branch` job no `contents: write`");
+      }
+    });
+  });
+
+  /**
    * The Actions policy a public repository needs from 2026-11-02 (#219): a
    * label added there and no run started, with nothing in the loop saying why.
    */
@@ -1373,7 +2103,8 @@ describe("doctor names the failures that otherwise look like something else", ()
       allowedEvents: ["pull_request_target"],
       ...overrides,
     });
-    const callers = [".github/workflows/agent-fix.yml", ".github/workflows/agent-follow-ups.yml", ".github/workflows/agent-review.yml", ".github/workflows/agent-update-branch.yml"];
+    /** The one caller file `init` installs that runs on the trigger: the PR side (#225). */
+    const callers = [".github/workflows/agent-pr.yml"];
 
     it("is silent where a policy allows it for every caller", async () => {
       const { code, out, err } = await check(await installed(), {
@@ -1392,22 +2123,22 @@ describe("doctor names the failures that otherwise look like something else", ()
       expect(code).toBe(1);
       expect(err).toContain("FAIL  pull_request_target policy");
       for (const file of callers) expect(err).toContain(file);
-      expect(err).not.toContain(".github/workflows/agent-implement.yml");
+      expect(err).not.toContain(".github/workflows/agent-issue.yml");
       expect(err).toContain("gh api --method POST repos/{owner}/{repo}/actions/policies");
       expect(err).toContain("Settings → Actions → Policies");
     });
 
     /** A policy that allows nothing for a caller is no policy for it. */
     it.each([
-      ["one caller missing", allowing(callers.slice(1))],
-      ["excluded", allowing([], { exclude: [".github/workflows/agent-fix.yml"] })],
+      ["one caller file missing", allowing([".github/workflows/agent-review.yml"])],
+      ["excluded", allowing([], { exclude: [".github/workflows/agent-pr.yml"] })],
       ["only in evaluate mode", allowing(callers, { enforcement: "evaluate" })],
       ["another event only", allowing(callers, { allowedEvents: ["push"] })],
     ] as const)("fails on a policy that is %s", async (_what, policy) => {
       const { code, err } = await check(await installed(), { ...healthy(), visibility: "public", actionsPolicies: [policy] });
 
       expect(code).toBe(1);
-      expect(err).toContain(".github/workflows/agent-fix.yml");
+      expect(err).toContain(".github/workflows/agent-pr.yml");
     });
 
     it("counts a policy on every workflow, or a glob over the callers", async () => {
@@ -1444,7 +2175,7 @@ describe("doctor names the failures that otherwise look like something else", ()
         rules: [{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }],
       };
 
-      const { result: actionsPolicies } = replayed({ policies: [created] }, () => readPolicies(root));
+      const { result: actionsPolicies } = await replayed({ policies: [created] }, () => readPolicies(root));
       const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
 
       expect(actionsPolicies).toEqual([
@@ -1472,7 +2203,7 @@ describe("doctor names the failures that otherwise look like something else", ()
         rules: [{ type: "restrict_action_events", parameters: { allowed_events: ["pull_request_target"] } }],
       };
 
-      const { result: actionsPolicies } = replayed({ policies: [theirs] }, () => readPolicies(root));
+      const { result: actionsPolicies } = await replayed({ policies: [theirs] }, () => readPolicies(root));
       const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
 
       expect(actionsPolicies).toEqual([
@@ -1486,7 +2217,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     it.skipIf(process.platform === "win32")("warns rather than failing where one policy could not be read", async () => {
       const root = await installed();
 
-      const { result: actionsPolicies } = replayed({ policies: [{ id: 4, name: "theirs", enforcement: "active" }], unreadable: [4] }, () =>
+      const { result: actionsPolicies } = await replayed({ policies: [{ id: 4, name: "theirs", enforcement: "active" }], unreadable: [4] }, () =>
         readPolicies(root),
       );
       const { code, out, err } = await check(root, { ...healthy(), visibility: "public", actionsPolicies });
@@ -1545,14 +2276,14 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * The `closed` trigger moved the chain on from a slice PR merged by hand,
-   * and nothing listens for it now. A caller installed before still has it,
-   * which fires a job that skips: harmless, so not worth a word (#249).
+   * and the review listens for it no more (#249). The PR-side caller file
+   * lists it for `follow-ups` (#225), so the review's caller fires on it and
+   * every review job skips: harmless, so not worth a word.
    */
-  it("does not flag a review caller that still listens on closed", async () => {
+  it("does not flag a review caller whose file listens on closed", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace("types: [labeled]", "types: [closed, labeled]"));
-    expect(fs.readFileSync(path.join(root, ".github", "workflows", "agent-review.yml"), "utf8")).toContain(
-      "types: [closed, labeled]",
+    expect(fs.readFileSync(path.join(root, ...callerFileOf(root, "review").split("/")), "utf8")).toContain(
+      "types: [labeled, closed]",
     );
 
     const { code, out, err } = await check(root, healthy());
@@ -1622,13 +2353,13 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   it("fails a caller that dropped packages: read, and names the grant", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(/^ *packages: read$/m, ""));
+    edit(root, "fix", (text) => text.replace(/^ *packages: read$/m, ""));
 
     const { code, err } = await check(root, healthy());
 
     expect(code).toBe(1);
     expect(err).toContain("packages: read");
-    expect(err).toContain("agent-fix.yml");
+    expect(err).toContain(".github/workflows/agent-pr.yml grants the `fix` job no `packages: read`");
   });
 
   /**
@@ -1647,7 +2378,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("fails a review caller without checks: read on a public repository too", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace(/^ *checks: read$/m, ""));
+    edit(root, "review", (text) => text.replace(/^ *checks: read$/m, ""));
 
     for (const visibility of ["private", "public"] as const) {
       const { code, err } = await check(root, { ...healthy(), visibility });
@@ -1735,6 +2466,27 @@ describe("doctor names the failures that otherwise look like something else", ()
       ),
     );
 
+  /**
+   * `doctor` points an adopter at the reference caller file holding a job, from
+   * a fixed list because `diagnose` reads nothing at run time. That list is
+   * the reference set's, file for file (#225).
+   */
+  it("knows which reference caller file holds each caller", () => {
+    const dir = path.join(PACKAGE_DIR, "examples", "callers");
+    const held = Object.fromEntries(
+      fs
+        .readdirSync(dir)
+        .filter((entry) => entry.endsWith(".yml"))
+        .flatMap((entry) =>
+          callersIn(fs.readFileSync(path.join(dir, entry), "utf8"), manifest.name, entry).map(
+            (caller) => [caller.workflow, entry] as const,
+          ),
+        ),
+    );
+
+    expect(REFERENCE_CALLER_FILES).toEqual(held);
+  });
+
   it("demands exactly what the reusable halves bound and the reference callers grant", () => {
     const bound = ceilings();
     // The premise: a restructure that stopped finding the reusables would
@@ -1752,10 +2504,16 @@ describe("doctor names the failures that otherwise look like something else", ()
       }
     }
 
+    // Read by the workflow each caller calls, not by file: a reference caller
+    // file holds one side's callers (#225).
+    const dir = path.join(PACKAGE_DIR, "examples", "callers");
+    const references = fs
+      .readdirSync(dir)
+      .filter((entry) => entry.endsWith(".yml"))
+      .flatMap((entry) => callersIn(fs.readFileSync(path.join(dir, entry), "utf8"), manifest.name, entry));
     const granted = new Map(
       [...bound.keys()].map((name) => {
-        const file = path.join(PACKAGE_DIR, "examples", "callers", `${name}.yml`);
-        const [caller] = callersIn(fs.readFileSync(file, "utf8"), manifest.name, file);
+        const caller = references.find((held) => held.workflow === name);
         return [name, { ...caller?.permissions }];
       }),
     );
@@ -1787,7 +2545,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     "names %s when the caller's own block leaves it out, and fails on it",
     async (_label: string, workflow: string, permission: string, value: string) => {
       const root = await installed();
-      edit(root, `agent-${workflow}.yml`, (text) =>
+      edit(root, workflow, (text) =>
         text.replace(new RegExp(`^ *${permission}: ${value}$`, "m"), ""),
       );
 
@@ -1801,7 +2559,9 @@ describe("doctor names the failures that otherwise look like something else", ()
         const said = err.split("\n").find((line) => line.includes(`${permission}: ${value}:`));
 
         expect(said, `${visibility}: nothing on stderr`).toBeDefined();
-        expect(said).toContain(`agent-${workflow}.yml`);
+        // The file and the job: in a caller file holding several callers, the
+        // file alone does not say which one is short (#225).
+        expect(said).toContain(`${callerFileOf(root, workflow)} grants the \`${workflow}\` job`);
         // And what it says the shortfall costs, which is the correction #146
         // made: the run, before any job starts, rather than the step the scope
         // is spent on.
@@ -1877,7 +2637,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("does not invent a missing grant on a caller that granted everything", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) =>
+    edit(root, "fix", (text) =>
       text.replace(/^    permissions:\n(?:.*\n)*?    # No `with:`/m, "    permissions: write-all\n    # No `with:`"),
     );
 
@@ -1924,7 +2684,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("reports a review caller that still grants contents: read", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace(/^( *)contents: write$/m, "$1contents: read"));
+    edit(root, "review", (text) => text.replace(/^( *)contents: write$/m, "$1contents: read"));
 
     for (const visibility of ["private", "public"] as const) {
       const { code, err } = await check(root, { ...healthy(), visibility });
@@ -1957,7 +2717,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     "tells a caller to change %s rather than add a second key",
     async (_label: string, workflow: string, permission: string, value: string) => {
       const root = await installed();
-      edit(root, `agent-${workflow}.yml`, (text) =>
+      edit(root, workflow, (text) =>
         text.replace(new RegExp(`^( *)${permission}: ${value}$`, "m"), `$1${permission}: none`),
       );
 
@@ -2027,6 +2787,30 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * A caller inside a caller file whose top level grants nothing (#225): a job
+   * there that lost its own block runs with no scope at all. One finding about
+   * the block, naming the job, rather than one per scope telling the adopter to
+   * add each to the top-level block, which would grant it to every caller in
+   * the file.
+   */
+  it("names a job in a caller file that grants nothing above jobs:, and gives it its own block", async () => {
+    const root = await installed();
+    edit(root, "fix", (text) => text.replace(/^    permissions:\n(?:(?:      .*)?\n)*?(?=    #)/m, ""));
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    const said = err.split("\n").filter((line) => line.startsWith("FAIL") && line.includes("`fix` job"));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain(".github/workflows/agent-pr.yml");
+    expect(said[0]).toContain("grants nothing");
+    expect(err).toContain("the `fix` job's in examples/callers/pr.yml");
+    expect(err).not.toMatch(/to the workflow's top-level `permissions:` block/);
+    // The other callers in the file keep their own blocks, and are fine.
+    expect(err).not.toContain("`review` job");
+  });
+
+  /**
    * No grant's severity depends on a fact `gh` may not be able to read any
    * more, so an unreadable visibility raises nothing and assumes nothing —
    * where it used to fail `checks: read` on the assumption that the repository
@@ -2035,7 +2819,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("needs no visibility to rule on a missing grant", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace(/^ *checks: read$/m, ""));
+    edit(root, "review", (text) => text.replace(/^ *checks: read$/m, ""));
 
     const { code, err } = await check(root, { ...healthy(), visibility: undefined });
 
@@ -2074,7 +2858,9 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(1);
     expect(err).toContain("declares no `permissions:` block");
-    expect(err).toContain("examples/callers/review.yml");
+    // The reference caller file holding that job, not one named after the
+    // workflow: a reference file holds one side's callers (#225).
+    expect(err).toContain("the `review` job's in examples/callers/pr.yml");
   });
 
   it("says nothing about a caller inheriting a permissive default token", async () => {
@@ -2148,7 +2934,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   it("fails a caller pinned to a branch rather than a tag or a SHA", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(`@v${manifest.version}`, "@main"));
+    edit(root, "fix", (text) => text.replace(`@v${manifest.version}`, "@main"));
 
     const { code, err } = await check(root, healthy());
 
@@ -2164,7 +2950,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("reports how many releases a pin is behind, without failing on it", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(`@v${manifest.version}`, "@v0.1.1"));
+    edit(root, "fix", (text) => text.replace(`@v${manifest.version}`, "@v0.1.1"));
 
     const { code, out } = await check(root, {
       ...healthy(),
@@ -2183,7 +2969,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("still reports a pin older than the latest tag it could not find in the list", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(`@v${manifest.version}`, "@v0.0.1"));
+    edit(root, "fix", (text) => text.replace(`@v${manifest.version}`, "@v0.0.1"));
 
     const { code, out } = await check(root, { ...healthy(), releases: [`v${manifest.version}`] });
 
@@ -2235,7 +3021,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("fails a self-check that does not name the job it is in", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => text.replace(/^  review:$/m, "  reviewer:"));
+    edit(root, "review", (text) => text.replace(/^  review:$/m, "  reviewer:"));
 
     const { code, err } = await check(root, healthy());
 
@@ -2266,7 +3052,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     ["leaves out the spaces around the slash", "self-check: review/review"],
   ])("fails a self-check that %s", async (_case: string, written: string) => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) =>
+    edit(root, "review", (text) =>
       text.replace(/self-check: review \/ review/, written),
     );
 
@@ -2290,7 +3076,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("reads the calling job's display name, not its id, as the first half", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) =>
+    edit(root, "review", (text) =>
       text
         .replace(/^  review:$/m, "  review:\n    name: Agent review")
         .replace("self-check: review / review", "self-check: Agent review / review"),
@@ -2305,7 +3091,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   /** …and the id-shaped one is now the wrong answer on that same caller. */
   it("fails a named job whose self-check still states the job id", async () => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) =>
+    edit(root, "review", (text) =>
       text.replace(/^  review:$/m, "  review:\n    name: Agent review"),
     );
 
@@ -2329,7 +3115,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("fails a caller that does not pass AGENT_PAT to the workflow it calls", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) =>
+    edit(root, "fix", (text) =>
       text.replace(/^ *AGENT_PAT: .*$/m, ""),
     );
 
@@ -2337,7 +3123,7 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(1);
     expect(err).toContain("AGENT_PAT");
-    expect(err).toContain("agent-fix.yml");
+    expect(err).toContain(".github/workflows/agent-pr.yml does not hand `AGENT_PAT` to `fix.yml`");
     expect(err).toContain("secrets: inherit");
   });
 
@@ -2363,7 +3149,8 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     const { code, out, err } = await check(root, healthy());
 
-    expect(`${out}${err}`).not.toContain("agent-follow-ups.yml");
+    expect(`${out}${err}`).not.toContain("`follow-ups.yml`");
+    expect(`${out}${err}`).not.toContain("`follow-ups` job");
     expect(code).toBe(0);
   });
 
@@ -2375,7 +3162,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("accepts a caller that inherits every secret", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) =>
+    edit(root, "fix", (text) =>
       text.replace(/^    secrets:\n(?:      .*\n)+/m, "    secrets: inherit\n"),
     );
 
@@ -2393,7 +3180,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("reports the missing wire as a warning when the secret is not set either", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(/^ *AGENT_PAT: .*$/m, ""));
+    edit(root, "fix", (text) => text.replace(/^ *AGENT_PAT: .*$/m, ""));
 
     const { out, err } = await check(root, {
       ...healthy(),
@@ -2402,6 +3189,180 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(out).toContain("secrets wiring");
     expect(err).not.toContain("secrets wiring");
+  });
+
+  /**
+   * **The loop's identity** (#321, PRD #314): which of the App, the PAT or
+   * neither the loop writes as, the App set up by halves, and a caller that
+   * does not pass the App's secrets on while they are set. Ruled through
+   * `diagnose`, on the callers of a constructed tree and constructed facts, in
+   * both layouts, and with the facts unreadable, which is never a pass.
+   */
+  describe("the loop's identity", () => {
+    const APP = ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"];
+    const withSecrets = (...secrets: string[]): RepoFacts => ({
+      ...healthy(),
+      secrets: ["CLAUDE_CODE_OAUTH_TOKEN", ...secrets],
+    });
+    const rule = (root: string, facts: RepoFacts): readonly Finding[] =>
+      diagnose(readInstalledCallers(root, manifest.name), facts);
+    const of = (findings: readonly Finding[], check: string): readonly Finding[] =>
+      findings.filter((finding) => finding.check === check);
+    const sixFiles = (): string => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
+      roots.push(root);
+      fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+      sixFileTree(root, `v${manifest.version}`);
+      return root;
+    };
+    /** One caller's secrets, without one of the App's: confined to its job, as `edit` is. */
+    const dropSecret = (root: string, file: string, job: string, name: string): void => {
+      const full = path.join(root, ...file.split("/"));
+      const text = fs.readFileSync(full, "utf8");
+      const { from, to } = jobSpan(text, job) ?? { from: 0, to: 0 };
+      const before = text.slice(from, to);
+      const after = before.replace(new RegExp(`^ *${name}: .*\\n`, "m"), "");
+      expect(after).not.toBe(before);
+      fs.writeFileSync(full, `${text.slice(0, from)}${after}${text.slice(to)}`);
+    };
+
+    it.each([
+      ["the App", [...APP], "note", "The loop writes as its GitHub App"],
+      ["the App, with a PAT behind it", [...APP, "AGENT_PAT"], "note", "The loop writes as its GitHub App"],
+      ["the PAT", ["AGENT_PAT"], "note", "The loop writes as `AGENT_PAT`'s owner"],
+      ["neither", [], "error", "Neither the loop's GitHub App"],
+    ] as const)("reports %s as the identity in use", async (_, secrets, severity, says) => {
+      const said = of(rule(await installed(), withSecrets(...secrets)), "identity");
+
+      expect(said).toHaveLength(1);
+      expect(said[0]?.severity).toBe(severity);
+      expect(said[0]?.problem).toContain(says);
+    });
+
+    it("names no identity where the secrets could not be read, and says it is unknown", async () => {
+      const findings = rule(await installed(), { ...healthy(), secrets: undefined });
+
+      expect(of(findings, "identity")).toEqual([]);
+      expect(of(findings, "App secrets")).toEqual([]);
+      expect(of(findings, "secrets")[0]?.fix).toContain("Which identity the loop writes as is unknown");
+    });
+
+    it.each([
+      ["an ID without a key", "AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY"],
+      ["a key without an ID", "AGENT_APP_PRIVATE_KEY", "AGENT_APP_ID"],
+    ])("fails an App with %s, naming the half that is missing", async (_, set, unset) => {
+      const root = await installed();
+
+      for (const pat of [["AGENT_PAT"], []]) {
+        const said = of(rule(root, withSecrets(set, ...pat)), "App secrets");
+        expect(said).toHaveLength(1);
+        expect(said[0]?.severity).toBe("error");
+        expect(said[0]?.problem).toContain(`\`${set}\` is set and \`${unset}\` is not`);
+        expect(said[0]?.problem).toContain(pat.length > 0 ? "`AGENT_PAT`'s owner" : "`GITHUB_TOKEN`");
+        expect(said[0]?.fix).toContain(`Set \`${unset}\``);
+      }
+      // Half an App is no App: the identity is the PAT's.
+      expect(of(rule(root, withSecrets(set, "AGENT_PAT")), "identity")[0]?.problem).toContain("`AGENT_PAT`'s owner");
+    });
+
+    it("finds nothing half-configured in a whole App, or in none", async () => {
+      const root = await installed();
+
+      expect(of(rule(root, withSecrets(...APP)), "App secrets")).toEqual([]);
+      expect(of(rule(root, withSecrets("AGENT_PAT")), "App secrets")).toEqual([]);
+    });
+
+    it("passes a repository init has just set up, on the App", async () => {
+      const { code, out, err } = await check(await installed(), withSecrets(...APP));
+
+      expect(err).toBe("");
+      expect(code).toBe(0);
+      expect(out).toContain("note  identity: The loop writes as its GitHub App");
+    });
+
+    describe.each([
+      ["merged", (): Promise<string> => installed(), ".github/workflows/agent-pr.yml", ".github/workflows/agent-issue.yml"],
+      ["six-file", (): Promise<string> => Promise.resolve(sixFiles()), ".github/workflows/agent-fix.yml", ".github/workflows/agent-implement.yml"],
+    ])("the App's secrets passed through, in the %s layout", (_, tree, fixFile, implementFile) => {
+      it("fails each caller that writes and does not pass them, naming it", async () => {
+        const root = await tree();
+        dropSecret(root, fixFile, "fix", "AGENT_APP_ID");
+        dropSecret(root, implementFile, "implement", "AGENT_APP_PRIVATE_KEY");
+
+        const said = of(rule(root, withSecrets(...APP, "AGENT_PAT")), "App secrets wiring");
+
+        expect(said.map((finding) => finding.severity)).toEqual(["error", "error"]);
+        const fix = said.find((finding) => finding.problem.includes("`fix.yml`"));
+        expect(fix?.problem).toContain(`${fixFile} does not hand \`AGENT_APP_ID\` to \`fix.yml\` on the \`fix\` job`);
+        expect(fix?.fix).toContain("AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}");
+        const implement = said.find((finding) => finding.problem.includes("`implement.yml`"));
+        expect(implement?.problem).toContain(`${implementFile} does not hand \`AGENT_APP_PRIVATE_KEY\``);
+      });
+
+      it("raises nothing about them where the App is not set up", async () => {
+        const root = await tree();
+        dropSecret(root, fixFile, "fix", "AGENT_APP_ID");
+
+        expect(of(rule(root, withSecrets("AGENT_PAT")), "App secrets wiring")).toEqual([]);
+        // Half an App is its own finding, and no caller can make it work.
+        expect(of(rule(root, withSecrets("AGENT_APP_ID", "AGENT_PAT")), "App secrets wiring")).toEqual([]);
+      });
+
+      it("warns rather than passes where the secrets could not be read", async () => {
+        const root = await tree();
+        dropSecret(root, fixFile, "fix", "AGENT_APP_ID");
+
+        const said = of(rule(root, { ...healthy(), secrets: undefined }), "App secrets wiring");
+
+        expect(said).toHaveLength(1);
+        expect(said[0]?.severity).toBe("warning");
+        expect(said[0]?.problem).toContain(fixFile);
+      });
+
+      it("accepts a caller that inherits every secret", async () => {
+        const root = await tree();
+        const full = path.join(root, ...fixFile.split("/"));
+        const text = fs.readFileSync(full, "utf8");
+        const { from, to } = jobSpan(text, "fix") ?? { from: 0, to: 0 };
+        const job = text.slice(from, to).replace(/^    secrets:\n(?:      .*\n)+/m, "    secrets: inherit\n");
+        expect(job).toContain("secrets: inherit");
+        fs.writeFileSync(full, `${text.slice(0, from)}${job}${text.slice(to)}`);
+
+        expect(of(rule(root, withSecrets(...APP)), "App secrets wiring")).toEqual([]);
+      });
+
+      /**
+       * `follow-ups` writes with the workflow token and declares none of the
+       * loop's write secrets, so it passes none, and that is never this error.
+       */
+      it("never raises it on follow-ups", async () => {
+        const root = await tree();
+        const findings = [
+          ...rule(root, withSecrets(...APP)),
+          ...rule(root, { ...healthy(), secrets: undefined }),
+        ];
+
+        expect(findings.filter((finding) => finding.problem.includes("`follow-ups.yml`"))).toEqual([]);
+        expect(of(findings, "App secrets wiring")).toEqual([]);
+      });
+    });
+
+    /**
+     * A caller handed the whole App writes with it, so the PAT it does not
+     * pass is never reached; and the App, like the PAT, is a writer for the
+     * rulings that ask whether a label can fire an event or a PR be opened.
+     */
+    it("asks for no PAT wire, PAT or repository setting where the App does the writing", async () => {
+      const root = await installed();
+      edit(root, "fix", (text) => text.replace(/^ *AGENT_PAT: .*$/m, ""));
+
+      const findings = rule(root, { ...withSecrets(...APP), canCreatePullRequests: false });
+
+      expect(of(findings, "secrets wiring")).toEqual([]);
+      expect(of(findings, "fix rounds without a PAT")).toEqual([]);
+      expect(of(findings, "actions can open PRs")[0]?.severity).toBe("warning");
+      expect(findings.filter((finding) => finding.severity === "error")).toEqual([]);
+    });
   });
 
   /**
@@ -2426,7 +3387,7 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(out).toContain(FIX_ROUNDS_VARIABLE);
     expect(err).not.toContain("fix rounds without a PAT");
     // The missing PAT itself, which is the acceptance: reported, and failing.
-    expect(err).toMatch(/The `AGENT_PAT` secret is not set/);
+    expect(err).toMatch(/FAIL  identity: Neither the loop's GitHub App .* nor the `AGENT_PAT` secret is set/);
     expect(code).toBe(1);
   });
 
@@ -2555,7 +3516,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   const withAutoFix = async (value: string): Promise<string> => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) =>
+    edit(root, "review", (text) =>
       text.replace("self-check: review / review", `self-check: review / review\n      auto-fix: ${value}`),
     );
     return root;
@@ -2639,7 +3600,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   const withRedCheck = async (blocks: readonly string[]): Promise<string> => {
     const root = await installed();
-    edit(root, "agent-review.yml", (text) => {
+    edit(root, "review", (text) => {
       let after = text;
       for (const block of blocks) {
         const commented = block.split(INDENT).map((line) => `# ${line}`).join(INDENT);
@@ -2658,7 +3619,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("notes that the red check is not configured on a caller init has just installed", async () => {
     const { code, out, err } = await check(await installed(), healthy());
 
-    expect(out).toContain("note  red check: .github/workflows/agent-review.yml's `review` job does not configure the red check");
+    expect(out).toContain("note  red check: .github/workflows/agent-pr.yml's `review` job does not configure the red check");
     expect(out).toContain("red-check-command");
     expect(out).not.toContain("warn  red check");
     expect(err).toBe("");
@@ -2668,7 +3629,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("notes that the red check is configured, naming its command and report", async () => {
     const { code, out, err } = await check(await withRedCheck([COMMAND, REPORT, GLOBS]), healthy());
 
-    expect(out).toContain("note  red check: .github/workflows/agent-review.yml's `review` job configures the red check");
+    expect(out).toContain("note  red check: .github/workflows/agent-pr.yml's `review` job configures the red check");
     expect(out).toContain("`npx vitest run --reporter=junit --outputFile=junit.xml`");
     expect(out).toContain("`junit.xml`");
     expect(out).toContain("never a required status");
@@ -2713,7 +3674,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("reads red check inputs left empty, null or blank as not passed", async () => {
     for (const value of ['""', "~", '"  "']) {
       const root = await withRedCheck([COMMAND, REPORT]);
-      edit(root, "agent-review.yml", (text) =>
+      edit(root, "review", (text) =>
         text.replace(REPORT, `${REPORT}${INDENT}red-check-test-globs: ${value}`),
       );
       const { out } = await check(root, healthy());
@@ -2884,7 +3845,7 @@ describe("doctor names the failures that otherwise look like something else", ()
    */
   it("writes its reasons where a workflow can read them", async () => {
     const root = await installed();
-    edit(root, "agent-fix.yml", (text) => text.replace(/^ *packages: read$/m, ""));
+    edit(root, "fix", (text) => text.replace(/^ *packages: read$/m, ""));
 
     await check(root, healthy());
 

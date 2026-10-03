@@ -1,0 +1,226 @@
+name: Agent PR
+
+# The pull-request side of the loop: one caller file holding the four callers
+# that run on a pull request (#225). Each job is a caller, and each says the
+# facts about *this* repo its reusable workflow cannot read for itself: the
+# token it is granted and the secrets it is handed. Everything else (the label
+# guard, the fork guard, the permissions ceiling, the concurrency group, every
+# step) is in the reusable workflow it names, which an adopting repo references
+# instead of copying (jeffwlawson/winget-manifest-lint#97, #98).
+#
+# **No job here carries an `if:`.** Every label on a pull request starts one run
+# of this file, and each reusable workflow's own guard decides whether it is
+# its label. A guard written here could only skip a job, never loosen one, and
+# would be a second copy of the routing for an adopter to keep in step.
+#
+# Uses pull_request_target so the labeled event runs with repo secrets and write
+# access, and fires reliably even when the PR is out of date. On a PUBLIC repo
+# that is a fork-code-execution path; the fork guard that closes it is a
+# job-level `if:` in each called workflow, where a caller can skip it but cannot
+# loosen it and an adopter cannot leave it behind.
+#
+# `pull_request_target` reads workflow YAML from the *default* branch, so a pull
+# request cannot alter this file to change what runs. The called workflows are
+# equally out of a PR's reach, but because of what each `uses:` below is
+# **pinned to**, not because they are local. Pin a tag or a SHA, never a branch:
+# `@main` would hand a job that runs with your secrets to whatever currently
+# sits on another repository's default branch (docs/ADOPTING.md §9).
+#
+# Two activity types, and `closed` is `follow-ups`' alone: it is **not** a
+# default `pull_request_target` type, so a file that listed only `labeled`
+# would file nothing on a merge and look exactly like one that did. Every job
+# of the other three skips a `closed` event, so they spend nothing on one.
+on:
+  pull_request_target:
+    types: [labeled, closed]
+
+# Nothing at the top level: every grant is on the job that spends it, so a job
+# added here later starts with nothing rather than with its neighbours' scopes.
+permissions: {}
+
+jobs:
+  # The job id is load-bearing: it is the first half of the check-run name
+  # `review / review` passed below. Rename it and the CI wait stops recognising
+  # itself. A test compares the two, so the pair cannot drift silently.
+  review:
+    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.7.8
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what its jobs need —
+    # `pull-requests: write` is what every `gh pr edit` in it spends, and
+    # `packages: read` is explained below.
+    permissions:
+      # Reading this commit's workflow runs, which is the only place a CI run
+      # that is queued or waiting for approval shows: it has no check run yet.
+      # Without it the CI wait could read "no CI" as green. The called job
+      # declares it, so omitting it here is refused before any job starts.
+      actions: read
+      # Reading the check runs the CI wait polls. A public repository serves that
+      # poll without this scope, which is why it reads as optional and why it was
+      # missing until v0.1.5 — but the called job declares it, so omitting it
+      # here is refused before any job starts, on a public repository too.
+      checks: read
+      # `write` for one job only: `post-review`, which resolves the threads the
+      # review closed before it posts the review. GitHub refuses
+      # `resolveReviewThread` to a token without it (#133). That job checks
+      # nothing out and runs no agent. The review job itself narrows this back
+      # to `read`, so a review still cannot touch the branch. Not optional and not a degradation: a called job cannot hold
+      # more than this block grants, and GitHub refuses the elevation by
+      # failing the whole run before any job starts — an *Invalid workflow file*
+      # annotation, and no job log (probed, #146). Left at `read`, this workflow
+      # does not review at all.
+      contents: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
+      packages: read
+      pull-requests: write
+      # Posting the review's verdict as an `agent-review` commit status on the
+      # reviewed commit — the one line saying what to do next. A status is its
+      # own scope, so `pull-requests: write` does not cover it. The step that
+      # posts it warns rather than failing, on the grounds that a posted review
+      # beats the line summarising it — but that is not what omitting this buys
+      # you: a caller granting less than a job it calls declares is refused
+      # before any job starts, so what it costs is the run (docs/ADOPTING.md
+      # §4).
+      statuses: write
+    with:
+      # `<caller job id> / <called job id>`, and the only input with no useful
+      # default. The toolchain three (`default-branch`, `node-version-file`,
+      # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci` —
+      # so there is nothing to say about them here.
+      self-check: review / review
+      # The review starts up to 3 fix rounds per pull request itself, adding
+      # `agent:fix` when it recommends changes. Set the repository variable
+      # `AGENT_MAX_FIX_ROUNDS` to change that (`0` for none): the reusable
+      # workflow reads it from this repository, so nothing goes here. Needs
+      # the loop's App or `AGENT_PAT` (docs/ADOPTING.md §3b).
+      # The red check (#231): runs the tests a pull request adds or changes
+      # against the code as it was before the change, in a job holding no
+      # secrets, and reports to the review which of them fail there on an
+      # assertion (red) and which on an import or collection error (broken).
+      # Off unless `red-check-command` is set; the other two go with it. The
+      # command must write a JUnit XML report to `red-check-report`, and the
+      # globs, one a line, say which files are tests. Uncomment and adapt:
+      # red-check-command: npx vitest run --reporter=junit --outputFile=junit.xml
+      # red-check-report: junit.xml
+      # red-check-test-globs: |
+      #   tests/**
+      #   **/*.test.ts
+    # Named rather than `secrets: inherit`, which would hand the called
+    # workflow every secret this repository holds. Each is declared in it;
+    # all but the first are optional, and an absent one arrives as the empty
+    # string, which the loop's token resolver falls back from.
+    # The loop's App's two secrets beside the PAT, all three optional: where
+    # the App's ID and key are both set, its bot makes the writes the PAT
+    # would make, and neither reaches the job that runs the agent.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+  fix:
+    uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v0.7.8
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs.
+    permissions:
+      contents: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
+      packages: read
+      pull-requests: write
+    # No `with:`. The three inputs (`default-branch`, `node-version-file`,
+    # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
+    #
+    # Named rather than `secrets: inherit`, which would hand the called workflow
+    # every secret this repository holds. Each is declared in it; all but the
+    # first are optional, and an absent one arrives as the empty string, which
+    # the loop's token resolver falls back from.
+    # The loop's App's two secrets beside the PAT, all three optional: where
+    # the App's ID and key are both set, its bot makes the writes the PAT
+    # would make, and neither reaches the job that runs the agent.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+  update-branch:
+    uses: jeffwlawson/agent-workflows/.github/workflows/update-branch.yml@v0.7.8
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs.
+    permissions:
+      contents: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
+      packages: read
+      pull-requests: write
+      # Carrying the review's verdict on to the merge commit a clean refresh
+      # creates, so a refresh does not quietly cost a review round. A commit
+      # status is its own scope rather than part of `pull-requests: write`. The
+      # step warns rather than failing if the copy does not land, the branch
+      # having moved by then — but omitting the grant costs the whole run
+      # instead, before any job starts (docs/ADOPTING.md §4).
+      statuses: write
+    # No `with:`. The three inputs (`default-branch`, `node-version-file`,
+    # `setup`) default to this repo's values — `main`, `.nvmrc`, `npm ci`.
+    # The loop's App's two secrets beside the PAT, all three optional: where
+    # the App's ID and key are both set, its bot makes the writes the PAT
+    # would make, and neither reaches the job that runs the agent.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+  # **This job is the off switch** for filing a merged pull request's recorded
+  # findings as issues (#50). The reusable ships inert: nothing invokes it
+  # except a caller's reference, so a repo that deletes this job never files
+  # anything. The review keeps recording its out-of-scope findings in the
+  # review body and keeps marking the pull request either way: unfiled rather
+  # than invisible, and a search for merged pull requests carrying
+  # `agent:follow-ups` is then the exact list of the ones nobody filed.
+  #
+  # `labeled` is its manual entry point: re-add `agent:follow-ups` to a closed
+  # pull request to drive a missed close event, a reconsidered opt-out or a
+  # partial failure. Both types are narrowed in the called job's condition,
+  # which an adopter cannot loosen.
+  follow-ups:
+    uses: jeffwlawson/agent-workflows/.github/workflows/follow-ups.yml@v0.7.8
+    # Granted here, bounded there. A called workflow can only downgrade the
+    # token it is handed, so these have to be at least what the job needs — and
+    # `issues: write` is the one this workflow exists for. The agent that raised
+    # these findings still cannot file them: it runs in `review`, which holds
+    # `contents: read` and no `issues:` scope at all, and the job below that
+    # holds the permission runs no model.
+    permissions:
+      contents: read
+      issues: write
+      # Installing the runner package, which the called job does with `npx` from
+      # GitHub Packages. Granted here because a called workflow can only
+      # *downgrade* the token it is handed, so the scope has to start in the
+      # caller — and unconditional because GitHub Packages has no anonymous
+      # install even for a public package. Omit it and there is no run to install
+      # in: a caller granting less than a job it calls declares is refused before
+      # any job starts (docs/ADOPTING.md §4).
+      packages: read
+      pull-requests: write
+    # No `with:` and no `secrets:`, and neither is an omission. The called
+    # workflow declares no inputs — nothing is checked out, so there is no
+    # toolchain to describe and no command to run — and no secrets, because it
+    # runs no model and creates its issues with the workflow token. A repository
+    # without `AGENT_PAT` files exactly as much as one with it.

@@ -40,9 +40,27 @@ npm config set //npm.pkg.github.com/:_authToken="$(gh auth token)"
 ```
 
 `init` copies the reference callers out of [`examples/callers/`](../examples/callers/) into
-`.github/workflows/`, substituting the one thing that is per-repo — the version pin — and writes a
-`SETUP.md` listing what is left: the two secrets (§2), the repository setting (§1), the labels (§3),
-and the two documents §6 is about. A `SETUP.md` it did not write is left alone.
+`.github/workflows/`, one caller file per side (§4), as `agent-pr.yml` and `agent-issue.yml`,
+substituting the one thing that is per-repo — the version pin — and writes a `SETUP.md` listing
+what is left: the secrets (§2), the repository setting (§1), the labels (§3), and the two documents
+§6 is about. A `SETUP.md` it did not write is left alone.
+
+It also gives the loop **its own GitHub App** (§2, *The loop's App*), which is the recommended
+identity: the loop's pushes, pull requests and trigger labels then carry the App's bot login rather
+than yours, and no credential it uses expires. `init` opens GitHub's create-App page with the name
+and permissions already filled in; you click Create, then Install, and pick the repositories it may
+act on. `init` stores the App's ID and private key as secrets itself, so you never fill in a form
+or handle a key file. What it does depends on what is already there:
+
+| Already set | What `init` does |
+|---|---|
+| the App's secrets, `AGENT_APP_ID` and `AGENT_APP_PRIVATE_KEY` | nothing: it says the loop already writes as its App |
+| `AGENT_PAT` | asks whether to switch to an App, defaulting to **no**, at a terminal; run without one (from a script), it keeps the PAT and prints how to switch. `init --app` switches without asking |
+| neither | creates the App |
+| a secret list it could not read | creates nothing, and names `init --app` |
+
+It **never deletes `AGENT_PAT`**. After a switch it tells you the secret can be deleted and the
+token revoked, and leaves both to you.
 
 It also converges the loop's labels (§3): it creates one that is missing, recolours one whose colour
 or description differs, and deletes a retired one that no open issue or pull request carries. A
@@ -51,8 +69,10 @@ pull requests carrying it named, and a label it could not write is named with th
 
 On a **public** repository it also creates the Actions event policy that lets the callers run on
 `pull_request_target` (§1, *On a public repository, `pull_request_target` stops running*), targeted
-at the caller files it installed or found and at nothing else. A re-run that finds the policy says
-`unchanged`. Creating it needs a repository admin; where the token `init` runs with is refused, it
+at the caller files holding the pull-request side's callers, whether it installed them or found
+them, and at nothing else. The policy follows the files rather than their names: merge your callers
+by hand, re-run `init`, and it rewrites the policy's file list to match. A re-run that finds the
+policy already right says `unchanged`. Creating it needs a repository admin; where the token `init` runs with is refused, it
 says so and prints the exact `gh api` call and the settings page, and the install still completes.
 
 It **updates on a re-run** rather than refusing, so it is also how you take a release — and an
@@ -68,18 +88,24 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 
 | What it checks | The failure it is for |
 |---|---|
-| both secrets are set — on the repository, or shared with it by its organization | §2 — and `AGENT_PAT`'s absence is three of §1's failures by itself |
-| Actions may create pull requests | §1's first, unless `AGENT_PAT` makes it moot |
-| every caller that declares a `permissions:` block grants each scope the job it calls spends — the whole of *The permissions per workflow* table below, every scope an error | §4 — the label does nothing at all: a caller granting less than a job it calls declares is refused the elevation, and the run is a `startup_failure` with no job log, reported by `gh run view` only as a "workflow file issue" |
+| `CLAUDE_CODE_OAUTH_TOKEN` is set, on the repository or shared with it by its organization | §2: every agent workflow fails immediately |
+| which identity the loop writes as, read from the same secrets: its App, `AGENT_PAT`'s owner, or neither, which is an error | §2: having neither is three of §1's failures by itself |
+| the App's secrets are both set or neither is: an ID without a key, or a key without an ID, is an error | §2: half an App cannot mint a token, so every run passes it over and writes as the PAT, or as `GITHUB_TOKEN` |
+| Actions may create pull requests | §1's first, unless the App or `AGENT_PAT` makes it moot |
+| every caller that declares a `permissions:` block grants each scope the job it calls spends — the whole of *The permissions per workflow* table below, every scope an error, ruled per job in a caller file holding several | §4 — the label does nothing at all: a caller granting less than a job it calls declares is refused the elevation, and the run is a `startup_failure` with no job log, reported by `gh run view` only as a "workflow file issue" |
 | `checks: read` on review, the one scope only a **private** repository *spends* — and an error whatever your visibility | §4 — a public repository is served the poll without the scope, so this one looks optional; the review job declares it, so a caller that omits it is refused at startup on a public repository too |
 | `agent-follow-ups`' `contents: read`, the one grant no call in the job spends — and an error all the same | §4 — a `permissions:` block replaces the inherited token rather than adding to it, so dropping the line sets `contents: none`, which is below what the job declares and is refused like any other shortfall |
 | a caller that declares no `permissions:` block at all | §4 — it runs with the default token, and the restricted setting is `contents` and `packages` read, which is less than every job here declares: refused at startup too. The permissive setting grants every scope write and under-grants nothing |
+| a job with no `permissions:` block of its own in a caller file whose top-level `permissions: {}` grants nothing | §4: it runs with no scope at all, whatever your default, so it is refused at startup. The fix is the job's own block: a grant above `jobs:` is every caller's in the file |
 | every caller is pinned to a tag or a SHA | §9 — a ref that moves under a pull request nobody touched |
-| every caller passes `AGENT_PAT` to the workflow it calls | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
+| every caller passes `AGENT_PAT` to the workflow it calls, unless it passes a working App instead | §1's second, third and fourth — a called workflow gets only what it is handed, and an optional secret it was not handed arrives as the empty string, so the loop runs under `GITHUB_TOKEN` with the secret correctly set |
+| where the App's secrets are set, every caller that writes passes them, named per caller, in either layout; a warning where the secrets could not be read | §2: a caller that does not writes as the PAT's owner, or with `GITHUB_TOKEN`, while every other caller writes as the App, and nothing fails |
+| no reusable workflow is called by more than one caller, in one caller file or across several | §4: every event that starts it starts it once per caller, and each run does the whole job: the shape copying the merged files in beside the older layout leaves |
+| as a note, the older layout of a caller file per caller, with the merge that makes one label start one run | §4: nothing is broken. A caller you left out, `follow-ups` most of all, is read as declined in either layout, and raises nothing |
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for the whole of its 15-minute CI wait |
 | the labels exist | §3 — a transition that is a silent no-op |
 | no retired label is still here, as a warning with the `gh label delete` that removes it | §3, *Retired labels*: nothing reads it, and it reads as a run in progress that is not |
-| the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; and, as warnings, that a budget above 0 (the default of 3 included) has `AGENT_PAT` behind it, and that no review caller still passes the deprecated `auto-fix` | §3b — a variable the review refuses fails every review; without the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand; and the release after this one fails a caller that passes `auto-fix` before any job starts |
+| the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; and, as warnings, that a budget above 0 (the default of 3 included) has the App or `AGENT_PAT` behind it, and that no review caller still passes the deprecated `auto-fix` | §3b — a variable the review refuses fails every review; without the App or the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand; and the release after this one fails a caller that passes `auto-fix` before any job starts |
 | whether the review caller configures the red check, as a note either way; and, as a warning, one that is half configured: a `red-check-command` with no `red-check-report` or no `red-check-test-globs`, named, or either of those with no command | §4, *The red check*: half configured, the check reports itself misconfigured on every review and the review reads what is red as unknown; with no command, the other two are read by nothing |
 | the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | §1: from 2026-11-02 a label is added and no run starts |
@@ -103,21 +129,22 @@ actually wrong.
 
 From **2026-11-02** GitHub blocks `pull_request_target` on every public repository that has no
 Actions event policy allowing it ([workflow execution protections](https://github.blog/changelog/2026-09-17-workflow-execution-protections-in-github-actions-generally-available/),
-in evaluate mode until then). `agent-review`, `agent-fix`, `agent-update-branch` and
-`agent-follow-ups` run on nothing else. The label lands, no run starts, and nothing in the loop can
+in evaluate mode until then). The pull-request side's callers, `review`, `fix`, `update-branch` and
+`follow-ups`, run on nothing else. The label lands, no run starts, and nothing in the loop can
 say why: the refusal is GitHub's, before any step of ours exists to explain it. Private and internal
 repositories are not affected.
 
-The fix is a policy allowing the trigger for **those caller files only**, so every other workflow in
-the repository stays under the default block. `init` creates it; `doctor` fails a public repository
-without it. By hand, as a repository admin, **Settings → Actions → Policies**, or the call `doctor`
+The fix is a policy allowing the trigger for **the caller files holding them only**, so every other
+workflow in the repository stays under the default block. `init` creates it, and on a re-run moves
+its file list to whichever files hold those callers now; `doctor` fails a public repository without
+it. By hand, as a repository admin, **Settings → Actions → Policies**, or the call `doctor`
 prints, which has this shape:
 
 ```json
 {
   "name": "jeffwlawson/agent-workflows callers: allow pull_request_target",
   "enforcement": "active",
-  "conditions": { "workflow_path": { "include": [".github/workflows/agent-review.yml", "…"], "exclude": [] } },
+  "conditions": { "workflow_path": { "include": [".github/workflows/agent-pr.yml"], "exclude": [] } },
   "rules": [{ "type": "restrict_action_events", "parameters": { "allowed_events": ["pull_request_target"] } }]
 }
 ```
@@ -132,8 +159,8 @@ Repository setting **Settings → Actions → General → Allow GitHub Actions t
 requests**, off by default. The agent does its work correctly and the run dies at `gh pr create`.
 
 Not a code defect and not in any upstream repo's docs, because both had it enabled long ago and the
-requirement is invisible once satisfied. Using `AGENT_PAT` (below) bypasses it entirely — a user PAT
-is not the Actions bot — which is the better fix.
+requirement is invisible once satisfied. The loop's App (§2) bypasses it entirely, and so does
+`AGENT_PAT` (neither is the Actions bot), which is the better fix.
 
 ### `GITHUB_TOKEN` pushes start CI that waits for approval
 
@@ -145,7 +172,8 @@ from its page.
 
 The review sees such a run and reads CI as **unknown**, never green, naming the run in its evidence,
 so a clean review asks for a human rather than recommending approval of code no CI ran on. The
-lasting fix is still pushing under a user identity: the PAT again.
+lasting fix is pushing under an identity that is not the Actions bot: the loop's App, or the PAT
+(§2).
 
 ### `GITHUB_TOKEN` cannot mark a pull request ready for review
 
@@ -162,19 +190,19 @@ The same anti-recursion rule applies to labels, and this one is the nastiest of 
 *appears on the PR*, so everything looks right, and the workflow it was supposed to trigger simply
 never runs.
 
-`agent-implement` cascades to `agent-review` by adding a label, so without the PAT that cascade is
-dead while looking alive. The workflow emits a `::warning::` when `AGENT_PAT` is unset for exactly
-this reason.
+`agent-implement` cascades to `agent-review` by adding a label, so without the App or the PAT that
+cascade is dead while looking alive. The workflow emits a `::warning::` when neither is set for
+exactly this reason.
 
 `agent-implement-prd` has it worse: it *chains itself* by re-adding `agent:implement` to the parent
-issue, so without the PAT the chain stops after one sub-issue with the trigger label sitting on the
+issue, so without the App or the PAT the chain stops after one sub-issue with the trigger label sitting on the
 parent, which reads as work in progress forever. It warns too, and names how many sub-issues are
 left so the manual remedy is one remove-and-re-add.
 
 ### A label set when the issue is *created* fires no `labeled` event
 
-The one failure here that has nothing to do with `GITHUB_TOKEN`, and the only one a correct PAT does
-not fix.
+The one failure here that has nothing to do with `GITHUB_TOKEN`, and the only one the App or a
+correct PAT does not fix.
 
 Every trigger in this loop listens on `types: [labeled]` and gates on `github.event.label.name`
 (one also listens on `closed`: `follow-ups`, which files on a merge).
@@ -184,7 +212,7 @@ label is really on the issue, and the workflow correctly never saw an event.
 
 So **label in a separate call from creation**, always. This bites the moment anything publishes
 issues programmatically — a script, a planning skill, an agent seeding its own backlog — and it
-looks exactly like the `GITHUB_TOKEN` no-op above, so it gets misdiagnosed as a missing PAT.
+looks exactly like the `GITHUB_TOKEN` no-op above, so it gets misdiagnosed as a missing PAT or App.
 
 Recovery on an issue that already carries the label is **remove, then re-add** — which is the next
 failure, reached from the other side.
@@ -215,7 +243,8 @@ too few.
 > incident — label present, no run, no error, nothing in any log. During one such incident a label
 > add was misread here as a further, structural rule (that a GitHub App's label adds are suppressed
 > like `GITHUB_TOKEN`'s), which would have written off the App-identity path in `parity.md` §9.4.
-> Re-running the same label add hours later dispatched normally. The rules above are documented and
+> Re-running the same label add hours later dispatched normally, and the loop's App (§2) now adds
+> its trigger labels exactly that way. The rules above are documented and
 > **retestable**; an outage is neither. Before concluding a trigger is structurally dead, do it
 > twice.
 
@@ -226,10 +255,19 @@ too few.
 | Secret | Required | What breaks without it |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | **yes** | every agent workflow fails immediately |
-| `AGENT_PAT` | effectively yes | all three failures in §1 |
+| `AGENT_APP_ID` and `AGENT_APP_PRIVATE_KEY` | the **recommended** identity; `init` sets both | without them, or `AGENT_PAT`, all three failures in §1 |
+| `AGENT_PAT` | the **supported fallback**, where there is no App | the same, where there is no App either |
 
-Two secrets, and there is deliberately no third. The runner package is installed from **GitHub
-Packages**, which needs a token — but that token is the built-in `GITHUB_TOKEN`, so what a
+The loop needs an identity that is not the Actions bot for the writes that start the next stage:
+its pushes, the pull requests it opens, marking them ready, and the trigger labels it adds (§1).
+That is the loop's **App** where its two secrets are set, otherwise `AGENT_PAT`, otherwise
+`GITHUB_TOKEN`, under a warning at every write that needed more. One shared step, the
+`loop-token` action every reusable workflow names, makes that choice, so no workflow can drift into
+choosing its own. An existing install on `AGENT_PAT` keeps working unchanged: switching is offered
+(§0), never forced.
+
+There is deliberately no secret for the package install. The runner package is installed from
+**GitHub Packages**, which needs a token — but that token is the built-in `GITHUB_TOKEN`, so what a
 consuming repo owes is a **permission**, `packages: read` in each caller (§4), not another secret
 to mint and rotate. Leave it out of a caller and the run never starts (§4); the 401 at `npx` that
 reads like a bad token is the *other* failure on the same seam, and §4's cross-repo caveat is where
@@ -242,9 +280,73 @@ that one is.
 > `packages: read` and `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` — installed and ran
 > `@jeffwlawson/agent-workflows` successfully. The permission is genuinely all an adopter owes.
 
-`AGENT_PAT` is a **fine-grained** personal access token. Use **one token with every repo running
-the loop in its access list**, not one token per repo: rotation is manual and a lapse is silent, so
-N tokens means N chances to forget. Permissions:
+### The loop's App
+
+A GitHub App of your own, which `init` creates (§0). Each run mints a token for it that lasts an
+hour and works on the one repository the run is in, so a leaked token is worth little and nothing
+needs renewing. The loop's pushes, pull requests, ready-marks and trigger labels carry the App's bot
+login, so you can tell at a glance what the loop did and what you did. And a pull request the loop
+opens is not authored by you, so a branch rule requiring approval from someone other than the
+author is one you can meet.
+
+**One App per account or organization**, covering every repository you install it on. Minting a
+token needs the App's private key, so an App cannot be shared between owners: there is no public
+one to install, and each owner creates their own. `init` suggests a name derived from the owner,
+since GitHub requires one unique across all of it; change it on GitHub's page if you like, and
+`init` takes the name GitHub actually registered.
+
+Its permissions, already filled in on the page you approve, are the writes `AGENT_PAT` makes and
+nothing more:
+
+| Permission | Why |
+|---|---|
+| Contents: **write** | push the agent's branch |
+| Pull requests: **write** | open the PR, mark it ready, add labels to it |
+| Issues: **write** | label transitions on issues, and the PRD chain's comment on the parent |
+| Workflows: **write** | a push touching `.github/workflows/**` is rejected without it, *after* the agent has done all its work |
+| Metadata: **read** | GitHub's own, and required of every App |
+
+It has no webhook: nothing listens for one.
+
+**Workflows: write is acceptable here because neither the key nor a token is ever on the agent's
+runner.** `Contents: write` together with `Workflows: write` is the pair that lets a holder push a
+workflow into a repository whose runs carry secrets. So the App's secrets are named only in jobs
+that never run the agent: the publish job of every workflow that writes code, `implement-prd`'s
+`catch_up` job, which pushes the default branch's merge before the agent runs, the review's
+`post-review` and `advance` jobs, and the review's `time-limit` job, which only asks which token the
+loop would write with and mints none. A job's runner holds every secret the job names from its
+first step, so the job that runs the agent names none of the App's secrets and no `AGENT_PAT`, not
+even in a step that never runs. Each job that writes mints its own token before its first write
+that needs it and hands it to no other job, and the publish job starts on a fresh runner after the
+agent has finished, so a long agent run cannot outlast the token that publishes its work.
+
+**Where `init` puts the secrets.** On the organization, shared with its repositories, where the
+owner is an organization and you are shown to be its admin; on the repository otherwise: a
+personal account, which has no account-level Actions secrets, or an organization where you are not
+an admin or your admin status cannot be read. Never on the organization on a guess. Where GitHub
+refuses the organization, `init` tries the repository, and names what it could not store.
+Repository secrets are one repository's, so a second repository under the same owner needs the
+same two set on it too, and the key `init` stored was never written anywhere you can copy it
+from. Install the App on that repository, generate a further private key on the App's settings
+page, and set both by hand: `init` in a repository with neither creates a new App rather than
+looking for one.
+
+**By hand**, if you would rather: create an App under your account or organization with the table
+above and no webhook, generate a private key, install it on the repositories running the loop, and
+set its ID and the whole key file as `AGENT_APP_ID` and `AGENT_APP_PRIVATE_KEY`. Both, or the
+loop uses neither: `doctor` reports half an App as an error.
+
+**What stays with the Actions bot.** Reviews, top-level comments, thread replies and commit
+statuses are still posted with `GITHUB_TOKEN`, as `github-actions[bot]`, so the author gate's trust
+in the loop's own earlier posts (§8) and every check that recognises them work unchanged. Moving
+those to the App too is a separate change (#305).
+
+### `AGENT_PAT`, the fallback
+
+A **fine-grained** personal access token, for an install with no App. The loop then writes as the
+token's owner (you, usually) and stops the day the token expires. Use **one token with every repo
+running the loop in its access list**, not one token per repo: rotation is manual and a lapse is
+silent, so N tokens means N chances to forget. Permissions:
 
 | Permission | Why |
 |---|---|
@@ -259,15 +361,22 @@ N tokens means N chances to forget. Permissions:
 > `CLAUDE_CODE_OAUTH_TOKEN`, from your own CI. Expiry is the only control that bounds that window
 > without depending on you noticing the leak. Take the longest custom date offered — roughly a year —
 > and let `token-expiry.yml` give you three weeks of warning. That monitor is what makes a long
-> expiry safe rather than reckless.
+> expiry safe rather than reckless. The App has none of this to manage: its tokens last an hour.
 
-The workflows fall back to `GITHUB_TOKEN` when `AGENT_PAT` is absent, so they still run — they just
-hit §1. That fallback is deliberate: the shape stays identical, and the failure is loud rather than
-structural.
+The workflows fall back to `GITHUB_TOKEN` when neither the App nor `AGENT_PAT` is set, so they still
+run — they just hit §1. That fallback is deliberate: the shape stays identical, and the failure is
+loud rather than structural.
 
 > **Set a reminder for the token's expiry, or install `token-expiry.yml`.** A lapsed PAT produces
 > §1's third failure — reviews stop happening and nothing says why. That workflow reads the expiry
-> weekly and files an issue at 21 days. It is in this repo and is repo-agnostic.
+> weekly and files an issue at 21 days. It is in this repo and is repo-agnostic, and it checks
+> nothing where the App's secrets are set: a warning about a token nothing uses trains you to
+> ignore the next one.
+
+**Switching to the App** is a re-run of `init`: at a terminal it asks, and `init --app` switches
+without asking (§0). Every caller then has to pass the App's secrets, which the reference callers
+do; `doctor` names any that does not. Afterwards, delete the `AGENT_PAT` secret and revoke the
+token yourself: `init` says you can, and does neither.
 
 ---
 
@@ -303,7 +412,8 @@ variable that won, `<workflow> default`, or `default` — for the same reason.
 
 > **The one trap.** An unset `vars.X` interpolates to the **empty string**, not to nothing. Resolve
 > it with `||`, never `??` — nullish coalescing passes `""` straight through and hands the CLI an
-> empty model id. Same shape as the `secrets.AGENT_PAT || secrets.GITHUB_TOKEN` fallbacks.
+> empty model id. An unset secret is the empty string too, which is what the loop's token fallback
+> (§2) reads as "not set".
 
 Pin an explicit id rather than tracking a floating alias, for the reason `.nvmrc` exists: the
 runner, CI and a local run must not drift onto different versions. Bumping is then a decision with a
@@ -353,9 +463,10 @@ cancelled or timed-out run uploads one too, which is when you are most likely to
 **Who can read it.** Anyone who can read the repository's Actions runs can download it: on a
 private repository, the people with read access; on a **public repository**, anyone. So treat it as
 public on a public repository. Before the upload, every secret the job holds,
-`CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_PAT` and `GITHUB_TOKEN`, is replaced with `[REDACTED]`, the two
-GitHub tokens also in the form a checkout's git config holds them in, so a transcript in which the
-agent printed its environment does not carry the token. What the agent read from your repository
+`CLAUDE_CODE_OAUTH_TOKEN` and `GITHUB_TOKEN`, is replaced with `[REDACTED]`, the GitHub token also
+in the form a checkout's git config holds it in, so a transcript in which the agent printed its
+environment does not carry the token. The job that runs the agent holds no `AGENT_PAT` and none of
+the App's secrets (§2), so there is none of theirs to redact. What the agent read from your repository
 and its issues is in it unredacted, which on a public repository is already public.
 
 **How long.** Three days by default, set by the `transcript-retention-days` input on any agent
@@ -569,7 +680,8 @@ request: a review that asks for an automatic round posts a second status beside 
 context `agent-fix-round` (`success`, "This review asked for an automatic fix round."), and the
 count is those statuses, so nothing records the rounds but the pull request itself. Only automatic
 rounds count: your own `agent:fix` always starts a round, and your own push resets nothing. It needs
-`AGENT_PAT`; without it no round starts, and the 🟡 line asks you for the label.
+the loop's App or `AGENT_PAT` (§2); without either no round starts, and the 🟡 line asks you for the
+label.
 
 The verdict's line is the same 🟡 line either way, and says "if the agent isn't already working on
 them" for that reason. The job that adds the label decides from the pull request as it is then, not
@@ -599,8 +711,8 @@ needed a human to add `agent:fix`, and most of the hours they were open were spe
 `AGENT_MAX_FIX_ROUNDS` to `0` before you bump, and raise it once you trust them. A regular pull
 request is still never merged automatically, whatever the budget.
 
-It needs `AGENT_PAT` (a label added with `GITHUB_TOKEN` fires no event, so nothing would start).
-`doctor` warns where the budget is above 0, the default included, and `AGENT_PAT` is not set; it
+It needs the loop's App or `AGENT_PAT` (a label added with `GITHUB_TOKEN` fires no event, so nothing
+would start). `doctor` warns where the budget is above 0, the default included, and neither is set; it
 fails a variable that is not a whole number, and warns on a caller still passing `auto-fix`, naming
 the value to set instead.
 
@@ -930,25 +1042,42 @@ That is the difference between installing this loop and forking it. A control yo
 that drifts; a control behind a pinned `uses:` is one you get fixes to.
 
 ```
-.github/workflows/agent-implement.yml
-.github/workflows/agent-implement-prd.yml
-.github/workflows/agent-review.yml
-.github/workflows/agent-fix.yml
-.github/workflows/agent-update-branch.yml
-.github/workflows/agent-follow-ups.yml      # optional — this file is the off switch
-.github/dependabot.yml                      # not part of the loop; see the end of this section
+.github/workflows/agent-pr.yml      # review, fix, update-branch, follow-ups (optional)
+.github/workflows/agent-issue.yml   # implement, implement-prd
+.github/dependabot.yml              # not part of the loop; see the end of this section
 ```
 
-**`agent-follow-ups.yml` is the first genuinely optional file in that list.** It files a merged
-pull request's recorded out-of-scope findings as triageable issues, and copying it is the whole of
-switching that on: the runner subcommand ships inside the package and the reusable lives here, but
-nothing invokes a reusable except a caller's reference, so a repository without this file files
-nothing. Not a mechanism invented for this: it is the same per-file granularity that already lets
-you skip `agent-implement-prd.yml`.
+**One caller file per side.** The pull-request side's file triggers on
+`pull_request_target: [labeled, closed]` and holds the `review`, `fix`, `update-branch` and
+`follow-ups` callers; the issue side's triggers on `issues: [labeled]` and holds `implement` and
+`implement-prd`. No caller carries a label `if:`: every reusable workflow's own guard decides
+whether an event is its label, as it always has, so one label starts one run of its side's file
+rather than one per caller, and the Actions tab shows the runs that did something.
 
-`init` (§0) scaffolds the lot on a first run, this file included, so **opting out is deleting it
-afterwards** rather than declining it up front. That is not a gap in the command: a re-run pins
-what is installed, and a caller you deleted is named rather than written back into your tree.
+Each file grants **nothing at the top level** (`permissions: {}`) and every scope on the job that
+spends it, so a job added later starts with nothing rather than with its neighbours' scopes. Keep
+it that way: a grant above `jobs:` is every caller's in the file. The one cost of sharing a file is
+that a refused grant or a YAML error in it refuses the whole run, so every caller in that file stops
+together; `doctor` rules on each job's grant on its own, which is what makes that acceptable.
+
+**The older layout, a caller file per caller, still works.** A re-run of `init` on it moves the pins
+and touches nothing else, and never writes the merged files beside yours: a reusable workflow with
+a caller in each would run twice on every event, each run doing the whole job. `doctor` reports that
+duplicate as an error wherever it finds one, and the older layout itself only as a note. To merge
+by hand, move the jobs into one file per side as `examples/callers/` holds them, delete the files
+they came from, and re-run `init`, which moves the `pull_request_target` policy (§1) to the new file.
+
+**`follow-ups` is the first genuinely optional caller.** It files a merged pull request's recorded
+out-of-scope findings as triageable issues, and having its job is the whole of switching that on:
+the runner subcommand ships inside the package and the reusable lives here, but nothing invokes a
+reusable except a caller's reference, so a repository without that job files nothing. Not a
+mechanism invented for this: it is the same per-caller granularity that already lets you skip
+`implement-prd`.
+
+`init` (§0) scaffolds the lot on a first run, this job included, so **opting out is deleting its
+job from `agent-pr.yml` afterwards** rather than declining it up front. `doctor` reads the missing
+job as declined, not broken, in either layout. That is not a gap in the command: a re-run pins what
+is installed, and a caller you deleted is named rather than written back into your tree.
 
 Opting out does **not** turn the recording off, and that asymmetry is deliberate. The review half
 still writes its out-of-scope findings into the review body and still marks the pull request, so
@@ -1004,10 +1133,10 @@ it into one that can install (§2).
 ### What a caller looks like
 
 **Copy them from [`examples/callers/`](../examples/callers/)** — or let `init` (§0) do it, which is
-the same copy with the pin substituted. One file per workflow, each already
-carrying the correct trigger, permissions, `self-check` and pinned `uses:`. Drop them into your
-`.github/workflows/` and rename if you like — the job id is the only thing you cannot rename
-freely, for the reason below.
+the same copy with the pin substituted. `pr.yml` and `issue.yml` there are the caller files for each
+side, every job already carrying the correct permissions, secrets, `self-check` and pinned `uses:`,
+and each file its trigger. Drop them into your `.github/workflows/` and rename the files if you
+like — the job id is the only thing you cannot rename freely, for the reason below.
 
 They are real files rather than a block quoted here, and that is load-bearing twice over. What you
 install is the thing that was checked: `tests/workflows.test.ts` reads those files and asserts the
@@ -1016,16 +1145,18 @@ trigger, the permissions on both halves, the pin, and the `self-check` coupling.
 reusable half lived in this repo and the caller half lived in whichever repo had adopted the loop,
 so the pair could only ever be checked by hand, in a repository this one cannot see.
 
-For orientation, a caller is a trigger and two wires — copy the real ones from
-[`examples/callers/`](../examples/callers/), which carry the live pin where this sketch has a
-placeholder:
+For orientation, a caller is a job with two wires, under its file's trigger. Copy the real ones
+from [`examples/callers/`](../examples/callers/), which carry the live pin where this sketch has a
+placeholder, and the pull-request side's other jobs beside this one:
 
 ```yaml
-name: Agent Fix
+name: Agent PR
 
 on:
-  pull_request_target:      # `issues:` for the two implement workflows
-    types: [labeled]
+  pull_request_target:      # `issues: types: [labeled]` for the issue side
+    types: [labeled, closed]
+
+permissions: {}             # nothing here; every grant is on its job
 
 jobs:
   fix:
@@ -1041,6 +1172,8 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 ```
 
 > **Pin a tag or a SHA, never a branch.** `pull_request_target` reads workflow YAML from the
@@ -1053,14 +1186,14 @@ jobs:
 
 The permissions per workflow, which are what each job actually spends:
 
-| Caller | `actions` | `checks` | `contents` | `issues` | `packages` | `pull-requests` | `statuses` |
+| Caller (job) | `actions` | `checks` | `contents` | `issues` | `packages` | `pull-requests` | `statuses` |
 |---|---|---|---|---|---|---|---|
-| `agent-implement` | — | — | write | write | read | write | — |
-| `agent-implement-prd` | — | — | write | write | read | write | **read** |
-| `agent-review` | **read** | **read** | **write** | — | read | write | **write** |
-| `agent-fix` | — | — | write | — | read | write | — |
-| `agent-update-branch` | — | — | write | — | read | write | **write** |
-| `agent-follow-ups` | — | — | read | **write** | read | write | — |
+| `implement` | — | — | write | write | read | write | — |
+| `implement-prd` | — | — | write | write | read | write | **read** |
+| `review` | **read** | **read** | **write** | — | read | write | **write** |
+| `fix` | — | — | write | — | read | write | — |
+| `update-branch` | — | — | write | — | read | write | **write** |
+| `follow-ups` | — | — | read | **write** | read | write | — |
 
 `packages: read` is the one row that is the same everywhere, because it is not about what the job
 does — it is about installing the runner it runs.
@@ -1075,13 +1208,15 @@ it in. An under-granted caller is a label that does nothing, not a run that half
 issue*, naming neither the scope nor the file. The run's page in the browser carries the annotation
 that names both:
 
-> **Invalid workflow file:** .github/workflows/agent-review.yml#L*n* — Error calling workflow
+> **Invalid workflow file:** .github/workflows/agent-pr.yml#L*n* — Error calling workflow
 > 'jeffwlawson/agent-workflows/.github/workflows/review.yml@\<sha>'. The nested job 'post-review' is
 > requesting 'contents: write', but is only allowed 'contents: read'.
 
 Two things in it are worth knowing before you go looking. The line it points at is your caller's
 `uses:`, not the `permissions:` line that is short. And the job it names is the **called** one —
-`post-review` here, the job that holds the grant, not the job in your file. That is the whole diagnosis,
+`post-review` here, the job that holds the grant, not the job in your file. A caller file holding
+several callers is refused whole, so the run that did not start is every caller's in it, and the
+annotation is what says which job was short. That is the whole diagnosis,
 and it is one `doctor` gives you before a label rather than after one.
 
 Probed on a real token (2026-09-27), because this had been asserted twice and observed never: four
@@ -1096,9 +1231,10 @@ scope write.
 > in the loop holds it to *file* anything — the `implement` pair spends it on labels and on
 > comments. It is also the only caller that passes **no secrets at all**:
 > the job runs no model, so there is no `CLAUDE_CODE_OAUTH_TOKEN` to hand over, and it creates its
-> issues with `GITHUB_TOKEN`, so there is no `AGENT_PAT` either — a repository without the PAT
-> files exactly as much as one with it. Adding either to your caller is not harmless: GitHub
-> refuses a `secrets:` entry the called workflow does not declare, before the job starts.
+> issues with `GITHUB_TOKEN`, so there is no `AGENT_PAT` and none of the App's secrets either: a
+> repository without the App or the PAT files exactly as much as one with them. Adding any of them
+> to your caller is not harmless: GitHub refuses a `secrets:` entry the called workflow does not
+> declare, before the job starts.
 
 > **`statuses: write` on review is what posts the verdict**, and it is a scope of its own rather
 > than part of `pull-requests: write` — a commit status is attached to a commit, not to a pull
@@ -1162,15 +1298,16 @@ scope write.
 > separates the causes that remain is the line printed underneath it: the step echoes whatever `gh`
 > or `jq` wrote to stderr, so a runner without `jq` says `jq: command not found` outright.
 
-> **`AGENT_PAT` decides which token makes a call; it grants nothing, and `doctor` reports every
-> missing grant whether or not you have one.** The checkout that pushes runs under
-> `${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}`, as do `gh pr create` and every `agent:review`
-> label the loop adds itself — on the `implement` pair, on a `fix` run that pushed, and on an
-> `update-branch` run that resolved conflicts. That is a choice *inside* a job that is already
-> running: a caller missing `contents: write` or `pull-requests: write` is refused before any job
-> starts, PAT or no PAT. What the PAT is actually for is §1's second, third and fourth failures —
-> a push that triggers no workflow, a `gh pr ready` that is refused, a label add that is a silent
-> no-op — and what it costs you when it expires is §2.
+> **The loop's identity decides which token makes a call; it grants nothing, and `doctor` reports
+> every missing grant whether or not you have the App or the PAT.** The push runs under the token
+> the `loop-token` action resolves (§2: the App's, else `AGENT_PAT`, else `GITHUB_TOKEN`), as do
+> `gh pr create` and every `agent:review` label the loop adds itself: on the `implement` pair, on a
+> `fix` run that pushed, and on an `update-branch` run that resolved conflicts. That is a choice
+> *inside* a job that is already running: a caller missing `contents: write` or
+> `pull-requests: write` is refused before any job starts, App or no App. What the identity is
+> actually for is §1's second, third and fourth failures — a push that triggers no workflow, a
+> `gh pr ready` that is refused, a label add that is a silent no-op — and what the PAT costs you when
+> it expires is §2.
 
 Four things about that shape are worth knowing before you paste it:
 
@@ -1191,8 +1328,11 @@ Four things about that shape are worth knowing before you paste it:
   on the grounds that an agent job is not evidence about the diff. A renamed one is still
   recognised by what its `uses:` calls.
 - **Name the secrets rather than `secrets: inherit`.** Inheriting hands the called workflow every
-  secret your repository holds. `AGENT_PAT` is declared optional, so passing an unset one is fine —
-  it arrives as the empty string, which is what the fallbacks in §1 expect.
+  secret your repository holds. `AGENT_PAT` and the App's secrets are declared optional, so passing
+  an unset one is fine — it arrives as the empty string, which is what the fallback in §2 reads as
+  "not set". Pass all three wherever the reference caller does, whichever identity you use today:
+  a caller that does not pass the App's secrets writes as the PAT even after you switch, and
+  `doctor` names it.
 
 ### `agent-review` needs one input more
 
@@ -1203,7 +1343,7 @@ which nothing inside the called workflow can read. Hence `self-check`, required:
 ```yaml
 jobs:
   review:
-    uses: jeffwlawson/winget-manifest-lint/.github/workflows/agent-review-reusable.yml@<commit sha>
+    uses: jeffwlawson/agent-workflows/.github/workflows/review.yml@v<latest tag>
     # This workflow's whole row of the table above, and a subset is not a
     # smaller feature: a caller granting less than a job it calls declares
     # fails the run before any job starts. `contents: write` is the posting
@@ -1220,6 +1360,8 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
+      AGENT_APP_ID: ${{ secrets.AGENT_APP_ID }}
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
 ```
 
 Rename the job, change the input. A name review does not recognise as its own is a job waiting for
@@ -1229,16 +1371,17 @@ How many fix rounds a review may start by itself is the repository variable
 `AGENT_MAX_FIX_ROUNDS`, not an input: §3b is where you decide about it. The `auto-fix` input it
 replaced is deprecated and not in the reference caller.
 
-`agent-implement-prd` is optional but **not independent**: it shares the `agent:implement` label
-with `agent-implement`, and the two partition every label event by issue shape. Take both or
-neither. Taking only the PRD one leaves ordinary issues unhandled; taking only `agent-implement` is
-fine in itself, but a PRD-shaped issue then reaches a job that *defers* to a workflow you did not
-install, and nothing happens at all.
+The `implement-prd` caller is optional but **not independent**: it shares the `agent:implement`
+label with `implement`, and the two partition every label event by issue shape. Keep both jobs in
+`agent-issue.yml` or neither. Keeping only the PRD one leaves ordinary issues unhandled; keeping
+only `implement` is fine in itself, but a PRD-shaped issue then reaches a job that *defers* to a
+workflow you did not install, and nothing happens at all.
 
 Optional, and the one file still copied verbatim: `.github/workflows/token-expiry.yml`. It is
 offered as-is because it is already repo-agnostic — no branch names, no toolchain, no paths, just
 `AGENT_PAT` and the GitHub API — so there is nothing for a `workflow_call` surface to parameterise.
-Splitting it would add a file and a pin to save nobody an edit.
+Splitting it would add a file and a pin to save nobody an edit. It is for the PAT alone: where the
+App's secrets are set it checks nothing, so a repository on the App has no need of it (§2).
 
 Optional, and needs its mapping rewritten for your labels: `docs/agents/triage-labels.md` (§3).
 Run `/setup-matt-pocock-skills` **first** — it writes every file in `docs/agents/`, including
@@ -1246,7 +1389,7 @@ Run `/setup-matt-pocock-skills` **first** — it writes every file in `docs/agen
 The reverse order silently loses everything below the mapping table, because the skill rewrites
 the file with its own default version.
 
-**If you take `agent-implement-prd.yml`, take `docs/agents/ticket-shape.md` with it.** The workflow
+**If you keep the `implement-prd` caller, take `docs/agents/ticket-shape.md` with it.** The workflow
 reads a hierarchy it does not create: a parent issue with **native sub-issues**, created in
 dependency order. That file is the publishing side of the contract, and it is the half nothing
 enforces — whoever writes the tickets, a skill or a human, owns the topological sort (§5).
@@ -1439,8 +1582,8 @@ added, so a test derives it from the reference callers and fails when it lags.
 
 **Taking the filing caller needs no change here.** The pattern matches on
 `jeffwlawson/agent-workflows*`, which is the repository rather than the workflow, so a caller is in
-the group the moment you copy the file. A sixth file needing a seventh line of config would be a
-pin that splits across two releases the first time somebody forgot to write it.
+the group the moment its job is in your file. A caller needing a line of config of its own would be
+a pin that splits across two releases the first time somebody forgot to write it.
 
 The second group is why `actions/checkout` and `astral-sh/setup-uv` do not each arrive on their own.
 The ecosystem is repository-wide: those pins are in scope whether or not you say anything about
@@ -1593,8 +1736,8 @@ the next slice is built on it before any human has read it.
 
 ## 8. If your repo is public
 
-`agent-review`, `agent-fix`, `agent-update-branch` and — if you took it — `agent-follow-ups` use
-`pull_request_target`, which runs with write access, and with secrets everywhere but the last. From
+The pull-request side's callers, `review`, `fix`, `update-branch` and (if you kept it)
+`follow-ups`, use `pull_request_target`, which runs with write access, and with secrets everywhere but the last. From
 2026-11-02 it runs on a public repository only where an Actions policy allows it (§1). These
 controls are not decoration — and since jeffwlawson/winget-manifest-lint#98 you no longer copy any
 of them: every one lives in a `*-reusable.yml` you reference, where a caller can skip the job but
@@ -1608,7 +1751,8 @@ you cannot reason about, and the paragraph after the table is a decision only yo
 | **Trust your own bot by login** — `github-actions[bot]` **and** `github-actions` | REST and GraphQL spell the same account differently. List one and the review→fix handoff silently drops its own agent's comments |
 | **Scrub the GitHub token** from the agent's environment after fetching context | the agent runs unsandboxed; it has no legitimate `gh` use once context is read |
 | **`contents: read`** on the review job | the one agent structurally unable to mutate the branch. The posting job beside it holds `contents: write`, because closing a thread needs it, and so it runs no agent and checks nothing out |
-| **No model in the job that files** | `agent-follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the runner |
+| **The loop's credentials never on the agent's runner** | the App's key, any token minted from it, and `AGENT_PAT` are named only in jobs that run no agent (§2). An agent that was steered, unsandboxed with `sudo`, can read every secret its own job names; its job names none of these, which is what makes the App's Workflows: write acceptable |
+| **No model in the job that files** | `follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the runner |
 
 **Neither the trigger nor the input gate is the write boundary, and it is the same role on both
 sides.** The **trigger** is a label, and GitHub's **Triage** role can add labels with no push access

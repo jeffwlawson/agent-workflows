@@ -8,10 +8,11 @@ import { ACTION_DIR, assertPinnable, escapeRe, rewritePins, WORKFLOW_DIR } from 
 /**
  * The half of `npm version` npm will not do.
  *
- * A release names its version in twenty files. `npm version` bumps two of
- * them — the manifest and the lockfile — and the other eighteen are pins: one
- * `--package=…@<version>` per reusable workflow, and one `…yml@v<version>` in
- * each of the two caller sets. `v0.1.4` and `v0.1.5` were both cut by editing
+ * A release names its version in twelve files. `npm version` bumps two of
+ * them — the manifest and the lockfile — and the other ten hold the pins: one
+ * `--package=…@<version>` per reusable workflow, and one `…yml@v<version>` per
+ * caller in each of the two caller sets, whose callers sit two caller files to
+ * a set (#225). `v0.1.4` and `v0.1.5` were both cut by editing
  * them by hand and folding the result into the version commit.
  *
  * This **propagates; it never decides**. The bump is npm's, the version is read
@@ -42,8 +43,9 @@ import { ACTION_DIR, assertPinnable, escapeRe, rewritePins, WORKFLOW_DIR } from 
 const CALLER_DIR = "examples/callers";
 
 /**
- * A caller is `agent-<name>.yml` and the reusable it calls is `<name>.yml`, in
- * the same directory — the prefix exists so the two do not collide by filename.
+ * A local caller file is `agent-<name>.yml`, and its reference copy is
+ * `examples/callers/<name>.yml`. The prefix exists so a caller file does not
+ * collide by filename with a reusable workflow in the same directory.
  */
 const CALLER_PREFIX = "agent-";
 
@@ -82,8 +84,9 @@ const sameSet = (a: readonly string[], b: readonly string[]): boolean => {
  * is the property that makes a silent partial success impossible: a file whose
  * pin has been reworded, moved or written in a form the core does not know
  * matches zero times, and zero is an error rather than a no-op. A file can hold
- * more than one site (#257): a reusable workflow's `npm exec` pin, and one
- * `action` pin per step naming a composite action in this repository. So the
+ * more than one site: a reusable workflow's `npm exec` pin and one `action` pin
+ * per step naming a composite action in this repository (#257), and a caller
+ * file's one `ref` pin per caller it holds (#225). So the
  * forms found are compared with the forms expected, as a list. Returns the new
  * text; nothing is written from here, so a refusal later in the run leaves the
  * tree untouched.
@@ -104,11 +107,12 @@ const pinned = (rel: string, text: string, forms: readonly PinForm[], pinning: P
 /**
  * Rewrite every version pin in the tree at `root` to `version`.
  *
- * The three sites of one workflow live in three directories, so the set is
+ * The sites of one workflow live in three directories, so the set is
  * cross-checked rather than walked: a walk of any one directory finds the old
- * count when a new workflow is half-landed, and reports success. Every directory must
- * name the same workflows, every named file must exist, and every file must
- * carry its one pin — otherwise nothing is written at all.
+ * count when a new workflow is half-landed, and reports success. Both caller
+ * sets must hold the same caller files, each set must call every reusable
+ * workflow exactly once, and every file must carry exactly the pins expected
+ * of it — otherwise nothing is written at all.
  */
 export const syncVersion = (version: string, packageDir = "."): readonly VersionSite[] => {
   // Before the first file is opened, rather than distributed to every one of
@@ -124,18 +128,6 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
   const workflows = ymlIn(packageDir, WORKFLOW_DIR);
 
   /**
-   * The callers are the source of truth for *which* workflows exist: a caller is
-   * the file an adopter installs, and nothing in the loop runs without one.
-   */
-  const expectedNames = workflows
-    .filter((file) => file.startsWith(CALLER_PREFIX))
-    .map((file) => nameOf(file).slice(CALLER_PREFIX.length));
-
-  if (expectedNames.length === 0) {
-    throw new Error(`${WORKFLOW_DIR} holds no ${CALLER_PREFIX}*.yml caller; the pin set would be empty.`);
-  }
-
-  /**
    * A reusable workflow is one that hands over to the published runner, found by
    * that line rather than by a list of the files that are *not* callers — `ci`,
    * `publish` and `token-expiry` are in the same directory and the next one
@@ -146,44 +138,78 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
     .filter((file) => readFile(packageDir, `${WORKFLOW_DIR}/${file}`).includes(`--package=${packageName}@`))
     .map(nameOf);
 
-  if (!sameSet(reusableNames, expectedNames)) {
-    throw new Error(
-      `${WORKFLOW_DIR} holds callers for [${expectedNames.join(", ")}] but reusable workflows for ` +
-        `[${reusableNames.join(", ")}]. Every workflow is a caller and a reusable half; a set that ` +
-        `disagrees is a release that would pin some of them.`,
-    );
+  if (reusableNames.length === 0) {
+    throw new Error(`${WORKFLOW_DIR} holds no reusable workflow naming ${packageName}; the pin set would be empty.`);
   }
 
+  /**
+   * The caller files, in both sets. A caller file holds one or more callers
+   * (#225), so its name says nothing about which workflows it calls: the
+   * local `agent-<name>.yml` and the reference `<name>.yml` are paired by
+   * name, and what each calls is read out of it below.
+   */
+  const callerFiles = workflows.filter((file) => file.startsWith(CALLER_PREFIX)).map(nameOf);
+  if (callerFiles.length === 0) {
+    throw new Error(`${WORKFLOW_DIR} holds no ${CALLER_PREFIX}*.yml caller file; the pin set would be empty.`);
+  }
+  const localNames = callerFiles.map((name) => name.slice(CALLER_PREFIX.length));
+
   const exampleNames = ymlIn(packageDir, CALLER_DIR).map(nameOf);
-  if (!sameSet(exampleNames, expectedNames)) {
+  if (!sameSet(exampleNames, localNames)) {
     throw new Error(
-      `${CALLER_DIR} holds callers for [${exampleNames.join(", ")}] but ${WORKFLOW_DIR} holds ` +
-        `[${expectedNames.join(", ")}]. Both caller sets move together: a stale example is an ` +
-        `adopter running last release's runners, a stale local caller is this repo running them.`,
+      `${CALLER_DIR} holds caller files [${exampleNames.join(", ")}] but ${WORKFLOW_DIR} holds ` +
+        `[${localNames.map((name) => `${CALLER_PREFIX}${name}`).join(", ")}]. Both caller sets move ` +
+        `together: a stale example is an adopter running last release's runners, a stale local ` +
+        `caller is this repo running them.`,
     );
   }
 
   /**
-   * The composite actions a reusable names (#257), counted by the path rather
-   * than by the pin: a `uses:` that names one under any ref but a pin is a
-   * site this would otherwise skip, and is refused instead.
+   * What a file names, counted by the path rather than by the pin: a `uses:`
+   * that names one under any ref but a pin is a site this would otherwise skip,
+   * and is refused instead. The composite actions a reusable names (#257) and
+   * the reusable workflows a caller file names are found the same way.
    */
-  const actionUse = new RegExp(`${escapeRe(packageName.replace(/^@/, ""))}/${escapeRe(ACTION_DIR)}/`, "g");
-  const actionsIn = (name: string): readonly PinForm[] =>
-    (readFile(packageDir, `${WORKFLOW_DIR}/${name}.yml`).match(actionUse) ?? []).map(() => "action" as const);
+  const slug = escapeRe(packageName.replace(/^@/, ""));
+  const actionUse = new RegExp(`${slug}/${escapeRe(ACTION_DIR)}/`, "g");
+  const workflowUse = new RegExp(`${slug}/${escapeRe(WORKFLOW_DIR)}/([A-Za-z0-9._-]+)\\.yml@`, "g");
+  const actionsIn = (file: string): readonly PinForm[] =>
+    (readFile(packageDir, file).match(actionUse) ?? []).map(() => "action" as const);
+  const calledBy = (file: string): readonly string[] =>
+    [...readFile(packageDir, file).matchAll(workflowUse)].map((match) => match[1] ?? "");
+
+  /**
+   * Each caller set calls every reusable workflow exactly **once**. Fewer is a
+   * workflow the set's adopters cannot run, and more is one that runs twice on
+   * every label; either way the count a file is held to below would be the
+   * count of a set that is wrong.
+   */
+  const sets = [
+    { dir: WORKFLOW_DIR, files: localNames.map((name) => `${WORKFLOW_DIR}/${CALLER_PREFIX}${name}.yml`) },
+    { dir: CALLER_DIR, files: localNames.map((name) => `${CALLER_DIR}/${name}.yml`) },
+  ];
+  for (const { dir, files } of sets) {
+    const idle = files.find((file) => calledBy(file).length === 0);
+    if (idle !== undefined) {
+      throw new Error(`${idle} calls no reusable workflow; a caller file with no pin is one the release cannot move.`);
+    }
+    const called = files.flatMap(calledBy);
+    if (!sameSet(called, reusableNames)) {
+      throw new Error(
+        `The caller files in ${dir} call [${called.join(", ")}] but the reusable workflows are ` +
+          `[${[...reusableNames].sort().join(", ")}]. Each caller set calls every reusable workflow ` +
+          `exactly once; a set that disagrees is a release that would pin some of them.`,
+      );
+    }
+  }
 
   const sites: readonly VersionSite[] = [
-    ...expectedNames.flatMap((name) =>
-      (["package", ...actionsIn(name)] as const).map((form) => ({
-        file: `${WORKFLOW_DIR}/${name}.yml`,
-        form,
-      })),
-    ),
-    ...expectedNames.flatMap((name) =>
-      [`${WORKFLOW_DIR}/${CALLER_PREFIX}${name}.yml`, `${CALLER_DIR}/${name}.yml`].map((file) => ({
-        file,
-        form: "ref" as const,
-      })),
+    ...reusableNames.flatMap((name) => {
+      const file = `${WORKFLOW_DIR}/${name}.yml`;
+      return (["package", ...actionsIn(file)] as const).map((form) => ({ file, form }));
+    }),
+    ...sets.flatMap(({ files }) =>
+      files.flatMap((file) => calledBy(file).map(() => ({ file, form: "ref" as const }))),
     ),
   ];
 
@@ -225,7 +251,7 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
  * `syncVersion` returned. `npm version` blocks a dirty tree only for *tracked*
  * modifications, so a `git add -A` here would sweep any untracked file lying
  * around into the release commit and the tag `publish.yml` fires on — a
- * twenty-first file inside a release, which nothing in the suite can see.
+ * thirteenth file inside a release, which nothing in the suite can see.
  */
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const packageDir = path.resolve(import.meta.dirname, "..");

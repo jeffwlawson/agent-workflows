@@ -1,8 +1,8 @@
 name: Agent Implement PRD (reusable)
 
-# The PRD job itself. `agent-implement-prd.yml` is the caller — a trigger and
-# two wires — and every guard, permission and step stays here, in a file an
-# adopting repo *references* rather than copies
+# The PRD job itself. The `implement-prd` job in `agent-issue.yml` is the
+# caller (two wires, under that file's trigger), and every guard, permission and
+# step stays here, in a file an adopting repo *references* rather than copies
 # (jeffwlawson/winget-manifest-lint#98).
 #
 # The PRD path (jeffwlawson/winget-manifest-lint#92). Labelling a *parent* issue
@@ -128,7 +128,18 @@ on:
           adds `agent:review` to it, and a label added with `GITHUB_TOKEN`
           triggers no workflow, so without it no slice is ever reviewed
           (docs/ADOPTING.md §1). Optional, and every site warns rather than
-          failing silently.
+          failing silently. The loop's App, where it is set up, takes its
+          place.
+        required: false
+      AGENT_APP_ID:
+        description: >-
+          The loop's GitHub App's ID. With `AGENT_APP_PRIVATE_KEY`, the
+          catch-up and publish jobs each mint a token for this repository from
+          the App and make the writes `AGENT_PAT` would make with it, as the
+          App's bot. Optional; without both, `AGENT_PAT` is used as before.
+        required: false
+      AGENT_APP_PRIVATE_KEY:
+        description: The loop's GitHub App's private key. See `AGENT_APP_ID`.
         required: false
 
 # Per *parent issue*, first-come, so consecutive slices of one PRD never
@@ -166,10 +177,12 @@ concurrency:
 # So `gate` reads the PRD, refuses or claims it, and decides the slice;
 # `catch_up` merges the default branch into the PRD branch and pushes it,
 # before any agent runs and on a runner none has touched; `implement-prd`
-# runs the agent with a read-only token and names no PAT anywhere, and hands
-# over its commits as a `git bundle`; and `publish` starts on a fresh runner,
-# checks the bundle, and pushes, opens or reuses the PRD PR, asks for the
-# round and hands the PRD PR over.
+# runs the agent with a read-only token and names no PAT and no App secret
+# anywhere, and hands over its commits as a `git bundle`; and `publish` starts
+# on a fresh runner, checks the bundle, and pushes, opens or reuses the PRD
+# PR, asks for the round and hands the PRD PR over. The two jobs that push
+# each resolve the loop's token, the App's or the PAT, at their start
+# (`.github/actions/loop-token`).
 #
 # The PRD PR's progress list shows the slice **building** from the gate,
 # which holds `pull-requests: write` and runs no agent, once it has claimed
@@ -927,6 +940,19 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
+      # The token every write below that the workflow token cannot make is
+      # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
+      # that order, and `source` says which. Minted in this job, before its
+      # first write, and handed to no other.
+      - name: Resolve the loop's token
+        id: token
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Checkout the base branch
         uses: actions/checkout@v7
         with:
@@ -983,8 +1009,8 @@ jobs:
       # (`shared/slice-ranges.ts`), so no slice round reviews it.
       #
       # The checkout persists no credential, so the fetch carries the job's
-      # read token and the push `AGENT_PAT` (or its fallback), each as a masked
-      # header on its own command. In a job of its own, before the agent's and
+      # read token and the push the loop's token, each as a masked header on
+      # its own command. In a job of its own, before the agent's and
       # on another runner, which is why the push token is in its env at all;
       # nothing it does is written into the checkout.
       #
@@ -1001,7 +1027,7 @@ jobs:
           EXISTS: ${{ needs.gate.outputs.prd_branch_exists }}
           PRD_PR: ${{ needs.gate.outputs.prd_pr }}
           SUB: ${{ needs.gate.outputs.sub }}
-          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -1067,7 +1093,7 @@ jobs:
           if ! git -c "http.extraHeader=AUTHORIZATION: basic ${push_auth}" push origin "$PRD_BRANCH"; then
             workflows=$(git diff --name-only HEAD^1 HEAD -- .github/workflows | sed 's/.*/`&`/' | paste -sd ',' - | sed 's/,/, /g')
             if [ -n "$workflows" ]; then
-              block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. The merge changes ${workflows}, and GitHub refuses a push that changes a workflow file from a token without Workflows: write, so trying again fails the same way until \`AGENT_PAT\` is set with Workflows: write. If it is, something else may have moved the PRD branch; trying again merges on top of it."
+              block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. The merge changes ${workflows}, and GitHub refuses a push that changes a workflow file from a token without Workflows: write, so trying again fails the same way until the loop pushes with a token that has Workflows: write: the loop's App, or \`AGENT_PAT\`. If it does, something else may have moved the PRD branch; trying again merges on top of it."
             fi
             block "Couldn't push the merge of \`${BASE_REF}\` into \`${PRD_BRANCH}\`, so nothing was built. Something else may have moved the PRD branch; trying again merges on top of it."
           fi
@@ -1109,8 +1135,9 @@ jobs:
     # one fails the job before any step, which `doctor` reports. The failure
     # step in `publish` names the same figure.
     timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
-    # **Read-only, and no PAT named anywhere in this job.** Not even in a step
-    # that never runs: a secret is delivered to every job whose text names it.
+    # **Read-only, and no PAT or App secret named anywhere in this job.** Not
+    # even in a step that never runs: a secret is delivered to every job whose
+    # text names it.
     permissions:
       # The checkout.
       contents: read
@@ -1462,6 +1489,20 @@ jobs:
           name: agent-implement-prd-gate
           path: ${{ runner.temp }}
 
+      # The token every write below that the workflow token cannot make is
+      # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
+      # that order, and `source` says which. Minted in this job, before its
+      # first write, and handed to no other.
+      - name: Resolve the loop's token
+        id: token
+        if: always()
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Checkout the base branch
         if: needs.implement-prd.result == 'success'
         uses: actions/checkout@v7
@@ -1499,7 +1540,7 @@ jobs:
         env:
           PRD_BRANCH: ${{ needs.gate.outputs.prd_branch }}
           BASE_SHA: ${{ needs.catch_up.outputs.head }}
-          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
           bundle="${RUNNER_TEMP}/branch.bundle"
@@ -1584,11 +1625,12 @@ jobs:
           SUB: ${{ needs.gate.outputs.sub }}
           SUB_K: ${{ needs.gate.outputs.sub_k }}
           SUBS: ${{ needs.gate.outputs.subs }}
-          # The Actions bot may not create a PR. A user PAT is not the Actions
-          # bot, so it bypasses that; fall back to GITHUB_TOKEN so the shape
-          # stays identical in a setup without the secret.
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # The Actions bot may not create a PR. The loop's App and a user PAT
+          # are not the Actions bot, so they bypass that; the resolver falls
+          # back to GITHUB_TOKEN so the shape stays identical in a setup with
+          # neither.
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           # `PROGRESS_START`, `PROGRESS_END`, `STATUS_START` and `STATUS_END`
           # in `shared/progress-list.ts`; a test holds them equal.
           PROGRESS_START: "<!-- agent:progress -->"
@@ -1693,8 +1735,8 @@ jobs:
           FRAME
             url=$(gh pr create --draft --base "$BASE_REF" --head "$PRD_BRANCH" \
               --title "${ISSUE_TITLE:0:256}" --body-file "$body_file" | tail -n1) \
-              || if [ "$HAS_PAT" != "true" ]; then
-                block "Couldn't open the PRD PR, because \`AGENT_PAT\` isn't set and GitHub doesn't let the default token open PRs. Set \`AGENT_PAT\` first."
+              || if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
+                block "Couldn't open the PRD PR, because neither the loop's App nor \`AGENT_PAT\` is set and GitHub doesn't let the default token open PRs. Set up one of them first."
               else
                 block "Couldn't open the PRD PR from \`${PRD_BRANCH}\` into \`${BASE_REF}\`. GitHub's reply is in the workflow run's log."
               fi
@@ -1713,17 +1755,17 @@ jobs:
       # §10). This run adds nothing to the parent: the next slice waits for
       # this round's verdict.
       #
-      # MUST use AGENT_PAT: a label added with GITHUB_TOKEN triggers no
-      # workflow. `-e`, unlike `agent-implement`'s: this is the last step, and
-      # without it a failed label add exits green with the slice asking nobody
-      # for review. So it fails into `Mark blocked on failure`, whose comment
+      # MUST use the loop's App or AGENT_PAT: a label added with GITHUB_TOKEN
+      # triggers no workflow. `-e`, unlike `agent-implement`'s: this is the
+      # last step, and without it a failed label add exits green with the
+      # slice asking nobody for review. So it fails into `Mark blocked on failure`, whose comment
       # names the PRD PR to label by hand.
       - name: Request review
         if: needs.gate.result == 'success' && needs.gate.outputs.finishing == 'false' && (needs.gate.outputs.build == 'false' || needs.implement-prd.result == 'success') && success()
         env:
           PRD_PR: ${{ steps.prd_pr.outputs.number }}
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           # The commit this run pushed, and how long the PR gets to show it as
           # its head before the label goes on anyway (#229). Empty on the run
           # that only opens a missing PRD PR, which pushed nothing.
@@ -1757,8 +1799,8 @@ jobs:
           # on a label that is somehow already there fires nothing.
           gh pr edit "$PRD_PR" --remove-label "agent:review" || true
           gh pr edit "$PRD_PR" --add-label "agent:review"
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PRD PR #${PRD_PR}."
+          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
+            echo "::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PRD PR #${PRD_PR}."
           fi
 
       # The finishing run's handover: every sub-issue is built and the last
@@ -1779,9 +1821,9 @@ jobs:
       # PRD PR reviewed them, so one slice built here beside them is not a
       # review of the whole PRD PR.
       #
-      # Needs AGENT_PAT either way, and refuses without it rather than doing
-      # half. `gh pr ready` cannot convert a draft under GITHUB_TOKEN, and a
-      # label added with it starts no review.
+      # Needs the loop's App or AGENT_PAT either way, and refuses without one
+      # rather than doing half. `gh pr ready` cannot convert a draft under
+      # GITHUB_TOKEN, and a label added with it starts no review.
       - name: "Hand over PRD PR #${{ needs.gate.outputs.prd_pr }}"
         if: needs.gate.result == 'success' && needs.gate.outputs.finishing == 'true' && success()
         id: handover
@@ -1790,8 +1832,8 @@ jobs:
           LANDED: ${{ needs.gate.outputs.landed }}
           SUBS: ${{ needs.gate.outputs.subs }}
           SERVER_URL: ${{ github.server_url }}
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -1801,8 +1843,8 @@ jobs:
             exit 1
           }
 
-          if [ "$HAS_PAT" != "true" ]; then
-            block "Couldn't hand PRD PR #${PRD_PR} over, because \`AGENT_PAT\` isn't set and GitHub doesn't let the default token mark a draft ready or start a review. Every sub-issue is built. Set \`AGENT_PAT\`; trying again resumes the handover and builds nothing."
+          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
+            block "Couldn't hand PRD PR #${PRD_PR} over, because neither the loop's App nor \`AGENT_PAT\` is set and GitHub doesn't let the default token mark a draft ready or start a review. Every sub-issue is built. Set up one of them; trying again resumes the handover and builds nothing."
           fi
 
           if [ "$LANDED" -gt 1 ]; then
@@ -2006,7 +2048,7 @@ jobs:
         env:
           PUSHED: ${{ steps.push.outputs.head }}
           PRD_PR: ${{ steps.prd_pr.outputs.number || needs.gate.outputs.prd_pr }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           # `PROGRESS_START`, `PROGRESS_END`, `STATUS_START` and `STATUS_END`
           # in `shared/progress-list.ts`; a test holds them equal.
           PROGRESS_START: "<!-- agent:progress -->"

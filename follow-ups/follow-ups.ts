@@ -23,14 +23,15 @@ import { FOLLOW_UPS_LABEL } from "../shared/review-output.js";
  * decides exactly one thing itself, and only because a plan cannot be made
  * without it — whether the marker is still on the pull request.
  *
- * The off switch is **the caller file**. `follow-ups.yml` invokes this
- * subcommand, and nothing invokes a reusable except a caller's reference — so a
- * repository that copies the rest of the loop and not `agent-follow-ups.yml`
- * never files anything, and turning it off later is deleting that one file.
+ * The off switch is **the caller**. `follow-ups.yml` invokes this subcommand,
+ * and nothing invokes a reusable except a caller's reference — so a repository
+ * that copies the rest of the loop and not the `follow-ups` job in the PR-side
+ * caller file (#225) never files anything, and turning it off later is deleting
+ * that one job.
  * This said "no reusable references this one yet" while that was true (#49) and
  * stopped being true at #50, which is worse than an ordinary stale line: it
  * named an off switch nobody can use, where every other artifact here
- * (`agent-follow-ups.yml`, `docs/ADOPTING.md` §4, `README.md`, `CONTEXT.md`)
+ * (the PR-side caller file, `docs/ADOPTING.md` §4, `README.md`, `CONTEXT.md`)
  * names the caller.
  */
 

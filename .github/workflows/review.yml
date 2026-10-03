@@ -1,8 +1,9 @@
 name: Agent Review (reusable)
 
-# The review job itself. `agent-review.yml` is the caller — a trigger and two
-# wires — and everything that bounds what a wrong review can do stays here, in a
-# file an adopting repo *references* rather than copies
+# The review job itself. The `review` job in `agent-pr.yml` is the caller (two
+# wires, under that file's trigger), and everything that bounds what a wrong
+# review can do stays here, in a file an adopting repo *references* rather than
+# copies
 # (jeffwlawson/winget-manifest-lint#97, slice 3 of
 # jeffwlawson/winget-manifest-lint#88).
 #
@@ -139,7 +140,17 @@ on:
           PR's parent when a slice round ends on an approval; and to post the
           park comment on that parent when a round ends without one. Optional:
           without it each of those warns, the run stays green, and a human does
-          it by hand.
+          it by hand. The loop's App, where it is set up, takes its place.
+        required: false
+      AGENT_APP_ID:
+        description: >-
+          The loop's GitHub App's ID. With `AGENT_APP_PRIVATE_KEY`, the posting
+          and advance jobs each mint a token for this repository from the App
+          and make the writes `AGENT_PAT` would make with it, as the App's bot.
+          Optional; without both, `AGENT_PAT` is used as before.
+        required: false
+      AGENT_APP_PRIVATE_KEY:
+        description: The loop's GitHub App's private key. See `AGENT_APP_ID`.
         required: false
 
 jobs:
@@ -152,13 +163,15 @@ jobs:
   # `vars` and `needs` and nothing a step computes, and GitHub's expression
   # language has no arithmetic, so the sum is done here and handed across as an
   # output. It runs where the review does, the same two guards, and holds no
-  # permission at all: it reads one variable and writes one number.
+  # permission at all: it reads one variable and writes one number, and the
+  # token source below.
   #
-  # **And whether `AGENT_PAT` is set** (#316), which the fix-round budget reads.
-  # The review job runs the agent, which can read its runner's memory, and that
-  # memory holds every secret the job names, a comparison against `''`
-  # included. So the comparison is made here, where no agent runs, and only
-  # its answer crosses.
+  # **And which token the posting job will write with** (#316, #320), which the
+  # fix-round budget reads: a label added with the workflow token starts no
+  # round. The review job runs the agent, which can read its runner's memory,
+  # and that memory holds every secret the job names, a comparison against
+  # `''` included. So the resolver chooses here, where no agent runs, minting
+  # nothing (`choose-only`), and only the source it reports crosses.
   #
   # **It never fails.** A failed job here would skip the review silently, which
   # is the class this issue is about. A value that is not a positive integer is
@@ -175,7 +188,7 @@ jobs:
     outputs:
       minutes: ${{ steps.limits.outputs.minutes }}
       refused: ${{ steps.limits.outputs.refused }}
-      has-pat: ${{ secrets.AGENT_PAT != '' }}
+      token-source: ${{ steps.token.outputs.source }}
     steps:
       - name: Add the CI wait to the review's own time
         id: limits
@@ -196,6 +209,18 @@ jobs:
             echo "minutes=$((CI_WAIT_MINUTES + own))"
             echo "refused=${refused}"
           } >> "$GITHUB_OUTPUT"
+
+      # The same choice the posting job's resolver makes, from the same
+      # secrets, so the two cannot disagree; but no token.
+      - name: Say which token the loop writes with
+        id: token
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          choose-only: "true"
 
   # The red check (#231, PRD #212): the tests a pull request adds or changes,
   # run against the code as it was **before** the change, so the review can
@@ -956,19 +981,20 @@ jobs:
       # posts no such status, so only automatic rounds count (decision 7), and a
       # push resets nothing.
       #
-      # **And no PAT, no round.** A label added with `GITHUB_TOKEN` starts
-      # nothing, so without `AGENT_PAT` the verdict asks for the label instead of
-      # asking for a round that would never run. The same holds for a count that
-      # could not be read: a run that cannot say how many rounds are spent does
-      # not start another, and warns. Whether there is a PAT comes from
-      # `time-limit`, so this job never names it (#316).
+      # **And no App or PAT, no round.** A label added with `GITHUB_TOKEN`
+      # starts nothing, so with neither the loop's App nor `AGENT_PAT` the
+      # verdict asks for the label instead of asking for a round that would
+      # never run. The same holds for a count that could not be read: a run
+      # that cannot say how many rounds are spent does not start another, and
+      # warns. Which token the loop writes with comes from `time-limit`, so
+      # this job never names a secret that writes (#316).
       - name: Settle the fix-round budget
         id: budget
         if: steps.state.outputs.proceed == 'true'
         env:
           MAX_FIX_ROUNDS: ${{ vars.AGENT_MAX_FIX_ROUNDS }}
           AUTO_FIX: ${{ inputs.auto-fix }}
-          HAS_PAT: ${{ needs.time-limit.outputs.has-pat }}
+          TOKEN_SOURCE: ${{ needs.time-limit.outputs.token-source }}
           # `FIX_ROUND_STATUS.context`; a test holds the two equal.
           FIX_ROUND_CONTEXT: agent-fix-round
           # And, for one release, the verdict a round started under 0.7.6
@@ -1033,7 +1059,7 @@ jobs:
           start=false
           if [ -z "$spent" ]; then
             echo "::warning::Could not count the automatic fix rounds already spent on PR #${PR_NUMBER}, so this review will not start one. GitHub's reply is printed above. Add \`agent:fix\` by hand if the review recommends changes."
-          elif [ "$spent" -lt "$budget" ] && [ "$HAS_PAT" = "true" ]; then
+          elif [ "$spent" -lt "$budget" ] && { [ "$TOKEN_SOURCE" = "app" ] || [ "$TOKEN_SOURCE" = "pat" ]; }; then
             start=true
           fi
           echo "Fix-round budget ${budget}, spent ${spent:-unknown}; an automatic fix round starts on changes recommended: ${start}."
@@ -2066,9 +2092,10 @@ jobs:
   # a file: the review payload, the thread ids the runner handed over
   # (`verifyCarried` dropped every id it had not), and the replies it
   # composed. So `contents: write` reaches a job that has nothing to write
-  # with, and `AGENT_PAT`, spent only on the labels something fires on and on
-  # marking the pull request ready, stays out of the job that reads untrusted
-  # pull-request content.
+  # with, and the loop's token (`.github/actions/loop-token`: the App's,
+  # `AGENT_PAT`, or the workflow token), spent only on the labels something
+  # fires on and on marking the pull request ready, stays out of the job that
+  # reads untrusted pull-request content.
   #
   # **The cost of a short grant is the whole run**, not this job. A caller's
   # `permissions:` is the ceiling for every job it calls, and GitHub refuses an
@@ -2078,7 +2105,7 @@ jobs:
   # What GitHub calls it is an *invalid workflow file*, annotated on the run
   # page as:
   #
-  #   Invalid workflow file: .github/workflows/agent-review.yml#L<the caller's
+  #   Invalid workflow file: .github/workflows/agent-pr.yml#L<the caller's
   #   `uses:` line> — Error calling workflow
   #   '<owner>/<repo>/.github/workflows/review.yml@<sha>'. The nested job
   #   'post-review' is requesting 'contents: write', but is only allowed
@@ -2609,6 +2636,32 @@ jobs:
               || echo "::warning::Could not post the \`agent-fix-round\` status for ${HEAD_SHA}, which is what the fix-round budget counts, so the automatic fix round will not start. GitHub's reply is printed above."
           fi
 
+      # The token the writes below that the workflow token cannot make are
+      # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
+      # that order, and `source` says which. Minted here, after the agent
+      # finished and on a runner it never ran on. Reviews, comments and
+      # statuses stay the workflow token's, as `github-actions[bot]`, which is
+      # what the loop recognises its own by.
+      #
+      # **Just before its first use, not at the job's start** (#330 review).
+      # A mint that fails fails the step, and every later step whose `if:`
+      # names no status function is skipped: at the start, that was the
+      # refusal note, the review itself and everything posted after it. Here
+      # the review, its verdict and the labels above are already written, and
+      # a failed mint reaches the failure arms below, whose comment reads the
+      # reason it wrote. Only where a review finished, since every use below
+      # is on one; `always()`, so a posting step that failed above does not
+      # leave the trigger label's re-request without a source to read.
+      - name: Resolve the loop's token
+        id: token
+        if: always() && needs.review.outputs.proceed == 'true' && needs.review.result == 'success'
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # Step 5. Draft means "the automated pipeline has not finished", not "the
       # agent is still writing code", so this belongs here rather than at the
       # end of implement. The human's first real decision (act on the review, or
@@ -2623,11 +2676,12 @@ jobs:
       # `pull_request` types (opened/synchronize/reopened), so neither ci.yml nor
       # corpus.yml re-runs.
       #
-      # MUST use AGENT_PAT. `GITHUB_TOKEN` cannot convert a draft PR even with
-      # `pull-requests: write` — it fails with
+      # MUST use the loop's App or AGENT_PAT. `GITHUB_TOKEN` cannot convert a
+      # draft PR even with `pull-requests: write`: it fails with
       #   GraphQL: Resource not accessible by integration (markPullRequestReadyForReview)
       # because the Actions bot is an App installation and this mutation is not
-      # in its permission set at all. A user PAT is not an App, so it can.
+      # in its permission set at all. A user PAT is not an App, so it can, and
+      # neither is the loop's own App limited the way the Actions bot is.
       #
       # This is the fourth GITHUB_TOKEN limitation the loop has hit, and the
       # third of that four where the operation *looks* covered by the granted
@@ -2671,10 +2725,10 @@ jobs:
           (!startsWith(github.event.pull_request.head.ref, 'agent/prd-') ||
            (needs.review.outputs.round == 'final' && needs.review.outputs.verdict == 'approval recommended'))
         env:
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           gh pr ready "$PR_NUMBER" \
-            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If AGENT_PAT is unset this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
+            || echo "::warning::Could not mark PR #${PR_NUMBER} ready for review. If neither the loop's App nor AGENT_PAT is set this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand."
 
       # And a run that failed says so where the verdict goes, rather than leaving
       # the last verdict standing. So does one that was cancelled or timed out
@@ -2780,8 +2834,8 @@ jobs:
       # then fired nothing, since it was already on. So where the run finished
       # and the pull request's head has moved on from the commit it reviewed,
       # because somebody pushed, it asks for its own step again: removed above,
-      # then added. With `AGENT_PAT` or not at all, since a label added with
-      # `GITHUB_TOKEN` starts nothing. Not on a failure, which is
+      # then added. With the loop's App or `AGENT_PAT`, or not at all, since a
+      # label added with `GITHUB_TOKEN` starts nothing. Not on a failure, which is
       # `agent:blocked` and a human's retry, and never a cycle: nothing in the
       # loop pushes to a pull request while its review runs, since every run
       # that pushes shares the review job's concurrency group.
@@ -2810,8 +2864,8 @@ jobs:
           REVIEW_RESULT: ${{ needs.review.result }}
           JOB_STATUS: ${{ job.status }}
           LEFT_SHA: ${{ needs.review.outputs.sha }}
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          REQUEST_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          REQUEST_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
           if [ "$PROCEEDED" != "true" ] || [ "$REVIEW_RESULT" != "success" ] || [ "$JOB_STATUS" != "success" ] || [ -z "$LEFT_SHA" ]; then
@@ -2827,9 +2881,9 @@ jobs:
             echo "::notice::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, but it carries ${busy}, so agent:review was not asked for again: that run is queued, and a new one would cancel it and leave its label on with no run behind it. Add agent:review by hand once ${busy} is off, if the new head still needs it."
             exit 0
           fi
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, but AGENT_PAT is not set, so agent:review was not asked for again: a label added with GITHUB_TOKEN starts nothing. Add agent:review by hand to review the new head."
-            gh pr comment "$PR_NUMBER" --body "This PR moved on to \`${head}\` while its review of \`${LEFT_SHA}\` ran. No review of the new head will start on its own: \`AGENT_PAT\` is not set, and a label added with \`GITHUB_TOKEN\` starts nothing. Add \`agent:review\` by hand to review it." \
+          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
+            echo "::warning::PR #${PR_NUMBER} moved on to ${head} while this run reviewed ${LEFT_SHA}, but neither the loop's App nor AGENT_PAT is set, so agent:review was not asked for again: a label added with GITHUB_TOKEN starts nothing. Add agent:review by hand to review the new head."
+            gh pr comment "$PR_NUMBER" --body "This PR moved on to \`${head}\` while its review of \`${LEFT_SHA}\` ran. No review of the new head will start on its own: neither the loop's App nor \`AGENT_PAT\` is set, and a label added with \`GITHUB_TOKEN\` starts nothing. Add \`agent:review\` by hand to review it." \
               || echo "::warning::…and that could not be said on the pull request either."
             exit 0
           fi
@@ -2861,11 +2915,12 @@ jobs:
       # none of the findings it was given cannot ask for a round, whatever
       # budget is left (`deriveVerdict`, docs/parity.md §10).
       #
-      # MUST use AGENT_PAT. A label added with `GITHUB_TOKEN` fires no
-      # `labeled` event, so `agent:fix` added with it sits on the pull request
-      # triggering nothing. The budget step already declined to start a round
-      # without the PAT, so this step does not run without one; the fallback is
-      # for the comment, which is the one thing here `GITHUB_TOKEN` can do.
+      # MUST use the loop's App or AGENT_PAT. A label added with `GITHUB_TOKEN`
+      # fires no `labeled` event, so `agent:fix` added with it sits on the pull
+      # request triggering nothing. The budget step already declined to start a
+      # round without one of them, so this step does not run without one; the
+      # resolver's fallback is for the comment, which is the one thing here
+      # `GITHUB_TOKEN` can do.
       #
       # **Decided from live state, not the event payload** (#201). Before adding
       # anything it re-reads the pull request:
@@ -2901,7 +2956,7 @@ jobs:
           needs.review.outputs.fix-round == 'true' &&
           steps.trigger.outputs.moved != 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           REVIEWED_SHA: ${{ needs.review.outputs.sha }}
           REVIEW_URL: ${{ steps.review.outputs.url }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -3006,8 +3061,9 @@ jobs:
   # one the review rendered for how the round ended.
   #
   # **Its shape**: no checkout, no toolchain, no model, `pull-requests: write`
-  # alone for the progress list and the no-PAT arm's comment on the PRD PR, and `AGENT_PAT` for
-  # everything on the parent, or nothing there. `issues: write` stays out of
+  # alone for the progress list and the no-PAT arm's comment on the PRD PR, and
+  # the loop's token, the App's or `AGENT_PAT` (`.github/actions/loop-token`),
+  # for everything on the parent, or nothing there. `issues: write` stays out of
   # this job and every caller's grant (docs/parity.md §10). **No concurrency
   # group**, for the reason the posting job is in none. It cannot cycle: it
   # labels and comments on an issue, never a pull request.
@@ -3123,6 +3179,21 @@ jobs:
             && echo "Wrote PRD PR #${PR_NUMBER}'s progress list: the round ended ${ending}." \
             || echo "::warning::Could not write PRD PR #${PR_NUMBER}'s progress list. GitHub's reply is above."
 
+      # The token everything on the parent is written with: the loop's App's,
+      # `AGENT_PAT`, or the workflow token, which can write nothing there, and
+      # `source` says which. After the progress list, which the workflow token
+      # writes, so a mint that fails cannot cost the list (#330 review); a
+      # failed mint is said on the PRD PR by the two steps after it.
+      - name: Resolve the loop's token
+        id: token
+        if: always()
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # A slice round's approval, and nothing else. The verdict key, matched
       # exactly, and only where the review and its posting both finished: a
       # verdict that was never posted approves nothing.
@@ -3135,8 +3206,34 @@ jobs:
         with:
           pr-number: ${{ github.event.pull_request.number }}
           head-ref: ${{ github.event.pull_request.head.ref }}
-          has-pat: ${{ secrets.AGENT_PAT != '' }}
-          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          token-source: ${{ steps.token.outputs.source }}
+          token: ${{ steps.token.outputs.token }}
+
+      # The advance above is skipped where the mint failed, and the job is
+      # red; this says so where the maintainer is looking, with the workflow
+      # token, which can comment on the PRD PR, and with the reason the
+      # resolver wrote. The same approval, so the same re-label by hand.
+      - name: Say the PRD chain did not advance
+        if: >-
+          failure() && steps.token.outcome == 'failure' &&
+          needs.review.result == 'success' && needs.post-review.result == 'success' &&
+          needs.review.outputs.round == 'slice' &&
+          needs.review.outputs.verdict == 'approval recommended'
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          parent="the PRD's parent issue"
+          if [[ "$HEAD_REF" =~ ^agent/prd-([0-9]+)- ]]; then parent="#${BASH_REMATCH[1]}"; fi
+          reason="Couldn't mint a token for the loop's GitHub App."
+          [ -f "${RUNNER_TEMP}/failure_reason.txt" ] && reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+          gh pr comment "$PR_NUMBER" --body "This slice's round ended on an approval, but the PRD chain did not advance: ${reason} [Workflow run](${RUN_URL})
+
+          Once that is fixed, re-add \`agent:implement\` to ${parent} by hand to build the next slice." \
+            || echo "::warning::Could not say on PRD PR #${PR_NUMBER} that the chain did not advance."
 
       # Every other ending but a fix round starting. A run that finished posts
       # `park.md`, the comment for its verdict. One whose review finished and
@@ -3149,14 +3246,20 @@ jobs:
       # raised link the posted review, whose URL exists only now, so it goes
       # into the slot the runner left for it.
       #
-      # MUST use AGENT_PAT for the comment on the parent, which is an issue:
-      # the workflow token holds no issue scope here. Without it the comment
+      # MUST use the loop's App or AGENT_PAT for the comment on the parent,
+      # which is an issue: the workflow token holds no issue scope here.
+      # Without either the comment
       # goes on the PRD PR instead, saying where it was meant for. `bash -e`
       # and no `|| true` on the post: a chain that parked without saying so is
       # the silence this job exists to end, and a red job is the only thing
       # left that says it.
+      #
+      # `!cancelled()`, so a failed mint above does not skip it (#330 review):
+      # the park goes on the PRD PR then too, as it does without the App or
+      # the PAT, but with the reason the mint failed, and the job stays red.
       - name: Park the PRD chain
         if: >-
+          !cancelled() &&
           !(needs.review.result == 'success' && needs.post-review.result == 'success' &&
             (needs.review.outputs.verdict == 'approval recommended' ||
              (needs.review.outputs.verdict == 'changes recommended' && needs.review.outputs.fix-round == 'true')))
@@ -3170,8 +3273,9 @@ jobs:
           # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
           REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          PAT_TOKEN: ${{ secrets.AGENT_PAT }}
+          TOKEN_OUTCOME: ${{ steps.token.outcome }}
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -3196,10 +3300,17 @@ jobs:
 
           To move on, add \`agent:review\` to PRD PR #${PR_NUMBER} to run the review again. The chain moves on once a review of the PRD PR's latest commit recommends approval."
           fi
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::AGENT_PAT is not set, so the park comment goes on PRD PR #${PR_NUMBER} rather than on #${parent}: the workflow token cannot comment on an issue here."
-            gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s' "$body" "_This was meant for #${parent}, but \`AGENT_PAT\` is not set._")"
+          if [ "$TOKEN_OUTCOME" = "failure" ]; then
+            reason="Couldn't mint a token for the loop's GitHub App."
+            [ -f "${RUNNER_TEMP}/failure_reason.txt" ] && reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
+            echo "::error::The loop's App's token was not minted, so the park comment goes on PRD PR #${PR_NUMBER} rather than on #${parent}."
+            gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s' "$body" "_This was meant for #${parent}, but it could not be posted there: ${reason}_")"
+            exit 1
+          fi
+          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
+            echo "::warning::Neither the loop's App nor AGENT_PAT is set, so the park comment goes on PRD PR #${PR_NUMBER} rather than on #${parent}: the workflow token cannot comment on an issue here."
+            gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s' "$body" "_This was meant for #${parent}, but neither the loop's App nor \`AGENT_PAT\` is set._")"
             exit 0
           fi
-          GH_TOKEN="$PAT_TOKEN" gh issue comment "$parent" --body "$body"
+          GH_TOKEN="$LOOP_TOKEN" gh issue comment "$parent" --body "$body"
           echo "Posted the park comment on #${parent}."

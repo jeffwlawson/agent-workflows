@@ -8,9 +8,9 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 /**
  * `npm version` bumps two files — the manifest and the lockfile — and there are
- * twenty. The other eighteen are the version pins: one `--package=…@<version>`
- * per reusable workflow, and one `…yml@v<version>` in each of the two caller
- * sets. Both `v0.1.4` and `v0.1.5` were cut by editing them by hand and folding
+ * twelve. The other ten hold the version pins: one `--package=…@<version>` per
+ * reusable workflow, and one `…yml@v<version>` per caller in each of the two
+ * caller sets, two caller files to a set (#225). Both `v0.1.4` and `v0.1.5` were cut by editing them by hand and folding
  * the result into the version commit.
  *
  * This is tedium rather than hazard, and the distinction shapes what is tested
@@ -141,48 +141,71 @@ const git = (root: string, args: readonly string[]): string => {
 const TARGET = "9.9.9";
 
 /**
- * Every site, named: one reusable, one local caller and one reference caller per
- * workflow in the loop.
+ * A caller of a `plan` workflow, as a job to append to a caller file, pinned
+ * where the fixture's own callers are.
+ */
+const planJob = (root: string): string => {
+  const { version } = JSON.parse(read(root, "package.json")) as { version: string };
+  return `\n  plan:\n    uses: jeffwlawson/agent-workflows/.github/workflows/plan.yml@v${version}\n`;
+};
+
+/**
+ * Every file holding a site, named: one per reusable workflow, and the two
+ * caller files (#225) in each caller set.
  *
  * Written out rather than derived, so that it is also the answer to "what
  * belongs in the release commit" — which is what the staging check below reads
  * it as. That the propagator's own set is *not* a written-out list is a separate
- * property, and has its own test: the complete extra trio below.
+ * property, and has its own test: the complete extra workflow below.
  *
- * It grew by three when `follow-ups` landed (#50), which is the point of writing
- * it out: a sixth workflow is three new paths here, in the same commit as the
- * three new files, or the release propagates to eighteen of twenty-one.
+ * It shrank by eight when the six caller files became two (#225), which is the
+ * point of writing it out: a change to the set of files is a change here, in
+ * the same commit, or the release propagates to a set nobody checked.
  */
 const EVERY_SITE = [
-  ".github/workflows/agent-fix.yml",
-  ".github/workflows/agent-follow-ups.yml",
-  ".github/workflows/agent-implement-prd.yml",
-  ".github/workflows/agent-implement.yml",
-  ".github/workflows/agent-review.yml",
-  ".github/workflows/agent-update-branch.yml",
+  ".github/workflows/agent-issue.yml",
+  ".github/workflows/agent-pr.yml",
   ".github/workflows/fix.yml",
   ".github/workflows/follow-ups.yml",
   ".github/workflows/implement-prd.yml",
   ".github/workflows/implement.yml",
   ".github/workflows/review.yml",
   ".github/workflows/update-branch.yml",
-  "examples/callers/fix.yml",
-  "examples/callers/follow-ups.yml",
-  "examples/callers/implement-prd.yml",
-  "examples/callers/implement.yml",
-  "examples/callers/review.yml",
-  "examples/callers/update-branch.yml",
+  "examples/callers/issue.yml",
+  "examples/callers/pr.yml",
 ] as const;
+
+/**
+ * The callers each caller file holds, and so the `ref` pins it carries: the
+ * four that run on a pull request, and the two that run on an issue.
+ */
+const CALLERS_PER_FILE: Readonly<Record<string, number>> = { pr: 4, issue: 2 };
+const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n, 0);
 
 /**
  * The pins that are not one a file (#257): a reusable workflow's step naming
  * one of this repository's composite actions, `…/.github/actions/<name>@v<version>`.
  * GitHub fetches the action from the tag, so it moves with the release like
- * the workflow that names it. One file carries one, beside its `npm exec`
- * pin, so the release rewrites nineteen pins in eighteen files.
+ * the workflow that names it.
+ *
+ * Each file's, by action, one entry per step naming it: review's `advance`
+ * job names `advance-prd`, and each job that resolves the loop's token names
+ * `loop-token` (#319, #320): implement's publish job, implement-prd's catch-up
+ * and publish jobs, fix's and update-branch's publish jobs, and review's
+ * `time-limit`, `post-review` and `advance` jobs. Nine, beside the six `npm
+ * exec` pins and the twelve callers, so the release rewrites twenty-seven pins
+ * in ten files.
  */
-const ACTION_SITES = [".github/workflows/review.yml"] as const;
-const PIN_COUNT = EVERY_SITE.length + ACTION_SITES.length;
+const ACTION_SITES: Readonly<Record<string, readonly string[]>> = {
+  ".github/workflows/fix.yml": ["loop-token"],
+  ".github/workflows/implement-prd.yml": ["loop-token", "loop-token"],
+  ".github/workflows/implement.yml": ["loop-token"],
+  ".github/workflows/review.yml": ["loop-token", "loop-token", "loop-token", "advance-prd"],
+  ".github/workflows/update-branch.yml": ["loop-token"],
+};
+const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + actions.length, 0);
+const PACKAGE_COUNT = EVERY_SITE.filter((file) => !/\/(agent-)?(pr|issue)\.yml$/.test(file)).length;
+const PIN_COUNT = PACKAGE_COUNT + REF_COUNT + ACTION_COUNT;
 
 describe("the version propagator rewrites every pin", () => {
   it("reports every site it rewrote", () => {
@@ -192,7 +215,14 @@ describe("the version propagator rewrites every pin", () => {
 
     expect([...new Set(sites.map((site) => site.file))].sort()).toEqual([...EVERY_SITE]);
     expect(sites).toHaveLength(PIN_COUNT);
-    expect(sites.filter((s) => s.form === "action").map((s) => s.file).sort()).toEqual([...ACTION_SITES]);
+    expect(sites.filter((s) => s.form === "action").map((s) => s.file).sort()).toEqual(
+      Object.entries(ACTION_SITES).flatMap(([file, actions]) => actions.map(() => file)).sort(),
+    );
+    for (const [name, count] of Object.entries(CALLERS_PER_FILE)) {
+      for (const file of [`.github/workflows/agent-${name}.yml`, `examples/callers/${name}.yml`]) {
+        expect(sites.filter((s) => s.file === file && s.form === "ref"), file).toHaveLength(count);
+      }
+    }
   });
 
   /**
@@ -204,8 +234,11 @@ describe("the version propagator rewrites every pin", () => {
 
     syncVersion(TARGET, root);
 
-    for (const file of ACTION_SITES) {
-      expect(read(root, file)).toContain(`jeffwlawson/agent-workflows/.github/actions/advance-prd@v${TARGET}`);
+    for (const [file, actions] of Object.entries(ACTION_SITES)) {
+      for (const action of new Set(actions)) {
+        const ref = `jeffwlawson/agent-workflows/.github/actions/${action}@v${TARGET}`;
+        expect(read(root, file).split(ref).length - 1, `${file} ${action}`).toBe(actions.filter((a) => a === action).length);
+      }
     }
   });
 
@@ -221,7 +254,23 @@ describe("the version propagator rewrites every pin", () => {
       read(root, ".github/workflows/review.yml").replace(/\/advance-prd@v\d+\.\d+\.\d+/, "/advance-prd@main"),
     );
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/review\.yml: expected 2 version pins \[package, action\], found 1 \[package\]/);
+    expect(() => syncVersion(TARGET, root)).toThrow(
+      /review\.yml: expected 5 version pins \[package, action, action, action, action\], found 4 \[package, action, action, action\]/,
+    );
+  });
+
+  /** The same for the token resolver, in each job of a workflow naming it (#319). */
+  it("refuses the token resolver named under a ref that is not a pin", () => {
+    const root = fixture();
+    write(
+      root,
+      ".github/workflows/implement-prd.yml",
+      read(root, ".github/workflows/implement-prd.yml").replace(/\/loop-token@v\d+\.\d+\.\d+/, "/loop-token@main"),
+    );
+
+    expect(() => syncVersion(TARGET, root)).toThrow(
+      /implement-prd\.yml: expected 3 version pins \[package, action, action\], found 2 \[package, action\]/,
+    );
   });
 
   it("leaves no site still naming the version it replaced", () => {
@@ -251,10 +300,10 @@ describe("the version propagator rewrites every pin", () => {
     expect(read(root, ".github/workflows/review.yml")).toContain(
       `--package=@jeffwlawson/agent-workflows@${TARGET} --`,
     );
-    expect(read(root, ".github/workflows/agent-review.yml")).toContain(
+    expect(read(root, ".github/workflows/agent-pr.yml")).toContain(
       `jeffwlawson/agent-workflows/.github/workflows/review.yml@v${TARGET}`,
     );
-    expect(read(root, "examples/callers/review.yml")).toContain(
+    expect(read(root, "examples/callers/pr.yml")).toContain(
       `jeffwlawson/agent-workflows/.github/workflows/review.yml@v${TARGET}`,
     );
   });
@@ -272,7 +321,7 @@ describe("the version propagator rewrites every pin", () => {
       ".github/workflows/review.yml",
       ".github/workflows/update-branch.yml",
     ]);
-    expect(sites.filter((s) => s.form === "ref")).toHaveLength(12);
+    expect(sites.filter((s) => s.form === "ref")).toHaveLength(REF_COUNT);
   });
 
   /**
@@ -292,46 +341,42 @@ describe("the version propagator rewrites every pin", () => {
   });
 
   /**
-   * Eighteen is today's count, not the rule. `EVERY_SITE` above is a written-out
+   * Twenty-seven is today's count, not the rule. `EVERY_SITE` above is a written-out
    * list, and so is every refusal below a *half*-landed extra workflow — between
-   * them they would all still pass against an implementation holding eighteen
-   * hardcoded paths, which on the day a seventh workflow lands rewrites eighteen
-   * of twenty-one and reports success.
+   * them they would all still pass against an implementation holding today's
+   * pins hardcoded, which on the day a seventh workflow lands rewrites all but
+   * its pins and reports success.
    *
-   * So this is the one that lands a whole trio: the reusable, the local caller
-   * and the reference caller. The site set is derived from what is on disk, and
-   * the number that proves it is three more than there were. `follow-ups` (#50)
-   * is the landing this was written against a release ahead of, and it changed
-   * nothing here but the total.
+   * So this is the one that lands a whole workflow: the reusable, and a caller
+   * of it in the PR-side caller file of each set. The site set is derived from
+   * what is on disk, and the number that proves it is more than there were.
    */
-  it("derives the site set: a complete extra workflow is three more sites, not the same", () => {
+  it("derives the site set: a complete extra workflow is more sites, not the same", () => {
     const root = fixture();
-    for (const [from, to] of [
-      [".github/workflows/review.yml", ".github/workflows/plan.yml"],
-      [".github/workflows/agent-review.yml", ".github/workflows/agent-plan.yml"],
-      ["examples/callers/review.yml", "examples/callers/plan.yml"],
-    ] as const) {
-      fs.copyFileSync(path.join(root, ...from.split("/")), path.join(root, ...to.split("/")));
+    fs.copyFileSync(
+      path.join(root, ".github", "workflows", "review.yml"),
+      path.join(root, ".github", "workflows", "plan.yml"),
+    );
+    for (const caller of [".github/workflows/agent-pr.yml", "examples/callers/pr.yml"]) {
+      write(root, caller, `${read(root, caller)}${planJob(root)}`);
     }
 
     const sites = syncVersion(TARGET, root);
 
-    // Four pins in three files: the copy of `review.yml` names the advance
-    // action too.
-    expect(sites).toHaveLength(PIN_COUNT + 4);
-    expect(sites.filter((s) => s.form === "package")).toHaveLength(7);
-    expect(sites.filter((s) => s.form === "ref")).toHaveLength(14);
-    expect(sites.filter((s) => s.file.includes("plan")).map((s) => `${s.file} ${s.form}`).sort()).toEqual([
-      ".github/workflows/agent-plan.yml ref",
-      ".github/workflows/plan.yml action",
-      ".github/workflows/plan.yml package",
-      "examples/callers/plan.yml ref",
-    ]);
+    // Seven pins, one file more: the copy of `review.yml` names the advance
+    // action and the token resolver's three times too, and the two callers of
+    // it join the files already there.
+    expect(sites).toHaveLength(PIN_COUNT + 7);
+    expect(sites.filter((s) => s.form === "package")).toHaveLength(PACKAGE_COUNT + 1);
+    expect(sites.filter((s) => s.form === "ref")).toHaveLength(REF_COUNT + 2);
+    expect([...new Set(sites.map((s) => s.file))].sort()).toEqual(
+      [...EVERY_SITE, ".github/workflows/plan.yml"].sort(),
+    );
     expect(read(root, ".github/workflows/plan.yml")).toContain(
       `--package=@jeffwlawson/agent-workflows@${TARGET} --`,
     );
-    for (const caller of [".github/workflows/agent-plan.yml", "examples/callers/plan.yml"]) {
-      expect(read(root, caller)).toContain(`.yml@v${TARGET}`);
+    for (const caller of [".github/workflows/agent-pr.yml", "examples/callers/pr.yml"]) {
+      expect(read(root, caller)).toContain(`/plan.yml@v${TARGET}`);
     }
   });
 
@@ -382,11 +427,13 @@ describe("the version propagator refuses an unexpected set of pins", () => {
     const root = fixture();
     write(
       root,
-      "examples/callers/fix.yml",
-      read(root, "examples/callers/fix.yml").replace(/\.yml@v\d+\.\d+\.\d+/, ".yml@main"),
+      "examples/callers/pr.yml",
+      read(root, "examples/callers/pr.yml").replace(/\/fix\.yml@v\d+\.\d+\.\d+/, "/fix.yml@main"),
     );
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/examples\/callers\/fix\.yml/);
+    expect(() => syncVersion(TARGET, root)).toThrow(
+      /examples\/callers\/pr\.yml: expected 4 version pins \[ref, ref, ref, ref\], found 3/,
+    );
   });
 
   /**
@@ -404,7 +451,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
       `${read(root, ".github/workflows/review.yml")}\n# jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.1.7\n`,
     );
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/found 3 \[package, ref, action\]/);
+    expect(() => syncVersion(TARGET, root)).toThrow(/found 6 \[package, ref, action, action, action, action\]/);
   });
 
   /**
@@ -415,12 +462,31 @@ describe("the version propagator refuses an unexpected set of pins", () => {
    */
   it("refuses an extra caller with no reusable workflow behind it", () => {
     const root = fixture();
-    fs.copyFileSync(
-      path.join(root, ".github", "workflows", "agent-review.yml"),
-      path.join(root, ".github", "workflows", "agent-plan.yml"),
-    );
+    write(root, ".github/workflows/agent-pr.yml", `${read(root, ".github/workflows/agent-pr.yml")}${planJob(root)}`);
 
     expect(() => syncVersion(TARGET, root)).toThrow(/plan/);
+  });
+
+  /**
+   * A caller file short of a caller, and one holding a caller twice: either
+   * way its set no longer calls every reusable workflow once, and the count of
+   * pins it would be held to is the count of a set that is wrong.
+   */
+  it("refuses a caller file missing one of its callers", () => {
+    const root = fixture();
+    const text = read(root, "examples/callers/pr.yml");
+    write(root, "examples/callers/pr.yml", text.slice(0, text.indexOf("\n  # **This job is the off switch**")) + "\n");
+
+    expect(() => syncVersion(TARGET, root)).toThrow(/examples\/callers.*follow-ups/);
+  });
+
+  it("refuses a caller set calling a reusable workflow twice", () => {
+    const root = fixture();
+    const fix = read(root, ".github/workflows/agent-pr.yml").match(/\n  fix:\n[\s\S]*?(?=\n\n)/)?.[0] ?? "";
+    expect(fix).toContain("/fix.yml@v");
+    write(root, ".github/workflows/agent-issue.yml", `${read(root, ".github/workflows/agent-issue.yml")}${fix}\n`);
+
+    expect(() => syncVersion(TARGET, root)).toThrow(/\.github\/workflows call \[.*fix.*fix/);
   });
 
   it("refuses an extra reusable workflow with no callers in front of it", () => {
@@ -433,21 +499,27 @@ describe("the version propagator refuses an unexpected set of pins", () => {
     expect(() => syncVersion(TARGET, root)).toThrow(/plan/);
   });
 
-  it("refuses a reference caller the local callers do not have", () => {
+  it("refuses a reference caller file the local callers do not have", () => {
     const root = fixture();
     fs.copyFileSync(
-      path.join(root, "examples", "callers", "review.yml"),
+      path.join(root, "examples", "callers", "pr.yml"),
       path.join(root, "examples", "callers", "plan.yml"),
     );
 
     expect(() => syncVersion(TARGET, root)).toThrow(/plan/);
   });
 
-  it("refuses a reference caller that is missing", () => {
+  /** Either caller file, from either set. */
+  it.each([
+    [".github/workflows/agent-pr.yml", /\.github\/workflows holds \[agent-issue\]/],
+    [".github/workflows/agent-issue.yml", /\.github\/workflows holds \[agent-pr\]/],
+    ["examples/callers/pr.yml", /holds caller files \[issue\]/],
+    ["examples/callers/issue.yml", /holds caller files \[pr\]/],
+  ])("refuses when the caller file %s is missing", (file: string, message: RegExp) => {
     const root = fixture();
-    fs.rmSync(path.join(root, "examples", "callers", "fix.yml"));
+    fs.rmSync(path.join(root, ...file.split("/")));
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/fix/);
+    expect(() => syncVersion(TARGET, root)).toThrow(message);
   });
 
   /**
@@ -457,10 +529,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
    */
   it("writes nothing when it refuses", () => {
     const root = fixture();
-    fs.copyFileSync(
-      path.join(root, ".github", "workflows", "agent-review.yml"),
-      path.join(root, ".github", "workflows", "agent-plan.yml"),
-    );
+    write(root, ".github/workflows/agent-pr.yml", `${read(root, ".github/workflows/agent-pr.yml")}${planJob(root)}`);
     const before = read(root, ".github/workflows/review.yml");
 
     expect(() => syncVersion(TARGET, root)).toThrow();
@@ -586,7 +655,7 @@ describe("what ships typechecks under the configuration that emits it", () => {
 
 /**
  * The hook, which is the whole point: `npm version patch` has to produce the
- * twenty-file commit on its own.
+ * twelve-file commit on its own.
  *
  * npm runs `version` after the manifest is bumped and before the commit is
  * created, and stages only the manifest and the lockfile itself — so the hook
@@ -666,7 +735,7 @@ describe("the release is one command", () => {
    * The stray is the point. `npm version` refuses a tree with *tracked*
    * modifications and lets untracked files straight through, so a `git add -A`
    * in this hook carries whatever happens to be there into the release commit
-   * and the tag `publish.yml` fires on — a twenty-first file inside a release,
+   * and the tag `publish.yml` fires on — a thirteenth file inside a release,
    * which `PIN` cannot see and no check downstream reads.
    */
   const released = (): string => {

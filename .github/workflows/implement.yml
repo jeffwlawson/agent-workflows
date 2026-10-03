@@ -1,8 +1,8 @@
 name: Agent Implement (reusable)
 
-# The implement job itself. `agent-implement.yml` is the caller — a trigger and
-# two wires — and every guard, permission and step stays here, in a file an
-# adopting repo *references* rather than copies
+# The implement job itself. The `implement` job in `agent-issue.yml` is the
+# caller (two wires, under that file's trigger), and every guard, permission and
+# step stays here, in a file an adopting repo *references* rather than copies
 # (jeffwlawson/winget-manifest-lint#98).
 #
 # Unlike the three PR workflows, this one has no event field to take a base
@@ -57,7 +57,18 @@ on:
           `gh pr create` (the Actions bot is forbidden from creating PRs), and the `agent:review` label add
           (a label added with `GITHUB_TOKEN` triggers no workflow, so the
           cascade dies silently). See docs/ADOPTING.md §1. Optional, and every
-          site warns rather than failing.
+          site warns rather than failing. The loop's App, where it is set up,
+          takes its place.
+        required: false
+      AGENT_APP_ID:
+        description: >-
+          The loop's GitHub App's ID. With `AGENT_APP_PRIVATE_KEY`, the publish
+          job mints a token for this repository from the App and makes the
+          writes `AGENT_PAT` would make with it, as the App's bot. Optional;
+          without both, `AGENT_PAT` is used as before.
+        required: false
+      AGENT_APP_PRIVATE_KEY:
+        description: The loop's GitHub App's private key. See `AGENT_APP_ID`.
         required: false
 
 
@@ -91,11 +102,12 @@ concurrency:
 #
 # So the steps that write are on other runners. `gate` reads the issue,
 # refuses or claims it, and names the branch; `implement` runs the agent with
-# a read-only token and names no PAT anywhere, and hands over its commits as a
-# `git bundle`; `publish` starts on a fresh runner, checks the bundle, and
-# pushes, opens the PR and asks for the review with the PAT. Each runner is
-# discarded when its job ends and the job token with it, so nothing the agent
-# did reaches the job that holds a credential. The same split as review.yml's
+# a read-only token and names no PAT and no App secret anywhere, and hands
+# over its commits as a `git bundle`; `publish` starts on a fresh runner,
+# checks the bundle, and pushes, opens the PR and asks for the review with the
+# loop's token, the App's or the PAT (`.github/actions/loop-token`). Each
+# runner is discarded when its job ends and the job token with it, so nothing
+# the agent did reaches the job that holds a credential. The same split as review.yml's
 # (#257), where the job that runs the model holds no write scope at all.
 #
 # The permissions differ per job, and the caller grants the union: what
@@ -389,8 +401,9 @@ jobs:
     # one fails the job before any step, which `doctor` reports. The failure
     # step in `publish` names the same figure.
     timeout-minutes: ${{ fromJSON(vars.AGENT_TIMEOUT_MINUTES || '30') }}
-    # **Read-only, and no PAT named anywhere in this job.** Not even in a step
-    # that never runs: a secret is delivered to every job whose text names it.
+    # **Read-only, and no PAT or App secret named anywhere in this job.** Not
+    # even in a step that never runs: a secret is delivered to every job whose
+    # text names it.
     # The job token is readable by the agent however it is scrubbed, so this
     # block is what it can do with it.
     permissions:
@@ -631,6 +644,20 @@ jobs:
           name: agent-implement
           path: ${{ runner.temp }}
 
+      # The token every write below that the workflow token cannot make is
+      # made with: the loop's App's, `AGENT_PAT`, or the workflow token, in
+      # that order, and `source` says which. Minted here, before the first
+      # write and after the agent finished, and in no other job.
+      - name: Resolve the loop's token
+        id: token
+        if: always()
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.8
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          agent-pat: ${{ secrets.AGENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Checkout the base branch
         if: needs.implement.result == 'success'
         uses: actions/checkout@v7
@@ -652,18 +679,18 @@ jobs:
       # branch this run was for. Unbundled rather than fetched: no remote, no
       # hooks, and no git configuration from anywhere but this fresh checkout.
       #
-      # AGENT_PAT is optional. When absent this falls back to GITHUB_TOKEN,
-      # which works, except that CI on the resulting PR waits for a maintainer
-      # to approve it: since 2026-06-11 a push made with it starts
-      # `pull_request` runs that require approval (#221). Add the secret later
-      # and this starts using it with no change to the workflow.
+      # The loop's App and AGENT_PAT are both optional. With neither, this
+      # pushes with GITHUB_TOKEN, which works, except that CI on the resulting
+      # PR waits for a maintainer to approve it: since 2026-06-11 a push made
+      # with it starts `pull_request` runs that require approval (#221). Set
+      # either later and this starts using it with no change to the workflow.
       - name: Push branch
         id: push
         if: needs.implement.result == 'success' && success()
         env:
           BRANCH: ${{ needs.gate.outputs.branch }}
           BASE_SHA: ${{ needs.gate.outputs.base }}
-          PUSH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          PUSH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
           bundle="${RUNNER_TEMP}/branch.bundle"
@@ -713,11 +740,11 @@ jobs:
           # gh reads GH_TOKEN from the env. The job-level GH_TOKEN is the
           # built-in GITHUB_TOKEN, and the Actions bot is forbidden from
           # creating PRs ("GitHub Actions is not permitted to create or approve
-          # pull requests"). A user PAT is not the Actions bot, so it bypasses
-          # that restriction. Fall back to GITHUB_TOKEN so the step still runs
-          # in forks/setups without the secret — it will fail the same way, but
-          # the workflow shape stays identical.
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          # pull requests"). The loop's App and a user PAT are not the Actions
+          # bot, so they bypass that restriction. The resolver falls back to
+          # GITHUB_TOKEN so the step still runs in setups with neither: it
+          # will fail the same way, but the workflow shape stays identical.
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           # The status line the note opens with until the first review rewrites
           # it (#298): `OPENING_STATUS` in `shared/progress-list.ts`, held equal
           # by a test.
@@ -766,15 +793,16 @@ jobs:
       # old rule and both amendments is docs/parity.md §10; a return leg
       # without those bounds closes the loop with no human gate.
       #
-      # MUST use AGENT_PAT: a label added with GITHUB_TOKEN does not trigger
-      # further workflows, so the label would appear and nothing would happen —
-      # a silent no-op. Warn loudly rather than pretend it worked.
+      # MUST use the loop's App or AGENT_PAT: a label added with GITHUB_TOKEN
+      # does not trigger further workflows, so the label would appear and
+      # nothing would happen, a silent no-op. Warn loudly rather than pretend
+      # it worked.
       - name: Request review
         if: needs.implement.result == 'success' && success()
         env:
           NEW_PR: ${{ steps.open_pr.outputs.number }}
-          HAS_PAT: ${{ secrets.AGENT_PAT != '' }}
-          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           # The commit this run pushed, and how long the PR gets to show it as
           # its head before the label goes on anyway (#229).
           PUSHED_SHA: ${{ steps.push.outputs.head }}
@@ -805,8 +833,8 @@ jobs:
           # on a label that is somehow already there fires nothing.
           gh pr edit "$NEW_PR" --remove-label "agent:review" || true
           gh pr edit "$NEW_PR" --add-label "agent:review"
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::AGENT_PAT is not set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${NEW_PR}."
+          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
+            echo "::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${NEW_PR}."
           fi
 
       # Any of the three jobs: `gate` failing (this job's own `if:` lets a

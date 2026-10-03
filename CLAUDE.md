@@ -19,9 +19,10 @@ section, which decides where a change belongs.
 
 ## This repo runs its own loop, on the last release
 
-A caller per workflow is installed in `.github/workflows/`, prefixed `agent-` so they do not
-collide by filename with the reusable workflows they call. Job ids stay unprefixed — `self-check`
-is built from job ids, not filenames, so `agent-review.yml` keeps `review / review`.
+A caller per workflow is installed in `.github/workflows/`, in two caller files, one per side
+(#225): `agent-pr.yml` and `agent-issue.yml`, prefixed `agent-` so they do not collide by filename
+with the reusable workflows they call. Job ids stay unprefixed: `self-check` is built from job ids,
+not filenames, so the `review` job in `agent-pr.yml` keeps `review / review`.
 
 They use a **pinned remote** reference, `jeffwlawson/agent-workflows/...@v<tag>`, rather than a
 local `./` path. The tag is not written out here on purpose — prose is the one copy of it no test
@@ -60,9 +61,11 @@ repo loses the instruction the prompts depend on.
    — deliberately, so a change to one cannot silently leave the other behind.
 4. `tests/workflows.test.ts` asserts over both halves. Add the assertion in the same change; a
    workflow defect has no unit test to catch it and usually no error message either.
-5. A **new** workflow is three files carrying a version pin — the reusable, the local caller and
-   the reference caller — and `scripts/sync-version.ts` refuses the next release until all three
-   exist. That refusal is the point: two of the three is a release that pins what it found.
+5. A **new** workflow is a reusable plus a caller of it in each caller set, all three carrying a
+   version pin: the reusable file, and a job in the local and the reference caller file for its
+   side (#225). `scripts/sync-version.ts` refuses the next release until each caller set calls
+   every reusable exactly once. That refusal is the point: two of the three is a release that pins
+   what it found.
 
 ## Changing a runner
 
@@ -84,24 +87,28 @@ git push --follow-tags
 `v*` on a commit reachable from `main` triggers `publish.yml`. It refuses a tag on an unmerged
 commit, and no-ops if the version is already on the registry.
 
-**That first command is the whole release.** The version appears in twenty files and `npm
-version` bumps two of them; `scripts/sync-version.ts` writes the other eighteen — the `npm exec`
-pin in each of the six reusable workflows, the `uses:` ref in each of the two caller sets, and the
-`uses:` ref a reusable's step names a composite action in `.github/actions/` with (one of those,
-in `review.yml`, so nineteen pins in the eighteen files). It
+**That first command is the whole release.** The version appears in twelve files and `npm
+version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
+pin in each of the six reusable workflows, the `uses:` ref of each caller in the two caller files
+of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
+`.github/actions/` with (nine of those: `advance-prd` once in `review.yml`, and `loop-token` once
+in each of `implement.yml`, `fix.yml` and `update-branch.yml`, twice in `implement-prd.yml` and
+three times in `review.yml`, so twenty-seven pins in the ten files). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
-stages **by path** — the eighteen it wrote, never `-A`: npm's dirty-tree check passes untracked
+stages **by path** — the ten it wrote, never `-A`: npm's dirty-tree check passes untracked
 files, so `-A` would carry a stray one into the tag `publish.yml` fires on, and nothing here would
 see it. It propagates and never decides: the version is read from `package.json`, never passed in,
 and nothing there commits or tags — `npm version` does both, and a second tagging path is a second
 way to publish.
 
-It refuses rather than doing part of the job. All eighteen files must exist and each must carry
-exactly the pins expected of it, one recognisable pin per site, so a seventh workflow whose caller
-or example is missing stops the release instead of quietly propagating to eighteen of twenty-one.
-A step naming a composite action is counted by its path, not by its pin, so one named under a ref
-that is not a pin is refused rather than skipped.
+It refuses rather than doing part of the job. Both caller sets must hold the same caller files,
+each set must call every reusable exactly once, and each file must carry exactly the pins expected
+of it, one recognisable pin per site, so a seventh workflow whose caller is missing from either
+set, or a caller file missing from either, stops the release instead of quietly propagating to
+what it found. A step naming a composite action, and a caller naming a reusable workflow, is
+counted by its path, not by its pin, so one named under a ref that is not a pin is refused rather
+than skipped.
 
 A refusal leaves no commit and no tag, but it does leave the **manifest and lockfile bumped** in
 the working tree — npm writes those before the hook runs and does not roll them back. Undo them

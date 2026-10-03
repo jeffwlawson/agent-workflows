@@ -42,7 +42,7 @@ export const POLICY_NAME = `${repoSlug(PACKAGE_NAME)} callers: allow pull_reques
 export const POLICY_SETTINGS = "Settings → Actions → Policies";
 
 /** The trigger the default rule blocks. */
-const TRIGGER = "pull_request_target";
+export const TRIGGER = "pull_request_target";
 
 /**
  * A policy as far as this rules on it. Everything else a policy can say (actor
@@ -146,11 +146,14 @@ const pathPattern = (pattern: string): RegExp =>
       .join(".*")}$`,
   );
 
+/** One `include` entry against one file: `~ALL` matches everything. */
+const includes = (pattern: string, file: string): boolean => pattern === "~ALL" || pathPattern(pattern).test(file);
+
 const targets = (policy: ActionsPolicy, file: string): boolean => {
   if (policy.exclude.some((pattern) => pathPattern(pattern).test(file))) return false;
-  // An empty `include` matches everything not excluded, and `~ALL` everything.
+  // An empty `include` matches everything not excluded.
   if (policy.include === undefined || policy.include.length === 0) return true;
-  return policy.include.some((pattern) => pattern === "~ALL" || pathPattern(pattern).test(file));
+  return policy.include.some((pattern) => includes(pattern, file));
 };
 
 const allows = (policy: ActionsPolicy, file: string): boolean =>
@@ -171,6 +174,22 @@ export const unallowedFiles = (
   policies: readonly (ActionsPolicy | undefined)[],
 ): readonly string[] =>
   triggeredFiles(callers).filter((file) => !policies.some((policy) => policy !== undefined && allows(policy, file)));
+
+/**
+ * The entries of a policy's `include` that target no workflow file on the
+ * trigger: the names it was written for, left behind once the callers moved, as
+ * when an adopter merges the six-file layout by hand (#225), or a file that no
+ * longer runs on it. Each is an allowance for a file that does not need one,
+ * which the next workflow given that name would inherit.
+ *
+ * `onTrigger` is **every** workflow file in the repository that runs on the
+ * trigger, not only the callers: an adopter may have added a workflow of their
+ * own to this policy, and an entry still targeting one of those is their
+ * decision, which a re-run must not revert. Pure; an `include` it does not
+ * store targets every workflow, and names nothing to drop.
+ */
+export const staleEntries = (onTrigger: readonly string[], policy: ActionsPolicy): readonly string[] =>
+  (policy.include ?? []).filter((pattern) => !onTrigger.some((file) => includes(pattern, file)));
 
 /** Whether any policy in the list could not be read. */
 export const unreadable = (policies: readonly (ActionsPolicy | undefined)[]): boolean =>

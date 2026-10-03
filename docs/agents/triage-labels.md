@@ -167,16 +167,26 @@ The refusal says: *"Label the issues they produce instead."* That path is:
    children regardless of the map's own state, so a later `/wayfinder` session would be handed a
    frontier on a route that has left planning. Close the child, or reopen the map.
 
+**A map that ends in standalone issues takes no PRD.** Some maps find a *set* of independent
+changes rather than one feature. Profiling the loop (#267) is the first: each of its decisions
+produced its own fix. These are filed as they surface: top-level issues, never sub-issues of the
+map, each linking it, and each triaged on its own. Steps 2 and 3 do not apply, because a PRD over
+unrelated changes would chain them into one sequence for no reason, and step 4 becomes promoting
+each issue as its turn comes. Step 5 still holds, with its precondition unchanged: close the map
+once every child ticket is closed, and say what it produced instead of naming a PRD
+(`--comment "Produced top-level issues; no PRD"`).
+
 Closing is bookkeeping, not disposal. **A map and its tickets are never implementable at any point
 in their lives** — that is what the refusal above is about, and it holds whether they are open or
-closed. They remain the record of why the PRD says what it says, reachable from the PRD's body link
-and from GitHub's own back-reference on the map. They are not a queue that eventually drains into
+closed. They remain the record of why the PRD, or each standalone issue, says what it says,
+reachable from that issue's body link and from GitHub's own back-reference on the map. They are not a queue that eventually drains into
 the loop.
 
 Child tickets close earlier and one at a time, as they are answered:
 [`issue-tracker.md`](./issue-tracker.md#wayfinding-operations)'s *Resolve* operation closes each one
 and appends a pointer to Decisions-so-far, and the **frontier query reads the map's open children**
 to find the next one. So issue state carries information here — an open child is an unanswered
-question, and an open map is a route that has not yet been sliced into a PRD. Neither reads on
-promotion: step 4 is a scheduling decision, and a map whose slices are waiting for one has already
-finished its own job.
+question, and an open map is a route still planning: not yet sliced into a PRD, or, for a map that
+ends in standalone issues, with a child ticket still open. Neither reads on promotion: step 4 is a
+scheduling decision, and a map whose slices or issues are waiting for one has already finished its
+own job.

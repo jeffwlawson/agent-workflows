@@ -762,8 +762,12 @@ jobs:
       # resumed from it, and its commits are now on the pull request with the
       # rest of this run's, or set it aside. Never fails the run: a branch left
       # behind is set aside by the next run, whose head has moved past it.
+      #
+      # Not on a run with nothing to do: the runner exits before it reads the
+      # rescue, so it neither resumed it nor set it aside, and the commits on
+      # it are still the next run's to resume from.
       - name: Delete the rescue branch
-        if: needs.fix.result == 'success' && success()
+        if: needs.fix.result == 'success' && success() && steps.nothing.outputs.nothing != 'true'
         run: |
           if ! gh api "repos/{owner}/{repo}/git/ref/heads/${RESCUE_BRANCH}" --silent 2> /dev/null; then
             echo "No ${RESCUE_BRANCH} to delete."

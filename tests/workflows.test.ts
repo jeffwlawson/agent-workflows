@@ -9500,7 +9500,8 @@ describe("rescue and resume for fix and implement-prd", () => {
       prepare: "Prepare branch and make the PR base available for diffing",
       condition:
         "always() && needs.gate.outputs.refused == 'false' && (cancelled() || failure() || needs.fix.result == 'failure' || needs.fix.result == 'cancelled') && steps.push.outputs.pushed != 'true'",
-      deleteIf: "needs.fix.result == 'success' && success()",
+      // Not on a nothing-to-do run, which exits before it reads the rescue.
+      deleteIf: "needs.fix.result == 'success' && success() && steps.nothing.outputs.nothing != 'true'",
       label: "agent:fix",
     },
     {

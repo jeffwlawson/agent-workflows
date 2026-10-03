@@ -331,7 +331,7 @@ jobs:
             fi
           fi
 
-          existing=$(gh pr list --state open --json number,url,body \
+          existing=$(gh pr list --state open --limit 1000 --json number,url,body \
             --jq "[.[] | select(.body | test(\"(?i)(closes|fixes|resolves)\\\\s+#${ISSUE_NUMBER}\\\\b\"))] | .[0].number // empty")
           if [ -n "$existing" ]; then
             refuse "PR #${existing} already exists for this issue. Keep working on that PR, or close it and add \`agent:implement\` again."

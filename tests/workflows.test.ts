@@ -4699,6 +4699,57 @@ describe("agent-implement refuses a closed issue", () => {
 });
 
 /**
+ * `gh pr list` returns 30 PRs unless told otherwise, and says nothing when it
+ * stops there (#275). implement's duplicate-PR guard read only those 30, so in a
+ * repo with more open PRs it could miss the one already closing the issue and
+ * open a second. A guard that reads a page reads a sample: every call names its
+ * limit, so a new one cannot quietly inherit the default.
+ */
+describe("every gh pr list names its limit", () => {
+  // Each call with its `\` continuation lines joined, so a `--limit` wrapped
+  // onto the next line still counts. Comment lines are prose, not calls.
+  const callsIn = (text: string): string[] => {
+    const lines = text.split("\n");
+    const calls: string[] = [];
+    lines.forEach((line, i) => {
+      if (line.trim().startsWith("#") || !line.includes("gh pr list")) return;
+      let call = line.slice(line.indexOf("gh pr list"));
+      for (let n = i; (lines[n] ?? "").trimEnd().endsWith("\\") && n + 1 < lines.length; n++) {
+        call += ` ${(lines[n + 1] ?? "").trim()}`;
+      }
+      calls.push(call);
+    });
+    return calls;
+  };
+
+  it("finds the calls to check", () => {
+    const calls = workflowFiles.flatMap((file) => callsIn(fs.readFileSync(file, "utf8")));
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    "gh pr list --state open --json number \\\n  --limit 1000",
+    'x=$(gh pr list --head "$b" --limit 100 --json number)',
+  ])("passes %s", (call: string) => {
+    expect(callsIn(call).every((c) => /\s--limit\s+\d+/.test(c))).toBe(true);
+  });
+
+  it("catches a call relying on the default", () => {
+    expect(callsIn("gh pr list --state open --json number \\\n  --jq '.[0]'")[0]).not.toMatch(/\s--limit\s+\d+/);
+  });
+
+  it.each(workflowFiles)("%s: every gh pr list passes --limit", (file: string) => {
+    const unbounded = callsIn(fs.readFileSync(file, "utf8")).filter((c) => !/\s--limit\s+\d+/.test(c));
+    expect(unbounded).toEqual([]);
+  });
+
+  it("implement's duplicate-PR guard reads up to 1000 open PRs", () => {
+    const run = firstWorkStep(IMPLEMENT)?.run ?? "";
+    expect(callsIn(run).some((c) => c.includes("--state open") && c.includes("--limit 1000"))).toBe(true);
+  });
+});
+
+/**
  * Issue *shape* (jeffwlawson/winget-manifest-lint#90). An issue's position in a
  * hierarchy decides whether it can be implemented at all, and the workflow used
  * to accept anything carrying the label:

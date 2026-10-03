@@ -460,3 +460,44 @@ describe.skipIf(!CAN_RUN)("implement-prd's failure step after the default branch
     expect(outcome.comment).not.toContain("was merged into the PRD branch");
   });
 });
+
+/**
+ * A run that stopped with commits keeps them on its rescue branch (#303), and
+ * the comment names it: as the retry where nothing else was, since adding the
+ * label resumes from it, and beside whatever else the retry says otherwise.
+ */
+describe.skipIf(!CAN_RUN)("a failure step names the rescue branch", () => {
+  const fix = CASES.find((c) => c.command === "fix") as Case;
+  const prd = CASES.find((c) => c.command === "implement-prd") as Case;
+
+  it("fix: names the branch, and that adding the label resumes from it", () => {
+    const outcome = run(fix, "cancelled", 30 * 60, "30", "false", {}, { RESCUED: "agent/rescue/fix-152" });
+
+    expect(outcome.comment).toContain("It timed out after 30 minutes.");
+    expect(outcome.comment).toContain("Its commits so far are saved on `agent/rescue/fix-152`. To resume from them, add `agent:fix`.\n");
+  });
+
+  it("implement-prd: names the branch, and that adding the label resumes from it", () => {
+    const outcome = run(prd, "cancelled", 30 * 60, "30", "false", {}, { RESCUED: "agent/rescue/prd-135", SUB: "246" });
+
+    expect(outcome.comment).toContain("It was building sub-issue #246.");
+    expect(outcome.comment).toContain("Its commits so far are saved on `agent/rescue/prd-135`. To resume from them, add `agent:implement`.\n");
+  });
+
+  it("implement-prd: names the branch beside a retry that names something else", () => {
+    const outcome = run(prd, "failure", 120, "30", "false", undefined, {
+      RESCUED: "agent/rescue/prd-135",
+      SUB: "245",
+      BASE_REF: "main",
+      PRD_PR: "286",
+      MERGED: "0123456789abcdef",
+    });
+
+    expect(outcome.comment).toContain("Add `agent:review` to PRD PR #286");
+    expect(outcome.comment).toContain("Its commits so far are saved on `agent/rescue/prd-135`, and the next `agent:implement` run resumes from them.\n");
+  });
+
+  it.each([fix, prd])("$command: says nothing of a rescue where none was made", (c: Case) => {
+    expect(run(c, "cancelled", 30 * 60).comment).not.toContain("agent/rescue/");
+  });
+});

@@ -29,11 +29,18 @@ import {
 } from "../shared/pr-feedback.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { fixHeader, fixScope, readRoundRecord, roundCounts, withHeader } from "../shared/round-header.js";
+import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");
+
+/**
+ * Where a run of this pull request that stopped before it finished left its
+ * commits (#303), and where this one looks for them to resume from.
+ */
+const RESCUE_BRANCH = required("RESCUE_BRANCH");
 
 /**
  * The header this run's top-level comments open with (#298): which slice and
@@ -104,6 +111,17 @@ try {
 
   const before = sh("git rev-parse HEAD").trim();
 
+  // An earlier run's unpushed commits (#303), where they still build on the
+  // head this run was started for. Set aside, and said so on the pull
+  // request, where the head moved since they were saved.
+  const resume = resumeFromRescue(RESCUE_BRANCH);
+  if (resume.kind === "resumed") {
+    console.log(`Resuming from ${resume.commits} commit(s) an earlier run saved on ${RESCUE_BRANCH}.`);
+  } else if (resume.kind === "ignored") {
+    console.log(`::warning::${RESCUE_BRANCH} was saved on an older head of ${BRANCH}, so this run starts fresh.`);
+    writeText("rescue_ignored.md", ignoredNote("agent:fix", RESCUE_BRANCH, "this pull request's head"));
+  }
+
   const result = await runWithExtraction({
     name: `fix-${PR_NUMBER}`,
     agent: claudeAgent("fix"),
@@ -120,6 +138,7 @@ try {
       INLINE_COMMENTS: surfaceText(feedback, "inline"),
       CONVERSATION: surfaceText(feedback, "conversation"),
       PR_DIFF: feedback.diff,
+      RESUME: resumeSection(resume, RESCUE_BRANCH),
     },
     output: sandcastle.Output.object({ tag: "output", schema: fixOutputSchema }),
     extractionPrompt: fs.readFileSync(path.join(import.meta.dirname, "extraction.md"), "utf8"),

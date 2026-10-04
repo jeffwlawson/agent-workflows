@@ -1163,6 +1163,7 @@ jobs:
     uses: jeffwlawson/agent-workflows/.github/workflows/fix.yml@v<latest tag>
     permissions:
       contents: write
+      issues: read
       packages: read            # install the runner package; see above
       pull-requests: write
     # with:

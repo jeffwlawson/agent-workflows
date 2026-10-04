@@ -4640,6 +4640,26 @@ describe("agent-review tells its caller what it cannot know", () => {
     );
   });
 
+  /**
+   * The other caller §4 prints, the `fix` sketch under *What a caller looks
+   * like*, and the same failure the test above exists for: #348 added
+   * `issues: read` to the review snippet and the reference callers, and this
+   * one stayed short, so an adopter pasting it got a `startup_failure` on every
+   * fix run. Held to the reference `fix` caller by value, for the same reason.
+   */
+  it("prints the reference fix caller's grant in the sketch docs/ADOPTING.md §4 shows", () => {
+    const section = fs
+      .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
+      .split(/^(?=### )/m)
+      .find((part) => part.startsWith("### What a caller looks like"));
+    const snippet = (section ?? "").match(/```yaml\n([\s\S]*?)```/)?.[1];
+
+    expect(snippet, "docs/ADOPTING.md §4 prints no fix caller").toBeDefined();
+    expect((parse(snippet as string) as Workflow).jobs["fix"]?.permissions).toEqual(
+      jobNamed(REVIEW_CALLER, "fix").permissions,
+    );
+  });
+
   it("declares the self-check input, typed and described", () => {
     const input = call()?.inputs?.["self-check"];
 

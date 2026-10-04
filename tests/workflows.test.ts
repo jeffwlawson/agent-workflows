@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { APP_PERMISSIONS } from "../setup/app.js";
 import { isWorkflowBot } from "../shared/common.js";
 import {
   ADD_REVIEW_MUTATION,
@@ -9182,9 +9183,26 @@ describe("the loop resolves its token in the jobs that write", () => {
     expect(writes.length).toBeGreaterThan(0);
     for (const step of writes) {
       const code = codeOf(step);
-      const inline = INLINE.exec(code)?.[1];
-      const variable = inline ?? (/\bpush\b/.test(code) ? "PUSH_TOKEN" : "GH_TOKEN");
-      expect(step.env?.[variable], `${step.name}: ${variable}`).toBe(TOKEN);
+      // A command naming its own token is held line by line. The workflow
+      // token is allowed there only for a read (#345): the fix round reads
+      // the statuses with it, since the App holds no `statuses` scope.
+      for (const line of code.split("\n")) {
+        const inline = INLINE.exec(line)?.[1];
+        if (inline === undefined) continue;
+        if (step.env?.[inline] === "${{ secrets.GITHUB_TOKEN }}") {
+          expect(line, `${step.name}: ${inline}`).toMatch(/GH_TOKEN="\$[A-Z_]+" gh api (?!.*--method)/);
+        } else {
+          expect(step.env?.[inline], `${step.name}: ${inline}`).toBe(TOKEN);
+        }
+      }
+      const bare = code
+        .split("\n")
+        .filter((l) => !INLINE.test(l))
+        .join("\n");
+      if (/\bpush (--force )?origin\b|\bgh pr create\b|\bgh pr ready\b/.test(bare) || handOff.test(bare)) {
+        const variable = /\bpush\b/.test(bare) ? "PUSH_TOKEN" : "GH_TOKEN";
+        expect(step.env?.[variable], `${step.name}: ${variable}`).toBe(TOKEN);
+      }
       if (/--add-label "agent:(review|update-branch)"|GH_TOKEN="\$[A-Z_]+" gh issue comment\b/.test(code)) {
         expect(step.env?.["TOKEN_SOURCE"], step.name).toBe(SOURCE);
         expect(code, step.name).toContain('[ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]');
@@ -9753,5 +9771,87 @@ describe("rescue and resume for fix and implement-prd", () => {
 
     expect(step?.if).toBe("always()");
     expect(code(step)).toContain('note="${RUNNER_TEMP}/rescue_ignored.md"');
+  });
+});
+
+/**
+ * **Every status, check and run read is made with a token that holds the
+ * scope** (#345, and #199 before it). A scope a step needs and its token lacks
+ * is refused at run time as `Resource not accessible by integration`, and
+ * nothing before that sees it: the App's permissions are registered by `init`,
+ * and `GITHUB_TOKEN`'s are the job's `permissions:` block, so neither is read
+ * by the step that spends them.
+ *
+ * So each line naming one of these endpoints is matched against the token that
+ * line actually runs under: a `GH_TOKEN="$VAR"` prefix, else the step's
+ * `GH_TOKEN`, else the job's. `GITHUB_TOKEN` holds the job's `permissions:`;
+ * the loop's token holds at most `APP_PERMISSIONS`, which is what the App was
+ * registered with. A token this table does not know fails, rather than
+ * passing a call nothing checked.
+ */
+describe("each status read and write is made with a token holding its scope", () => {
+  const ENDPOINTS: readonly (readonly [RegExp, string])[] = [
+    [/repos\/\S+\/commits\/\S+\/statuses\b/, "statuses"],
+    [/repos\/\S+\/commits\/\S+\/status\b/, "statuses"],
+    [/repos\/\S+\/statuses\//, "statuses"],
+    [/repos\/\S+\/commits\/\S+\/check-runs\b/, "checks"],
+    [/repos\/\S+\/actions\/runs\b/, "actions"],
+  ];
+  const LEVEL = ["none", "read", "write"];
+  const WORKFLOW_TOKENS = ["${{ secrets.GITHUB_TOKEN }}", "${{ github.token }}"];
+  const LOOP_TOKEN = "${{ steps.token.outputs.token }}";
+  const appScopes: Record<string, string> = Object.fromEntries(
+    Object.entries(APP_PERMISSIONS).map(([scope, level]) => [scope.replace(/_/g, "-"), level]),
+  );
+
+  interface Call {
+    readonly where: string;
+    readonly line: string;
+    readonly token: string;
+    readonly scope: string;
+    readonly level: string;
+    readonly held: Record<string, string>;
+  }
+
+  const calls: Call[] = workflowFiles.flatMap((file) =>
+    Object.entries(workflowOf(file).jobs).flatMap(([id, job]) =>
+      (job.steps ?? []).flatMap((step) =>
+        (step.run ?? "").split("\n").flatMap((line): Call[] => {
+          if (line.trim().startsWith("#")) return [];
+          const hit = ENDPOINTS.find(([pattern]) => pattern.test(line));
+          if (hit === undefined) return [];
+          const prefix = /GH_TOKEN="\$([A-Z_]+)"/.exec(line)?.[1];
+          const token = (prefix === undefined ? undefined : step.env?.[prefix]) ?? step.env?.["GH_TOKEN"] ?? job.env?.["GH_TOKEN"] ?? "";
+          const held = WORKFLOW_TOKENS.includes(token) ? (job.permissions ?? {}) : token === LOOP_TOKEN ? appScopes : {};
+          return [
+            {
+              where: `${path.basename(file)} ${id} / ${step.name ?? step.id ?? "?"}`,
+              line: line.trim(),
+              token,
+              scope: hit[1],
+              level: /--method (POST|PATCH|PUT|DELETE)/.test(line) ? "write" : "read",
+              held,
+            },
+          ];
+        }),
+      ),
+    ),
+  );
+
+  it("finds the calls it rules on", () => {
+    expect(calls.filter((c) => c.scope === "statuses").length).toBeGreaterThan(5);
+    expect(calls.some((c) => c.where === "review.yml post-review / Start the automatic fix round")).toBe(true);
+  });
+
+  it("knows every token such a call is made with", () => {
+    expect(
+      calls.filter((c) => !WORKFLOW_TOKENS.includes(c.token) && c.token !== LOOP_TOKEN).map((c) => `${c.where}: ${c.line}`),
+    ).toEqual([]);
+  });
+
+  it("makes every such call with a token holding the scope it needs", () => {
+    const short = calls.filter((c) => LEVEL.indexOf(c.held[c.scope] ?? "none") < LEVEL.indexOf(c.level));
+
+    expect(short.map((c) => `${c.where} needs ${c.scope}: ${c.level} for ${c.line}`)).toEqual([]);
   });
 });

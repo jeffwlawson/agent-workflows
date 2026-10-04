@@ -1190,8 +1190,8 @@ The permissions per workflow, which are what each job actually spends:
 |---|---|---|---|---|---|---|---|
 | `implement` | — | — | write | write | read | write | — |
 | `implement-prd` | — | — | write | write | read | write | **read** |
-| `review` | **read** | **read** | **write** | — | read | write | **write** |
-| `fix` | — | — | write | — | read | write | — |
+| `review` | **read** | **read** | **write** | **read** | read | write | **write** |
+| `fix` | — | — | write | **read** | read | write | — |
 | `update-branch` | — | — | write | — | read | write | **write** |
 | `follow-ups` | — | — | read | **write** | read | write | — |
 
@@ -1352,6 +1352,7 @@ jobs:
       actions: read
       checks: read
       contents: write
+      issues: read
       packages: read
       pull-requests: write
       statuses: write

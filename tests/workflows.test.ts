@@ -214,7 +214,7 @@ const ISSUES_WRITE_EXEMPT = new Set([
   // built. Both halves of the invariant that carry the weight survive intact.
   // **The agent that raises the finding still never files it**: the review
   // agent emits the findings into its own review body under `contents: read`
-  // and no `issues:` scope. And **the workflow holding the permission runs no
+  // and `issues: read`, which files nothing. And **the workflow holding the permission runs no
   // model** — this pair installs no Claude Code and invokes a runner whose
   // judgement is a pure function, which is also what keeps reading arbitrary
   // issue bodies with `issues: write` from being a prompt-injection surface.
@@ -2851,14 +2851,15 @@ describe("a PRD PR's round ends in one advance job", () => {
    * **No new grant.** One scope, for the no-PAT comment on the PRD PR; the
    * parent is written with the loop's App or the PAT, or not at all, so `issues: write` stays out
    * of this job and out of every caller's grant, which already holds what it
-   * does.
+   * does. The callers grant `issues: read`, for the review job's reads (#348),
+   * and that is all they grant of it.
    */
   it("holds only what it needs, and asks no caller for more", () => {
     expect(job().permissions).toEqual({ "pull-requests": "write" });
     expect(job().concurrency).toBeUndefined();
     for (const caller of callersOfWorkflow(REVIEW)) {
       expect(caller.job.permissions?.["pull-requests"], callerName(caller)).toBe("write");
-      expect(caller.job.permissions?.["issues"], callerName(caller)).toBeUndefined();
+      expect(caller.job.permissions?.["issues"], callerName(caller)).toBe("read");
     }
   });
 
@@ -4574,6 +4575,12 @@ describe("agent-review tells its caller what it cannot know", () => {
       // Resolving a thread wants `contents: write` (#133), and only the
       // posting job spends it.
       contents: level,
+      // The linked issue, its comments and a PRD's sub-issues (#348). A public
+      // repository serves them without this scope, so on a private one every
+      // review ran with no criteria and the PRD progress table went stale.
+      // Read only, in both halves: nothing in the loop's PR side writes an
+      // issue with this token (docs/parity.md §10).
+      issues: "read",
       // Installing the runner package, not reading the PR — the one scope here
       // that is about the toolchain rather than about the review.
       packages: "read",
@@ -5862,7 +5869,7 @@ describe("the filing invariant is amended where it is written, not only where it
   /**
    * The headline survives the amendment and is not weakened to fit: the review
    * agent emits its findings into its own review body under `contents: read`
-   * and no `issues:` scope, and the workflow that spends the permission runs no
+   * and `issues: read`, which files nothing, and the workflow that spends the permission runs no
    * model at all. Those two are what the invariant was protecting; the
    * human-labelled step was how it was protected, not what it was for.
    */
@@ -8755,7 +8762,8 @@ describe("a split run keeps every write off the agent's runner", () => {
     },
     "fix.yml": {
       agentIf: "needs.gate.outputs.refused == 'false'",
-      agentPermissions: { contents: "read", packages: "read", "pull-requests": "read" },
+      // `issues: read` for a PRD's sub-issues, which place the fix round (#348).
+      agentPermissions: { contents: "read", issues: "read", packages: "read", "pull-requests": "read" },
       gateWrites: ["pull-requests"],
       group: `agent-pr-\${{ github.event.pull_request.number }}${otherLabel("agent:fix")}`,
       bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}"',

@@ -546,6 +546,38 @@ describe("the trusted fetches reach gh through argv", () => {
     expect(fetchTrustedIssue("42")).toEqual({ title: "", body: "", trusted: false });
     expect(fetchTrustedComments("42")).toBe("");
   });
+
+  // An absence, but not a silent one (#348): on a private repository a token
+  // without `issues: read` fails this read, and the review went on with no
+  // linked issue and no criteria while the log said nothing.
+  it("warns when the issue or its comments cannot be read", () => {
+    spawned.mockImplementation(() => {
+      throw new Error("gh: Resource not accessible by integration (HTTP 403)");
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      fetchTrustedIssue("42");
+      fetchTrustedComments("42");
+      const warnings = log.mock.calls.map(([line]) => String(line)).filter((line) => line.startsWith("::warning::"));
+      expect(warnings).toHaveLength(2);
+      expect(warnings[0]).toContain("Issue #42 could not be read");
+      expect(warnings[1]).toContain("The comments on #42 could not be read");
+      for (const warning of warnings) expect(warning).toContain("`issues: read`");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("does not warn when the read succeeds", () => {
+    spawned.mockReturnValue(JSON.stringify({ title: "t", body: "b", author_association: "OWNER" }));
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      fetchTrustedIssue("42");
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
 });
 
 /**

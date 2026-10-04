@@ -1206,7 +1206,7 @@ expensive to rediscover.
   What was being protected survives intact, and is the whole of what this bullet now asserts:
 
   - **The agent that raises the finding still never files it.** It is the review agent, and review
-    holds `contents: read` and no `issues:` scope at all. It emits the findings into its own review
+    holds `contents: read` and `issues: read`, which files nothing (#348). It emits the findings into its own review
     body; a separate workflow, started by the merge, reads that body.
   - **The workflow that holds the permission runs no model.** `follow-ups` installs no agent and
     declares no secrets — what would be the agent's judgement is a pure function over plain objects

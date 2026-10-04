@@ -322,6 +322,11 @@ jobs:
       # so this is needed even though the package is public — and, being a
       # bound, it grants nothing without the caller's own `packages: read`.
       packages: read
+      # Reading a PRD's sub-issues, which place a PRD PR's fix round in its
+      # slice. A **public** repository serves that read without the scope, so
+      # its absence showed only on a private one: the PRD branch could not be
+      # read and the run was numbered off the reviews' headers instead (#348).
+      issues: read
       # The runner reads the pull request's threads and comments.
       pull-requests: read
 

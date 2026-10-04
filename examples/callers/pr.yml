@@ -69,6 +69,12 @@ jobs:
       # annotation, and no job log (probed, #146). Left at `read`, this workflow
       # does not review at all.
       contents: write
+      # Reading the linked issue and a PRD's sub-issues: the spec and acceptance
+      # criteria the review rules on, and the PRD branch its progress table is
+      # read off. A public repository serves those without the scope, so a
+      # caller installed before #348 looks complete; the called job declares it,
+      # so omitting it here is refused before any job starts.
+      issues: read
       # Installing the runner package, which the called job does with `npx` from
       # GitHub Packages. Granted here because a called workflow can only
       # *downgrade* the token it is handed, so the scope has to start in the
@@ -129,6 +135,8 @@ jobs:
     # token it is handed, so these have to be at least what the job needs.
     permissions:
       contents: write
+      # Reading a PRD's sub-issues, which place a fix round in its slice (#348).
+      issues: read
       # Installing the runner package, which the called job does with `npx` from
       # GitHub Packages. Granted here because a called workflow can only
       # *downgrade* the token it is handed, so the scope has to start in the
@@ -205,7 +213,7 @@ jobs:
     # token it is handed, so these have to be at least what the job needs — and
     # `issues: write` is the one this workflow exists for. The agent that raised
     # these findings still cannot file them: it runs in `review`, which holds
-    # `contents: read` and no `issues:` scope at all, and the job below that
+    # `contents: read` and `issues: read`, which files nothing, and the job below that
     # holds the permission runs no model.
     permissions:
       contents: read

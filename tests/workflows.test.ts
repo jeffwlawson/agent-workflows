@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { APP_PERMISSIONS } from "../setup/app.js";
 import { isWorkflowBot } from "../shared/common.js";
 import {
   ADD_REVIEW_MUTATION,
@@ -214,7 +215,7 @@ const ISSUES_WRITE_EXEMPT = new Set([
   // built. Both halves of the invariant that carry the weight survive intact.
   // **The agent that raises the finding still never files it**: the review
   // agent emits the findings into its own review body under `contents: read`
-  // and no `issues:` scope. And **the workflow holding the permission runs no
+  // and `issues: read`, which files nothing. And **the workflow holding the permission runs no
   // model** — this pair installs no Claude Code and invokes a runner whose
   // judgement is a pure function, which is also what keeps reading arbitrary
   // issue bodies with `issues: write` from being a prompt-injection surface.
@@ -2851,14 +2852,15 @@ describe("a PRD PR's round ends in one advance job", () => {
    * **No new grant.** One scope, for the no-PAT comment on the PRD PR; the
    * parent is written with the loop's App or the PAT, or not at all, so `issues: write` stays out
    * of this job and out of every caller's grant, which already holds what it
-   * does.
+   * does. The callers grant `issues: read`, for the review job's reads (#348),
+   * and that is all they grant of it.
    */
   it("holds only what it needs, and asks no caller for more", () => {
     expect(job().permissions).toEqual({ "pull-requests": "write" });
     expect(job().concurrency).toBeUndefined();
     for (const caller of callersOfWorkflow(REVIEW)) {
       expect(caller.job.permissions?.["pull-requests"], callerName(caller)).toBe("write");
-      expect(caller.job.permissions?.["issues"], callerName(caller)).toBeUndefined();
+      expect(caller.job.permissions?.["issues"], callerName(caller)).toBe("read");
     }
   });
 
@@ -4574,6 +4576,12 @@ describe("agent-review tells its caller what it cannot know", () => {
       // Resolving a thread wants `contents: write` (#133), and only the
       // posting job spends it.
       contents: level,
+      // The linked issue, its comments and a PRD's sub-issues (#348). A public
+      // repository serves them without this scope, so on a private one every
+      // review ran with no criteria and the PRD progress table went stale.
+      // Read only, in both halves: nothing in the loop's PR side writes an
+      // issue with this token (docs/parity.md §10).
+      issues: "read",
       // Installing the runner package, not reading the PR — the one scope here
       // that is about the toolchain rather than about the review.
       packages: "read",
@@ -4630,6 +4638,26 @@ describe("agent-review tells its caller what it cannot know", () => {
     expect(snippet, "docs/ADOPTING.md §4 prints no review caller").toBeDefined();
     expect((parse(snippet as string) as Workflow).jobs["review"]?.permissions).toEqual(
       caller().permissions,
+    );
+  });
+
+  /**
+   * The other caller §4 prints, the `fix` sketch under *What a caller looks
+   * like*, and the same failure the test above exists for: #348 added
+   * `issues: read` to the review snippet and the reference callers, and this
+   * one stayed short, so an adopter pasting it got a `startup_failure` on every
+   * fix run. Held to the reference `fix` caller by value, for the same reason.
+   */
+  it("prints the reference fix caller's grant in the sketch docs/ADOPTING.md §4 shows", () => {
+    const section = fs
+      .readFileSync(path.join("docs", "ADOPTING.md"), "utf8")
+      .split(/^(?=### )/m)
+      .find((part) => part.startsWith("### What a caller looks like"));
+    const snippet = (section ?? "").match(/```yaml\n([\s\S]*?)```/)?.[1];
+
+    expect(snippet, "docs/ADOPTING.md §4 prints no fix caller").toBeDefined();
+    expect((parse(snippet as string) as Workflow).jobs["fix"]?.permissions).toEqual(
+      jobNamed(REVIEW_CALLER, "fix").permissions,
     );
   });
 
@@ -5862,7 +5890,7 @@ describe("the filing invariant is amended where it is written, not only where it
   /**
    * The headline survives the amendment and is not weakened to fit: the review
    * agent emits its findings into its own review body under `contents: read`
-   * and no `issues:` scope, and the workflow that spends the permission runs no
+   * and `issues: read`, which files nothing, and the workflow that spends the permission runs no
    * model at all. Those two are what the invariant was protecting; the
    * human-labelled step was how it was protected, not what it was for.
    */
@@ -8755,7 +8783,8 @@ describe("a split run keeps every write off the agent's runner", () => {
     },
     "fix.yml": {
       agentIf: "needs.gate.outputs.refused == 'false'",
-      agentPermissions: { contents: "read", packages: "read", "pull-requests": "read" },
+      // `issues: read` for a PRD's sub-issues, which place the fix round (#348).
+      agentPermissions: { contents: "read", issues: "read", packages: "read", "pull-requests": "read" },
       gateWrites: ["pull-requests"],
       group: `agent-pr-\${{ github.event.pull_request.number }}${otherLabel("agent:fix")}`,
       bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^${BRANCH_HEAD_SHA}"',
@@ -9154,9 +9183,26 @@ describe("the loop resolves its token in the jobs that write", () => {
     expect(writes.length).toBeGreaterThan(0);
     for (const step of writes) {
       const code = codeOf(step);
-      const inline = INLINE.exec(code)?.[1];
-      const variable = inline ?? (/\bpush\b/.test(code) ? "PUSH_TOKEN" : "GH_TOKEN");
-      expect(step.env?.[variable], `${step.name}: ${variable}`).toBe(TOKEN);
+      // A command naming its own token is held line by line. The workflow
+      // token is allowed there only for a read (#345): the fix round reads
+      // the statuses with it, since the App holds no `statuses` scope.
+      for (const line of code.split("\n")) {
+        const inline = INLINE.exec(line)?.[1];
+        if (inline === undefined) continue;
+        if (step.env?.[inline] === "${{ secrets.GITHUB_TOKEN }}") {
+          expect(line, `${step.name}: ${inline}`).toMatch(/GH_TOKEN="\$[A-Z_]+" gh api (?!.*--method)/);
+        } else {
+          expect(step.env?.[inline], `${step.name}: ${inline}`).toBe(TOKEN);
+        }
+      }
+      const bare = code
+        .split("\n")
+        .filter((l) => !INLINE.test(l))
+        .join("\n");
+      if (/\bpush (--force )?origin\b|\bgh pr create\b|\bgh pr ready\b/.test(bare) || handOff.test(bare)) {
+        const variable = /\bpush\b/.test(bare) ? "PUSH_TOKEN" : "GH_TOKEN";
+        expect(step.env?.[variable], `${step.name}: ${variable}`).toBe(TOKEN);
+      }
       if (/--add-label "agent:(review|update-branch)"|GH_TOKEN="\$[A-Z_]+" gh issue comment\b/.test(code)) {
         expect(step.env?.["TOKEN_SOURCE"], step.name).toBe(SOURCE);
         expect(code, step.name).toContain('[ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]');
@@ -9725,5 +9771,87 @@ describe("rescue and resume for fix and implement-prd", () => {
 
     expect(step?.if).toBe("always()");
     expect(code(step)).toContain('note="${RUNNER_TEMP}/rescue_ignored.md"');
+  });
+});
+
+/**
+ * **Every status, check and run read is made with a token that holds the
+ * scope** (#345, and #199 before it). A scope a step needs and its token lacks
+ * is refused at run time as `Resource not accessible by integration`, and
+ * nothing before that sees it: the App's permissions are registered by `init`,
+ * and `GITHUB_TOKEN`'s are the job's `permissions:` block, so neither is read
+ * by the step that spends them.
+ *
+ * So each line naming one of these endpoints is matched against the token that
+ * line actually runs under: a `GH_TOKEN="$VAR"` prefix, else the step's
+ * `GH_TOKEN`, else the job's. `GITHUB_TOKEN` holds the job's `permissions:`;
+ * the loop's token holds at most `APP_PERMISSIONS`, which is what the App was
+ * registered with. A token this table does not know fails, rather than
+ * passing a call nothing checked.
+ */
+describe("each status read and write is made with a token holding its scope", () => {
+  const ENDPOINTS: readonly (readonly [RegExp, string])[] = [
+    [/repos\/\S+\/commits\/\S+\/statuses\b/, "statuses"],
+    [/repos\/\S+\/commits\/\S+\/status\b/, "statuses"],
+    [/repos\/\S+\/statuses\//, "statuses"],
+    [/repos\/\S+\/commits\/\S+\/check-runs\b/, "checks"],
+    [/repos\/\S+\/actions\/runs\b/, "actions"],
+  ];
+  const LEVEL = ["none", "read", "write"];
+  const WORKFLOW_TOKENS = ["${{ secrets.GITHUB_TOKEN }}", "${{ github.token }}"];
+  const LOOP_TOKEN = "${{ steps.token.outputs.token }}";
+  const appScopes: Record<string, string> = Object.fromEntries(
+    Object.entries(APP_PERMISSIONS).map(([scope, level]) => [scope.replace(/_/g, "-"), level]),
+  );
+
+  interface Call {
+    readonly where: string;
+    readonly line: string;
+    readonly token: string;
+    readonly scope: string;
+    readonly level: string;
+    readonly held: Record<string, string>;
+  }
+
+  const calls: Call[] = workflowFiles.flatMap((file) =>
+    Object.entries(workflowOf(file).jobs).flatMap(([id, job]) =>
+      (job.steps ?? []).flatMap((step) =>
+        (step.run ?? "").split("\n").flatMap((line): Call[] => {
+          if (line.trim().startsWith("#")) return [];
+          const hit = ENDPOINTS.find(([pattern]) => pattern.test(line));
+          if (hit === undefined) return [];
+          const prefix = /GH_TOKEN="\$([A-Z_]+)"/.exec(line)?.[1];
+          const token = (prefix === undefined ? undefined : step.env?.[prefix]) ?? step.env?.["GH_TOKEN"] ?? job.env?.["GH_TOKEN"] ?? "";
+          const held = WORKFLOW_TOKENS.includes(token) ? (job.permissions ?? {}) : token === LOOP_TOKEN ? appScopes : {};
+          return [
+            {
+              where: `${path.basename(file)} ${id} / ${step.name ?? step.id ?? "?"}`,
+              line: line.trim(),
+              token,
+              scope: hit[1],
+              level: /--method (POST|PATCH|PUT|DELETE)/.test(line) ? "write" : "read",
+              held,
+            },
+          ];
+        }),
+      ),
+    ),
+  );
+
+  it("finds the calls it rules on", () => {
+    expect(calls.filter((c) => c.scope === "statuses").length).toBeGreaterThan(5);
+    expect(calls.some((c) => c.where === "review.yml post-review / Start the automatic fix round")).toBe(true);
+  });
+
+  it("knows every token such a call is made with", () => {
+    expect(
+      calls.filter((c) => !WORKFLOW_TOKENS.includes(c.token) && c.token !== LOOP_TOKEN).map((c) => `${c.where}: ${c.line}`),
+    ).toEqual([]);
+  });
+
+  it("makes every such call with a token holding the scope it needs", () => {
+    const short = calls.filter((c) => LEVEL.indexOf(c.held[c.scope] ?? "none") < LEVEL.indexOf(c.level));
+
+    expect(short.map((c) => `${c.where} needs ${c.scope}: ${c.level} for ${c.line}`)).toEqual([]);
   });
 });

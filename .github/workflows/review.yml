@@ -771,6 +771,15 @@ jobs:
       # starts (#146).
       actions: read
       contents: read
+      # Reading the linked issue, its trusted comments and a PRD's sub-issues:
+      # the spec and acceptance criteria the review is handed, and the PRD
+      # branch the progress table and the slice round are read off. A
+      # **public** repository serves all three without the scope, so its
+      # absence showed only on a private one, and only as warnings: every
+      # review there was handed no criteria, and the progress table was never
+      # written at a round's end, leaving a reviewed slice "In review" beside
+      # the next one building (#348).
+      issues: read
       # Installing the runner package. GitHub Packages has no anonymous install,
       # so this is needed even though the package is public — and, being a
       # bound, it grants nothing without the caller's own `packages: read`.
@@ -2922,6 +2931,13 @@ jobs:
       # resolver's fallback is for the comment, which is the one thing here
       # `GITHUB_TOKEN` can do.
       #
+      # **The statuses are read with `GITHUB_TOKEN`** (#345), which this job's
+      # `statuses: write` covers. The App `init` registers holds no `statuses`
+      # scope, the writes `AGENT_PAT` makes and nothing more (docs/ADOPTING.md
+      # §2), so the same read on its token is refused with a 403, and every
+      # round on an App install stopped there. The loop's token is kept for
+      # the label, the one write here that has to fire an event.
+      #
       # **Decided from live state, not the event payload** (#201). Before adding
       # anything it re-reads the pull request:
       #
@@ -2957,6 +2973,7 @@ jobs:
           steps.trigger.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
+          STATUS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REVIEWED_SHA: ${{ needs.review.outputs.sha }}
           REVIEW_URL: ${{ steps.review.outputs.url }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -2997,7 +3014,7 @@ jobs:
           head=$(printf '%s' "$live" | jq -r .headRefOid)
           where="the head commit \`${head}\`"
           [ "$head" = "$REVIEWED_SHA" ] || where="${where}, which moved on from the reviewed \`${REVIEWED_SHA}\`"
-          if ! statuses=$(gh api "repos/${GH_REPO}/commits/${head}/statuses" --paginate --slurp); then
+          if ! statuses=$(GH_TOKEN="$STATUS_TOKEN" gh api "repos/${GH_REPO}/commits/${head}/statuses" --paginate --slurp); then
             no_round "the verdicts on its head could not be read, so whether a newer one stands could not be told"
           fi
           # Newest first, which is the order this endpoint documents.

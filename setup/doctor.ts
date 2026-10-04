@@ -344,6 +344,18 @@ export const REQUIRED_PERMISSIONS: readonly {
       "report a problem with it is a comment on a pull request that is already closed",
   },
   {
+    permission: "issues",
+    value: "read",
+    workflows: ["review", "fix"],
+    why:
+      "the review reads the linked issue, its comments and a PRD's sub-issues: the spec and " +
+      "acceptance criteria it rules on, and the PRD branch the progress table and a fix round's " +
+      "slice are read off. A **public** repository serves those reads without the scope, so a " +
+      "caller installed before #348 looks complete; on a private one every review ran with no " +
+      "criteria and the PRD progress table went stale, with nothing worse than a warning. The " +
+      "jobs declare it now, so the caller's half is required on a public repository too",
+  },
+  {
     permission: "checks",
     value: "read",
     workflows: ["review"],

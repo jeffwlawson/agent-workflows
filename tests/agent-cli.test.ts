@@ -593,7 +593,7 @@ describe("init installs the reference callers into an adopting repo", () => {
       .replace(/^  review:$/m, "  agent_review:")
       .replace(/self-check: review \/ review/, "self-check: agent_review / review")
       .replace(/^(    with:)$/m, "$1\n      default-branch: trunk\n      node-version-file: .tool-versions\n      setup: pnpm i --frozen-lockfile")
-      .replace(/^      pull-requests: write$/m, "      pull-requests: write\n      issues: write")
+      .replace(/^      pull-requests: write$/m, "      pull-requests: write\n      id-token: write")
       .replaceAll(`@v${manifest.version}`, "@v0.0.1");
     fs.writeFileSync(path.join(root, ".github", "workflows", "agent-pr.yml"), theirs);
 
@@ -605,7 +605,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     // nothing cannot leave this asserting that two identical files are equal.
     expect(text).toContain("setup: pnpm i --frozen-lockfile");
     expect(text).toContain("default-branch: trunk");
-    expect(text).toContain("issues: write");
+    expect(text).toContain("id-token: write");
     expect(text).toMatch(/^  agent_review:$/m);
     expect(changes.find((c) => c.file.endsWith("agent-pr.yml"))?.action).toBe("updated");
   });
@@ -2661,6 +2661,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       "  actions: read",
       "  checks: read",
       "  contents: write",
+      "  issues: read",
       "  packages: read",
       "  pull-requests: write",
       "  statuses: write",

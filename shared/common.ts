@@ -395,6 +395,18 @@ export interface TrustedIssue {
 }
 
 /**
+ * The trusted fetches read a failure as an absence, which is what a missing
+ * issue is, but say so: on a private repository a token without `issues: read`
+ * fails the same read, and the review was handed no linked issue and no
+ * criteria with nothing in the log to say why (#348).
+ */
+const warnUnreadable = (what: string): void =>
+  console.log(
+    `::warning::${what} could not be read, so it is treated as having no trusted text. ` +
+      "On a private repository, a job without `issues: read` gets exactly this.",
+  );
+
+/**
  * Fetch an issue's title and body, but treat them as usable ONLY when the issue
  * author is OWNER / MEMBER / COLLABORATOR — org-adjacent or better, not
  * necessarily write-gated; see `TRUSTED_ASSOCIATIONS` and #68.
@@ -415,8 +427,10 @@ export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
     author_association?: string;
     user?: { login?: string };
   } = {};
+  const text = safeGh(["api", `repos/${ghRepo}/issues/${issueNumber}`]);
+  if (text === "") warnUnreadable(`Issue #${issueNumber}`);
   try {
-    parsed = JSON.parse(safeGh(["api", `repos/${ghRepo}/issues/${issueNumber}`]) || "{}");
+    parsed = JSON.parse(text || "{}");
   } catch {
     parsed = {};
   }
@@ -456,8 +470,10 @@ export interface TrustedComment {
 export const fetchTrustedCommentList = (number: string): TrustedComment[] => {
   const ghRepo = process.env["GH_REPO"] ?? "";
   let comments: { body?: string; author_association?: string; user?: { login?: string } }[] = [];
+  const text = safeGh(["api", `repos/${ghRepo}/issues/${number}/comments`]);
+  if (text === "") warnUnreadable(`The comments on #${number}`);
   try {
-    comments = JSON.parse(safeGh(["api", `repos/${ghRepo}/issues/${number}/comments`]) || "[]");
+    comments = JSON.parse(text || "[]");
   } catch {
     comments = [];
   }

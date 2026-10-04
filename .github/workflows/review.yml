@@ -771,6 +771,15 @@ jobs:
       # starts (#146).
       actions: read
       contents: read
+      # Reading the linked issue, its trusted comments and a PRD's sub-issues:
+      # the spec and acceptance criteria the review is handed, and the PRD
+      # branch the progress table and the slice round are read off. A
+      # **public** repository serves all three without the scope, so its
+      # absence showed only on a private one, and only as warnings: every
+      # review there was handed no criteria, and the progress table was never
+      # written at a round's end, leaving a reviewed slice "In review" beside
+      # the next one building (#348).
+      issues: read
       # Installing the runner package. GitHub Packages has no anonymous install,
       # so this is needed even though the package is public — and, being a
       # bound, it grants nothing without the caller's own `packages: read`.

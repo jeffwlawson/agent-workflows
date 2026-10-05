@@ -37,9 +37,10 @@ yet are collected in §8 rather than scattered as caveats.
 5. **Where the agent jobs go is the adopter's choice, and three routes lead there** (§6–§7): pay
    (~$60 a month at the window's pace, minutes of work); a managed runner provider (~$11–37,
    an App install); or an ephemeral VM on hardware the adopter owns (free, with egress the adopter
-   controls, and the most work). Moving only the agent's compute to a
-   sandbox service off Actions is cheaper still per minute but needs an orchestrator outside
-   Actions — #57's seam.
+   controls, and the most work). A fourth route — running the agent in a sandbox service such as
+   Vercel's — is cheaper per minute, but the Actions job cannot wait for it without paying for the
+   wait, so something always-on outside GitHub has to start the agent and report back. That
+   something is a second orchestrator, which is what #57 maps (§6.4, §10).
 6. **Two blockers before it is promised to anyone but this repo's owner** (§8): GitHub's docs give a
    reusable workflow the caller's self-hosted runners only when both are **owned by the same user
    or organization**, and the postponed $0.002/min self-hosted charge would, as announced, **count
@@ -116,7 +117,7 @@ namespaces, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) came from bpc-watch's *own* audi
 (jeffwlawson/bpc-watch#67), which turns on the Claude CLI's Bash sandbox. **The loop does not**: it
 runs the agent with sandcastle's `noSandbox()` on purpose (environment parity with CI, `docs/
 friction.md` *Decision 2*), and the CLI's sandbox appears nowhere in this repository. So for the
-loop the VM is the sandbox, and bwrap matters only to an adopter who wants a second layer (§7.3).
+loop the VM is the sandbox, and bwrap matters only to an adopter who wants a second layer (§7.4).
 
 ---
 
@@ -576,7 +577,34 @@ found worth citing)*:
 The Unraid-specific parts are only the hypervisor and where the disks live; the same loop runs on
 any libvirt host, and the rules of §7.1 do not change.
 
-### 7.3 The CLI's sandbox, and `ubuntu-latest` moving to 26.04
+### 7.3 Other local hosts
+
+The worked example is a libvirt host, but most home setups have something else. Each is judged
+against §7.1; rules 5–7 belong to the host loop and apply to all of them alike. **None filters
+egress by hostname on its own** (Docker Sandboxes aside): the ones that fit can block the LAN on the
+host by IP or CIDR, and the hostname allowlist is still an HTTPS proxy on the host.
+
+| Host | Verdict | Minimum config, or why not |
+|---|---|---|
+| **Incus / LXD VM** (Linux) | **Fits — the best Linux option** | `incus launch --vm --ephemeral` (deleted on stop), JIT config through `cloud-init.user-data`, a dedicated bridge whose ACL drops egress by default, enforced by nftables on the host ([Incus ACLs][incus-acl]); set `security.guestapi=false` |
+| **Proxmox VE** | Fits | Linked clone of a read-only template per job, destroyed after ([qm][pve-qm]); `pve-firewall` `policy_out DROP` plus allows, enforced on the node ([firewall][pve-fw]) |
+| **Hyper-V VM** (Windows Pro/Enterprise) | Fits | Differencing VHDX per job (`New-VHD -Differencing`), its own internal switch with NAT, extended port ACLs dropping RFC 1918 and link-local at the vSwitch ([extended ACL][hv-acl]); leave Guest Service Interface off |
+| **Tart** (macOS, Apple Silicon) | Fits — the best macOS option | Clone, run, delete per job; no `--dir`; `--net-softnet`, which by default lets the VM reach only globally routable addresses and the gateway ([Softnet][softnet]). Licensed FSL-1.1 |
+| **Multipass** | Fits, weak network story | A non-primary instance (the primary mounts `$HOME`, [instances][mp-instance]); no ACL of its own, so the host firewall does rule 3 |
+| **Docker Sandboxes** (`sbx`) | **Probably fits; unproven as a runner host** | A microVM per sandbox, default-deny egress through a host proxy that takes hostnames ([defaults][sbx-defaults]). Mountless `sbx create`, skills mount and SSH-agent forwarding off, `sbx rm` per job. Unproven: hosting `run.sh --jitconfig`, and whether an unmatched host fails or waits for an approval nobody gives |
+| **Kata Containers** / firecracker-containerd | Fits technically, awkward | A VM per container ([Kata][kata-arch]), but egress is still host rules, and Docker inside Kata needs workarounds |
+| **WSL2** | **Does not fit** | Distros are *"isolated containers inside of the WSL 2 managed VM"* sharing one kernel and network namespace ([WSL][wsl-about]) — with your everyday distro. Interop and drive automount are switched off in `/etc/wsl.conf`, which the guest's root edits, and a root user *"could still mount"* drives by hand ([wsl.conf][wsl-config]). Use a Hyper-V VM instead: the same hypervisor, without the integration |
+| **Docker / Docker Desktop, ECI, Sysbox, gVisor** | Do not fit | Rule 2: shared kernel (gVisor is a user-space kernel, not a VM, [gVisor][gvisor-sec]); passwordless `sudo` in a container is root with fewer capabilities, not a machine |
+| **OrbStack, Colima** | Do not fit as shipped | OrbStack machines share one VM and see the Mac at `/mnt/mac` ([OrbStack][orb-machines]); Colima mounts `$HOME` writable by default |
+| **Lima, Vagrant** | Only with heavy config | Lima exposes the host's loopback as `host.lima.internal` ([Lima][lima-net]); Vagrant shares the project directory unless disabled — both are the provider VM underneath, and add nothing over it |
+
+**Host-loop tooling worth starting from**, rather than §7.2's hand-rolled loop: GitHub's own
+[`actions/scaleset`][scaleset] (public preview; a Go client that mints JIT configs and matches jobs
+without polling, runners ephemeral by default), and Cloudbase's [GARM][garm] with its Incus provider,
+which creates Incus VMs per job but *"does not apply any ACLs"* — rule 3 stays yours, and the VM's
+callback to the GARM controller is one more hole to allow.
+
+### 7.4 The CLI's sandbox, and `ubuntu-latest` moving to 26.04
 
 Not needed for the loop (§2), but asked for, and relevant to an adopter that does turn the sandbox
 on — and to everyone's GitHub-hosted jobs from 2026-10-19:
@@ -620,7 +648,7 @@ Each is cheap to settle and each changes a recommendation above.
    reusable here with `agent-runs-on` pointing at its own JIT runner. If it queues, the interface is
    owner-only and §4's doctor rule becomes a hard refusal — or the adopter vendors the reusables.
 2. **`fromJSON` in `runs-on`.** Only matters if a JSON form is added (§4). Probe before adding it.
-3. **Ubuntu 26.04 and bwrap.** On `ubuntu-26.04`: `sysctl kernel.apparmor_restrict_unprivileged_userns;
+3. **Ubuntu 26.04 and bwrap** (§7.4). On `ubuntu-26.04`: `sysctl kernel.apparmor_restrict_unprivileged_userns;
    command -v bwrap socat; bwrap --ro-bind / / --proc /proc --dev /dev true`. Settles whether
    bpc-watch's `sysctl` workaround is still needed after 2026-10-19.
 4. **How `ubuntu-slim` minutes count against the quota.** Its price is a third of 2-core's
@@ -649,10 +677,10 @@ routing redesign. The post-agent merge (§5.4 (c)) is worth doing only alongside
 
 | Ticket | Implements | Waits on |
 |---|---|---|
-| FU-CI-WAIT — Review: stop holding a billed runner while the PR's CI runs | §5.3, §6.2 | — |
-| FU-PROBES — Probe the four unknowns before the runner input is promised | §8 | — |
-| FU-RUNS-ON — `agent-runs-on`: let the agent jobs, and only those, run on an adopter's runner | §3, §4, §7 | FU-PROBES for adopters outside this owner |
-| FU-SLIM — Run the gates and `time-limit` on `ubuntu-slim` | §6.1 | FU-PROBES (§8.4) |
+| #361 — Review: stop holding a billed runner while the PR's CI runs | §5.3, §6.2 | — |
+| #360 — Probe the four unknowns before the runner input is promised | §8 | — |
+| #362 — `agent-runs-on`: let the agent jobs, and only those, run on an adopter's runner | §3, §4, §7 | #360 (probe 1), for adopters outside this owner |
+| #363 — Run the gates and `time-limit` on `ubuntu-slim` | §6.1 | #360 (probe 4) |
 
 ## 10. Related
 
@@ -663,6 +691,16 @@ routing redesign. The post-agent merge (§5.4 (c)) is worth doing only alongside
     that ran a model — and the adopter's compute is offered for the agent class only.
   - **The CI wait is an orchestration concern** (§5.3, §6.2). A runner should not poll for evidence
     an orchestrator can deliver as an event.
+  - **A concrete second orchestrator exists to aim at.** Sandcastle, which every runner already
+    calls with `noSandbox()`, ships Vercel and Daytona microVM providers and a provider interface
+    (`@ai-hero/sandcastle` 0.12.0). But `sandcastle.run()` holds its caller for the whole run, so
+    swapping the provider inside an Actions job bills the wait (§6.4). The direction that pays: a
+    small TypeScript service, woken by GitHub webhooks, that calls `sandcastle.run()` with a
+    microVM provider and writes the result back as the App — GitHub stays the place every issue,
+    pull request, label and review lives; only the execution moves. It holds the key the way the
+    publish jobs do today, and the agent never shares a machine with it. The cost is environment
+    parity with CI (`docs/friction.md`, *Decision 2*) and the pinned-reusable install for other
+    adopters, so the Actions path would stay beside it.
 - **#346** (non-Node adopters): a self-hosted image is a second place the loop's tool assumptions
   (Node 24, `gh`, `jq`, `python3`) become the adopter's to provide (§7.1, *What the image needs*).
 
@@ -727,3 +765,18 @@ routing redesign. The post-agent merge (§5.4 (c)) is worth doing only alongside
 [bs-app]: https://docs.blacksmith.sh/blacksmith-administration/github-app
 [buildjet]: https://buildjet.com/for-github-actions
 [sh-rest]: https://docs.github.com/en/rest/actions/self-hosted-runners
+[incus-acl]: https://linuxcontainers.org/incus/docs/main/howto/network_acls/
+[pve-qm]: https://pve.proxmox.com/pve-docs/chapter-qm.html
+[pve-fw]: https://pve.proxmox.com/pve-docs/chapter-pve-firewall.html
+[hv-acl]: https://learn.microsoft.com/en-us/powershell/module/hyper-v/add-vmnetworkadapterextendedacl
+[softnet]: https://github.com/openai/softnet
+[mp-instance]: https://canonical.com/multipass/docs/latest/explanation/instance/
+[sbx-defaults]: https://docs.docker.com/ai/sandboxes/security/defaults/
+[kata-arch]: https://github.com/kata-containers/kata-containers/blob/main/docs/design/architecture/README.md
+[wsl-about]: https://learn.microsoft.com/en-us/windows/wsl/about
+[wsl-config]: https://learn.microsoft.com/en-us/windows/wsl/wsl-config
+[gvisor-sec]: https://gvisor.dev/docs/architecture_guide/security/
+[orb-machines]: https://docs.orbstack.dev/machines/
+[lima-net]: https://lima-vm.io/docs/config/network/user/
+[scaleset]: https://github.com/actions/scaleset
+[garm]: https://github.com/cloudbase/garm

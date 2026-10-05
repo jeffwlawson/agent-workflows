@@ -568,6 +568,16 @@ export const renderEvidence = (check: RedCheck, inputs: EvidenceInputs): string 
 };
 
 /**
+ * The agent's own text, cut at the first section the workflow writes after it
+ * (the Evidence under either heading, or the Merge Danger), which the block it
+ * was handed back carried and which is written afresh under it.
+ */
+export const withoutCarriedSections = (summary: string): string => {
+  const at = HEADINGS.exec(summary)?.index ?? -1;
+  return (at === -1 ? summary : summary.slice(0, at)).trimEnd();
+};
+
+/**
  * The summary the body carries: the agent's text, then the Evidence. The
  * block it rewrites is handed back to it as input, Evidence and all, so a
  * section it carried forward is cut from its text first rather than kept as a
@@ -576,8 +586,7 @@ export const renderEvidence = (check: RedCheck, inputs: EvidenceInputs): string 
  * heading too (#356), which follows the Evidence and is written afresh with it.
  */
 export const withEvidence = (summary: string, check: RedCheck, inputs: EvidenceInputs): string => {
-  const at = HEADINGS.exec(summary)?.index ?? -1;
-  const own = (at === -1 ? summary : summary.slice(0, at)).trimEnd();
+  const own = withoutCarriedSections(summary);
   const section = renderEvidence(check, inputs);
   return own === "" ? section : `${own}\n\n${section}`;
 };

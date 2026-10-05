@@ -400,6 +400,45 @@ describe("renderPrdSummary", () => {
     expect(renderPrdSummary(quiet)).not.toContain("Failing-first");
   });
 
+  /**
+   * The final review is handed the whole block and rewrites it whenever the
+   * head moved, so an outcome may carry what this render writes afresh. Each
+   * such part is dropped, so the body never shows it twice.
+   */
+  it("drops the Differs lines, the Evidence and the Merge Danger an outcome carried forward", () => {
+    const previous = renderPrdSummary({
+      ...quiet,
+      outcome: "Each slice is built on one branch.",
+      slices: [{ subIssue: 245, record: { kind: "no record" } }],
+      followUps: [followUp],
+    });
+    const fresh = renderPrdSummary({ ...quiet, outcome: "Each slice is built on one branch." });
+
+    expect(renderPrdSummary({ ...quiet, outcome: previous })).toBe(fresh);
+    expect(renderPrdSummary({ ...quiet, outcome: "Each slice is built on one branch.\n\n## Merge Danger\n\n**Door:** stale" })).toBe(fresh);
+    expect(
+      renderPrdSummary({ ...quiet, outcome: "Each slice is built on one branch.\n\n### Failing-first tests\n\n- `stale`" }),
+    ).toBe(fresh);
+  });
+
+  /** A block written before #356 carries the old sections; the outcome keeps its text and none of them. */
+  it("keeps only the outcome's text from a block written in the old layout", () => {
+    const legacy = [
+      "### Outcome",
+      "Each slice is built on one branch.",
+      "### Behaviour changes",
+      "- **Breaking:** stale",
+      "### Acceptance criteria changed or dropped",
+      "None.",
+      "### Known issues",
+      "None recorded to be filed.",
+    ].join("\n\n");
+
+    expect(renderPrdSummary({ ...quiet, outcome: legacy })).toBe(
+      renderPrdSummary({ ...quiet, outcome: "Each slice is built on one branch." }),
+    );
+  });
+
   /** #216: nothing in what the workflow lays out says the PRD PR is a draft. */
   it("carries no draft-only text", () => {
     expect(renderPrdSummary(quiet)).not.toMatch(/draft|summarize the whole PRD here/i);

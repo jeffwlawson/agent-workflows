@@ -4,6 +4,7 @@ import type { ProgressSubIssue } from "./progress-list.js";
 import {
   readRedTestsBlock,
   renderEvidenceBySlice,
+  withoutCarriedSections,
   type EvidenceInputs,
   type RedTestsRecord,
   type SliceRedTests,
@@ -272,6 +273,33 @@ export interface PrdSummaryInputs {
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
+const DIFFERS = "**Differs from the PRD:**";
+
+/**
+ * The sections a PRD summary had before #356, after its outcome. A body written
+ * then carries them in the block the final review is handed back.
+ */
+const LEGACY_PRD_SECTIONS = /^### (?:Behaviour changes|Acceptance criteria changed or dropped|Known issues)[ \t]*$/m;
+
+/**
+ * The final review's outcome as it is its own (#356). The final review is
+ * handed the whole block (`currentSummary`) and rewrites it whenever the head
+ * moved, so what it keeps may carry the parts this render writes afresh: the
+ * Evidence and the Merge Danger, cut as a regular summary's are; a *Differs
+ * from the PRD* line, dropped wherever it stands; and a block written before
+ * #356, its `### Outcome` heading taken off and its later sections cut.
+ */
+const ownOutcome = (outcome: string): string => {
+  const cut = withoutCarriedSections(outcome);
+  const at = LEGACY_PRD_SECTIONS.exec(cut)?.index ?? -1;
+  return (at === -1 ? cut : cut.slice(0, at))
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith(DIFFERS) && !/^### Outcome[ \t]*$/.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+};
+
 /**
  * The PRD PR's summary as the final review writes it (#247, #356), through
  * #218's splice, in the layout a regular pull request's has: the review's own
@@ -290,8 +318,8 @@ const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
  * since leaving it out would read as a slice that changed nothing.
  */
 export const renderPrdSummary = (inputs: PrdSummaryInputs): string => {
-  const outcome = inputs.outcome?.trim() || "_The final review wrote no outcome._";
-  const differs = (text: string): string => `**Differs from the PRD:** ${text}`;
+  const outcome = ownOutcome(inputs.outcome ?? "") || "_The final review wrote no outcome._";
+  const differs = (text: string): string => `${DIFFERS} ${text}`;
   const lines =
     inputs.slices === undefined
       ? [

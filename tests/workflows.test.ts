@@ -4447,7 +4447,7 @@ describe("every workflow in the loop is called rather than copied", () => {
   /**
    * Both toolchain steps are skippable, and that is the whole of the non-Node
    * story: a repo with no `.nvmrc` and no `npm ci` passes empty strings and
-   * still gets the loop, on the image's own Node.
+   * still gets the loop, on the Node the auth step names in that case (#335).
    *
    * `npm install -g @anthropic-ai/claude-code` is deliberately not skippable —
    * that is the agent's own runtime rather than the adopter's toolchain, and
@@ -6952,13 +6952,24 @@ describe("the README's action pins are the ones this repository runs", () => {
   const authStepsIn = (steps: readonly Step[]): readonly Step[] =>
     steps.filter((step) => step.with?.["registry-url"] !== undefined);
 
+  /**
+   * Everything but `node-version` (#335). The reusable names one only when
+   * `node-version-file` is `''`, an input a step run by hand has no copy of, so
+   * the README names the version itself; the Node half is held to
+   * `engines.node` where the workflows are read, not here.
+   */
+  const registryHalf = (step: Step | undefined): Record<string, unknown> => {
+    const { ["node-version"]: _node, ...rest } = step?.with ?? {};
+    return rest;
+  };
+
   it("documents the auth step the reusable half actually runs", () => {
     const documented = authStepsIn(stepBlocks());
     const real = authStepsIn(stepsOf(REVIEW));
 
     expect(documented).toHaveLength(1);
     expect(real).toHaveLength(1);
-    expect(documented[0]?.with).toEqual(real[0]?.with);
+    expect(registryHalf(documented[0])).toEqual(registryHalf(real[0]));
   });
 });
 
@@ -6983,6 +6994,7 @@ describe("the runner package is installed from GitHub Packages", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(PACKAGE_DIR, "package.json"), "utf8")) as {
     readonly name: string;
     readonly publishConfig?: Record<string, string>;
+    readonly engines: { readonly node: string };
   };
   /** `@jeffwlawson`, derived — the scope the `.npmrc` entry must be limited to. */
   const SCOPE = manifest.name.split("/")[0] as string;
@@ -7078,6 +7090,67 @@ describe("the runner package is installed from GitHub Packages", () => {
     expect(step?.with?.["package-manager-cache"]).toBe(false);
     expect(step?.with?.["node-version-file"]).toBeUndefined();
   });
+
+  /**
+   * The runner runs on a Node its own manifest accepts (#335). The package
+   * declares `engines.node`, and a step that names no Node at all runs it on
+   * whatever the image ships, which drifts by itself: follow-ups ran v22 under
+   * a `>=24` floor, logging `EBADENGINE` and working only because nothing it
+   * imported needed 24 yet. The day something did, it would die loading, before
+   * it could write `failure_reason.txt`.
+   *
+   * So the last `setup-node` before the run that names a Node decides it, and
+   * there has to be one, **for each value of `node-version-file`**: a step
+   * gated on that input naming a file only names a Node when it is set, so with
+   * `''` the toolchain step is skipped and something else must name one. Read
+   * once with the input empty and once set, by evaluating the two expression
+   * shapes these files use and refusing any other, so a third shape is a
+   * failure here rather than a guess. A `node-version` is held to the floor; a
+   * `node-version-file` is the adopter's toolchain input, which this file
+   * cannot read the far end of.
+   */
+  const NODE_VERSION_FILE_SET = "inputs.node-version-file != ''";
+  const NODE_VERSION_FALLBACK = /^\$\{\{ inputs\.node-version-file == '' && '([^']*)' \|\| '' \}\}$/;
+
+  /** What a step names for the Node with the input at `input`: a version, a file, or nothing. */
+  const nodeNamedBy = (step: Step, input: string): { readonly version: string } | { readonly file: string } | undefined => {
+    if (!(step.uses ?? "").startsWith("actions/setup-node@")) return undefined;
+    if (input === "" && (step.if ?? "").includes(NODE_VERSION_FILE_SET)) return undefined;
+    const file = step.with?.["node-version-file"];
+    const raw = step.with?.["node-version"];
+    let version: string | undefined;
+    if (raw !== undefined) {
+      const text = String(raw);
+      if (text.includes("${{")) {
+        const fallback = NODE_VERSION_FALLBACK.exec(text);
+        expect(fallback, `an expression this test cannot evaluate: ${text}`).not.toBeNull();
+        version = input === "" ? fallback?.[1] : "";
+      } else {
+        version = text;
+      }
+    }
+    if (version !== undefined && version !== "") return { version };
+    if (file !== undefined && String(file) !== "") return { file: String(file) };
+    return undefined;
+  };
+
+  it.each(runnerWorkflows.flatMap((file) => ["", ".nvmrc"].map((input) => [file, input] as const)))(
+    "%s: runs the runner on a Node the package's engines accept, with node-version-file %j",
+    (file, input) => {
+      const floor = Number(/^>=(\d+)$/.exec(manifest.engines.node)?.[1]);
+      const naming = stepsOf(file)
+        .slice(0, runnerStepIndex(file))
+        .map((s) => nodeNamedBy(s, input))
+        .filter((n) => n !== undefined);
+      const decides = naming[naming.length - 1];
+
+      expect(floor).toBeGreaterThan(0);
+      expect(decides, `${file} runs the runner on the image's Node`).toBeDefined();
+      if (decides !== undefined && "version" in decides) {
+        expect(Number(/^(\d+)/.exec(decides.version)?.[1])).toBeGreaterThanOrEqual(floor);
+      }
+    },
+  );
 
   /**
    * Gated exactly as the run it exists for. An ungated auth step would run on

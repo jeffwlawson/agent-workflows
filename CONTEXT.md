@@ -589,7 +589,10 @@ The ones worth knowing because nothing fails when they break:
   from a `packageManager` field (automatic and defaulted on from v5; v6/v7 also read
   `devEngines.packageManager`). An input added there that does toolchain work fails *before* the
   runner exists to write `failure_reason.txt`, and this repo cannot reproduce it: it declares no
-  `packageManager`, so the caching never fires here.
+  `packageManager`, so the caching never fires here. The one input it takes beyond the registry is
+  follow-ups' `node-version` (#335): that workflow has no toolchain step, and the image's own Node
+  sits below the package's `engines.node`. A version needs no checkout, so the step stays
+  toolchain-free in the sense that matters.
 
 ## The prompts name no domain
 

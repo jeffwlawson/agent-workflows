@@ -65,7 +65,8 @@ on:
   # keeps it structurally impossible rather than merely absent. No
   # `node-version-file`: its default names a file that does not exist without a
   # checkout, so inheriting the review workflow's shape would fail every run at
-  # Node setup, and the image's own Node runs the runner perfectly well. No
+  # Node setup. The auth step pins `node-version` instead, held to the
+  # package's `engines.node` (#335): the image's own Node drifts below it. No
   # `default-branch`, because nothing is diffed, and no `self-check`, because
   # nothing waits on CI.
   #
@@ -173,9 +174,18 @@ jobs:
       # toolchain from a `packageManager` field and fail before the runner
       # exists to write `failure_reason.txt`. See the long note on the same step
       # in review.yml.
+      #
+      # It names a `node-version`, which the other five leave to their toolchain
+      # step (#335). There is no toolchain step here, so without it the runner
+      # runs on the image's Node: v22 under a package declaring `engines.node`
+      # `>=24`, logging `EBADENGINE` and working only until something it imports
+      # needs 24, at which point it dies loading, before it can write
+      # `failure_reason.txt`. A version, unlike a version file, needs no
+      # checkout; `tests/workflows.test.ts` holds it to `engines.node`.
       - name: Authenticate to GitHub Packages
         uses: actions/setup-node@v7
         with:
+          node-version: "24"
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"
           package-manager-cache: false

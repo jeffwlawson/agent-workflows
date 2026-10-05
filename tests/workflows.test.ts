@@ -6983,6 +6983,7 @@ describe("the runner package is installed from GitHub Packages", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(PACKAGE_DIR, "package.json"), "utf8")) as {
     readonly name: string;
     readonly publishConfig?: Record<string, string>;
+    readonly engines: { readonly node: string };
   };
   /** `@jeffwlawson`, derived — the scope the `.npmrc` entry must be limited to. */
   const SCOPE = manifest.name.split("/")[0] as string;
@@ -7077,6 +7078,33 @@ describe("the runner package is installed from GitHub Packages", () => {
 
     expect(step?.with?.["package-manager-cache"]).toBe(false);
     expect(step?.with?.["node-version-file"]).toBeUndefined();
+  });
+
+  /**
+   * The runner runs on a Node its own manifest accepts (#335). The package
+   * declares `engines.node`, and a step that names no Node at all runs it on
+   * whatever the image ships, which drifts by itself: follow-ups ran v22 under
+   * a `>=24` floor, logging `EBADENGINE` and working only because nothing it
+   * imported needed 24 yet. The day something did, it would die loading, before
+   * it could write `failure_reason.txt`.
+   *
+   * So the last `setup-node` before the run that names a Node decides it, and
+   * there has to be one. A `node-version` is held to the floor here; a
+   * `node-version-file` is the adopter's toolchain input, which this file
+   * cannot read the far end of.
+   */
+  it.each(runnerWorkflows)("%s: runs the runner on a Node the package's engines accept", (file) => {
+    const floor = Number(/^>=(\d+)$/.exec(manifest.engines.node)?.[1]);
+    const naming = stepsOf(file)
+      .slice(0, runnerStepIndex(file))
+      .filter((s) => (s.uses ?? "").startsWith("actions/setup-node@"))
+      .filter((s) => s.with?.["node-version"] !== undefined || s.with?.["node-version-file"] !== undefined);
+    const decides = naming[naming.length - 1];
+
+    expect(floor).toBeGreaterThan(0);
+    expect(decides, `${file} runs the runner on the image's Node`).toBeDefined();
+    const pinned = decides?.with?.["node-version"];
+    if (pinned !== undefined) expect(Number(/^(\d+)/.exec(String(pinned))?.[1])).toBeGreaterThanOrEqual(floor);
   });
 
   /**

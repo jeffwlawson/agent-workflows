@@ -338,17 +338,27 @@ named test passed, since the red check runs nothing at the head. The body calls 
 renaming an input would refuse every adopter caller that sets it. The review may sketch what a
 failing-first test checks (`testSketches`), and the runner places at most three, each only on a test
 the report lists as red, so a sketch can describe a test and never add one. A block written before
-#355 carries the old `### Failing-first tests` heading, and the rewrite cuts at either. So the review comment
+#355 carries the old `### Failing-first tests` heading, and the rewrite cuts at either. Last, under a
+`## Merge Danger` heading (#356), the runner lays out the review's **door**, `one-way` where a revert
+cannot undo the change (a published release, deleted data, a migration) and `two-way` otherwise; its
+**blast radius**, one word of the adopter's own, and who it reaches from when (on merge, or at the next
+release), which is where timing lives rather than in the door; a **Breaking:** line per change a
+caller or a user has to act on, which the summary's prose no longer marks; and the **known issues**,
+this review's follow-ups, filed when the pull request merges. Each optional part is left out when
+there is none. So the review comment
 carries no description of the change, and the description exists in one place.
 
 On a PRD PR of more than one slice the summary is the final review's alone (#298): a slice round
 writes neither the title nor the block, which holds a placeholder until then. A PRD PR's **final
-review** writes both however little was pushed (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
-the behaviour changes with the breaking ones marked, the acceptance criteria each slice changed or
-dropped (read off each slice round's record, by the commit it reviewed, through the slice ranges),
-the Evidence (#235, #355): where the red check is configured one Before/After entry per slice, its
-failing-first tests read off the same rounds, and where it is off one entry for the whole pull request,
-and the known issues, naming the follow-ups filed at merge. A slice round's red check runs against
+review** writes both however little was pushed (#247). Its summary is the whole PRD's, in the same
+layout as a regular pull request's (#356): the review's outcome, its sketches and a bullet per
+behaviour change they do not already show; a **Differs from the PRD:** line per slice that changed or
+dropped a criterion, rendered from that slice round's record (read by the commit it reviewed, through
+the slice ranges), with a line saying so for a slice whose record could not be read, and none where
+no slice differed; the Evidence (#235, #355): where the red check is configured one Before/After entry
+per slice, its failing-first tests read off the same rounds, and where it is off one entry for the
+whole pull request; and the Merge Danger, of the whole PRD, its known issues naming the follow-ups
+filed at merge. A slice round's red check runs against
 the PRD branch as it stood before that slice, its slice range's base, rather than the merge-base,
 so each slice's tests run on code holding every earlier slice; the final review runs none, and holds
 each slice's changes to that slice round's record. The same write removes the frame's

@@ -396,7 +396,9 @@ not merging. Keep only the calls, files and states the point needs. Put each in 
 The prose beside the sketches covers:
 
 - what the change does;
-- behaviour changes, with any breaking one marked **Breaking:**.
+- the behaviour it changes, cut to what the sketches do not already show.
+
+A breaking change is not marked in the prose: it goes in `breaking`, under **Merge Danger** below.
 
 Where the change does something other than what the linked issue asked, add one line led by
 **Differs from the issue:**, with the reason. Say it plainly even where the reason is good: a reader
@@ -417,6 +419,24 @@ Leave that section out of `summary`: it is rewritten from the report every time,
 write from it is replaced. Where the report lists tests as red, you may sketch what up to three of
 them check in `testSketches`, as the extraction step describes; a sketch of any other test is
 dropped.
+
+Last, the workflow puts the pull request's **Merge Danger**, beginning at a `## Merge Danger`
+heading, laid out from fields you write beside `summary`, and its **known issues** from your
+`followUps`, which are filed when it merges. Leave that section out of `summary` too. Write:
+
+- **`door`**: `one-way` or `two-way`. A **one-way door is one a revert cannot undo**: a published
+  release, deleted data, a migration. Anything a revert restores is two-way, however many it reaches
+  and however soon. Keep the two questions apart: a change cheap to revert whose danger is *when* it
+  takes effect, live the moment it merges, is a two-way door with a wide blast radius.
+- **`doorNote`**: only for a one-way door, saying what a revert leaves behind, or a two-way door
+  with a catch. "A revert restores it" is what two-way means, and is not worth a note.
+- **`blastRadius`**: **one word** for who or what the change reaches, in the project's own terms.
+- **`blastRadiusNote`**: who is reached, and **from when**: on merge, or at the next release. Name
+  what is reached on merge only where something is (a file read from the default branch, rather
+  than from a release, is live the moment it merges); do not restate the default, which is not
+  worth saying.
+- **`breaking`**: one line per change a caller or a user has to act on, saying what they must do.
+  An empty list where there is none.
 
 **`title`** is one line, true of the change as it now stands. Use the commit convention `CLAUDE.md`
 names, if it names one; otherwise conventional-commit style, `type(scope): subject`, with the scope

@@ -314,25 +314,41 @@ describe("reviewOutputSchema: follow-ups", () => {
   });
 });
 
-/** The final review's behaviour changes (#247): its own field, the breaking ones flagged rather than formatted. */
-describe("behaviourChanges", () => {
-  it("reads each change and whether it breaks anything, and leaves the field out where there are none", () => {
+/** The body's Merge Danger (#356): the review's door, blast radius and breaking changes, read leniently. */
+describe("the Merge Danger fields", () => {
+  it("reads each part, and leaves each out where there is none", () => {
     expect(
       parse({
         summary: "s",
-        behaviourChanges: [
-          { change: "Slice PRs are gone.", breaking: true },
-          { change: "  A progress\n list.  " },
-          "A bare string.",
-          { change: "   " },
-        ],
-      }).behaviourChanges,
-    ).toEqual([
-      { change: "Slice PRs are gone.", breaking: true },
-      { change: "A progress list.", breaking: false },
-      { change: "A bare string.", breaking: false },
-    ]);
-    expect(parse({ summary: "s" })).not.toHaveProperty("behaviourChanges");
+        door: "One way",
+        doorNote: "  A published\n release.  ",
+        blastRadius: "**adopters**.",
+        blastRadiusNote: "From the next release.",
+        breaking: ["Rename the input.", "- **Breaking:** Drop the trigger.", "  ", 4],
+      }),
+    ).toMatchObject({
+      door: "one-way",
+      doorNote: "A published release.",
+      blastRadius: "adopters",
+      blastRadiusNote: "From the next release.",
+      breaking: ["Rename the input.", "Drop the trigger."],
+    });
+    const none = parse({ summary: "s", door: "sideways", doorNote: " ", blastRadius: "", breaking: [] });
+    for (const field of ["door", "doorNote", "blastRadius", "blastRadiusNote", "breaking"]) {
+      expect(none).not.toHaveProperty(field);
+    }
+  });
+
+  it("takes either spelling of the door, and the first word of a blast radius", () => {
+    expect(parse({ door: "two_way", blast_radius: "every adopter" })).toMatchObject({ door: "two-way", blastRadius: "every" });
+    expect(parse({ door: "TWO-WAY", breaking: "One bare line." })).toMatchObject({ door: "two-way", breaking: ["One bare line."] });
+  });
+
+  /** Retired (#356): breaking changes are `breaking`, and the rest are the summary's own bullets. */
+  it("no longer reads behaviourChanges", () => {
+    expect(parse({ summary: "s", behaviourChanges: [{ change: "c", breaking: true }] })).not.toHaveProperty(
+      "behaviourChanges",
+    );
   });
 });
 
@@ -3074,6 +3090,51 @@ describe("the review brief's summary sketch", () => {
     expect(finalShape()).toMatch(/zero, one or two sketches/i);
     expect(finalShape()).toMatch(/from the diff as it stands/i);
     expect(finalShape()).toMatch(/do not count against/i);
+  });
+});
+
+/**
+ * **Merge Danger** (#356): the review writes its parts beside `summary`, and
+ * the workflow lays them out. The door is whether a revert undoes the change,
+ * held apart from when the change takes effect, which is blast radius: #330
+ * was cheap to revert, and its danger was that it was live on merge.
+ */
+describe("the review brief's Merge Danger", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const EXTRACTION = fs.readFileSync(path.join("review", "extraction.md"), "utf8");
+  const RUNNER = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const section = (): string => plain(PROMPT).match(/# THE TITLE AND THE SUMMARY.*?(?= # )/s)?.[0] ?? "";
+  const finalShape = (): string => plain(RUNNER.match(/const FINAL_SUMMARY_SHAPE = \[.*?\]\.join/s)?.[0] ?? "");
+
+  it.each([
+    ["prompt.md", PROMPT],
+    ["extraction.md", EXTRACTION],
+  ])("%s asks for every field", (_half, text) => {
+    for (const field of ["door", "doorNote", "blastRadius", "blastRadiusNote", "breaking"]) {
+      expect(text, field).toContain(`\`${field}\``);
+    }
+  });
+
+  it("defines a one-way door as one a revert cannot undo, and keeps timing under blast radius", () => {
+    expect(section()).toMatch(/one-way door is one a revert cannot undo/i);
+    expect(section()).toMatch(/when.{0,20}takes effect.*blast radius/i);
+    expect(section()).toMatch(/`blastRadius`: one word/);
+    expect(section()).toMatch(/from when: on merge, or at the next release/i);
+    expect(section()).toMatch(/only where something is/i);
+  });
+
+  it("moves Breaking out of the summary's prose", () => {
+    expect(PROMPT).not.toContain("**Breaking:**");
+    expect(EXTRACTION).not.toContain("**Breaking:**");
+    expect(section()).toMatch(/breaking change is not marked in the prose/i);
+  });
+
+  it("retires behaviourChanges, and has the final review write the Merge Danger of the whole PRD", () => {
+    for (const text of [PROMPT, EXTRACTION, RUNNER]) expect(text).not.toContain("behaviourChanges");
+    expect(finalShape()).toMatch(/`breaking`/);
+    expect(finalShape()).toMatch(/Differs from the PRD/);
+    expect(RUNNER).toMatch(/renderPrdSummary\(\{\s*outcome: output\.summary,\s*danger: output,/);
   });
 });
 

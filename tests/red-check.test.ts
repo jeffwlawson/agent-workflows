@@ -1058,11 +1058,26 @@ describe("the pull request's body gives its Evidence, Before and After (#234, #3
     expect(withEvidence("### Failing-first tests\n\n- `stale`", check, GREEN)).toBe(renderEvidence(check, GREEN));
   });
 
-  it("is what the review writes under a slice or regular pull request's summary", () => {
+  /** #356: the Merge Danger follows the Evidence and is written afresh with it, so a carried copy is cut as well. */
+  it("cuts a Merge Danger carried forward, with or without the Evidence above it", () => {
+    const check = { kind: "ran", report: report([RED]) } as const;
+    const section = renderEvidence(check, GREEN);
+
+    expect(withEvidence("Fixes scaling.\n\n## Merge Danger\n\n**Door:** stale", check, GREEN)).toBe(
+      `Fixes scaling.\n\n${section}`,
+    );
+    expect(
+      withEvidence("Fixes scaling.\n\n## Evidence\n\nstale\n\n## Merge Danger\n\n**Door:** stale", check, GREEN),
+    ).toBe(`Fixes scaling.\n\n${section}`);
+  });
+
+  it("is what the review writes under a slice or regular pull request's summary, the Merge Danger after it", () => {
     const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
     const prompt = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
 
-    expect(runner).toMatch(/summary: withEvidence\(output\.summary, redCheck, evidence\)/);
+    expect(runner).toMatch(
+      /summary: `\$\{withEvidence\(output\.summary, redCheck, evidence\)\}\\n\\n\$\{renderMergeDanger\(output, followUps\)\}`/,
+    );
     expect(runner).toMatch(/const evidence = \{ ci, head: headSha, testSketches: output\.testSketches \}/);
     expect(prompt).toContain("`## Evidence`");
     expect(prompt).not.toContain("Failing-first tests");

@@ -1,4 +1,5 @@
 import { gh, git, isWorkflowBot } from "./common.js";
+import { renderMergeDanger, type MergeDanger } from "./merge-danger.js";
 import type { ProgressSubIssue } from "./progress-list.js";
 import {
   readRedTestsBlock,
@@ -9,7 +10,6 @@ import {
 } from "./red-check.js";
 import {
   readCriteriaChanges,
-  type BehaviourChange,
   type CriterionChange,
   type FollowUp,
 } from "./review-output.js";
@@ -251,9 +251,10 @@ export const sliceRedTests = (reviews: readonly PostedReview[], ranges: SliceRan
   });
 
 export interface PrdSummaryInputs {
-  /** What the PRD delivered, as the final review wrote it: its `summary`. */
+  /** What the PRD delivered, as the final review wrote it: its `summary`, sketches and bullets included. */
   readonly outcome: string | undefined;
-  readonly behaviourChanges: readonly BehaviourChange[];
+  /** The review's door, blast radius and breaking changes, for the Merge Danger (#356). */
+  readonly danger: MergeDanger;
   /** Every landed slice's criteria record, in slice order; undefined where the PRD branch could not be read. */
   readonly slices: readonly SliceCriteria[] | undefined;
   /** The follow-ups this review recorded, which `follow-ups` files when the PRD PR merges. */
@@ -272,60 +273,47 @@ export interface PrdSummaryInputs {
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
 /**
- * The PRD PR's summary as the final review writes it (#247), through #218's
- * splice: the outcome, then the PRD sections. The behaviour changes with the
- * breaking ones marked, the criteria each slice changed or dropped from that
- * slice round's record, the Evidence (#355): each slice's failing-first tests
+ * The PRD PR's summary as the final review writes it (#247, #356), through
+ * #218's splice, in the layout a regular pull request's has: the review's own
+ * text, the outcome with its sketches and bullets; then a **Differs from the
+ * PRD:** line per slice that changed or dropped a criterion, from that slice
+ * round's record; then the Evidence (#355), each slice's failing-first tests
  * where the red check is configured (#235), from the same rounds, beside CI's
- * result at the head, and the known issues, naming the
- * follow-ups filed when it merges. The sections are the workflow's to lay
- * out, so a breaking change is marked and a dropped criterion named with its
- * slice whatever the model's formatting.
+ * result at the head; then the Merge Danger, its known issues naming the
+ * follow-ups filed when it merges. All but the review's text are the
+ * workflow's to lay out, so a dropped criterion is named with its slice
+ * whatever the model's formatting.
  *
  * A criterion its approving round left **unmet** is one a maintainer accepted
  * as it stands, by declining the finding it raised: so it is *dropped* here.
+ * A slice whose record could not be read still gets its line, saying so,
+ * since leaving it out would read as a slice that changed nothing.
  */
 export const renderPrdSummary = (inputs: PrdSummaryInputs): string => {
   const outcome = inputs.outcome?.trim() || "_The final review wrote no outcome._";
-  const changes =
-    inputs.behaviourChanges.length === 0
-      ? ["None recorded."]
-      : [
-          ...inputs.behaviourChanges.filter((c) => c.breaking).map((c) => `- **Breaking:** ${oneLine(c.change)}`),
-          ...inputs.behaviourChanges.filter((c) => !c.breaking).map((c) => `- ${oneLine(c.change)}`),
-        ];
-  const criteria = (inputs.slices ?? []).flatMap(({ subIssue, record }): string[] => {
-    if (record.kind === "no record") {
-      return [`- #${subIssue}: no review of this slice could be read, so its record is not listed here.`];
-    }
-    if (record.kind === "none checked" || record.changes.length === 0) return [];
-    return [
-      `- #${subIssue}:`,
-      ...record.changes.map((c) => `  - **${c.status === "changed" ? "Changed" : "Dropped"}:** ${oneLine(c.line)}`),
-    ];
-  });
-  const known =
-    inputs.followUps.length === 0
-      ? ["None recorded to be filed."]
-      : [
-          "Filed as issues when this pull request merges:",
-          "",
-          ...inputs.followUps.map((f) => `- ${oneLine(f.title)} (\`${oneLine(f.location)}\`)`),
-        ];
-  return [
-    "### Outcome",
-    outcome,
-    "### Behaviour changes",
-    changes.join("\n"),
-    "### Acceptance criteria changed or dropped",
+  const differs = (text: string): string => `**Differs from the PRD:** ${text}`;
+  const lines =
     inputs.slices === undefined
-      ? "The PRD branch's history could not be read, so the slices' records are not listed here; each slice round's review on this pull request has its own."
-      : criteria.length === 0
-        ? "None: every slice met its sub-issue's criteria as written."
-        : criteria.join("\n"),
+      ? [
+          differs(
+            "not known. The PRD branch's history could not be read, so the slices' records are not listed here; each slice round's review on this pull request has its own.",
+          ),
+        ]
+      : inputs.slices.flatMap(({ subIssue, record }): string[] => {
+          if (record.kind === "no record") {
+            return [differs(`#${subIssue}: no review of this slice could be read, so whether it changed or dropped a criterion is not known.`)];
+          }
+          if (record.kind === "none checked" || record.changes.length === 0) return [];
+          const changes = record.changes.map(
+            (c) => `${c.status === "changed" ? "changed" : "dropped"}: ${oneLine(c.line)}`,
+          );
+          return [differs(`#${subIssue} ${changes.join("; ")}`)];
+        });
+  return [
+    outcome,
+    ...lines,
     renderEvidenceBySlice(inputs.redTests, inputs.evidence),
-    "### Known issues",
-    known.join("\n"),
+    renderMergeDanger(inputs.danger, inputs.followUps),
   ].join("\n\n");
 };
 

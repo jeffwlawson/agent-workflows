@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { asArray, asRecord, asString } from "./common.js";
+import { MERGE_DANGER_HEADING } from "./merge-danger.js";
 import { embeddableJson, type CiResult, type TestSketch } from "./review-output.js";
 
 /**
@@ -450,7 +451,8 @@ export const EVIDENCE_HEADING = "## Evidence";
  */
 const LEGACY_HEADING = "### Failing-first tests";
 
-const HEADINGS = new RegExp(`^(?:${EVIDENCE_HEADING}|${LEGACY_HEADING})[ \\t]*$`, "m");
+/** And the Merge Danger the workflow writes after the Evidence (#356), which is carried forward with it. */
+const HEADINGS = new RegExp(`^(?:${EVIDENCE_HEADING}|${LEGACY_HEADING}|${MERGE_DANGER_HEADING})[ \\t]*$`, "m");
 
 /**
  * The **After** of every entry: CI's result at the head the summary describes,
@@ -570,7 +572,8 @@ export const renderEvidence = (check: RedCheck, inputs: EvidenceInputs): string 
  * block it rewrites is handed back to it as input, Evidence and all, so a
  * section it carried forward is cut from its text first rather than kept as a
  * second, stale copy above the one the report gives. Under either heading:
- * a body written before #355 carries the old one.
+ * a body written before #355 carries the old one. Cut at the Merge Danger's
+ * heading too (#356), which follows the Evidence and is written afresh with it.
  */
 export const withEvidence = (summary: string, check: RedCheck, inputs: EvidenceInputs): string => {
   const at = HEADINGS.exec(summary)?.index ?? -1;

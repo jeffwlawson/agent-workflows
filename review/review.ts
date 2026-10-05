@@ -45,7 +45,7 @@ import {
   renderRedCheck,
   renderRedCheckForFinal,
   renderRedTestsBlock,
-  withFailingFirst,
+  withEvidence,
   type SliceRedTests,
 } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
@@ -203,7 +203,7 @@ const FINAL_SUMMARY_SHAPE = [
   "- **`summary`**: the **outcome**, what the PRD delivered as a whole. Open it as the summary section above asks, with the **smallest view that makes the point**: zero, one or two sketches of the whole change, drawn from the diff as it stands and never from the PRD, each beside the short text it supports. Then a few sentences, brief and with no preamble; sketches do not count against the word budget, which stays for the prose. Nothing about the review, and no list of slices: the body already shows them.",
   "- **`behaviourChanges`**: one entry per behaviour the PRD changes, `{ \"change\": \"one line\", \"breaking\": true }` where a caller or a user has to act on it and `false` otherwise. The workflow marks the breaking ones; do not write the mark yourself.",
   "",
-  "The criteria each slice changed or dropped and, where the red check is configured, each slice's failing-first tests are added from each slice round's record, and the known issues from the follow-ups this review records, so write neither. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
+  "The criteria each slice changed or dropped and the Evidence (each slice's failing-first tests, where the red check is configured, beside CI's result) are added from each slice round's record, and the known issues from the follow-ups this review records, so write neither. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
 ].join("\n");
 
 /** Off a PRD PR, the brief's follow-ups section is the ordinary one. */
@@ -652,6 +652,11 @@ try {
   // The final review's summary is the PRD's (#247): its outcome, then the
   // behaviour changes, the criteria each slice changed or dropped, and the
   // known issues this review records to be filed on merge, laid out here.
+  //
+  // What the Evidence's After and its test sketches come from (#355): CI's
+  // result at the head the summary describes, and the sketches the review
+  // wrote, which the render attaches only to tests listed as failing first.
+  const evidence = { ci, head: headSha, testSketches: output.testSketches };
   const written = final
     ? {
         ...output,
@@ -662,15 +667,16 @@ try {
           followUps,
           // Each slice's red tests (#235), where the check is configured.
           ...(redCheck.kind === "not-configured" ? {} : { redTests: { slices: slicesRedTests } }),
+          evidence,
         }),
       }
     : output.summary === undefined
       ? output
-      : // A slice or a regular pull request's body lists its failing-first
-        // tests under the summary (#234), from the red check's report rather
-        // than the agent's word, so the agent's text and the list are kept
-        // apart. The final review's summary is the PRD's and does not.
-        { ...output, summary: withFailingFirst(output.summary, redCheck, headSha) };
+      : // A slice or a regular pull request's body gives its Evidence under
+        // the summary (#234, #355), from the red check's report and CI's
+        // result rather than the agent's word, so the agent's text and the
+        // Evidence are kept apart. The final review's is laid out by slice.
+        { ...output, summary: withEvidence(output.summary, redCheck, evidence) };
   const summary = writesSummary ? summaryUpdate(written, headSha, final) : undefined;
   if (summary !== undefined) writeJson("pr_summary.json", summary);
 

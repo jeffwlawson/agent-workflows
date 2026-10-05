@@ -127,6 +127,13 @@ saying it again here is the same problem read twice.
   a caller or a user has to act on and `false` otherwise. The workflow marks the breaking ones and
   lays the summary out around them. Omit the field on every other review.
 
+- **`testSketches`**: what a test checks, as pseudocode, for the pull request's Evidence, where the
+  brief's red check section lists tests as red: `{ "test": "its name exactly as listed", "sketch":
+  "a few lines" }`. The setup, the call and what it asserts, not the test's code copied. The workflow
+  puts each sketch above that test's assertion message, keeps **at most three**, and drops any naming
+  a test the report does not list as red: a sketch describes a failing test, it cannot add one or
+  mark one as proven. Leave it out, or empty, where no test is listed as red.
+
 Do not use em dashes in anything you write, in any field; use a comma, colon, semicolon,
 parentheses, or a new sentence instead.
 
@@ -209,6 +216,9 @@ A criterion you omit is listed as not checked.
   "howChecked": "Under 100 words. What you actually verified: the checks you ran, the behaviour you traced, the files you read.",
   "title": "feat(scope): one line, true of the change as it now stands",
   "summary": "One sentence on what the change does.\n\n```diff\n caller()\n-  oldStep()\n+  newStep()\n```\n\n- A behaviour change it makes.\n- **Breaking:** one a caller has to act on.\n\n**Differs from the issue:** where it departs from the linked issue, and why.",
+  "testSketches": [
+    { "test": "test_scales_servings", "sketch": "recipe = Recipe(servings=2, flour=100)\nscaled = recipe.scale(4)\nexpect scaled.flour == 200" }
+  ],
   "fixBeforeMerge": [
     "One line per finding that must be fixed before this merges: the same findings the `findings` list carries."
   ],
@@ -240,7 +250,7 @@ A criterion you omit is listed as not checked.
 ```
 
 `behaviourChanges` is not in the example: it is asked for on one review in many, and the brief
-says when. Use an empty array for any of the six lists with no entries (`verified` is empty when you were
+says when. Use an empty array for any of the seven lists with no entries (`verified` is empty when you were
 given no open findings to rule on, `noteRulings` when you were given no notes, and `criteria` when
 you were given no criteria). Leave
 `needsYou` out entirely unless it applies, and `title` and `summary` out where the brief said this

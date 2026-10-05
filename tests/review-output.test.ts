@@ -336,6 +336,29 @@ describe("behaviourChanges", () => {
   });
 });
 
+/** The Evidence's test sketches (#355): which test, and what it checks, the placing left to the workflow. */
+describe("testSketches", () => {
+  it("reads each sketch, unwraps one fenced whole, drops one naming no test or sketching nothing, and leaves the field out where there are none", () => {
+    expect(
+      parse({
+        summary: "s",
+        testSketches: [
+          { test: " test_a ", sketch: "call a\nexpect b\n" },
+          { test: "test_b", sketch: "```python\nb()\n```" },
+          { test: "", sketch: "x" },
+          { test: "test_c", sketch: "  " },
+          "test_d",
+        ],
+      }).testSketches,
+    ).toEqual([
+      { test: "test_a", sketch: "call a\nexpect b" },
+      { test: "test_b", sketch: "b()" },
+    ]);
+    expect(parse({ summary: "s", test_sketches: [{ test: "t", sketch: "k" }] }).testSketches).toHaveLength(1);
+    expect(parse({ summary: "s" })).not.toHaveProperty("testSketches");
+  });
+});
+
 describe("capFollowUps", () => {
   it("keeps the first three and reports what it dropped", () => {
     const { kept, dropped } = capFollowUps(followUps(5));

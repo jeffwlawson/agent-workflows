@@ -9,12 +9,15 @@ import {
   readRedCheck,
   readRedTestsBlock,
   redTestsRecord,
-  renderFailingFirst,
-  renderFailingFirstBySlice,
+  MAX_TEST_SKETCHES,
+  pickSketches,
+  renderEvidence,
+  renderEvidenceBySlice,
   renderRedCheck,
   renderRedCheckForFinal,
   renderRedTestsBlock,
-  withFailingFirst,
+  withEvidence,
+  type EvidenceInputs,
   type RedCheck,
   type RedCheckReport,
   type RedTestsRecord,
@@ -816,9 +819,10 @@ describe("the review reads the red check's report as evidence", () => {
   });
 });
 
-describe("the pull request's body lists the failing-first tests (#234)", () => {
+describe("the pull request's body gives its Evidence, Before and After (#234, #355)", () => {
   const HEAD = "h".repeat(40);
   const BASE = "b".repeat(40);
+  const GREEN: EvidenceInputs = { ci: "green", head: HEAD };
 
   const report = (tests: RedCheckReport["tests"], over: Partial<RedCheckReport> = {}): RedCheckReport => ({
     status: "ran",
@@ -836,64 +840,121 @@ describe("the pull request's body lists the failing-first tests (#234)", () => {
   const BROKEN = { name: "tests.test_units", classname: "", result: "broken", message: "ModuleNotFoundError: No module named 'src.units'" } as const;
   const PASSED = { name: "test_keeps_units", classname: "tests.test_recipes", result: "passed" } as const;
 
-  const body = (r: RedCheckReport, head = HEAD): string => renderFailingFirst({ kind: "ran", report: r }, head);
+  const body = (r: RedCheckReport, inputs: EvidenceInputs = GREEN): string =>
+    renderEvidence({ kind: "ran", report: r }, inputs);
 
-  it("lists each red test with the assertion it failed on, and no broken or passed one", () => {
+  it("lists each red test with the assertion it failed on as the Before, and no broken or passed one", () => {
     const seen = body(report([RED, BROKEN, PASSED]));
 
-    expect(seen).toMatch(/^### Failing-first tests\n\n/);
-    expect(seen).toContain("- `test_scales_servings` (`tests.test_recipes`)\n\n```text\nassert 2 == 4\n```");
-    expect(seen).toContain(`the merge-base \`${BASE}\``);
-    expect(seen).not.toContain("tests.test_units");
+    expect(seen).toBe(
+      [
+        "## Evidence",
+        "",
+        `- **Before:** 1 test(s) fail without this change. Each failed on the assertion shown against the code as it was before this change, the merge-base \`${BASE}\`, with this pull request's test files put over it:`,
+        "",
+        "  - `test_scales_servings` (`tests.test_recipes`)",
+        "",
+        "    ```text",
+        "    assert 2 == 4",
+        "    ```",
+        "",
+        "  1 more failed there on import, collection or setup, before any assertion ran. Those are not failing-first, and are not listed.",
+        "",
+        "  **After:** CI is green at `hhhhhhh`.",
+      ].join("\n"),
+    );
     expect(seen).not.toContain("No module named");
     expect(seen).not.toContain("test_keeps_units");
-    expect(seen).toContain("1 more failed there on import, collection or setup, before any assertion ran. Those are not failing-first");
+  });
+
+  it("says the body's name for the check, the test-first check, and never the red check", () => {
+    const states = [
+      renderEvidence(readRedCheck(false, undefined), GREEN),
+      renderEvidence({ kind: "unreadable", reason: "lost" }, GREEN),
+      body(report([], { status: "setup-failed" })),
+      body(report([RED]), { ...GREEN, head: "n".repeat(40) }),
+    ];
+
+    for (const seen of states) {
+      expect(seen).toContain("test-first check");
+      expect(seen.toLowerCase()).not.toContain("red check");
+    }
   });
 
   it("with no red test, says none were red, and only then", () => {
     const none = body(report([BROKEN, PASSED]));
 
-    expect(none).toContain("None: no test this pull request adds or changes failed on an assertion");
+    expect(none).toContain("- **Before:** none. No test this pull request adds or changes failed on an assertion");
     expect(none).not.toContain("unknown");
-    expect(none).not.toContain("not configured");
-    expect(body(report([], { status: "no-test-files" }))).toContain("None: this pull request adds or changes no test file.");
+    expect(none).not.toContain("not checked");
+    expect(body(report([], { status: "no-test-files" }))).toBe(
+      "## Evidence\n\n- **Before:** none. This pull request adds or changes no test file.\n  **After:** CI is green at `hhhhhhh`.",
+    );
   });
 
-  it("says the check is not configured, rather than listing nothing", () => {
-    const seen = renderFailingFirst(readRedCheck(false, undefined), HEAD);
-
-    expect(seen).toContain("The red check is not configured for this repository");
-    expect(seen).not.toMatch(/None:|unknown/);
+  it("says the check is off as what the reader is missing, rather than listing nothing", () => {
+    expect(renderEvidence(readRedCheck(false, undefined), GREEN)).toBe(
+      [
+        "## Evidence",
+        "",
+        "- **Before:** not checked. The test-first check is off, so no test here is shown to fail without this change.",
+        "  **After:** CI is green at `hhhhhhh`.",
+      ].join("\n"),
+    );
   });
 
   it("says the report could not be read, or held no result, rather than listing nothing", () => {
-    const missing = renderFailingFirst(readRedCheck(true, path.join(scratch(), "red_check.json")), HEAD);
+    const missing = renderEvidence(readRedCheck(true, path.join(scratch(), "red_check.json")), GREEN);
     const noResult = [
       body(report([], { status: "setup-failed" })),
       body(report([], { skipped: 2 })),
       body(report([], { status: "something-new" })),
     ];
 
-    expect(missing).toContain("The red check is configured, and its report could not be read: its report did not reach this review.");
-    expect(missing).toContain("is unknown");
+    expect(missing).toContain(
+      "- **Before:** unknown. The test-first check is on, and its report could not be read: its report did not reach this review.",
+    );
     expect(noResult[0]).toContain("came back with no test results: installing the merge-base's dependencies failed.");
     expect(noResult[1]).toContain("came back with no test results: its JUnit report held no test that ran.");
     expect(noResult[2]).toContain("it reported `something-new`");
     for (const seen of [missing, ...noResult]) {
       expect(seen).toContain("is unknown");
-      expect(seen).not.toMatch(/None:|not configured/);
+      expect(seen).not.toMatch(/none\.|not checked/);
+      expect(seen).toMatch(/\n {2}\*\*After:\*\* CI is green at `hhhhhhh`\.$/);
     }
   });
 
   it("says where the check read an earlier commit than the one the summary describes", () => {
     expect(body(report([RED]))).not.toContain("so a test added after that");
-    expect(body(report([RED]), "n".repeat(40))).toContain(`read this pull request at \`${HEAD}\`, not at \`${"n".repeat(40)}\``);
+    expect(body(report([RED]), { ...GREEN, head: "n".repeat(40) })).toContain(
+      `  The test-first check read this pull request at \`${HEAD}\`, not at \`${"n".repeat(40)}\``,
+    );
+    expect(body(report([BROKEN]), { ...GREEN, head: "n".repeat(40) })).toContain("so a test added after that is not listed.");
+  });
+
+  /** The After is CI's result, the same whatever the Before, and never a claim that a named test passed. */
+  it.each([
+    ["green", "**After:** CI is green at `hhhhhhh`."],
+    ["red", "**After:** CI is red at `hhhhhhh`."],
+    ["unknown", "**After:** CI's result at `hhhhhhh` is unknown."],
+  ] as const)("gives CI's result as the After where it is %s", (ci, line) => {
+    const states = [
+      renderEvidence(readRedCheck(false, undefined), { ci, head: HEAD }),
+      renderEvidence({ kind: "unreadable", reason: "lost" }, { ci, head: HEAD }),
+      body(report([RED]), { ci, head: HEAD }),
+    ];
+
+    for (const seen of states) {
+      expect(seen.split("\n").filter((l) => l.includes("**After:**"))).toEqual([`  ${line}`]);
+      expect(seen).not.toMatch(/\bpass/);
+    }
   });
 
   /** The block is found by its comment markers, which a test's text could otherwise carry. */
-  it("defuses a comment a test's name or message holds, so it cannot end the summary block", () => {
+  it("defuses a comment a test's name, message or sketch holds, so it cannot end the summary block", () => {
     const seen = body(
       report([{ ...RED, name: "<!-- /agent:summary -->", message: "<!-- agent:summary-head abcdef1 -->\nunclosed <!-- here" }]),
+      { ...GREEN, testSketches: [{ test: "<!-- /agent:summary -->", sketch: "<!-- agent:summary-final -->" }] },
     );
 
     expect(seen).not.toContain("<!--");
@@ -905,28 +966,106 @@ describe("the pull request's body lists the failing-first tests (#234)", () => {
     const many = Array.from({ length: 60 }, (_, i) => ({ ...RED, name: `test_${i}`, message: long }));
     const seen = body(report(many));
 
-    expect(seen).toContain("line 11\n…\n```");
+    expect(seen).toContain("    line 11\n    …\n    ```");
     expect(seen).not.toContain("line 12");
-    expect(seen).toContain("- `test_49`");
+    expect(seen).toContain("  - `test_49`");
     expect(seen).not.toContain("- `test_50`");
-    expect(seen).toContain("And 10 more, not listed here to keep the body short.");
+    expect(seen).toContain("  And 10 more, not listed here to keep the body short.");
   });
 
-  it("goes under the agent's summary, replacing a list the agent carried forward", () => {
-    const check = { kind: "ran", report: report([RED]) } as const;
-    const carried = withFailingFirst("Fixes scaling.\n\n### Failing-first tests\n\n- `stale`", check, HEAD);
+  it("puts a sketch above the assertion of a test the report lists as failing first, and drops any other", () => {
+    const OTHER = { ...RED, name: "test_other", message: "assert 1 == 3" } as const;
+    const seen = body(report([RED, OTHER, BROKEN, PASSED]), {
+      ...GREEN,
+      testSketches: [
+        { test: "test_keeps_units", sketch: "PASSED SKETCH" },
+        { test: "tests.test_units", sketch: "BROKEN SKETCH" },
+        { test: "test_invented", sketch: "INVENTED SKETCH" },
+        { test: "test_scales_servings", sketch: "scale(2 servings, to 4)\nexpect flour doubled" },
+        { test: "test_scales_servings", sketch: "SECOND SKETCH" },
+      ],
+    });
 
-    expect(carried).toBe(`Fixes scaling.\n\n${renderFailingFirst(check, HEAD)}`);
+    expect(seen).toContain(
+      [
+        "  - `test_scales_servings` (`tests.test_recipes`)",
+        "",
+        "    ```text",
+        "    scale(2 servings, to 4)",
+        "    expect flour doubled",
+        "    ```",
+        "",
+        "    ```text",
+        "    assert 2 == 4",
+        "    ```",
+        "",
+        "  - `test_other` (`tests.test_recipes`)",
+        "",
+        "    ```text",
+        "    assert 1 == 3",
+        "    ```",
+      ].join("\n"),
+    );
+    expect(seen).not.toMatch(/PASSED SKETCH|BROKEN SKETCH|INVENTED SKETCH|SECOND SKETCH/);
+  });
+
+  it(`sketches at most ${MAX_TEST_SKETCHES} tests, and lists the rest by name`, () => {
+    const tests = Array.from({ length: 5 }, (_, i) => ({ ...RED, name: `test_${i}`, message: `assert ${i}` }));
+    const seen = body(report(tests), {
+      ...GREEN,
+      testSketches: tests.map((test) => ({ test: test.name, sketch: `SKETCH ${test.name}` })),
+    });
+
+    expect(seen.match(/SKETCH test_\d/g)).toEqual(["SKETCH test_0", "SKETCH test_1", "SKETCH test_2"]);
+    expect(seen).toContain("  - `test_4` (`tests.test_recipes`)\n\n    ```text\n    assert 4\n    ```");
+    expect(
+      pickSketches(
+        [
+          { test: "a", sketch: "1" },
+          { test: "x", sketch: "2" },
+          { test: "b", sketch: "3" },
+          { test: "c", sketch: "4" },
+          { test: "d", sketch: "5" },
+        ],
+        ["a", "b", "c", "d"],
+      ),
+    ).toEqual(
+      new Map([
+        ["a", "1"],
+        ["b", "3"],
+        ["c", "4"],
+      ]),
+    );
+  });
+
+  it("goes under the agent's summary, replacing an Evidence the agent carried forward", () => {
+    const check = { kind: "ran", report: report([RED]) } as const;
+    const carried = withEvidence("Fixes scaling.\n\n## Evidence\n\n- **Before:** stale", check, GREEN);
+
+    expect(carried).toBe(`Fixes scaling.\n\n${renderEvidence(check, GREEN)}`);
     expect(carried).not.toContain("stale");
-    expect(withFailingFirst("Fixes scaling.", check, HEAD)).toBe(`Fixes scaling.\n\n${renderFailingFirst(check, HEAD)}`);
+    expect(withEvidence("Fixes scaling.", check, GREEN)).toBe(`Fixes scaling.\n\n${renderEvidence(check, GREEN)}`);
+  });
+
+  /** A body written before #355 carries the old heading; its next write keeps no copy of that section. */
+  it("cuts a section carried forward under the legacy failing-first heading, too", () => {
+    const check = { kind: "ran", report: report([RED]) } as const;
+    const carried = withEvidence("Fixes scaling.\n\n### Failing-first tests\n\n- `stale`", check, GREEN);
+
+    expect(carried).toBe(`Fixes scaling.\n\n${renderEvidence(check, GREEN)}`);
+    expect(carried).not.toContain("Failing-first");
+    expect(carried).not.toContain("stale");
+    expect(withEvidence("### Failing-first tests\n\n- `stale`", check, GREEN)).toBe(renderEvidence(check, GREEN));
   });
 
   it("is what the review writes under a slice or regular pull request's summary", () => {
     const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
     const prompt = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
 
-    expect(runner).toMatch(/summary: withFailingFirst\(output\.summary, redCheck, headSha\)/);
-    expect(prompt).toContain("`### Failing-first tests`");
+    expect(runner).toMatch(/summary: withEvidence\(output\.summary, redCheck, evidence\)/);
+    expect(runner).toMatch(/const evidence = \{ ci, head: headSha, testSketches: output\.testSketches \}/);
+    expect(prompt).toContain("`## Evidence`");
+    expect(prompt).not.toContain("Failing-first tests");
   });
 });
 
@@ -967,7 +1106,7 @@ describe("a slice round's red check, and its record for the final review (#235)"
     expect(seen).toContain("**Red against the PRD branch as it stood before this slice (#235)** (1)");
     expect(seen).toContain("**Non-test files this slice changes** (1)");
     expect(seen).not.toContain("merge-base");
-    expect(renderFailingFirst(ran(report([RED])), HEAD)).toContain(
+    expect(renderEvidence(ran(report([RED])), { ci: "green", head: HEAD })).toContain(
       `against the code as it was before this change, the PRD branch as it stood before this slice (#235) \`${BASE}\`, with this slice's test files put over it`,
     );
   });
@@ -1025,33 +1164,80 @@ describe("a slice round's red check, and its record for the final review (#235)"
     expect(record?.more).toBe(10);
   });
 
-  it("lists the failing-first tests grouped by slice, saying which slice has none, which is unknown and which has no record", () => {
-    const seen = renderFailingFirstBySlice([
-      { subIssue: 231, record: { known: true, red: [{ name: "test_a", classname: "tests.a" }, { name: "test_b", classname: "tests.a", file: "tests/a.py" }], more: 0 } },
-      { subIssue: 232, record: { known: true, red: [], more: 0 } },
-      { subIssue: 233, record: { known: false, red: [], more: 0 } },
-      { subIssue: 234, record: undefined },
-      { subIssue: 235, record: { known: true, red: [{ name: "<!-- x -->", classname: "c" }], more: 3 } },
-    ]);
+  it("gives one Before/After entry per slice, saying which slice has none, which is unknown and which has no record", () => {
+    const seen = renderEvidenceBySlice(
+      {
+        slices: [
+          { subIssue: 231, record: { known: true, red: [{ name: "test_a", classname: "tests.a" }, { name: "test_b", classname: "tests.a", file: "tests/a.py" }], more: 0 } },
+          { subIssue: 232, record: { known: true, red: [], more: 0 } },
+          { subIssue: 233, record: { known: false, red: [], more: 0 } },
+          { subIssue: 234, record: undefined },
+          { subIssue: 235, record: { known: true, red: [{ name: "<!-- x -->", classname: "c" }], more: 3 } },
+        ],
+      },
+      { ci: "red", head: HEAD, testSketches: [{ test: "test_b", sketch: "call b\nexpect c" }, { test: "test_z", sketch: "INVENTED" }] },
+    );
+    const after = "  **After:** CI is red at `hhhhhhh`.";
 
     expect(seen).toBe(
       [
-        "### Failing-first tests",
-        "Each slice's tests that failed on an assertion against the PRD branch as it stood before that slice, as that slice's own round found them:",
+        "## Evidence",
         [
-          "- #231 (2):",
+          "- #231",
+          "  **Before:** 2 test(s) fail without this slice. Each failed on an assertion against the PRD branch as it stood before it:",
+          "",
           "  - `test_a` (`tests.a`)",
           "  - `test_b` (`tests.a`, `tests/a.py`)",
-          "- #232: none. No test it adds or changes failed on an assertion.",
-          "- #233: unknown. Its red check came back with no test results.",
-          "- #234: no record. No review of this slice recorded what its red check found.",
-          "- #235 (4):",
+          "",
+          "    ```text",
+          "    call b",
+          "    expect c",
+          "    ```",
+          "",
+          after,
+        ].join("\n"),
+        `- #232\n  **Before:** none. No test it adds or changes failed on an assertion against the PRD branch as it stood before it.\n${after}`,
+        `- #233\n  **Before:** unknown. Its test-first check came back with no test results.\n${after}`,
+        `- #234\n  **Before:** no record. No review of this slice recorded what its test-first check found.\n${after}`,
+        [
+          "- #235",
+          "  **Before:** 4 test(s) fail without this slice. Each failed on an assertion against the PRD branch as it stood before it:",
+          "",
           "  - `<​!-- x -->` (`c`)",
-          "  - And 3 more, not listed here to keep the body short.",
+          "",
+          "  And 3 more, not listed here to keep the body short.",
+          "",
+          after,
         ].join("\n"),
       ].join("\n\n"),
     );
-    expect(renderFailingFirstBySlice(undefined)).toContain("could not be read");
+    expect(seen).not.toContain("INVENTED");
+    expect(seen.toLowerCase()).not.toContain("red check");
+  });
+
+  it("gives one entry for the whole PRD PR where the check is off, and says where the history could not be read", () => {
+    expect(renderEvidenceBySlice(undefined, { ci: "unknown", head: HEAD })).toBe(
+      [
+        "## Evidence",
+        "",
+        "- **Before:** not checked. The test-first check is off, so no test in any slice is shown to fail without its change.",
+        "  **After:** CI's result at `hhhhhhh` is unknown.",
+      ].join("\n"),
+    );
+    expect(renderEvidenceBySlice({ slices: undefined }, { ci: "green", head: HEAD })).toContain(
+      "- **Before:** unknown. The PRD branch's history could not be read",
+    );
+    expect(renderEvidenceBySlice({ slices: [] }, { ci: "green", head: HEAD })).toContain("- **Before:** none. No slice has landed");
+  });
+
+  it(`sketches at most ${MAX_TEST_SKETCHES} tests across the slices, once each`, () => {
+    const record = (names: string[]): RedTestsRecord => ({ known: true, red: names.map((name) => ({ name, classname: "c" })), more: 0 });
+    const seen = renderEvidenceBySlice(
+      { slices: [{ subIssue: 1, record: record(["t1", "t2", "shared"]) }, { subIssue: 2, record: record(["shared", "t3"]) }] },
+      { ci: "green", head: HEAD, testSketches: ["t1", "shared", "t2", "t3"].map((test) => ({ test, sketch: `SKETCH ${test}` })) },
+    );
+
+    expect(seen.match(/SKETCH \w+/g)).toEqual(["SKETCH t1", "SKETCH t2", "SKETCH shared"]);
   });
 
   /**

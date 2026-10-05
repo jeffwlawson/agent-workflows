@@ -1,6 +1,12 @@
 import { gh, git, isWorkflowBot } from "./common.js";
 import type { ProgressSubIssue } from "./progress-list.js";
-import { readRedTestsBlock, renderFailingFirstBySlice, type RedTestsRecord, type SliceRedTests } from "./red-check.js";
+import {
+  readRedTestsBlock,
+  renderEvidenceBySlice,
+  type EvidenceInputs,
+  type RedTestsRecord,
+  type SliceRedTests,
+} from "./red-check.js";
 import {
   readCriteriaChanges,
   type BehaviourChange,
@@ -255,9 +261,12 @@ export interface PrdSummaryInputs {
   /**
    * Where the red check is configured, each landed slice's red tests (#235),
    * from `sliceRedTests`; `slices` undefined where the PRD branch could not be
-   * read. Absent where it is not configured, and the section with it.
+   * read. Absent where it is not configured, and the Evidence says so in one
+   * entry for the whole pull request (#355).
    */
   readonly redTests?: { readonly slices: readonly SliceRedTests[] | undefined } | undefined;
+  /** CI's result at the head and the review's test sketches, for the Evidence's After and its tests (#355). */
+  readonly evidence: EvidenceInputs;
 }
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
@@ -266,8 +275,9 @@ const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
  * The PRD PR's summary as the final review writes it (#247), through #218's
  * splice: the outcome, then the PRD sections. The behaviour changes with the
  * breaking ones marked, the criteria each slice changed or dropped from that
- * slice round's record, each slice's failing-first tests where the red check
- * is configured (#235), from the same rounds, and the known issues, naming the
+ * slice round's record, the Evidence (#355): each slice's failing-first tests
+ * where the red check is configured (#235), from the same rounds, beside CI's
+ * result at the head, and the known issues, naming the
  * follow-ups filed when it merges. The sections are the workflow's to lay
  * out, so a breaking change is marked and a dropped criterion named with its
  * slice whatever the model's formatting.
@@ -313,7 +323,7 @@ export const renderPrdSummary = (inputs: PrdSummaryInputs): string => {
       : criteria.length === 0
         ? "None: every slice met its sub-issue's criteria as written."
         : criteria.join("\n"),
-    ...(inputs.redTests === undefined ? [] : [renderFailingFirstBySlice(inputs.redTests.slices)]),
+    renderEvidenceBySlice(inputs.redTests, inputs.evidence),
     "### Known issues",
     known.join("\n"),
   ].join("\n\n");

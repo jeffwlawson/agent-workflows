@@ -176,6 +176,19 @@ export interface BehaviourChange {
   readonly breaking: boolean;
 }
 
+/**
+ * What one failing-first test checks, as the review sketches it for the
+ * body's Evidence (#355): pseudocode, above the assertion it failed on. The
+ * workflow attaches it only to a test the test-first check's report lists as
+ * failing first (`pickSketches`), so a sketch can describe a test and never add
+ * one or mark one proven.
+ */
+export interface TestSketch {
+  /** The test's name, as the report lists it. */
+  readonly test: string;
+  readonly sketch: string;
+}
+
 /** A note the review dropped, as the body lists it. */
 export interface DroppedNote {
   readonly title: string;
@@ -232,6 +245,13 @@ export interface ReviewOutput {
    * on every other review.
    */
   readonly behaviourChanges?: BehaviourChange[];
+  /**
+   * A pseudocode sketch of a failing-first test, for the body's Evidence
+   * (#355). The model's to write and the workflow's to place: one naming a test
+   * the report does not list as failing first is dropped there. Absent where
+   * there are none.
+   */
+  readonly testSketches?: TestSketch[];
   /**
    * Every problem the review found in this pull request, as the model produced
    * them. Where each one is posted — a line thread or a file-level thread — is
@@ -1852,6 +1872,9 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     record["behaviourChanges"] ?? record["behaviorChanges"] ?? record["behaviour_changes"] ?? [],
     "behaviourChanges",
   ).flatMap(parseBehaviourChange);
+  const testSketches = asArray(record["testSketches"] ?? record["test_sketches"] ?? [], "testSketches").flatMap(
+    parseTestSketch,
+  );
   return {
     ...(assessment === undefined ? {} : { assessment }),
     ...(howChecked === undefined ? {} : { howChecked: cappedWords(howChecked, MAX_HOW_CHECKED_WORDS) }),
@@ -1892,8 +1915,26 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     ...(criteria.length === 0 ? {} : { criteria }),
     // Absent on every review but a PRD PR's final review.
     ...(behaviourChanges.length === 0 ? {} : { behaviourChanges }),
+    // Absent where the review sketched no test, which is most reviews.
+    ...(testSketches.length === 0 ? {} : { testSketches }),
   };
 });
+
+/** A fence wrapped round the whole sketch: the body fences it itself, and a second fence would show as text. */
+const SKETCH_FENCE = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1[ \t]*$/;
+
+/**
+ * A test sketch, or none where it names no test or sketches nothing: it is
+ * display, and the review beside it is worth more than refusing it.
+ */
+const parseTestSketch = (value: unknown): TestSketch[] => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  const test = typeof record["test"] === "string" ? record["test"].trim() : "";
+  const raw = typeof record["sketch"] === "string" ? record["sketch"].trim() : "";
+  const sketch = (SKETCH_FENCE.exec(raw)?.[2] ?? raw).replace(/\s+$/, "");
+  return test === "" || sketch.trim() === "" ? [] : [{ test, sketch }];
+};
 
 /**
  * A behaviour change, from an object or from a bare string (not breaking).

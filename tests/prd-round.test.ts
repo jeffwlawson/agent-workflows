@@ -318,6 +318,7 @@ describe("sliceRedTests", () => {
  */
 describe("renderPrdSummary", () => {
   const followUp = { title: "the cache key omits the tenant", location: "src/cache.ts:12", body: "b", severity: "medium" as const };
+  const evidence = { ci: "green", head: "h".repeat(40) } as const;
 
   it("renders every section, a breaking change marked and a dropped criterion with its slice", () => {
     const text = renderPrdSummary({
@@ -342,6 +343,7 @@ describe("renderPrdSummary", () => {
         { subIssue: 245, record: { kind: "no record" } },
       ],
       followUps: [followUp],
+      evidence,
     });
 
     expect(text).toBe(
@@ -357,6 +359,8 @@ describe("renderPrdSummary", () => {
           "  - **Changed:** It logs the tag. · a warning now",
           "- #245: no review of this slice could be read, so its record is not listed here.",
         ].join("\n"),
+        "## Evidence",
+        "- **Before:** not checked. The test-first check is off, so no test in any slice is shown to fail without its change.\n  **After:** CI is green at `hhhhhhh`.",
         "### Known issues",
         "Filed as issues when this pull request merges:\n\n- the cache key omits the tenant (`src/cache.ts:12`)",
       ].join("\n\n"),
@@ -369,33 +373,35 @@ describe("renderPrdSummary", () => {
       behaviourChanges: [],
       slices: [{ subIssue: 242, record: { kind: "recorded", changes: [] } }],
       followUps: [],
+      evidence,
     });
 
     expect(quiet).toContain("None: every slice met its sub-issue's criteria as written.");
     expect(quiet).toContain("### Known issues\n\nNone recorded to be filed.");
     expect(quiet).toContain("### Behaviour changes\n\nNone recorded.");
-    expect(renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: undefined, followUps: [] })).toContain(
+    expect(renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: undefined, followUps: [], evidence })).toContain(
       "could not be read",
     );
   });
 
-  /** #235: where the red check is configured, each slice's failing-first tests, before the known issues. */
-  it("lists the failing-first tests by slice where the red check is configured, and only there", () => {
-    const inputs = { outcome: "o", behaviourChanges: [], slices: [], followUps: [] };
+  /** #235, #355: the Evidence, by slice where the red check is configured and in one entry where it is not, before the known issues. */
+  it("gives the Evidence by slice where the red check is configured, and in one entry where it is not", () => {
+    const inputs = { outcome: "o", behaviourChanges: [], slices: [], followUps: [], evidence };
     const listed = renderPrdSummary({
       ...inputs,
       redTests: { slices: [{ subIssue: 242, record: { known: true, red: [{ name: "test_a", classname: "c" }], more: 0 } }] },
     });
 
-    expect(listed).toContain("### Failing-first tests\n\nEach slice's tests that failed on an assertion against the PRD branch as it stood before that slice");
-    expect(listed).toContain("- #242 (1):\n  - `test_a` (`c`)\n\n### Known issues");
-    expect(renderPrdSummary({ ...inputs, redTests: { slices: undefined } })).toContain("not listed here by slice");
+    expect(listed).toContain("## Evidence\n\n- #242\n  **Before:** 1 test(s) fail without this slice.");
+    expect(listed).toContain("  - `test_a` (`c`)\n\n  **After:** CI is green at `hhhhhhh`.\n\n### Known issues");
+    expect(renderPrdSummary({ ...inputs, redTests: { slices: undefined } })).toContain("history could not be read");
+    expect(renderPrdSummary(inputs)).toContain("## Evidence\n\n- **Before:** not checked.");
     expect(renderPrdSummary(inputs)).not.toContain("Failing-first");
   });
 
   /** #216: nothing in what the workflow lays out says the PRD PR is a draft. */
   it("carries no draft-only text", () => {
-    const text = renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: [], followUps: [] });
+    const text = renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: [], followUps: [], evidence });
 
     expect(text).not.toMatch(/draft|summarize the whole PRD here/i);
   });

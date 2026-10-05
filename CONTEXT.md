@@ -328,8 +328,17 @@ which is how the rule is read: not from the verdict history, which says what a v
 rather than what a summary has. A maintainer's edit inside the block is input to the next rewrite,
 kept where it is still true. The agent produces `title` and `summary`; the posting job writes them,
 splicing into the body as it stands then rather than as the review read it. Under the agent's
-summary the runner adds the **failing-first tests** from the red check's report (#234), red ones
-only, or which of *not configured*, *could not be read* and *none red* holds instead. So the review comment
+summary the runner adds the **Evidence** (#234, #355) under a `## Evidence` heading, as a
+**Before** and an **After**. Before is the failing-first tests from the red check's report, red ones
+only, each with its assertion, or which of *not checked* (the check is off), *unknown* (its report
+could not be read or held no result) and *none* holds instead. After is CI's result at the head the
+summary describes, `green`, `red` or `unknown`, from the file the verdict reads; it never claims a
+named test passed, since the red check runs nothing at the head. The body calls the red check the
+**test-first check**, and nothing else does: input, job and doc names keep "red check", since
+renaming an input would refuse every adopter caller that sets it. The review may sketch what a
+failing-first test checks (`testSketches`), and the runner places at most three, each only on a test
+the report lists as red, so a sketch can describe a test and never add one. A block written before
+#355 carries the old `### Failing-first tests` heading, and the rewrite cuts at either. So the review comment
 carries no description of the change, and the description exists in one place.
 
 On a PRD PR of more than one slice the summary is the final review's alone (#298): a slice round
@@ -337,7 +346,8 @@ writes neither the title nor the block, which holds a placeholder until then. A 
 review** writes both however little was pushed (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
 the behaviour changes with the breaking ones marked, the acceptance criteria each slice changed or
 dropped (read off each slice round's record, by the commit it reviewed, through the slice ranges),
-where the red check is configured each slice's failing-first tests (#235), read off the same rounds,
+the Evidence (#235, #355): where the red check is configured one Before/After entry per slice, its
+failing-first tests read off the same rounds, and where it is off one entry for the whole pull request,
 and the known issues, naming the follow-ups filed at merge. A slice round's red check runs against
 the PRD branch as it stood before that slice, its slice range's base, rather than the merge-base,
 so each slice's tests run on code holding every earlier slice; the final review runs none, and holds

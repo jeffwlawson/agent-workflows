@@ -19,6 +19,8 @@ export interface Config {
   readonly sandbox: string;
   readonly model?: string;
   readonly timeoutMs: number;
+  /** Prepended to PATH, so the runner finds the orchestrator's own `claude`. */
+  readonly pathPrefix: string;
 }
 
 export interface RunRecord {
@@ -79,7 +81,7 @@ export const runReview = async (job: Job, cfg: Config, log: (line: string) => vo
   const home = path.join(workDir, "home");
   execFileSync("mkdir", ["-p", home]);
   const env: Record<string, string> = {
-    PATH: process.env["PATH"] ?? "/usr/bin:/bin",
+    PATH: `${cfg.pathPrefix}:${process.env["PATH"] ?? "/usr/bin:/bin"}`,
     HOME: home,
     LANG: process.env["LANG"] ?? "C.UTF-8",
     GH_TOKEN: cfg.readToken,

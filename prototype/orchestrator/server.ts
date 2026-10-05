@@ -8,7 +8,7 @@
 import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fromGitHub, verifySignature } from "./github.ts";
 import { parseJob, type Job } from "./job.ts";
@@ -42,22 +42,36 @@ const webhookSecret = need("WEBHOOK_SECRET");
 const label = process.env["ORCH_LABEL"] ?? "proto:review";
 const port = Number(process.env["ORCH_PORT"] ?? "8787");
 const model = process.env["ORCH_MODEL"];
-const cfg: Config = {
+const cfg: Config & { pathPrefix: string } = {
   runnerCli: path.resolve(import.meta.dirname, "../../dist/cli.js"),
   claudeToken: need("CLAUDE_CODE_OAUTH_TOKEN"),
   // The prototype reads and posts with the user's own gh login (finding: a real
   // one wants a read-only token for the runner and an App for the writes).
   readToken: execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim(),
   sandbox: process.env["ORCH_SANDBOX"] ?? "none",
+  pathPrefix: "",
   ...(model === undefined ? {} : { model }),
   timeoutMs: 30 * 60 * 1000,
 };
+// The agent's CLI is the orchestrator's to provide, as review.yml's
+// `npm install -g @anthropic-ai/claude-code` does on every run: the host's own
+// `claude` was too old for the loop's model on the first real run (finding).
+const cliVersion = process.env["ORCH_CLAUDE_VERSION"] ?? "latest";
+const cliPrefix = path.join(tmpdir(), "orch-claude-cli");
+execFileSync("npm", ["install", "--silent", "--no-audit", "--no-fund", "--prefix", cliPrefix, `@anthropic-ai/claude-code@${cliVersion}`], {
+  stdio: "inherit",
+});
+const cliBin = path.join(cliPrefix, "node_modules", ".bin");
+const installed = execFileSync(path.join(cliBin, "claude"), ["--version"], { encoding: "utf8" }).trim();
+
 if (!existsSync(cfg.runnerCli)) {
   console.error(`No runner at ${cfg.runnerCli}; run \`npm run build\` first.`);
   process.exit(1);
 }
 
 const log = (line: string): void => console.log(`${new Date().toISOString()} ${line}`);
+cfg.pathPrefix = cliBin;
+log(`agent CLI: ${installed} (from ${cliPrefix})`);
 
 let busy: Promise<unknown> = Promise.resolve();
 const enqueue = (job: Job): void => {

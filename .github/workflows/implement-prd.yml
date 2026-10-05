@@ -1661,9 +1661,12 @@ jobs:
       # PRD of more than one slice, since a human can still mark it ready by
       # hand. Its body is the **frame** (#218), written once, in the order #298
       # settled: the note, opening with the **status line** between its own
-      # markers, then `## Summary` and the summary block the final review
-      # writes, then the progress table, then the `Closes` line at the bottom,
-      # on one line. The note's text past the status line is **draft-only**,
+      # markers, then a `---` rule, then `## Summary` and the summary block the
+      # final review writes, then a second rule, then the progress table, then
+      # the `Closes` line at the bottom, on one line. Each rule sits outside
+      # every marker pair, so no splice touches it, with a blank line above it,
+      # without which GitHub reads that line as a setext heading (#353). The
+      # note's text past the status line opens with a **draft-only** part,
       # between its own markers (`DRAFT_NOTE_START` and `DRAFT_NOTE_END` in
       # `shared/pr-summary.ts`, held equal by a test), which the final review's
       # write of the summary removes (#247). The status line, the `Closes`
@@ -1799,13 +1802,17 @@ jobs:
           > [!NOTE]
           > ${line}
           >
-          > <!-- agent:draft-note -->The agent loop builds PRD #${ISSUE_NUMBER} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.<!-- /agent:draft-note --> Add your own notes outside the blocks the loop writes; it never edits them.
+          > <!-- agent:draft-note -->The agent loop builds PRD #${ISSUE_NUMBER} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.<!-- /agent:draft-note --> Built by the agent loop from PRD #${ISSUE_NUMBER}, one sub-issue per slice. Comment here to steer it; your notes outside the loop's blocks are never edited.
+
+          ---
 
           ## Summary
 
           <!-- agent:summary -->
           _The final review will summarize the whole PRD here._
           <!-- /agent:summary -->
+
+          ---
 
           ${list}
 

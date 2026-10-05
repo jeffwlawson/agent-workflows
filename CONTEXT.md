@@ -312,13 +312,13 @@ final review reads what each round recorded.
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
 a pull request writes its **frame** once and never again, in the order #298 settled: a note saying
 what the loop does with it and how to steer it (linking the opening run), opening with a one-line
-**status** between `<!-- agent:status -->` markers; `## Summary` and a **summary block** between
+**status** between `<!-- agent:status -->` markers; a `---` rule (#353); `## Summary` and a **summary block** between
 `<!-- agent:summary -->` markers; on a PRD PR the **progress table** between `<!-- agent:progress -->`
 markers (#246: each sub-issue not started, building, in review, fixing, parked or approved, with its
 reviews, fix rounds and a diff of its slice range, and the final review's row; re-rendered from live
 state by every build run, including one that stops, and at every ending of a round; edited in place
 only where a job that runs no toolchain writes exactly what the render would, a building slice's row
-and the final review's, held equal to it by a test; and holding the final review's mark); and the `Closes` line at the bottom. The status
+and the final review's, held equal to it by a test; and holding the final review's mark), set off from the summary block by a second rule; and the `Closes` line at the bottom. The status
 line is rendered beside the table on a PRD PR, and by the review's posting job on a regular one. The
 review writes the summary block and the title, and nothing else in the body: a maintainer's notes outside
 the markers survive every round byte for byte. The rule is **anything pushed since the summary was

@@ -944,13 +944,17 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
         "> **🔍 In review:** the slices built so far.",
         `> ${STATUS_END}`,
         ">",
-        `> ${DRAFT_NOTE_START}The agent loop builds PRD #${PARENT} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.${DRAFT_NOTE_END} Add your own notes outside the blocks the loop writes; it never edits them.`,
+        `> ${DRAFT_NOTE_START}The agent loop builds PRD #${PARENT} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.${DRAFT_NOTE_END} Built by the agent loop from PRD #${PARENT}, one sub-issue per slice. Comment here to steer it; your notes outside the loop's blocks are never edited.`,
+        "",
+        "---",
         "",
         "## Summary",
         "",
         SUMMARY_START,
         "_The final review will summarize the whole PRD here._",
         SUMMARY_END,
+        "",
+        "---",
         "",
         PROGRESS_START,
         "_The progress table is written when this slice's review round ends._",
@@ -986,7 +990,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
 
     expect(outcome.status, outcome.stdout).toBe(0);
     expect(outcome.temp("prd-pr-body.md")).toContain(`> [!NOTE]\n> ${status}\n>\n`);
-    expect(outcome.temp("prd-pr-body.md")).toContain(`${SUMMARY_END}\n\n${list}\n\n<!-- agent:closes -->`);
+    expect(outcome.temp("prd-pr-body.md")).toContain(`${SUMMARY_END}\n\n---\n\n${list}\n\n<!-- agent:closes -->`);
     expect(prWrites(outcome).at(-1)).toEqual(["pr", "comment", "300", "--body", "**Slice 1 of 3 · #172 started**"]);
   });
 

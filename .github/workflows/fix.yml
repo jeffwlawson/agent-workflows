@@ -36,7 +36,7 @@ on:
         description: >-
           The file `actions/setup-node` reads the version from. Empty skips the
           setup step entirely: a repo whose toolchain is not Node still gets its
-          feedback acted on, running on the image's own Node.
+          feedback acted on, running on the Node the runner package requires.
         type: string
         default: .nvmrc
       setup:
@@ -438,9 +438,17 @@ jobs:
       # `packages: read` in the caller is what makes the token below work. The
       # cache opt-out belongs to the same note: this half declares no toolchain,
       # so it must not infer one.
+      #
+      # With `node-version-file: ''` the toolchain step above is skipped, and
+      # without a Node named here the runner would run on the image's, below
+      # the package's `engines.node` (#335). So it names one in exactly that
+      # case and none otherwise, leaving an adopter's own version file to decide
+      # the Node their commands run on. `tests/workflows.test.ts` holds it to
+      # `engines.node`.
       - name: Authenticate to GitHub Packages
         uses: actions/setup-node@v7
         with:
+          node-version: ${{ inputs.node-version-file == '' && '24' || '' }}
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"
           package-manager-cache: false

@@ -590,8 +590,9 @@ The ones worth knowing because nothing fails when they break:
   `devEngines.packageManager`). An input added there that does toolchain work fails *before* the
   runner exists to write `failure_reason.txt`, and this repo cannot reproduce it: it declares no
   `packageManager`, so the caching never fires here. The one input it takes beyond the registry is
-  follow-ups' `node-version` (#335): that workflow has no toolchain step, and the image's own Node
-  sits below the package's `engines.node`. A version needs no checkout, so the step stays
+  `node-version` (#335), wherever nothing else names a Node: always in follow-ups, which has no
+  toolchain step, and in the other five only when `node-version-file` is `''`. The image's own
+  Node sits below the package's `engines.node`. A version needs no checkout, so the step stays
   toolchain-free in the sense that matters.
 
 ## The prompts name no domain

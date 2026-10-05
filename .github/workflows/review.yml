@@ -57,7 +57,7 @@ on:
         description: >-
           The file `actions/setup-node` reads the version from. Empty skips the
           setup step entirely: a repo whose toolchain is not Node still gets a
-          review, running on the image's own Node.
+          review, running on the Node the runner package requires.
         type: string
         default: .nvmrc
       setup:
@@ -1804,10 +1804,18 @@ jobs:
       # package published from this repo is not automatically readable by another
       # repo's `GITHUB_TOKEN`; that follows from the package's own access settings
       # (docs/ADOPTING.md §4).
+      #
+      # With `node-version-file: ''` the toolchain step above is skipped, and
+      # without a Node named here the runner would run on the image's, below
+      # the package's `engines.node` (#335). So it names one in exactly that
+      # case and none otherwise, leaving an adopter's own version file to decide
+      # the Node their commands run on. `tests/workflows.test.ts` holds it to
+      # `engines.node`.
       - name: Authenticate to GitHub Packages
         if: steps.state.outputs.proceed == 'true'
         uses: actions/setup-node@v7
         with:
+          node-version: ${{ inputs.node-version-file == '' && '24' || '' }}
           registry-url: https://npm.pkg.github.com
           scope: "@jeffwlawson"
           package-manager-cache: false

@@ -175,8 +175,8 @@ jobs:
       # exists to write `failure_reason.txt`. See the long note on the same step
       # in review.yml.
       #
-      # It names a `node-version`, which the other five leave to their toolchain
-      # step (#335). There is no toolchain step here, so without it the runner
+      # It names a `node-version` unconditionally, where the other five name one
+      # only when their toolchain step is skipped (#335). There is no toolchain step here, so without it the runner
       # runs on the image's Node: v22 under a package declaring `engines.node`
       # `>=24`, logging `EBADENGINE` and working only until something it imports
       # needs 24, at which point it dies loading, before it can write

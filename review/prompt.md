@@ -375,16 +375,37 @@ The title, now, is the one at the top of this brief.
 
 {{SUMMARY_RULE}}
 
-**`summary`** is short, and about **what was built, not what was asked**. It does not retell the
-linked issue. It covers:
+**`summary`** is about **what was built, not what was asked**. It does not retell the linked issue.
+
+It opens with the **smallest view that makes the point**: zero, one or two sketches, each beside the
+short text it supports. A sketch is one of:
+
+- a `diff` of a call tree, a file tree, a state or a control flow;
+- pseudocode;
+- a call tree;
+- a component tree;
+- a Mermaid diagram.
+
+Prefer a `diff` when the surrounding shape already exists: its added and removed lines are the
+change, and its unchanged ones say where it sits. Most changes need one sketch; some need none, and
+a change one sentence explains is one of them. Draw each sketch **from the diff as it stands, never
+from the issue**: the issue is what was asked, and a sketch of it can show a change the reader is
+not merging. Keep only the calls, files and states the point needs. Put each in a fenced code block
+(`mermaid` for a Mermaid diagram).
+
+The prose beside the sketches covers:
 
 - what the change does;
-- behaviour changes, with any breaking one marked **Breaking:**;
-- anything the change does differently from what the linked issue asked, with the reason. Say it
-  plainly even where the reason is good: a reader deciding whether to merge needs to know the
-  change is not the one the issue describes.
+- behaviour changes, with any breaking one marked **Breaking:**.
 
-A sentence, then a few bullets, in Markdown, under about 150 words. Describe the pull request as it
+Where the change does something other than what the linked issue asked, add one line led by
+**Differs from the issue:**, with the reason. Say it plainly even where the reason is good: a reader
+deciding whether to merge needs to know the change is not the one the issue describes. Leave the
+line out when nothing differs.
+
+Keep the prose brief, in Markdown, with no preamble, under about 150 words. Sketches do not count
+against those words; the prose does. Where the project's own docs define a domain term for
+something, use that term rather than a word of your own. Describe the pull request as it
 stands now, all of it, and not only the commits since the last summary. Where the block already
 says something (an earlier review's summary, or a maintainer's edit to it), treat it as **input**:
 keep what is still true, in its words where they still fit, and correct whatever the code now

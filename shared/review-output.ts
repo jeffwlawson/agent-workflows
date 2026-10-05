@@ -1740,16 +1740,34 @@ const cappedWords = (text: string, limit: number): string => {
  * Markdown, a sentence over a few bullets, and joining it on spaces would make
  * one paragraph of it. Cut at the last word kept, with everything before it
  * exactly as written.
+ *
+ * Only prose counts (#354). A fenced block is a sketch the brief puts outside
+ * the budget, so its words are not counted and the cut never lands inside
+ * one: a fence left open would turn the rest of the body into code.
  */
 const cappedWordsKeepingLines = (text: string, limit: number): string => {
   const trimmed = text.trim();
   let count = 0;
-  for (const word of trimmed.matchAll(/\S+/g)) {
-    count += 1;
-    if (count === limit) {
-      const end = word.index + word[0].length;
-      return end < trimmed.length ? `${trimmed.slice(0, end)}…` : trimmed;
+  let fence: string | undefined;
+  let start = 0;
+  for (const line of trimmed.split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence === undefined && marker !== undefined) {
+      fence = marker;
+    } else if (fence !== undefined) {
+      if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) {
+        fence = undefined;
+      }
+    } else {
+      for (const word of line.matchAll(/\S+/g)) {
+        count += 1;
+        if (count === limit) {
+          const end = start + word.index + word[0].length;
+          if (end < trimmed.length) return `${trimmed.slice(0, end)}…`;
+        }
+      }
     }
+    start += line.length + 1;
   }
   return trimmed;
 };

@@ -200,7 +200,7 @@ const NOT_FINAL = "Leave `behaviourChanges` out.";
 const FINAL_SUMMARY_SHAPE = [
   "**This is the final review of a PRD PR, so the summary is the whole PRD's**, and the workflow lays it out in sections. Write:",
   "",
-  "- **`summary`**: the **outcome**, what the PRD delivered as a whole, in a few sentences. Nothing about the review, and no list of slices: the body already shows them.",
+  "- **`summary`**: the **outcome**, what the PRD delivered as a whole. Open it as the summary section above asks, with the **smallest view that makes the point**: zero, one or two sketches of the whole change, drawn from the diff as it stands and never from the PRD, each beside the short text it supports. Then a few sentences, brief and with no preamble; sketches do not count against the word budget, which stays for the prose. Nothing about the review, and no list of slices: the body already shows them.",
   "- **`behaviourChanges`**: one entry per behaviour the PRD changes, `{ \"change\": \"one line\", \"breaking\": true }` where a caller or a user has to act on it and `false` otherwise. The workflow marks the breaking ones; do not write the mark yourself.",
   "",
   "The criteria each slice changed or dropped and, where the red check is configured, each slice's failing-first tests are added from each slice round's record, and the known issues from the follow-ups this review records, so write neither. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",

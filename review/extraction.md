@@ -112,11 +112,13 @@ saying it again here is the same problem read twice.
 - **`title`**: the pull request's title, one line, true of the change as it now stands, in the
   commit convention `CLAUDE.md` names or conventional-commit style otherwise. The type comes from
   what the diff does, not from the issue's title. Cut at 100 characters.
-- **`summary`**: the pull request's summary, in Markdown: what the change does, behaviour changes
-  with breaking ones marked, and anything that departs from the linked issue with the reason.
-  About what was built, not what was asked; it does not retell the issue. Under about 150 words,
-  and **truncated** past that. Description only, never an evaluation. It goes into the pull
-  request's body, not the review.
+- **`summary`**: the pull request's summary, in Markdown: zero, one or two sketches drawn from the
+  diff, each in a fenced code block beside the text it supports, then what the change does,
+  behaviour changes with breaking ones marked, and a line led by **Differs from the issue:** where
+  it departs from the linked issue, with the reason. About what was built, not what was asked; it
+  does not retell the issue. The prose is under about 150 words, and **truncated** past that;
+  words inside a fenced block do not count. Description only, never an evaluation. It goes into
+  the pull request's body, not the review.
 
   Both are written only where something was pushed since the summary was last written, which the
   brief told you. Where it said this review leaves them as they are, omit both.
@@ -206,7 +208,7 @@ A criterion you omit is listed as not checked.
   "assessment": "One sentence, under 200 characters, naming what is unresolved: the subjects, not the count.",
   "howChecked": "Under 100 words. What you actually verified: the checks you ran, the behaviour you traced, the files you read.",
   "title": "feat(scope): one line, true of the change as it now stands",
-  "summary": "One sentence on what the change does.\n\n- A behaviour change it makes.\n- **Breaking:** one a caller has to act on.\n- Where it departs from the linked issue, and why.",
+  "summary": "One sentence on what the change does.\n\n```diff\n caller()\n-  oldStep()\n+  newStep()\n```\n\n- A behaviour change it makes.\n- **Breaking:** one a caller has to act on.\n\n**Differs from the issue:** where it departs from the linked issue, and why.",
   "fixBeforeMerge": [
     "One line per finding that must be fixed before this merges: the same findings the `findings` list carries."
   ],

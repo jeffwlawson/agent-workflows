@@ -225,6 +225,24 @@ describe("reviewOutputSchema: the prose beside the findings", () => {
   });
 
   /**
+   * **A sketch is outside the budget** (#354). The brief asks for up to two
+   * fenced sketches beside the prose and holds only the prose to the cap, so
+   * the cap counts no word inside a fence: a sketch neither spends the prose's
+   * words nor is cut mid-fence, which would leave the fence open over the rest
+   * of the body.
+   */
+  it("counts no word inside a fenced sketch, and never cuts one", () => {
+    const sketch = ["```diff", ...Array.from({ length: MAX_SUMMARY_WORDS }, (_, i) => `+ s${i} x`), "```"].join("\n");
+    const tilde = "~~~text\nloop-token\n  App secrets set? → App token\n~~~";
+    const prose = Array.from({ length: MAX_SUMMARY_WORDS - 1 }, (_, i) => `w${i}`).join(" ");
+    const summary = `${prose}\n\n${sketch}\n\n${tilde}\n\nlast`;
+    expect(parse({ summary }).summary).toBe(summary);
+
+    const over = parse({ summary: `${sketch}\n\n${prose} one two` }).summary ?? "";
+    expect(over).toBe(`${sketch}\n\n${prose} one…`);
+  });
+
+  /**
    * The block's own markers are HTML comments, so a summary carrying one would
    * end the block early, or open a second, the next time it is spliced.
    */
@@ -2975,6 +2993,64 @@ describe("the review's finding vocabulary", () => {
     expect(PROMPT).toContain("the wrong thing was built");
     expect(PROMPT).toContain("the issue itself was wrong");
     expect(PROMPT).toMatch(/cannot say why/);
+  });
+});
+
+/**
+ * **The summary opens with a sketch drawn from the diff** (#354), the `pr`
+ * skill's Summary: the smallest view that makes the point, then brief prose.
+ *
+ * Drawn from the diff rather than the issue, because the issue is what was
+ * asked and a sketch of it shows a change the reader is not merging; and
+ * outside the word budget, which `cappedWordsKeepingLines` holds the parser
+ * to as well. The final review of a PRD PR is asked for the same, of its
+ * outcome, from the runner's own text since that is where its shape lives.
+ */
+describe("the review brief's summary sketch", () => {
+  const PROMPT = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
+  const RUNNER = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+  const plain = (text: string): string => text.replace(/[*_]/g, "").replace(/\s+/g, " ");
+  const section = (): string => plain(PROMPT).match(/# THE TITLE AND THE SUMMARY.*?(?= # )/s)?.[0] ?? "";
+  const finalShape = (): string => plain(RUNNER.match(/const FINAL_SUMMARY_SHAPE = \[.*?\]\.join/s)?.[0] ?? "");
+
+  it("asks for zero, one or two sketches, each beside the text it supports", () => {
+    expect(section()).toMatch(/smallest view that makes the point/i);
+    expect(section()).toMatch(/zero, one or two sketches/i);
+    expect(section()).toMatch(/beside the short text it supports/i);
+  });
+
+  it("names the forms, and prefers a diff where the shape already exists", () => {
+    for (const form of ["call tree", "file tree", "pseudocode", "component tree", "Mermaid"]) {
+      expect(section(), form).toContain(form);
+    }
+    expect(section()).toMatch(/prefer a `diff`/i);
+  });
+
+  it("draws a sketch from the diff as it stands, never from the issue", () => {
+    expect(section()).toMatch(/from the diff as it stands, never from the issue/i);
+  });
+
+  it("keeps sketches outside the word budget, which stays for the prose", () => {
+    expect(section()).toMatch(/about 150 words/);
+    expect(section()).toMatch(/sketches do not count against/i);
+  });
+
+  it("asks for the project's own terms without naming a file that defines them", () => {
+    expect(section()).toMatch(/domain terms?/i);
+    expect(section()).not.toMatch(/GLOSSARY/);
+  });
+
+  it("keeps Differs from the issue as one bold-led line, left out when nothing differs", () => {
+    expect(PROMPT).toContain("**Differs from the issue:**");
+    expect(section()).toMatch(/leave (?:the line|it) out when nothing differs/i);
+  });
+
+  it("asks the final review for the same sketch of the outcome", () => {
+    expect(finalShape()).toMatch(/outcome/);
+    expect(finalShape()).toMatch(/smallest view that makes the point/i);
+    expect(finalShape()).toMatch(/zero, one or two sketches/i);
+    expect(finalShape()).toMatch(/from the diff as it stands/i);
+    expect(finalShape()).toMatch(/do not count against/i);
   });
 });
 

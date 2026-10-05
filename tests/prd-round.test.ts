@@ -311,21 +311,21 @@ describe("sliceRedTests", () => {
 });
 
 /**
- * The final review's PRD sections (#247, #216), as the workflow lays them out
- * in the summary block: the outcome, the behaviour changes with the breaking
- * ones marked, the criteria each slice changed or dropped, and the known
- * issues naming the follow-ups filed on merge.
+ * The final review's PRD summary (#247, #356), laid out as a regular pull
+ * request's: the review's outcome, a *Differs from the PRD* line per slice
+ * that changed or dropped a criterion, the Evidence and the Merge Danger, its
+ * known issues naming the follow-ups filed on merge.
  */
 describe("renderPrdSummary", () => {
   const followUp = { title: "the cache key omits the tenant", location: "src/cache.ts:12", body: "b", severity: "medium" as const };
+  const evidence = { ci: "green", head: "h".repeat(40) } as const;
+  const danger = { door: "two-way", blastRadius: "adopters" } as const;
+  const quiet = { outcome: "o", danger, slices: [], followUps: [], evidence };
 
-  it("renders every section, a breaking change marked and a dropped criterion with its slice", () => {
+  it("lays out the outcome, a line per slice that differs, the Evidence and the Merge Danger, in that order", () => {
     const text = renderPrdSummary({
-      outcome: "Each slice is built on one branch and reviewed on one pull request.",
-      behaviourChanges: [
-        { change: "Slice PRs are no longer opened.", breaking: false },
-        { change: "Adopters must drop the `closed` trigger.", breaking: true },
-      ],
+      outcome: "Each slice is built on one branch.\n\n- Slice PRs are no longer opened.",
+      danger: { ...danger, breaking: ["Adopters must drop the `closed` trigger."] },
       slices: [
         { subIssue: 242, record: { kind: "recorded", changes: [] } },
         {
@@ -342,62 +342,106 @@ describe("renderPrdSummary", () => {
         { subIssue: 245, record: { kind: "no record" } },
       ],
       followUps: [followUp],
+      evidence,
     });
 
     expect(text).toBe(
       [
-        "### Outcome",
-        "Each slice is built on one branch and reviewed on one pull request.",
-        "### Behaviour changes",
-        "- **Breaking:** Adopters must drop the `closed` trigger.\n- Slice PRs are no longer opened.",
-        "### Acceptance criteria changed or dropped",
-        [
-          "- #243:",
-          "  - **Dropped:** It refuses a stale tag. · declined",
-          "  - **Changed:** It logs the tag. · a warning now",
-          "- #245: no review of this slice could be read, so its record is not listed here.",
-        ].join("\n"),
-        "### Known issues",
-        "Filed as issues when this pull request merges:\n\n- the cache key omits the tenant (`src/cache.ts:12`)",
+        "Each slice is built on one branch.\n\n- Slice PRs are no longer opened.",
+        "**Differs from the PRD:** #243 dropped: It refuses a stale tag. · declined; changed: It logs the tag. · a warning now",
+        "**Differs from the PRD:** #245: no review of this slice could be read, so whether it changed or dropped a criterion is not known.",
+        "## Evidence",
+        "- **Before:** not checked. The test-first check is off, so no test in any slice is shown to fail without its change.\n  **After:** CI is green at `hhhhhhh`.",
+        "## Merge Danger",
+        "**Door:** two-way",
+        "**Blast Radius:** adopters",
+        "**Breaking:** Adopters must drop the `closed` trigger.",
+        "**Known issues**, filed when this merges:\n\n- the cache key omits the tenant (`src/cache.ts:12`)",
       ].join("\n\n"),
     );
   });
 
-  it("says so where nothing changed, nothing is known and the history could not be read", () => {
-    const quiet = renderPrdSummary({
+  /** #356: the old sections are gone, their content in Summary and Merge Danger. */
+  it("carries none of the retired sections", () => {
+    const text = renderPrdSummary({ ...quiet, followUps: [followUp] });
+
+    for (const heading of ["### Outcome", "### Behaviour changes", "### Acceptance criteria changed or dropped", "### Known issues"]) {
+      expect(text).not.toContain(heading);
+    }
+  });
+
+  it("leaves the Differs lines and the known issues out where there are none, and says where the history could not be read", () => {
+    const none = renderPrdSummary({
+      ...quiet,
       outcome: undefined,
-      behaviourChanges: [],
       slices: [{ subIssue: 242, record: { kind: "recorded", changes: [] } }],
-      followUps: [],
     });
 
-    expect(quiet).toContain("None: every slice met its sub-issue's criteria as written.");
-    expect(quiet).toContain("### Known issues\n\nNone recorded to be filed.");
-    expect(quiet).toContain("### Behaviour changes\n\nNone recorded.");
-    expect(renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: undefined, followUps: [] })).toContain(
-      "could not be read",
+    expect(none).toMatch(/^_The final review wrote no outcome\._\n\n## Evidence/);
+    expect(none).not.toContain("Differs from the PRD");
+    expect(none).not.toContain("Known issues");
+    expect(none).toMatch(/\*\*Blast Radius:\*\* adopters$/);
+    expect(renderPrdSummary({ ...quiet, slices: undefined })).toContain(
+      "o\n\n**Differs from the PRD:** not known. The PRD branch's history could not be read",
     );
   });
 
-  /** #235: where the red check is configured, each slice's failing-first tests, before the known issues. */
-  it("lists the failing-first tests by slice where the red check is configured, and only there", () => {
-    const inputs = { outcome: "o", behaviourChanges: [], slices: [], followUps: [] };
+  /** #235, #355: the Evidence, by slice where the red check is configured and in one entry where it is not, before the Merge Danger. */
+  it("gives the Evidence by slice where the red check is configured, and in one entry where it is not", () => {
     const listed = renderPrdSummary({
-      ...inputs,
+      ...quiet,
       redTests: { slices: [{ subIssue: 242, record: { known: true, red: [{ name: "test_a", classname: "c" }], more: 0 } }] },
     });
 
-    expect(listed).toContain("### Failing-first tests\n\nEach slice's tests that failed on an assertion against the PRD branch as it stood before that slice");
-    expect(listed).toContain("- #242 (1):\n  - `test_a` (`c`)\n\n### Known issues");
-    expect(renderPrdSummary({ ...inputs, redTests: { slices: undefined } })).toContain("not listed here by slice");
-    expect(renderPrdSummary(inputs)).not.toContain("Failing-first");
+    expect(listed).toContain("## Evidence\n\n- #242\n  **Before:** 1 test(s) fail without this slice.");
+    expect(listed).toContain("  - `test_a` (`c`)\n\n  **After:** CI is green at `hhhhhhh`.\n\n## Merge Danger");
+    expect(renderPrdSummary({ ...quiet, redTests: { slices: undefined } })).toContain("history could not be read");
+    expect(renderPrdSummary(quiet)).toContain("## Evidence\n\n- **Before:** not checked.");
+    expect(renderPrdSummary(quiet)).not.toContain("Failing-first");
+  });
+
+  /**
+   * The final review is handed the whole block and rewrites it whenever the
+   * head moved, so an outcome may carry what this render writes afresh. Each
+   * such part is dropped, so the body never shows it twice.
+   */
+  it("drops the Differs lines, the Evidence and the Merge Danger an outcome carried forward", () => {
+    const previous = renderPrdSummary({
+      ...quiet,
+      outcome: "Each slice is built on one branch.",
+      slices: [{ subIssue: 245, record: { kind: "no record" } }],
+      followUps: [followUp],
+    });
+    const fresh = renderPrdSummary({ ...quiet, outcome: "Each slice is built on one branch." });
+
+    expect(renderPrdSummary({ ...quiet, outcome: previous })).toBe(fresh);
+    expect(renderPrdSummary({ ...quiet, outcome: "Each slice is built on one branch.\n\n## Merge Danger\n\n**Door:** stale" })).toBe(fresh);
+    expect(
+      renderPrdSummary({ ...quiet, outcome: "Each slice is built on one branch.\n\n### Failing-first tests\n\n- `stale`" }),
+    ).toBe(fresh);
+  });
+
+  /** A block written before #356 carries the old sections; the outcome keeps its text and none of them. */
+  it("keeps only the outcome's text from a block written in the old layout", () => {
+    const legacy = [
+      "### Outcome",
+      "Each slice is built on one branch.",
+      "### Behaviour changes",
+      "- **Breaking:** stale",
+      "### Acceptance criteria changed or dropped",
+      "None.",
+      "### Known issues",
+      "None recorded to be filed.",
+    ].join("\n\n");
+
+    expect(renderPrdSummary({ ...quiet, outcome: legacy })).toBe(
+      renderPrdSummary({ ...quiet, outcome: "Each slice is built on one branch." }),
+    );
   });
 
   /** #216: nothing in what the workflow lays out says the PRD PR is a draft. */
   it("carries no draft-only text", () => {
-    const text = renderPrdSummary({ outcome: "o", behaviourChanges: [], slices: [], followUps: [] });
-
-    expect(text).not.toMatch(/draft|summarize the whole PRD here/i);
+    expect(renderPrdSummary(quiet)).not.toMatch(/draft|summarize the whole PRD here/i);
   });
 });
 

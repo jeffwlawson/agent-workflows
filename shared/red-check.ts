@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { asArray, asRecord, asString } from "./common.js";
-import { embeddableJson } from "./review-output.js";
+import { MERGE_DANGER_HEADING } from "./merge-danger.js";
+import { embeddableJson, type CiResult, type TestSketch } from "./review-output.js";
 
 /**
  * The red check's evidence, as the review reads it (#232, PRD #212).
@@ -391,82 +392,202 @@ const clipped = (message: string): string => {
   return `${text.slice(0, MAX_MESSAGE_CHARS).trimEnd()}\n…`;
 };
 
-const failingFirst = (test: RedCheckTest): string =>
-  test.message
-    ? `- ${describeTest(test)}\n\n${fenced(clipped(test.message))}`
-    : `- ${describeTest(test)} (no assertion reported)`;
-
-export const FAILING_FIRST_HEADING = "### Failing-first tests";
+/** How many tests the body sketches, so the model's pseudocode cannot crowd out the evidence it sits beside. */
+export const MAX_TEST_SKETCHES = 3;
 
 /**
- * The **failing-first tests** as the pull request's body lists them (#234),
- * under the summary the review writes: the tests the red check found red
- * against the merge-base, each with the assertion it failed on.
+ * The sketches the body carries (#355): each one naming a test the report
+ * lists as failing first, `failingFirst` in the order the body lists them, the
+ * first sketch for a test winning, and at most `MAX_TEST_SKETCHES`. Any other is
+ * dropped, so the model can describe a failing-first test but never add one or
+ * promote one to proven; a test past the cap stays listed by name.
+ */
+export const pickSketches = (
+  sketches: readonly TestSketch[],
+  failingFirst: readonly string[],
+): Map<string, string> => {
+  const listed = new Set(failingFirst);
+  const picked = new Map<string, string>();
+  for (const { test, sketch } of sketches) {
+    if (picked.size === MAX_TEST_SKETCHES) break;
+    if (listed.has(test) && !picked.has(test)) picked.set(test, sketch);
+  }
+  return picked;
+};
+
+/** Each line indented, blank ones left blank, so a block sits inside the list entry above it. */
+const indented = (text: string, by: number): string =>
+  text
+    .split("\n")
+    .map((line) => (line === "" ? line : `${" ".repeat(by)}${line}`))
+    .join("\n");
+
+/**
+ * A sketch is taken from `sketches` as it is placed, so a test listed twice on
+ * a PRD PR carries it once.
+ */
+const sketchOf = (test: Pick<RedCheckTest, "name">, sketches: Map<string, string>): string[] => {
+  const sketch = sketches.get(test.name);
+  if (sketch === undefined) return [];
+  sketches.delete(test.name);
+  return [fenced(clipped(sketch))];
+};
+
+/** A failing-first test as the body lists it: its name, what it checks where sketched, then why it failed. */
+const failingFirst = (test: RedCheckTest, sketches: Map<string, string>): string =>
+  [
+    `- ${describeTest(test)}${test.message ? "" : " (no assertion reported)"}`,
+    ...[...sketchOf(test, sketches), ...(test.message ? [fenced(clipped(test.message))] : [])].map((block) =>
+      indented(block, 2),
+    ),
+  ].join("\n\n");
+
+export const EVIDENCE_HEADING = "## Evidence";
+
+/**
+ * The heading the section had before #355. A body written then carries it in
+ * the block the review is handed back, and cutting only at the new one would
+ * keep that stale copy above the section written now.
+ */
+const LEGACY_HEADING = "### Failing-first tests";
+
+/** And the Merge Danger the workflow writes after the Evidence (#356), which is carried forward with it. */
+const HEADINGS = new RegExp(`^(?:${EVIDENCE_HEADING}|${LEGACY_HEADING}|${MERGE_DANGER_HEADING})[ \\t]*$`, "m");
+
+/**
+ * The **After** of every entry: CI's result at the head the summary describes,
+ * from the same file the verdict reads. It claims CI's result and never that a
+ * named test passed: the test-first check runs nothing at the head.
+ */
+const after = (ci: CiResult, head: string): string => {
+  const at = code(head.slice(0, 7));
+  return ci === "unknown" ? `CI's result at ${at} is unknown.` : `CI is ${ci} at ${at}.`;
+};
+
+/**
+ * One Before/After entry: a list item, the Before on its first line and
+ * anything it lists indented under it, then the After.
+ */
+const entry = (before: string, details: readonly string[], ci: CiResult, head: string, label?: string): string => {
+  const opening = `${label === undefined ? "- " : `- ${label}\n  `}**Before:** ${before}`;
+  const closing = `  **After:** ${after(ci, head)}`;
+  return details.length === 0
+    ? `${opening}\n${closing}`
+    : [opening, ...details.map((detail) => indented(detail, 2)), closing].join("\n\n");
+};
+
+/** What CI and the review's model add to the test-first check's report, for the body's Evidence. */
+export interface EvidenceInputs {
+  readonly ci: CiResult;
+  /** The head the summary describes, and CI's result is for. */
+  readonly head: string;
+  readonly testSketches?: readonly TestSketch[] | undefined;
+}
+
+/**
+ * The **Evidence** as the pull request's body gives it (#234, #355), under the
+ * summary the review writes: one Before/After entry. **Before** is what the
+ * test-first check (the red check, under the name the body gives it) found
+ * against the code as it was before this change: the tests red there, each
+ * with the assertion it failed on. **After** is CI's result at the head.
  *
  * Only red tests are listed: a broken test failed before any assertion ran, so
  * it is counted and said to be not failing-first, never listed beside them. A
  * check that is off, and one whose report could not be read or held no
  * result, each say so, because an empty list would read as "none was red".
  */
-export const renderFailingFirst = (check: RedCheck, reviewedHead: string): string => {
-  const body = ((): string => {
+export const renderEvidence = (check: RedCheck, inputs: EvidenceInputs): string => {
+  const { ci, head } = inputs;
+  const section = ((): string => {
     switch (check.kind) {
       case "not-configured":
-        return "The red check is not configured for this repository, so no test here is shown to fail against the code as it was before this change.";
+        return entry(
+          "not checked. The test-first check is off, so no test here is shown to fail without this change.",
+          [],
+          ci,
+          head,
+        );
       case "unreadable":
-        return `The red check is configured, and its report could not be read: ${check.reason}. Which tests fail against the code as it was before this change is unknown.`;
+        return entry(
+          `unknown. The test-first check is on, and its report could not be read: ${check.reason}. Which tests fail without this change is unknown.`,
+          [],
+          ci,
+          head,
+        );
       case "ran":
         break;
     }
     const report = check.report;
     if (report.status === "no-test-files") {
-      return "None: this pull request adds or changes no test file.";
+      return entry("none. This pull request adds or changes no test file.", [], ci, head);
     }
     if (report.status !== "ran" || report.tests.length === 0) {
       const why =
         report.status !== "ran"
           ? (NOT_RUN[report.status] ?? `it reported ${code(report.status)}`)
           : "its JUnit report held no test that ran";
-      return `The red check is configured, and came back with no test results: ${why}. Which tests fail against the code as it was before this change is unknown.`;
+      return entry(
+        `unknown. The test-first check came back with no test results: ${why}. Which tests fail without this change is unknown.`,
+        [],
+        ci,
+        head,
+      );
     }
 
     const red = report.tests.filter((test) => test.result === "red");
+    const listed = red.slice(0, MAX_LISTED);
     const broken = report.tests.filter((test) => test.result === "broken").length;
-    const parts: string[] = [
-      red.length === 0
-        ? "None: no test this pull request adds or changes failed on an assertion against the code as it was before this change."
-        : `Each of these failed on the assertion shown against the code as it was before this change, ${
-            report.base === null ? before(report) : `${before(report)} ${code(report.base)}`
-          }, with ${whose(report)}'s test files put over it:\n\n${red.slice(0, MAX_LISTED).map(failingFirst).join("\n\n")}`,
-    ];
+    const sketches = pickSketches(
+      inputs.testSketches ?? [],
+      listed.map((test) => test.name),
+    );
+    const details: string[] = [];
+    if (listed.length > 0) details.push(listed.map((test) => failingFirst(test, sketches)).join("\n\n"));
     if (red.length > MAX_LISTED) {
-      parts.push(`And ${red.length - MAX_LISTED} more, not listed here to keep the body short.`);
+      details.push(`And ${red.length - MAX_LISTED} more, not listed here to keep the body short.`);
     }
     if (broken > 0) {
-      parts.push(
+      details.push(
         `${broken} more failed there on import, collection or setup, before any assertion ran. Those are not failing-first, and are not listed.`,
       );
     }
-    if (report.head !== null && report.head !== reviewedHead) {
-      parts.push(
-        `The check read this pull request at ${code(report.head)}, not at ${code(reviewedHead)}, so a test added after that is not listed.`,
+    if (report.head !== null && report.head !== head) {
+      details.push(
+        `The test-first check read this pull request at ${code(report.head)}, not at ${code(head)}, so a test added after that is not listed.`,
       );
     }
-    return parts.join("\n\n");
+    const found =
+      red.length === 0
+        ? "none. No test this pull request adds or changes failed on an assertion against the code as it was before this change."
+        : `${red.length} test(s) fail without this change. Each failed on the assertion shown against the code as it was before this change, ${
+            report.base === null ? before(report) : `${before(report)} ${code(report.base)}`
+          }, with ${whose(report)}'s test files put over it:`;
+    return entry(found, details, ci, head);
   })();
-  return defused(`${FAILING_FIRST_HEADING}\n\n${body}`);
+  return defused(`${EVIDENCE_HEADING}\n\n${section}`);
 };
 
 /**
- * The summary the body carries: the agent's text, then the failing-first
- * tests. The block it rewrites is handed back to it as input, list and all, so
- * a list it carried forward is cut from its text first rather than kept as a
- * second, stale copy above the one the report gives.
+ * The agent's own text, cut at the first section the workflow writes after it
+ * (the Evidence under either heading, or the Merge Danger), which the block it
+ * was handed back carried and which is written afresh under it.
  */
-export const withFailingFirst = (summary: string, check: RedCheck, reviewedHead: string): string => {
-  const at = summary.indexOf(FAILING_FIRST_HEADING);
-  const own = (at === -1 ? summary : summary.slice(0, at)).trimEnd();
-  const section = renderFailingFirst(check, reviewedHead);
+export const withoutCarriedSections = (summary: string): string => {
+  const at = HEADINGS.exec(summary)?.index ?? -1;
+  return (at === -1 ? summary : summary.slice(0, at)).trimEnd();
+};
+
+/**
+ * The summary the body carries: the agent's text, then the Evidence. The
+ * block it rewrites is handed back to it as input, Evidence and all, so a
+ * section it carried forward is cut from its text first rather than kept as a
+ * second, stale copy above the one the report gives. Under either heading:
+ * a body written before #355 carries the old one. Cut at the Merge Danger's
+ * heading too (#356), which follows the Evidence and is written afresh with it.
+ */
+export const withEvidence = (summary: string, check: RedCheck, inputs: EvidenceInputs): string => {
+  const own = withoutCarriedSections(summary);
+  const section = renderEvidence(check, inputs);
   return own === "" ? section : `${own}\n\n${section}`;
 };
 
@@ -554,37 +675,85 @@ export interface SliceRedTests {
 }
 
 /**
- * The failing-first tests as the PRD PR's final body lists them (#235): by
- * slice, each slice's as its own round's red check found them, against the
- * PRD branch as it stood before that slice. `slices` is undefined where the
- * PRD branch could not be read.
+ * The **Evidence** as the PRD PR's final body gives it (#235, #355). With the
+ * test-first check on, one Before/After entry per slice: Before is each
+ * slice's red tests as its own round's check found them, against the PRD
+ * branch as it stood before that slice, and After is CI's result at the head.
+ * With it off, one entry for the whole pull request.
+ *
+ * `redTests` is undefined where the check is off, and its `slices` undefined
+ * where the PRD branch could not be read.
  */
-export const renderFailingFirstBySlice = (slices: readonly SliceRedTests[] | undefined): string => {
-  const body = ((): string => {
-    if (slices === undefined) {
-      return "The PRD branch's history could not be read, so the failing-first tests are not listed here by slice.";
+export const renderEvidenceBySlice = (
+  redTests: { readonly slices: readonly SliceRedTests[] | undefined } | undefined,
+  inputs: EvidenceInputs,
+): string => {
+  const { ci, head } = inputs;
+  const section = ((): string => {
+    if (redTests === undefined) {
+      return entry(
+        "not checked. The test-first check is off, so no test in any slice is shown to fail without its change.",
+        [],
+        ci,
+        head,
+      );
     }
-    if (slices.length === 0) return "No slice has landed, so there are none to list.";
-    const lines = slices.flatMap(({ subIssue, record }): string[] => {
-      if (record === undefined) {
-        return [`- #${subIssue}: no record. No review of this slice recorded what its red check found.`];
-      }
-      if (!record.known) {
-        return [`- #${subIssue}: unknown. Its red check came back with no test results.`];
-      }
-      if (record.red.length === 0) {
-        return [`- #${subIssue}: none. No test it adds or changes failed on an assertion.`];
-      }
-      return [
-        `- #${subIssue} (${record.red.length + record.more}):`,
-        ...record.red.map((test) => `  - ${describeTest({ ...test, result: "red" })}`),
-        ...(record.more > 0 ? [`  - And ${record.more} more, not listed here to keep the body short.`] : []),
-      ];
-    });
-    return [
-      "Each slice's tests that failed on an assertion against the PRD branch as it stood before that slice, as that slice's own round found them:",
-      lines.join("\n"),
-    ].join("\n\n");
+    const slices = redTests.slices;
+    if (slices === undefined) {
+      return entry(
+        "unknown. The PRD branch's history could not be read, so what each slice's test-first check found is not listed here.",
+        [],
+        ci,
+        head,
+      );
+    }
+    if (slices.length === 0) return entry("none. No slice has landed, so there is nothing to list.", [], ci, head);
+    const sketches = pickSketches(
+      inputs.testSketches ?? [],
+      slices.flatMap(({ record }) => (record === undefined ? [] : record.red.map((test) => test.name))),
+    );
+    return slices
+      .map(({ subIssue, record }): string => {
+        const label = `#${subIssue}`;
+        if (record === undefined) {
+          return entry(
+            "no record. No review of this slice recorded what its test-first check found.",
+            [],
+            ci,
+            head,
+            label,
+          );
+        }
+        if (!record.known) {
+          return entry("unknown. Its test-first check came back with no test results.", [], ci, head, label);
+        }
+        if (record.red.length === 0) {
+          return entry(
+            "none. No test it adds or changes failed on an assertion against the PRD branch as it stood before it.",
+            [],
+            ci,
+            head,
+            label,
+          );
+        }
+        const tests = record.red.map((test) => {
+          const sketch = sketchOf(test, sketches);
+          return [`- ${describeTest({ ...test, result: "red" })}`, ...sketch.map((block) => indented(block, 2))].join(
+            "\n\n",
+          );
+        });
+        return entry(
+          `${record.red.length + record.more} test(s) fail without this slice. Each failed on an assertion against the PRD branch as it stood before it:`,
+          [
+            tests.join("\n"),
+            ...(record.more > 0 ? [`And ${record.more} more, not listed here to keep the body short.`] : []),
+          ],
+          ci,
+          head,
+          label,
+        );
+      })
+      .join("\n\n");
   })();
-  return defused(`${FAILING_FIRST_HEADING}\n\n${body}`);
+  return defused(`${EVIDENCE_HEADING}\n\n${section}`);
 };

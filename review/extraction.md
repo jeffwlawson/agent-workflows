@@ -112,18 +112,31 @@ saying it again here is the same problem read twice.
 - **`title`**: the pull request's title, one line, true of the change as it now stands, in the
   commit convention `CLAUDE.md` names or conventional-commit style otherwise. The type comes from
   what the diff does, not from the issue's title. Cut at 100 characters.
-- **`summary`**: the pull request's summary, in Markdown: what the change does, behaviour changes
-  with breaking ones marked, and anything that departs from the linked issue with the reason.
-  About what was built, not what was asked; it does not retell the issue. Under about 150 words,
-  and **truncated** past that. Description only, never an evaluation. It goes into the pull
-  request's body, not the review.
+- **`summary`**: the pull request's summary, in Markdown: zero, one or two sketches drawn from the
+  diff, each in a fenced code block beside the text it supports, then what the change does, the
+  behaviour it changes, and a line led by **Differs from the issue:** where it departs from the
+  linked issue, with the reason. About what was built, not what was asked; it does not retell the
+  issue. Breaking changes are not marked in it: they go in `breaking`. The prose is under about 150
+  words, and **truncated** past that; words inside a fenced block do not count. Description only,
+  never an evaluation. It goes into the pull request's body, not the review.
 
   Both are written only where something was pushed since the summary was last written, which the
   brief told you. Where it said this review leaves them as they are, omit both.
-- **`behaviourChanges`**: on a PRD PR's **final review** only, where the brief asked for it: one
-  entry per behaviour the whole change alters, `{ "change": "one line", "breaking": true }` for one
-  a caller or a user has to act on and `false` otherwise. The workflow marks the breaking ones and
-  lays the summary out around them. Omit the field on every other review.
+- **`door`**, **`doorNote`**, **`blastRadius`**, **`blastRadiusNote`**, **`breaking`**: the pull
+  request's **Merge Danger**, written beside `summary` and omitted with it. `door` is `"one-way"`
+  where a revert cannot undo the change (a published release, deleted data, a migration) and
+  `"two-way"` otherwise; when a change takes effect is its blast radius, not its door. `blastRadius`
+  is one word for who or what it reaches. The two notes are one line each and optional: `doorNote`
+  only for a one-way door or a two-way door with a catch, `blastRadiusNote` saying who is reached
+  and from when. `breaking` is a list, one line per change a caller or a user has to act on, empty
+  where there is none. The workflow lays the section out, with your `followUps` as its known issues.
+
+- **`testSketches`**: what a test checks, as pseudocode, for the pull request's Evidence, where the
+  brief's red check section lists tests as red: `{ "test": "its name exactly as listed", "sketch":
+  "a few lines" }`. The setup, the call and what it asserts, not the test's code copied. The workflow
+  puts each sketch above that test's assertion message, keeps **at most three**, and drops any naming
+  a test the report does not list as red: a sketch describes a failing test, it cannot add one or
+  mark one as proven. Leave it out, or empty, where no test is listed as red.
 
 Do not use em dashes in anything you write, in any field; use a comma, colon, semicolon,
 parentheses, or a new sentence instead.
@@ -206,7 +219,16 @@ A criterion you omit is listed as not checked.
   "assessment": "One sentence, under 200 characters, naming what is unresolved: the subjects, not the count.",
   "howChecked": "Under 100 words. What you actually verified: the checks you ran, the behaviour you traced, the files you read.",
   "title": "feat(scope): one line, true of the change as it now stands",
-  "summary": "One sentence on what the change does.\n\n- A behaviour change it makes.\n- **Breaking:** one a caller has to act on.\n- Where it departs from the linked issue, and why.",
+  "summary": "One sentence on what the change does.\n\n```diff\n caller()\n-  oldStep()\n+  newStep()\n```\n\n- A behaviour change it makes.\n\n**Differs from the issue:** where it departs from the linked issue, and why.",
+  "door": "two-way",
+  "blastRadius": "users",
+  "blastRadiusNote": "Who is reached, and from when: on merge, or at the next release.",
+  "breaking": [
+    "One line per change a caller or a user has to act on, and what they must do."
+  ],
+  "testSketches": [
+    { "test": "test_scales_servings", "sketch": "recipe = Recipe(servings=2, flour=100)\nscaled = recipe.scale(4)\nexpect scaled.flour == 200" }
+  ],
   "fixBeforeMerge": [
     "One line per finding that must be fixed before this merges: the same findings the `findings` list carries."
   ],
@@ -237,9 +259,9 @@ A criterion you omit is listed as not checked.
 </output>
 ```
 
-`behaviourChanges` is not in the example: it is asked for on one review in many, and the brief
-says when. Use an empty array for any of the six lists with no entries (`verified` is empty when you were
+`doorNote` is not in the example: it is for a one-way door or a two-way door with a catch. Use an
+empty array for any of the eight lists with no entries (`verified` is empty when you were
 given no open findings to rule on, `noteRulings` when you were given no notes, and `criteria` when
 you were given no criteria). Leave
-`needsYou` out entirely unless it applies, and `title` and `summary` out where the brief said this
-review leaves them as they are.
+`needsYou` out entirely unless it applies, and `title`, `summary` and the Merge Danger fields out
+where the brief said this review leaves them as they are.

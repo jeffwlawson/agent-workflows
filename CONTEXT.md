@@ -312,13 +312,13 @@ final review reads what each round recorded.
 **What the change is lives in the pull request's body, not the review** (#218). The run that opens
 a pull request writes its **frame** once and never again, in the order #298 settled: a note saying
 what the loop does with it and how to steer it (linking the opening run), opening with a one-line
-**status** between `<!-- agent:status -->` markers; `## Summary` and a **summary block** between
+**status** between `<!-- agent:status -->` markers; a `---` rule (#353); `## Summary` and a **summary block** between
 `<!-- agent:summary -->` markers; on a PRD PR the **progress table** between `<!-- agent:progress -->`
 markers (#246: each sub-issue not started, building, in review, fixing, parked or approved, with its
 reviews, fix rounds and a diff of its slice range, and the final review's row; re-rendered from live
 state by every build run, including one that stops, and at every ending of a round; edited in place
 only where a job that runs no toolchain writes exactly what the render would, a building slice's row
-and the final review's, held equal to it by a test; and holding the final review's mark); and the `Closes` line at the bottom. The status
+and the final review's, held equal to it by a test; and holding the final review's mark), set off from the summary block by a second rule; and the `Closes` line at the bottom. The status
 line is rendered beside the table on a PRD PR, and by the review's posting job on a regular one. The
 review writes the summary block and the title, and nothing else in the body: a maintainer's notes outside
 the markers survive every round byte for byte. The rule is **anything pushed since the summary was
@@ -328,17 +328,37 @@ which is how the rule is read: not from the verdict history, which says what a v
 rather than what a summary has. A maintainer's edit inside the block is input to the next rewrite,
 kept where it is still true. The agent produces `title` and `summary`; the posting job writes them,
 splicing into the body as it stands then rather than as the review read it. Under the agent's
-summary the runner adds the **failing-first tests** from the red check's report (#234), red ones
-only, or which of *not configured*, *could not be read* and *none red* holds instead. So the review comment
+summary the runner adds the **Evidence** (#234, #355) under a `## Evidence` heading, as a
+**Before** and an **After**. Before is the failing-first tests from the red check's report, red ones
+only, each with its assertion, or which of *not checked* (the check is off), *unknown* (its report
+could not be read or held no result) and *none* holds instead. After is CI's result at the head the
+summary describes, `green`, `red` or `unknown`, from the file the verdict reads; it never claims a
+named test passed, since the red check runs nothing at the head. The body calls the red check the
+**test-first check**, and nothing else does: input, job and doc names keep "red check", since
+renaming an input would refuse every adopter caller that sets it. The review may sketch what a
+failing-first test checks (`testSketches`), and the runner places at most three, each only on a test
+the report lists as red, so a sketch can describe a test and never add one. A block written before
+#355 carries the old `### Failing-first tests` heading, and the rewrite cuts at either. Last, under a
+`## Merge Danger` heading (#356), the runner lays out the review's **door**, `one-way` where a revert
+cannot undo the change (a published release, deleted data, a migration) and `two-way` otherwise; its
+**blast radius**, one word of the adopter's own, and who it reaches from when (on merge, or at the next
+release), which is where timing lives rather than in the door; a **Breaking:** line per change a
+caller or a user has to act on, which the summary's prose no longer marks; and the **known issues**,
+this review's follow-ups, filed when the pull request merges. Each optional part is left out when
+there is none. So the review comment
 carries no description of the change, and the description exists in one place.
 
 On a PRD PR of more than one slice the summary is the final review's alone (#298): a slice round
 writes neither the title nor the block, which holds a placeholder until then. A PRD PR's **final
-review** writes both however little was pushed (#247). Its summary is the whole PRD's, laid out by the workflow: the outcome,
-the behaviour changes with the breaking ones marked, the acceptance criteria each slice changed or
-dropped (read off each slice round's record, by the commit it reviewed, through the slice ranges),
-where the red check is configured each slice's failing-first tests (#235), read off the same rounds,
-and the known issues, naming the follow-ups filed at merge. A slice round's red check runs against
+review** writes both however little was pushed (#247). Its summary is the whole PRD's, in the same
+layout as a regular pull request's (#356): the review's outcome, its sketches and a bullet per
+behaviour change they do not already show; a **Differs from the PRD:** line per slice that changed or
+dropped a criterion, rendered from that slice round's record (read by the commit it reviewed, through
+the slice ranges), with a line saying so for a slice whose record could not be read, and none where
+no slice differed; the Evidence (#235, #355): where the red check is configured one Before/After entry
+per slice, its failing-first tests read off the same rounds, and where it is off one entry for the
+whole pull request; and the Merge Danger, of the whole PRD, its known issues naming the follow-ups
+filed at merge. A slice round's red check runs against
 the PRD branch as it stood before that slice, its slice range's base, rather than the merge-base,
 so each slice's tests run on code holding every earlier slice; the final review runs none, and holds
 each slice's changes to that slice round's record. The same write removes the frame's

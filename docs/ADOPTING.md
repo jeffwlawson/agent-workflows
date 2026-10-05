@@ -1458,10 +1458,11 @@ The review is handed that report, and flags each behaviour change in non-test so
 test covers. Where the report could not be read, or holds no test that ran, what is red is unknown,
 and the review says so rather than flagging anything on the strength of it.
 
-The pull request's body lists the **failing-first tests** under the summary the review writes: each
-red test, with the assertion it failed on. Broken tests are counted there and not listed, and a
+The pull request's body lists the **failing-first tests** under the summary the review writes, as
+the *Before* of its `## Evidence` section, where the red check is called the *test-first check*:
+each red test, with the assertion it failed on. Broken tests are counted there and not listed, and a
 check that is not configured, or whose report could not be read, says which rather than listing
-nothing.
+nothing. The *After* beside it is CI's result at the head, never a claim that a named test passed.
 
 **On a PRD PR**, each slice is built on the slices before it, so a slice round's red check runs
 that slice's test files against the **PRD branch as it stood before the slice**, not the merge-base:

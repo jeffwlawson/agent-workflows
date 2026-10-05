@@ -8483,6 +8483,53 @@ describe("the PRD chain's progress", () => {
     expect(statusBlock("x")).toBe("<!-- agent:status -->\n> x\n> <!-- /agent:status -->");
   });
 
+  /**
+   * The frames' rules (#353): one between the note and `## Summary`, and on a
+   * PRD PR a second between the summary block and the progress block. Each
+   * sits outside every marker pair, so no splice touches it, with a blank line
+   * before it, without which GitHub reads the line above as a setext heading.
+   */
+  it("rules the note off from the summary, and on a PRD PR the summary off from the progress table", () => {
+    const frame = (file: string, name: string): string[] => {
+      const run = stepsOf(file).find((s) => s.name === name)?.run ?? "";
+      return (run.match(/<<FRAME\n([\s\S]*?)\n\s*FRAME\n/)?.[1] ?? "").split("\n").map((line) => line.trim());
+    };
+    const regular = frame(IMPLEMENT, "Open draft PR");
+    const prd = frame(PRD, "Open or reuse the PRD PR");
+
+    expect(regular.slice(5)).toEqual([
+      "> Opened by the agent loop from #${ISSUE_NUMBER} ([Workflow run](${RUN_URL})). Comment here to steer it; your notes outside the loop's blocks are never edited.",
+      "",
+      "---",
+      "",
+      "## Summary",
+      "",
+      "<!-- agent:summary -->",
+      "_The review will summarize this change here after its first pass._",
+      "<!-- /agent:summary -->",
+      "",
+      "Closes #${ISSUE_NUMBER}",
+    ]);
+    expect(regular.join("\n")).not.toContain("stays a draft");
+    expect(prd.slice(3)).toEqual([
+      "> <!-- agent:draft-note -->The agent loop builds PRD #${ISSUE_NUMBER} here, one sub-issue at a time, and reviews each on this PR before starting the next. It stays a draft until every slice is done. Don't merge it before then.<!-- /agent:draft-note --> Built by the agent loop from PRD #${ISSUE_NUMBER}, one sub-issue per slice. Comment here to steer it; your notes outside the loop's blocks are never edited.",
+      "",
+      "---",
+      "",
+      "## Summary",
+      "",
+      "<!-- agent:summary -->",
+      "_The final review will summarize the whole PRD here._",
+      "<!-- /agent:summary -->",
+      "",
+      "---",
+      "",
+      "${list}",
+      "",
+      "${closes_block}",
+    ]);
+  });
+
   /** The regular pull request's status line is the posting job's; a PRD PR's is the advance job's. */
   it("writes a regular pull request's status line after its summary, and never a PRD PR's", () => {
     const names = (jobNamed(REVIEW, "post-review").steps ?? []).map((s) => s.name ?? "");

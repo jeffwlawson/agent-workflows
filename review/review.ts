@@ -17,6 +17,7 @@ import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/accepta
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { fetchReviews } from "../shared/follow-up-filing.js";
 import { earlierFollowUps } from "../shared/follow-up-plan.js";
+import { renderMergeDanger } from "../shared/merge-danger.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import {
   firstLine,
@@ -45,7 +46,7 @@ import {
   renderRedCheck,
   renderRedCheckForFinal,
   renderRedTestsBlock,
-  withFailingFirst,
+  withEvidence,
   type SliceRedTests,
 } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "../shared/review-context.js";
@@ -189,21 +190,19 @@ const fixRounds = (): FixRounds | undefined => {
   return spent === undefined || budget === undefined ? undefined : { spent, budget };
 };
 
-/** What the brief says of the summary's shape on every review but a PRD PR's final review. */
-const NOT_FINAL = "Leave `behaviourChanges` out.";
-
 /**
- * The final review's summary shape (#247). The workflow lays the sections out;
- * the review writes the outcome and the behaviour changes, and the rest comes
- * from the slice rounds' records and this review's follow-ups.
+ * The final review's summary shape (#247, #356). The review writes the
+ * outcome, and the Merge Danger's fields as every summary write does; the
+ * workflow adds the *Differs from the PRD* lines and the Evidence from the
+ * slice rounds' records, and the known issues from this review's follow-ups.
  */
 const FINAL_SUMMARY_SHAPE = [
-  "**This is the final review of a PRD PR, so the summary is the whole PRD's**, and the workflow lays it out in sections. Write:",
+  "**This is the final review of a PRD PR, so the summary is the whole PRD's**, in the layout the summary section above describes. Write:",
   "",
-  "- **`summary`**: the **outcome**, what the PRD delivered as a whole, in a few sentences. Nothing about the review, and no list of slices: the body already shows them.",
-  "- **`behaviourChanges`**: one entry per behaviour the PRD changes, `{ \"change\": \"one line\", \"breaking\": true }` where a caller or a user has to act on it and `false` otherwise. The workflow marks the breaking ones; do not write the mark yourself.",
+  "- **`summary`**: the **outcome**, what the PRD delivered as a whole. Open it as the summary section above asks, with the **smallest view that makes the point**: zero, one or two sketches of the whole change, drawn from the diff as it stands and never from the PRD, each beside the short text it supports. Then a few sentences, brief and with no preamble, and a bullet per behaviour the PRD changes, cut to what the sketches do not already show; sketches do not count against the word budget, which stays for the prose. Nothing about the review, and no list of slices: the body already shows them.",
+  "- **`door`**, **`blastRadius`**, their notes and **`breaking`**: as the summary section above asks, of the whole PRD. A breaking change goes in `breaking`, never in a bullet.",
   "",
-  "The criteria each slice changed or dropped and, where the red check is configured, each slice's failing-first tests are added from each slice round's record, and the known issues from the follow-ups this review records, so write neither. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
+  "A **Differs from the PRD:** line for each slice that changed or dropped one of its criteria, and the Evidence (each slice's failing-first tests, where the red check is configured, beside CI's result), are added from each slice round's record, and the known issues from the follow-ups this review records, so write none of them. The title is the whole PRD's, never the PRD issue's title copied. Nothing in what you write may say the pull request is a draft or that slices are still to come: every slice is built.",
 ].join("\n");
 
 /** Off a PRD PR, the brief's follow-ups section is the ordinary one. */
@@ -442,7 +441,7 @@ try {
         : final
           ? "**This review writes them.** It is the final review, so the workflow replaces the title and the summary block with yours, laid out as the section below says."
           : "**This review writes them.** Something was pushed since the summary was last written, so the workflow replaces the title and the summary block with yours.",
-      FINAL_SUMMARY: final ? FINAL_SUMMARY_SHAPE : NOT_FINAL,
+      FINAL_SUMMARY: final ? FINAL_SUMMARY_SHAPE : "",
       CARRIED_FOLLOW_UPS: round === undefined ? NOT_CARRIED : renderCarriedFollowUps(carried),
     },
     output: sandcastle.Output.object({ tag: "output", schema: reviewOutputSchema }),
@@ -649,28 +648,40 @@ try {
   // summary into the body as it stands then, not as it was read here, so an
   // edit made outside the block while this review ran survives it.
   //
-  // The final review's summary is the PRD's (#247): its outcome, then the
-  // behaviour changes, the criteria each slice changed or dropped, and the
-  // known issues this review records to be filed on merge, laid out here.
+  // The final review's summary is the PRD's (#247, #356): its outcome, then a
+  // line per slice that changed or dropped a criterion, laid out here.
+  //
+  // Every summary write ends with the Merge Danger (#356), from the review's
+  // door, blast radius and breaking changes, its known issues the follow-ups
+  // this review records to be filed on merge.
+  //
+  // What the Evidence's After and its test sketches come from (#355): CI's
+  // result at the head the summary describes, and the sketches the review
+  // wrote, which the render attaches only to tests listed as failing first.
+  const evidence = { ci, head: headSha, testSketches: output.testSketches };
   const written = final
     ? {
         ...output,
         summary: renderPrdSummary({
           outcome: output.summary,
-          behaviourChanges: output.behaviourChanges ?? [],
+          danger: output,
           slices: slicesCriteria,
           followUps,
           // Each slice's red tests (#235), where the check is configured.
           ...(redCheck.kind === "not-configured" ? {} : { redTests: { slices: slicesRedTests } }),
+          evidence,
         }),
       }
     : output.summary === undefined
       ? output
-      : // A slice or a regular pull request's body lists its failing-first
-        // tests under the summary (#234), from the red check's report rather
-        // than the agent's word, so the agent's text and the list are kept
-        // apart. The final review's summary is the PRD's and does not.
-        { ...output, summary: withFailingFirst(output.summary, redCheck, headSha) };
+      : // A slice or a regular pull request's body gives its Evidence under
+        // the summary (#234, #355), from the red check's report and CI's
+        // result rather than the agent's word, so the agent's text and the
+        // Evidence are kept apart. The final review's is laid out by slice.
+        {
+          ...output,
+          summary: `${withEvidence(output.summary, redCheck, evidence)}\n\n${renderMergeDanger(output, followUps)}`,
+        };
   const summary = writesSummary ? summaryUpdate(written, headSha, final) : undefined;
   if (summary !== undefined) writeJson("pr_summary.json", summary);
 

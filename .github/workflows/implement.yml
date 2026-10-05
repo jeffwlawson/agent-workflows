@@ -734,7 +734,9 @@ jobs:
       # The body is the **frame** (#218), written here once and never
       # rewritten, in the order #298 settled: a note on what the loop does with
       # the pull request and how to steer it, linking this run and opening with
-      # a status line between its own markers, which every review rewrites;
+      # a status line between its own markers, which every review rewrites; a
+      # `---` rule, outside every marker pair and with a blank line above it,
+      # without which GitHub reads that line as a setext heading (#353);
       # `## Summary` and the summary block the review writes and keeps current;
       # and `Closes #N` at the bottom, where GitHub reads it as well as at the
       # top. The review owns the two blocks and nothing else, so a maintainer's
@@ -766,7 +768,9 @@ jobs:
           > ${OPENING_STATUS}
           > <!-- /agent:status -->
           >
-          > Opened by the agent loop from #${ISSUE_NUMBER} ([Workflow run](${RUN_URL})). It stays a draft while the loop reviews and fixes it, and leaves draft when it's ready for you. Comment here to steer it. Add your own notes outside the blocks the loop writes; it never edits them.
+          > Opened by the agent loop from #${ISSUE_NUMBER} ([Workflow run](${RUN_URL})). Comment here to steer it; your notes outside the loop's blocks are never edited.
+
+          ---
 
           ## Summary
 

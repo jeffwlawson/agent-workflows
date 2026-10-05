@@ -169,11 +169,24 @@ export interface CriterionResult {
   readonly reason?: string;
 }
 
-/** One behaviour a PRD changes, as its final review lists it (#247). */
-export interface BehaviourChange {
-  readonly change: string;
-  /** A caller or a user has to act on it. */
-  readonly breaking: boolean;
+/**
+ * Whether a revert undoes the change (#356): a **one-way** door is one it
+ * cannot (a published release, deleted data, a migration). *When* a change
+ * takes effect is its blast radius, not its door.
+ */
+export type Door = "one-way" | "two-way";
+
+/**
+ * What one failing-first test checks, as the review sketches it for the
+ * body's Evidence (#355): pseudocode, above the assertion it failed on. The
+ * workflow attaches it only to a test the test-first check's report lists as
+ * failing first (`pickSketches`), so a sketch can describe a test and never add
+ * one or mark one proven.
+ */
+export interface TestSketch {
+  /** The test's name, as the report lists it. */
+  readonly test: string;
+  readonly sketch: string;
 }
 
 /** A note the review dropped, as the body lists it. */
@@ -225,13 +238,27 @@ export interface ReviewOutput {
    */
   readonly summary?: string;
   /**
-   * On a PRD PR's **final review** only (#247): each behaviour the PRD as a
-   * whole changes, one line each, with the breaking ones flagged. The workflow
-   * renders them into the summary's *Behaviour changes* section and marks the
-   * breaking ones, so the mark is not left to the model's formatting. Absent
-   * on every other review.
+   * The body's **Merge Danger** (#356), written beside `summary` and rendered
+   * by the workflow under it (`renderMergeDanger`), so it is laid out the same
+   * on every pull request whatever the model's formatting. `door` and
+   * `blastRadius` (one word, free text: the review runs in repositories whose
+   * words this one does not know) are absent where the model gave none, and
+   * the render says so; the notes are absent where there is nothing to add.
    */
-  readonly behaviourChanges?: BehaviourChange[];
+  readonly door?: Door;
+  readonly doorNote?: string;
+  readonly blastRadius?: string;
+  /** Who is reached, and from when: on merge, or at the next release. */
+  readonly blastRadiusNote?: string;
+  /** One line per change a caller or a user has to act on. Absent where there is none. */
+  readonly breaking?: string[];
+  /**
+   * A pseudocode sketch of a failing-first test, for the body's Evidence
+   * (#355). The model's to write and the workflow's to place: one naming a test
+   * the report does not list as failing first is dropped there. Absent where
+   * there are none.
+   */
+  readonly testSketches?: TestSketch[];
   /**
    * Every problem the review found in this pull request, as the model produced
    * them. Where each one is posted — a line thread or a file-level thread — is
@@ -1740,16 +1767,34 @@ const cappedWords = (text: string, limit: number): string => {
  * Markdown, a sentence over a few bullets, and joining it on spaces would make
  * one paragraph of it. Cut at the last word kept, with everything before it
  * exactly as written.
+ *
+ * Only prose counts (#354). A fenced block is a sketch the brief puts outside
+ * the budget, so its words are not counted and the cut never lands inside
+ * one: a fence left open would turn the rest of the body into code.
  */
 const cappedWordsKeepingLines = (text: string, limit: number): string => {
   const trimmed = text.trim();
   let count = 0;
-  for (const word of trimmed.matchAll(/\S+/g)) {
-    count += 1;
-    if (count === limit) {
-      const end = word.index + word[0].length;
-      return end < trimmed.length ? `${trimmed.slice(0, end)}…` : trimmed;
+  let fence: string | undefined;
+  let start = 0;
+  for (const line of trimmed.split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence === undefined && marker !== undefined) {
+      fence = marker;
+    } else if (fence !== undefined) {
+      if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) {
+        fence = undefined;
+      }
+    } else {
+      for (const word of line.matchAll(/\S+/g)) {
+        count += 1;
+        if (count === limit) {
+          const end = start + word.index + word[0].length;
+          if (end < trimmed.length) return `${trimmed.slice(0, end)}…`;
+        }
+      }
     }
+    start += line.length + 1;
   }
   return trimmed;
 };
@@ -1830,10 +1875,14 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     "noteRulings",
   ).map(parseNoteRuling);
   const criteria = asArray(record["criteria"] ?? [], "criteria").map(parseCriterionRuling);
-  const behaviourChanges = asArray(
-    record["behaviourChanges"] ?? record["behaviorChanges"] ?? record["behaviour_changes"] ?? [],
-    "behaviourChanges",
-  ).flatMap(parseBehaviourChange);
+  const door = parseDoor(record["door"]);
+  const doorNote = parseNote(record["doorNote"] ?? record["door_note"]);
+  const blastRadius = parseBlastRadius(record["blastRadius"] ?? record["blast_radius"]);
+  const blastRadiusNote = parseNote(record["blastRadiusNote"] ?? record["blast_radius_note"]);
+  const breaking = parseBreaking(record["breaking"]);
+  const testSketches = asArray(record["testSketches"] ?? record["test_sketches"] ?? [], "testSketches").flatMap(
+    parseTestSketch,
+  );
   return {
     ...(assessment === undefined ? {} : { assessment }),
     ...(howChecked === undefined ? {} : { howChecked: cappedWords(howChecked, MAX_HOW_CHECKED_WORDS) }),
@@ -1872,22 +1921,64 @@ export const reviewOutputSchema = standardSchema<ReviewOutput>((raw) => {
     ...(noteRulings.length === 0 ? {} : { noteRulings }),
     // Absent where the review was handed no criteria, for the same reason.
     ...(criteria.length === 0 ? {} : { criteria }),
-    // Absent on every review but a PRD PR's final review.
-    ...(behaviourChanges.length === 0 ? {} : { behaviourChanges }),
+    // Merge Danger (#356), each part absent where the model gave none.
+    ...(door === undefined ? {} : { door }),
+    ...(doorNote === undefined ? {} : { doorNote }),
+    ...(blastRadius === undefined ? {} : { blastRadius }),
+    ...(blastRadiusNote === undefined ? {} : { blastRadiusNote }),
+    ...(breaking.length === 0 ? {} : { breaking }),
+    // Absent where the review sketched no test, which is most reviews.
+    ...(testSketches.length === 0 ? {} : { testSketches }),
   };
 });
 
+/** A fence wrapped round the whole sketch: the body fences it itself, and a second fence would show as text. */
+const SKETCH_FENCE = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1[ \t]*$/;
+
 /**
- * A behaviour change, from an object or from a bare string (not breaking).
- * One that says nothing is dropped rather than failing the review: it is one
- * line of a description, and the findings beside it are worth more.
+ * A test sketch, or none where it names no test or sketches nothing: it is
+ * display, and the review beside it is worth more than refusing it.
  */
-const parseBehaviourChange = (value: unknown): BehaviourChange[] => {
-  if (typeof value === "string") return value.trim() === "" ? [] : [{ change: oneLine(value), breaking: false }];
-  const record = asRecord(value, "behaviour change");
-  const change = typeof record["change"] === "string" ? oneLine(record["change"]) : "";
-  return change === "" ? [] : [{ change, breaking: record["breaking"] === true }];
+const parseTestSketch = (value: unknown): TestSketch[] => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  const test = typeof record["test"] === "string" ? record["test"].trim() : "";
+  const raw = typeof record["sketch"] === "string" ? record["sketch"].trim() : "";
+  const sketch = (SKETCH_FENCE.exec(raw)?.[2] ?? raw).replace(/\s+$/, "");
+  return test === "" || sketch.trim() === "" ? [] : [{ test, sketch }];
 };
+
+/**
+ * Merge Danger's parts (#356), read leniently: each is display, and the review
+ * beside it is worth more than refusing it. A part that cannot be read is
+ * absent, and the render says the review did not give it.
+ */
+const parseDoor = (value: unknown): Door | undefined => {
+  if (typeof value !== "string") return undefined;
+  const door = value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  return door === "oneway" ? "one-way" : door === "twoway" ? "two-way" : undefined;
+};
+
+const parseNote = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const note = oneLine(withoutComments(value));
+  return note === "" ? undefined : note;
+};
+
+/** One word, as the body gives it: the first, without the emphasis or the full stop a model puts round it. */
+const parseBlastRadius = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const word = (oneLine(withoutComments(value)).split(" ")[0] ?? "").replace(/^[*_`]+|[*_`.,;:]+$/g, "");
+  return word === "" ? undefined : word;
+};
+
+/** One line per breaking change, a bare string read as one, and the mark the workflow writes taken off. */
+const parseBreaking = (value: unknown): string[] =>
+  (typeof value === "string" ? [value] : Array.isArray(value) ? value : []).flatMap((entry): string[] => {
+    if (typeof entry !== "string") return [];
+    const line = oneLine(withoutComments(entry)).replace(/^(?:[-*]\s+)?\*{0,2}Breaking:\*{0,2}\s*/i, "");
+    return line === "" ? [] : [line];
+  });
 
 /**
  * Apply the cap, and report what it cost.

@@ -41,13 +41,21 @@ const need = (k: string): string => {
 const webhookSecret = need("WEBHOOK_SECRET");
 const label = process.env["ORCH_LABEL"] ?? "proto:review";
 const port = Number(process.env["ORCH_PORT"] ?? "8787");
+// The agent box listens on its agentnet address, so the dispatcher on Unraid can reach it.
+const host = process.env["ORCH_HOST"] ?? "127.0.0.1";
 const model = process.env["ORCH_MODEL"];
 const cfg: Config & { pathPrefix: string; toolchain: readonly string[] } = {
   runnerCli: path.resolve(import.meta.dirname, "../../dist/cli.js"),
   claudeToken: need("CLAUDE_CODE_OAUTH_TOKEN"),
   // The prototype reads and posts with the user's own gh login (finding: a real
   // one wants a read-only token for the runner and an App for the writes).
-  readToken: execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim(),
+  readToken: (() => {
+    try {
+      return execFileSync("gh", ["auth", "token"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      return undefined; // fine once the dispatcher sends a token with every job
+    }
+  })(),
   sandbox: process.env["ORCH_SANDBOX"] ?? "none",
   pathPrefix: "",
   toolchain: [],
@@ -116,4 +124,4 @@ createServer((req, res) => {
     enqueue(job);
     return reply(202, `accepted ${job.kind} ${job.repo}#${job.pr}`);
   });
-}).listen(port, "127.0.0.1", () => log(`listening on 127.0.0.1:${port}; trigger label ${label}; sandbox ${cfg.sandbox}`));
+}).listen(port, host, () => log(`listening on ${host}:${port}; trigger label ${label}; sandbox ${cfg.sandbox}`));

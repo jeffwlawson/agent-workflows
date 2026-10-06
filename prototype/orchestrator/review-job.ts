@@ -14,7 +14,7 @@ export interface Config {
   readonly runnerCli: string;
   readonly claudeToken: string;
   /** The token the runner reads GitHub with, before it scrubs it. */
-  readonly readToken: string;
+  readonly readToken: string | undefined;
   /** `none` (the runners' own `noSandbox()`), `docker` or `podman`. */
   readonly sandbox: string;
   readonly model?: string;
@@ -41,14 +41,19 @@ export const runReview = async (job: Job, cfg: Config, log: (line: string) => vo
   const stoodIn: string[] = [];
   const workDir = mkdtempSync(path.join(tmpdir(), `orch-${job.repo.replace("/", "-")}-${job.pr}-`));
   const done = (outcome: RunRecord["outcome"], detail: string): RunRecord => {
-    const record = { job, workDir, outcome, detail, stoodIn };
+    // Never the token: run.json stays on disk for debugging.
+    const { token: _token, ...recorded } = job;
+    const record = { job: { ...recorded, token: job.token === undefined ? "none" : "[redacted]" }, workDir, outcome, detail, stoodIn };
     writeFileSync(path.join(workDir, "run.json"), `${JSON.stringify(record, null, 2)}\n`);
     log(`${outcome}: ${detail}`);
     return record;
   };
 
   // Pre-flight, as review.yml's `review` job does before anything is checked out.
-  const pr = readPullRequest(job.repo, job.pr);
+  const token = job.token ?? cfg.readToken;
+  if (token === undefined) return done("refused", "no GitHub token: the job carried none and the worker has no gh login");
+  stoodIn.push(job.token === undefined ? "token: the worker's own gh login" : "token: minted per job by the dispatcher (App key outside the box)");
+  const pr = readPullRequest(job.repo, job.pr, token);
   stoodIn.push("pre-flight: refuse a closed PR, a fork head, or a head that moved (review.yml *Pre-flight*)");
   if (pr.state !== "open") return done("refused", `PR is ${pr.state}`);
   if (pr.headRepo !== job.repo) return done("refused", "head is on a fork");
@@ -60,11 +65,13 @@ export const runReview = async (job: Job, cfg: Config, log: (line: string) => vo
   // base as a *local* branch, which the runner diffs against.
   const checkout = path.join(workDir, "checkout");
   log(`cloning ${job.repo} at ${pr.headSha.slice(0, 7)}`);
-  execFileSync("gh", ["repo", "clone", job.repo, checkout, "--", "--no-tags", "--quiet"], { stdio: "ignore" });
+  // The token goes on each command as a header, never into .git/config.
+  const auth = ["-c", `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`];
+  execFileSync("git", [...auth, "clone", "--no-tags", "--quiet", `https://github.com/${job.repo}.git`, checkout], { stdio: "ignore" });
   // Detach first: git refuses to fetch into the branch the clone checked out.
   git(checkout, ["checkout", "--quiet", "--detach"]);
-  git(checkout, ["fetch", "--quiet", "origin", `+refs/heads/${pr.baseRef}:refs/heads/${pr.baseRef}`]);
-  git(checkout, ["fetch", "--quiet", "origin", pr.headSha]);
+  git(checkout, [...auth, "fetch", "--quiet", "origin", `+refs/heads/${pr.baseRef}:refs/heads/${pr.baseRef}`]);
+  git(checkout, [...auth, "fetch", "--quiet", "origin", pr.headSha]);
   git(checkout, ["checkout", "--quiet", "-B", pr.headRef, pr.headSha]);
   stoodIn.push("checkout: PR head as BRANCH, BASE_REF as a local branch (review.yml *Checkout PR head*, *Make the PR base available*)");
   stoodIn.push("no `setup` input run (review.yml runs the adopter's `npm ci` on the head before the agent)");
@@ -74,7 +81,7 @@ export const runReview = async (job: Job, cfg: Config, log: (line: string) => vo
   execFileSync("mkdir", ["-p", outputDir]);
   const statusFile = path.join(workDir, "ci_status.md");
   const resultFile = path.join(workDir, "ci_result.txt");
-  const ci = snapshotChecks(job.repo, job.pr, statusFile, resultFile);
+  const ci = snapshotChecks(job.repo, job.pr, statusFile, resultFile, token);
   stoodIn.push(`CI evidence: one snapshot (${ci}), no waiting (review.yml polls up to 900 s; #361)`);
   stoodIn.push("no fix-round budget, round detection, red check or auto-fix (review.yml *Settle the fix-round budget*, *Tell a slice round*, `red-check`)");
 
@@ -86,7 +93,7 @@ export const runReview = async (job: Job, cfg: Config, log: (line: string) => vo
     PATH: `${cfg.pathPrefix}:${process.env["PATH"] ?? "/usr/bin:/bin"}`,
     HOME: home,
     LANG: process.env["LANG"] ?? "C.UTF-8",
-    GH_TOKEN: cfg.readToken,
+    GH_TOKEN: token,
     GH_REPO: job.repo,
     PR_NUMBER: String(job.pr),
     BRANCH: pr.headRef,
@@ -139,7 +146,7 @@ export const runReview = async (job: Job, cfg: Config, log: (line: string) => vo
 
   // What `post-review` does, cut down to the review itself. Posted with this
   // orchestrator's token, so as *its* identity, not `github-actions[bot]` (#59).
-  const url = postReview(outputDir);
+  const url = postReview(outputDir, token);
   stoodIn.push("posted the review only: no thread resolution, verdict status, PR title/body, labels or advance (review.yml `post-review`, `advance`)");
   stoodIn.push("posted as the orchestrator's identity, not github-actions[bot]: the loop's next Actions run would not recognise it");
   const verdict = existsSync(path.join(outputDir, "verdict.json"))

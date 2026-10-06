@@ -42,9 +42,11 @@ export const fromGitHub = (event: string | undefined, payload: unknown, label: s
   return { kind: "review", repo, pr, headSha, source: "github" };
 };
 
-export const gh = (args: readonly string[], input?: string): string =>
+/** `token`, when given, is the job's own token (minted by the dispatcher); otherwise gh's login. */
+export const gh = (args: readonly string[], input?: string, token?: string): string =>
   execFileSync("gh", [...args], {
     encoding: "utf8",
+    ...(token === undefined ? {} : { env: { ...process.env, GH_TOKEN: token } }),
     ...(input === undefined ? {} : { input }),
     stdio: ["pipe", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
@@ -58,8 +60,8 @@ export interface PullRequest {
   readonly baseRef: string;
 }
 
-export const readPullRequest = (repo: string, pr: number): PullRequest => {
-  const j = JSON.parse(gh(["api", `repos/${repo}/pulls/${pr}`])) as {
+export const readPullRequest = (repo: string, pr: number, token?: string): PullRequest => {
+  const j = JSON.parse(gh(["api", `repos/${repo}/pulls/${pr}`], undefined, token)) as {
     state: string;
     head: { ref: string; sha: string; repo: { full_name: string } | null };
     base: { ref: string };
@@ -78,10 +80,10 @@ export const readPullRequest = (repo: string, pr: number): PullRequest => {
  * review when CI completes) is #361's to design. Writes what review.yml's
  * *Wait for other checks* step would, minus the polling.
  */
-export const snapshotChecks = (repo: string, pr: number, statusFile: string, resultFile: string): string => {
+export const snapshotChecks = (repo: string, pr: number, statusFile: string, resultFile: string, token?: string): string => {
   let rows: { name: string; bucket: string }[];
   try {
-    rows = JSON.parse(gh(["pr", "checks", String(pr), "--repo", repo, "--json", "name,bucket"])) as typeof rows;
+    rows = JSON.parse(gh(["pr", "checks", String(pr), "--repo", repo, "--json", "name,bucket"], undefined, token)) as typeof rows;
   } catch (e) {
     // `gh pr checks` exits non-zero while checks fail or are pending, but still prints them.
     const out = (e as { stdout?: string }).stdout ?? "";
@@ -112,7 +114,7 @@ export const snapshotChecks = (repo: string, pr: number, statusFile: string, res
  * threads (review.yml's *Resolve the threads this review closed*), so every
  * thread-bearing line lands in the unclosed group.
  */
-export const postReview = (outputDir: string): string => {
+export const postReview = (outputDir: string, token?: string): string => {
   const payload = JSON.parse(readFileSync(path.join(outputDir, "review_payload.json"), "utf8")) as {
     variables: { input: { body: string } };
   };
@@ -142,5 +144,5 @@ export const postReview = (outputDir: string): string => {
     halves[0] + group(parts.groups.unclosed, unclosed) + group(parts.groups.resolved, closed) + halves[1];
   const posted = path.join(outputDir, "review_posted.json");
   writeFileSync(posted, JSON.stringify(payload));
-  return gh(["api", "graphql", "--input", posted, "--jq", ".data.addPullRequestReview.pullRequestReview.url"]).trim();
+  return gh(["api", "graphql", "--input", posted, "--jq", ".data.addPullRequestReview.pullRequestReview.url"], undefined, token).trim();
 };

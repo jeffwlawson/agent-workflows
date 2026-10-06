@@ -12,6 +12,12 @@ export interface ReviewJob {
   readonly headSha?: string;
   /** Who asked: `github`, `generic`, … — for the log only. */
   readonly source: string;
+  /**
+   * A short-lived GitHub token for this job alone, minted by the dispatcher
+   * from the loop's App key, which never enters the agent box. Absent, the
+   * worker falls back to its own gh login (replay and local runs).
+   */
+  readonly token?: string;
 }
 
 export type Job = ReviewJob;
@@ -29,5 +35,16 @@ export const parseJob = (value: unknown): Job | string => {
   if (headSha !== undefined && (typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha))) {
     return "headSha must be a 40-character sha";
   }
-  return { kind: "review", repo, pr, ...(headSha === undefined ? {} : { headSha }), source: "generic" };
+  const token = v["token"];
+  if (token !== undefined && (typeof token !== "string" || !/^gh[sp]_[A-Za-z0-9_]{20,255}$/.test(token))) {
+    return "token must be a GitHub installation or user token";
+  }
+  return {
+    kind: "review",
+    repo,
+    pr,
+    ...(headSha === undefined ? {} : { headSha }),
+    ...(token === undefined ? {} : { token }),
+    source: typeof v["source"] === "string" ? `generic:${v["source"]}` : "generic",
+  };
 };

@@ -3920,23 +3920,40 @@ describe("docs/ADOPTING.md links each doctor check to the §1 failure it is for"
   const LINK = /\[([^\]]*)\]\(([^)\s]*)\)/g;
 
   /**
-   * A §1 failure named by its position rather than its heading, in each place
-   * a position can stand beside `§1`: an ordinal after `§1's`; a number after
-   * `§1's failures` or `§1 failures`; an ordinal before `of §1` or `in §1`; an
-   * ordinal before `§1 failure`, as its adjective; or a number after `failure`
-   * before `of §1` or `in §1`. A count ("three of" the section's failures,
-   * "every" one, "the three" of them) names no position and is left alone.
+   * Spelled as an escape, so this file's source names no §1 failure by number
+   * itself, the cases below included, and the scan of tracked files need not
+   * skip it.
    */
-  const ORDINAL =
-    "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|penultimate|final|last";
+  const ONE = "\u00a71";
+
+  /**
+   * A §1 failure named by its position rather than its heading. The rule fails
+   * closed: a position on either side of `§1`, with at most four words between
+   * them, is flagged whatever those words say. A position is an ordinal, as a
+   * word ("third", "last", "penultimate", "latter") or in digits ("3rd"), or a
+   * number that indexes rather than counts, which is a number written after
+   * the word for what it indexes ("failure two", "member 3", "item #4",
+   * "numbered 5"). The rule also flags a subsection given by number, `§1.` and
+   * a digit. A count puts its number before the noun or names none ("three of"
+   * the section's failures, "all three failures in" it, "every" one, "seven
+   * failures"), and passes; so does `§10` and every section past it.
+   */
+  const ORDINAL = [
+    "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth",
+    "(?:thir|four|fif|six|seven|eigh|nine)teenth|twentieth",
+    "penultimate|final|last|latter|former",
+    "\\d+(?:st|nd|rd|th)",
+  ].join("|");
   const NUMBER = "one|two|three|four|five|six|seven|eight|nine|ten|\\d+";
+  const INDEXED_BY = "failures?|members?|items?|entry|entries|numbers?|numbered|no\\.";
+  const POSITION = `\\b(?:${ORDINAL})\\b|\\b(?:${INDEXED_BY})\\s+#?(?:${NUMBER})\\b`;
+  const SECTION = `${ONE}(?![0-9])`;
+  const WORDS = "(?:\\s+\\S+){0,4}?";
   const NUMBERED = new RegExp(
     [
-      `§1['’]s\\s+(?:(?:silent\\s+)?failures?\\s+)?(?:${ORDINAL})\\b`,
-      `§1(?:['’]s)?\\s+(?:silent\\s+)?failures?\\s+(?:${NUMBER})\\b`,
-      `\\b(?:${ORDINAL})\\b(?:\\s+\\S+)?\\s+(?:(?:silent\\s+)?failures?\\s+)?(?:of|in)\\s+§1(?![0-9])`,
-      `\\b(?:${ORDINAL})\\s+(?:\\S+\\s+)?§1\\s+(?:silent\\s+)?failures?\\b`,
-      `\\bfailures?\\s+(?:${NUMBER})\\s+(?:of|in)\\s+§1(?![0-9])`,
+      `(?:${POSITION})\\S*${WORDS}\\s*[^\\s\\w${ONE[0]}]*${SECTION}`,
+      `${SECTION}\\S*${WORDS}\\s+[^\\s\\w]*(?:${POSITION})`,
+      `${ONE}\\.\\d`,
     ].join("|"),
     "gi",
   );
@@ -4046,12 +4063,6 @@ describe("docs/ADOPTING.md links each doctor check to the §1 failure it is for"
     expect(breaks(broken)).toEqual(expect.arrayContaining([expect.stringMatching(expected)]));
   });
 
-  /**
-   * Spelled through a constant, so this file names no §1 failure by number
-   * itself and the scan below need not skip it.
-   */
-  const ONE = "§1";
-
   it.each([
     `${ONE}'s first, unless the App makes it moot`,
     `${ONE}'s last two`,
@@ -4066,6 +4077,23 @@ describe("docs/ADOPTING.md links each doctor check to the §1 failure it is for"
     `${ONE} failures two and three`,
     `failure two of ${ONE}`,
     `failure 3 in ${ONE}`,
+    `the third failure listed in ${ONE}`,
+    `the third failure\nlisted in ${ONE}`,
+    "the first failure `docs/ADOPTING.md` " + ONE + " describes",
+    `${ONE}'s 3rd failure`,
+    `the 2nd ${ONE} failure`,
+    `a fifth member of the ${ONE} family`,
+    `the 2nd failure (${ONE})`,
+    `the 11th of ${ONE}'s failures`,
+    `the twelfth ${ONE} failure`,
+    `the penultimate failure in ${ONE}`,
+    `the latter of ${ONE}'s event failures`,
+    `${ONE} lists seven failures; the third`,
+    `${ONE}, failure #3`,
+    `item 2 of ${ONE}`,
+    `member 4 of ${ONE}`,
+    `the failure numbered 3 in ${ONE}`,
+    `${ONE}.2`,
   ])("reads %j as a §1 failure by number", (text) => {
     expect(numberedReferences(text)).not.toEqual([]);
   });
@@ -4079,12 +4107,24 @@ describe("docs/ADOPTING.md links each doctor check to the §1 failure it is for"
     `the three ${ONE} failures`,
     `the first ${ONE}0 failure`,
     `failure two of ${ONE}0`,
+    `the third failure listed in ${ONE}0`,
+    `${ONE}0.2 is the first`,
+    `${ONE} has seven failures`,
+    `${ONE}'s seven failures`,
+    `two of the failures in ${ONE}`,
+    `cannot be marked ready: three of ${ONE}'s failures at once, and all three`,
+    `${ONE} (#230)`,
   ])(
     "reads %j as no number",
     (text) => {
       expect(numberedReferences(text)).toEqual([]);
     },
   );
+
+  it("leaves a position alone once more than four words stand between it and the section", () => {
+    expect(numberedReferences(`the first of them, four before ${ONE}`)).not.toEqual([]);
+    expect(numberedReferences(`the first of them, five words before ${ONE}`)).toEqual([]);
+  });
 
   /**
    * Everywhere, not only in the document. `docs/friction.md` is the one file

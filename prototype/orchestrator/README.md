@@ -47,7 +47,8 @@ the label.
 | `ORCH_SANDBOX` | `none` | **`bwrap`** runs each agent pass in bubblewrap through an *isolated* Sandcastle provider (`shared/bwrap.ts`): a private per-job home and `/tmp`, read-only `/usr` and toolchain, no view of the host's home, and a guarded `copyFileOut`. Tested. `docker` and `podman` are wired but untested, because no engine is installed |
 | `ORCH_MODEL` | the runner's default | `AGENT_MODEL_REVIEW` |
 | `ORCH_CLAUDE_VERSION` | `latest` | The agent's CLI, installed by the server into `$TMPDIR/orch-claude-cli` at start, as review.yml installs it per run. The host's own `claude` is never used |
-| `ORCH_PORT` | `8787` | Binds to 127.0.0.1 only |
+| `ORCH_PORT` | `8787` | |
+| `ORCH_HOST` | `127.0.0.1` | The listen address. The agent box sets its agentnet address so the dispatcher can reach `/jobs`; anything but loopback exposes both doors to that network |
 
 **`none` runs the agent on this machine as you.** `HOME` is an empty directory and the env is
 allowlisted, but the agent's Bash can still read any file you can, by absolute path, including your

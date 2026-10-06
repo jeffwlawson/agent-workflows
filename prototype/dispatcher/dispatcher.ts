@@ -80,8 +80,13 @@ const api = async (path: string, auth: string, init: { method?: string; body?: u
 
 /** What a review job may do: read the code and the conversation, post a review. */
 const REVIEW_PERMISSIONS = { contents: "read", pull_requests: "write", issues: "read" };
-/** Asked for too, for the CI evidence; dropped if the App was not granted them. */
-const REVIEW_OPTIONAL = { checks: "read", statuses: "read", actions: "read" };
+/**
+ * Asked for too, for the CI evidence (`gh pr checks` reads check runs and
+ * commit statuses); dropped if the App was not granted them. GitHub refuses
+ * the whole request over one ungranted permission, so this asks for no more
+ * than the evidence needs.
+ */
+const REVIEW_OPTIONAL = { checks: "read", statuses: "read" };
 
 const mintRepoToken = async (repo: string): Promise<string> => {
   const jwt = `Bearer ${appJwt()}`;

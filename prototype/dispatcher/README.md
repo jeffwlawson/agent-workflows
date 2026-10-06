@@ -7,7 +7,7 @@ repository, and hands the job to the orchestrator in the agent box.
 ```text
 GitHub App webhook → Funnel :10000 → 127.0.0.1:8790/github (this)
   verify signature · `proto:review` on an open, same-repo PR · owner allowlisted · sender can push
-  token: contents:read, pull_requests:write, issues:read (+ checks/statuses/actions:read if granted)
+  token: contents:read, pull_requests:write, issues:read (+ checks/statuses:read if granted)
   → POST WORKER_URL (signed with WORKER_SECRET) → agent box /jobs
 ```
 

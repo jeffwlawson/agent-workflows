@@ -36,8 +36,11 @@ export const parseJob = (value: unknown): Job | string => {
     return "headSha must be a 40-character sha";
   }
   const token = v["token"];
-  if (token !== undefined && (typeof token !== "string" || !/^gh[sp]_[A-Za-z0-9_]{20,255}$/.test(token))) {
-    return "token must be a GitHub installation or user token";
+  // Not GitHub's token format, which changes (the first live installation
+  // token failed a ghs_[A-Za-z0-9_]{,255} check): only what makes it safe to
+  // put in a header and an environment variable. The body is signed anyway.
+  if (token !== undefined && (typeof token !== "string" || !/^[\x21-\x7e]{20,4096}$/.test(token))) {
+    return "token must be 20-4096 printable characters with no spaces";
   }
   return {
     kind: "review",

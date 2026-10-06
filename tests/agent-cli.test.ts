@@ -3920,10 +3920,12 @@ describe("docs/ADOPTING.md links each doctor check to the §1 failure it is for"
   const LINK = /\[([^\]]*)\]\(([^)\s]*)\)/g;
 
   /**
-   * A §1 failure named by its position rather than its heading: an ordinal
-   * after `§1's`, a number after `§1's failures`, or an ordinal before
-   * `of §1` or `in §1`. A count ("three of" the section's failures) names no
-   * position and is left alone.
+   * A §1 failure named by its position rather than its heading, in each place
+   * a position can stand beside `§1`: an ordinal after `§1's`; a number after
+   * `§1's failures` or `§1 failures`; an ordinal before `of §1` or `in §1`; an
+   * ordinal before `§1 failure`, as its adjective; or a number after `failure`
+   * before `of §1` or `in §1`. A count ("three of" the section's failures,
+   * "every" one, "the three" of them) names no position and is left alone.
    */
   const ORDINAL =
     "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|penultimate|final|last";
@@ -3931,8 +3933,10 @@ describe("docs/ADOPTING.md links each doctor check to the §1 failure it is for"
   const NUMBERED = new RegExp(
     [
       `§1['’]s\\s+(?:(?:silent\\s+)?failures?\\s+)?(?:${ORDINAL})\\b`,
-      `§1['’]s\\s+(?:silent\\s+)?failures?\\s+(?:${NUMBER})\\b`,
+      `§1(?:['’]s)?\\s+(?:silent\\s+)?failures?\\s+(?:${NUMBER})\\b`,
       `\\b(?:${ORDINAL})\\b(?:\\s+\\S+)?\\s+(?:(?:silent\\s+)?failures?\\s+)?(?:of|in)\\s+§1(?![0-9])`,
+      `\\b(?:${ORDINAL})\\s+(?:\\S+\\s+)?§1\\s+(?:silent\\s+)?failures?\\b`,
+      `\\bfailures?\\s+(?:${NUMBER})\\s+(?:of|in)\\s+§1(?![0-9])`,
     ].join("|"),
     "gi",
   );
@@ -4056,11 +4060,26 @@ describe("docs/ADOPTING.md links each doctor check to the §1 failure it is for"
     `${ONE}'s second, third and fourth\nfailures`,
     `the first failure in ${ONE}`,
     `the last two of ${ONE}'s failures`,
+    `the first ${ONE} failure`,
+    `the last two ${ONE} failures`,
+    `the third silent ${ONE} failure`,
+    `${ONE} failures two and three`,
+    `failure two of ${ONE}`,
+    `failure 3 in ${ONE}`,
   ])("reads %j as a §1 failure by number", (text) => {
     expect(numberedReferences(text)).not.toEqual([]);
   });
 
-  it.each([`three of ${ONE}'s failures at once`, `every ${ONE} failure`, `${ONE}'s failures`, `${ONE}0's first`])(
+  it.each([
+    `three of ${ONE}'s failures at once`,
+    `every ${ONE} failure`,
+    `${ONE}'s failures`,
+    `${ONE}0's first`,
+    `all three failures in ${ONE}`,
+    `the three ${ONE} failures`,
+    `the first ${ONE}0 failure`,
+    `failure two of ${ONE}0`,
+  ])(
     "reads %j as no number",
     (text) => {
       expect(numberedReferences(text)).toEqual([]);

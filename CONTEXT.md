@@ -421,8 +421,9 @@ entries in `docs/friction.md` keep the old usage, because that log is never rewr
 `init` and `doctor` (`setup/`) are two more subcommands of the same binary, run by a human rather
 than by a workflow. They are not a fourth part so much as the thing that *puts* the first one in
 place and then checks it: `init` copies the reference callers in with the pin substituted, and
-`doctor` looks for the failures `docs/ADOPTING.md` §1 is about — every one of which is a condition
-with no runtime symptom, which is why looking has to be deliberate.
+`doctor` looks for failures that are each a condition with no runtime symptom, which is why looking
+has to be deliberate. `docs/ADOPTING.md` §0's table is the list of what it checks, and which failure
+each check is for.
 
 The boundary between them follows the one above: the caller is the adopter's, so a re-run of `init`
 moves the pin in the files they have and changes nothing else about them. What a later release

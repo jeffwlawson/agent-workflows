@@ -1,9 +1,11 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { COMMANDS, run, type CliIo } from "../cli.js";
+import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import { copyAssets } from "../scripts/copy-assets.js";
 import { callersIn, readInstalledCallers, REFERENCE_CALLER_FILES } from "../setup/callers.js";
 import {
@@ -1818,8 +1820,8 @@ describe("init converges the labels the loop owns", () => {
 });
 
 /**
- * `doctor` is the other half: every check below is a failure `docs/ADOPTING.md`
- * §1 describes as announcing itself as something else. The facts it cannot read
+ * `doctor` is the other half: every check below is a row of `docs/ADOPTING.md`
+ * §0's table, for a failure that announces itself as something else. The facts it cannot read
  * from a checkout — the secrets, the repository setting, the labels, this repo's
  * releases — are gathered through `gh` and passed in, so the diagnosis is
  * exercised here without depending on whoever is running the suite being
@@ -2331,7 +2333,8 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
-   * §1's first failure. A PAT bypasses the setting entirely — a user token is
+   * `docs/ADOPTING.md` §1, "GitHub Actions is not permitted to create or
+   * approve pull requests". A PAT bypasses the setting entirely — a user token is
    * not the Actions bot — so the severity depends on the other answer rather
    * than on this one alone.
    */
@@ -3111,8 +3114,10 @@ describe("doctor names the failures that otherwise look like something else", ()
    * side, and the `secrets.AGENT_PAT || secrets.GITHUB_TOKEN` fallback absorbs
    * the empty string it arrives as — so a caller an adopter rewrote without the
    * line runs the loop under the built-in token with the secret correctly set.
-   * That is `docs/ADOPTING.md` §1's failures two, three and four, reached from
-   * the one place nothing else here looks.
+   * That is the three `GITHUB_TOKEN` failures in `docs/ADOPTING.md` §1, "`GITHUB_TOKEN`
+   * pushes start CI that waits for approval", "`GITHUB_TOKEN` cannot mark a pull
+   * request ready for review" and "A label added with `GITHUB_TOKEN` is a silent
+   * no-op", reached from the one place nothing else here looks.
    */
   it("fails a caller that does not pass AGENT_PAT to the workflow it calls", async () => {
     const root = await installed();
@@ -3862,5 +3867,220 @@ describe("doctor names the failures that otherwise look like something else", ()
 
     expect(code).toBe(2);
     expect(err).toContain("--fix");
+  });
+});
+
+/**
+ * `docs/ADOPTING.md` says what `doctor` checks in one place, §0's table, and
+ * says it by linking each row to the §1 failure it is for, by heading. A number
+ * is what drifted: #230 put a new failure at the head of §1, and every reference that
+ * counted moved by one while still reading as right.
+ *
+ * So the rules below are over the document as written, and each is shown
+ * failing on a copy broken the one way it guards against. The first is the
+ * point: whoever adds a failure to §1 decides whether `doctor` can check it,
+ * and writes down either the row that links it or the reason it cannot. Both
+ * is as wrong as neither.
+ */
+describe("docs/ADOPTING.md links each doctor check to the §1 failure it is for", () => {
+  const ADOPTING = path.join("docs", "ADOPTING.md");
+  const CANNOT_CHECK = "**`doctor` cannot check this.**";
+  const TABLE_HEADER = /^\| What it checks \| The failure it is for \|$/m;
+
+  /**
+   * GitHub's heading anchor: lower case, every character that is not a letter,
+   * a mark, a digit, an underscore, a hyphen or a space dropped (so the
+   * backticks, quotes and asterisks in §1's headings go), spaces made hyphens,
+   * and a repeat numbered from `-1` in document order, over the whole document.
+   */
+  const anchorsOf = (doc: string): { level: number; text: string; anchor: string }[] => {
+    const seen = new Map<string, number>();
+    return doc
+      .replace(/^```[\s\S]*?^```/gm, "")
+      .split("\n")
+      .flatMap((line) => {
+        const heading = /^(#{1,6}) +(.+?) *$/.exec(line);
+        if (heading === null) return [];
+        const [, hashes = "", text = ""] = heading;
+        const base = text
+          .toLowerCase()
+          .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "")
+          .replace(/ /g, "-");
+        const count = seen.get(base) ?? 0;
+        seen.set(base, count + 1);
+        return [{ level: hashes.length, text, anchor: count === 0 ? base : `${base}-${count}` }];
+      });
+  };
+
+  /** The section a `## ` heading starting with `prefix` opens, up to the next `## `. */
+  const section = (doc: string, prefix: string): string =>
+    doc.split(/^(?=## )/m).find((part) => part.startsWith(`## ${prefix}`)) ?? "";
+
+  /** A Markdown link's text and target. */
+  const LINK = /\[([^\]]*)\]\(([^)\s]*)\)/g;
+
+  /**
+   * A §1 failure named by its position rather than its heading: an ordinal
+   * after `§1's`, a number after `§1's failures`, or an ordinal before
+   * `of §1` or `in §1`. A count ("three of" the section's failures) names no
+   * position and is left alone.
+   */
+  const ORDINAL =
+    "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|penultimate|final|last";
+  const NUMBER = "one|two|three|four|five|six|seven|eight|nine|ten|\\d+";
+  const NUMBERED = new RegExp(
+    [
+      `§1['’]s\\s+(?:(?:silent\\s+)?failures?\\s+)?(?:${ORDINAL})\\b`,
+      `§1['’]s\\s+(?:silent\\s+)?failures?\\s+(?:${NUMBER})\\b`,
+      `\\b(?:${ORDINAL})\\b(?:\\s+\\S+)?\\s+(?:(?:silent\\s+)?failures?\\s+)?(?:of|in)\\s+§1(?![0-9])`,
+    ].join("|"),
+    "gi",
+  );
+
+  const numberedReferences = (text: string): string[] =>
+    [...text.matchAll(NUMBERED)].map(([match]) => match.replace(/\s+/g, " "));
+
+  /** Every way the document breaks the rules, as a sentence each; none is the pass. */
+  const breaks = (doc: string): string[] => {
+    const found: string[] = [];
+    const anchors = anchorsOf(doc);
+
+    const failures = anchorsOf(section(doc, "1."))
+      .filter((heading) => heading.level === 3)
+      .map((heading) => {
+        const match = anchors.find((candidate) => candidate.level === 3 && candidate.text === heading.text);
+        const body = section(doc, "1.").split(/^(?=### )/m).find((part) => part.startsWith(`### ${heading.text}\n`)) ?? "";
+        return { text: heading.text, anchor: match?.anchor ?? "", marked: body.includes(CANNOT_CHECK) };
+      });
+    if (failures.length === 0) found.push("§1 has no ### failure under it");
+
+    const zero = section(doc, "0.");
+    const header = TABLE_HEADER.exec(zero);
+    const rows =
+      header === null
+        ? []
+        : zero
+            .slice(header.index)
+            .split("\n")
+            .slice(2)
+            .filter((_, at, lines) => lines.slice(0, at + 1).every((line) => line.startsWith("|")));
+    if (rows.length === 0) found.push("§0 has no table of what doctor checks");
+
+    const linked = new Set<string>();
+    const sectionOne = new Set(failures.map((failure) => failure.anchor));
+    for (const row of rows) {
+      for (const [, , target = ""] of row.matchAll(LINK)) {
+        if (!target.startsWith("#")) continue;
+        const anchor = target.slice(1);
+        linked.add(anchor);
+        if (!sectionOne.has(anchor)) found.push(`§0's table links #${anchor}, which is no §1 heading`);
+      }
+      const forColumn = row.split(/(?<!\\)\|/)[2] ?? "";
+      if (/§1(?![0-9])/.test(forColumn.replace(LINK, ""))) {
+        found.push(`§0's table names §1 outside a link: ${forColumn.trim()}`);
+      }
+    }
+
+    for (const failure of failures) {
+      const isLinked = linked.has(failure.anchor);
+      if (!isLinked && !failure.marked) {
+        found.push(`${failure.text}: linked by no row of §0's table, and does not say doctor cannot check it`);
+      }
+      if (isLinked && failure.marked) {
+        found.push(`${failure.text}: linked from §0's table, and says doctor cannot check it`);
+      }
+    }
+
+    for (const reference of numberedReferences(doc)) found.push(`a §1 failure by number: ${reference}`);
+    return found;
+  };
+
+  const doc = (): string => fs.readFileSync(ADOPTING, "utf8");
+
+  it("holds on the document as written", () => {
+    expect(breaks(doc())).toEqual([]);
+  });
+
+  /**
+   * The same rules over copies broken one way each. A rule that cannot fail is
+   * not one, and the first rule has two directions, both of which must.
+   */
+  it.each<[string, (text: string) => string, RegExp]>([
+    [
+      "a new §1 failure that is linked by no row and does not say doctor cannot check it",
+      (text) => text.replace(/^## 2\. /m, "### A new failure\n\nNothing checks it.\n\n## 2. "),
+      /^A new failure: linked by no row of §0's table, and does not say doctor cannot check it$/,
+    ],
+    [
+      "a §1 failure that is linked and says doctor cannot check it",
+      (text) =>
+        text.replace(
+          /^(### "GitHub Actions is not permitted to create or approve pull requests"\n)/m,
+          `$1\n${CANNOT_CHECK} Nothing records it.\n`,
+        ),
+      /^"GitHub Actions is not permitted to create or approve pull requests": linked from §0's table, and says doctor cannot check it$/,
+    ],
+    [
+      "an event failure that has lost its line",
+      (text) => text.replace(new RegExp(`^${CANNOT_CHECK.replace(/[.*`]/g, "\\$&")}.*\\n`, "m"), ""),
+      /^A label set when the issue is \*created\* fires no `labeled` event: linked by no row of §0's table, and does not say doctor cannot check it$/,
+    ],
+    [
+      "a link in §0's table to an anchor that is no §1 heading",
+      (text) => text.replace("](#on-a-public-repository-pull_request_target-stops-running)", "](#keeping-the-pins-fresh)"),
+      /^§0's table links #keeping-the-pins-fresh, which is no §1 heading$/,
+    ],
+    [
+      "§1 named outside a link in the failure column",
+      (text) => text.replace("unless the App or `AGENT_PAT` makes it moot |", "unless the App or `AGENT_PAT` makes it moot (§1) |"),
+      /^§0's table names §1 outside a link: /,
+    ],
+  ])("fails on %s", (_case, breakIt, expected) => {
+    const broken = breakIt(doc());
+
+    expect(broken, "the copy is not broken: the text it edits has moved").not.toBe(doc());
+    expect(breaks(broken)).toEqual(expect.arrayContaining([expect.stringMatching(expected)]));
+  });
+
+  /**
+   * Spelled through a constant, so this file names no §1 failure by number
+   * itself and the scan below need not skip it.
+   */
+  const ONE = "§1";
+
+  it.each([
+    `${ONE}'s first, unless the App makes it moot`,
+    `${ONE}'s last two`,
+    `${ONE}'s fifth silent failure`,
+    `${ONE}'s failures two, three and four`,
+    `${ONE}'s second, third and fourth\nfailures`,
+    `the first failure in ${ONE}`,
+    `the last two of ${ONE}'s failures`,
+  ])("reads %j as a §1 failure by number", (text) => {
+    expect(numberedReferences(text)).not.toEqual([]);
+  });
+
+  it.each([`three of ${ONE}'s failures at once`, `every ${ONE} failure`, `${ONE}'s failures`, `${ONE}0's first`])(
+    "reads %j as no number",
+    (text) => {
+      expect(numberedReferences(text)).toEqual([]);
+    },
+  );
+
+  /**
+   * Everywhere, not only in the document. `docs/friction.md` is the one file
+   * excused: it is a dated log, appended to and never rewritten to match today.
+   */
+  it("finds no §1 failure named by number in any tracked file but the friction log", () => {
+    const tracked = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8", timeout: SUBPROCESS_TIMEOUT })
+      .split("\0")
+      .filter((file) => file !== "" && file !== "docs/friction.md" && fs.existsSync(file));
+
+    const offenders = tracked.flatMap((file) =>
+      numberedReferences(fs.readFileSync(file, "utf8")).map((reference) => `${file}: ${reference}`),
+    );
+
+    expect(tracked).toContain(ADOPTING.split(path.sep).join("/"));
+    expect(offenders).toEqual([]);
   });
 });

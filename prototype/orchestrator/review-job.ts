@@ -21,6 +21,8 @@ export interface Config {
   readonly timeoutMs: number;
   /** Prepended to PATH, so the runner finds the orchestrator's own `claude`. */
   readonly pathPrefix: string;
+  /** Directories a `bwrap` sandbox sees read-only: Node, and the agent's CLI. */
+  readonly toolchain: readonly string[];
 }
 
 export interface RunRecord {
@@ -94,6 +96,9 @@ export const runReview = async (job: Job, cfg: Config, log: (line: string) => vo
     CI_RESULT_FILE: resultFile,
     CLAUDE_CODE_OAUTH_TOKEN: cfg.claudeToken,
     AGENT_SANDBOX: cfg.sandbox,
+    // For `bwrap`: the toolchain the sandbox may see, read-only, and its PATH.
+    AGENT_SANDBOX_RO_BINDS: cfg.toolchain.join(":"),
+    AGENT_SANDBOX_PATH: `${cfg.toolchain.map((d) => `${d}/bin:${d}/node_modules/.bin`).join(":")}:/usr/local/bin:/usr/bin:/bin`,
     // Actions sets these on its own; the runner renders links from them (#59).
     GITHUB_SERVER_URL: "https://github.com",
     GITHUB_REPOSITORY: job.repo,

@@ -44,7 +44,7 @@ the label.
 | Setting | Default | |
 |---|---|---|
 | `ORCH_LABEL` | `proto:review` | Not `agent:review`: that one also starts the Actions loop, and the PR would be reviewed twice |
-| `ORCH_SANDBOX` | `none` | `docker` or `podman` runs the agent in a container through Sandcastle (`shared/sandbox.ts`). Untested here: neither engine is installed |
+| `ORCH_SANDBOX` | `none` | **`bwrap`** runs each agent pass in bubblewrap through an *isolated* Sandcastle provider (`shared/bwrap.ts`): a private per-job home and `/tmp`, read-only `/usr` and toolchain, no view of the host's home, and a guarded `copyFileOut`. Tested. `docker` and `podman` are wired but untested, because no engine is installed |
 | `ORCH_MODEL` | the runner's default | `AGENT_MODEL_REVIEW` |
 | `ORCH_CLAUDE_VERSION` | `latest` | The agent's CLI, installed by the server into `$TMPDIR/orch-claude-cli` at start, as review.yml installs it per run. The host's own `claude` is never used |
 | `ORCH_PORT` | `8787` | Binds to 127.0.0.1 only |

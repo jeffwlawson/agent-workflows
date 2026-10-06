@@ -1,6 +1,7 @@
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
+import { bwrap } from "./bwrap.js";
 
 /**
  * PROTOTYPE (#364): which Sandcastle provider the agent runs in, chosen by the
@@ -16,7 +17,9 @@ export const sandboxFromEnv = () => {
       return docker();
     case "podman":
       return podman();
+    case "bwrap":
+      return bwrap();
     default:
-      throw new Error(`AGENT_SANDBOX=${choice}: expected none, docker or podman`);
+      throw new Error(`AGENT_SANDBOX=${choice}: expected none, docker, podman or bwrap`);
   }
 };

@@ -42,7 +42,7 @@ const webhookSecret = need("WEBHOOK_SECRET");
 const label = process.env["ORCH_LABEL"] ?? "proto:review";
 const port = Number(process.env["ORCH_PORT"] ?? "8787");
 const model = process.env["ORCH_MODEL"];
-const cfg: Config & { pathPrefix: string } = {
+const cfg: Config & { pathPrefix: string; toolchain: readonly string[] } = {
   runnerCli: path.resolve(import.meta.dirname, "../../dist/cli.js"),
   claudeToken: need("CLAUDE_CODE_OAUTH_TOKEN"),
   // The prototype reads and posts with the user's own gh login (finding: a real
@@ -50,6 +50,7 @@ const cfg: Config & { pathPrefix: string } = {
   readToken: execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim(),
   sandbox: process.env["ORCH_SANDBOX"] ?? "none",
   pathPrefix: "",
+  toolchain: [],
   ...(model === undefined ? {} : { model }),
   timeoutMs: 30 * 60 * 1000,
 };
@@ -71,6 +72,7 @@ if (!existsSync(cfg.runnerCli)) {
 
 const log = (line: string): void => console.log(`${new Date().toISOString()} ${line}`);
 cfg.pathPrefix = cliBin;
+cfg.toolchain = [path.dirname(path.dirname(process.execPath)), cliPrefix];
 log(`agent CLI: ${installed} (from ${cliPrefix})`);
 
 let busy: Promise<unknown> = Promise.resolve();

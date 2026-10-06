@@ -140,7 +140,7 @@ describe("sandboxFromEnv", () => {
   });
   it("keeps today's behaviour when unset", () => {
     delete process.env["AGENT_SANDBOX"];
-    expect((sandboxFromEnv() as { name: string }).name).not.toBe("bwrap");
+    expect((sandboxFromEnv() as { name: string }).name).toBe("no-sandbox");
   });
   it("selects bwrap", () => {
     process.env["AGENT_SANDBOX"] = "bwrap";

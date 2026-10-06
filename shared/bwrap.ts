@@ -40,7 +40,7 @@ const ETC = [
 const list = (v: string | undefined): string[] => (v ?? "").split(":").filter((s) => s !== "");
 
 /** Map a sandbox path to the host path that backs it, or refuse. */
-const toHost = (root: string, sandboxPath: string): string => {
+export const toHost = (root: string, sandboxPath: string): string => {
   const p = path.posix.normalize(sandboxPath);
   if (p === HOME || p.startsWith(`${HOME}/`)) return path.join(root, "home", p.slice(HOME.length));
   if (p === "/tmp" || p.startsWith("/tmp/")) return path.join(root, "tmp", p.slice("/tmp".length));
@@ -53,17 +53,25 @@ const within = (child: string, parent: string): boolean => {
 };
 
 /**
- * Where `copyFileOut` may write on the host. Sandcastle writes patches and
- * untracked files under `<repo>/.sandcastle/patches/…` and session logs to
- * `<tmpdir>/sandcastle-*.jsonl`, and the sandbox chooses the names in both, so
- * anything else, and any `.git` component, is refused before a byte is copied.
+ * Where `copyFileOut` may write on the host, and nowhere else: the sandbox
+ * chooses the file names, so this is the guard.
+ *
+ * Sandcastle writes a run's patches and untracked files under
+ * `<hostRepoDir>/.sandcastle/patches/<run>/…` (`createPatchDir`), and an
+ * isolated run's `hostRepoDir` is its host worktree,
+ * `<repo>/.sandcastle/worktrees/<name>`. So, relative to `<cwd>/.sandcastle`,
+ * exactly `patches/<run>/…` or `worktrees/<name>/.sandcastle/patches/<run>/…`.
+ * Session logs go to `<tmpdir>/sandcastle-*.jsonl`. Any `.git` component is
+ * refused outright.
  */
-const assertHostTarget = (hostPath: string): void => {
+export const assertHostTarget = (hostPath: string): void => {
   const abs = path.resolve(hostPath);
-  const parts = abs.split(path.sep);
-  if (parts.includes(".git")) throw new Error(`bwrap: refusing to write into .git: ${abs}`);
-  const patches = path.join(process.cwd(), ".sandcastle");
-  const inPatches = within(abs, patches) && parts.includes("patches");
+  if (abs.split(path.sep).includes(".git")) throw new Error(`bwrap: refusing to write into .git: ${abs}`);
+  const root = path.join(process.cwd(), ".sandcastle");
+  const rel = within(abs, root) ? path.relative(root, abs).split(path.sep) : [];
+  const inPatches =
+    (rel[0] === "patches" && rel.length >= 3) ||
+    (rel[0] === "worktrees" && rel[2] === ".sandcastle" && rel[3] === "patches" && rel.length >= 6);
   const isSession = path.dirname(abs) === path.resolve(tmpdir()) && /^sandcastle-[\w.-]+\.jsonl$/.test(path.basename(abs));
   if (!inPatches && !isSession) throw new Error(`bwrap: refusing to write outside the patch directory: ${abs}`);
 };

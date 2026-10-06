@@ -139,7 +139,13 @@ export const bwrap = () =>
         "--setenv", "PATH", sandboxPath,
         "--setenv", "LANG", "C.UTF-8",
         "--setenv", "TMPDIR", "/tmp",
-        ...(proxy === undefined ? [] : ["--setenv", "HTTPS_PROXY", proxy, "--setenv", "HTTP_PROXY", proxy]),
+        ...(proxy === undefined
+          ? []
+          : ["--setenv", "HTTPS_PROXY", proxy, "--setenv", "HTTP_PROXY", proxy, "--setenv", "https_proxy", proxy, "--setenv", "http_proxy", proxy]),
+        // Telemetry and the auto-updater reach hosts no egress allowlist should
+        // need to name; the agent's own work needs only the API.
+        "--setenv", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1",
+        "--setenv", "DISABLE_AUTOUPDATER", "1",
         ...Object.entries(env).flatMap(([k, v]) => ["--setenv", k, v]),
       ];
 

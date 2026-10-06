@@ -96,6 +96,15 @@ export const runReview = async (job: Job, cfg: Config, log: (line: string) => vo
     CI_RESULT_FILE: resultFile,
     CLAUDE_CODE_OAUTH_TOKEN: cfg.claudeToken,
     AGENT_SANDBOX: cfg.sandbox,
+    // Behind an egress proxy (the agent box): the runner's own gh/git calls go
+    // through it, and so does every bwrap job (finding: the proxy is an input
+    // the orchestrator has to thread to both).
+    ...Object.fromEntries(
+      ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy"]
+        .filter((k) => process.env[k] !== undefined)
+        .map((k) => [k, process.env[k] as string]),
+    ),
+    ...(process.env["HTTPS_PROXY"] === undefined ? {} : { AGENT_SANDBOX_PROXY: process.env["HTTPS_PROXY"] }),
     // For `bwrap`: the toolchain the sandbox may see, read-only, and its PATH.
     AGENT_SANDBOX_RO_BINDS: cfg.toolchain.join(":"),
     AGENT_SANDBOX_PATH: `${cfg.toolchain.map((d) => `${d}/bin:${d}/node_modules/.bin`).join(":")}:/usr/local/bin:/usr/bin:/bin`,

@@ -75,6 +75,9 @@ repo loses the instruction the prompts depend on.
    side (#225). `scripts/sync-version.ts` refuses the next release until each caller set calls
    every reusable exactly once. That refusal is the point: two of the three is a release that pins
    what it found.
+6. A change to what the Actions orchestrator does with a runner's result is a change to that
+   runner's `Actions orchestrator:` block in `docs/platform-spec.md`, in the same commit. Nothing
+   checks it: the blocks are description, and no test reads them against the YAML.
 
 ## Changing a runner
 
@@ -88,6 +91,11 @@ repo loses the instruction the prompts depend on.
    **Every file it writes into `OUTPUT_DIR` is declared there too**, as its outputs, and written
    through the `writers` that declaration gives it, so an undeclared name fails typechecking. A
    computed name is typed over a fixed set, and each name in the set is listed.
+   **A new input is three parts, landed together**: its declaration there, its row in the runner's
+   `### Inputs` table in `docs/platform-spec.md`, and, where it is required, the reusable's `env:`
+   setting it, in the runner step or its job. `tests/platform-spec.test.ts` is red until all three
+   are in; a new output file is the same, without the third. Where the reusable needs a new caller
+   input or secret to set it, the two-step rule in *This repo runs its own loop* applies.
 5. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say
    "the verify command `CLAUDE.md` names". A test enforces both over the runner surface.
 

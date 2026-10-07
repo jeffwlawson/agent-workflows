@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import ts from "typescript";
 import { parse } from "yaml";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -44,6 +45,18 @@ import {
 } from "../setup/policies.js";
 import type { LabelSurface, RepoLabel } from "../setup/labels.js";
 import type { AppManifest, AppSurface, RegisteredApp, RepoOwner, SecretPlacement } from "../setup/app.js";
+
+// `fs` is the real module throughout, with its writes watched: with no
+// `OUTPUT_DIR` the CLI's refusals and `doctor` must write no file at all, and
+// that is not a claim a test can make by looking in one directory.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
+});
+
+/** Every write of a `failure_reason.txt` since the spy was last cleared. */
+const reasonsWritten = (): readonly unknown[] =>
+  vi.mocked(fs.writeFileSync).mock.calls.filter(([file]) => String(file).endsWith("failure_reason.txt"));
 
 /**
  * The Actions policy step, for the tests that are not about it: a private
@@ -246,7 +259,7 @@ const invoke = async (argv: string[]): Promise<Captured> => {
 /**
  * Every runner writes its failure reason to `OUTPUT_DIR` so the workflow's
  * `if: failure()` step can put it on the issue or PR. Point it at scratch for
- * the duration rather than letting the default (`/tmp`) collect test debris.
+ * the duration, so a test that reads the reason has somewhere to read it from.
  */
 let scratch = "";
 const previousOutputDir = process.env["OUTPUT_DIR"];
@@ -313,6 +326,23 @@ describe("the runner CLI dispatches on a subcommand", () => {
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toContain("implment");
   });
 
+  /**
+   * The writer's rule, which the CLI shares with every runner's `fail()`: no
+   * `OUTPUT_DIR`, no file, and stderr is the whole report. A human typing a
+   * subcommand wrong has no `OUTPUT_DIR` and is reading stderr anyway.
+   */
+  it("refuses an unknown command on stderr alone where OUTPUT_DIR is unset", async () => {
+    delete process.env["OUTPUT_DIR"];
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    const { code, err } = await invoke(["implment"]);
+
+    expect(code).toBe(2);
+    expect(err).toContain("implment");
+    expect(err).toContain("Usage");
+    expect(reasonsWritten()).toEqual([]);
+  });
+
   it("refuses an empty argv with usage", async () => {
     const { code, err } = await invoke([]);
 
@@ -362,6 +392,86 @@ describe("the runner CLI dispatches on a subcommand", () => {
     expect(source).not.toContain("claudeAgent");
     expect(source).not.toContain("sandcastle");
     expect(source).not.toContain("runWithExtraction");
+  });
+});
+
+/**
+ * The declarations in `shared/contract.ts` are what an orchestrator builds a
+ * runner's environment from, so they are only true while they are the thing
+ * that runs. A runner or a helper reading `process.env` itself reads an input
+ * the declaration does not have: a quiet default no orchestrator is told to
+ * set. So outside the accessor's module, `shared/env.ts`, nothing in a runner
+ * directory or in `shared/` names it; a helper is handed its values instead.
+ * The token scrub deletes rather than reads, and lives there for that reason.
+ *
+ * Read off the syntax tree rather than the text, because the rule is about
+ * code: a doc comment saying what `process.env` holds is not a read. `setup/`
+ * and `scripts/` are not runners, and are not walked.
+ */
+describe("every input a runner reads goes through its declaration", () => {
+  const ACCESSOR = "shared/env.ts";
+
+  /** The lines of `text` on which code names `process.env`, as `process.env` or `process["env"]`. */
+  const envReads = (text: string): number[] => {
+    const file = ts.createSourceFile("source.ts", text, ts.ScriptTarget.Latest, true);
+    const lines: number[] = [];
+    const isProcess = (node: ts.Node): boolean =>
+      (ts.isIdentifier(node) && node.text === "process") ||
+      (ts.isPropertyAccessExpression(node) && node.name.text === "process");
+    const visit = (node: ts.Node): void => {
+      const env =
+        (ts.isPropertyAccessExpression(node) && node.name.text === "env" && isProcess(node.expression)) ||
+        (ts.isElementAccessExpression(node) &&
+          ts.isStringLiteralLike(node.argumentExpression) &&
+          node.argumentExpression.text === "env" &&
+          isProcess(node.expression));
+      if (env) lines.push(file.getLineAndCharacterOfPosition(node.getStart()).line + 1);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    return lines;
+  };
+
+  const surface = [...runnerDirs, "shared"].flatMap((dir) =>
+    fs
+      .readdirSync(path.join(PACKAGE_DIR, dir), { recursive: true, encoding: "utf8" })
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => path.posix.join(dir, name.split(path.sep).join("/"))),
+  );
+  const source = (rel: string): string => fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8");
+
+  it("walks every runner and shared/, the accessor's module among them", () => {
+    expect(surface).toContain(ACCESSOR);
+    expect(surface).toContain("shared/common.ts");
+    for (const dir of runnerDirs) expect(surface).toContain(`${dir}/${dir}.ts`);
+  });
+
+  it("names process.env nowhere outside the accessor's module", () => {
+    const reads = surface
+      .filter((rel) => rel !== ACCESSOR)
+      .flatMap((rel) => envReads(source(rel)).map((line) => `${rel}:${line}`));
+
+    expect(reads).toEqual([]);
+  });
+
+  /** The exemption is for something: the accessor reads there, and the scrub deletes there. */
+  it("finds the reads and the token scrub in the accessor's module", () => {
+    expect(envReads(source(ACCESSOR)).length).toBeGreaterThan(0);
+    expect(source(ACCESSOR)).toContain("export const scrubGitHubTokens");
+  });
+
+  it("reads code, not comments or strings", () => {
+    const text = [
+      "/** `process.env` is read in `shared/env.ts`. */",
+      '// process.env["GH_REPO"]',
+      'const said = "process.env";',
+      'const a = process.env["A"];',
+      "const { B } = process.env;",
+      'const c = process["env"].C;',
+      "const d = globalThis.process.env.D;",
+    ].join("\n");
+
+    expect(envReads(text)).toEqual([4, 5, 6, 7]);
   });
 });
 
@@ -453,8 +563,10 @@ describe("the build ships every prompt beside its runner", () => {
    * `docs/` was outside it and unreachable by the walk. At a repository root it is
    * a sibling of the runner directories and looks exactly like one, so the walk
    * that exists to make sure no prompt is ever forgotten will happily ship
-   * `friction.md`, `ADOPTING.md` and `parity.md` to every consumer — 30 kB to
-   * 102 kB — unless it is told not to.
+   * `friction.md`, `ADOPTING.md`, `parity.md` and `platform-spec.md` to every
+   * consumer — 30 kB to 102 kB — unless it is told not to. The spec is no
+   * exception: an orchestrator imports `shared/contract.ts`, which ships, and
+   * reads the spec at the release tag it links, which is the source tree.
    */
   it("leaves docs/ out of dist", () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), "agent-assets-"));
@@ -463,6 +575,7 @@ describe("the build ships every prompt beside its runner", () => {
 
       expect(fs.existsSync(path.join(out, "docs"))).toBe(false);
       expect(fs.existsSync(path.join(PACKAGE_DIR, "docs/ADOPTING.md"))).toBe(true);
+      expect(fs.existsSync(path.join(PACKAGE_DIR, "docs/platform-spec.md"))).toBe(true);
     } finally {
       fs.rmSync(out, { recursive: true, force: true });
     }
@@ -3858,6 +3971,20 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toContain(
       "packages: read",
     );
+  });
+
+  /** Run by hand, as it usually is, `doctor` has no `OUTPUT_DIR`: its findings go to stderr and nowhere else. */
+  it("reports on stderr and writes no file where OUTPUT_DIR is unset", async () => {
+    const root = await installed();
+    edit(root, "fix", (text) => text.replace(/^ *packages: read$/m, ""));
+    delete process.env["OUTPUT_DIR"];
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toContain("packages: read");
+    expect(reasonsWritten()).toEqual([]);
   });
 
   it("is reachable as a subcommand and refuses a flag it does not know", async () => {

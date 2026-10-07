@@ -153,7 +153,7 @@ describe("readReviewHistory", () => {
   it("follows no fix round when no commit carries a verdict yet", () => {
     ghAnswers({ commits: [[commit(FIRST), commit(HEAD)]], statuses: statuses() });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
   /**
@@ -167,7 +167,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [MIDDLE]: started() }),
     });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   /**
@@ -184,13 +184,13 @@ describe("readReviewHistory", () => {
       commits: [[commit(FIRST), commit(MIDDLE), head]],
       statuses: statuses({ [MIDDLE]: started() }),
     });
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
 
     ghAnswers({
       commits: [[commit(FIRST), commit(MIDDLE), head]],
       statuses: statuses({ [MIDDLE]: [verdict()] }),
     });
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
   /**
@@ -208,7 +208,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [MIDDLE]: [verdict(VERDICTS[key].description)] }),
     });
 
-    expect(readReviewHistory("12").afterFixRound).toBe(false);
+    expect(readReviewHistory("o/r", "12").afterFixRound).toBe(false);
   });
 
   /**
@@ -236,7 +236,7 @@ describe("readReviewHistory", () => {
       },
     });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
   /**
@@ -254,7 +254,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [MIDDLE]: posted }),
     });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
   /**
@@ -268,7 +268,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [MIDDLE]: [verdict(LEGACY_FIX_ROUND_STARTED)] }),
     });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   /**
@@ -282,7 +282,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [FIRST]: started(), [HEAD]: [verdict("the review failed", "error")] }),
     });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   it("takes the latest verdict, not the first one it can find", () => {
@@ -291,7 +291,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [FIRST]: started(), [MIDDLE]: [verdict()] }),
     });
 
-    expect(readReviewHistory("12").afterFixRound).toBe(false);
+    expect(readReviewHistory("o/r", "12").afterFixRound).toBe(false);
   });
 
   /**
@@ -304,7 +304,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [FIRST]: [verdict(), ...started()] }),
     });
 
-    expect(readReviewHistory("12").afterFixRound).toBe(false);
+    expect(readReviewHistory("o/r", "12").afterFixRound).toBe(false);
   });
 
   /**
@@ -319,7 +319,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [HEAD]: started() }),
     });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: false, unreviewedCommits: false });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: false, unreviewedCommits: false });
   });
 
   /**
@@ -333,8 +333,8 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [HEAD]: started() }),
     });
 
-    expect(readReviewHistory("12", true)).toEqual({ afterFixRound: true, unreviewedCommits: false });
-    expect(describeHistory(readReviewHistory("12", true))).toMatch(/follows a fix round.*out-of-scope notes/);
+    expect(readReviewHistory("o/r", "12", true)).toEqual({ afterFixRound: true, unreviewedCommits: false });
+    expect(describeHistory(readReviewHistory("o/r", "12", true))).toMatch(/follows a fix round.*out-of-scope notes/);
   });
 
   /** A note after any other verdict is a human-started fix, which spends no budget. */
@@ -344,7 +344,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [HEAD]: [verdict()] }),
     });
 
-    expect(readReviewHistory("12", true).afterFixRound).toBe(false);
+    expect(readReviewHistory("o/r", "12", true).afterFixRound).toBe(false);
   });
 
   it("reads every page, so a long pull request's head is not off the end", () => {
@@ -353,7 +353,7 @@ describe("readReviewHistory", () => {
       statuses: statuses({ [MIDDLE]: started() }),
     });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   /**
@@ -377,14 +377,14 @@ describe("readReviewHistory", () => {
       }),
     });
 
-    expect(readReviewHistory("12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12")).toEqual({ afterFixRound: true, unreviewedCommits: true });
   });
 
   describe("an unreadable history follows a fix round, and says so", () => {
     it("when the commits cannot be listed", () => {
       ghAnswers({ commits: "gh: Not Found", statuses: statuses() });
 
-      const history = readReviewHistory("12");
+      const history = readReviewHistory("o/r", "12");
 
       expect(history.afterFixRound).toBe(true);
       expect(history.unreviewedCommits).toBe(false);
@@ -402,7 +402,7 @@ describe("readReviewHistory", () => {
         },
       });
 
-      const history = readReviewHistory("12");
+      const history = readReviewHistory("o/r", "12");
 
       expect(history.afterFixRound).toBe(true);
       expect(history.unreadable).toContain(HEAD.slice(0, 7));
@@ -415,7 +415,7 @@ describe("readReviewHistory", () => {
     it("when a commit in the listing has no SHA to look up", () => {
       ghAnswers({ commits: [[{ parents: [] }]], statuses: statuses() });
 
-      expect(readReviewHistory("12").afterFixRound).toBe(true);
+      expect(readReviewHistory("o/r", "12").afterFixRound).toBe(true);
     });
   });
 });

@@ -13,6 +13,14 @@ vi.mock("node:child_process", async (importOriginal) => ({
   spawnSync: vi.fn(),
 }));
 
+// `fs` is the real module throughout, with its writes watched: a run with no
+// `OUTPUT_DIR` must write no file at all, and "not where it used to" is not a
+// claim a test can make by looking in one directory.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
+});
+
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import {
   agentModel,
@@ -20,11 +28,16 @@ import {
   fetchTrustedComments,
   fetchTrustedIssue,
   ghOutcome,
+  input,
   isTrustedAuthor,
-  required,
+  overrideVar,
+  readInputs,
   safeGh,
-  scrubGitHubTokens,
+  workflowRunUrl,
+  writers,
 } from "../shared/common.js";
+import { scrubGitHubTokens } from "../shared/env.js";
+import { CONTRACT, EVERY_RUNNER, type Input, type Inputs, type Runner } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 const spawned = vi.mocked(execFileSync);
@@ -164,28 +177,20 @@ describe("isTrustedAuthor — the two conditions are an OR, not an AND", () => {
  * quality is questioned weeks later.
  */
 describe("agentModel — precedence", () => {
-  const VARS = [
-    "AGENT_MODEL",
-    "AGENT_MODEL_IMPLEMENT",
-    "AGENT_MODEL_FIX",
-    "AGENT_MODEL_REVIEW",
-    "AGENT_MODEL_UPDATE_BRANCH",
-  ] as const;
+  /** The runner's model inputs, by the names it declares them under, as `readInputs` hands them over. */
+  let inputs: Record<string, string> = {};
 
   beforeEach(() => {
-    for (const v of VARS) delete process.env[v];
-  });
-  afterEach(() => {
-    for (const v of VARS) delete process.env[v];
+    inputs = {};
   });
 
   it("falls back to the global default when nothing is set", () => {
-    expect(agentModel("implement")).toBe("claude-opus-5-5");
-    expect(agentModel("review")).toBe("claude-opus-5-5");
+    expect(agentModel("implement", inputs)).toBe("claude-opus-5-5");
+    expect(agentModel("review", inputs)).toBe("claude-opus-5-5");
   });
 
   it("uses the baked per-workflow default for update-branch", () => {
-    expect(agentModel("update-branch")).toBe("claude-sonnet-5-5");
+    expect(agentModel("update-branch", inputs)).toBe("claude-sonnet-5-5");
   });
 
   // The failure this guards: GitHub interpolates an UNSET repository variable
@@ -193,40 +198,40 @@ describe("agentModel — precedence", () => {
   // these the env vars arrive as "". Resolving with `??` instead of `||` would
   // pass that through and hand the CLI an empty model id.
   it("treats an empty string as unset, on both the global and the per-workflow var", () => {
-    process.env["AGENT_MODEL"] = "";
-    process.env["AGENT_MODEL_REVIEW"] = "";
-    expect(agentModel("review")).toBe("claude-opus-5-5");
+    inputs["AGENT_MODEL"] = "";
+    inputs["AGENT_MODEL_REVIEW"] = "";
+    expect(agentModel("review", inputs)).toBe("claude-opus-5-5");
 
-    process.env["AGENT_MODEL_UPDATE_BRANCH"] = "";
-    expect(agentModel("update-branch")).toBe("claude-sonnet-5-5");
+    inputs["AGENT_MODEL_UPDATE_BRANCH"] = "";
+    expect(agentModel("update-branch", inputs)).toBe("claude-sonnet-5-5");
   });
 
   it("lets the global override beat a baked per-workflow default", () => {
     // "run everything on X" is the whole point of setting AGENT_MODEL, so it
     // must outrank the table — including update-branch's cheaper default.
-    process.env["AGENT_MODEL"] = "claude-opus-5";
-    expect(agentModel("update-branch")).toBe("claude-opus-5");
+    inputs["AGENT_MODEL"] = "claude-opus-5";
+    expect(agentModel("update-branch", inputs)).toBe("claude-opus-5");
   });
 
   it("lets a per-workflow override beat the global override", () => {
-    process.env["AGENT_MODEL"] = "claude-sonnet-5";
-    process.env["AGENT_MODEL_REVIEW"] = "claude-opus-5";
-    expect(agentModel("review")).toBe("claude-opus-5");
-    expect(agentModel("implement")).toBe("claude-sonnet-5");
+    inputs["AGENT_MODEL"] = "claude-sonnet-5";
+    inputs["AGENT_MODEL_REVIEW"] = "claude-opus-5";
+    expect(agentModel("review", inputs)).toBe("claude-opus-5");
+    expect(agentModel("implement", inputs)).toBe("claude-sonnet-5");
   });
 
   // update-branch -> AGENT_MODEL_UPDATE_BRANCH. A hyphen surviving into the
   // var name would make the override silently unreachable.
   it("maps a hyphenated workflow name onto an underscored var", () => {
-    process.env["AGENT_MODEL_UPDATE_BRANCH"] = "claude-opus-5";
-    expect(agentModel("update-branch")).toBe("claude-opus-5");
-    expect(agentModel("implement")).toBe("claude-opus-5-5");
+    inputs["AGENT_MODEL_UPDATE_BRANCH"] = "claude-opus-5";
+    expect(agentModel("update-branch", inputs)).toBe("claude-opus-5");
+    expect(agentModel("implement", inputs)).toBe("claude-opus-5-5");
   });
 
   it("resolves the fix workflow, whose name has no hyphen", () => {
-    process.env["AGENT_MODEL_FIX"] = "claude-sonnet-5";
-    expect(agentModel("fix")).toBe("claude-sonnet-5");
-    expect(agentModel("implement")).toBe("claude-opus-5-5");
+    inputs["AGENT_MODEL_FIX"] = "claude-sonnet-5";
+    expect(agentModel("fix", inputs)).toBe("claude-sonnet-5");
+    expect(agentModel("implement", inputs)).toBe("claude-opus-5-5");
   });
 });
 
@@ -460,16 +465,9 @@ describe("ghOutcome — the output survives a non-zero exit", () => {
 });
 
 describe("the trusted fetches reach gh through argv", () => {
-  const REPO = process.env["GH_REPO"];
-
   beforeEach(() => {
     spawned.mockReset();
     shelled.mockReset();
-    process.env["GH_REPO"] = "o/r";
-  });
-  afterEach(() => {
-    if (REPO === undefined) delete process.env["GH_REPO"];
-    else process.env["GH_REPO"] = REPO;
   });
 
   it("keeps a metacharacter issue number as one argument to fetchTrustedIssue", () => {
@@ -477,7 +475,7 @@ describe("the trusted fetches reach gh through argv", () => {
       JSON.stringify({ title: "t", body: "b", author_association: "OWNER" }),
     );
 
-    fetchTrustedIssue("1;id");
+    fetchTrustedIssue("o/r", "1;id");
 
     expect(spawned.mock.calls.at(-1)![1]).toEqual(["api", "repos/o/r/issues/1;id"]);
     expect(shelled).not.toHaveBeenCalled();
@@ -500,7 +498,7 @@ describe("the trusted fetches reach gh through argv", () => {
       }),
     );
 
-    expect(fetchTrustedIssue("42")).toEqual({
+    expect(fetchTrustedIssue("o/r", "42")).toEqual({
       title: "Fix the merge",
       body: "A body with surrounding whitespace.",
       trusted: true,
@@ -521,13 +519,13 @@ describe("the trusted fetches reach gh through argv", () => {
       }),
     );
 
-    expect(fetchTrustedIssue("42")).toEqual({ title: "", body: "", trusted: false });
+    expect(fetchTrustedIssue("o/r", "42")).toEqual({ title: "", body: "", trusted: false });
   });
 
   it("keeps a metacharacter number as one argument to fetchTrustedComments", () => {
     spawned.mockReturnValue("[]");
 
-    fetchTrustedComments("$(id)");
+    fetchTrustedComments("o/r", "$(id)");
 
     expect(spawned.mock.calls.at(-1)![1]).toEqual([
       "api",
@@ -543,8 +541,8 @@ describe("the trusted fetches reach gh through argv", () => {
       throw new Error("gh: Not Found (HTTP 404)");
     });
 
-    expect(fetchTrustedIssue("42")).toEqual({ title: "", body: "", trusted: false });
-    expect(fetchTrustedComments("42")).toBe("");
+    expect(fetchTrustedIssue("o/r", "42")).toEqual({ title: "", body: "", trusted: false });
+    expect(fetchTrustedComments("o/r", "42")).toBe("");
   });
 
   // An absence, but not a silent one (#348): on a private repository a token
@@ -556,8 +554,8 @@ describe("the trusted fetches reach gh through argv", () => {
     });
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
-      fetchTrustedIssue("42");
-      fetchTrustedComments("42");
+      fetchTrustedIssue("o/r", "42");
+      fetchTrustedComments("o/r", "42");
       const warnings = log.mock.calls.map(([line]) => String(line)).filter((line) => line.startsWith("::warning::"));
       expect(warnings).toHaveLength(2);
       expect(warnings[0]).toContain("Issue #42 could not be read");
@@ -572,7 +570,7 @@ describe("the trusted fetches reach gh through argv", () => {
     spawned.mockReturnValue(JSON.stringify({ title: "t", body: "b", author_association: "OWNER" }));
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
-      fetchTrustedIssue("42");
+      fetchTrustedIssue("o/r", "42");
       expect(log).not.toHaveBeenCalled();
     } finally {
       log.mockRestore();
@@ -708,20 +706,33 @@ describe("fetchPullRequestHeading — the jq program survives the crossing", () 
 });
 
 /**
- * `required` is the first thing a runner does — `fix/fix.ts` reads `PR_NUMBER`
- * and `BRANCH` at module scope — so an input the workflow never wired stops the
- * run before anything else has happened, which is exactly the run whose failure
- * comment has to say what was missing.
+ * The accessor a runner reads its declared inputs through (`shared/contract.ts`),
+ * and the check it makes at start. A required input missing stops the run there
+ * and names itself; an optional one reads the default its declaration states,
+ * which the type will not let it leave out.
  *
- * It used to exit without writing the reason file, so a missing `BASE_REF` and
- * a runner that would not load at all produced the *same* comment on the PR:
- * `(no reason file written)` (`docs/friction.md`, 2026-08-08, "One signature,
- * two causes"). What that loses is the absence itself — the comment cannot even
- * say which of the two happened. So what is pinned here is that the name of the
- * variable reaches the file the `if: failure()` step reads.
+ * A runner reads its inputs at module scope, before anything else, so an input
+ * the workflow never wired stops the run before anything else has happened,
+ * which is exactly the run whose failure comment has to say what was missing.
+ * `required()`, which this replaced, once exited without writing the reason
+ * file, so a missing `BASE_REF` and a runner that would not load at all
+ * produced the *same* comment on the PR (`docs/friction.md`, 2026-08-08, "One
+ * signature, two causes"). So what is pinned here is that the name of the
+ * input reaches the file the `if: failure()` step reads.
+ *
+ * `GH_TOKEN` is the case the start-of-run check exists for: only `gh` reads it,
+ * so nothing used to notice it missing, and every trusted fetch quietly came
+ * back empty.
  */
-describe("required — a missing env var says which one, where the workflow can read it", () => {
+describe("readInputs and input — a runner's declared inputs, read loudly", () => {
   const VAR = "AGENT_WORKFLOWS_TEST_ONLY_VAR";
+  const RUNNERS = Object.keys(CONTRACT) as Runner[];
+  const declared = (runner: Runner): [string, Input][] => Object.entries(CONTRACT[runner].inputs);
+  const requiredOf = (runner: Runner): string[] =>
+    declared(runner).filter(([, d]) => d.required).map(([name]) => name);
+  const NAMES = [...new Set([...RUNNERS.flatMap((r) => declared(r).map(([name]) => name)), VAR])];
+  const previous = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
+  const written = vi.mocked(fs.writeFileSync);
 
   /**
    * `fail` never returns, so the exit has to stop the call here too. Letting
@@ -734,58 +745,186 @@ describe("required — a missing env var says which one, where the workflow can 
   let exitCode: number | undefined;
   let exit: MockInstance<typeof process.exit>;
   let logged: MockInstance<typeof console.error>;
-  const previousOutputDir = process.env["OUTPUT_DIR"];
 
   const reasonFile = (): string => path.join(scratch, "failure_reason.txt");
 
+  /** Every input any runner declares, required ones set and optional ones not, so each test removes what it is about. */
   beforeEach(() => {
-    scratch = fs.mkdtempSync(path.join(os.tmpdir(), "common-required-"));
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), "common-inputs-"));
+    for (const n of NAMES) delete process.env[n];
+    for (const n of new Set(RUNNERS.flatMap(requiredOf))) process.env[n] = "given";
     process.env["OUTPUT_DIR"] = scratch;
-    delete process.env[VAR];
+    process.env["GH_REPO"] = "o/r";
+    process.env["GH_TOKEN"] = "a-token";
     exitCode = undefined;
     exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       exitCode = code;
       throw new Exited();
     }) as never);
     logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    written.mockClear();
   });
 
   afterEach(() => {
     exit.mockRestore();
     logged.mockRestore();
-    delete process.env[VAR];
-    if (previousOutputDir === undefined) delete process.env["OUTPUT_DIR"];
-    else process.env["OUTPUT_DIR"] = previousOutputDir;
+    for (const n of NAMES) {
+      const value = previous[n];
+      if (value === undefined) delete process.env[n];
+      else process.env[n] = value;
+    }
     fs.rmSync(scratch, { recursive: true, force: true });
   });
 
-  it("returns the value, and writes nothing, when the variable is set", () => {
-    process.env[VAR] = "some-branch";
-
-    expect(required(VAR)).toBe("some-branch");
+  it("returns every declared input, and writes nothing, when all are set", () => {
+    expect(readInputs(EVERY_RUNNER)).toEqual({ OUTPUT_DIR: scratch, GH_REPO: "o/r", GH_TOKEN: "a-token" });
     expect(fs.existsSync(reasonFile())).toBe(false);
   });
 
-  it("writes the missing name where the failure comment can read it, then exits 1", () => {
-    expect(() => required(VAR)).toThrow(Exited);
+  it("refuses, at typecheck, a read of an input the runner has not declared", () => {
+    delete process.env["BASE_REF"];
+    const inputs = readInputs(CONTRACT["follow-ups"].inputs);
 
-    expect(exitCode).toBe(1);
-    expect(fs.readFileSync(reasonFile(), "utf8")).toContain(VAR);
+    // @ts-expect-error: `follow-ups` declares no `BASE_REF`, so it may not read one.
+    expect(inputs.BASE_REF).toBeUndefined();
+    // @ts-expect-error: nor may a single read name one.
+    expect(() => input(CONTRACT["follow-ups"].inputs, "BASE_REF")).toThrow(Exited);
+  });
+
+  describe.each(RUNNERS)("%s", (runner) => {
+    /**
+     * Every required input, `GH_REPO` and `GH_TOKEN` among them, stops the run
+     * by name. `OUTPUT_DIR` is the one that cannot name itself in the file it
+     * is the directory of, and has its own test below.
+     */
+    it.each(requiredOf(runner).filter((n) => n !== "OUTPUT_DIR"))("stops at start without %s, naming it in failure_reason.txt", (name) => {
+      delete process.env[name];
+
+      expect(() => readInputs(CONTRACT[runner].inputs)).toThrow(Exited);
+
+      expect(exitCode).toBe(1);
+      expect(fs.readFileSync(reasonFile(), "utf8")).toBe(`Missing required env var: ${name}`);
+    });
+
+    it("declares the three every runner reads, required", () => {
+      for (const name of Object.keys(EVERY_RUNNER)) {
+        expect(CONTRACT[runner].inputs, name).toHaveProperty(name, { required: true });
+      }
+    });
+
+    /** Empty where unset, the reading each of them had before it was declared. */
+    it("reads each optional input as its default where it is not given", () => {
+      const values: Readonly<Record<string, string>> = readInputs(CONTRACT[runner].inputs);
+      for (const [name, declaration] of declared(runner)) {
+        if (!declaration.required) expect(values[name], name).toBe(declaration.default);
+      }
+    });
   });
 
   /**
-   * An unset `vars.X` interpolates into the empty string rather than into
-   * nothing, so an input a caller declared and never filled in arrives set and
-   * empty. Same absence, and it has to reach the PR by the same route — this is
-   * the shape the 2026-08-08 run actually had.
+   * The model override's name is computed from the runner's, so no grep finds
+   * it: the declaration is held to the name `agentModel` computes, and every
+   * runner that starts the agent declares what `claudeAgent` reads.
    */
-  it("treats an empty value as missing, reason file and all", () => {
-    process.env[VAR] = "";
+  it.each(RUNNERS.filter((r) => r !== "follow-ups"))("%s declares the inputs that start the agent", (runner) => {
+    expect(CONTRACT[runner].inputs).toHaveProperty(overrideVar(runner), { required: false, default: "" });
+    expect(CONTRACT[runner].inputs).toHaveProperty("AGENT_MODEL", { required: false, default: "" });
+    expect(CONTRACT[runner].inputs).toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN", { required: true });
+  });
 
-    expect(() => required(VAR)).toThrow(Exited);
+  /** As an unset `vars.X` interpolates: into `""`, and that is the same absence. */
+  it("treats an empty value as missing", () => {
+    process.env["GH_TOKEN"] = "";
+
+    expect(() => readInputs(CONTRACT.implement.inputs)).toThrow(Exited);
 
     expect(exitCode).toBe(1);
-    expect(fs.readFileSync(reasonFile(), "utf8")).toContain(VAR);
+    expect(fs.readFileSync(reasonFile(), "utf8")).toContain("GH_TOKEN");
+  });
+
+  it("names every missing input at once, not the first", () => {
+    delete process.env["GH_REPO"];
+    delete process.env["GH_TOKEN"];
+
+    expect(() => readInputs(CONTRACT.fix.inputs)).toThrow(Exited);
+
+    expect(fs.readFileSync(reasonFile(), "utf8")).toBe("Missing required env vars: GH_REPO, GH_TOKEN");
+  });
+
+  it("fails one read the same way", () => {
+    delete process.env["GH_REPO"];
+
+    expect(() => input(EVERY_RUNNER, "GH_REPO")).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(reasonFile(), "utf8")).toBe("Missing required env var: GH_REPO");
+  });
+
+  it("falls back to an optional input's declared default, and reads it where set", () => {
+    const declared = { [VAR]: { required: false, default: "the-default" } } as const satisfies Inputs;
+
+    expect(input(declared, VAR)).toBe("the-default");
+    expect(readInputs(declared)).toEqual({ [VAR]: "the-default" });
+
+    process.env[VAR] = "";
+    expect(input(declared, VAR)).toBe("the-default");
+
+    process.env[VAR] = "given";
+    expect(input(declared, VAR)).toBe("given");
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("refuses, at typecheck, an optional input that states no default", () => {
+    // @ts-expect-error: an optional input has to say what it reads in its place.
+    const declared: Inputs = { [VAR]: { required: false } };
+
+    expect(declared).toBeDefined();
+  });
+
+  /**
+   * `fail()` reports into `OUTPUT_DIR`, so a missing one cannot be reported
+   * there. Stderr carries it, the exit is non-zero, and nothing is written:
+   * not into a fallback directory, and not anywhere else.
+   */
+  it("reports a missing OUTPUT_DIR on stderr, exits non-zero, and writes no file", () => {
+    delete process.env["OUTPUT_DIR"];
+
+    expect(() => readInputs(CONTRACT["update-branch"].inputs)).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("Missing required env var: OUTPUT_DIR"));
+    expect(written).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A runner's outputs are declared the way its inputs are, and checked the
+   * same way: at typecheck, which is where an undeclared output file fails.
+   */
+  it("refuses, at typecheck, a write of a file the runner has not declared", () => {
+    const { writeText } = writers(CONTRACT["follow-ups"].outputs);
+
+    writeText("failure_reason.txt", "declared");
+    // @ts-expect-error: `follow-ups` declares no `summary.md`, so it may not write one.
+    writeText("summary.md", "undeclared");
+
+    expect(fs.readFileSync(reasonFile(), "utf8")).toBe("declared");
+  });
+});
+
+/**
+ * The run link, from the three variables Actions gives every step. A runner
+ * declares them optional and empty by default, so off Actions they arrive
+ * empty, and empty renders no link rather than a dead one.
+ */
+describe("workflowRunUrl", () => {
+  const ON_ACTIONS = { GITHUB_SERVER_URL: "https://github.com", GITHUB_REPOSITORY: "o/r", GITHUB_RUN_ID: "7" };
+
+  it("links the run where all three are given", () => {
+    expect(workflowRunUrl(ON_ACTIONS)).toBe("https://github.com/o/r/actions/runs/7");
+  });
+
+  it.each(Object.keys(ON_ACTIONS))("renders no link where %s is empty, its declared default", (name) => {
+    expect(workflowRunUrl({ ...ON_ACTIONS, [name]: "" })).toBeUndefined();
   });
 });
 

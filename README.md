@@ -3,6 +3,9 @@
 The runners behind a GitHub Actions agent loop: a labelled issue becomes a reviewed pull request
 without a human in the middle. One binary, one version, one subcommand per workflow.
 
+To drive the runners from something other than GitHub Actions, see
+[`docs/platform-spec.md`](./docs/platform-spec.md).
+
 ```bash
 npx --yes @jeffwlawson/agent-workflows@<version> implement
 npx --yes @jeffwlawson/agent-workflows@<version> implement-prd
@@ -125,7 +128,7 @@ this package to fall back on.
 | Code | Meaning |
 |---|---|
 | 0 | the command succeeded |
-| 1 | the run failed, or `doctor` found a problem; the reason is in `$OUTPUT_DIR/failure_reason.txt`, for the workflow's `if: failure()` step to put on the issue or PR |
+| 1 | the run failed, or `doctor` found a problem; the reason is on stderr, and in `$OUTPUT_DIR/failure_reason.txt` where `OUTPUT_DIR` is set, for the workflow's `if: failure()` step to put on the issue or PR |
 | 2 | bad usage — an unknown subcommand, an argument to a runner, or an option `init`/`doctor` does not know |
 
 ## Building and publishing

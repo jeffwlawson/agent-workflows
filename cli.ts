@@ -2,7 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeText } from "./shared/common.js";
+import { commonWriters } from "./shared/common.js";
 import { VERSION } from "./shared/manifest.js";
 
 /**
@@ -187,8 +187,8 @@ ${commands}
 
 Exit codes:
   0  the command succeeded
-  1  the run failed, or \`doctor\` found something; the reason is in
-     OUTPUT_DIR/failure_reason.txt
+  1  the run failed, or \`doctor\` found something; the reason is on
+     stderr, and in OUTPUT_DIR/failure_reason.txt where OUTPUT_DIR is set
   2  bad usage
 `;
 };
@@ -204,11 +204,12 @@ export interface CliIo {
  * `if: failure()` step turns that file into the comment on the issue or PR, and
  * a comment that can only say "check the logs" is one nobody checks. Mistyping a
  * subcommand is now a base-branch YAML edit, so this is the message a maintainer
- * gets on the first run after it.
+ * gets on the first run after it. Typed by hand, with no `OUTPUT_DIR`, stderr
+ * is the whole of it: the writer writes no file without one.
  */
 const refuse = (io: CliIo, message: string): number => {
   io.stderr(`${message}\n\n${usage()}`);
-  writeText("failure_reason.txt", message);
+  commonWriters.writeText("failure_reason.txt", message);
   return 2;
 };
 
@@ -266,7 +267,7 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
       // failure comment would otherwise read "It stopped without giving a reason."
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`${message}\n`);
-      writeText("failure_reason.txt", message);
+      commonWriters.writeText("failure_reason.txt", message);
       process.exitCode = 1;
     },
   );

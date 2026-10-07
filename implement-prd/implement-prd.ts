@@ -7,30 +7,34 @@ import {
   fetchTrustedComments,
   fetchTrustedIssue,
   git,
-  required,
+  readInputs,
   scrubGitHubTokens,
-  writeText,
+  writers,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { renderPrdStatus, renderProgressList, statusBlock, type ProgressInputs } from "../shared/progress-list.js";
 import { readRoundRecord, roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 
+const INPUTS = readInputs(CONTRACT["implement-prd"].inputs);
+const { writeText } = writers(CONTRACT["implement-prd"].outputs);
+
 /** The parent PRD. Context only — the work is the sub-issue below. */
-const ISSUE_NUMBER = required("ISSUE_NUMBER");
-const ISSUE_TITLE = required("ISSUE_TITLE");
+const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
+const ISSUE_TITLE = INPUTS.ISSUE_TITLE;
 
 /** The one sub-issue this run implements, chosen by the workflow's preflight. */
-const SUB_NUMBER = required("SUB_NUMBER");
-const SUB_TITLE = required("SUB_TITLE");
+const SUB_NUMBER = INPUTS.SUB_NUMBER;
+const SUB_TITLE = INPUTS.SUB_TITLE;
 
 /**
  * The PRD branch this run builds on, at its tip: every earlier slice of the
  * PRD is on it, which is what the agent builds on. The workflow pushes it
  * once this exits.
  */
-const BRANCH = required("BRANCH");
+const BRANCH = INPUTS.BRANCH;
 
 /**
  * The branch the chain is based on. Only the prompt uses it — it is what the
@@ -38,22 +42,22 @@ const BRANCH = required("BRANCH");
  * workflow's `default-branch` input rather than a literal, so the instruction
  * names a ref that exists on a repo whose default branch is not `main`.
  */
-const BASE_REF = required("BASE_REF");
+const BASE_REF = INPUTS.BASE_REF;
 
 /**
  * Where a run of this PRD that stopped before it finished left its commits
  * (#303), and where this one looks for them to resume from.
  */
-const RESCUE_BRANCH = required("RESCUE_BRANCH");
+const RESCUE_BRANCH = INPUTS.RESCUE_BRANCH;
 
 /** The PRD PR, or "" on the first slice, which opens it once this exits. */
-const PRD_PR = process.env["PRD_PR"] ?? "";
+const PRD_PR = INPUTS.PRD_PR;
 
 /**
  * The merge of the default branch the run pushed before this started (#245),
  * or "": the PRD PR's head is then that merge, which no review has seen.
  */
-const MERGED = process.env["MERGED"] ?? "";
+const MERGED = INPUTS.MERGED;
 
 /**
  * The PRD PR's progress list (#246), a table since #298 with the status line
@@ -79,7 +83,7 @@ const MERGED = process.env["MERGED"] ?? "";
 const writeProgress = (): void => {
   try {
     const sub = Number(SUB_NUMBER);
-    const { subIssues, log, ranges } = readPrdBranch(ISSUE_NUMBER, BASE_REF);
+    const { subIssues, log, ranges } = readPrdBranch(INPUTS.GH_REPO, ISSUE_NUMBER, BASE_REF);
     const pushed = sliceRanges(
       [{ sha: "(this slice)", parents: [git(["rev-parse", "HEAD"]).trim()], slice: sub }, ...log],
       subIssues,
@@ -90,16 +94,16 @@ const writeProgress = (): void => {
     let rounds: RoundCounts | undefined;
     if (PRD_PR !== "") {
       try {
-        rounds = roundCounts(readRoundRecord(PRD_PR), ranges);
+        rounds = roundCounts(readRoundRecord(INPUTS.GH_REPO, PRD_PR), ranges);
       } catch (error) {
         console.log(`::warning::The PRD PR's rounds could not be read, so the progress table does not count them: ${firstLine(error)}`);
       }
     }
-    const server = process.env["GITHUB_SERVER_URL"];
-    const repo = process.env["GITHUB_REPOSITORY"];
+    const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo } = INPUTS;
     const prUrl = PRD_PR !== "" && server && repo ? `${server}/${repo}/pull/${PRD_PR}` : undefined;
     const common = { subIssues, finalReview: "not requested" as const, prUrl, rounds };
-    const write = (name: string, inputs: ProgressInputs): void => {
+    // Over a fixed set, so each name is one the declaration lists.
+    const write = (name: "" | "_stopped" | "_stopped_pushed", inputs: ProgressInputs): void => {
       writeText(`progress${name}.md`, renderProgressList(inputs));
       writeText(`status${name}.md`, statusBlock(renderPrdStatus(inputs)));
     };
@@ -121,8 +125,8 @@ const writeProgress = (): void => {
  * issue.
  */
 const issueSection = (number: string, fallbackTitle: string): string => {
-  const issue = fetchTrustedIssue(number);
-  const comments = fetchTrustedComments(number);
+  const issue = fetchTrustedIssue(INPUTS.GH_REPO, number);
+  const comments = fetchTrustedComments(INPUTS.GH_REPO, number);
   const parts = [
     issue.trusted
       ? `# ${issue.title || fallbackTitle}\n\n${issue.body || "(no description)"}`
@@ -168,7 +172,7 @@ try {
 
   const result = await sandcastle.run({
     name: `implement-prd-#${ISSUE_NUMBER}-sub-#${SUB_NUMBER}`,
-    agent: claudeAgent("implement-prd"),
+    agent: claudeAgent("implement-prd", INPUTS),
     // The ephemeral Actions runner IS the isolation — same reasoning as the
     // other runners; see implement.ts.
     sandbox: noSandbox(),

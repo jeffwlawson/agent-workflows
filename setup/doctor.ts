@@ -1,4 +1,4 @@
-import { safeGh, writeText } from "../shared/common.js";
+import { commonWriters, safeGh } from "../shared/common.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
   passesSecret,
@@ -1536,7 +1536,8 @@ const render = (finding: Finding): string =>
  * The reasons are written to `OUTPUT_DIR/failure_reason.txt` as well as to
  * stderr, for the reason every runner's `fail()` does it: a preflight run as a
  * workflow step has to leave something the `if: failure()` step can put in front
- * of a human.
+ * of a human. Run by hand there is no `OUTPUT_DIR`, and then stderr is the whole
+ * report: the writer writes no file without one.
  */
 export const runDoctor = async (options: DoctorOptions, io: CliIo): Promise<number> => {
   const callers = readInstalledCallers(options.dir, PACKAGE_NAME);
@@ -1567,7 +1568,7 @@ export const runDoctor = async (options: DoctorOptions, io: CliIo): Promise<numb
   }
 
   const reason = errors.map((finding) => `${finding.check}: ${finding.problem} Fix: ${finding.fix}`).join("\n");
-  writeText("failure_reason.txt", reason);
+  commonWriters.writeText("failure_reason.txt", reason);
   io.stderr(`\n${errors.length} problem(s) that will not announce themselves. See above.\n`);
   return 1;
 };

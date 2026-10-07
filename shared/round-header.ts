@@ -196,9 +196,8 @@ export const fixScope = (record: RoundRecord, ranges?: SliceRanges, prd = ranges
  * to it. Throws where either cannot be read; a caller decides what a header it
  * cannot number becomes.
  */
-export const readRoundRecord = (prNumber: string): RoundRecord => {
-  const reviews = fetchReviews(prNumber);
-  const repo = process.env["GH_REPO"] ?? "{owner}/{repo}";
+export const readRoundRecord = (repo: string, prNumber: string): RoundRecord => {
+  const reviews = fetchReviews(repo, prNumber);
   const fixes = gh([
     "api",
     `repos/${repo}/issues/${prNumber}/events`,

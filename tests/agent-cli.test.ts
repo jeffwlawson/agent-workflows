@@ -563,8 +563,10 @@ describe("the build ships every prompt beside its runner", () => {
    * `docs/` was outside it and unreachable by the walk. At a repository root it is
    * a sibling of the runner directories and looks exactly like one, so the walk
    * that exists to make sure no prompt is ever forgotten will happily ship
-   * `friction.md`, `ADOPTING.md` and `parity.md` to every consumer — 30 kB to
-   * 102 kB — unless it is told not to.
+   * `friction.md`, `ADOPTING.md`, `parity.md` and `platform-spec.md` to every
+   * consumer — 30 kB to 102 kB — unless it is told not to. The spec is no
+   * exception: an orchestrator imports `shared/contract.ts`, which ships, and
+   * reads the spec at the release tag it links, which is the source tree.
    */
   it("leaves docs/ out of dist", () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), "agent-assets-"));
@@ -573,6 +575,7 @@ describe("the build ships every prompt beside its runner", () => {
 
       expect(fs.existsSync(path.join(out, "docs"))).toBe(false);
       expect(fs.existsSync(path.join(PACKAGE_DIR, "docs/ADOPTING.md"))).toBe(true);
+      expect(fs.existsSync(path.join(PACKAGE_DIR, "docs/platform-spec.md"))).toBe(true);
     } finally {
       fs.rmSync(out, { recursive: true, force: true });
     }

@@ -29,6 +29,9 @@ outside it. Read these before proposing that something is undecided:
   (*Invariants*) is the closest thing here to a set of ADRs, and several rules record that they
   have been re-derived and re-argued before.
 - **`docs/ADOPTING.md`** — decisions expressed as instructions to an adopter.
+- **`docs/platform-spec.md`**: the runner ⇄ orchestrator contract. A sentence in bold
+  ***must*** or ***must not*** binds every orchestrator; a block naming one orchestrator only
+  describes it.
 - **`docs/friction.md`** — a dated narrative log of what went wrong. **Append; never rewrite an
   entry to match today.**
 - **`docs/agents/ticket-shape.md`** — the one file in `docs/agents/` that is loop doctrine rather
@@ -48,6 +51,7 @@ prose into one; a decision written in two places is a decision that can disagree
 │   ├── ADOPTING.md
 │   ├── parity.md
 │   ├── friction.md
+│   ├── platform-spec.md
 │   └── agents/         ← this directory
 └── <runner>/           ← implement/, review/, fix/, update-branch/, implement-prd/
 ```
@@ -77,8 +81,9 @@ and stops at the prompt files, where the constraint is the opposite one.
 
 ## Flag ADR conflicts
 
-If your output contradicts an existing ADR — or one of the invariants in `docs/parity.md` §10 —
-surface it explicitly rather than silently overriding:
+If your output contradicts an existing ADR — or one of the invariants in `docs/parity.md` §10, or
+a ***must*** sentence in `docs/platform-spec.md` — surface it explicitly rather than silently
+overriding:
 
 > _Contradicts `docs/parity.md` §10 (creation order is execution order) — but worth reopening
 > because…_

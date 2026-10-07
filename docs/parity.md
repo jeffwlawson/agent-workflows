@@ -462,7 +462,8 @@ what it is for, what it is not (a summary of what changed), and that silence is 
 | Composite action for the repeated setup steps | ❌ | 📋 | both currently duplicate checkout→node→ci→install |
 | `Dockerfile` + local-loop `main.ts` | ✅ | ❌ | N/A by design: `noSandbox()` on the runner (Decision 2) |
 | Project skills (`.claude/skills/`) | ✅ | ❌ | CVM has 7, checked into the repo so its CI agents can load them. Ours relies on `CLAUDE.md` + `CONTEXT.md`, plus **user-level** skills (`wayfinder`, `grilling`) that are available to a human driving Claude Code locally but *not* to a CI agent. That split is deliberate: planning happens with a human in the loop, execution happens in CI |
-| `docs/agents/` platform spec + backlog + label docs | ✅ | 🟡 | ours has `docs/agents/` since jeffwlawson/winget-manifest-lint#89 and four files in it — `triage-labels.md`, `issue-tracker.md`, `domain.md` (a pointer to `CONTEXT.md`, not a second copy) and `ticket-shape.md` (jeffwlawson/winget-manifest-lint#93). All of it is per-repo config for the **local** skills; no workflow loads any of it, and the one file a workflow depends on the *output* of is `ticket-shape.md` (§2a). Still no platform spec or backlog: `CONTEXT.md`, `CLAUDE.md`, this file and `friction.md` cover that ground |
+| Platform spec | ✅ | ✅ | ours is [`docs/platform-spec.md`](./platform-spec.md) (PRD #375), outside `docs/agents/`: the runner ⇄ orchestrator contract, with each runner's inputs and outputs tables held to its declaration by `tests/platform-spec.test.ts`, and written for two orchestrators, the Actions one and the service prototyped on #364 |
+| `docs/agents/` backlog + label docs | ✅ | 🟡 | ours has `docs/agents/` since jeffwlawson/winget-manifest-lint#89 and four files in it — `triage-labels.md`, `issue-tracker.md`, `domain.md` (a pointer to `CONTEXT.md`, not a second copy) and `ticket-shape.md` (jeffwlawson/winget-manifest-lint#93). All of it is per-repo config for the **local** skills; no workflow loads any of it, and the one file a workflow depends on the *output* of is `ticket-shape.md` (§2a). Still no backlog: `CONTEXT.md`, `CLAUDE.md`, this file and `friction.md` cover that ground |
 | `CODING_STANDARDS.md` referenced from prompts | ✅ | 🟡 | folded into `CLAUDE.md` |
 
 ---
@@ -471,6 +472,18 @@ what it is for, what it is not (a summary of what changed), and that silence is 
 
 Where we deliberately diverge **upward**. CVM's posture is "ephemeral runner + label requires
 write access + trust collaborators"; ours adds structural gates because this repo is public.
+
+What binds is [the platform spec's §3](./platform-spec.md#3-safety): four outcomes every
+orchestrator guarantees, and the rows below are how the Actions orchestrator meets them. The token
+scrub and the loop's own identity meet outcome 1, no write credential reaching the agent, and the
+model token row is the one credential that outcome allows; the scrub is also as far as outcome 2,
+the allowlist, goes under `noSandbox`. The fork guard and the identity's App key, named only in
+jobs that run no agent, meet outcome 3, the agent reaching none of the orchestrator's secrets. The
+review job's `contents: read` and the agent never handling labels or pull requests meet outcome 4,
+nothing published but by the workflow after the agent has ended. The author-association gates and
+the explicit trust for our own bot are none of the four: they are reached through the loop's
+identity, [§4.1](./platform-spec.md#41-the-loops-identity), which says whose text a runner trusts.
+Network egress is not an outcome the spec asks for.
 
 | Control | CVM | Ours | Note |
 |---|:--:|:--:|---|
@@ -1180,8 +1193,13 @@ expensive to rediscover.
   to remove.
 - **Every world-writable input is author-gated.** Issue and PR text reaches agents only from
   collaborators or our own bot. `agent:fix` pushes code, so an ungated input there steers commits.
-- **Agents never hold the GitHub token.** Context is fetched before the agent starts and the token
-  is scrubbed, so the no-push/no-label/no-comment boundary is technical rather than conventional.
+  See [platform spec §4.1](./platform-spec.md#41-the-loops-identity).
+- **In the Actions orchestrator, the agent never holds the GitHub token.** The binding rule is
+  [platform spec §3](./platform-spec.md#3-safety), outcome 1: no write credential reaches the
+  agent, whatever invokes the runner. This is how Actions meets it, and why.
+
+  Context is fetched before the agent starts and the token is scrubbed, so the
+  no-push/no-label/no-comment boundary is technical rather than conventional.
   Top-level comments (§4) do not weaken this: the agent *reports* them in its structured output and
   the workflow posts them, which is the same shape as thread replies.
 - **An agent that raises work never files it.** `agent:fix` may say a follow-up is needed; it
@@ -1223,7 +1241,8 @@ expensive to rediscover.
   and the failure it produced was silent, since an unfiled finding leaves no trace at all. Opt-in
   is what had already failed.
 - **No agent reads its own output back as input.** The invariant above closes by a different door
-  if it does. `gh pr comment` posts as `github-actions[bot]`, which `isTrustedAuthor` trusts on
+  if it does. See [platform spec §4.1](./platform-spec.md#41-the-loops-identity).
+  `gh pr comment` posts as `github-actions[bot]`, which `isTrustedAuthor` trusts on
   purpose — so without a filter the agent's own "worth a follow-up issue" note returns next run as
   `# CONVERSATION`, under a prompt heading that says to address or decline it. The agent raises the
   follow-up and the agent, one label later, does it, with no human in between; the quieter variant
@@ -1271,8 +1290,13 @@ expensive to rediscover.
   have to be read by the other. What it costs is a second fix run answering a thread twice, which
   is visible on the pull request; the failure the invariant is about is a workflow silently
   building what it asked for, and nothing here does that.
-- **A channel the prompt bounds is also bounded mechanically.** Prompt guidance sets intent; it is
-  not a control. `filterOutcomes` drops invented thread ids because a model invents them, and
+- **Before the Actions orchestrator publishes it, a channel the prompt bounds is also bounded
+  mechanically.** The binding rule is [platform spec §3](./platform-spec.md#3-safety), outcome 4:
+  the agent's output is checked before anything is published, whatever invokes the runner. This
+  is how it is checked here, and why.
+
+  Prompt guidance sets intent; it is not a control. `filterOutcomes` drops invented thread ids
+  because a model invents them, and
   `filterTopLevelComments` caps a run at two comments and drops verbatim repeats of ones already
   posted, because "silence is the default" is otherwise aspirational — three `agent:fix` rounds
   would leave three copies of the same comment. `filterOutOfScopeNotes` holds the notes (#213) to

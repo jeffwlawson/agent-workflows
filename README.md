@@ -3,6 +3,9 @@
 The runners behind a GitHub Actions agent loop: a labelled issue becomes a reviewed pull request
 without a human in the middle. One binary, one version, one subcommand per workflow.
 
+To drive the runners from something other than GitHub Actions, see
+[`docs/platform-spec.md`](./docs/platform-spec.md).
+
 ```bash
 npx --yes @jeffwlawson/agent-workflows@<version> implement
 npx --yes @jeffwlawson/agent-workflows@<version> implement-prd

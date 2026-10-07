@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import {
   parkReasonOf,
@@ -564,6 +564,17 @@ describe("parkReasonOf", () => {
  */
 describe("readSliceRound", () => {
   const SPAWNS = 40;
+
+  // The sub-issues are read under `GH_REPO`, a required input, so it is set
+  // here rather than borrowed from whatever environment runs the suite.
+  const REPO = process.env["GH_REPO"];
+  beforeEach(() => {
+    process.env["GH_REPO"] = "o/r";
+  });
+  afterEach(() => {
+    if (REPO === undefined) delete process.env["GH_REPO"];
+    else process.env["GH_REPO"] = REPO;
+  });
 
   const g = (...args: string[]): string =>
     execFileSync("git", ["-C", fixture.dir, ...args], { encoding: "utf8", timeout: SUBPROCESS_TIMEOUT }).trim();

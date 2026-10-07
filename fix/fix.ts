@@ -9,8 +9,7 @@ import {
   readInputs,
   scrubGitHubTokens,
   sh,
-  writeJson,
-  writeText,
+  writers,
 } from "../shared/common.js";
 import { CONTRACT } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
@@ -35,6 +34,7 @@ import { runWithExtraction } from "../shared/run-with-extraction.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
 const INPUTS = readInputs(CONTRACT["fix"].inputs);
+const { writeJson, writeText } = writers(CONTRACT["fix"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;

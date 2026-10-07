@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { EVERY_RUNNER, type Input, type Inputs } from "./contract.js";
+import { EVERY_RUNNER, EVERY_RUNNER_OUTPUTS, type Input, type Inputs, type Outputs } from "./contract.js";
 
 /**
  * The one module in a runner or `shared/` that touches the process's
@@ -29,7 +29,9 @@ export type InputValues<D extends Inputs> = { readonly [K in keyof D & string]: 
 const present = (name: string): string | undefined => process.env[name] || undefined;
 
 /**
- * Write a file into `OUTPUT_DIR`, or write nothing where it is unset.
+ * Write a file into `OUTPUT_DIR`, or write nothing where it is unset. Not
+ * exported: a name reaches it only through `writers`, which accepts only a
+ * declared one.
  *
  * Nothing rather than a fallback directory, and that is the writer's rule for
  * every caller: a runner's `fail()`, the CLI's own refusals and `doctor`, which
@@ -43,12 +45,29 @@ const present = (name: string): string | undefined => process.env[name] || undef
  * through `input` itself, which is what keeps a missing `OUTPUT_DIR` reportable
  * at all: `input` reports through `fail()`, and `fail()` writes through here.
  */
-export const writeOutput = (filename: string, value: string): void => {
+const writeOutput = (filename: string, value: string): void => {
   const dir = present("OUTPUT_DIR");
   if (dir === undefined) return;
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, filename), value);
 };
+
+/**
+ * The writers for the files `declared` lists, a runner's outputs in
+ * `shared/contract.ts`: a name it does not list fails typechecking, so a new
+ * output file cannot be written without being declared first. `declared` is
+ * read for its type alone.
+ */
+export const writers = <D extends Outputs>(declared: D) => ({
+  writeText: (filename: D[number], value: string): void => writeOutput(filename, value),
+  writeJson: (filename: D[number], value: unknown): void => writeOutput(filename, JSON.stringify(value, null, 2)),
+});
+
+/**
+ * The writers for the file every runner writes, `failure_reason.txt`: what
+ * `fail()` writes through, and the CLI's refusals and `doctor` with it.
+ */
+export const commonWriters = writers(EVERY_RUNNER_OUTPUTS);
 
 /**
  * Write the reason somewhere the workflow's `if: failure()` step can read it,
@@ -60,7 +79,7 @@ export const writeOutput = (filename: string, value: string): void => {
  */
 export const fail = (message: string): never => {
   console.error(`\nFAILED: ${message}`);
-  writeOutput("failure_reason.txt", message);
+  commonWriters.writeText("failure_reason.txt", message);
   process.exit(1);
 };
 

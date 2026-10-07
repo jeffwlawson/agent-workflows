@@ -10,8 +10,7 @@ import {
   scrubGitHubTokens,
   sh,
   workflowRunUrl,
-  writeJson,
-  writeText,
+  writers,
 } from "../shared/common.js";
 import { CONTRACT } from "../shared/contract.js";
 import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
@@ -39,7 +38,7 @@ import {
   type SliceCriteria,
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
-import { progressAtRoundEnd, renderPrStatus, statusBlock } from "../shared/progress-list.js";
+import { progressAtRoundEnd, renderPrStatus, statusBlock, type RoundEnding } from "../shared/progress-list.js";
 import {
   describeRedCheck,
   readRedCheck,
@@ -92,6 +91,7 @@ import { readRoundRecord, reviewHeader, roundCounts, type RoundCounts, type Roun
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const INPUTS = readInputs(CONTRACT["review"].inputs);
+const { writeJson, writeText } = writers(CONTRACT["review"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;
@@ -358,7 +358,9 @@ try {
       },
       { rounds: counts, review: REVIEW_URL_SLOT, open, prUrl },
     );
-    for (const [ending, list] of Object.entries(lists)) {
+    // Keyed on `RoundEnding`, not `Object.entries`'s `string`, so each name is
+    // one the declaration lists.
+    for (const [ending, list] of Object.entries(lists) as [RoundEnding, (typeof lists)[RoundEnding]][]) {
       writeText(`progress_${ending}.md`, list.progress);
       writeText(`status_${ending}.md`, list.status);
     }

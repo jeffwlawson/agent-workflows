@@ -2,7 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeText } from "./shared/common.js";
+import { commonWriters } from "./shared/common.js";
 import { VERSION } from "./shared/manifest.js";
 
 /**
@@ -209,7 +209,7 @@ export interface CliIo {
  */
 const refuse = (io: CliIo, message: string): number => {
   io.stderr(`${message}\n\n${usage()}`);
-  writeText("failure_reason.txt", message);
+  commonWriters.writeText("failure_reason.txt", message);
   return 2;
 };
 
@@ -267,7 +267,7 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
       // failure comment would otherwise read "It stopped without giving a reason."
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`${message}\n`);
-      writeText("failure_reason.txt", message);
+      commonWriters.writeText("failure_reason.txt", message);
       process.exitCode = 1;
     },
   );

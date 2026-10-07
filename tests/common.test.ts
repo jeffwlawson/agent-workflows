@@ -34,6 +34,7 @@ import {
   readInputs,
   safeGh,
   workflowRunUrl,
+  writers,
 } from "../shared/common.js";
 import { scrubGitHubTokens } from "../shared/env.js";
 import { CONTRACT, EVERY_RUNNER, type Input, type Inputs, type Runner } from "../shared/contract.js";
@@ -893,6 +894,20 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
     expect(exitCode).toBe(1);
     expect(logged).toHaveBeenCalledWith(expect.stringContaining("Missing required env var: OUTPUT_DIR"));
     expect(written).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A runner's outputs are declared the way its inputs are, and checked the
+   * same way: at typecheck, which is where an undeclared output file fails.
+   */
+  it("refuses, at typecheck, a write of a file the runner has not declared", () => {
+    const { writeText } = writers(CONTRACT["follow-ups"].outputs);
+
+    writeText("failure_reason.txt", "declared");
+    // @ts-expect-error: `follow-ups` declares no `summary.md`, so it may not write one.
+    writeText("summary.md", "undeclared");
+
+    expect(fs.readFileSync(reasonFile(), "utf8")).toBe("declared");
   });
 });
 

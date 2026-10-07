@@ -1,4 +1,4 @@
-import { safeGh, writeText } from "../shared/common.js";
+import { commonWriters, safeGh } from "../shared/common.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
   passesSecret,
@@ -1568,7 +1568,7 @@ export const runDoctor = async (options: DoctorOptions, io: CliIo): Promise<numb
   }
 
   const reason = errors.map((finding) => `${finding.check}: ${finding.problem} Fix: ${finding.fix}`).join("\n");
-  writeText("failure_reason.txt", reason);
+  commonWriters.writeText("failure_reason.txt", reason);
   io.stderr(`\n${errors.length} problem(s) that will not announce themselves. See above.\n`);
   return 1;
 };

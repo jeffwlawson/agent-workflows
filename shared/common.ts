@@ -1,11 +1,17 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { outputDir, writeOutput } from "./env.js";
 
-export { fail, input, outputDir, readInputs, scrubGitHubTokens, type InputValues } from "./env.js";
+export {
+  commonWriters,
+  fail,
+  input,
+  outputDir,
+  readInputs,
+  scrubGitHubTokens,
+  writers,
+  type InputValues,
+} from "./env.js";
 
 /**
  * Run a **literal** command through a shell, throwing on a non-zero exit. The
@@ -493,24 +499,6 @@ export const fetchPullRequestBody = (prNumber: string): string => {
   const pr = JSON.parse(gh(["pr", "view", prNumber, "--json", "body"])) as { readonly body?: unknown };
   return typeof pr.body === "string" ? pr.body : "";
 };
-
-/**
- * Replace a pull request's body. Through the REST endpoint with the body as a
- * JSON file, so it arrives exactly as given: no shell, no argv length limit,
- * and no `@file` or type coercion for `-F` to apply to a body that happens to
- * look like either.
- */
-export const updatePullRequestBody = (prNumber: string, body: string): void => {
-  fs.mkdirSync(outputDir(), { recursive: true });
-  const file = path.join(outputDir(), `pr-${prNumber}-body.json`);
-  fs.writeFileSync(file, JSON.stringify({ body }));
-  gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${prNumber}`, "--input", file]);
-};
-
-export const writeJson = (filename: string, value: unknown): void =>
-  writeOutput(filename, JSON.stringify(value, null, 2));
-
-export const writeText = (filename: string, value: string): void => writeOutput(filename, value);
 
 /**
  * Wrap a plain validation function as a Standard Schema, so it can be handed to

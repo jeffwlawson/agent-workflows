@@ -93,9 +93,31 @@ const RUN_LINK = {
   GITHUB_RUN_ID: EMPTY,
 } as const satisfies Inputs;
 
+/**
+ * The files a runner writes into `OUTPUT_DIR`, by name. Every file it can
+ * write is listed, including one written only on some outcomes, whose
+ * existence is the signal. The writers in `shared/env.ts` take a runner's list
+ * and accept no other name, so a new output file fails typechecking until it
+ * is declared here.
+ *
+ * A name a runner computes is computed over a fixed set, typed where it is
+ * written as a template literal over that set, and listed here one literal per
+ * name: a name the set gains and this list lacks fails typechecking at the
+ * write.
+ */
+export type Outputs = readonly string[];
+
+/**
+ * The file every runner writes when it fails: the reason, in words a human
+ * can act on. The CLI's own refusals and `doctor` write it too, through the
+ * same writer, and nothing else.
+ */
+export const EVERY_RUNNER_OUTPUTS = ["failure_reason.txt"] as const satisfies Outputs;
+
 /** One runner's side of the contract. */
 export interface RunnerContract {
   readonly inputs: Inputs;
+  readonly outputs: Outputs;
 }
 
 /**
@@ -109,6 +131,13 @@ export interface RunnerContract {
  * - `FIX_ROUNDS_SPENT` and `FIX_ROUND_BUDGET` are counted by the same step,
  *   and a stop on a spent budget is recorded only where both are numbers.
  * - `PRD_PR` is empty on a PRD's first slice, which opens it.
+ *
+ * And the files each writes:
+ *
+ * - `implement-prd`'s `progress${name}.md` and `status${name}.md` are over
+ *   `name` in `""`, `_stopped` and `_stopped_pushed`.
+ * - `review`'s `progress_${ending}.md` and `status_${ending}.md` are over
+ *   `RoundEnding` in `shared/progress-list.ts`.
  */
 export const CONTRACT = {
   implement: {
@@ -121,6 +150,7 @@ export const CONTRACT = {
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
     },
+    outputs: [...EVERY_RUNNER_OUTPUTS],
   },
   "implement-prd": {
     inputs: {
@@ -138,6 +168,16 @@ export const CONTRACT = {
       MERGED: EMPTY,
       ...PULL_REQUEST_LINK,
     },
+    outputs: [
+      ...EVERY_RUNNER_OUTPUTS,
+      "progress.md",
+      "status.md",
+      "progress_stopped.md",
+      "status_stopped.md",
+      "progress_stopped_pushed.md",
+      "status_stopped_pushed.md",
+      "rescue_ignored.md",
+    ],
   },
   review: {
     inputs: {
@@ -157,6 +197,26 @@ export const CONTRACT = {
       RED_CHECK_FILE: EMPTY,
       ...RUN_LINK,
     },
+    outputs: [
+      ...EVERY_RUNNER_OUTPUTS,
+      "park_failed.md",
+      "progress_approved.md",
+      "status_approved.md",
+      "progress_parked.md",
+      "status_parked.md",
+      "progress_running.md",
+      "status_running.md",
+      "review_payload.json",
+      "summary.md",
+      "review_body.json",
+      "thread_resolutions.json",
+      "pr_summary.json",
+      "verdict.json",
+      "park.md",
+      "park_posted.md",
+      "pr_status.md",
+      "follow_ups.md",
+    ],
   },
   fix: {
     inputs: {
@@ -168,6 +228,15 @@ export const CONTRACT = {
       BASE_REF: REQUIRED,
       RESCUE_BRANCH: REQUIRED,
     },
+    outputs: [
+      ...EVERY_RUNNER_OUTPUTS,
+      "nothing_to_do.txt",
+      "rescue_ignored.md",
+      "thread_outcomes.json",
+      "conversation_outcomes.md",
+      "top_level_comments.json",
+      "out_of_scope_notes.json",
+    ],
   },
   "update-branch": {
     inputs: {
@@ -178,12 +247,14 @@ export const CONTRACT = {
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
     },
+    outputs: [...EVERY_RUNNER_OUTPUTS, "update_comment.md"],
   },
   "follow-ups": {
     inputs: {
       ...EVERY_RUNNER,
       PR_NUMBER: REQUIRED,
     },
+    outputs: [...EVERY_RUNNER_OUTPUTS],
   },
 } as const satisfies Readonly<Record<string, RunnerContract>>;
 

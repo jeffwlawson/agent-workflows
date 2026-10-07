@@ -9,7 +9,7 @@ import {
   git,
   readInputs,
   scrubGitHubTokens,
-  writeText,
+  writers,
 } from "../shared/common.js";
 import { CONTRACT } from "../shared/contract.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
@@ -19,6 +19,7 @@ import { readRoundRecord, roundCounts, type RoundCounts } from "../shared/round-
 import { sliceRanges } from "../shared/slice-ranges.js";
 
 const INPUTS = readInputs(CONTRACT["implement-prd"].inputs);
+const { writeText } = writers(CONTRACT["implement-prd"].outputs);
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
@@ -101,7 +102,8 @@ const writeProgress = (): void => {
     const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo } = INPUTS;
     const prUrl = PRD_PR !== "" && server && repo ? `${server}/${repo}/pull/${PRD_PR}` : undefined;
     const common = { subIssues, finalReview: "not requested" as const, prUrl, rounds };
-    const write = (name: string, inputs: ProgressInputs): void => {
+    // Over a fixed set, so each name is one the declaration lists.
+    const write = (name: "" | "_stopped" | "_stopped_pushed", inputs: ProgressInputs): void => {
       writeText(`progress${name}.md`, renderProgressList(inputs));
       writeText(`status${name}.md`, statusBlock(renderPrdStatus(inputs)));
     };

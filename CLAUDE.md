@@ -85,6 +85,9 @@ repo loses the instruction the prompts depend on.
    default, and read through `readInputs` at the top of the runner. A helper is handed the values
    it needs as arguments and reads no environment. `shared/env.ts` is the one module in a runner or
    `shared/` that names `process.env`, and `tests/agent-cli.test.ts` fails on any other.
+   **Every file it writes into `OUTPUT_DIR` is declared there too**, as its outputs, and written
+   through the `writers` that declaration gives it, so an undeclared name fails typechecking. A
+   computed name is typed over a fixed set, and each name in the set is listed.
 5. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say
    "the verify command `CLAUDE.md` names". A test enforces both over the runner surface.
 

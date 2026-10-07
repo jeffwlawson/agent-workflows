@@ -13,12 +13,13 @@ import {
   scrubGitHubTokens,
   sh,
   standardSchema,
-  writeText,
+  writers,
 } from "../shared/common.js";
 import { CONTRACT } from "../shared/contract.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
 const INPUTS = readInputs(CONTRACT["update-branch"].inputs);
+const { writeText } = writers(CONTRACT["update-branch"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;

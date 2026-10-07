@@ -18,13 +18,18 @@ project has one maintainer, is eleven weeks old, and has no adopter but its main
 
 So work goes to what the maintainer's own repositories use: loop correctness, and the
 self-hosted orchestrator (#374, #375, #386, #387). Work that only matters to an outside adopter
-is labelled `parked`. It is paused, not refused, and nothing is deleted:
+is labelled `parked`. It is paused, not refused, and nothing is deleted. The label is the list;
+when this was decided it covered:
 
 - #344, #346: `init` friction on a second, or non-Node, repository. Already worked around by hand.
 - #360, #362: running the agent jobs on an adopter's self-hosted runner. Superseded for us by
   the orchestrator.
 - #367: a second agent.
-- #371, #372, #373: `doctor` checks against mistakes in callers we write ourselves.
+- #79, #223, #371, #372, #373: `doctor` checks, and running `doctor` on a schedule, against
+  mistakes in callers we write ourselves.
+- #260: a release-notes workflow, a new feature for adopters.
+- #68 and its open children (#72–#75, #77): the map of what the loop assumes about other
+  collaborators' permissions.
 - The rename and the move to the public npm registry (`docs/landscape.md` §6). Not filed.
 
 ## Revisit when

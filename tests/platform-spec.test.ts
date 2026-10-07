@@ -87,12 +87,13 @@ describe("the spec's structure", () => {
    * that is not found compares as empty. So a restructured spec would pass
    * the equality checks by comparing nothing; this is what stops it.
    */
-  it.each(RUNNERS)("has a section for %s, with its trigger label and both tables", (runner) => {
+  it.each(RUNNERS)("has a section for %s, with its trigger label, both tables and what it reads from the record", (runner) => {
     const section = runnerSection(runner);
 
     expect(section).toMatch(/^Trigger label: `agent:[a-z-]+`/m);
     expect(runnerTable(runner, "Inputs")?.[0]?.[0]).toBe("Input");
     expect(runnerTable(runner, "Outputs")?.[0]?.[0]).toBe("Output");
+    expect(sectionsOf(section, 3).has("What it reads from the record")).toBe(true);
     expect(section).toMatch(/^> \*\*Actions orchestrator:\*\*/m);
   });
 
@@ -101,13 +102,17 @@ describe("the spec's structure", () => {
     expect([...sections].sort()).toEqual([...RUNNERS].sort());
   });
 
-  it("has the reading guide, the terms, the process boundary and the version rule", () => {
+  it("has the reading guide, the terms, the process boundary, safety, the record and the version rule", () => {
     const top = [...sectionsOf(SPEC, 2).keys()];
-    for (const prefix of ["0. ", "1. ", "2. ", "5. "]) {
+    for (const prefix of ["0. ", "1. ", "2. ", "3. ", "4. ", "5. "]) {
       expect(top.some((heading) => heading.startsWith(prefix))).toBe(true);
     }
     for (const prefix of ["2.1 ", "2.2 ", "2.3 ", "2.4 ", "2.5 "]) {
       expect(sectionStarting(PROCESS, prefix)).not.toBe("");
+    }
+    const record = sectionsOf(sectionStarting(sectionsOf(SPEC, 2), "4. "), 3);
+    for (const prefix of ["4.1 ", "4.2 ", "4.3 "]) {
+      expect(sectionStarting(record, prefix)).not.toBe("");
     }
     expect(everyRunnerInputs().size).toBeGreaterThan(0);
     expect(everyRunnerOutputs().length).toBeGreaterThan(0);

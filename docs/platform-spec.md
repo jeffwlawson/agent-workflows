@@ -35,12 +35,15 @@ test holds them equal, so they are not a copy that can drift.
   or optional, in both directions;
 - the §2.4 table and each runner's `### Outputs` table to its declared output files, in both
   directions;
-- that every runner section, and both its tables, are present;
+- that every runner section, both its tables and its record part are present, and so are §3 and
+  §4.1 to §4.3;
 - that each Actions reusable sets every input its runner declares required;
 - that the binding words appear only in bold, and never in an orchestrator block.
 
 Everything else here is held by convention: the conventions in
-[`CLAUDE.md`](../CLAUDE.md) that name this spec, and review. A default, a meaning, or what an
+[`CLAUDE.md`](../CLAUDE.md) that name this spec, and review. That includes all of §3 and §4: the
+safety outcomes, and the record strings, which YAML steps write as well as TypeScript, with no one
+call shape a test could read. A default, a meaning, or what an
 orchestrator does with a result is prose, and nothing compares it with the code.
 
 **`doctor`.** Each clause says whether `doctor`, the Actions orchestrator's install check, checks
@@ -180,6 +183,188 @@ runner, at the time it runs, and the model is a repository variable that can cha
 > **Service orchestrator:** the CLI is installed on the box or in its sandbox image, and stays at
 > whatever version that was. The prototype's first run died on an old one.
 
+## 3. Safety
+
+The agent reads text anybody can write, an issue body or a review comment, and runs commands on
+what it reads. So what it can reach is the orchestrator's to bound. These are outcomes, and how an
+orchestrator meets each one is its own; the blocks below say how the two do.
+
+1. **No write credential reaches the agent.** It ***must*** be given its model token and no
+   other credential: no token that can push, post, label or read a secret.
+2. **The agent's environment is an allowlist.** An orchestrator ***must*** hand the agent only the
+   variables it names, never everything its own process holds.
+3. **The agent cannot reach the orchestrator's secrets or other jobs.** The agent ***must not***
+   be able to read a secret the orchestrator holds for its own use, or reach another run's
+   process, files or credentials.
+4. **The agent's output is checked before anything is published.** An orchestrator ***must***
+   publish only through its own code, after the runner has returned, and ***must not*** let the
+   agent push, post or label itself.
+
+**`doctor` cannot check this.** Each outcome is a property of the machine a run happens on and of
+the orchestrator's code, and `doctor` reads a repository. For the Actions orchestrator the build
+holds the reusables to several of the mechanisms below (`tests/workflows.test.ts`).
+
+> **Actions orchestrator:** outcome 1 is met in two places. The App's key, its minted token and
+> `AGENT_PAT` are named only in jobs that never start the agent; and the runner deletes `GH_TOKEN`,
+> `GITHUB_TOKEN` and `NODE_AUTH_TOKEN` from its own environment before the agent starts
+> (`scrubGitHubTokens`, in `shared/env.ts`), so the context it fetched with them is all it kept.
+> Outcome 2: the provider is `none`, so the agent inherits the runner step's environment, which is
+> what the step and its job write out in `env:` and what Actions gives every step, less the
+> scrubbed tokens. Outcome 3 is met by the runner VM, which is fresh for every job and holds only
+> the secrets that job names. Outcome 4 is met by the publish jobs, which push, post and label from
+> the runner's files after the agent job has ended. The controls themselves are listed in
+> [parity §6](./parity.md#6-security-controls).
+
+**The sandbox.** Which provider, and what it ***must*** support, is a runner concern the
+orchestrator selects. Unset means `none`: the agent runs in the runner's own process environment
+and filesystem, and the orchestrator's isolation of the whole run is all there is. In this release
+no input selects a provider, so every run is `none`. Whatever provider a runner gains ***must***
+support resuming a session, since a runner that extracts a structured result runs the agent twice,
+the second time resuming the first session.
+
+**`doctor` cannot check this.** The provider is chosen where the runner runs, not in the
+repository.
+
+> **Actions orchestrator:** relies on the quiet default. The runner VM is the isolation, and
+> outcomes 1 to 3 are met around the whole job rather than around the agent.
+
+> **Service orchestrator:** the prototype found that Sandcastle 0.12.0, the version this package
+> pins, resumes a session only for bind-mount providers. A provider that copies the checkout in
+> rather than mounting it loses the session between the two passes, and the extraction fails.
+
+## 4. The record
+
+A runner reads back what earlier runs of the loop left on GitHub. An orchestrator that drives the
+runners ***must*** leave that record in the shape this section gives, or the runners read the
+pull request as one the loop has never touched: the prototype posted a real review and got
+*Review 1* on every round, because its posts were not by an account the runner recognises.
+
+### 4.1 The loop's identity
+
+The runner recognises one account as the loop's own, in both the spellings GitHub reports it:
+
+| Login | Where GitHub reports it so |
+|---|---|
+| `github-actions[bot]` | The REST API. |
+| `github-actions` | GraphQL. |
+
+This list is **trust**. It feeds `isTrustedAuthor` in `shared/common.ts`, the gate over every
+world-writable surface a runner reads: a comment, review or thread by one of these logins passes
+it whatever its author association, beside the `OWNER`, `MEMBER` and `COLLABORATOR` the gate
+trusts by association. Whatever posts as one of these logins therefore becomes text `fix` acts on
+and commits code from. An orchestrator ***must*** post the loop's findings, notes and statuses as
+one of these logins for a runner to read them back, and ***must not*** let anything it does not
+control post as one.
+
+The same list, without the association half (`isWorkflowBot`), is what a runner asks where the
+question is *did the loop post this* rather than *is this trusted*: the verdict status it counts
+rounds by (§4.3), and the review bodies `follow-ups` files from.
+
+The list is fixed in this release, and an orchestrator cannot pass in its own; #376 will let it.
+
+**`doctor` cannot check this.** The login is whichever account the orchestrator posts as, and the
+Actions reusable will work out its own App's login at run time (#305); nothing in a repository
+names it beforehand.
+
+> **Actions orchestrator:** reviews, comments and statuses are posted with the job's
+> `GITHUB_TOKEN`, so as `github-actions[bot]`. Only a workflow in the repository can post as it,
+> and adding or editing a workflow takes write access, which is why trusting the login is sound
+> there. The loop's App carries pushes, pull requests, ready-marks and trigger labels, which no
+> runner reads as text.
+
+> **Service orchestrator:** a service that posts as its own App is not on the list, so its reviews
+> are read as untrusted text, its verdicts are not counted, and every round reads as the first.
+> Until the list can be passed in, a service can only be read back by posting through a workflow's
+> `github-actions[bot]`.
+
+### 4.2 Labels
+
+What each `agent:*` label means, which object it goes on, and its lifecycle (on while the run
+works) is [ADOPTING §3](./ADOPTING.md#3-labels)'s, and the build reads that table. A label is
+record: an orchestrator that answers one ***must*** give it that meaning.
+
+A repository ***must*** be served by one orchestrator per label: two listening for the same
+label on the same repository would run the same step twice, on the same branch, and post twice.
+
+**`doctor` cannot check this.** `doctor` checks that each label exists, but which orchestrator
+listens is a matter of what is installed where, and a service listens from outside the repository.
+Nor can it see whether a service's App is installed on the repository, since that App is the
+service's and not the loop's.
+
+What an orchestrator does after a runner returns, including adding the next label, is chaining.
+Chaining is each orchestrator's own and is described in each runner's section: review adding
+`agent:fix` (§8), fix asking for the next review (§9), and the PRD advance that puts
+`agent:implement` back on the parent (§7, §8).
+
+### 4.3 Markers, status contexts, trailers and branch names
+
+The strings a runner reads back. Each is written by a runner's output, by the orchestrator, or by
+both, and the runner that reads it is named in its section.
+
+Every marker below is an HTML comment, invisible on GitHub, and every one is a selector rather
+than a control: a runner counts it only on a post by the loop's identity (§4.1), or by a trusted
+author where the table says so. `review` strips the finding and resolution markers from every
+string the agent wrote, so the agent cannot forge one of those through a review.
+
+**Headings and markers in posts.**
+
+| String | Where it sits | Written by | Read by |
+|---|---|---|---|
+| `## Agent review` | The opening of a review's body, after its round header. A review by the loop with this heading is one round. | `review`'s `review_payload.json`, posted by the orchestrator | `review`, `fix`, `implement-prd`, to count rounds |
+| `**Review <r>**`, `**Slice <k> of <n> · #<sub> · review <r>**`, `**Final review · review <r>**` | The round header, the first line of a review or fix comment. | `review` and `fix`, in their outputs | the same three, to tell a PRD PR's rounds apart by slice |
+| `<!-- agent-finding <id> … -->` | Each finding's inline comment, and the review body for a finding with no line. | `review`'s `review_payload.json` | `review`, `fix`, as the findings still open |
+| `<!-- agent-resolution ADDRESSED -->`, `<!-- agent-resolution WONT_FIX -->` | The reply that closes a finding's thread. | `review`'s `thread_resolutions.json` | `review`, `fix`, as the findings settled |
+| `<!-- agent-fix:out-of-scope {…} -->` | A note on a finding the fix judged out of scope. | `fix`'s `out_of_scope_notes.json` | `review`, which rules on it; `fix`, to not repeat it |
+| `<!-- agent-fix:top-level -->` | A top-level comment the fix posted. Read on a trusted author's post too. | `fix`'s `top_level_comments.json` | `review`, `fix`, to leave the loop's own comments out of the feedback |
+| `<!-- agent-fix:conversation-outcomes -->` | The comment saying what the fix did with the conversation. | `fix`'s `conversation_outcomes.md` | `review`, `fix`, the same |
+| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings. An edited review's is refused. | `review`'s `review_payload.json` | `review`, to not record one twice; `follow-ups`, to file them |
+| `<!-- agent-red-tests {…} -->` | A slice round's review body: the red check's tests. | `review`'s `review_payload.json` | `review`, on the PRD PR's final review |
+| `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review`'s `review_payload.json` | `review`, on later rounds of the same slice |
+| `<!--{"version",…,"location","pr","seq"}-->` | The body of a filed follow-up issue. | `follow-ups`, which files it | `follow-ups`, to not file one twice |
+
+**Markers in a pull request's body.** The orchestrator writes the body; a runner writes the blocks
+into its output files and reads them back from the body.
+
+| String | What it holds | Read by |
+|---|---|---|
+| `<!-- agent:summary -->` … `<!-- /agent:summary -->` | The review's summary of the pull request. | `review` |
+| `<!-- agent:summary-head <sha> -->` | Inside the summary: the commit it was written at, which decides whether it is due again. | `review` |
+| `<!-- agent:summary-final -->` | Inside the summary: the final review wrote it. | `review` |
+| `Closes #<n>`, `Fixes #<n>`, `Resolves #<n>` | The issue the pull request delivers, whose criteria a review checks. | `review` |
+
+**Commit status contexts.** Read off each of the pull request's commits, newest first, counting
+only a status whose creator is the loop's identity (§4.1).
+
+| Context | What it records | Written by | Read by |
+|---|---|---|---|
+| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review`'s `verdict.json`, posted by the orchestrator | `review`, to know what changed since the last verdict |
+| `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict |
+
+**Commit trailers.** Read from the PRD branch's first-parent log.
+
+| Trailer | What it records | Written by | Read by |
+|---|---|---|---|
+| `Agent-Slice: #<sub>` | The commit is part of slice `<sub>`'s build. Which slice is next, and which commits a slice round reviews, are read from these and nothing else. | the orchestrator, on every commit a build run makes, before the push | `implement-prd`, `review`, `fix` |
+| `Agent-Catch-Up: #<sub>` | The commit is the orchestrator's merge of the default branch, made before slice `<sub>`. | the orchestrator | the same three, to keep that merge out of any slice |
+
+**Branch names and refs.**
+
+| Name | What it means | Read by |
+|---|---|---|
+| `agent/prd-<parent>-<slug>` | A PRD branch, and so a PRD PR, of parent issue `<parent>`. A pull request whose head does not match is an ordinary one. | `review`, `fix` |
+| `refs/rescue/<RESCUE_BRANCH>` | An earlier stopped run's commits, fetched for the runner to resume from (§7, §9). | `implement-prd`, `fix` |
+
+**Label events.**
+
+| Event | What it records | Read by |
+|---|---|---|
+| `agent:fix` added to the pull request | One fix round, automatic or by hand, each time it was added. | `review`, `fix`, `implement-prd`, to count rounds |
+| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed. | `follow-ups` |
+| `pr-follow-up` on an issue | An issue `follow-ups` filed earlier, read with its body's key. | `follow-ups` |
+
+**`doctor` cannot check this.** These strings are written by the orchestrator's posting code, and
+read back at run time; nothing in a repository holds them before a run.
+
 ## 5. Versions
 
 The contract holds within one release. An orchestrator ***must*** pin one exact runner version,
@@ -232,6 +417,13 @@ branch checked out, at `BASE_REF`, and a new branch named `BRANCH` created from 
 **`doctor` cannot check this.** These tables are the runner's, held to its declaration by the
 build, and an orchestrator other than Actions sets its environment in its own code.
 
+### What it reads from the record
+
+The issue's body and comments, through `isTrustedAuthor` (§4.1): a body or comment by an author
+it does not trust is left out of what the agent is shown. Nothing else of the record.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
 > **Actions orchestrator:** a publish job pushes `BRANCH`, opens a draft pull request into the
 > default branch, links it on the issue, and adds `agent:review` to it.
 
@@ -277,6 +469,16 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 | `rescue_ignored.md` | Signals by existing: a rescue branch was found and set aside. The note says so. |
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
+
+### What it reads from the record
+
+- The parent's and the sub-issue's bodies and comments, through `isTrustedAuthor` (§4.1).
+- The PRD branch's `Agent-Slice` and `Agent-Catch-Up` trailers (§4.3), for which slices are built.
+- The PRD PR's rounds, where `PRD_PR` is set: its reviews headed `## Agent review` by the loop's
+  identity, and each time `agent:fix` was added, for the progress list's counts.
+- `refs/rescue/<RESCUE_BRANCH>`, where it exists, to resume from.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** a publish job adds the `Agent-Slice` trailer to the slice's commits,
 > pushes the PRD branch, opens the PRD PR as a draft the first time or reuses it, writes the
@@ -341,6 +543,24 @@ so the diff matches GitHub's.
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
 
+### What it reads from the record
+
+- Its own head, `BRANCH`, against `agent/prd-<parent>-<slug>`: a match is a PRD PR, and the slice
+  round is read from the branch's `Agent-Slice` and `Agent-Catch-Up` trailers.
+- The rounds so far, for its header: the reviews headed `## Agent review` and their round headers,
+  and the `agent:fix` label events.
+- The `agent-review` and `agent-fix-round` statuses on the pull request's commits, for what changed
+  since the last verdict.
+- The open and settled findings: `agent-finding` markers on the loop's threads and review bodies,
+  and `agent-resolution` on the loop's closing replies.
+- The fix's `agent-fix:out-of-scope` notes, posted since the last review, to rule on.
+- Earlier reviews' `agent-follow-ups`, `agent-red-tests` and acceptance criteria groups.
+- The pull request body's `agent:summary` block, and its `Closes #<n>` line.
+- The feedback threads, the linked issue and its comments, through `isTrustedAuthor`, with the
+  fix's own comments (`agent-fix:top-level`, `agent-fix:conversation-outcomes`) left out.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
 > **Actions orchestrator:** before the runner, the review job waits up to 15 minutes for the pull
 > request's other checks and writes `CI_STATUS_FILE` and `CI_RESULT_FILE`, and a separate job may
 > run the red check. A posting job then answers and resolves the verified threads, posts the
@@ -389,6 +609,20 @@ diffing, and `RESCUE_BRANCH` fetched to `refs/rescue/<RESCUE_BRANCH>` where it e
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
 
+### What it reads from the record
+
+- The review feedback, through `isTrustedAuthor` (§4.1): the open findings by their
+  `agent-finding` markers, less the ones an `agent-resolution` reply closed, with its own earlier
+  `agent-fix:top-level` comments and `agent-fix:conversation-outcomes` left out.
+- Its own earlier `agent-fix:top-level` comments and `agent-fix:out-of-scope` notes, so as not to
+  post one twice.
+- Its own head against `agent/prd-<parent>-<slug>`, and on a PRD PR the branch's trailers, for
+  which slice the round is in.
+- The rounds so far, the way `review` reads them, for its header.
+- `refs/rescue/<RESCUE_BRANCH>`, where it exists, to resume from.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
 > **Actions orchestrator:** a publish job pushes the branch, replies to every thread and closes
 > none, posts the conversation outcomes, the comments and the notes, then adds `agent:review` where
 > it pushed or left a note, or marks the pull request ready where it did neither. On a PRD PR it
@@ -424,6 +658,11 @@ conflicts. A merge that does not conflict needs no runner.
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
 
+### What it reads from the record
+
+Nothing. It reads the pull request's title and body as context for the agent, and parses
+neither.
+
 > **Actions orchestrator:** a merge that does not conflict is pushed without the runner. Otherwise
 > a publish job pushes the resolution, posts `update_comment.md`, carries the earlier verdict over
 > to the merge commit or adds `agent:review`.
@@ -449,6 +688,14 @@ it needs no `claude` and no checkout.
 | | Nothing beyond §2.4. The result is the issues it files. |
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
+
+### What it reads from the record
+
+- `agent:follow-ups` on the pull request, read live, so a second run files nothing.
+- The newest review by the loop's identity carrying `agent-follow-ups`; an edited one is refused.
+- Every `pr-follow-up` issue, with the key in its body, so as not to file one twice.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the runner files the issues itself, so its `GH_TOKEN` can write issues,
 > unlike the other five runners'. A failure is commented on the pull request.

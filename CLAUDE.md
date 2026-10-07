@@ -96,7 +96,11 @@ repo loses the instruction the prompts depend on.
    setting it, in the runner step or its job. `tests/platform-spec.test.ts` is red until all three
    are in; a new output file is the same, without the third. Where the reusable needs a new caller
    input or secret to set it, the two-step rule in *This repo runs its own loop* applies.
-5. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say
+5. **A change to anything a runner reads from the record** (a marker, a status context, a trailer,
+   a branch pattern, a trusted login) is a change to `docs/platform-spec.md` §4 in the same commit.
+   Nothing checks it: YAML shell steps write those strings as well as TypeScript, with no one call
+   shape a test could read, and the record is exactly what a second orchestrator trips on.
+6. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say
    "the verify command `CLAUDE.md` names". A test enforces both over the runner surface.
 
 ## Releasing

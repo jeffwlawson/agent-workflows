@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import {
   parkReasonOf,
@@ -565,17 +565,6 @@ describe("parkReasonOf", () => {
 describe("readSliceRound", () => {
   const SPAWNS = 40;
 
-  // The sub-issues are read under `GH_REPO`, a required input, so it is set
-  // here rather than borrowed from whatever environment runs the suite.
-  const REPO = process.env["GH_REPO"];
-  beforeEach(() => {
-    process.env["GH_REPO"] = "o/r";
-  });
-  afterEach(() => {
-    if (REPO === undefined) delete process.env["GH_REPO"];
-    else process.env["GH_REPO"] = REPO;
-  });
-
   const g = (...args: string[]): string =>
     execFileSync("git", ["-C", fixture.dir, ...args], { encoding: "utf8", timeout: SUBPROCESS_TIMEOUT }).trim();
   const write = (file: string, text: string): void => fs.writeFileSync(path.join(fixture.dir, file), text);
@@ -626,7 +615,7 @@ describe("readSliceRound", () => {
       write("one.txt", "one, fixed\n");
       const fix = commitAll("fix: a finding");
 
-      const round = readSliceRound("222", "main");
+      const round = readSliceRound("o/r", "222", "main");
 
       expect(round.unknownBecause).toBeUndefined();
       expect(round.slice?.subIssue).toBe(11);
@@ -663,7 +652,7 @@ describe("readSliceRound", () => {
       g("commit", "-q", "--allow-empty", "-m", "Merge main into agent/prd-222-x\n\nAgent-Catch-Up: #11");
       const caughtUp = g("rev-parse", "HEAD");
 
-      const branch = readPrdBranch("222", "main");
+      const branch = readPrdBranch("o/r", "222", "main");
 
       expect(branch.subIssues).toEqual(fixture.subIssues);
       expect(branch.log.map((c) => [c.sha, c.slice, c.catchUp])).toEqual([
@@ -679,7 +668,7 @@ describe("readSliceRound", () => {
   it("says why where no slice can be told", () => {
     fixture.dir = fs.mkdtempSync(path.join(os.tmpdir(), "prd-round-missing-"));
 
-    const round = readSliceRound("222", "main");
+    const round = readSliceRound("o/r", "222", "main");
 
     expect(round.slice).toBeUndefined();
     expect(round.unknownBecause).toContain("could not be read");

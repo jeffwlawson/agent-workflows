@@ -1,5 +1,4 @@
-import { fail, ghOutcome, git, input, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
-import { EVERY_RUNNER } from "./contract.js";
+import { fail, ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
 import { parseNameStatus } from "./diff-lines.js";
 import { isOutOfScopeNote, readOutOfScopeNote, type PostedNote } from "./fix-notes.js";
 import {
@@ -849,9 +848,9 @@ const threeDotRange = (baseRef: string | undefined): string => {
  * is never truncated, because a review of part of a change reads as a review
  * of all of it.
  */
-const readDiff = (prNumber: string): string => {
+const readDiff = (prNumber: string, baseRef: string): string => {
   try {
-    return git(diffCommandAgainstBase(process.env["BASE_REF"]));
+    return git(diffCommandAgainstBase(baseRef));
   } catch (error) {
     if ((error as { code?: unknown }).code !== "ENOBUFS") throw error;
     return fail(
@@ -1189,8 +1188,8 @@ const render = <T extends GqlAuthored>(
  * pushes takes `refusalReason`. The one thing neither may do is read a refusal
  * as an absence.
  */
-export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback => {
-  const [owner = "", repo = ""] = input(EVERY_RUNNER, "GH_REPO").split("/");
+export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseRef: string): PullRequestFeedback => {
+  const [owner = "", repo = ""] = ghRepo.split("/");
 
   // Read through `ghOutcome`, not `gh`: a partial-error response exits non-zero
   // with the good data on stdout, so the throwing helper inside a `try` was
@@ -1461,8 +1460,8 @@ export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback 
     priorTopLevelComments,
     outOfScopeNotes,
     priorOutOfScopeNotes,
-    diff: readDiff(prNumber),
-    changedFiles: parseNameStatus(git(changedFilesCommandAgainstBase(process.env["BASE_REF"]))),
+    diff: readDiff(prNumber, baseRef),
+    changedFiles: parseNameStatus(git(changedFilesCommandAgainstBase(baseRef))),
     // Deliberately **not** computed from `all` (#160). What is rendered and
     // what is owed an answer came apart in #133 and #159: a thread awaiting its
     // close and this loop's own unmarked status notes are shown for their

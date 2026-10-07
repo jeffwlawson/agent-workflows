@@ -455,7 +455,7 @@ what it is for, what it is not (a summary of what changed), and that silence is 
 | `run-with-extraction` (resume session → emit structured output) | ✅ | ✅ | |
 | Extraction retry on schema-validation failure | ✅ | ✅ | ours via `Output`'s `maxRetries: 2` |
 | `run-with-retry` + `retry-feedback` (retry a whole run with the error fed back) | ✅ | ❌ | a different pattern from extraction retry; ours has only the latter |
-| Shared `common.ts` helpers (`required` / `fail` / `sh` / `gh`) | ✅ | ✅ | |
+| Shared `common.ts` helpers (`readInputs` / `fail` / `sh` / `gh`) | ✅ | ✅ | |
 | `failure_reason.txt` convention | ✅ | ✅ | |
 | Diff-line parser for inline-comment validation | ✅ | ✅ | |
 | Shared **feedback fetch** used by more than one workflow | ❌ | ➕ | CVM duplicates fetch logic per workflow |

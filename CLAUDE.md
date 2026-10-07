@@ -81,7 +81,11 @@ repo loses the instruction the prompts depend on.
 1. `<name>/<name>.ts` for the logic, `<name>/prompt.md` for what the agent is told.
 2. Shared helpers live in `shared/`. Anything reading a GitHub surface goes there, not in a runner.
 3. Add tests under `tests/`, mirroring the source.
-4. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say
+4. **Every input a runner reads is declared** in `shared/contract.ts`, required or optional with a
+   default, and read through `readInputs` at the top of the runner. A helper is handed the values
+   it needs as arguments and reads no environment. `shared/env.ts` is the one module in a runner or
+   `shared/` that names `process.env`, and `tests/agent-cli.test.ts` fails on any other.
+5. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say
    "the verify command `CLAUDE.md` names". A test enforces both over the runner surface.
 
 ## Releasing
@@ -215,10 +219,11 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
   module-resolution failure a stale branch gives: one signature, two causes, and the signature is
   the *absence* of information.
 
-  `shared/common.ts`'s `required()` was the known exception and is no longer one (#88): a missing
-  env var now exits through `fail()`, so the run that dies at module scope — before any of a
-  runner's own work — still names the variable it wanted. That is the case the convention is
-  hardest to keep and most needed, since nothing else has happened yet for a human to read.
+  A missing required input was the known exception and is no longer one (#88): the accessor
+  (`readInputs` in `shared/env.ts`, which replaced `required()`) exits through `fail()`, so the run
+  that dies at module scope — before any of a runner's own work — still names the input it wanted.
+  That is the case the convention is hardest to keep and most needed, since nothing else has
+  happened yet for a human to read.
 
   One cause of the string survives and is not fixable from here: a step that fails *before* the
   runner exists to write anything, which is where `CONTEXT.md`'s note on the toolchain-free auth

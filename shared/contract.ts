@@ -12,7 +12,7 @@
  * that is not Actions can import it to build the environment it hands a runner
  * without loading a runner, the agent SDK, or anything that reads the
  * environment on import. Reading is `readInputs` and `input` in
- * `shared/common.ts`, which take a declaration from here.
+ * `shared/env.ts`, which take a declaration from here.
  */
 
 /** An input the runner cannot run without. Empty counts as missing. */
@@ -56,22 +56,135 @@ export const EVERY_RUNNER = {
   GH_TOKEN: { required: true },
 } as const satisfies Inputs;
 
+const REQUIRED = { required: true } as const satisfies Input;
+
+/**
+ * An optional input that is empty where it is not given, which is the reading
+ * every one of these had before it was declared: a reader that treats `""` as
+ * "not given" is told nothing new by a default it would treat the same way.
+ */
+const EMPTY = { required: false, default: "" } as const satisfies Input;
+
+/**
+ * What a runner that drives the agent reads to start it: the model token, and
+ * the model, resolved in `shared/common.ts`'s `agentModel` from the runner's
+ * own override, then `AGENT_MODEL`, then the baked default. The override's
+ * name is computed from the runner's (`update-branch` reads
+ * `AGENT_MODEL_UPDATE_BRANCH`), so each runner below names its own, and a test
+ * holds the name to the one `agentModel` computes.
+ */
+const AGENT = {
+  CLAUDE_CODE_OAUTH_TOKEN: REQUIRED,
+  AGENT_MODEL: EMPTY,
+} as const satisfies Inputs;
+
+/**
+ * Two of the three variables Actions gives every step, read for a link to the
+ * pull request. Empty renders no link, as an unset one always has.
+ */
+const PULL_REQUEST_LINK = {
+  GITHUB_SERVER_URL: EMPTY,
+  GITHUB_REPOSITORY: EMPTY,
+} as const satisfies Inputs;
+
+/** The same two and the run's id, for a link to the run as well. */
+const RUN_LINK = {
+  ...PULL_REQUEST_LINK,
+  GITHUB_RUN_ID: EMPTY,
+} as const satisfies Inputs;
+
 /** One runner's side of the contract. */
 export interface RunnerContract {
   readonly inputs: Inputs;
 }
 
 /**
- * Every runner, by the subcommand that invokes it. A runner's own inputs join
- * `EVERY_RUNNER` here as each one moves onto the accessor.
+ * Every runner, by the subcommand that invokes it: the inputs every runner
+ * reads, and its own.
+ *
+ * - `ROUND` is `final` on a PRD PR's final review, and anything else is a
+ *   slice round or an ordinary pull request.
+ * - `AUTO_FIX` is `true` where the workflow will start a fix round itself, and
+ *   anything else is off.
+ * - `FIX_ROUNDS_SPENT` and `FIX_ROUND_BUDGET` are counted by the same step,
+ *   and a stop on a spent budget is recorded only where both are numbers.
+ * - `PRD_PR` is empty on a PRD's first slice, which opens it.
  */
 export const CONTRACT = {
-  implement: { inputs: { ...EVERY_RUNNER } },
-  "implement-prd": { inputs: { ...EVERY_RUNNER } },
-  review: { inputs: { ...EVERY_RUNNER } },
-  fix: { inputs: { ...EVERY_RUNNER } },
-  "update-branch": { inputs: { ...EVERY_RUNNER } },
-  "follow-ups": { inputs: { ...EVERY_RUNNER } },
+  implement: {
+    inputs: {
+      ...EVERY_RUNNER,
+      ...AGENT,
+      AGENT_MODEL_IMPLEMENT: EMPTY,
+      ISSUE_NUMBER: REQUIRED,
+      ISSUE_TITLE: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+    },
+  },
+  "implement-prd": {
+    inputs: {
+      ...EVERY_RUNNER,
+      ...AGENT,
+      AGENT_MODEL_IMPLEMENT_PRD: EMPTY,
+      ISSUE_NUMBER: REQUIRED,
+      ISSUE_TITLE: REQUIRED,
+      SUB_NUMBER: REQUIRED,
+      SUB_TITLE: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+      RESCUE_BRANCH: REQUIRED,
+      PRD_PR: EMPTY,
+      MERGED: EMPTY,
+      ...PULL_REQUEST_LINK,
+    },
+  },
+  review: {
+    inputs: {
+      ...EVERY_RUNNER,
+      ...AGENT,
+      AGENT_MODEL_REVIEW: EMPTY,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+      ROUND: EMPTY,
+      CI_STATUS_FILE: EMPTY,
+      CI_RESULT_FILE: EMPTY,
+      AUTO_FIX: EMPTY,
+      FIX_ROUNDS_SPENT: EMPTY,
+      FIX_ROUND_BUDGET: EMPTY,
+      RED_CHECK_CONFIGURED: EMPTY,
+      RED_CHECK_FILE: EMPTY,
+      ...RUN_LINK,
+    },
+  },
+  fix: {
+    inputs: {
+      ...EVERY_RUNNER,
+      ...AGENT,
+      AGENT_MODEL_FIX: EMPTY,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+      RESCUE_BRANCH: REQUIRED,
+    },
+  },
+  "update-branch": {
+    inputs: {
+      ...EVERY_RUNNER,
+      ...AGENT,
+      AGENT_MODEL_UPDATE_BRANCH: EMPTY,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+    },
+  },
+  "follow-ups": {
+    inputs: {
+      ...EVERY_RUNNER,
+      PR_NUMBER: REQUIRED,
+    },
+  },
 } as const satisfies Readonly<Record<string, RunnerContract>>;
 
 export type Runner = keyof typeof CONTRACT;

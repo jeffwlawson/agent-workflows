@@ -3,123 +3,9 @@ import * as path from "node:path";
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { EVERY_RUNNER, type Input, type Inputs } from "./contract.js";
+import { outputDir, writeOutput } from "./env.js";
 
-/**
- * The environment's value for `name`, or `undefined` where it is unset **or
- * empty**: GitHub interpolates an unset `vars.X` into `""` rather than into
- * nothing, so an input a caller declared and never filled in arrives set and
- * empty, and it is the same absence.
- */
-const present = (name: string): string | undefined => process.env[name] || undefined;
-
-/**
- * Write a file into `OUTPUT_DIR`, or write nothing where it is unset.
- *
- * Nothing rather than a fallback directory, and that is the writer's rule for
- * every caller: a runner's `fail()`, the CLI's own refusals and `doctor`, which
- * is often run by hand with no `OUTPUT_DIR` at all. Each of those says what it
- * is writing on stderr as well, so the message still reaches whoever is
- * reading, and an orchestrator that never set `OUTPUT_DIR` was never going to
- * look anywhere for the file. The `/tmp` it used to fall back to was a
- * directory nobody read, shared by every run on the machine.
- *
- * Reads `OUTPUT_DIR` through `present`, the lookup under `input`, rather than
- * through `input` itself, which is what keeps a missing `OUTPUT_DIR` reportable
- * at all: `input` reports through `fail()`, and `fail()` writes through here.
- */
-const writeOutput = (filename: string, value: string): void => {
-  const dir = present("OUTPUT_DIR");
-  if (dir === undefined) return;
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, filename), value);
-};
-
-/**
- * Write the reason somewhere the workflow's `if: failure()` step can read it,
- * then exit non-zero. Without this the issue comment can only say "check the
- * logs", which in practice means nobody checks.
- *
- * With `OUTPUT_DIR` unset the message on stderr is the whole report, and no
- * file is written (`writeOutput`).
- */
-export const fail = (message: string): never => {
-  console.error(`\nFAILED: ${message}`);
-  writeOutput("failure_reason.txt", message);
-  process.exit(1);
-};
-
-const missingMessage = (names: readonly string[]): string =>
-  `Missing required env var${names.length === 1 ? "" : "s"}: ${names.join(", ")}`;
-
-/**
- * One input, read as `declared` says it is to be read: a required one that is
- * unset or empty fails the run through `fail()`, naming it, and an optional
- * one falls back to the default its declaration states. `declared` is a
- * runner's inputs in `shared/contract.ts`, or `EVERY_RUNNER` from a helper
- * that serves them all, so `name` has to be an input the declaration has.
- */
-export const input = <D extends Inputs>(declared: D, name: keyof D & string): string => {
-  const value = present(name);
-  if (value !== undefined) return value;
-  const declaration: Input | undefined = declared[name];
-  if (declaration?.required === false) return declaration.default;
-  return fail(missingMessage([name]));
-};
-
-/**
- * Every input `declared` has, read at once: the check a runner makes **at
- * start**, before any of its own work, so a hole in its input stops the run
- * there and names every input missing rather than the first one a later read
- * happens to reach.
- *
- * That includes an input only a subprocess reads. `GH_TOKEN` is read by `gh`
- * and by nothing here, and without this check a missing one did not stop
- * anything: every trusted fetch came back empty and the run carried on as if
- * the issue had nothing trusted in it. Read before `scrubGitHubTokens`, which
- * deletes it.
- */
-export const readInputs = <D extends Inputs>(declared: D): { readonly [K in keyof D & string]: string } => {
-  const missing = Object.entries(declared)
-    .filter(([name, declaration]) => declaration.required && present(name) === undefined)
-    .map(([name]) => name);
-  if (missing.length > 0) return fail(missingMessage(missing));
-  return Object.fromEntries(Object.keys(declared).map((name) => [name, input(declared, name)])) as {
-    readonly [K in keyof D & string]: string;
-  };
-};
-
-/**
- * Where the runner writes its results. Required, through the accessor: a
- * caller that reaches for it is past the start-of-run check, so a missing one
- * here is a runner that never made it.
- */
-export const outputDir = (): string => input(EVERY_RUNNER, "OUTPUT_DIR");
-
-/**
- * Read an input the workflow step was supposed to set, failing the run when it
- * did not.
- *
- * Out through `fail`, not `process.exit`, and that is the whole point of the
- * function: this runs at module scope, before any of a runner's own work, so
- * the run it ends is the one with nothing else in its log to go on. Exiting
- * silently left the comment reading `(no reason file written)` — the same
- * string a runner that will not load at all produces, one signature for two
- * causes whose difference is the only thing worth knowing (`docs/friction.md`,
- * 2026-08-08).
- *
- * Empty counts as missing: GitHub interpolates an unset `vars.X` into `""`
- * rather than into nothing, so a `with:` input a caller declared and never
- * filled in arrives set and empty.
- */
-export const required = (name: string): string => {
-  const value = process.env[name];
-  // `return`, rather than a bare call and a fallthrough: `fail` is a const, so
-  // TypeScript does not narrow on its `never` return and would still see
-  // `string | undefined` below.
-  if (!value) return fail(`Missing required env var: ${name}`);
-  return value;
-};
+export { fail, input, outputDir, readInputs, scrubGitHubTokens, type InputValues } from "./env.js";
 
 /**
  * Run a **literal** command through a shell, throwing on a non-zero exit. The
@@ -161,7 +47,7 @@ const WORKFLOW_MODELS: Record<string, string> = {
 };
 
 /** Workflow name → the env var that overrides it. `update-branch` → `AGENT_MODEL_UPDATE_BRANCH`. */
-const overrideVar = (workflow: string): string =>
+export const overrideVar = (workflow: string): string =>
   `AGENT_MODEL_${workflow.toUpperCase().replace(/-/g, "_")}`;
 
 /**
@@ -193,11 +79,11 @@ interface ResolvedModel {
  * A log that lies about provenance is worse than no log, and nothing would have
  * caught it: the naming half was unexported and untestable.
  */
-const resolveModel = (workflow: string): ResolvedModel => {
-  const perWorkflowOverride = process.env[overrideVar(workflow)];
+const resolveModel = (workflow: string, inputs: ModelInputs): ResolvedModel => {
+  const perWorkflowOverride = inputs[overrideVar(workflow)];
   if (perWorkflowOverride) return { model: perWorkflowOverride, source: overrideVar(workflow) };
 
-  const globalOverride = process.env["AGENT_MODEL"];
+  const globalOverride = inputs["AGENT_MODEL"];
   if (globalOverride) return { model: globalOverride, source: "AGENT_MODEL" };
 
   const perWorkflowDefault = WORKFLOW_MODELS[workflow];
@@ -206,22 +92,34 @@ const resolveModel = (workflow: string): ResolvedModel => {
   return { model: DEFAULT_MODEL, source: "default" };
 };
 
-export const agentModel = (workflow: string): string => resolveModel(workflow).model;
+/**
+ * The inputs the chain above reads, by the names a runner declares them under
+ * in `shared/contract.ts`: its `AGENT_MODEL_<WORKFLOW>` and `AGENT_MODEL`. The
+ * runner reads them and hands them in; nothing here reads the environment.
+ */
+export type ModelInputs = Readonly<Record<string, string>>;
+
+export const agentModel = (workflow: string, inputs: ModelInputs): string => resolveModel(workflow, inputs).model;
 
 /**
  * @param workflow Directory name under `agent-workflows/` — `implement`,
  *   `fix`, `review`, `update-branch`. Drives model selection, so it
  *   must match the directory or the workflow silently gets the global default.
+ * @param inputs The runner's inputs, as `readInputs` read them: the model
+ *   token, and the model's two overrides.
  */
-export const claudeAgent = (workflow: string) => {
-  const { model, source } = resolveModel(workflow);
+export const claudeAgent = (
+  workflow: string,
+  inputs: ModelInputs & { readonly AGENT_MODEL: string; readonly CLAUDE_CODE_OAUTH_TOKEN: string },
+) => {
+  const { model, source } = resolveModel(workflow, inputs);
   // Echoed so a run is self-documenting — "which model produced this?" is the
   // first question asked of any output that looks off, and the answer should
   // not require knowing what a repository variable was set to that week.
   console.log(`Agent model: ${model} (${source})`);
   return sandcastle.claudeCode(model, {
     env: {
-      CLAUDE_CODE_OAUTH_TOKEN: required("CLAUDE_CODE_OAUTH_TOKEN"),
+      CLAUDE_CODE_OAUTH_TOKEN: inputs.CLAUDE_CODE_OAUTH_TOKEN,
     },
   });
 };
@@ -365,33 +263,6 @@ export const git = (args: readonly string[]): string =>
   execFileSync("git", [...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
- * Remove the GitHub tokens from this process's environment. The agent runs
- * unsandboxed (`noSandbox` merges `process.env`) and its Bash tool can read the
- * environment, so a prompt-injected agent could use `gh` to act on the repo or
- * exfiltrate the token. Neither runner's agent legitimately needs it: issue/PR
- * context is fetched *before* the agent starts, and all pushing/labelling/
- * commenting happens in separate workflow steps.
- *
- * `NODE_AUTH_TOKEN` is the same job token under another name: the workflow
- * hands it to the runner step so `npm exec` can install this package from
- * GitHub Packages, and by the time this runs that install is done. In every
- * job but review it holds `contents: write`, so left in place it would be a
- * push credential the agent could read off its own environment.
- *
- * Scope and limits: this affects only the current Node process and its
- * children, not later workflow steps. Nor does it reach the git credentials
- * `actions/checkout` would persist — from v6 in a `$RUNNER_TEMP` file that
- * `.git/config` includes — and it does not need to: every checkout an agent
- * runs in sets `persist-credentials: false`, and each fetch or push passes
- * its token on its own command (asserted in `tests/workflows.test.ts`).
- */
-export const scrubGitHubTokens = (): void => {
-  delete process.env["GH_TOKEN"];
-  delete process.env["GITHUB_TOKEN"];
-  delete process.env["NODE_AUTH_TOKEN"];
-};
-
-/**
  * What the association half of the gate establishes is **org-adjacent or
  * better**, which is not the same thing as repository write access. Only
  * `OWNER` is write-gated by its own definition; GraphQL describes the other
@@ -497,8 +368,7 @@ const warnUnreadable = (what: string): void =>
  * rest of the loop assumes. Comments are never fetched at all — they are
  * world-writable regardless of who opened the issue.
  */
-export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
-  const ghRepo = input(EVERY_RUNNER, "GH_REPO");
+export const fetchTrustedIssue = (ghRepo: string, issueNumber: string): TrustedIssue => {
   let parsed: {
     title?: string;
     body?: string | null;
@@ -530,8 +400,8 @@ export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
  * need the same author gate. Only the first page (~30, oldest-first) is read;
  * that is plenty for steering and avoids pulling a huge thread into the prompt.
  */
-export const fetchTrustedComments = (number: string): string =>
-  renderTrustedComments(fetchTrustedCommentList(number));
+export const fetchTrustedComments = (ghRepo: string, number: string): string =>
+  renderTrustedComments(fetchTrustedCommentList(ghRepo, number));
 
 /** One trusted comment, as `fetchTrustedCommentList` returns it. */
 export interface TrustedComment {
@@ -545,8 +415,7 @@ export interface TrustedComment {
  * than handing them on as one text: the review reads a triage brief's
  * acceptance criteria out of one (#214).
  */
-export const fetchTrustedCommentList = (number: string): TrustedComment[] => {
-  const ghRepo = input(EVERY_RUNNER, "GH_REPO");
+export const fetchTrustedCommentList = (ghRepo: string, number: string): TrustedComment[] => {
   let comments: { body?: string; author_association?: string; user?: { login?: string } }[] = [];
   const text = safeGh(["api", `repos/${ghRepo}/issues/${number}/comments`]);
   if (text === "") warnUnreadable(`The comments on #${number}`);
@@ -573,13 +442,16 @@ export const renderTrustedComments = (comments: readonly TrustedComment[]): stri
  * Composed from the three variables every Actions step is given rather than
  * from an input the workflow sets, because that is what they are: a step that
  * had to pass them could forget to, and there is nothing a runner could do
- * about a link it was not handed. `undefined` rather than a guess, so a caller
- * renders no link instead of a dead one.
+ * about a link it was not handed. A runner declares them optional and empty
+ * by default, and hands them in. `undefined` where any is empty rather than a
+ * guess, so a caller renders no link instead of a dead one.
  */
-export const workflowRunUrl = (): string | undefined => {
-  const server = process.env["GITHUB_SERVER_URL"];
-  const repo = process.env["GITHUB_REPOSITORY"];
-  const runId = process.env["GITHUB_RUN_ID"];
+export const workflowRunUrl = (inputs: {
+  readonly GITHUB_SERVER_URL: string;
+  readonly GITHUB_REPOSITORY: string;
+  readonly GITHUB_RUN_ID: string;
+}): string | undefined => {
+  const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: runId } = inputs;
   if (!server || !repo || !runId) return undefined;
   return `${server}/${repo}/actions/runs/${runId}`;
 };

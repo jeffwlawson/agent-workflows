@@ -1,5 +1,4 @@
-import { gh, input, isWorkflowBot } from "./common.js";
-import { EVERY_RUNNER } from "./contract.js";
+import { gh, isWorkflowBot } from "./common.js";
 import { fetchReviews } from "./follow-up-filing.js";
 import type { FilingReview } from "./follow-up-plan.js";
 import { BODY_HEADING } from "./review-output.js";
@@ -197,9 +196,8 @@ export const fixScope = (record: RoundRecord, ranges?: SliceRanges, prd = ranges
  * to it. Throws where either cannot be read; a caller decides what a header it
  * cannot number becomes.
  */
-export const readRoundRecord = (prNumber: string): RoundRecord => {
-  const reviews = fetchReviews(prNumber);
-  const repo = input(EVERY_RUNNER, "GH_REPO");
+export const readRoundRecord = (repo: string, prNumber: string): RoundRecord => {
+  const reviews = fetchReviews(repo, prNumber);
   const fixes = gh([
     "api",
     `repos/${repo}/issues/${prNumber}/events`,

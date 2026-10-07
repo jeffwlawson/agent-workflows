@@ -1,5 +1,4 @@
-import { input, isWorkflowBot, safeGh } from "./common.js";
-import { EVERY_RUNNER } from "./contract.js";
+import { isWorkflowBot, safeGh } from "./common.js";
 import {
   FIX_ROUND_STATUS,
   LEGACY_FIX_ROUND_STARTED,
@@ -182,8 +181,7 @@ const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | un
  * round did run, and pushed nothing (#213). The note is read off the
  * conversation, which this file does not fetch, so the caller says.
  */
-export const readReviewHistory = (prNumber: string, noted = false): ReviewHistory => {
-  const repo = input(EVERY_RUNNER, "GH_REPO");
+export const readReviewHistory = (repo: string, prNumber: string, noted = false): ReviewHistory => {
   const commits = readCommits(repo, prNumber);
   if (commits === undefined) {
     return {

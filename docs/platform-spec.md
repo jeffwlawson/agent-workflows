@@ -283,8 +283,10 @@ What each `agent:*` label means, which object it goes on, and its lifecycle (on 
 works) is [ADOPTING §3](./ADOPTING.md#3-labels)'s, and the build reads that table. A label is
 record: an orchestrator that answers one ***must*** give it that meaning.
 
-A repository ***must*** be served by one orchestrator per label: two listening for the same
+A repository ***must*** be served by one orchestrator, for every label. Two listening for the same
 label on the same repository would run the same step twice, on the same branch, and post twice.
+Split by label, each would run a step of a loop the other started: a label's run adds the next
+label, so one orchestrator would be continuing the other's chain, through the record.
 
 **`doctor` cannot check this.** `doctor` checks that each label exists, but which orchestrator
 listens is a matter of what is installed where, and a service listens from outside the repository.

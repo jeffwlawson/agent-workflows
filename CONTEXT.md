@@ -632,6 +632,7 @@ This is why the loop can run anywhere. It is also why **this** repo needs its ow
 | [`docs/ADOPTING.md`](./docs/ADOPTING.md) | installing the loop elsewhere; §1 is the silent failures |
 | [`docs/friction.md`](./docs/friction.md) | a dated log of every time a human reached into the loop, and why |
 | [`docs/parity.md`](./docs/parity.md) | how this compares to the upstream loops it was modelled on; §10 holds invariants |
+| [`docs/landscape.md`](./docs/landscape.md) | every other agent loop and reviewer on GitHub, dated; whether this one earns its place, and what to call it |
 | [`docs/profiling.md`](./docs/profiling.md) | how to profile a workflow from its jobs and its session transcript, and the shape of a finding |
 | [`docs/agents/ticket-shape.md`](./docs/agents/ticket-shape.md) | how a batch of tickets is published, and in what order |
 | [`docs/agents/triage-labels.md`](./docs/agents/triage-labels.md) | the triage vocabulary beside `agent:*`, and the only definition of the `wayfinder:*` labels two workflows refuse |

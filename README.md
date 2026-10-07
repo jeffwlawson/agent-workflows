@@ -44,11 +44,12 @@ deletes a retired one that no open issue or pull request still carries. It **upd
 release: the pin moves in the callers you have, and nothing else about them changes, a caller being
 the half an adopter owns.
 
-`doctor` exits non-zero on every failure `docs/ADOPTING.md` §1 describes as announcing itself as
-something else — a missing secret, a caller that does not pass `AGENT_PAT` on to the workflow it
+`doctor` exits non-zero on the failures that announce themselves as something else, listed check by
+check in [`docs/ADOPTING.md` §0's table](docs/ADOPTING.md#0-two-commands-that-do-the-mechanical-half).
+Among them are a missing secret, a caller that does not pass `AGENT_PAT` on to the workflow it
 calls, a caller whose `permissions:` block leaves out any grant the workflow it calls declares, a
 pin that is a branch rather than a tag, a `self-check` that does not name the check run its job
-produces, a label that does not exist — and names the fix for each. Every missing grant is an error,
+produces, and a label that does not exist. It names the fix for each. Every missing grant is an error,
 none of them softened by what the repository is or what else is set: a caller cannot hand a job it
 calls more than it holds, and GitHub refuses the elevation by refusing the workflow file, so a
 shortfall costs the whole run before any job starts. It also reports, without failing: how many

@@ -24,8 +24,9 @@ import {
 import type { CliIo } from "../cli.js";
 
 /**
- * The preflight: every check here is a failure `docs/ADOPTING.md` §1 describes
- * as announcing itself as something else. None of them errors on its own, which
+ * The preflight: every check here is for a failure that announces itself as
+ * something else, and `docs/ADOPTING.md` §0's table is the list of them, check
+ * by check. None of them errors on its own, which
  * is the whole reason to look for them on purpose — a missing `packages: read`
  * reads as a bad token, a missing `AGENT_PAT` reads as a working loop, and a
  * `self-check` that names a check run the job does not produce reads as a slow CI.

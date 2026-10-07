@@ -410,11 +410,26 @@ a fix reaches them without them touching anything.
 
 **The runner** is TypeScript plus a prompt, invoked as one subcommand of one published binary. It
 takes its whole input from the environment; passing an argument is refused rather than ignored.
+Its boundary with whatever invokes it is [`docs/platform-spec.md`](./docs/platform-spec.md) §2.
 
 **Part, not layer.** These were *the three layers* until stacked pull requests arrived: GitHub calls
 one pull request in a stack a **layer**, and that is the only meaning the word has here now. The
 PRD chain uses no stacks: its slices are ranges of commits on one branch, not layers. Older
 entries in `docs/friction.md` keep the old usage, because that log is never rewritten.
+
+### Orchestrator, the record and the agent
+
+Three terms from the contract between the runner and what invokes it, worded as
+[`docs/platform-spec.md`](./docs/platform-spec.md) §1 words them. The spec is their home; these
+are here so the glossary and the contract use one vocabulary.
+
+- **Orchestrator.** Whatever invokes a runner and acts on its result. The **Actions orchestrator**
+  is a caller plus its reusable workflow, and the three parts above describe its internals. A
+  second one, a service outside Actions, was prototyped on #364.
+- **The record.** What the loop leaves on GitHub that a later run reads back: posts by the loop's
+  accounts, markers in their text, status contexts, commit trailers and branch names.
+- **The agent.** The model CLI a runner drives inside its sandbox: Claude Code. It is not the
+  runner, which starts it, and `follow-ups` is a runner that starts none.
 
 ### And the install path, which is none of the three
 
@@ -630,8 +645,10 @@ This is why the loop can run anywhere. It is also why **this** repo needs its ow
 | File | What |
 |---|---|
 | [`docs/ADOPTING.md`](./docs/ADOPTING.md) | installing the loop elsewhere; §1 is the silent failures |
+| [`docs/platform-spec.md`](./docs/platform-spec.md) | the runner ⇄ orchestrator contract: what a runner needs, returns and reads back, for anything driving the runners other than Actions |
 | [`docs/friction.md`](./docs/friction.md) | a dated log of every time a human reached into the loop, and why |
 | [`docs/parity.md`](./docs/parity.md) | how this compares to the upstream loops it was modelled on; §10 holds invariants |
+| [`docs/landscape.md`](./docs/landscape.md) | every other agent loop and reviewer on GitHub, dated; whether this one earns its place, and what to call it |
 | [`docs/profiling.md`](./docs/profiling.md) | how to profile a workflow from its jobs and its session transcript, and the shape of a finding |
 | [`docs/agents/ticket-shape.md`](./docs/agents/ticket-shape.md) | how a batch of tickets is published, and in what order |
 | [`docs/agents/triage-labels.md`](./docs/agents/triage-labels.md) | the triage vocabulary beside `agent:*`, and the only definition of the `wayfinder:*` labels two workflows refuse |

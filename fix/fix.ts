@@ -5,13 +5,13 @@ import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   claudeAgent,
   fail,
-  required,
   git,
+  readInputs,
   scrubGitHubTokens,
   sh,
-  writeJson,
-  writeText,
+  writers,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
 import {
   filterConversationOutcomes,
@@ -33,14 +33,17 @@ import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.j
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
-const PR_NUMBER = required("PR_NUMBER");
-const BRANCH = required("BRANCH");
+const INPUTS = readInputs(CONTRACT["fix"].inputs);
+const { writeJson, writeText } = writers(CONTRACT["fix"].outputs);
+
+const PR_NUMBER = INPUTS.PR_NUMBER;
+const BRANCH = INPUTS.BRANCH;
 
 /**
  * Where a run of this pull request that stopped before it finished left its
  * commits (#303), and where this one looks for them to resume from.
  */
-const RESCUE_BRANCH = required("RESCUE_BRANCH");
+const RESCUE_BRANCH = INPUTS.RESCUE_BRANCH;
 
 /**
  * The header this run's top-level comments open with (#298): which slice and
@@ -51,13 +54,13 @@ const RESCUE_BRANCH = required("RESCUE_BRANCH");
 const readFixHeader = (): string | undefined => {
   try {
     const parent = /^agent\/prd-(\d+)-/.exec(BRANCH)?.[1];
-    const record = readRoundRecord(PR_NUMBER);
+    const record = readRoundRecord(INPUTS.GH_REPO, PR_NUMBER);
     // A PRD branch that cannot be read leaves the reviews' own headers to
     // place this run, which they do for every review that carries one.
     let ranges: SliceRanges | undefined;
     if (parent !== undefined) {
       try {
-        ranges = readPrdBranch(parent, process.env["BASE_REF"] ?? "main").ranges;
+        ranges = readPrdBranch(INPUTS.GH_REPO, parent, INPUTS.BASE_REF).ranges;
       } catch (error) {
         console.log(`::warning::The PRD branch could not be read, so this run is placed by the reviews' headers: ${firstLine(error)}`);
       }
@@ -75,7 +78,7 @@ const headed = (header: string | undefined, body: string): string =>
   header === undefined || body === "" ? body : withHeader(header, body);
 
 try {
-  const feedback = fetchPullRequestFeedback(PR_NUMBER);
+  const feedback = fetchPullRequestFeedback(INPUTS.GH_REPO, PR_NUMBER, INPUTS.BASE_REF);
 
   // Said in the log whether or not it is a reason to stop, because a run that
   // proceeded on a partial answer is one someone will later ask about.
@@ -124,7 +127,7 @@ try {
 
   const result = await runWithExtraction({
     name: `fix-${PR_NUMBER}`,
-    agent: claudeAgent("fix"),
+    agent: claudeAgent("fix", INPUTS),
     sandbox: noSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

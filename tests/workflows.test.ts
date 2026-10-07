@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { APP_PERMISSIONS } from "../setup/app.js";
 import { isWorkflowBot } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import {
   ADD_REVIEW_MUTATION,
   FIX_BEFORE_MERGE_LABEL,
@@ -133,7 +134,7 @@ const workflowFiles = fs
  * be added to.
  *
  * Three directory names are skipped, all gitignored and none authored here:
- * `output/` is scratch written by a local run (`shared/common.ts`'s
+ * `output/` is scratch written by a local run (`shared/env.ts`'s
  * `outputDir()`), `dist/` is the compiled package a local build leaves behind —
  * checking it would test `tsc`'s copy of a file already checked — and
  * `node_modules/` is somebody else's source entirely. The last is latent today,
@@ -974,7 +975,8 @@ describe("the loop works against a base ref it is told, never a literal", () => 
     const text = fs.readFileSync("implement/implement.ts", "utf8");
 
     expect(text).not.toContain("main..HEAD");
-    expect(text).toContain('required("BASE_REF")');
+    expect(text).toContain("const BASE_REF = INPUTS.BASE_REF;");
+    expect(CONTRACT.implement.inputs.BASE_REF).toEqual({ required: true });
   });
 
   /**
@@ -989,7 +991,8 @@ describe("the loop works against a base ref it is told, never a literal", () => 
       "utf8",
     );
 
-    expect(text).toContain('required("BASE_REF")');
+    expect(text).toContain("const BASE_REF = INPUTS.BASE_REF;");
+    expect(CONTRACT["update-branch"].inputs.BASE_REF).toEqual({ required: true });
     expect(text).not.toMatch(/\|\|\s*"main"/);
   });
 });
@@ -1565,7 +1568,7 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
   it("hands the runner and every later job that one answer", () => {
     expect(runStep()?.env?.["ROUND"]).toBe("${{ steps.round.outputs.round }}");
     expect(jobOf(REVIEW).outputs?.["round"]).toBe("${{ steps.round.outputs.round }}");
-    expect(runner()).toContain('process.env["ROUND"] === "final"');
+    expect(runner()).toContain('INPUTS.ROUND === "final"');
     // Before the agent's checkout and every step that can fail after it.
     const names = stepsOf(REVIEW).map((s) => s.name ?? "");
     expect(names.indexOf("Tell a slice round from the final review")).toBeLessThan(names.indexOf("Checkout PR head"));
@@ -1574,8 +1577,8 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
   it("reads the slice off the PRD branch while the token is still in hand", () => {
     const text = runner();
 
-    expect(text.indexOf("readSliceRound(prdParent, BASE_REF)")).toBeGreaterThan(-1);
-    expect(text.indexOf("readSliceRound(prdParent, BASE_REF)")).toBeLessThan(text.indexOf("scrubGitHubTokens();"));
+    expect(text.indexOf("readSliceRound(INPUTS.GH_REPO, prdParent, BASE_REF)")).toBeGreaterThan(-1);
+    expect(text.indexOf("readSliceRound(INPUTS.GH_REPO, prdParent, BASE_REF)")).toBeLessThan(text.indexOf("scrubGitHubTokens();"));
     expect(fs.readFileSync("shared/prd-round.ts", "utf8")).toContain("sliceRanges(");
   });
 
@@ -1586,7 +1589,7 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
    */
   it("hands a slice round its sub-issue as the linked issue", () => {
     expect(runner()).toMatch(
-      /fetchPullRequestContext\(PR_NUMBER, subIssue === undefined \? undefined : String\(subIssue\)\)/,
+      /fetchPullRequestContext\(INPUTS\.GH_REPO, PR_NUMBER, BASE_REF, subIssue === undefined \? undefined : String\(subIssue\)\)/,
     );
     expect(runner()).toContain('const criteria = round?.kind === "final" ? [] : context.criteria;');
   });
@@ -1600,8 +1603,10 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
   });
 
   it("needs no new required input, so no caller changes", () => {
-    const inputs = [...runner().matchAll(/required\("([A-Z_]+)"\)/g)].map((m) => m[1]);
-    expect(inputs).toEqual(["PR_NUMBER", "BRANCH", "BASE_REF"]);
+    const inputs = Object.entries(CONTRACT.review.inputs)
+      .filter(([, input]) => input.required)
+      .map(([name]) => name);
+    expect(inputs).toEqual(["OUTPUT_DIR", "GH_REPO", "GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "PR_NUMBER", "BRANCH", "BASE_REF"]);
   });
 });
 

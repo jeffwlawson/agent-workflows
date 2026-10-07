@@ -6,13 +6,13 @@ import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   claudeAgent,
   fail,
-  required,
+  readInputs,
   scrubGitHubTokens,
   sh,
   workflowRunUrl,
-  writeJson,
-  writeText,
+  writers,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { fetchReviews } from "../shared/follow-up-filing.js";
@@ -38,7 +38,7 @@ import {
   type SliceCriteria,
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
-import { progressAtRoundEnd, renderPrStatus, statusBlock } from "../shared/progress-list.js";
+import { progressAtRoundEnd, renderPrStatus, statusBlock, type RoundEnding } from "../shared/progress-list.js";
 import {
   describeRedCheck,
   readRedCheck,
@@ -90,9 +90,12 @@ import {
 import { readRoundRecord, reviewHeader, roundCounts, type RoundCounts, type RoundScope } from "../shared/round-header.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
-const PR_NUMBER = required("PR_NUMBER");
-const BRANCH = required("BRANCH");
-const BASE_REF = required("BASE_REF");
+const INPUTS = readInputs(CONTRACT["review"].inputs);
+const { writeJson, writeText } = writers(CONTRACT["review"].outputs);
+
+const PR_NUMBER = INPUTS.PR_NUMBER;
+const BRANCH = INPUTS.BRANCH;
+const BASE_REF = INPUTS.BASE_REF;
 
 /**
  * The PRD this pull request delivers, when its head is a PRD branch:
@@ -110,7 +113,7 @@ const prdParent = PRD_MATCH?.[1];
  * a slice round. Decided there rather than here so that a run which fails
  * before it gets this far still knows which round it was.
  */
-const FINAL_REVIEW = process.env["ROUND"] === "final";
+const FINAL_REVIEW = INPUTS.ROUND === "final";
 
 /**
  * What kind of pull request the reviewer is reading. An ordinary one is the
@@ -133,7 +136,7 @@ const pullRequestKind = (round: PrdRound | undefined): string =>
  * degrades to a note; it never blocks the review.
  */
 const readCiStatus = (): string => {
-  const file = process.env["CI_STATUS_FILE"];
+  const file = INPUTS.CI_STATUS_FILE;
   if (!file) return "(CI results were not collected for this run.)";
   try {
     return fs.readFileSync(file, "utf8").trim() || "(no other checks reported.)";
@@ -153,7 +156,7 @@ const readCiStatus = (): string => {
  * is not one that can recommend approving a pull request.
  */
 const readCiResult = (): CiResult => {
-  const file = process.env["CI_RESULT_FILE"];
+  const file = INPUTS.CI_RESULT_FILE;
   if (!file) return "unknown";
   try {
     const value = fs.readFileSync(file, "utf8").trim();
@@ -173,7 +176,7 @@ const readCiResult = (): CiResult => {
  *
  * Absent is off: a run that could not say must not claim a fix round started.
  */
-const willAutoFix = (): boolean => process.env["AUTO_FIX"] === "true";
+const willAutoFix = (): boolean => INPUTS.AUTO_FIX === "true";
 
 /**
  * The budget and the rounds spent against it, where the same step could count
@@ -181,12 +184,9 @@ const willAutoFix = (): boolean => process.env["AUTO_FIX"] === "true";
  * and the row records no stop.
  */
 const fixRounds = (): FixRounds | undefined => {
-  const count = (name: string): number | undefined => {
-    const value = process.env[name] ?? "";
-    return /^[0-9]+$/.test(value) ? Number(value) : undefined;
-  };
-  const spent = count("FIX_ROUNDS_SPENT");
-  const budget = count("FIX_ROUND_BUDGET");
+  const count = (value: string): number | undefined => (/^[0-9]+$/.test(value) ? Number(value) : undefined);
+  const spent = count(INPUTS.FIX_ROUNDS_SPENT);
+  const budget = count(INPUTS.FIX_ROUND_BUDGET);
   return spent === undefined || budget === undefined ? undefined : { spent, budget };
 };
 
@@ -219,10 +219,10 @@ try {
       ? undefined
       : FINAL_REVIEW
         ? { kind: "final", parent: prdParent }
-        : readSliceRound(prdParent, BASE_REF);
+        : readSliceRound(INPUTS.GH_REPO, prdParent, BASE_REF);
   console.log(`Round: ${round === undefined ? "an ordinary pull request" : roundName(round)}.`);
   const subIssue = round?.kind === "slice" ? round.slice?.subIssue : undefined;
-  const context = fetchPullRequestContext(PR_NUMBER, subIssue === undefined ? undefined : String(subIssue));
+  const context = fetchPullRequestContext(INPUTS.GH_REPO, PR_NUMBER, BASE_REF, subIssue === undefined ? undefined : String(subIssue));
 
   // The linked issue's acceptance criteria, which this review rules on one by
   // one (#214): on a slice round, its sub-issue's. Not on the final review,
@@ -239,7 +239,7 @@ try {
   // stop judges that round, which is the half that is not the agent's.
   // A fix round that pushed nothing but left a note asked for this review as
   // well (#213), and is one the early stop judges like any other.
-  const history = readReviewHistory(PR_NUMBER, context.fixNotes.length > 0);
+  const history = readReviewHistory(INPUTS.GH_REPO, PR_NUMBER, context.fixNotes.length > 0);
   console.log(
     `Follows a fix round: ${history.afterFixRound ? "yes" : "no"}${history.unreadable === undefined ? "" : `, assumed because ${history.unreadable}`}.`,
   );
@@ -283,7 +283,7 @@ try {
   // `red-check` job's artifact, downloaded beside the CI evidence. Whether it is
   // configured is the workflow's to say, since a check that is off and one
   // whose report was lost both leave no file, and only the second is unknown.
-  const redCheck = readRedCheck(process.env["RED_CHECK_CONFIGURED"] === "true", process.env["RED_CHECK_FILE"]);
+  const redCheck = readRedCheck(INPUTS.RED_CHECK_CONFIGURED === "true", INPUTS.RED_CHECK_FILE);
   console.log(`Red check: ${describeRedCheck(redCheck)}.`);
 
   // The park comment for a round that does not finish (PRD #222), written now
@@ -291,7 +291,7 @@ try {
   // PRD's parent if the review or its posting fails. What is open is what was
   // open before this review, since nothing after this point is known to have
   // happened.
-  const runUrl = workflowRunUrl();
+  const runUrl = workflowRunUrl(INPUTS);
   if (round !== undefined) {
     writeText(
       "park_failed.md",
@@ -311,7 +311,7 @@ try {
   let prdBranch: PrdBranch | undefined;
   if (round !== undefined) {
     try {
-      prdBranch = readPrdBranch(round.parent, BASE_REF);
+      prdBranch = readPrdBranch(INPUTS.GH_REPO, round.parent, BASE_REF);
     } catch (error) {
       console.log(`::warning::The PRD branch's history could not be read: ${firstLine(error)}`);
     }
@@ -323,7 +323,7 @@ try {
   // header and the counts are left out rather than guessed.
   let counts: RoundCounts | undefined;
   try {
-    counts = roundCounts(readRoundRecord(PR_NUMBER), prdBranch?.ranges, round !== undefined);
+    counts = roundCounts(readRoundRecord(INPUTS.GH_REPO, PR_NUMBER), prdBranch?.ranges, round !== undefined);
   } catch (error) {
     console.log(`::warning::This pull request's earlier rounds could not be read, so the review is not numbered: ${firstLine(error)}`);
   }
@@ -335,8 +335,7 @@ try {
         : { kind: "regular" };
   const header = counts === undefined ? undefined : reviewHeader(scope, counts);
   console.log(`Header: ${header ?? "none, since the earlier rounds could not be read"}.`);
-  const server = process.env["GITHUB_SERVER_URL"];
-  const repo = process.env["GITHUB_REPOSITORY"];
+  const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo } = INPUTS;
   const prUrl = server && repo ? `${server}/${repo}/pull/${PR_NUMBER}` : undefined;
 
   // The PRD PR's progress table and status line for each way this round can
@@ -359,7 +358,9 @@ try {
       },
       { rounds: counts, review: REVIEW_URL_SLOT, open, prUrl },
     );
-    for (const [ending, list] of Object.entries(lists)) {
+    // Keyed on `RoundEnding`, not `Object.entries`'s `string`, so each name is
+    // one the declaration lists.
+    for (const [ending, list] of Object.entries(lists) as [RoundEnding, (typeof lists)[RoundEnding]][]) {
       writeText(`progress_${ending}.md`, list.progress);
       writeText(`status_${ending}.md`, list.status);
     }
@@ -378,7 +379,7 @@ try {
   let slicesCriteria: SliceCriteria[] | undefined;
   let slicesRedTests: SliceRedTests[] | undefined;
   if (round !== undefined) {
-    const reviews = fetchReviews(PR_NUMBER);
+    const reviews = fetchReviews(INPUTS.GH_REPO, PR_NUMBER);
     const earlier = earlierFollowUps(reviews);
     carried = earlier.carried;
     for (const skipped of earlier.skipped) {
@@ -406,7 +407,7 @@ try {
 
   const result = await runWithExtraction({
     name: `review-pr-${PR_NUMBER}`,
-    agent: claudeAgent("review"),
+    agent: claudeAgent("review", INPUTS),
     sandbox: noSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
@@ -594,7 +595,7 @@ try {
     droppedNotes: notes.dropped,
     criteria: criteriaRulings.results,
     ...(redTests === undefined ? {} : { redTestsBlock: renderRedTestsBlock(redTests) }),
-    runUrl: workflowRunUrl(),
+    runUrl: workflowRunUrl(INPUTS),
     header,
     // What was shed, where the body had to be cut to fit GitHub's limit (#140).
     // A body that cannot be made to fit throws, and the catch below writes the

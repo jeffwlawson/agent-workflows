@@ -615,7 +615,7 @@ describe("readSliceRound", () => {
       write("one.txt", "one, fixed\n");
       const fix = commitAll("fix: a finding");
 
-      const round = readSliceRound("222", "main");
+      const round = readSliceRound("o/r", "222", "main");
 
       expect(round.unknownBecause).toBeUndefined();
       expect(round.slice?.subIssue).toBe(11);
@@ -652,7 +652,7 @@ describe("readSliceRound", () => {
       g("commit", "-q", "--allow-empty", "-m", "Merge main into agent/prd-222-x\n\nAgent-Catch-Up: #11");
       const caughtUp = g("rev-parse", "HEAD");
 
-      const branch = readPrdBranch("222", "main");
+      const branch = readPrdBranch("o/r", "222", "main");
 
       expect(branch.subIssues).toEqual(fixture.subIssues);
       expect(branch.log.map((c) => [c.sha, c.slice, c.catchUp])).toEqual([
@@ -668,7 +668,7 @@ describe("readSliceRound", () => {
   it("says why where no slice can be told", () => {
     fixture.dir = fs.mkdtempSync(path.join(os.tmpdir(), "prd-round-missing-"));
 
-    const round = readSliceRound("222", "main");
+    const round = readSliceRound("o/r", "222", "main");
 
     expect(round.slice).toBeUndefined();
     expect(round.unknownBecause).toContain("could not be read");

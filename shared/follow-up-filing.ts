@@ -23,10 +23,9 @@ import { FOLLOW_UPS_LABEL } from "./review-output.js";
  * Every call below resolves its repository from `GH_REPO` and never from a git
  * remote, which is load-bearing rather than conventional here: the filing
  * workflow checks nothing out, so there is no remote to resolve from. `gh`
- * reads that variable for exactly this case.
+ * reads that variable for exactly this case, and the runner hands the same
+ * value in as `ghRepo` for the calls that name the repository themselves.
  */
-
-const ghRepo = (): string => process.env["GH_REPO"] ?? "";
 
 /**
  * Is the marker still on the pull request?
@@ -90,8 +89,8 @@ interface GqlReview {
  * reviewed: the same reviews through the same gate, rather than a second query
  * that could disagree with the one the filing end reads.
  */
-export const fetchReviews = (prNumber: string): FilingReview[] => {
-  const [owner = "", repo = ""] = ghRepo().split("/");
+export const fetchReviews = (ghRepo: string, prNumber: string): FilingReview[] => {
+  const [owner = "", repo = ""] = ghRepo.split("/");
   const raw = gh([
     "api",
     "graphql",
@@ -205,18 +204,18 @@ const fetchStubs = (): FilingStub[] => {
  * key the same-pull-request case matches on, so a `NaN` would match nothing,
  * quietly turning every retry into a second copy of every stub.
  */
-export const fetchFilingInput = (prNumber: string): FilingInput => {
+export const fetchFilingInput = (ghRepo: string, prNumber: string): FilingInput => {
   const number = Number.parseInt(prNumber, 10);
   if (!Number.isInteger(number) || number <= 0) {
     throw new Error(`PR_NUMBER is ${JSON.stringify(prNumber)}, which is not a pull request number.`);
   }
-  return { prNumber: number, reviews: fetchReviews(prNumber), stubs: fetchStubs() };
+  return { prNumber: number, reviews: fetchReviews(ghRepo, prNumber), stubs: fetchStubs() };
 };
 
 /** Every label this repository actually has, so a stub is never refused for naming one it lacks. */
-const repoLabels = (): Set<string> =>
+const repoLabels = (ghRepo: string): Set<string> =>
   new Set(
-    gh(["api", `repos/${ghRepo()}/labels`, "--paginate", "--jq", ".[].name"])
+    gh(["api", `repos/${ghRepo}/labels`, "--paginate", "--jq", ".[].name"])
       .split("\n")
       .map((line) => line.trim())
       .filter((name) => name.length > 0),
@@ -260,8 +259,8 @@ export interface FilingOutcome {
  * rather than path by path, which is what makes two findings in one file
  * recoverable too.
  */
-export const executeFilingPlan = (prNumber: string, plan: FilingPlan): FilingOutcome => {
-  const available = plan.issues.length === 0 ? new Set<string>() : repoLabels();
+export const executeFilingPlan = (ghRepo: string, prNumber: string, plan: FilingPlan): FilingOutcome => {
+  const available = plan.issues.length === 0 ? new Set<string>() : repoLabels(ghRepo);
   const created: number[] = [];
   let report = plan.report;
 

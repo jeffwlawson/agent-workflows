@@ -1,4 +1,5 @@
-import { fail, required } from "../shared/common.js";
+import { fail, readInputs } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import {
   executeFilingPlan,
   fetchFilingInput,
@@ -35,7 +36,9 @@ import { FOLLOW_UPS_LABEL } from "../shared/review-output.js";
  * names the caller.
  */
 
-const PR_NUMBER = required("PR_NUMBER");
+const INPUTS = readInputs(CONTRACT["follow-ups"].inputs);
+
+const PR_NUMBER = INPUTS.PR_NUMBER;
 
 try {
   // One unconditional call, and the only branch in this file. The label is the
@@ -49,8 +52,8 @@ try {
     // how a channel teaches people to stop reading it.
     console.log(`#${PR_NUMBER} does not carry \`${FOLLOW_UPS_LABEL}\`. Nothing to file.`);
   } else {
-    const plan = planFollowUps(fetchFilingInput(PR_NUMBER));
-    const outcome = executeFilingPlan(PR_NUMBER, plan);
+    const plan = planFollowUps(fetchFilingInput(INPUTS.GH_REPO, PR_NUMBER));
+    const outcome = executeFilingPlan(INPUTS.GH_REPO, PR_NUMBER, plan);
 
     console.log(
       `Filed ${outcome.created.length} issue(s)${outcome.created.length === 0 ? "" : `: ${outcome.created.map((n) => `#${n}`).join(", ")}`}.`,

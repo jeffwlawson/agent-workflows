@@ -9,28 +9,32 @@ import {
   fail,
   fetchPullRequestHeading,
   outputDir,
-  required,
+  readInputs,
   scrubGitHubTokens,
   sh,
   standardSchema,
-  writeText,
+  writers,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
-const PR_NUMBER = required("PR_NUMBER");
-const BRANCH = required("BRANCH");
+const INPUTS = readInputs(CONTRACT["update-branch"].inputs);
+const { writeText } = writers(CONTRACT["update-branch"].outputs);
+
+const PR_NUMBER = INPUTS.PR_NUMBER;
+const BRANCH = INPUTS.BRANCH;
 
 /**
  * The branch the workflow merged in, rendered into the prompt so the agent is
  * reconciling the merge that actually happened.
  *
- * `required`, where it used to default to `main`: the workflow sets it from the
+ * Required, where it used to default to `main`: the workflow sets it from the
  * pull-request event with its `default-branch` input behind it, so an empty
  * value here means the prompt would describe a different merge from the one in
  * the working tree — and being wrong about that quietly is worse than refusing
  * before the agent starts.
  */
-const BASE_REF = required("BASE_REF");
+const BASE_REF = INPUTS.BASE_REF;
 
 /**
  * Only the *comment* is structured. The resolution itself is the working tree,
@@ -56,7 +60,7 @@ try {
 
   const result = await runWithExtraction({
     name: `update-branch-pr-${PR_NUMBER}`,
-    agent: claudeAgent("update-branch"),
+    agent: claudeAgent("update-branch", INPUTS),
     sandbox: noSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),

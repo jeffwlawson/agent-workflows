@@ -198,21 +198,10 @@ const answersGh = ((file: string, args: readonly string[]) => {
   }
 }) as never;
 
-const PREVIOUS = { repo: process.env["GH_REPO"], base: process.env["BASE_REF"] };
-
 beforeEach(() => {
   spawned.mockReset();
   captured.mockReset();
   captured.mockImplementation(answersGh);
-  process.env["GH_REPO"] = "o/r";
-  process.env["BASE_REF"] = "main";
-});
-
-afterEach(() => {
-  for (const [name, value] of [["GH_REPO", PREVIOUS.repo], ["BASE_REF", PREVIOUS.base]] as const) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
 });
 
 /**
@@ -234,7 +223,7 @@ describe("a partial-error response keeps the selections that returned", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     // The whole point: these came back correctly in the same response that
     // carried the error, and used to be discarded with it.
@@ -259,7 +248,7 @@ describe("a partial-error response keeps the selections that returned", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("partial");
     expect(feedback.unreadable).toEqual([
@@ -287,7 +276,7 @@ describe("a partial-error response keeps the selections that returned", () => {
       ]),
     );
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("partial");
     expect(feedback.unreadable.map((u) => u.surfaces)).toEqual([["conversation"]]);
@@ -315,7 +304,7 @@ describe("a partial-error response keeps the selections that returned", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.conversation).toContain("Please rename this");
     expect(feedback.inline).toContain("This swallows the error.");
@@ -334,7 +323,7 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
   it('renders "(none)" for a surface that answered and had nothing', () => {
     readableButEmpty();
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("ok");
     expect(feedback.unreadable).toEqual([]);
@@ -351,7 +340,7 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     const rendered = surfaceText(feedback, "inline");
     expect(rendered).not.toBe("(none)");
@@ -389,7 +378,7 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
     const rendered = surfaceText(feedback, "inline");
 
     expect(feedback.unreadable[0]?.trustBearing).toBe(false);
@@ -414,7 +403,7 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
       );
     });
 
-    const note = unreadableNote(fetchPullRequestFeedback("12").unreadable);
+    const note = unreadableNote(fetchPullRequestFeedback("o/r", "12", "main").unreadable);
 
     expect(note).toContain("repository.pullRequest.reviewThreads");
     expect(note).toContain("unknown");
@@ -443,7 +432,7 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
       );
     });
 
-    const note = unreadableNote(fetchPullRequestFeedback("12").unreadable);
+    const note = unreadableNote(fetchPullRequestFeedback("o/r", "12", "main").unreadable);
 
     // Said, by name, with what the API said about it.
     expect(note).toContain("repository.collaborators");
@@ -456,7 +445,7 @@ describe("an unreadable selection is distinguishable from an empty one", () => {
   it("renders no note at all when everything was readable", () => {
     readableButEmpty();
 
-    expect(unreadableNote(fetchPullRequestFeedback("12").unreadable)).toBe("");
+    expect(unreadableNote(fetchPullRequestFeedback("o/r", "12", "main").unreadable)).toBe("");
   });
 });
 
@@ -485,7 +474,7 @@ describe("a selection the author gate reads is trust-bearing", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.unreadable).toEqual([
       {
@@ -526,7 +515,7 @@ describe("a selection the author gate reads is trust-bearing", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.unreadable[0]?.trustBearing).toBe(true);
     // The review is still rendered — with the author it could not establish.
@@ -583,7 +572,7 @@ describe("a selection the author gate reads is trust-bearing", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.conversation).toContain("Please rename this");
     expect(feedback.summaries).toContain("Looks close");
@@ -613,7 +602,7 @@ describe("a selection the author gate reads is trust-bearing", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.unreadable).toEqual([
       {
@@ -649,7 +638,7 @@ describe("a selection the author gate reads is trust-bearing", () => {
         );
       });
 
-      expect(fetchPullRequestFeedback("12").unreadable).toEqual([
+      expect(fetchPullRequestFeedback("o/r", "12", "main").unreadable).toEqual([
         {
           path: `repository.pullRequest.${key}`,
           reason: "FORBIDDEN: Resource not accessible",
@@ -668,7 +657,7 @@ describe("a selection the author gate reads is trust-bearing", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.unreadable).toHaveLength(1);
     expect(feedback.unreadable[0]?.surfaces).toEqual(["summaries", "inline", "conversation"]);
@@ -794,7 +783,7 @@ describe("the classification is checked against the query it was transcribed fro
         "gh: Resource not accessible\n",
       );
     });
-    return fetchPullRequestFeedback("12").unreadable;
+    return fetchPullRequestFeedback("o/r", "12", "main").unreadable;
   };
 
   it("places every selection the query makes on a rendered surface", () => {
@@ -875,7 +864,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
       throw exitsNonZero("", "gh: could not connect to api.github.com\n");
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("failed");
     expect(feedback.hasFeedback).toBe(false);
@@ -893,7 +882,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
     ]) {
       ghAnswers(answer);
 
-      expect(fetchPullRequestFeedback("12").status).toBe("failed");
+      expect(fetchPullRequestFeedback("o/r", "12", "main").status).toBe("failed");
     }
   });
 
@@ -918,7 +907,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
       stderr: "gh: HTTP 502 from api.github.com\n",
     } as never);
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("failed");
     expect(feedback.unreadable).toHaveLength(1);
@@ -941,7 +930,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
       error: Object.assign(new Error("spawnSync gh ENOENT"), { code: "ENOENT" }),
     } as never);
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("failed");
     expect(feedback.unreadable).toHaveLength(1);
@@ -958,7 +947,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
       error: Object.assign(new Error("spawnSync gh ENOBUFS"), { code: "ENOBUFS" }),
     } as never);
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("failed");
     expect(feedback.unreadable).toHaveLength(1);
@@ -983,7 +972,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("partial");
     expect(feedback.summaries).toContain("Looks close");
@@ -1014,7 +1003,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
     const reason = refusalReason(feedback);
 
     expect(feedback.status).toBe("failed");
@@ -1052,7 +1041,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
       );
     });
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("failed");
     // The path and the words survive — they are what names the cause — and the
@@ -1079,7 +1068,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
   it("reads a null pull request with no errors at all as no answer", () => {
     ghAnswers(() => response(null));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.status).toBe("failed");
     expect(feedback.unreadable).toHaveLength(1);
@@ -1101,19 +1090,19 @@ describe("a total failure stays distinguishable from a partial one", () => {
       );
     });
 
-    expect(fetchPullRequestFeedback("12").status).toBe("partial");
+    expect(fetchPullRequestFeedback("o/r", "12", "main").status).toBe("partial");
   });
 
   it("is not a partial error, and not an empty result", () => {
     ghAnswers(() => {
       throw exitsNonZero("", "gh: could not connect to api.github.com\n");
     });
-    const failed = fetchPullRequestFeedback("12");
+    const failed = fetchPullRequestFeedback("o/r", "12", "main");
 
     ghAnswers(() =>
       response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } }),
     );
-    const empty = fetchPullRequestFeedback("12");
+    const empty = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(new Set([failed.status, empty.status]).size).toBe(2);
     expect(refusalReason(failed)).toBeDefined();
@@ -1135,7 +1124,7 @@ describe("a total failure stays distinguishable from a partial one", () => {
 describe("refusalReason names which of the three states it is refusing on", () => {
   const feedbackFrom = (answer: () => string) => {
     ghAnswers(answer);
-    return fetchPullRequestFeedback("12");
+    return fetchPullRequestFeedback("o/r", "12", "main");
   };
 
   it("lets a run proceed when every selection was readable and something is there", () => {
@@ -1267,7 +1256,7 @@ describe("the review context surfaces what it could not read", () => {
       );
     });
 
-    const context = fetchPullRequestContext("12");
+    const context = fetchPullRequestContext("o/r", "12", "main");
 
     expect(context.discussion).toContain("Looks close");
     expect(context.discussion).toContain("repository.pullRequest.reviewThreads");
@@ -1279,7 +1268,7 @@ describe("the review context surfaces what it could not read", () => {
       throw exitsNonZero("", "gh: could not connect to api.github.com\n");
     });
 
-    const context = fetchPullRequestContext("12");
+    const context = fetchPullRequestContext("o/r", "12", "main");
 
     // The runner renders `discussion || "(no collaborator comments)"`, which is
     // exactly the sentence a forbidden field must not turn into.
@@ -1290,7 +1279,7 @@ describe("the review context surfaces what it could not read", () => {
   it("adds nothing when every selection was readable", () => {
     ghAnswers(() => response(pullRequest()));
 
-    const context = fetchPullRequestContext("12");
+    const context = fetchPullRequestContext("o/r", "12", "main");
 
     expect(context.unreadableFeedback).toEqual([]);
     expect(context.discussion).not.toContain("could not be read");
@@ -1326,7 +1315,7 @@ describe("the review context surfaces what it could not read", () => {
       throw new Error(`unrecorded gh call: ${args.join(" ")}`);
     }) as never);
 
-    const { discussion } = fetchPullRequestContext("12");
+    const { discussion } = fetchPullRequestContext("o/r", "12", "main");
     const note = discussion.indexOf("Feedback that could not be read");
     const issue = discussion.indexOf("### On the linked issue");
 
@@ -1374,7 +1363,7 @@ describe("the review context surfaces what it could not read", () => {
       throw new Error(`unrecorded gh call: ${args.join(" ")}`);
     }) as never);
 
-    const context = fetchPullRequestContext("12");
+    const context = fetchPullRequestContext("o/r", "12", "main");
 
     expect(context.criteria).toEqual(["From the brief."]);
     expect(context.discussion).toContain("## Agent Brief");
@@ -1457,7 +1446,7 @@ describe("the findings an earlier review left open", () => {
     };
     ghAnswers(() => response({ reviewThreads: { nodes: [legacy] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads).toEqual([
       {
         threadId: "PRRT_legacy",
         findingId: "f-1",
@@ -1472,7 +1461,7 @@ describe("the findings an earlier review left open", () => {
   it("carries an open agent thread with the id the workflow wrote into it", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [agentThread("PRRT_one", "f-1")] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads).toEqual([
       {
         threadId: "PRRT_one",
         findingId: "f-1",
@@ -1508,7 +1497,7 @@ describe("the findings an earlier review left open", () => {
       response({ reviewThreads: { nodes: [agentThread("PRRT_one", "f-1"), rated] } }),
     );
 
-    const threads = fetchPullRequestFeedback("12").agentThreads;
+    const threads = fetchPullRequestFeedback("o/r", "12", "main").agentThreads;
     expect(threads.map((t) => t.severity)).toEqual([undefined, "high"]);
   });
 
@@ -1519,7 +1508,7 @@ describe("the findings an earlier review left open", () => {
    */
   it("leaves a human's thread out of the record while still showing it", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [THREAD] } }));
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.agentThreads).toEqual([]);
     expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
@@ -1539,7 +1528,7 @@ describe("the findings an earlier review left open", () => {
     };
     ghAnswers(() => response({ reviewThreads: { nodes: [forged] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([]);
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads).toEqual([]);
   });
 
   /**
@@ -1552,7 +1541,7 @@ describe("the findings an earlier review left open", () => {
       response({ reviewThreads: { nodes: [{ ...(agentThread("PRRT_one", "f-1") as object), isResolved: true }] } }),
     );
 
-    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([]);
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads).toEqual([]);
   });
 
   /**
@@ -1572,7 +1561,7 @@ describe("the findings an earlier review left open", () => {
       }),
     );
 
-    expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("round 2 body");
+    expect(fetchPullRequestFeedback("o/r", "12", "main").latestAgentReviewBody).toBe("round 2 body");
   });
 
   /**
@@ -1592,12 +1581,12 @@ describe("the findings an earlier review left open", () => {
       }),
     );
 
-    expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("round 1 body");
+    expect(fetchPullRequestFeedback("o/r", "12", "main").latestAgentReviewBody).toBe("round 1 body");
   });
 
   it("says the record is empty for a pull request this loop has never reviewed", () => {
     ghAnswers(() => response({ reviews: { nodes: [REVIEW_SUMMARY] }, reviewThreads: { nodes: [] } }));
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.agentThreads).toEqual([]);
     expect(feedback.latestAgentReviewBody).toBe("");
@@ -1642,7 +1631,7 @@ describe("the findings an earlier review left open", () => {
       return response(pullRequest({ reviews: { nodes: paged } }));
     }) as never);
 
-    expect(fetchPullRequestFeedback("12").latestAgentReviewBody).toBe("the current record");
+    expect(fetchPullRequestFeedback("o/r", "12", "main").latestAgentReviewBody).toBe("the current record");
   });
 });
 
@@ -1690,7 +1679,7 @@ describe("a severity chip in the feedback a prompt is built from", () => {
 
   it("reaches both agents as the word the chip draws, never as the tag", () => {
     ghAnswers(() => response(withChips()));
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     for (const surface of ["summaries", "inline", "all"] as const) {
       expect(feedback[surface]).not.toContain("<img");
@@ -1710,7 +1699,7 @@ describe("a severity chip in the feedback a prompt is built from", () => {
   it("reads the claim off a thread that opens with a chip", () => {
     ghAnswers(() => response(withChips()));
 
-    expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toBe(
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads[0]?.text).toBe(
       "src/queue.ts:206 · the guard runs after the return",
     );
   });
@@ -1718,7 +1707,7 @@ describe("a severity chip in the feedback a prompt is built from", () => {
   /** And the surface a refusal renders is the same text, through `surfaceText`. */
   it("reduces the chip in the text the fix runner asks for by name", () => {
     ghAnswers(() => response(withChips()));
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(surfaceText(feedback, "summaries")).not.toContain("<img");
     expect(surfaceText(feedback, "inline")).not.toContain("<img");
@@ -1764,7 +1753,7 @@ describe("a thread anchored to a file rather than a line", () => {
 
   it("says what it is, rather than that the code has moved", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [fileThread()] } }));
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.inline).toContain("src/queue.ts (the whole file)");
     expect(feedback.inline).not.toContain("outdated");
@@ -1798,7 +1787,7 @@ describe("a thread anchored to a file rather than a line", () => {
     };
     ghAnswers(() => response({ reviewThreads: { nodes: [moved] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toContain(
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads[0]?.text).toContain(
       "src/queue.ts:206 (outdated: the code here has changed since)",
     );
   });
@@ -1827,7 +1816,7 @@ describe("a thread anchored to a file rather than a line", () => {
     };
     ghAnswers(() => response({ reviewThreads: { nodes: [moved] } }));
 
-    const [thread] = fetchPullRequestFeedback("12").agentThreads;
+    const [thread] = fetchPullRequestFeedback("o/r", "12", "main").agentThreads;
     expect(thread?.title).toBe("the guard runs late");
     expect(thread?.anchor).toBe("src/queue.ts:206");
   });
@@ -1852,7 +1841,7 @@ describe("a thread anchored to a file rather than a line", () => {
     };
     ghAnswers(() => response({ reviewThreads: { nodes: [moved] } }));
 
-    const threads = fetchPullRequestFeedback("12").agentThreads;
+    const threads = fetchPullRequestFeedback("o/r", "12", "main").agentThreads;
     expect(threads[0]?.title).toBe("the guard runs after the return");
     expect(threads[0]?.anchor).toBe("src/queue.ts:206");
 
@@ -1877,7 +1866,7 @@ describe("a thread anchored to a file rather than a line", () => {
   it("anchors a file-level thread at its path alone", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [fileThread()] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads[0]?.anchor).toBe("src/queue.ts");
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads[0]?.anchor).toBe("src/queue.ts");
   });
 
   /**
@@ -1890,7 +1879,7 @@ describe("a thread anchored to a file rather than a line", () => {
       response({ reviewThreads: { nodes: [fileThread({ subjectType: null })] } }),
     );
 
-    expect(fetchPullRequestFeedback("12").agentThreads[0]?.text).toContain(":?");
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads[0]?.text).toContain(":?");
   });
 });
 
@@ -1924,7 +1913,7 @@ describe("a body carrying two finding markers", () => {
     };
     ghAnswers(() => response({ reviewThreads: { nodes: [doubled] } }));
 
-    const [thread] = fetchPullRequestFeedback("12").agentThreads;
+    const [thread] = fetchPullRequestFeedback("o/r", "12", "main").agentThreads;
     expect(thread?.findingId).toBe("f-NEW");
     expect(thread?.severity).toBe("low");
   });
@@ -1963,10 +1952,10 @@ describe("where a carried finding can be reached", () => {
       }),
     );
 
-    expect(fetchPullRequestFeedback("12").agentThreads[0]?.url).toBe(
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads[0]?.url).toBe(
       "https://github.com/o/r/pull/12#discussion_r1",
     );
-    expect(fetchPullRequestContext("12").carriedFindings[0]?.url).toBe(
+    expect(fetchPullRequestContext("o/r", "12", "main").carriedFindings[0]?.url).toBe(
       "https://github.com/o/r/pull/12#discussion_r1",
     );
   });
@@ -1975,7 +1964,7 @@ describe("where a carried finding can be reached", () => {
   it("carries no link rather than losing the finding", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [withUrl(null)] } }));
 
-    const [thread] = fetchPullRequestFeedback("12").agentThreads;
+    const [thread] = fetchPullRequestFeedback("o/r", "12", "main").agentThreads;
     expect(thread?.url).toBeUndefined();
     expect(thread?.findingId).toBe("f-1");
   });
@@ -2019,7 +2008,7 @@ describe("a finding the maintainer has settled", () => {
       }),
     );
 
-    expect(fetchPullRequestFeedback("12").settledFindings).toEqual([
+    expect(fetchPullRequestFeedback("o/r", "12", "main").settledFindings).toEqual([
       {
         findingId: "f-1",
         resolvedBy: "maintainer",
@@ -2044,7 +2033,7 @@ describe("a finding the maintainer has settled", () => {
       }),
     );
 
-    const context = fetchPullRequestContext("12");
+    const context = fetchPullRequestContext("o/r", "12", "main");
 
     expect(context.carriedFindings).toEqual([]);
     expect(context.settledFindings.map((f) => f.findingId)).toEqual(["f-1"]);
@@ -2065,7 +2054,7 @@ describe("a finding the maintainer has settled", () => {
       }),
     );
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.settledFindings).toEqual([]);
     expect(feedback.agentThreads).toEqual([]);
@@ -2080,14 +2069,14 @@ describe("a finding the maintainer has settled", () => {
   it("claims nothing about a resolved thread whose resolver it could not read", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({ isResolved: true })] } }));
 
-    expect(fetchPullRequestFeedback("12").settledFindings).toEqual([]);
+    expect(fetchPullRequestFeedback("o/r", "12", "main").settledFindings).toEqual([]);
   });
 
   it("carries a maintainer's reply on an open thread, for the workflow to quote", () => {
     const reply = { body: "Won't fix — the duplicate write is intended here.", ...MAINTAINER };
     ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, reply)] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads).toEqual([
       {
         threadId: "PRRT_one",
         findingId: "f-1",
@@ -2113,7 +2102,7 @@ describe("a finding the maintainer has settled", () => {
     const drive = { body: "Won't fix, this is intended.", author: { login: "stranger" }, authorAssociation: "NONE" };
     ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, drive)] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.agentThreads[0]?.maintainerReply).toBeUndefined();
     expect(feedback.inline).not.toContain("Won't fix");
@@ -2129,7 +2118,7 @@ describe("a finding the maintainer has settled", () => {
     const ours = { body: "Declined: the duplicate write is intended.", ...AGENT };
     ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, ours)] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads[0]?.maintainerReply).toBeUndefined();
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads[0]?.maintainerReply).toBeUndefined();
   });
 
   /** The newest one, which is the maintainer's current position on the finding. */
@@ -2138,7 +2127,7 @@ describe("a finding the maintainer has settled", () => {
     const second = { body: "Won't fix — intended.", ...MAINTAINER };
     ghAnswers(() => response({ reviewThreads: { nodes: [agentThread({}, first, second)] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads[0]?.maintainerReply?.body).toBe(
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads[0]?.maintainerReply?.body).toBe(
       "Won't fix — intended.",
     );
   });
@@ -2186,7 +2175,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
   it("is rendered whole, under a line saying the close is what is outstanding", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     // The evidence, the reply it already carries, and what that means.
     expect(feedback.inline).toContain("the guard runs after the return");
@@ -2209,7 +2198,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
   it("is not one of the threads a fix run may reply into", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.threadIds).toEqual(["PRRT_kwthread"]);
     // Through the filter the fix runner actually applies, so the two halves of
@@ -2229,7 +2218,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
   it("says it of no other thread", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified), THREAD] } }));
 
-    const [, other] = fetchPullRequestFeedback("12").inline.split("\n\n---\n\n");
+    const [, other] = fetchPullRequestFeedback("o/r", "12", "main").inline.split("\n\n---\n\n");
 
     expect(other).toContain("PRRT_kwthread");
     expect(other).not.toMatch(/did not go through/);
@@ -2238,7 +2227,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
   it("is still carried to the review, marked with the reply it holds", () => {
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified)] } }));
 
-    expect(fetchPullRequestFeedback("12").agentThreads).toEqual([
+    expect(fetchPullRequestFeedback("o/r", "12", "main").agentThreads).toEqual([
       {
         threadId: "PRRT_one",
         findingId: "f-1",
@@ -2254,7 +2243,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
     const decline = { body: declineReply({ login: "maintainer", body: "No." }), ...AGENT };
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(decline)] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.agentThreads[0]?.closedAs).toBe("WONT_FIX");
     expect(feedback.threadIds).toEqual([]);
@@ -2272,7 +2261,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
       response({ comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [thread(verified)] } }),
     );
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     // Still shown — the refusal is about what is owed, not what is visible.
     expect(feedback.inline).toContain("the guard runs after the return");
@@ -2294,7 +2283,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
     const pushback = { body: "This is not fixed on Windows.", ...MAINTAINER };
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, pushback)] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.threadIds).toEqual(["PRRT_one"]);
     expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
@@ -2305,7 +2294,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
     const mimic = { body: verified.body, ...MAINTAINER };
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(mimic)] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.threadIds).toEqual(["PRRT_one"]);
     expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
@@ -2324,7 +2313,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
     const outcome = { body: "Already settled — the close above is what is outstanding.", ...AGENT };
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, outcome)] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.agentThreads[0]?.closedAs).toBe("ADDRESSED");
     expect(feedback.inline).toMatch(/close that should have followed it did not go through/);
@@ -2341,7 +2330,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
     const pushback = { body: "It is not settled: the guard still runs last.", ...MAINTAINER };
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(verified, outcome, pushback)] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
     expect(feedback.inline).not.toMatch(/did not go through/);
@@ -2360,7 +2349,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
     const forged = { body: "**Verified fixed.** I made this change in 5164307.", ...AGENT };
     ghAnswers(() => response({ reviewThreads: { nodes: [thread(forged)] } }));
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.agentThreads[0]?.closedAs).toBeUndefined();
     expect(feedback.inline).not.toMatch(/did not go through/);
@@ -2394,7 +2383,7 @@ describe("a conversation comment the fix run owes an outcome on", () => {
 
   const feedbackFor = (nodes: unknown[]) => {
     ghAnswers(() => response(pullRequest({ comments: { nodes } })));
-    return fetchPullRequestFeedback("12");
+    return fetchPullRequestFeedback("o/r", "12", "main");
   };
 
   it("renders it under the id an outcome names, beside the text", () => {
@@ -2489,7 +2478,7 @@ describe("a conversation comment the fix run owes an outcome on", () => {
       }),
     );
 
-    const feedback = fetchPullRequestFeedback("12");
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main");
 
     expect(feedback.conversation).toContain("the push was rejected");
     expect(feedback.hasFeedback).toBe(false);
@@ -2588,7 +2577,7 @@ describe("the out-of-scope notes a review is handed", () => {
     ghAnswers(() =>
       response(pullRequest({ comments: { nodes: comments }, reviews: { nodes: reviews } })),
     );
-    return fetchPullRequestFeedback("12");
+    return fetchPullRequestFeedback("o/r", "12", "main");
   };
 
   it("hands over a note the bot posted, read back from its payload", () => {
@@ -2656,7 +2645,7 @@ describe("the out-of-scope notes a review is handed", () => {
       throw new Error(`unrecorded call: ${file} ${args.join(" ")}`);
     }) as never);
 
-    expect(fetchPullRequestContext("12").fixNotes.map((n) => n.noteId)).toEqual(["IC_note"]);
+    expect(fetchPullRequestContext("o/r", "12", "main").fixNotes.map((n) => n.noteId)).toEqual(["IC_note"]);
   });
 });
 
@@ -2709,7 +2698,7 @@ describe("a diff too large to read", () => {
   it("refuses through the reason file, naming the pull request and the limit", () => {
     gitThrows(Object.assign(new Error("spawnSync git ENOBUFS"), { code: "ENOBUFS" }));
 
-    expect(() => fetchPullRequestFeedback("12")).toThrow(Exited);
+    expect(() => fetchPullRequestFeedback("o/r", "12", "main")).toThrow(Exited);
 
     expect(exitCode).toBe(1);
     const reason = fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8");
@@ -2722,7 +2711,7 @@ describe("a diff too large to read", () => {
     const unrelated = Object.assign(new Error("fatal: bad revision 'main...HEAD'"), { status: 128 });
     gitThrows(unrelated);
 
-    expect(() => fetchPullRequestFeedback("12")).toThrow(unrelated);
+    expect(() => fetchPullRequestFeedback("o/r", "12", "main")).toThrow(unrelated);
     expect(exit).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(scratch, "failure_reason.txt"))).toBe(false);
   });

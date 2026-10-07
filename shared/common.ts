@@ -1,47 +1,17 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import * as sandcastle from "@ai-hero/sandcastle";
 
-export const outputDir = (): string => process.env["OUTPUT_DIR"] ?? "/tmp";
-
-/**
- * Write the reason somewhere the workflow's `if: failure()` step can read it,
- * then exit non-zero. Without this the issue comment can only say "check the
- * logs", which in practice means nobody checks.
- */
-export const fail = (message: string): never => {
-  console.error(`\nFAILED: ${message}`);
-  fs.mkdirSync(outputDir(), { recursive: true });
-  fs.writeFileSync(path.join(outputDir(), "failure_reason.txt"), message);
-  process.exit(1);
-};
-
-/**
- * Read an input the workflow step was supposed to set, failing the run when it
- * did not.
- *
- * Out through `fail`, not `process.exit`, and that is the whole point of the
- * function: this runs at module scope, before any of a runner's own work, so
- * the run it ends is the one with nothing else in its log to go on. Exiting
- * silently left the comment reading `(no reason file written)` — the same
- * string a runner that will not load at all produces, one signature for two
- * causes whose difference is the only thing worth knowing (`docs/friction.md`,
- * 2026-08-08).
- *
- * Empty counts as missing: GitHub interpolates an unset `vars.X` into `""`
- * rather than into nothing, so a `with:` input a caller declared and never
- * filled in arrives set and empty.
- */
-export const required = (name: string): string => {
-  const value = process.env[name];
-  // `return`, rather than a bare call and a fallthrough: `fail` is a const, so
-  // TypeScript does not narrow on its `never` return and would still see
-  // `string | undefined` below.
-  if (!value) return fail(`Missing required env var: ${name}`);
-  return value;
-};
+export {
+  commonWriters,
+  fail,
+  input,
+  outputDir,
+  readInputs,
+  scrubGitHubTokens,
+  writers,
+  type InputValues,
+} from "./env.js";
 
 /**
  * Run a **literal** command through a shell, throwing on a non-zero exit. The
@@ -83,7 +53,7 @@ const WORKFLOW_MODELS: Record<string, string> = {
 };
 
 /** Workflow name → the env var that overrides it. `update-branch` → `AGENT_MODEL_UPDATE_BRANCH`. */
-const overrideVar = (workflow: string): string =>
+export const overrideVar = (workflow: string): string =>
   `AGENT_MODEL_${workflow.toUpperCase().replace(/-/g, "_")}`;
 
 /**
@@ -115,11 +85,11 @@ interface ResolvedModel {
  * A log that lies about provenance is worse than no log, and nothing would have
  * caught it: the naming half was unexported and untestable.
  */
-const resolveModel = (workflow: string): ResolvedModel => {
-  const perWorkflowOverride = process.env[overrideVar(workflow)];
+const resolveModel = (workflow: string, inputs: ModelInputs): ResolvedModel => {
+  const perWorkflowOverride = inputs[overrideVar(workflow)];
   if (perWorkflowOverride) return { model: perWorkflowOverride, source: overrideVar(workflow) };
 
-  const globalOverride = process.env["AGENT_MODEL"];
+  const globalOverride = inputs["AGENT_MODEL"];
   if (globalOverride) return { model: globalOverride, source: "AGENT_MODEL" };
 
   const perWorkflowDefault = WORKFLOW_MODELS[workflow];
@@ -128,22 +98,34 @@ const resolveModel = (workflow: string): ResolvedModel => {
   return { model: DEFAULT_MODEL, source: "default" };
 };
 
-export const agentModel = (workflow: string): string => resolveModel(workflow).model;
+/**
+ * The inputs the chain above reads, by the names a runner declares them under
+ * in `shared/contract.ts`: its `AGENT_MODEL_<WORKFLOW>` and `AGENT_MODEL`. The
+ * runner reads them and hands them in; nothing here reads the environment.
+ */
+export type ModelInputs = Readonly<Record<string, string>>;
+
+export const agentModel = (workflow: string, inputs: ModelInputs): string => resolveModel(workflow, inputs).model;
 
 /**
  * @param workflow Directory name under `agent-workflows/` — `implement`,
  *   `fix`, `review`, `update-branch`. Drives model selection, so it
  *   must match the directory or the workflow silently gets the global default.
+ * @param inputs The runner's inputs, as `readInputs` read them: the model
+ *   token, and the model's two overrides.
  */
-export const claudeAgent = (workflow: string) => {
-  const { model, source } = resolveModel(workflow);
+export const claudeAgent = (
+  workflow: string,
+  inputs: ModelInputs & { readonly AGENT_MODEL: string; readonly CLAUDE_CODE_OAUTH_TOKEN: string },
+) => {
+  const { model, source } = resolveModel(workflow, inputs);
   // Echoed so a run is self-documenting — "which model produced this?" is the
   // first question asked of any output that looks off, and the answer should
   // not require knowing what a repository variable was set to that week.
   console.log(`Agent model: ${model} (${source})`);
   return sandcastle.claudeCode(model, {
     env: {
-      CLAUDE_CODE_OAUTH_TOKEN: required("CLAUDE_CODE_OAUTH_TOKEN"),
+      CLAUDE_CODE_OAUTH_TOKEN: inputs.CLAUDE_CODE_OAUTH_TOKEN,
     },
   });
 };
@@ -287,33 +269,6 @@ export const git = (args: readonly string[]): string =>
   execFileSync("git", [...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
- * Remove the GitHub tokens from this process's environment. The agent runs
- * unsandboxed (`noSandbox` merges `process.env`) and its Bash tool can read the
- * environment, so a prompt-injected agent could use `gh` to act on the repo or
- * exfiltrate the token. Neither runner's agent legitimately needs it: issue/PR
- * context is fetched *before* the agent starts, and all pushing/labelling/
- * commenting happens in separate workflow steps.
- *
- * `NODE_AUTH_TOKEN` is the same job token under another name: the workflow
- * hands it to the runner step so `npm exec` can install this package from
- * GitHub Packages, and by the time this runs that install is done. In every
- * job but review it holds `contents: write`, so left in place it would be a
- * push credential the agent could read off its own environment.
- *
- * Scope and limits: this affects only the current Node process and its
- * children, not later workflow steps. Nor does it reach the git credentials
- * `actions/checkout` would persist — from v6 in a `$RUNNER_TEMP` file that
- * `.git/config` includes — and it does not need to: every checkout an agent
- * runs in sets `persist-credentials: false`, and each fetch or push passes
- * its token on its own command (asserted in `tests/workflows.test.ts`).
- */
-export const scrubGitHubTokens = (): void => {
-  delete process.env["GH_TOKEN"];
-  delete process.env["GITHUB_TOKEN"];
-  delete process.env["NODE_AUTH_TOKEN"];
-};
-
-/**
  * What the association half of the gate establishes is **org-adjacent or
  * better**, which is not the same thing as repository write access. Only
  * `OWNER` is write-gated by its own definition; GraphQL describes the other
@@ -419,8 +374,7 @@ const warnUnreadable = (what: string): void =>
  * rest of the loop assumes. Comments are never fetched at all — they are
  * world-writable regardless of who opened the issue.
  */
-export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
-  const ghRepo = process.env["GH_REPO"] ?? "";
+export const fetchTrustedIssue = (ghRepo: string, issueNumber: string): TrustedIssue => {
   let parsed: {
     title?: string;
     body?: string | null;
@@ -452,8 +406,8 @@ export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
  * need the same author gate. Only the first page (~30, oldest-first) is read;
  * that is plenty for steering and avoids pulling a huge thread into the prompt.
  */
-export const fetchTrustedComments = (number: string): string =>
-  renderTrustedComments(fetchTrustedCommentList(number));
+export const fetchTrustedComments = (ghRepo: string, number: string): string =>
+  renderTrustedComments(fetchTrustedCommentList(ghRepo, number));
 
 /** One trusted comment, as `fetchTrustedCommentList` returns it. */
 export interface TrustedComment {
@@ -467,8 +421,7 @@ export interface TrustedComment {
  * than handing them on as one text: the review reads a triage brief's
  * acceptance criteria out of one (#214).
  */
-export const fetchTrustedCommentList = (number: string): TrustedComment[] => {
-  const ghRepo = process.env["GH_REPO"] ?? "";
+export const fetchTrustedCommentList = (ghRepo: string, number: string): TrustedComment[] => {
   let comments: { body?: string; author_association?: string; user?: { login?: string } }[] = [];
   const text = safeGh(["api", `repos/${ghRepo}/issues/${number}/comments`]);
   if (text === "") warnUnreadable(`The comments on #${number}`);
@@ -495,13 +448,16 @@ export const renderTrustedComments = (comments: readonly TrustedComment[]): stri
  * Composed from the three variables every Actions step is given rather than
  * from an input the workflow sets, because that is what they are: a step that
  * had to pass them could forget to, and there is nothing a runner could do
- * about a link it was not handed. `undefined` rather than a guess, so a caller
- * renders no link instead of a dead one.
+ * about a link it was not handed. A runner declares them optional and empty
+ * by default, and hands them in. `undefined` where any is empty rather than a
+ * guess, so a caller renders no link instead of a dead one.
  */
-export const workflowRunUrl = (): string | undefined => {
-  const server = process.env["GITHUB_SERVER_URL"];
-  const repo = process.env["GITHUB_REPOSITORY"];
-  const runId = process.env["GITHUB_RUN_ID"];
+export const workflowRunUrl = (inputs: {
+  readonly GITHUB_SERVER_URL: string;
+  readonly GITHUB_REPOSITORY: string;
+  readonly GITHUB_RUN_ID: string;
+}): string | undefined => {
+  const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: runId } = inputs;
   if (!server || !repo || !runId) return undefined;
   return `${server}/${repo}/actions/runs/${runId}`;
 };
@@ -542,29 +498,6 @@ export const fetchPullRequestHeading = (prNumber: string): string =>
 export const fetchPullRequestBody = (prNumber: string): string => {
   const pr = JSON.parse(gh(["pr", "view", prNumber, "--json", "body"])) as { readonly body?: unknown };
   return typeof pr.body === "string" ? pr.body : "";
-};
-
-/**
- * Replace a pull request's body. Through the REST endpoint with the body as a
- * JSON file, so it arrives exactly as given: no shell, no argv length limit,
- * and no `@file` or type coercion for `-F` to apply to a body that happens to
- * look like either.
- */
-export const updatePullRequestBody = (prNumber: string, body: string): void => {
-  fs.mkdirSync(outputDir(), { recursive: true });
-  const file = path.join(outputDir(), `pr-${prNumber}-body.json`);
-  fs.writeFileSync(file, JSON.stringify({ body }));
-  gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${prNumber}`, "--input", file]);
-};
-
-export const writeJson = (filename: string, value: unknown): void => {
-  fs.mkdirSync(outputDir(), { recursive: true });
-  fs.writeFileSync(path.join(outputDir(), filename), JSON.stringify(value, null, 2));
-};
-
-export const writeText = (filename: string, value: string): void => {
-  fs.mkdirSync(outputDir(), { recursive: true });
-  fs.writeFileSync(path.join(outputDir(), filename), value);
 };
 
 /**

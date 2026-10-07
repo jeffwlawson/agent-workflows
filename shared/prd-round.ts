@@ -1,4 +1,5 @@
-import { gh, git, isWorkflowBot } from "./common.js";
+import { gh, git, input, isWorkflowBot } from "./common.js";
+import { EVERY_RUNNER } from "./contract.js";
 import { renderMergeDanger, type MergeDanger } from "./merge-danger.js";
 import type { ProgressSubIssue } from "./progress-list.js";
 import {
@@ -558,7 +559,7 @@ const capped = (diff: string): string => {
 
 /** The parent's sub-issues, in the sub-issues API's order, which is execution order. */
 const readSubIssues = (parent: string): ProgressSubIssue[] => {
-  const repo = process.env["GH_REPO"] ?? "";
+  const repo = input(EVERY_RUNNER, "GH_REPO");
   const raw = gh([
     "api",
     "graphql",

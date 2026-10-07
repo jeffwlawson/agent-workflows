@@ -3,20 +3,98 @@ import * as path from "node:path";
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import * as sandcastle from "@ai-hero/sandcastle";
+import { EVERY_RUNNER, type Input, type Inputs } from "./contract.js";
 
-export const outputDir = (): string => process.env["OUTPUT_DIR"] ?? "/tmp";
+/**
+ * The environment's value for `name`, or `undefined` where it is unset **or
+ * empty**: GitHub interpolates an unset `vars.X` into `""` rather than into
+ * nothing, so an input a caller declared and never filled in arrives set and
+ * empty, and it is the same absence.
+ */
+const present = (name: string): string | undefined => process.env[name] || undefined;
+
+/**
+ * Write a file into `OUTPUT_DIR`, or write nothing where it is unset.
+ *
+ * Nothing rather than a fallback directory, and that is the writer's rule for
+ * every caller: a runner's `fail()`, the CLI's own refusals and `doctor`, which
+ * is often run by hand with no `OUTPUT_DIR` at all. Each of those says what it
+ * is writing on stderr as well, so the message still reaches whoever is
+ * reading, and an orchestrator that never set `OUTPUT_DIR` was never going to
+ * look anywhere for the file. The `/tmp` it used to fall back to was a
+ * directory nobody read, shared by every run on the machine.
+ *
+ * Reads `OUTPUT_DIR` through `present`, the lookup under `input`, rather than
+ * through `input` itself, which is what keeps a missing `OUTPUT_DIR` reportable
+ * at all: `input` reports through `fail()`, and `fail()` writes through here.
+ */
+const writeOutput = (filename: string, value: string): void => {
+  const dir = present("OUTPUT_DIR");
+  if (dir === undefined) return;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, filename), value);
+};
 
 /**
  * Write the reason somewhere the workflow's `if: failure()` step can read it,
  * then exit non-zero. Without this the issue comment can only say "check the
  * logs", which in practice means nobody checks.
+ *
+ * With `OUTPUT_DIR` unset the message on stderr is the whole report, and no
+ * file is written (`writeOutput`).
  */
 export const fail = (message: string): never => {
   console.error(`\nFAILED: ${message}`);
-  fs.mkdirSync(outputDir(), { recursive: true });
-  fs.writeFileSync(path.join(outputDir(), "failure_reason.txt"), message);
+  writeOutput("failure_reason.txt", message);
   process.exit(1);
 };
+
+const missingMessage = (names: readonly string[]): string =>
+  `Missing required env var${names.length === 1 ? "" : "s"}: ${names.join(", ")}`;
+
+/**
+ * One input, read as `declared` says it is to be read: a required one that is
+ * unset or empty fails the run through `fail()`, naming it, and an optional
+ * one falls back to the default its declaration states. `declared` is a
+ * runner's inputs in `shared/contract.ts`, or `EVERY_RUNNER` from a helper
+ * that serves them all, so `name` has to be an input the declaration has.
+ */
+export const input = <D extends Inputs>(declared: D, name: keyof D & string): string => {
+  const value = present(name);
+  if (value !== undefined) return value;
+  const declaration: Input | undefined = declared[name];
+  if (declaration?.required === false) return declaration.default;
+  return fail(missingMessage([name]));
+};
+
+/**
+ * Every input `declared` has, read at once: the check a runner makes **at
+ * start**, before any of its own work, so a hole in its input stops the run
+ * there and names every input missing rather than the first one a later read
+ * happens to reach.
+ *
+ * That includes an input only a subprocess reads. `GH_TOKEN` is read by `gh`
+ * and by nothing here, and without this check a missing one did not stop
+ * anything: every trusted fetch came back empty and the run carried on as if
+ * the issue had nothing trusted in it. Read before `scrubGitHubTokens`, which
+ * deletes it.
+ */
+export const readInputs = <D extends Inputs>(declared: D): { readonly [K in keyof D & string]: string } => {
+  const missing = Object.entries(declared)
+    .filter(([name, declaration]) => declaration.required && present(name) === undefined)
+    .map(([name]) => name);
+  if (missing.length > 0) return fail(missingMessage(missing));
+  return Object.fromEntries(Object.keys(declared).map((name) => [name, input(declared, name)])) as {
+    readonly [K in keyof D & string]: string;
+  };
+};
+
+/**
+ * Where the runner writes its results. Required, through the accessor: a
+ * caller that reaches for it is past the start-of-run check, so a missing one
+ * here is a runner that never made it.
+ */
+export const outputDir = (): string => input(EVERY_RUNNER, "OUTPUT_DIR");
 
 /**
  * Read an input the workflow step was supposed to set, failing the run when it
@@ -420,7 +498,7 @@ const warnUnreadable = (what: string): void =>
  * world-writable regardless of who opened the issue.
  */
 export const fetchTrustedIssue = (issueNumber: string): TrustedIssue => {
-  const ghRepo = process.env["GH_REPO"] ?? "";
+  const ghRepo = input(EVERY_RUNNER, "GH_REPO");
   let parsed: {
     title?: string;
     body?: string | null;
@@ -468,7 +546,7 @@ export interface TrustedComment {
  * acceptance criteria out of one (#214).
  */
 export const fetchTrustedCommentList = (number: string): TrustedComment[] => {
-  const ghRepo = process.env["GH_REPO"] ?? "";
+  const ghRepo = input(EVERY_RUNNER, "GH_REPO");
   let comments: { body?: string; author_association?: string; user?: { login?: string } }[] = [];
   const text = safeGh(["api", `repos/${ghRepo}/issues/${number}/comments`]);
   if (text === "") warnUnreadable(`The comments on #${number}`);
@@ -557,15 +635,10 @@ export const updatePullRequestBody = (prNumber: string, body: string): void => {
   gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${prNumber}`, "--input", file]);
 };
 
-export const writeJson = (filename: string, value: unknown): void => {
-  fs.mkdirSync(outputDir(), { recursive: true });
-  fs.writeFileSync(path.join(outputDir(), filename), JSON.stringify(value, null, 2));
-};
+export const writeJson = (filename: string, value: unknown): void =>
+  writeOutput(filename, JSON.stringify(value, null, 2));
 
-export const writeText = (filename: string, value: string): void => {
-  fs.mkdirSync(outputDir(), { recursive: true });
-  fs.writeFileSync(path.join(outputDir(), filename), value);
-};
+export const writeText = (filename: string, value: string): void => writeOutput(filename, value);
 
 /**
  * Wrap a plain validation function as a Standard Schema, so it can be handed to

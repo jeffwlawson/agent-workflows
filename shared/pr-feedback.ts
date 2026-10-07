@@ -1,4 +1,5 @@
-import { fail, ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
+import { fail, ghOutcome, git, input, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
+import { EVERY_RUNNER } from "./contract.js";
 import { parseNameStatus } from "./diff-lines.js";
 import { isOutOfScopeNote, readOutOfScopeNote, type PostedNote } from "./fix-notes.js";
 import {
@@ -1189,7 +1190,7 @@ const render = <T extends GqlAuthored>(
  * as an absence.
  */
 export const fetchPullRequestFeedback = (prNumber: string): PullRequestFeedback => {
-  const [owner = "", repo = ""] = (process.env["GH_REPO"] ?? "").split("/");
+  const [owner = "", repo = ""] = input(EVERY_RUNNER, "GH_REPO").split("/");
 
   // Read through `ghOutcome`, not `gh`: a partial-error response exits non-zero
   // with the good data on stdout, so the throwing helper inside a `try` was

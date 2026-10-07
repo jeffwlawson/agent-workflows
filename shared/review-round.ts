@@ -1,4 +1,5 @@
-import { isWorkflowBot, safeGh } from "./common.js";
+import { input, isWorkflowBot, safeGh } from "./common.js";
+import { EVERY_RUNNER } from "./contract.js";
 import {
   FIX_ROUND_STATUS,
   LEGACY_FIX_ROUND_STARTED,
@@ -182,7 +183,7 @@ const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | un
  * conversation, which this file does not fetch, so the caller says.
  */
 export const readReviewHistory = (prNumber: string, noted = false): ReviewHistory => {
-  const repo = process.env["GH_REPO"] ?? "";
+  const repo = input(EVERY_RUNNER, "GH_REPO");
   const commits = readCommits(repo, prNumber);
   if (commits === undefined) {
     return {

@@ -5,13 +5,15 @@ import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   claudeAgent,
   fail,
-  required,
   git,
+  readInputs,
+  required,
   scrubGitHubTokens,
   sh,
   writeJson,
   writeText,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
 import {
   filterConversationOutcomes,
@@ -32,6 +34,8 @@ import { fixHeader, fixScope, readRoundRecord, roundCounts, withHeader } from ".
 import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
+
+readInputs(CONTRACT["fix"].inputs);
 
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");

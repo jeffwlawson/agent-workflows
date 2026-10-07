@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { COMMANDS, run, type CliIo } from "../cli.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -44,6 +44,18 @@ import {
 } from "../setup/policies.js";
 import type { LabelSurface, RepoLabel } from "../setup/labels.js";
 import type { AppManifest, AppSurface, RegisteredApp, RepoOwner, SecretPlacement } from "../setup/app.js";
+
+// `fs` is the real module throughout, with its writes watched: with no
+// `OUTPUT_DIR` the CLI's refusals and `doctor` must write no file at all, and
+// that is not a claim a test can make by looking in one directory.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
+});
+
+/** Every write of a `failure_reason.txt` since the spy was last cleared. */
+const reasonsWritten = (): readonly unknown[] =>
+  vi.mocked(fs.writeFileSync).mock.calls.filter(([file]) => String(file).endsWith("failure_reason.txt"));
 
 /**
  * The Actions policy step, for the tests that are not about it: a private
@@ -246,7 +258,7 @@ const invoke = async (argv: string[]): Promise<Captured> => {
 /**
  * Every runner writes its failure reason to `OUTPUT_DIR` so the workflow's
  * `if: failure()` step can put it on the issue or PR. Point it at scratch for
- * the duration rather than letting the default (`/tmp`) collect test debris.
+ * the duration, so a test that reads the reason has somewhere to read it from.
  */
 let scratch = "";
 const previousOutputDir = process.env["OUTPUT_DIR"];
@@ -311,6 +323,23 @@ describe("the runner CLI dispatches on a subcommand", () => {
     expect(code).toBe(2);
     expect(err).toContain("implment");
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toContain("implment");
+  });
+
+  /**
+   * The writer's rule, which the CLI shares with every runner's `fail()`: no
+   * `OUTPUT_DIR`, no file, and stderr is the whole report. A human typing a
+   * subcommand wrong has no `OUTPUT_DIR` and is reading stderr anyway.
+   */
+  it("refuses an unknown command on stderr alone where OUTPUT_DIR is unset", async () => {
+    delete process.env["OUTPUT_DIR"];
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    const { code, err } = await invoke(["implment"]);
+
+    expect(code).toBe(2);
+    expect(err).toContain("implment");
+    expect(err).toContain("Usage");
+    expect(reasonsWritten()).toEqual([]);
   });
 
   it("refuses an empty argv with usage", async () => {
@@ -3858,6 +3887,20 @@ describe("doctor names the failures that otherwise look like something else", ()
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toContain(
       "packages: read",
     );
+  });
+
+  /** Run by hand, as it usually is, `doctor` has no `OUTPUT_DIR`: its findings go to stderr and nowhere else. */
+  it("reports on stderr and writes no file where OUTPUT_DIR is unset", async () => {
+    const root = await installed();
+    edit(root, "fix", (text) => text.replace(/^ *packages: read$/m, ""));
+    delete process.env["OUTPUT_DIR"];
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    const { code, err } = await check(root, healthy());
+
+    expect(code).toBe(1);
+    expect(err).toContain("packages: read");
+    expect(reasonsWritten()).toEqual([]);
   });
 
   it("is reachable as a subcommand and refuses a flag it does not know", async () => {

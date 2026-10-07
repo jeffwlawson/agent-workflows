@@ -224,6 +224,11 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
   runner exists to write anything, which is where `CONTEXT.md`'s note on the toolchain-free auth
   step points. So it now means "the run never got as far as the runner", rather than that plus a
   missing input.
+
+  `OUTPUT_DIR` itself is the one input that cannot report through the file. With it unset the
+  writer writes nothing, for every caller, and stderr is the whole report: no `/tmp` fallback.
+  A runner checks it at start with the other inputs every runner reads (`readInputs` over
+  `shared/contract.ts`), so in practice only `doctor` and the CLI's refusals, run by hand, meet it.
 - TypeScript is strict, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. With
   the latter, build optional properties conditionally (`...(x === undefined ? {} : { x })`) rather
   than assigning `undefined`.

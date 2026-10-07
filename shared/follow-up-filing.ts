@@ -1,4 +1,5 @@
-import { asRecord, gh } from "./common.js";
+import { asRecord, gh, input } from "./common.js";
+import { EVERY_RUNNER } from "./contract.js";
 import {
   FOLLOW_UP_STUB_LABEL,
   type FilingInput,
@@ -26,7 +27,7 @@ import { FOLLOW_UPS_LABEL } from "./review-output.js";
  * reads that variable for exactly this case.
  */
 
-const ghRepo = (): string => process.env["GH_REPO"] ?? "";
+const ghRepo = (): string => input(EVERY_RUNNER, "GH_REPO");
 
 /**
  * Is the marker still on the pull request?

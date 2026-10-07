@@ -1,4 +1,5 @@
-import { gh, isWorkflowBot } from "./common.js";
+import { gh, input, isWorkflowBot } from "./common.js";
+import { EVERY_RUNNER } from "./contract.js";
 import { fetchReviews } from "./follow-up-filing.js";
 import type { FilingReview } from "./follow-up-plan.js";
 import { BODY_HEADING } from "./review-output.js";
@@ -198,7 +199,7 @@ export const fixScope = (record: RoundRecord, ranges?: SliceRanges, prd = ranges
  */
 export const readRoundRecord = (prNumber: string): RoundRecord => {
   const reviews = fetchReviews(prNumber);
-  const repo = process.env["GH_REPO"] ?? "{owner}/{repo}";
+  const repo = input(EVERY_RUNNER, "GH_REPO");
   const fixes = gh([
     "api",
     `repos/${repo}/issues/${prNumber}/events`,

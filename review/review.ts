@@ -6,6 +6,7 @@ import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   claudeAgent,
   fail,
+  readInputs,
   required,
   scrubGitHubTokens,
   sh,
@@ -13,6 +14,7 @@ import {
   writeJson,
   writeText,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { fetchReviews } from "../shared/follow-up-filing.js";
@@ -89,6 +91,8 @@ import {
 } from "../shared/review-verification.js";
 import { readRoundRecord, reviewHeader, roundCounts, type RoundCounts, type RoundScope } from "../shared/round-header.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
+
+readInputs(CONTRACT["review"].inputs);
 
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");

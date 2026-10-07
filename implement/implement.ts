@@ -7,9 +7,13 @@ import {
   fetchTrustedComments,
   fetchTrustedIssue,
   git,
+  readInputs,
   required,
   scrubGitHubTokens,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
+
+readInputs(CONTRACT["implement"].inputs);
 
 const ISSUE_NUMBER = required("ISSUE_NUMBER");
 const ISSUE_TITLE = required("ISSUE_TITLE");

@@ -1,4 +1,5 @@
-import { fail, required } from "../shared/common.js";
+import { fail, readInputs, required } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import {
   executeFilingPlan,
   fetchFilingInput,
@@ -34,6 +35,8 @@ import { FOLLOW_UPS_LABEL } from "../shared/review-output.js";
  * (the PR-side caller file, `docs/ADOPTING.md` §4, `README.md`, `CONTEXT.md`)
  * names the caller.
  */
+
+readInputs(CONTRACT["follow-ups"].inputs);
 
 const PR_NUMBER = required("PR_NUMBER");
 

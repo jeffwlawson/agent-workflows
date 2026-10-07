@@ -13,6 +13,14 @@ vi.mock("node:child_process", async (importOriginal) => ({
   spawnSync: vi.fn(),
 }));
 
+// `fs` is the real module throughout, with its writes watched: a run with no
+// `OUTPUT_DIR` must write no file at all, and "not where it used to" is not a
+// claim a test can make by looking in one directory.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
+});
+
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import {
   agentModel,
@@ -20,11 +28,14 @@ import {
   fetchTrustedComments,
   fetchTrustedIssue,
   ghOutcome,
+  input,
   isTrustedAuthor,
+  readInputs,
   required,
   safeGh,
   scrubGitHubTokens,
 } from "../shared/common.js";
+import { CONTRACT, EVERY_RUNNER, type Inputs } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 const spawned = vi.mocked(execFileSync);
@@ -786,6 +797,143 @@ describe("required — a missing env var says which one, where the workflow can 
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(reasonFile(), "utf8")).toContain(VAR);
+  });
+});
+
+/**
+ * The accessor a runner reads its declared inputs through (`shared/contract.ts`),
+ * and the check it makes at start. A required input missing stops the run there
+ * and names itself, the way `required` does above; an optional one reads the
+ * default its declaration states, which the type will not let it leave out.
+ *
+ * `GH_TOKEN` is the case this exists for: only `gh` reads it, so nothing used
+ * to notice it missing, and every trusted fetch quietly came back empty.
+ */
+describe("readInputs and input — a runner's declared inputs, read loudly", () => {
+  const VAR = "AGENT_WORKFLOWS_TEST_ONLY_VAR";
+  const NAMES = [...Object.keys(EVERY_RUNNER), VAR];
+  const previous = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
+  const written = vi.mocked(fs.writeFileSync);
+
+  /** `fail` never returns, so the exit has to stop the call here too; see `required` above. */
+  class Exited extends Error {}
+
+  let scratch = "";
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  const reasonFile = (): string => path.join(scratch, "failure_reason.txt");
+
+  beforeEach(() => {
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), "common-inputs-"));
+    process.env["OUTPUT_DIR"] = scratch;
+    process.env["GH_REPO"] = "o/r";
+    process.env["GH_TOKEN"] = "a-token";
+    delete process.env[VAR];
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    written.mockClear();
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+    for (const n of NAMES) {
+      const value = previous[n];
+      if (value === undefined) delete process.env[n];
+      else process.env[n] = value;
+    }
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("returns every declared input, and writes nothing, when all are set", () => {
+    expect(readInputs(CONTRACT.review.inputs)).toEqual({ OUTPUT_DIR: scratch, GH_REPO: "o/r", GH_TOKEN: "a-token" });
+    expect(fs.existsSync(reasonFile())).toBe(false);
+  });
+
+  /** The three every runner reads, required by every runner's declaration rather than by convention. */
+  describe.each(Object.keys(CONTRACT) as (keyof typeof CONTRACT)[])("%s", (runner) => {
+    it.each(["GH_REPO", "GH_TOKEN"])("stops at start without %s, naming it in failure_reason.txt", (name) => {
+      delete process.env[name];
+
+      expect(() => readInputs(CONTRACT[runner].inputs)).toThrow(Exited);
+
+      expect(exitCode).toBe(1);
+      expect(fs.readFileSync(reasonFile(), "utf8")).toBe(`Missing required env var: ${name}`);
+    });
+
+    it("declares OUTPUT_DIR required too", () => {
+      expect(CONTRACT[runner].inputs.OUTPUT_DIR).toEqual({ required: true });
+    });
+  });
+
+  /** As for `required`: an unset `vars.X` arrives as `""`, and that is the same absence. */
+  it("treats an empty value as missing", () => {
+    process.env["GH_TOKEN"] = "";
+
+    expect(() => readInputs(CONTRACT.implement.inputs)).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(reasonFile(), "utf8")).toContain("GH_TOKEN");
+  });
+
+  it("names every missing input at once, not the first", () => {
+    delete process.env["GH_REPO"];
+    delete process.env["GH_TOKEN"];
+
+    expect(() => readInputs(CONTRACT.fix.inputs)).toThrow(Exited);
+
+    expect(fs.readFileSync(reasonFile(), "utf8")).toBe("Missing required env vars: GH_REPO, GH_TOKEN");
+  });
+
+  it("fails one read the same way, for a helper reading a single input", () => {
+    delete process.env["GH_REPO"];
+
+    expect(() => input(EVERY_RUNNER, "GH_REPO")).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(reasonFile(), "utf8")).toBe("Missing required env var: GH_REPO");
+  });
+
+  it("falls back to an optional input's declared default, and reads it where set", () => {
+    const declared = { [VAR]: { required: false, default: "the-default" } } as const satisfies Inputs;
+
+    expect(input(declared, VAR)).toBe("the-default");
+    expect(readInputs(declared)).toEqual({ [VAR]: "the-default" });
+
+    process.env[VAR] = "";
+    expect(input(declared, VAR)).toBe("the-default");
+
+    process.env[VAR] = "given";
+    expect(input(declared, VAR)).toBe("given");
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("refuses, at typecheck, an optional input that states no default", () => {
+    // @ts-expect-error: an optional input has to say what it reads in its place.
+    const declared: Inputs = { [VAR]: { required: false } };
+
+    expect(declared).toBeDefined();
+  });
+
+  /**
+   * `fail()` reports into `OUTPUT_DIR`, so a missing one cannot be reported
+   * there. Stderr carries it, the exit is non-zero, and nothing is written:
+   * not into a fallback directory, and not anywhere else.
+   */
+  it("reports a missing OUTPUT_DIR on stderr, exits non-zero, and writes no file", () => {
+    delete process.env["OUTPUT_DIR"];
+
+    expect(() => readInputs(CONTRACT["update-branch"].inputs)).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("Missing required env var: OUTPUT_DIR"));
+    expect(written).not.toHaveBeenCalled();
   });
 });
 

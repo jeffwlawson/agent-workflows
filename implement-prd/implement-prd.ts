@@ -7,15 +7,19 @@ import {
   fetchTrustedComments,
   fetchTrustedIssue,
   git,
+  readInputs,
   required,
   scrubGitHubTokens,
   writeText,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { renderPrdStatus, renderProgressList, statusBlock, type ProgressInputs } from "../shared/progress-list.js";
 import { readRoundRecord, roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
+
+readInputs(CONTRACT["implement-prd"].inputs);
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
 const ISSUE_NUMBER = required("ISSUE_NUMBER");

@@ -9,13 +9,17 @@ import {
   fail,
   fetchPullRequestHeading,
   outputDir,
+  readInputs,
   required,
   scrubGitHubTokens,
   sh,
   standardSchema,
   writeText,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
+
+readInputs(CONTRACT["update-branch"].inputs);
 
 const PR_NUMBER = required("PR_NUMBER");
 const BRANCH = required("BRANCH");

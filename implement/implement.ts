@@ -7,25 +7,28 @@ import {
   fetchTrustedComments,
   fetchTrustedIssue,
   git,
-  required,
+  readInputs,
   scrubGitHubTokens,
 } from "../shared/common.js";
+import { CONTRACT } from "../shared/contract.js";
 
-const ISSUE_NUMBER = required("ISSUE_NUMBER");
-const ISSUE_TITLE = required("ISSUE_TITLE");
-const BRANCH = required("BRANCH");
+const INPUTS = readInputs(CONTRACT["implement"].inputs);
+
+const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
+const ISSUE_TITLE = INPUTS.ISSUE_TITLE;
+const BRANCH = INPUTS.BRANCH;
 /**
  * The branch `BRANCH` was cut from, this run, in the step before this one. Two
  * uses: the prompt says what the agent's branch is based on, and the commit
  * count below measures against it.
  *
- * `required`, and an input rather than the literal `main` it once was —
+ * Required, and an input rather than the literal `main` it once was —
  * this was the only unconditional `main` in a runner rather than in YAML, and
  * the only one that *hard-errored*: a repo whose default branch is `master` got
  * all the way through the agent run and then aborted on a ref that does not
  * exist (docs/ADOPTING.md §5).
  */
-const BASE_REF = required("BASE_REF");
+const BASE_REF = INPUTS.BASE_REF;
 
 try {
   // Read the issue here and pass it in, rather than letting the agent shell out
@@ -34,8 +37,8 @@ try {
   // the agent with a comment; a non-collaborator's text is dropped. Collaborator
   // comments are included even when the issue body is withheld, so a maintainer
   // can annotate a community-reported issue.
-  const issue = fetchTrustedIssue(ISSUE_NUMBER);
-  const comments = fetchTrustedComments(ISSUE_NUMBER);
+  const issue = fetchTrustedIssue(INPUTS.GH_REPO, ISSUE_NUMBER);
+  const comments = fetchTrustedComments(INPUTS.GH_REPO, ISSUE_NUMBER);
   const parts = [
     issue.trusted
       ? `# ${issue.title || ISSUE_TITLE}\n\n${issue.body || "(no description)"}`
@@ -49,7 +52,7 @@ try {
 
   const result = await sandcastle.run({
     name: `implement-#${ISSUE_NUMBER}`,
-    agent: claudeAgent("implement"),
+    agent: claudeAgent("implement", INPUTS),
     // The ephemeral Actions runner IS the isolation. Running the agent directly
     // on it means the agent's environment and CI's environment are identical by
     // construction — no image drift, no "works in the sandbox, fails in CI".

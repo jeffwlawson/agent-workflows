@@ -87,7 +87,12 @@ export interface PullRequestContext {
  * the diff. It deliberately omits the review-thread GraphQL that the full
  * workflow uses to reply to human comments.
  */
-export const fetchPullRequestContext = (prNumber: string, issue?: string): PullRequestContext => {
+export const fetchPullRequestContext = (
+  ghRepo: string,
+  prNumber: string,
+  baseRef: string,
+  issue?: string,
+): PullRequestContext => {
   const prView = JSON.parse(gh(["pr", "view", prNumber, "--json", "id,title,body"])) as {
     id: string;
     title: string;
@@ -116,9 +121,9 @@ export const fetchPullRequestContext = (prNumber: string, issue?: string): PullR
   // Read once, for both the discussion below and the criteria: triage posts
   // its brief, and with it the criteria the work was scoped to, as a comment
   // on the issue rather than into its body (#214).
-  const trustedIssueComments = issueNumber ? fetchTrustedCommentList(issueNumber) : [];
+  const trustedIssueComments = issueNumber ? fetchTrustedCommentList(ghRepo, issueNumber) : [];
   if (issueNumber) {
-    const issue = fetchTrustedIssue(issueNumber);
+    const issue = fetchTrustedIssue(ghRepo, issueNumber);
     if (issue.trusted) {
       issueTitle = issue.title;
       linkedIssue = issue.body || "(linked issue has no description)";
@@ -135,7 +140,7 @@ export const fetchPullRequestContext = (prNumber: string, issue?: string): PullR
   // `agent:fix` uses: review summaries, unresolved inline threads (replies
   // included), and conversation comments. A re-review therefore sees the notes
   // a human left on the previous one instead of repeating itself.
-  const feedback = fetchPullRequestFeedback(prNumber);
+  const feedback = fetchPullRequestFeedback(ghRepo, prNumber, baseRef);
   const issueComments = renderTrustedComments(trustedIssueComments);
   // A review **degrades** where the fix runner refuses: it holds `contents:
   // read` and produces text, so proceeding on what survived is right. What it

@@ -481,8 +481,8 @@ export interface PrdBranch {
  * The checkout is the PRD branch, with `base` a local ref. Throws where either
  * cannot be read.
  */
-export const readPrdBranch = (parent: string, base: string): PrdBranch => {
-  const subIssues = readSubIssues(parent);
+export const readPrdBranch = (repo: string, parent: string, base: string): PrdBranch => {
+  const subIssues = readSubIssues(repo, parent);
   const log = git([
     "log",
     "--first-parent",
@@ -512,9 +512,9 @@ export const readPrdBranch = (parent: string, base: string): PrdBranch => {
  * Never throws. A slice that cannot be told is `slice: undefined` with the
  * reason, which the brief turns into a review of the whole pull request.
  */
-export const readSliceRound = (parent: string, base: string): Extract<PrdRound, { kind: "slice" }> => {
+export const readSliceRound = (repo: string, parent: string, base: string): Extract<PrdRound, { kind: "slice" }> => {
   try {
-    const { log, ranges } = readPrdBranch(parent, base);
+    const { log, ranges } = readPrdBranch(repo, parent, base);
     const current = ranges.current;
     if (current === null) {
       return { kind: "slice", parent, slice: undefined, unknownBecause: `no commit on the branch carries an \`${SLICE_TRAILER}\` trailer` };
@@ -557,8 +557,7 @@ const capped = (diff: string): string => {
 };
 
 /** The parent's sub-issues, in the sub-issues API's order, which is execution order. */
-const readSubIssues = (parent: string): ProgressSubIssue[] => {
-  const repo = process.env["GH_REPO"] ?? "";
+const readSubIssues = (repo: string, parent: string): ProgressSubIssue[] => {
   const raw = gh([
     "api",
     "graphql",

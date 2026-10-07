@@ -16,7 +16,9 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and
 `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
-`docs/adr/` does not exist yet. That is the expected state — the first ADR creates it.
+`docs/adr/` starts at
+[`0001-personal-tooling-before-productising.md`](../adr/0001-personal-tooling-before-productising.md),
+which is why adopter-facing issues carry `parked`.
 
 ## Where the decisions currently live
 

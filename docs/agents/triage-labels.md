@@ -121,6 +121,19 @@ refuse an issue whose blocker is still open, naming the blocker, and a human re-
 sub-issue list. So a label saying the same thing is only one more thing that can go stale against
 the link. Do not create it; where a repository already has it, it can be deleted.
 
+## `parked`
+
+A judgement, like the five roles, and nothing in the loop reads it. It marks an issue that only an
+outside adopter needs while the loop is its maintainer's own tool
+([ADR 0001](../adr/0001-personal-tooling-before-productising.md)). It sits **beside** an issue's
+triage role rather than replacing it: an issue keeps `ready-for-agent` if it had it, and `parked`
+says nobody promotes it until the ADR's revisit conditions are met. Removing the label is how an
+issue gets unparked.
+
+```bash
+gh label create "parked"          --color BFBFBF --description "Adopter-facing; paused while the loop is personal tooling (docs/adr/0001)"
+```
+
 ## The `wayfinder:*` planning labels
 
 A third, small vocabulary, written by `/wayfinder` and by hand. These mark **planning artifacts**:

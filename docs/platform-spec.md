@@ -756,8 +756,10 @@ the ending from them. Each is one of:
 
 - **A refusal** (`PROCEED` is `false`): the comment `` **`agent:review` didn't run:** `` and
   `REFUSAL`, then `agent:review` off, then `agent:blocked` where `BLOCKED` is `true`.
-- **A review that stopped before deciding** (`PROCEED` is neither): `agent:review` off, and nothing
-  else, since nothing is known to say.
+- **A review cancelled before deciding** (`PROCEED` is neither, and `REVIEW_RESULT` is not
+  `failure`): `agent:review` off, and nothing else, since nothing is known to say. One that
+  *failed* before deciding, as a gate whose package would not install does, is a run that did not
+  finish, below, with no verdict, since no commit was settled.
 - **A run that did not finish**, the review's or the posting's: the `agent-review` status `error`
   on `REVIEWED_SHA`, then the failure comment, then `agent:review` off, then `agent:blocked`. The
   comment's reason is, in order: the time limit or a cancel where the review was cancelled; the

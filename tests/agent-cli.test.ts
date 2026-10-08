@@ -7,6 +7,7 @@ import ts from "typescript";
 import { parse } from "yaml";
 import { run, SUBCOMMANDS, type CliIo } from "../cli.js";
 import { file as fileFollowUps } from "../follow-ups/file.js";
+import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
 import * as record from "../shared/record.js";
@@ -64,6 +65,7 @@ vi.mock("node:fs", async (importOriginal) => {
 vi.mock("../follow-ups/file.js", () => ({ file: vi.fn() }));
 // And the one that writes through the engine, for the same reason.
 vi.mock("../review/publish.js", () => ({ publish: vi.fn() }));
+vi.mock("../review/gate.js", () => ({ gate: vi.fn() }));
 
 /** Every write of a `failure_reason.txt` since the spy was last cleared. */
 const reasonsWritten = (): readonly unknown[] =>
@@ -520,6 +522,84 @@ describe("the CLI runs a command", () => {
     expect(exitCode).toBe(1);
     expect(command).not.toHaveBeenCalled();
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: PR_NUMBER");
+  });
+});
+
+/**
+ * A command that reads GitHub and writes nothing to it, `review:gate` (#420),
+ * is handed its inputs, a reader and its declared output files, and no writer.
+ */
+describe("the CLI runs a command that reads", () => {
+  class Exited extends Error {}
+  const INPUTS = {
+    GH_REPO: "o/r",
+    GH_TOKEN: "a-token",
+    PR_NUMBER: "7",
+    BRANCH: "agent/issue-12-do-the-thing",
+    HEAD_SHA: "c".repeat(40),
+    PR_STATE: "open",
+  } as const;
+  const previous = Object.fromEntries(Object.keys(INPUTS).map((name) => [name, process.env[name]]));
+  const command = vi.mocked(gate);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    Object.assign(process.env, INPUTS);
+    command.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it("hands the function its declared inputs, a reader and its outputs, and no writer", async () => {
+    command.mockImplementation(async (_inputs, io) => {
+      expect(typeof io.github.branchTip).toBe("function");
+      expect(io).not.toHaveProperty("writers");
+      io.outputs.writeJson("gate.json", { proceed: "true" });
+    });
+
+    const { code } = await invoke(["review:gate"]);
+
+    expect(code).toBe(0);
+    expect(command).toHaveBeenCalledWith(
+      expect.objectContaining({ OUTPUT_DIR: scratch, HEAD_WAIT_SECONDS: "60", HEAD_POLL_SECONDS: "5", ...INPUTS }),
+      expect.anything(),
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(scratch, "gate.json"), "utf8"))).toEqual({ proceed: "true" });
+  });
+
+  it("turns a throw into fail(): the reason in failure_reason.txt, exit 1", async () => {
+    command.mockImplementation(async () => {
+      throw new Error("The repository variable is wrong.");
+    });
+
+    await expect(invoke(["review:gate"])).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("The repository variable is wrong.");
+  });
+
+  it("stops at a missing input, naming it, before the function is called", async () => {
+    delete process.env["HEAD_SHA"];
+
+    await expect(invoke(["review:gate"])).rejects.toThrow(Exited);
+
+    expect(command).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: HEAD_SHA");
   });
 });
 

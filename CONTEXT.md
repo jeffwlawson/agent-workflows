@@ -152,9 +152,9 @@ A review asked for **right after a push** is about the pushed commit, and two ha
 (#229). GitHub moves a pull request's head asynchronously after a push, so a label added at once
 can carry the commit before the push in its payload. Each run that pushes waits, about a minute,
 for the pull request to show the pushed commit before it labels, and labels anyway with a warning
-if it never does. And the review does not trust its payload: it reads the branch tip from git,
-reviews the tip where it descends from the labelled commit, refuses by name where it does not,
-and checks out, waits on CI for and posts every status on that one commit.
+if it never does. And the review does not trust its payload: `review:gate` reads the branch tip
+from the repository's refs, reviews the tip where it descends from the labelled commit, refuses by
+name where it does not, and checks out, waits on CI for and posts every status on that one commit.
 
 Review adds a trigger label in two cases. The first is on the pull request (#102): the posting
 job's last step adds `agent:fix` when the verdict is *Changes recommended* and the pull request has
@@ -432,8 +432,11 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `follow-ups:file`, `review:publish` and `review:conclude` are the commands
-today; every other step a command will be still runs as YAML shell. The kind is declared, not inferred: `shared/contract.ts` holds
+name is always a runner. `follow-ups:file`, `review:gate`, `review:publish` and `review:conclude`
+are the commands today; every other step a command will be still runs as YAML shell. A command that
+only decides, as `review:gate` does before the review job's checkout (#420), is handed the GitHub
+reader and no writer, and its decisions leave it as a declared file the YAML copies into step
+outputs. The kind is declared, not inferred: `shared/contract.ts` holds
 runners in `RUNNERS` and commands in `COMMANDS`.
 [ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
 

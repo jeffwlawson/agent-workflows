@@ -58,7 +58,7 @@ export const conclude = async (
   const say = { pr, workflow };
 
   if (ending.kind === "undecided") {
-    // The review job stopped before its pre-flight decided anything: nothing
+    // The review job was cancelled before its gate decided anything: nothing
     // is known to say, and the label is all there is to take off.
     await removeTrigger(say);
     io.outputs.writeJson("ended.json", { moved: false });
@@ -125,9 +125,15 @@ type Inputs = InputValues<(typeof COMMANDS)["review:conclude"]["inputs"]>;
 
 const endingOf = (inputs: Inputs, publishReason: string | undefined): Ending => {
   if (inputs.PROCEED === "false") return { kind: "refused" };
-  if (inputs.PROCEED !== "true") return { kind: "undecided" };
   const runUrl = workflowRunUrl(inputs) ?? "";
   const stoppedWith = (reason: string): Ending => ({ kind: "stopped", comment: stoppedComment(reason, runUrl) });
+  // A gate that failed before it decided (#420), as a package that would not
+  // install does, is a run that stopped, said with what reason it gave and
+  // with no verdict, since no commit was settled. Only a cancel that early
+  // has nothing to say.
+  if (inputs.PROCEED !== "true") {
+    return inputs.REVIEW_RESULT === "failure" ? stoppedWith(inputs.FAILURE_REASON === "" ? NO_REASON : inputs.FAILURE_REASON) : { kind: "undecided" };
+  }
 
   if (inputs.REVIEW_RESULT === "cancelled") {
     return stoppedWith(

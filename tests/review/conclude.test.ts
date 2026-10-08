@@ -183,12 +183,33 @@ describe("review:conclude ends a refused review", () => {
     expect(logged).toContain("::warning::Could not post the refusal comment on PR #7.");
   });
 
-  /** A pre-flight that died before it decided: there is nothing to say, and the label still comes off. */
-  it("takes only its label off where the review stopped before deciding", async () => {
-    await run(INPUTS({ ...reviewEnded("failure"), PROCEED: "", REVIEWED_SHA: "" }));
+  /** A review cancelled before its gate decided: there is nothing to say, and the label still comes off. */
+  it("takes only its label off where the review was cancelled before deciding", async () => {
+    await run(INPUTS({ ...reviewEnded("cancelled"), PROCEED: "", REVIEWED_SHA: "" }));
 
     expect(writes()).toEqual(["workflow removeLabel agent:review"]);
     expect(github.statuses.size).toBe(0);
+  });
+
+  /**
+   * A gate that failed before it decided (#420), as one whose package would
+   * not install, is a run that stopped, and says so: a label that vanished
+   * with nothing said is the silent failure the convention exists against.
+   * No verdict, since no commit was settled.
+   */
+  it("says a review that failed before deciding stopped, with no verdict, and blocks", async () => {
+    await run(INPUTS({ ...reviewEnded("failure", { FAILURE_REASON: "PR_NUMBER is \"x\", which is not a pull request number." }), PROCEED: "", REVIEWED_SHA: "" }));
+
+    expect(writes()).toEqual(["workflow comment", "workflow removeLabel agent:review", "workflow addLabel agent:blocked"]);
+    expect(github.comments[0]?.body).toContain('**`agent:review` stopped:** PR_NUMBER is "x", which is not a pull request number.');
+    expect(github.statuses.size).toBe(0);
+    expect(logged).toContain("::warning::The review job named no reviewed commit, so no error verdict was posted.");
+  });
+
+  it("says one that failed before deciding without a reason stopped without giving one", async () => {
+    await run(INPUTS({ ...reviewEnded("failure"), PROCEED: "", REVIEWED_SHA: "" }));
+
+    expect(github.comments[0]?.body).toContain("It stopped without giving a reason.");
   });
 });
 

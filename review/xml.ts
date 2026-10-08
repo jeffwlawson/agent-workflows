@@ -13,6 +13,12 @@
  * attribute's value read as a space, the five predefined entities and
  * character references and no others, and an error that names what was wrong
  * and where, in expat's words.
+ *
+ * It reads UTF-8 alone, as the command hands it the file decoded as UTF-8, so
+ * a document whose XML declaration names any other encoding is refused,
+ * naming it, rather than read with its characters mangled: Python's parser
+ * honoured the declaration, and a name read wrong is evidence made up.
+ * US-ASCII is a subset of UTF-8, and is read.
  */
 
 export interface XmlElement {
@@ -37,6 +43,12 @@ const ENTITY = /&(#x[0-9A-Fa-f]+|#[0-9]+|[A-Za-z_:][\w.:-]*);/y;
 const PREDEFINED: Readonly<Record<string, string>> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
 /** Characters XML allows nowhere, raw or by reference. */
 const FORBIDDEN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/;
+
+/** The encodings a declaration may name that are read as UTF-8 reads them, compared case-blind. */
+const READ_AS_UTF8 = new Set(["utf-8", "utf8", "us-ascii", "ascii"]);
+
+/** The encoding an XML declaration at the start of `doc` names, and where its value starts. */
+const DECLARED_ENCODING = /^<\?xml[ \t\n][^?]*?\bencoding[ \t\n]*=[ \t\n]*(["'])([^"']*)\1/;
 
 /** The one element `source` holds, or `XmlError`. */
 export const parseXml = (source: string): XmlElement => {
@@ -187,6 +199,10 @@ export const parseXml = (source: string): XmlElement => {
     return { name: tag, namespaced, attributes, text, children };
   };
 
+  const declared = DECLARED_ENCODING.exec(doc);
+  if (declared !== null && !READ_AS_UTF8.has((declared[2] ?? "").toLowerCase())) {
+    error(`encoding "${declared[2] ?? ""}" is not UTF-8, which this report is read as`, declared[0].length - (declared[2] ?? "").length - 1);
+  }
   skipMisc();
   if (at >= doc.length) error("no element found");
   if (!starts("<")) error("syntax error");

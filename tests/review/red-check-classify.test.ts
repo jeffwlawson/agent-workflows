@@ -204,6 +204,13 @@ describe("review:red-check-classify reads XML as the step it replaces did", () =
     ]);
   });
 
+  /** UTF-8, by any spelling, and US-ASCII, which is a subset of it, are read. */
+  it.each(["UTF-8", "utf-8", "utf8", "US-ASCII"])("reads a report that declares %s", (encoding) => {
+    expect(
+      classifiedXml(`<?xml version="1.0" encoding="${encoding}"?><testsuite name="s"><testcase name="café" classname="c"/></testsuite>`).tests,
+    ).toEqual([{ name: "café", classname: "c", result: "passed" }]);
+  });
+
   it("reads nothing in a default namespace as a testcase", () => {
     expect(classifiedXml('<testsuite xmlns="urn:x" name="s"><testcase name="t" classname="c"/></testsuite>')).toMatchObject({
       status: "ran",
@@ -222,6 +229,9 @@ describe("review:red-check-classify reads XML as the step it replaces did", () =
     ["an unclosed root", "<a><b/>", "no element found: line 1, column 7"],
     ["a duplicate attribute", '<a b="1" b="2"/>', "duplicate attribute: line 1, column 9"],
     ["a control character", "<a>\u0001</a>", "not well-formed (invalid token): line 1, column 3"],
+    ["a declared ISO-8859-1", '<?xml version="1.0" encoding="ISO-8859-1"?><a/>', 'encoding "ISO-8859-1" is not UTF-8, which this report is read as: line 1, column 30'],
+    ["a declared windows-1252", "<?xml version='1.0' encoding='windows-1252'?><a/>", 'encoding "windows-1252" is not UTF-8, which this report is read as: line 1, column 30'],
+    ["a declared UTF-16", '<?xml version="1.0" encoding="UTF-16"?><a/>', 'encoding "UTF-16" is not UTF-8, which this report is read as: line 1, column 30'],
   ])("reads %s as an unreadable report", (_, xml, reason) => {
     expect(classifiedXml(xml)).toMatchObject({ status: "unreadable-report", tests: [], skipped: 0, reason });
   });

@@ -57,7 +57,7 @@ cannot check is one only an orchestrator's author will catch.
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
   named `<workflow>:<step>`: `follow-ups:file`, `review:gate`, `review:collect-checks`,
-  `review:publish` and `review:conclude`. §2 says where it differs from a runner.
+  `review:red-check-place`, `review:red-check-classify`, `review:publish` and `review:conclude`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -813,7 +813,7 @@ with `reason`, `slice` and `source` where `review:red-check-place` gave them.
 - **The status.** `place.json`'s, or `failed` where there is none. Where it is `ready`:
   `setup-failed` where `SETUP_OUTCOME` is `failure`, `not-run` where `EXIT_CODE` is not a number,
   `no-report` where `REPORT_PATH` is not a file, `unreadable-report`, with the parser's reason,
-  where it is not well-formed XML, else `ran`.
+  where it is not well-formed XML or its declaration names an encoding other than UTF-8, else `ran`.
 - **Each test.** Each `testcase` of every element of the JUnit report: an `<error>` is `broken`; a
   `<failure>` is `red`, unless the testcase is a file or a `describe` rather than a test (named as
   its classname and its suite are, or, with every testcase after it, a failure named like a

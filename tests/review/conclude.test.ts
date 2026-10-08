@@ -61,8 +61,8 @@ const publishFailed = (reason: string): void => fs.writeFileSync(path.join(dir, 
 const verdictPosted = (over: { fixRound?: boolean; url?: string; sha?: string } = {}): void => {
   const url = over.url ?? REVIEW_URL;
   github.statuses.set(over.sha ?? SHA, [
-    ...(over.fixRound === false ? [] : [{ context: FIX_ROUND_STATUS.context, state: "success", targetUrl: url, creator: LOOP }]),
-    { context: VERDICT_CONTEXT, state: "failure", targetUrl: url, creator: LOOP },
+    ...(over.fixRound === false ? [] : [{ context: FIX_ROUND_STATUS.context, state: "success", targetUrl: url, description: "", creator: LOOP }]),
+    { context: VERDICT_CONTEXT, state: "failure", targetUrl: url, description: "", creator: LOOP },
   ]);
 };
 
@@ -211,7 +211,7 @@ describe("review:conclude ends a review that did not finish", () => {
       "workflow removeLabel agent:review",
       "workflow addLabel agent:blocked",
     ]);
-    expect(github.statuses.get(SHA)).toEqual([{ context: VERDICT_CONTEXT, state: "error", targetUrl: RUN_URL, creator: "workflow" }]);
+    expect(github.statuses.get(SHA)).toEqual([{ context: VERDICT_CONTEXT, state: "error", targetUrl: RUN_URL, description: expect.any(String), creator: "workflow" }]);
     const description = (made?.writes[0]?.args[0] as { description: string }).description;
     expect(description).toBe("The review run did not finish, so there's no verdict. Check the run, then re-add agent:review.");
     // GitHub refuses a status description holding a 4-byte character (#121).
@@ -528,7 +528,7 @@ describe("review:conclude starts the automatic fix round", () => {
   /** A newer verdict on the head stands, and this review's round is not started over it. */
   it("adds nothing where a newer verdict stands on the head", async () => {
     verdictPosted();
-    github.statuses.get(SHA)?.unshift({ context: VERDICT_CONTEXT, state: "success", targetUrl: "https://github.com/o/r/pull/7#pullrequestreview-9", creator: LOOP });
+    github.statuses.get(SHA)?.unshift({ context: VERDICT_CONTEXT, state: "success", targetUrl: "https://github.com/o/r/pull/7#pullrequestreview-9", description: "", creator: LOOP });
 
     await run(INPUTS(FIX_ROUND));
 
@@ -539,7 +539,7 @@ describe("review:conclude starts the automatic fix round", () => {
   /** Only the loop's own statuses count (§4.1): a verdict anyone else set is not this one, nor newer. */
   it("reads only the loop's statuses", async () => {
     verdictPosted();
-    github.statuses.get(SHA)?.unshift({ context: VERDICT_CONTEXT, state: "success", targetUrl: "https://elsewhere.invalid", creator: "someone" });
+    github.statuses.get(SHA)?.unshift({ context: VERDICT_CONTEXT, state: "success", targetUrl: "https://elsewhere.invalid", description: "", creator: "someone" });
 
     await run(INPUTS(FIX_ROUND));
 

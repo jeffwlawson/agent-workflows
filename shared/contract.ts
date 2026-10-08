@@ -386,6 +386,14 @@ const REVIEW_PUBLISH = {
  *
  * - `follow-ups:file` writes issues with its `GH_TOKEN` itself, outside the
  *   engine's writer, until its own workflow moves (ADR 0005).
+ * - `review:gate` decides, before checkout, whether the review runs, which
+ *   commit it reviews, the fix-round budget and, on a PRD branch, which round
+ *   it is, and writes nothing to the record: the posting job says what it
+ *   decided. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the pull request as
+ *   the event that asked for the review saw it; the branch's tip and the rest
+ *   of the live state it reads itself. `gate.json` is its decisions, every
+ *   value a string, under the names an orchestrator hands on, and
+ *   `refusal_reason.txt` is a variable it refused, written before it fails.
  * - `review:publish` resolves the threads a review closed and posts it on
  *   `REVIEWED_SHA`, the commit the review job recorded before the agent ran
  *   (ADR 0006), then writes the title, the summary, the status line and the
@@ -409,6 +417,23 @@ export const COMMANDS = {
       PR_NUMBER: REQUIRED,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+  },
+  "review:gate": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      HEAD_SHA: REQUIRED,
+      PR_STATE: REQUIRED,
+      PR_MERGED: EMPTY,
+      HEAD_WAIT_SECONDS: { required: false, default: "60" },
+      HEAD_POLL_SECONDS: { required: false, default: "5" },
+      REVIEW_TIMEOUT_MINUTES: EMPTY,
+      MAX_FIX_ROUNDS: EMPTY,
+      DEPRECATED_AUTO_FIX: EMPTY,
+      LOOP_TOKEN_SOURCE: EMPTY,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", "refusal_reason.txt"],
   },
   "review:publish": REVIEW_PUBLISH,
   "review:conclude": {

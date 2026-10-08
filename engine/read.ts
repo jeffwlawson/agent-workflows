@@ -20,6 +20,7 @@ export interface CommitStatus {
   readonly context: string;
   readonly state: string;
   readonly targetUrl: string | null;
+  readonly description: string;
   /** The login that set it. */
   readonly creator: string;
 }
@@ -42,6 +43,19 @@ export interface GitHubReader {
   reviewThreadIds(number: number): Promise<ReadonlySet<string>>;
   /** Every review on the pull request, oldest first, as the endpoint documents. */
   reviews(number: number): Promise<readonly Review[]>;
+  /** Every commit on the pull request, oldest first, by sha. */
+  pullRequestCommits(number: number): Promise<readonly string[]>;
+  /**
+   * The commit `branch` points at, read from the repository's refs rather
+   * than from a pull request, so it moves the moment a push lands.
+   */
+  branchTip(branch: string): Promise<string>;
+  /**
+   * How `head` relates to `base`, as the compare API's `status` says it:
+   * `ahead` where `head` descends from `base`, else `identical`, `behind` or
+   * `diverged`.
+   */
+  compare(base: string, head: string): Promise<string>;
 }
 
 /** The REST pull request, as far as `PullRequest` reads it. */
@@ -71,6 +85,7 @@ interface RawStatus {
   readonly context: string;
   readonly state: string;
   readonly target_url: string | null;
+  readonly description: string | null;
   readonly creator: { readonly login: string } | null;
 }
 
@@ -112,7 +127,13 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
           path: `/repos/${repo}/commits/${sha}/statuses?per_page=100&page=${page}`,
         })) as readonly RawStatus[];
         statuses.push(
-          ...raw.map((s) => ({ context: s.context, state: s.state, targetUrl: s.target_url, creator: s.creator?.login ?? "" })),
+          ...raw.map((s) => ({
+            context: s.context,
+            state: s.state,
+            targetUrl: s.target_url,
+            description: s.description ?? "",
+            creator: s.creator?.login ?? "",
+          })),
         );
         if (raw.length < 100) return statuses;
       }
@@ -139,6 +160,31 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
         );
         if (raw.length < 100) return reviews;
       }
+    },
+    pullRequestCommits: async (number) => {
+      const commits: string[] = [];
+      for (let page = 1; ; page++) {
+        const raw = (await transport.rest({
+          method: "GET",
+          path: `/repos/${repo}/pulls/${number}/commits?per_page=100&page=${page}`,
+        })) as readonly { readonly sha: string }[];
+        commits.push(...raw.map((commit) => commit.sha));
+        if (raw.length < 100) return commits;
+      }
+    },
+    branchTip: async (branch) => {
+      const ref = branch.split("/").map(encodeURIComponent).join("/");
+      const raw = (await transport.rest({ method: "GET", path: `/repos/${repo}/git/ref/heads/${ref}` })) as {
+        readonly object: { readonly sha: string };
+      };
+      return raw.object.sha;
+    },
+    compare: async (base, head) => {
+      const raw = (await transport.rest({
+        method: "GET",
+        path: `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
+      })) as { readonly status: string };
+      return raw.status;
     },
   };
 };

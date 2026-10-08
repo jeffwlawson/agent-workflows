@@ -19,7 +19,6 @@ import {
 import {
   CLOSER_LOOK,
   deriveVerdict,
-  LEGACY_FIX_ROUND_STARTED,
   type Verdict,
   VERDICTS,
 } from "../shared/review-output.js";
@@ -31,6 +30,7 @@ import {
   FINAL_REVIEW_MARK,
   FIX_ROUND_STATUS,
   FOLLOW_UPS_LABEL,
+  PRD_BRANCH_PREFIX,
   PROGRESS_END,
   PROGRESS_START,
   STATUS_END,
@@ -1299,13 +1299,33 @@ describe("PR workflows refuse a closed or merged PR", () => {
   // Second only to the clock a failure step reads its time limit off (#220),
   // which does nothing but note the time and is asserted exactly below, in
   // *a run that times out or is cancelled says so*.
-  it.each(PR_WORKFLOWS)("%s: the guard is the first step and is itself ungated", (file) => {
+  it.each(PR_WORKFLOWS.filter((file) => file !== REVIEW))("%s: the guard is the first step and is itself ungated", (file) => {
     const first = firstWorkStep(file);
 
     expect(first?.id).toBe("state");
     expect(first?.if).toBeUndefined();
     expect(first?.run ?? "").toContain('"$PR_STATE" != "open"');
     expect(first?.run ?? "").toContain('"$PR_MERGED" = "true"');
+  });
+
+  /**
+   * Review's guard is `review:gate` (#420), which refuses a closed or merged
+   * pull request from the state the job hands it (`tests/review/gate.test.ts`).
+   * Its first work is the Node the command runs on, ungated, then the gate,
+   * ungated, then the step that hands its decisions on as `state`'s outputs,
+   * which every later step reads.
+   */
+  it("review.yml: the gate is the first work after its Node, ungated, and hands on its decisions as `state`", () => {
+    const steps = stepsOf(REVIEW);
+    expect(firstWorkStep(REVIEW)?.name).toBe(steps[1]?.name);
+    const at = 1;
+
+    expect(steps.slice(at, at + 3).map((s) => [s.name, s.id, s.if])).toEqual([
+      ["Set up Node for the gate", undefined, undefined],
+      ["Settle what this run reviews", "gate", undefined],
+      ["Hand the gate's decisions to the job", "state", "always()"],
+    ]);
+    expect(steps[at + 1]?.run ?? "").toMatch(/-- agent-workflows review:gate$/);
   });
 
   const PROCEED = "steps.state.outputs.proceed == 'true'";
@@ -1396,43 +1416,42 @@ describe("a run that pushed waits for the PR head before asking for a review", (
  * carry the commit before the push, with `headRefOid` agreeing. #228 posted its
  * verdict on the pre-fix commit that way.
  *
- * So the pre-flight reads the branch tip from git, reviews it where it
- * descends from the payload's commit, refuses by name where it does not, and
- * everything after reads the one commit it settled on. The branches are
- * executed in `tests/review-preflight.test.ts`; what is held here is the
- * wiring, which no execution of one step can see.
+ * So `review:gate` reads the branch tip from the repository's refs, reviews
+ * it where it descends from the payload's commit, refuses by name where it
+ * does not, and everything after reads the one commit it settled on (#420).
+ * The branches are executed in `tests/review/gate.test.ts`; what is held here
+ * is the wiring, which no call of the command can see.
  */
 describe("agent-review settles on one commit and reads nothing else", () => {
-  const guard = (): Step | undefined => firstWorkStep(REVIEW);
-  const run = (): string => guard()?.run ?? "";
+  const gateStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "gate");
+  const copyStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "state");
   const RESOLVED = "${{ steps.state.outputs.sha }}";
 
-  it("reads the branch tip from git, not from the pull request", () => {
-    expect(guard()?.id).toBe("state");
-    expect(guard()?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
-    expect(run()).toContain('ls-remote "${GITHUB_SERVER_URL}/${GH_REPO}.git" "refs/heads/${BRANCH}"');
-    expect(run()).toContain(`awk -v ref="refs/heads/\${BRANCH}" '$2 == ref { print $1 }'`);
-    expect(run()).toContain('[ "$tip" != "$HEAD_SHA" ]');
-    // Distinct from the not-open refusal: same step, two states, and a human
-    // reading only the comment has to be able to tell them apart.
-    expect(run()).toContain('refuse "This PR is closed."');
-    expect(run()).toContain("The PR changed after \\`agent:review\\` was added.");
+  it("hands the gate the commit and the state the label's event carried", () => {
+    expect(gateStep()?.env?.["HEAD_SHA"]).toBe("${{ github.event.pull_request.head.sha }}");
+    expect(jobOf(REVIEW).env?.["PR_STATE"]).toBe("${{ github.event.pull_request.state }}");
+    expect(jobOf(REVIEW).env?.["PR_MERGED"]).toBe("${{ github.event.pull_request.merged }}");
+    expect(jobOf(REVIEW).env?.["BRANCH"]).toBe("${{ github.event.pull_request.head.ref }}");
+    // The wait for the pull request's head is the command's default, not a
+    // setting of this file's.
+    expect(gateStep()?.env?.["HEAD_WAIT_SECONDS"]).toBeUndefined();
+    expect(COMMANDS["review:gate"].inputs.HEAD_WAIT_SECONDS).toEqual({ required: false, default: "60" });
   });
 
-  it("follows the tip only where it descends from the labelled commit, and waits for the PR to show it", () => {
-    const moved = run().slice(run().indexOf('[ "$tip" != "$HEAD_SHA" ]'));
-
-    expect(moved).toContain('compare/${HEAD_SHA}...${tip}');
-    expect(moved).toContain('[ "$relation" != "ahead" ]');
-    expect(moved.indexOf('[ "$relation" != "ahead" ]')).toBeLessThan(moved.indexOf("--json headRefOid"));
-    expect(moved).toContain('[ "$head" = "$tip" ]');
-    expect(guard()?.env?.["HEAD_WAIT_SECONDS"]).toBe("60");
-  });
-
-  it("writes the commit it settled on beside the go-ahead, and nowhere else says proceed", () => {
-    expect(run()).toContain('echo "sha=${tip}" >> "$GITHUB_OUTPUT"');
-    expect(run().match(/proceed=true/g)).toHaveLength(1);
-    expect(run().indexOf('echo "sha=${tip}"')).toBeLessThan(run().indexOf('echo "proceed=true"'));
+  /**
+   * `gate.json` is a declared output of the gate, written into the
+   * directory the copy reads, and the copy names no key itself: the gate's
+   * keys are the step's outputs, which are today's names.
+   */
+  it("copies the gate's decisions into the step outputs, under the gate's own names", () => {
+    expect(COMMANDS["review:gate"].outputs).toContain("gate.json");
+    expect(gateStep()?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
+    const run = copyStep()?.run ?? "";
+    expect(run).toContain('file="${RUNNER_TEMP}/gate.json"');
+    expect(run).toContain(`jq -r 'to_entries[] | "\\(.key)=\\(.value)"' "$file" >> "$GITHUB_OUTPUT"`);
+    for (const name of ["proceed", "refusal", "blocked", "sha", "round"]) {
+      expect(jobOf(REVIEW).outputs?.[name], name).toBe(`\${{ steps.state.outputs.${name} }}`);
+    }
   });
 
   /**
@@ -1565,10 +1584,13 @@ describe("agent-fix refuses an event head behind the live branch", () => {
 describe("agent-review tells a slice round from the final review on a PRD PR", () => {
   const RUNNER = "review/review.ts";
   const runner = (): string => fs.readFileSync(RUNNER, "utf8");
-  const roundStep = (): Step | undefined =>
-    stepsOf(REVIEW).find((s) => s.name === "Tell a slice round from the final review");
   const runStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.name === "Run review agent");
 
+  /**
+   * `review:gate` decides it (#420), on the head branch the job hands it,
+   * against the prefix `shared/record.ts` spells; its arms are executed in
+   * `tests/review/gate.test.ts`.
+   */
   it("recognises a PRD PR by the prefix implement-prd names its branch with, and nothing else", () => {
     const prefix = /^agent\/prd-(\d+)-/;
 
@@ -1576,35 +1598,29 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
     expect(runner()).toContain("/^agent\\/prd-(\\d+)-/");
     expect(prefix.test("agent/issue-179-integration-review")).toBe(false);
     expect(prefix.test("agent/prd-171-prd-slice-prs")).toBe(true);
-    const condition = (roundStep()?.if ?? "").replace(/\s+/g, " ");
-    expect(condition).toContain("steps.state.outputs.proceed == 'true'");
-    expect(condition).toContain("startsWith(github.event.pull_request.head.ref, 'agent/prd-')");
+    expect(PRD_BRANCH_PREFIX).toBe("agent/prd-");
+    expect(jobOf(REVIEW).env?.["BRANCH"]).toBe("${{ github.event.pull_request.head.ref }}");
   });
 
   /**
-   * The mark is spelled in two workflows, the one that writes it and the one
-   * that reads it, and held equal here: a reader looking for a mark nobody
-   * writes would take every final review for a slice round.
+   * The mark is spelled where it is written, in `implement-prd.yml`, and
+   * where it is read, `shared/record.ts`, and held equal here: a reader
+   * looking for a mark nobody writes would take every final review for a
+   * slice round.
    */
   it("reads the final review's mark the finishing run writes", () => {
-    const mark = roundStep()?.env?.["FINAL_REVIEW_MARK"] ?? "";
-
-    expect(mark).toBe("<!-- agent:final-review requested -->");
-    expect(fs.readFileSync(PRD, "utf8")).toContain(`mark="${mark}"`);
-    expect(fs.readFileSync(PRD, "utf8")).toContain(`final_review="${mark}"`);
-    expect(roundStep()?.run ?? "").toContain('if [[ "$body" == *"$FINAL_REVIEW_MARK"* ]]; then');
-    // Not `|| true`: a body that cannot be read fails the run, which parks the
-    // chain, rather than guessing which round it is.
-    expect(roundStep()?.run ?? "").toContain("set -euo pipefail");
+    expect(FINAL_REVIEW_MARK).toBe("<!-- agent:final-review requested -->");
+    expect(fs.readFileSync(PRD, "utf8")).toContain(`mark="${FINAL_REVIEW_MARK}"`);
+    expect(fs.readFileSync(PRD, "utf8")).toContain(`final_review="${FINAL_REVIEW_MARK}"`);
   });
 
   it("hands the runner and every later job that one answer", () => {
-    expect(runStep()?.env?.["ROUND"]).toBe("${{ steps.round.outputs.round }}");
-    expect(jobOf(REVIEW).outputs?.["round"]).toBe("${{ steps.round.outputs.round }}");
+    expect(runStep()?.env?.["ROUND"]).toBe("${{ steps.state.outputs.round }}");
+    expect(jobOf(REVIEW).outputs?.["round"]).toBe("${{ steps.state.outputs.round }}");
     expect(runner()).toContain('INPUTS.ROUND === "final"');
     // Before the agent's checkout and every step that can fail after it.
     const names = stepsOf(REVIEW).map((s) => s.name ?? "");
-    expect(names.indexOf("Tell a slice round from the final review")).toBeLessThan(names.indexOf("Checkout PR head"));
+    expect(names.indexOf("Settle what this run reviews")).toBeLessThan(names.indexOf("Checkout PR head"));
   });
 
   it("reads the slice off the PRD branch while the token is still in hand", () => {
@@ -1843,7 +1859,8 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   /** The posting job (#257), whose `review:conclude` starts the round (#419). */
   const job = (): Job => jobNamed(REVIEW, "post-review");
   const startStep = (): Step | undefined => (job().steps ?? []).find((s) => s.name === "Conclude the run");
-  const budgetStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "budget");
+  /** `review:gate`, which settles the budget (#420). */
+  const budgetStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "gate");
   const runnerStep = (): Step | undefined =>
     stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent");
 
@@ -1881,24 +1898,12 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
    * refusal file the failure comment posts as "didn't run" (#253), naming the
    * variable and the value.
    */
-  it("reads the budget from AGENT_MAX_FIX_ROUNDS, default 3, and refuses a value that is not a count", () => {
+  it("reads the budget from AGENT_MAX_FIX_ROUNDS, in the gate, before the runner", () => {
     const step = budgetStep();
-    const run = step?.run ?? "";
     const names = stepsOf(REVIEW).map((s) => s.name ?? "");
 
     expect(step?.env?.["MAX_FIX_ROUNDS"]).toBe("${{ vars.AGENT_MAX_FIX_ROUNDS }}");
-    expect(run).toContain('budget="${MAX_FIX_ROUNDS:-3}"');
-    expect(run).toContain('[[ ! "$budget" =~ ^[0-9]+$ ]]');
-    expect(run).toContain('> "${RUNNER_TEMP}/refusal_reason.txt"');
-    const refusal = run.slice(run.indexOf('[[ ! "$budget"'));
-    expect(refusal).toContain(
-      'refuse "The repository variable \\`AGENT_MAX_FIX_ROUNDS\\` is \\`${MAX_FIX_ROUNDS}\\`. It must be a whole number (0 or more), or delete it to use the default of 3. Then add \\`agent:review\\` again."',
-    );
-
-    // After the pre-flight, so a refusal is the ordinary failure path, and
-    // before the runner, which reads the answer.
-    expect(step?.if).toBe("steps.state.outputs.proceed == 'true'");
-    expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(stepsOf(REVIEW).findIndex((s) => s.id === "state"));
+    // Before the runner, which reads the answer.
     expect(names.indexOf(step?.name ?? "")).toBeLessThan(names.indexOf("Run review agent"));
 
     // And no caller passes it: the reusable reads the caller's variables itself.
@@ -1909,69 +1914,38 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * **The comparison.** A round starts where the rounds already spent are fewer
-   * than the budget, and only with the loop's App or `AGENT_PAT`, since a
-   * label added with the workflow token starts nothing. Rounds spent are the `agent-fix-round` statuses this loop
-   * posted beside the verdicts that asked for a round (#297), matched on the
-   * context (held to `FIX_ROUND_STATUS` here, so renaming it cannot silently
-   * zero the count) and counted once per review, because `update-branch`
-   * copies a commit's statuses on to its merge commit.
+   * **The comparison** is `review:gate`'s, counted from the loop's
+   * `agent-fix-round` statuses (#297) and executed in
+   * `tests/review/gate.test.ts`. What is held here is what it is handed and
+   * what it hands on: which token the loop writes with, from a job that never
+   * runs the agent (#316, #320), since naming a secret here, even to compare
+   * it, puts it on the agent's runner; and the answer, not the facts, to the
+   * runner, so the line it writes and the job that makes it true come from
+   * one decision.
    */
-  it("starts a round only while the rounds spent are fewer than the budget", () => {
-    const step = budgetStep();
-    const run = step?.run ?? "";
-
-    expect(run).toContain('[ "$spent" -lt "$budget" ] && { [ "$TOKEN_SOURCE" = "app" ] || [ "$TOKEN_SOURCE" = "pat" ]; }');
-    // Which token the loop writes with, from a job that never runs the agent
-    // (#316, #320): naming a secret here, even to compare it, puts it on the
-    // agent's runner.
-    expect(step?.env?.["TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
+  it("hands the gate the loop token's source, and the runner the gate's answer", () => {
+    expect(budgetStep()?.env?.["LOOP_TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
     expect(jobNamed(REVIEW, "time-limit").outputs?.["token-source"]).toBe("${{ steps.token.outputs.source }}");
-    expect(step?.env?.["FIX_ROUND_CONTEXT"]).toBe(FIX_ROUND_STATUS.context);
-    expect(step?.env?.["STARTED"]).toBeUndefined();
-    expect(run).toContain(".context == env.FIX_ROUND_CONTEXT");
-    // And, for one release, a 0.7.6 verdict that started a round, which has
-    // no `agent-fix-round` status to count (#297).
-    expect(step?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
-    expect(step?.env?.["LEGACY_STARTED"]).toBe(LEGACY_FIX_ROUND_STARTED);
-    expect(run).toContain(
-      "(.context == env.FIX_ROUND_CONTEXT or (.context == env.VERDICT_CONTEXT and .description == env.LEGACY_STARTED))",
-    );
-    expect(run).toContain(".creator.login == env.LOOP_ACCOUNT");
-    expect(run).toContain("sort -u");
-    // An unreadable count starts nothing.
-    expect(run).toMatch(/if \[ -z "\$spent" \]; then\n\s*echo "::warning::/);
-    expect(run).toContain('echo "start=${start}"');
+    expect(JSON.stringify(jobNamed(REVIEW, "review"))).not.toMatch(/secrets\.(AGENT_PAT|AGENT_APP_)/);
 
-    // The runner is handed the answer, not the facts, so the line it writes
-    // and the job that makes it true come from one decision.
-    expect(runnerStep()?.env?.["AUTO_FIX"]).toBe("${{ steps.budget.outputs.start }}");
-    expect(runnerStep()?.env?.["FIX_ROUNDS_SPENT"]).toBe("${{ steps.budget.outputs.spent }}");
-    expect(runnerStep()?.env?.["FIX_ROUND_BUDGET"]).toBe("${{ steps.budget.outputs.budget }}");
+    expect(runnerStep()?.env?.["AUTO_FIX"]).toBe("${{ steps.state.outputs.start }}");
+    expect(runnerStep()?.env?.["FIX_ROUNDS_SPENT"]).toBe("${{ steps.state.outputs.spent }}");
+    expect(runnerStep()?.env?.["FIX_ROUND_BUDGET"]).toBe("${{ steps.state.outputs.budget }}");
   });
 
   /**
    * **The deprecated alias** (decision 4). `auto-fix` stays one release, a
    * string so that unset can be told from `false`, and where a caller sets it
-   * it wins: `true` is a budget of 1, `false` of 0, and the run warns, naming
-   * the variable that replaces it.
+   * it wins (`tests/review/gate.test.ts`).
    */
-  it("keeps auto-fix one release as an alias that wins over the variable, and warns", () => {
+  it("keeps auto-fix one release as an alias, handed to the gate", () => {
     const input = workflowOf(REVIEW).on?.workflow_call?.inputs?.["auto-fix"];
-    const run = budgetStep()?.run ?? "";
 
     expect(input?.type).toBe("string");
     expect(input?.default).toBe("");
     expect(input?.required).toBeUndefined();
     expect(input?.description ?? "").toContain("Deprecated");
-    expect(budgetStep()?.env?.["AUTO_FIX"]).toBe("${{ inputs.auto-fix }}");
-
-    expect(run).toContain("true) budget=1 ;;");
-    expect(run).toContain("false) budget=0 ;;");
-    expect(run).toMatch(/::warning::The \\`auto-fix\\` input is deprecated[^\n]*AGENT_MAX_FIX_ROUNDS/);
-    // Wins: the variable is read only where the input is empty.
-    expect(run.indexOf('if [ -n "$AUTO_FIX" ]; then')).toBeGreaterThanOrEqual(0);
-    expect(run.indexOf('if [ -n "$AUTO_FIX" ]; then')).toBeLessThan(run.indexOf('budget="${MAX_FIX_ROUNDS:-3}"'));
+    expect(budgetStep()?.env?.["DEPRECATED_AUTO_FIX"]).toBe("${{ inputs.auto-fix }}");
   });
 
   /**
@@ -1998,7 +1972,7 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
 
     // The one `round` the review hands across is which round of a PRD PR it
     // was, a slice round or the final review (PRD #222), and it is no count.
-    expect(jobOf(REVIEW).outputs?.["round"]).toBe("${{ steps.round.outputs.round }}");
+    expect(jobOf(REVIEW).outputs?.["round"]).toBe("${{ steps.state.outputs.round }}");
     expect(stepsOf(REVIEW).find((s) => s.name === "Hand the verdict to what reads it")?.run ?? "").not.toMatch(/"round=|spent|budget/);
     expect(jobOf(REVIEW).outputs?.["verdict"]).toBe("${{ steps.verdict.outputs.verdict }}");
   });
@@ -2591,7 +2565,7 @@ describe("a PRD PR's round ends in one advance job", () => {
     const upload = stepsOf(REVIEW).find((s) => s.name === "Hand the park comment to the advance job");
 
     expect(upload?.uses).toBe("actions/upload-artifact@v7");
-    expect(flat(upload?.if)).toBe("always() && steps.round.outputs.round != ''");
+    expect(flat(upload?.if)).toBe("always() && steps.state.outputs.round != ''");
     expect(upload?.with?.["name"]).toBe("agent-review-park");
     expect(upload?.with?.["path"]).toContain("park.md");
     expect(upload?.with?.["path"]).toContain("park_failed.md");
@@ -4243,7 +4217,9 @@ describe("every workflow in the loop is called rather than copied", () => {
    * every runner image already has the Node it needs for it.
    */
   it.each(wiredWorkflows())("%s: takes the toolchain from the caller", (file) => {
-    const node = stepsOf(file).find((s) => (s.uses ?? "").startsWith("actions/setup-node@"));
+    // The first that names a version file: review's gate runs on a Node of
+    // its own before the checkout, with no file to read one from (#420).
+    const node = stepsOf(file).find((s) => (s.uses ?? "").startsWith("actions/setup-node@") && s.with?.["node-version"] === undefined);
     const install = stepsOf(file).find((s) => (s.run ?? "").includes("${{ inputs.setup }}"));
 
     expect(node?.with?.["node-version-file"]).toBe("${{ inputs.node-version-file }}");
@@ -5967,13 +5943,22 @@ describe("every workflow invokes the runners at a pinned version", () => {
    * this repository the checkout *is* that package, with no `dist/` built, so the
    * bin resolves to nothing (#8). The prefix moves the install, not the `cwd`.
    */
-  const invocation = (file: string): string => {
-    const invocations = stepsOf(file)
+  const invocationsIn = (file: string): readonly string[] =>
+    stepsOf(file)
       .map((step) => (step.run ?? "").trim())
       .filter((run) => run.startsWith("npm exec") || run.startsWith("npx "));
 
-    expect(invocations).toHaveLength(1);
-    return invocations[0] as string;
+  /**
+   * The runner's, where the job runs commands beside it, as review's runs
+   * `review:gate` ahead of it (#420); else the job's one command.
+   */
+  const invocation = (file: string): string => {
+    const invocations = invocationsIn(file);
+    const runners = invocations.filter((run) => !/ -- agent-workflows [a-z-]+:[a-z-]+$/.test(run));
+    const chosen = runners.length > 0 ? runners : invocations;
+
+    expect(chosen).toHaveLength(1);
+    return chosen[0] as string;
   };
 
   /**
@@ -6008,6 +5993,7 @@ describe("every workflow invokes the runners at a pinned version", () => {
    */
   it.each(runnerWorkflows)("%s: pins the version this repo publishes", (file) => {
     expect(invocation(file).match(PIN)?.[1]).toBe(manifest.version);
+    for (const run of invocationsIn(file)) expect(run.match(PIN)?.[1], run).toBe(manifest.version);
   });
 
   /**
@@ -6761,8 +6747,10 @@ describe("the README's action pins are the ones this repository runs", () => {
     const real = authStepsIn(stepsOf(REVIEW));
 
     expect(documented).toHaveLength(1);
-    expect(real).toHaveLength(1);
-    expect(registryHalf(documented[0])).toEqual(registryHalf(real[0]));
+    // Two in review's job, the gate's and the runner's (#420), alike but for
+    // the Node.
+    expect(real).toHaveLength(2);
+    for (const step of real) expect(registryHalf(documented[0])).toEqual(registryHalf(step));
   });
 });
 
@@ -6804,8 +6792,11 @@ describe("the runner package is installed from GitHub Packages", () => {
   // Indices, not the steps themselves: `stepsOf` re-parses the file on every
   // call, so two lookups never return the same object and `indexOf` finds
   // nothing.
+  //
+  // The last of each: review's job runs `review:gate` on a registry and a
+  // Node of its own before the checkout (#420), and the runner's are after.
   const authIndex = (file: string): number =>
-    stepsOf(file).findIndex((s) => (s.with ?? {})["registry-url"] !== undefined);
+    stepsOf(file).findLastIndex((s) => (s.with ?? {})["registry-url"] !== undefined);
 
   const authStep = (file: string): Step | undefined => stepsOf(file)[authIndex(file)];
 
@@ -6815,7 +6806,7 @@ describe("the runner package is installed from GitHub Packages", () => {
    * repository's own checkout as the package (#8).
    */
   const runnerStepIndex = (file: string): number =>
-    stepsOf(file).findIndex((s) => {
+    stepsOf(file).findLastIndex((s) => {
       const run = (s.run ?? "").trim();
       return run.startsWith("npm exec") || run.startsWith("npx ");
     });
@@ -6952,6 +6943,29 @@ describe("the runner package is installed from GitHub Packages", () => {
    */
   it.each(runnerWorkflows)("%s: is gated the same as the run it serves", (file) => {
     expect(authStep(file)?.if).toBe(stepsOf(file)[runnerStepIndex(file)]?.if);
+  });
+
+  /**
+   * `review:gate` runs before the checkout (#420), so before the adopter's
+   * toolchain and the runner's auth step: its own `setup-node` comes first,
+   * naming the registry and a Node the package's engines accept, and the gate
+   * is handed the token the install reads. Ungated, as the gate is: it is the
+   * guard.
+   */
+  it("review.yml: sets up Node and the registry for the gate, before it", () => {
+    const steps = stepsOf(REVIEW);
+    const gate = steps.findIndex((s) => s.id === "gate");
+    const node = steps[gate - 1];
+    const floor = Number(/^>=(\d+)$/.exec(manifest.engines.node)?.[1]);
+
+    expect(node?.uses ?? "").toMatch(/^actions\/setup-node@/);
+    expect(node?.if).toBeUndefined();
+    expect(node?.with?.["registry-url"]).toBe(REGISTRY);
+    expect(node?.with?.["scope"]).toBe(SCOPE);
+    expect(node?.with?.["package-manager-cache"]).toBe(false);
+    expect(Number(node?.with?.["node-version"])).toBeGreaterThanOrEqual(floor);
+    expect(steps[gate]?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(gate).toBeLessThan(steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
   });
 
   /**
@@ -7520,15 +7534,19 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
      * A value that is not a positive integer is refused by the review, naming
      * it, the way the fix-round budget is: summed, it would be a limit nobody
      * wrote down, and failed in `limits` it would skip the review silently.
+     * `review:gate` refuses it, reading the same variable this sums
+     * (`tests/review/gate.test.ts`), into the refusal file the outcome step
+     * hands on, so the comment says it didn't run (#253).
      */
     it("refuses a variable that is not a positive integer in the review, where it is said", () => {
-      const refusal = stepsOf(REVIEW).find((s) => (s.if ?? "").includes("needs.time-limit.outputs.refused == 'true'"));
+      const gate = stepsOf(REVIEW).find((s) => s.id === "gate");
 
       expect(sum().run ?? "").toContain("^[1-9][0-9]*$");
-      expect(refusal?.if).toBe("steps.state.outputs.proceed == 'true' && needs.time-limit.outputs.refused == 'true'");
-      // Into the refusal file, so the comment says it didn't run (#253).
-      expect(refusal?.run ?? "").toContain("refusal_reason.txt");
-      expect(refusal?.run ?? "").toContain("AGENT_REVIEW_TIMEOUT_MINUTES");
+      expect(limits().outputs?.["refused"]).toBeUndefined();
+      expect(gate?.env?.["REVIEW_TIMEOUT_MINUTES"]).toBe(sum().env?.["REVIEW_MINUTES"]);
+      expect(gate?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
+      expect(COMMANDS["review:gate"].outputs).toContain("refusal_reason.txt");
+      expect(stepsOf(REVIEW).find((s) => s.id === "outcome")?.run ?? "").toContain('file="${RUNNER_TEMP}/${name}.txt"');
     });
   });
 });
@@ -7886,18 +7904,16 @@ describe("a trigger label is on while its run works, and off when it ends", () =
   });
 
   /**
-   * The review's pre-flight decides a refusal and cannot say it (#257): the
-   * job that runs the model writes nothing. It hands the sentence and the
-   * block over, and `review:conclude` says it in the same order (#419; its
-   * tests hold the order).
+   * The review's gate decides a refusal and cannot say it (#257): the job
+   * that runs the model writes nothing, and `review:gate` holds no writer
+   * (#420). It hands the sentence and the block over, and `review:conclude`
+   * says it in the same order (#419; its tests hold the order).
    */
   it("review.yml: a refusal is handed to the command that says it", () => {
-    const refuse = bashFunctionBody(runOf(REVIEW, "state"), "refuse");
     const conclude = writerStepsOf(REVIEW).find((s) => s.name === "Conclude the run");
 
-    expect(refuse).toContain('echo "proceed=false"');
-    expect(refuse).toContain('echo "refusal=$1"');
-    expect(refuse).not.toMatch(/gh pr/);
+    expect(stepsOf(REVIEW).find((s) => s.id === "gate")?.env ?? {}).not.toHaveProperty("LOOP_TOKEN");
+    expect(COMMANDS["review:gate"].inputs).not.toHaveProperty("LOOP_TOKEN");
     expect(jobOf(REVIEW).outputs?.["refusal"]).toBe("${{ steps.state.outputs.refusal }}");
     expect(jobOf(REVIEW).outputs?.["blocked"]).toBe("${{ steps.state.outputs.blocked }}");
     expect(conclude?.env?.["PROCEED"]).toBe("${{ needs.review.outputs.proceed }}");
@@ -7990,7 +8006,6 @@ describe("every failure and refusal says so in one of two patterns", () => {
     { file: IMPLEMENT, label: "agent:implement", guard: "preflight" },
     { file: PRD, label: "agent:implement", guard: "preflight" },
     { file: FIX, label: "agent:fix", guard: "state" },
-    { file: REVIEW, label: "agent:review", guard: "state" },
   ] as const;
 
   it.each(STOPPED)("$file: a run that stopped says `$label stopped:`, the reason, the run and what to do", (c) => {
@@ -8016,15 +8031,7 @@ describe("every failure and refusal says so in one of two patterns", () => {
       // Less `refuse_shape`'s own forwarding of its argument.
       .filter((line) => /^(refuse|refuse_shape) "/.test(line) && !line.startsWith('refuse "$1"'));
 
-    // The review's posting job says it, from the sentence handed over (#257),
-    // in `review:conclude` (#419), whose tests hold the pattern.
-    if (c.file === REVIEW) {
-      expect(writerStepsOf(REVIEW).find((s) => s.name === "Conclude the run")?.env?.["REFUSAL"]).toBe(
-        "${{ needs.review.outputs.refusal }}",
-      );
-    } else {
-      expect(bashFunctionBody(run, "refuse")).toContain(`--body "**\\\`${c.label}\\\` didn't run:** $1"`);
-    }
+    expect(bashFunctionBody(run, "refuse")).toContain(`--body "**\\\`${c.label}\\\` didn't run:** $1"`);
     expect(calls.length).toBeGreaterThan(0);
     for (const call of calls) {
       // A capital, or the one shared sentence review keeps in a variable.
@@ -8032,6 +8039,18 @@ describe("every failure and refusal says so in one of two patterns", () => {
       expect(call, call).not.toMatch(/Refused|re-add/i);
     }
     expect(run).not.toContain("Refused to run");
+  });
+
+  /**
+   * Review's refusals are `review:gate`'s sentences (#420), each held word
+   * for word in `tests/review/gate.test.ts`, and said by the posting job, from
+   * the sentence handed over (#257), in `review:conclude` (#419), whose tests
+   * hold the pattern.
+   */
+  it("review: hands the gate's refusal to the command that says it", () => {
+    expect(writerStepsOf(REVIEW).find((s) => s.name === "Conclude the run")?.env?.["REFUSAL"]).toBe(
+      "${{ needs.review.outputs.refusal }}",
+    );
   });
 
   it("update-branch: refuses a closed PR in the same pattern, with no block", () => {
@@ -8050,7 +8069,6 @@ describe("every failure and refusal says so in one of two patterns", () => {
     const implement = runOf(IMPLEMENT, "preflight");
     const prd = runOf(PRD, "preflight");
     const fix = runOf(FIX, "state");
-    const review = runOf(REVIEW, "state");
 
     for (const run of [implement, prd]) {
       expect(armOf(run, '"$ISSUE_STATE" != "open"')).toContain(
@@ -8060,13 +8078,8 @@ describe("every failure and refusal says so in one of two patterns", () => {
     }
     expect(armOf(implement, '-n "$existing"')).not.toContain("refuse_shape");
     expect(fix).toContain('refuse "This PR is closed."\n');
-    expect(review).toContain('refuse "This PR is closed."\n');
-    // Review's refusal adds the block only where it is asked to, as fix's does.
-    expect(bashFunctionBody(review, "refuse")).toContain('if [ "${2:-}" = "blocked" ]; then');
-    // And the PR-changed refusals, which do need a human, are blocked.
-    for (const line of review.split("\n").filter((l) => l.includes('refuse "$changed') || l.includes('refuse "${changed}'))) {
-      expect(line.trim()).toMatch(/ blocked$/);
-    }
+    // Review's closed pull request is blocked nowhere either, and its
+    // changed one is: `tests/review/gate.test.ts`.
   });
 
   /**
@@ -8994,17 +9007,14 @@ describe("the loop resolves its token in the jobs that write", () => {
 
   /**
    * `time-limit` hands the source across, and the review job reads it where
-   * the budget decides whether a round can start: a label the workflow token
-   * adds starts none.
+   * the budget decides whether a round can start: `review:gate` (#420),
+   * whose tests hold that a label the workflow token adds starts none.
    */
   it("tells the review job which token the loop writes with, and nothing else", () => {
-    const budget = (jobNamed(REVIEW, "review").steps ?? []).find((s) => s.id === "budget");
+    const gate = (jobNamed(REVIEW, "review").steps ?? []).find((s) => s.id === "gate");
 
     expect(jobNamed(REVIEW, "time-limit").outputs?.["token-source"]).toBe(SOURCE);
-    expect(budget?.env?.["TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
-    expect(codeOf(budget ?? {})).toContain(
-      '[ "$spent" -lt "$budget" ] && { [ "$TOKEN_SOURCE" = "app" ] || [ "$TOKEN_SOURCE" = "pat" ]; }',
-    );
+    expect(gate?.env?.["LOOP_TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
     expect(JSON.stringify(jobNamed(REVIEW, "time-limit"))).not.toContain("steps.token.outputs.token");
   });
 
@@ -9754,7 +9764,12 @@ describe("each status read and write is made with a token holding its scope", ()
 
   it("finds the calls it rules on", () => {
     expect(calls.filter((c) => c.scope === "statuses").length).toBeGreaterThan(5);
-    expect(calls.some((c) => c.where === "review.yml review / Settle the fix-round budget")).toBe(true);
+    // The review job's count of the rounds spent is `review:gate`'s now
+    // (#420), made by the engine's reader with the job's `GH_TOKEN`, which
+    // its `statuses: read` covers.
+    expect(jobNamed(REVIEW, "review").permissions?.["statuses"]).toBe("read");
+    expect(jobNamed(REVIEW, "review").env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(stepsOf(REVIEW).find((s) => s.id === "gate")?.env ?? {}).not.toHaveProperty("GH_TOKEN");
     // The posting job's reads are `review:conclude`'s now (#419), made by the
     // engine's reader with `GH_TOKEN`, the workflow's, which this job's
     // `statuses: write` covers; the App's token holds no `statuses` scope.

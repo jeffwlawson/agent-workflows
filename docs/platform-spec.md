@@ -56,7 +56,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `follow-ups:file`, `review:publish` and `review:conclude`. §2 says where it differs from a runner.
+  named `<workflow>:<step>`: `follow-ups:file`, `review:gate`, `review:publish` and `review:conclude`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -358,7 +358,7 @@ only a status whose creator is the loop's identity (§4.1).
 | Context | What it records | Written by | Read by |
 |---|---|---|---|
 | `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude` | `review`, to know what changed since the last verdict |
-| `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict |
+| `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict; `review:gate`, to count the rounds the budget has spent |
 
 **Commit trailers.** Read from the PRD branch's first-parent log.
 
@@ -585,7 +585,9 @@ and `review:publish` writes every final string from them.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** before the runner, the review job waits up to 15 minutes for the pull
+> **Actions orchestrator:** the review job starts with `review:gate`, before its checkout, and runs
+> the rest only where it went ahead, on the commit it settled on, handing the runner its budget and
+> its round. Before the runner, the review job waits up to 15 minutes for the pull
 > request's other checks and writes `CI_STATUS_FILE` and `CI_RESULT_FILE`, and a separate job may
 > run the red check. A posting job then mints the loop's token, sets up Node, downloads the
 > hand-over, and runs `review:publish`, which answers and resolves the verified threads, posts the
@@ -603,6 +605,78 @@ and `review:publish` writes every final string from them.
 > unknown, so it never recommends an approval. Chaining is each orchestrator's too: the runner adds
 > no label, so a service that does not add `agent:fix` or run the advance leaves the next step to a
 > human.
+
+### `review:gate`
+
+Decides, before anything is checked out, whether the review runs, which commit it reviews, and what
+kind of round it is. It runs no model and needs no checkout, and it writes nothing to the record:
+what it decided is handed on, and the posting step says it. In order:
+
+- **The pre-flight.** A pull request whose `PR_STATE` is not `open`, or that is `PR_MERGED`, is
+  refused with `This PR is closed.`, and not blocked. Otherwise the commit is settled. `BRANCH`'s
+  tip is read from the repository's refs, which move the moment a push lands, since the pull
+  request's head moves asynchronously after one: a tip that is `HEAD_SHA` is reviewed; a tip that
+  descends from it is reviewed once the pull request shows it as its head, waiting up to
+  `HEAD_WAIT_SECONDS`; a tip that does not descend from it, whose ancestry cannot be read, or that
+  the pull request never shows, is refused, blocked, with one sentence for all three. A tip that
+  cannot be read proceeds on `HEAD_SHA`, with a warning.
+- **The time limit.** A `REVIEW_TIMEOUT_MINUTES` that is set and is not a positive integer is
+  refused, naming the variable.
+- **The fix-round budget.** `DEPRECATED_AUTO_FIX`, where set, is a budget of 1 (`true`) or 0
+  (`false`), and anything else is refused; otherwise `MAX_FIX_ROUNDS`, 3 where unset, and a value
+  that is not a whole number is refused, naming it. The rounds spent are the loop's own
+  `agent-fix-round` statuses on the pull request's commits, and 0.7.6's round-starting
+  `agent-review` verdicts, counted once per link. A round starts where fewer are spent than the
+  budget and `LOOP_TOKEN_SOURCE` is `app` or `pat`; a count that cannot be read starts none.
+- **The round.** On a PRD branch only: `final` where the pull request's body carries the final
+  review's mark, else `slice`. A body that cannot be read fails the command.
+
+A refusal of the pre-flight's is a decision, and the command succeeds. A variable it refuses is
+written to `refusal_reason.txt` and the command fails, so the run ends as one that didn't run.
+`gate.json` is written however the command ends, with what was decided by then.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch, whose tip is read, and which tells a PRD PR. |
+| `HEAD_SHA` | required | | The head the request to review named. |
+| `PR_STATE` | required | | The pull request's state as the request saw it: `open` or `closed`. |
+| `PR_MERGED` | optional | `""` | `true` where the request saw it merged. |
+| `HEAD_WAIT_SECONDS` | optional | `"60"` | How long the pull request gets to show a tip that moved on as its head. |
+| `HEAD_POLL_SECONDS` | optional | `"5"` | How often it is asked meanwhile. |
+| `REVIEW_TIMEOUT_MINUTES` | optional | `""` | The review's own time limit, as configured; empty is the default. |
+| `MAX_FIX_ROUNDS` | optional | `""` | The fix-round budget, as configured; empty is 3. |
+| `DEPRECATED_AUTO_FIX` | optional | `""` | The deprecated `auto-fix` setting, which wins over `MAX_FIX_ROUNDS` where set. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where the loop's token will come from: `app`, `pat` or `workflow`. No round starts on anything but the first two. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `gate.json` | Always. Its decisions, every value a string: `proceed`, and `refusal` and `blocked` where it refused; `sha`, the commit to review; `budget`, `spent` (empty where it could not be counted) and `start`; and `round` on a PRD PR. A name not yet decided when it ended is absent. |
+| `refusal_reason.txt` | Where it refuses a variable: the sentence, before it fails. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- `BRANCH`'s tip, and how it relates to `HEAD_SHA`.
+- The pull request `PR_NUMBER` names, for its head while it waits and, on a PRD branch, for the
+  final review's mark in its body.
+- The statuses on the pull request's commits, for the loop's own `agent-fix-round`, and
+  `agent-review` with 0.7.6's round-starting description, counting only the loop's own (§4.1).
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the review job's first work, after its clock and a Node set up for it,
+> since nothing is checked out yet. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the label's event's;
+> the budget and the time limit are the caller's repository variables, and `LOOP_TOKEN_SOURCE` is
+> the `time-limit` job's choice, made where no agent runs. `OUTPUT_DIR` is `runner.temp`, where the
+> job's outcome step reads `refusal_reason.txt`. A glue step copies `gate.json` into step outputs
+> under its own names, `always()`, which the later steps' `if:`s, the runner and the posting job
+> read; `review:conclude` says the refusal.
 
 ### `review:publish`
 

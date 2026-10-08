@@ -42,6 +42,12 @@ export interface FakeGitHub {
   readonly threads: Map<number, Map<string, { replies: string[]; resolved?: string }>>;
   /** Labels on issues that are not pull requests. */
   readonly issueLabels: Map<number, string[]>;
+  /** Each branch's tip, by name: what a push moves. A branch not here is not found. */
+  readonly branches: Map<string, string>;
+  /** Per pull request, its commits, oldest first. */
+  readonly commits: Map<number, string[]>;
+  /** The compare API's `status`, by `<base>...<head>`. A pair not here is not found. */
+  readonly comparisons: Map<string, string>;
   readonly comments: { readonly token: string; readonly issue: number; readonly body: string }[];
   /** Every review posted, in order, with the pull request's node id and the commit it was posted on. */
   readonly reviews: FakeReview[];
@@ -95,6 +101,9 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   statuses: new Map(),
   threads: new Map(),
   issueLabels: new Map(),
+  branches: new Map(),
+  commits: new Map(),
+  comparisons: new Map(),
   comments: [],
   reviews: [],
   fails: () => false,
@@ -144,6 +153,23 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
         .filter((review) => review.pullRequestId === nodeId)
         .map((review) => ({ url: review.url, commit: review.commit, body: review.body, author: review.token }));
     },
+    pullRequestCommits: async (number) => {
+      reads.push({ method: "pullRequestCommits", args: [number] });
+      pullRequestOf(github, number);
+      return [...(github.commits.get(number) ?? [])];
+    },
+    branchTip: async (branch) => {
+      reads.push({ method: "branchTip", args: [branch] });
+      const tip = github.branches.get(branch);
+      if (tip === undefined) throw new GitHubError(`branch ${branch}: 404 Not Found`, 404);
+      return tip;
+    },
+    compare: async (base, head) => {
+      reads.push({ method: "compare", args: [base, head] });
+      const status = github.comparisons.get(`${base}...${head}`);
+      if (status === undefined) throw new GitHubError(`compare ${base}...${head}: 404 Not Found`, 404);
+      return status;
+    },
   };
   return { reader, reads };
 };
@@ -190,7 +216,13 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
       await call("POST status", async () => {
         check("setCommitStatus", "POST status");
         const statuses = github.statuses.get(status.sha) ?? [];
-        statuses.unshift({ context: status.context, state: status.state, targetUrl: status.targetUrl ?? null, creator: token });
+        statuses.unshift({
+          context: status.context,
+          state: status.state,
+          targetUrl: status.targetUrl ?? null,
+          description: status.description,
+          creator: token,
+        });
         github.statuses.set(status.sha, statuses);
       });
       return { outcome: "applied" };

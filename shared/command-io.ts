@@ -23,17 +23,31 @@ export type Token = "loop" | "workflow";
 /** A command's declared output files, as `writers` in `shared/env.ts` gives them. */
 export type OutputWriters<O extends Outputs> = ReturnType<typeof writers<O>>;
 
-export interface CommandIo<O extends Outputs> {
+/**
+ * What a command that reads GitHub and writes nothing to it is handed besides
+ * its inputs: the reader and its declared output files. A command that writes
+ * is handed these and its writers.
+ */
+export interface ReadingIo<O extends Outputs> {
+  /** Reads, with the workflow's token. Never limited or logged: a read changes nothing. */
+  readonly github: GitHubReader;
+  readonly outputs: OutputWriters<O>;
+}
+
+export interface CommandIo<O extends Outputs> extends ReadingIo<O> {
   /**
    * The two writers, limited to `limits`, the command's own: what it may
    * write, and how many of each. Asked for once, before the first write, so
    * the limits sit in the command beside the writes they bound.
    */
   readonly writers: (limits: Limits) => Readonly<Record<Token, Writer>>;
-  /** Reads, with the workflow's token. Never limited or logged: a read changes nothing. */
-  readonly github: GitHubReader;
-  readonly outputs: OutputWriters<O>;
 }
+
+/** The real ones, for `repo` with the workflow's token. */
+export const liveReadingIo = <O extends Outputs>(
+  tokens: { readonly GH_REPO: string; readonly GH_TOKEN: string },
+  outputs: OutputWriters<O>,
+): ReadingIo<O> => ({ github: githubReader(tokens.GH_REPO, fetchTransport(tokens.GH_TOKEN)), outputs });
 
 /**
  * The real ones, for `repo` with the two tokens, each line of the write log

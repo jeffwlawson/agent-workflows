@@ -3940,11 +3940,12 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * The default `doctor` assumes is the one the review applies, read out of
-   * the budget step itself: two copies of the number, held equal.
+   * `review:gate`, which settles the budget: two copies of the number, held
+   * equal.
    */
   it("assumes the default budget the review applies", () => {
     const review = fs.readFileSync(path.join(".github", "workflows", "review.yml"), "utf8");
-    expect(review).toContain(`budget="\${MAX_FIX_ROUNDS:-${DEFAULT_FIX_ROUNDS}}"`);
+    expect(fs.readFileSync(path.join("review", "gate.ts"), "utf8")).toContain(`inputs.MAX_FIX_ROUNDS === "" ? "${DEFAULT_FIX_ROUNDS}"`);
     expect(review).toContain(`MAX_FIX_ROUNDS: \${{ vars.${FIX_ROUNDS_VARIABLE} }}`);
   });
 

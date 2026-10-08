@@ -202,7 +202,7 @@ describe("githubReader", () => {
   });
 
   it("reads every page of a commit's statuses", async () => {
-    const status = (n: number) => ({ context: `c${n}`, state: "success", target_url: null, creator: { login: "bot" } });
+    const status = (n: number) => ({ context: `c${n}`, state: "success", target_url: null, description: null, creator: { login: "bot" } });
     const { transport, sent } = recording((s) =>
       "rest" in s && s.rest.path.endsWith("page=1") ? Array.from({ length: 100 }, (_, i) => status(i)) : [status(100)],
     );
@@ -210,7 +210,7 @@ describe("githubReader", () => {
     const statuses = await githubReader(REPO, transport).commitStatuses(SHA);
 
     expect(statuses).toHaveLength(101);
-    expect(statuses[100]).toEqual({ context: "c100", state: "success", targetUrl: null, creator: "bot" });
+    expect(statuses[100]).toEqual({ context: "c100", state: "success", targetUrl: null, description: "", creator: "bot" });
     expect(sent).toHaveLength(2);
   });
 
@@ -258,6 +258,36 @@ describe("githubReader", () => {
       "/repos/o/r/pulls/7/reviews?per_page=100&page=1",
       "/repos/o/r/pulls/7/reviews?per_page=100&page=2",
     ]);
+  });
+
+  it("reads every page of a pull request's commits, oldest first", async () => {
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1") ? Array.from({ length: 100 }, (_, i) => ({ sha: `s${i}` })) : [{ sha: "last" }],
+    );
+
+    const commits = await githubReader(REPO, transport).pullRequestCommits(7);
+
+    expect(commits).toHaveLength(101);
+    expect([commits[0], commits[100]]).toEqual(["s0", "last"]);
+    expect(sent.map((s) => ("rest" in s ? s.rest.path : ""))).toEqual([
+      "/repos/o/r/pulls/7/commits?per_page=100&page=1",
+      "/repos/o/r/pulls/7/commits?per_page=100&page=2",
+    ]);
+  });
+
+  /** A ref may hold characters a path does not; each segment is encoded, and the slashes kept. */
+  it("reads a branch's tip from the repository's refs", async () => {
+    const { transport, sent } = recording(() => ({ ref: "refs/heads/agent/x", object: { sha: SHA } }));
+
+    expect(await githubReader(REPO, transport).branchTip("agent/issue-1-a#b")).toBe(SHA);
+    expect(sent).toEqual([{ rest: { method: "GET", path: "/repos/o/r/git/ref/heads/agent/issue-1-a%23b" } }]);
+  });
+
+  it("reads how one commit relates to another", async () => {
+    const { transport, sent } = recording(() => ({ status: "ahead" }));
+
+    expect(await githubReader(REPO, transport).compare("a".repeat(40), SHA)).toBe("ahead");
+    expect(sent).toEqual([{ rest: { method: "GET", path: `/repos/o/r/compare/${"a".repeat(40)}...${SHA}?per_page=1` } }]);
   });
 });
 

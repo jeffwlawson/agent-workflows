@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CommandIo } from "./shared/command-io.js";
+import type { CommandIo, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -100,6 +100,32 @@ const command = <C extends Command>(
     const inputs = readInputs(COMMANDS[name].inputs);
     try {
       await fn(inputs);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+/**
+ * A command that reads GitHub and writes nothing to it: handed, besides its
+ * inputs, the reader the CLI builds over its `GH_TOKEN`, and its declared
+ * output files.
+ */
+const readingCommand = <C extends Command>(
+  name: C,
+  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: ReadingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
+  summary: string,
+): Subcommand => ({
+  kind: "command",
+  summary,
+  run: async (args) => {
+    refuseArguments(name, args);
+    const fn = await load();
+    const { liveReadingIo } = await import("./shared/command-io.js");
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
+    try {
+      await fn(inputs, liveReadingIo(inputs, writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs)));
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
     }
@@ -252,6 +278,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     },
   },
   review: runner("review", () => import("./review/review.js")),
+  "review:gate": readingCommand(
+    "review:gate",
+    async () => (await import("./review/gate.js")).gate,
+    "Settle whether a review runs, on which commit, with what fix-round budget and in which round (no model).",
+  ),
   "review:publish": writingCommand(
     "review:publish",
     async () => (await import("./review/publish.js")).publish,

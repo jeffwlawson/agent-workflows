@@ -143,7 +143,7 @@ describe("the writer", () => {
 
     expect((await reader.pullRequest(7)).draft).toBe(false);
     expect(again).toEqual({ outcome: "unchanged" });
-    expect(await reader.commitStatuses(SHA)).toEqual([{ context: "ctx", state: "success", targetUrl: null, creator: "workflow" }]);
+    expect(await reader.commitStatuses(SHA)).toEqual([{ context: "ctx", state: "success", targetUrl: null, description: "d", creator: "workflow" }]);
     expect(reads.map((r) => r.method)).toEqual(["pullRequest", "pullRequest", "commitStatuses"]);
   });
 });

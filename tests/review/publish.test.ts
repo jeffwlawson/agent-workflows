@@ -1078,7 +1078,7 @@ describe("review:publish posts the verdict", () => {
     await run();
 
     expect(statuses()).toEqual([
-      { context: VERDICT_CONTEXT, state: "failure", targetUrl: github.reviews[0]?.url, creator: "workflow" },
+      { context: VERDICT_CONTEXT, state: "failure", targetUrl: github.reviews[0]?.url, description: expect.any(String), creator: "workflow" },
     ]);
     const posted = writes().find((w) => w.type === "setCommitStatus")?.args[0];
     expect(posted).toEqual({

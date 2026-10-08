@@ -72,7 +72,9 @@ runner, with `### Inputs` and `### Outputs` tables held by `tests/platform-spec.
 
 ## Consequences
 
-- `cli.ts`'s `Command` type becomes `Subcommand`, and *command* means only the new kind.
+- `cli.ts`'s `Command` interface becomes `Subcommand`, and its `COMMANDS` table of every
+  subcommand becomes `SUBCOMMANDS`, so *command* means only the new kind and the one `COMMANDS`
+  export is the contract's. `shared/contract.ts`'s `CONTRACT` map becomes `RUNNERS` beside it.
 - `follow-ups` moves to `follow-ups/file.ts` as `follow-ups:file`, and spec §11 becomes a command
   section with no runner above it.
 - The review-only modules in `shared/` move into `review/` with review's PRD. The other workflows'

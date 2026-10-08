@@ -60,6 +60,14 @@ const writeOutput = (filename: string, value: string): void => {
  */
 export const writers = <D extends Outputs>(declared: D) => ({
   writeText: (filename: D[number], value: string): void => writeOutput(filename, value),
+  // PROTOTYPE (#399): a write log appended entry by entry, so a command
+  // killed half way leaves what it did. `writeOutput` replaces the file.
+  appendLine: (filename: D[number], line: string): void => {
+    const dir = present("OUTPUT_DIR");
+    if (dir === undefined) return;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, filename), `${line}\n`);
+  },
   writeJson: (filename: D[number], value: unknown): void => writeOutput(filename, JSON.stringify(value, null, 2)),
 });
 

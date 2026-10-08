@@ -1,0 +1,93 @@
+# PROTOTYPE (#399), throwaway: what `review.yml`'s `post-review` job shrinks to
+# with `review:publish` and `review:conclude`. Not wired into anything. The
+# `if:`, `needs:`, `permissions:` and the no-concurrency reasoning are
+# unchanged from today and elided as `…`.
+  post-review:
+    needs: [time-limit, review]
+    if: …                       # unchanged
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      moved: ${{ steps.ended.outputs.moved }}
+      review-url: ${{ steps.ended.outputs.review-url }}
+    permissions: …              # unchanged: contents, pull-requests, statuses write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      REVIEWED_SHA: ${{ needs.review.outputs.sha }}
+    steps:
+      # ADR 0005: the mint moves to the start. A failed one skips publish and
+      # reaches conclude, which says so; conclude's LOOP_TOKEN is optional.
+      - name: Resolve the loop's token
+        id: token
+        if: needs.review.outputs.proceed == 'true' && needs.review.result == 'success'
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@vX
+        with: …                 # unchanged
+
+      # New: every job that runs a command needs Node and the package. The
+      # posting job installs nothing today. `npm exec` installs on first use,
+      # so this is a Node setup and a registry login, not a separate install.
+      - uses: actions/setup-node@v6
+        with: { node-version: 24, registry-url: https://npm.pkg.github.com }
+
+      - name: Fetch what the review wrote
+        id: fetch
+        if: steps.token.outcome == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: agent-review
+          path: ${{ runner.temp }}/review
+
+      - name: Publish the review
+        id: publish
+        if: steps.fetch.outcome == 'success'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/publish
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          ROUND: ${{ needs.review.outputs.round }}
+          REVIEW_DIR: ${{ runner.temp }}/review
+        run: npm exec --yes -- @jeffwlawson/agent-workflows@X review:publish
+
+      - name: Conclude the run
+        if: always()
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/conclude
+          LOOP_TOKEN: ${{ steps.token.outputs.token }}
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          PROCEEDED: ${{ needs.review.outputs.proceed }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          REFUSAL: ${{ needs.review.outputs.refusal }}
+          BLOCKED: ${{ needs.review.outputs.blocked }}
+          REVIEW_FAILURE_REASON: ${{ needs.review.outputs.failure-reason }}
+          REVIEW_REFUSAL_REASON: ${{ needs.review.outputs.refusal-reason }}
+          TIMED_OUT: ${{ needs.review.outputs.timed-out }}
+          TIMEOUT_MINUTES: ${{ needs.time-limit.outputs.minutes }}
+          # How far this job got: Actions-only facts, so inputs, not files.
+          MINT_OUTCOME: ${{ steps.token.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          REVIEW_DIR: ${{ runner.temp }}/review
+          PUBLISH_DIR: ${{ runner.temp }}/publish
+        run: npm exec --yes -- @jeffwlawson/agent-workflows@X review:conclude
+
+      # Glue only Actions can do (ADR 0003): a job output from a command's file.
+      - name: Hand the ending to the advance job
+        id: ended
+        if: always()
+        run: |
+          f="${RUNNER_TEMP}/conclude/ended.json"
+          [ -f "$f" ] || exit 0
+          jq -r '"moved=\(.moved)", "review-url=\(.reviewUrl // "")"' "$f" >> "$GITHUB_OUTPUT"
+
+      # Not in today's job: both write logs, kept for the audit ADR 0005 names.
+      - name: Keep the write log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-review-write-log
+          path: ${{ runner.temp }}/*/write_log.jsonl
+          if-no-files-found: ignore

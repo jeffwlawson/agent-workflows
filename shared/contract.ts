@@ -259,3 +259,91 @@ export const CONTRACT = {
 } as const satisfies Readonly<Record<string, RunnerContract>>;
 
 export type Runner = keyof typeof CONTRACT;
+
+// ---------------------------------------------------------------------------
+// PROTOTYPE (#399), throwaway: commands beside runners (ADR 0004), and the
+// directory inputs they read another subcommand's files through (ADR 0006).
+// ---------------------------------------------------------------------------
+
+/**
+ * A directory input: the producer, and exactly the files read from it. A file
+ * the producer does not declare fails typechecking here, which is the point.
+ */
+export interface DirectoryInput<F extends string = string> {
+  readonly producer: string;
+  readonly files: readonly F[];
+}
+
+const fromRunner = <P extends Runner, const F extends readonly (typeof CONTRACT)[P]["outputs"][number][]>(
+  producer: P,
+  files: F,
+): DirectoryInput<F[number]> => ({ producer, files });
+
+/** The write token, for commands only. `LOOP_TOKEN_SOURCE` is `app`, `pat` or `workflow`. */
+const LOOP_TOKEN = { LOOP_TOKEN: REQUIRED, LOOP_TOKEN_SOURCE: REQUIRED } as const satisfies Inputs;
+
+const PUBLISH_OUTPUTS = [...EVERY_RUNNER_OUTPUTS, "write_log.jsonl", "published.json"] as const satisfies Outputs;
+
+const fromPublish = <const F extends readonly (typeof PUBLISH_OUTPUTS)[number][]>(files: F): DirectoryInput<F[number]> => ({
+  producer: "review:publish",
+  files,
+});
+
+export const COMMANDS = {
+  "review:publish": {
+    inputs: {
+      ...EVERY_RUNNER,
+      ...LOOP_TOKEN,
+      PR_NUMBER: REQUIRED,
+      HEAD_REF: REQUIRED,
+      // The gate's facts (ADR 0006): job outputs set before the agent ran.
+      REVIEWED_SHA: REQUIRED,
+      ROUND: EMPTY,
+      REVIEW_DIR: REQUIRED,
+    },
+    outputs: PUBLISH_OUTPUTS,
+    reads: {
+      REVIEW_DIR: fromRunner("review", [
+        "review_payload.json",
+        "review_body.json",
+        "verdict.json",
+        "thread_resolutions.json",
+        "follow_ups.md",
+        "pr_summary.json",
+        "pr_status.md",
+      ]),
+    },
+  },
+  "review:conclude": {
+    inputs: {
+      ...EVERY_RUNNER,
+      // Optional here: a mint that failed is one of the endings this reports.
+      LOOP_TOKEN: EMPTY,
+      LOOP_TOKEN_SOURCE: EMPTY,
+      PR_NUMBER: REQUIRED,
+      HEAD_REF: REQUIRED,
+      REVIEWED_SHA: EMPTY,
+      // How the run got here: the review job, and the step before this one.
+      PROCEEDED: REQUIRED,
+      REVIEW_RESULT: REQUIRED,
+      REFUSAL: EMPTY,
+      BLOCKED: EMPTY,
+      REVIEW_FAILURE_REASON: EMPTY,
+      REVIEW_REFUSAL_REASON: EMPTY,
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      REVIEW_DIR: EMPTY,
+      PUBLISH_DIR: EMPTY,
+      ...RUN_LINK,
+    },
+    outputs: [...EVERY_RUNNER_OUTPUTS, "write_log.jsonl", "ended.json"],
+    reads: {
+      REVIEW_DIR: fromRunner("review", ["verdict.json"]),
+      PUBLISH_DIR: fromPublish(["published.json", "failure_reason.txt"]),
+    },
+  },
+} as const;
+
+export type CommandName = keyof typeof COMMANDS;

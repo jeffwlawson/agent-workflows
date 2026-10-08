@@ -448,7 +448,11 @@ runner's files that each command declares it reads, checked and cleaned when the
 facts recorded before the agent ran, such as the reviewed commit, are not part of it. They travel
 apart, where the agent cannot write them, because they are what its output is checked against.
 The agent's phase always runs as a process of its own, so the write token never reaches it.
-[ADR 0006](./docs/adr/0006-hand-over-between-agent-and-publish.md) records the rule. It is the
+The files carry the runner's decisions as data and the agent's raw text, never finished text:
+the command that posts writes every final string and every marker, so no marker in the record
+came from a file the agent could write.
+[ADR 0006](./docs/adr/0006-hand-over-between-agent-and-publish.md) records the rule, and
+[ADR 0007](./docs/adr/0007-publish-writes-every-final-string.md) what the files hold. It is the
 target: today `review.yml` uploads a hand-kept list of files, and nothing checks them before
 posting.
 

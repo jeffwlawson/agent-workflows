@@ -5,3 +5,7 @@ dist/
 # Local agent scratch — noSandbox() runs write to the working tree.
 **/output/
 failure_reason.txt
+
+# Generated from package-lock.json by `prepack` and removed by `postpack`
+# (scripts/shrinkwrap.ts). Never committed: a committed copy is a second lockfile to go stale.
+/npm-shrinkwrap.json

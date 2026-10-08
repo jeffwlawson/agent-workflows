@@ -178,6 +178,14 @@ The commit's message is `.npmrc`'s `message=v%s`, the `v` matching the tag `publ
 That is the whole file: the registry and the token live in the `.npmrc` `actions/setup-node` writes
 under `RUNNER_TEMP`, and a second copy of the scope here is a second place for it to be wrong.
 
+The release also ships the dependency tree it was tested with (#414). `prepack` writes
+`npm-shrinkwrap.json` from `package-lock.json`, runtime entries only, and `postpack` removes it
+(`scripts/shrinkwrap.ts`). It is gitignored and never committed: the lockfile is the one copy, so a
+dependency change cannot ship beside a stale shrinkwrap. A leftover one at the root takes over every
+`npm install` here, since npm prefers it to the lockfile; delete it. `ci.yml` checks the tarball
+carries it, and `publish.yml` checks the registry marks the version as carrying it, without which
+npm ignores the file.
+
 The checks that made this a chore rather than a hazard are still the backstop, and are what a
 rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and
 checked against **both caller sets** — `examples/callers/*.yml` and `.github/workflows/agent-*.yml`

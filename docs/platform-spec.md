@@ -378,6 +378,9 @@ read back at run time; nothing in a repository holds them before a run.
 The contract holds within one release. An orchestrator ***must*** pin one exact runner version,
 and read this spec at that version's tag.
 
+A release fixes its dependency tree too: the package ships an `npm-shrinkwrap.json` derived from its
+lockfile when it is packed, so the version pinned selects every package that runs with it.
+
 There is no promise across releases, and no changelog of contract changes beside this file's own
 history: `git diff v<a>..v<b> -- docs/platform-spec.md` is what changed between two releases. Read
 it on every bump.

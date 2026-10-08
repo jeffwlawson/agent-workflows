@@ -12,14 +12,16 @@
     "agent-workflows": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "npm-shrinkwrap.json"
   ],
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node dist/scripts/copy-assets.js",
-    "prepack": "npm run build",
+    "prepack": "npm run build && node dist/scripts/shrinkwrap.js",
+    "postpack": "node dist/scripts/shrinkwrap.js --remove",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "version": "node scripts/sync-version.ts",

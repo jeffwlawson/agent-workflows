@@ -389,6 +389,15 @@ describe("review:advance parks the chain on every other ending", () => {
     expect(comments()[0]?.body).toMatch(/^\*\*The PRD chain parked\*\* on PRD PR #201: its review didn't finish/);
   });
 
+  /** A posted verdict whose ruling was not handed over is said the same way, never as the earlier rounds' list. */
+  it("falls back to the bare comment where a verdict was posted and the hand-over has no ruling", async () => {
+    handOver(BEFORE);
+
+    await run(INPUTS({ POSTING_RESULT: "failure", VERDICT: "changes recommended" }));
+
+    expect(comments()[0]?.body).toMatch(/^\*\*The PRD chain parked\*\* on PRD PR #201: its review didn't finish/);
+  });
+
   /** On the PRD PR without the App or the PAT, saying where it was meant for, and the job stays green. */
   it("parks on the PRD PR without the App or the PAT", async () => {
     handOver();

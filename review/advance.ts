@@ -256,17 +256,22 @@ const park = async (
           ...extra,
         });
   const review = handed?.review;
+  const chosen = (): string | undefined => {
+    if (ended) {
+      if (review?.reason === undefined) return undefined;
+      return comment(review.reason, review, { detail: verdictRow(review.verdict, review.cause).nextStep });
+    }
+    if (inputs.REVIEW_RESULT === "success" && reviewUrl !== "") {
+      if (review === undefined) return undefined;
+      return comment("post failed", review, {
+        detail: `[The verdict](${reviewUrl}) was *${verdictRow(review.verdict, review.cause).heading}*.`,
+        ...(runUrl === undefined ? {} : { runUrl }),
+      });
+    }
+    return comment("failed", undefined, runUrl === undefined ? {} : { runUrl });
+  };
   const body =
-    (ended
-      ? review?.reason === undefined
-        ? undefined
-        : comment(review.reason, review, { detail: verdictRow(review.verdict, review.cause).nextStep })
-      : inputs.REVIEW_RESULT === "success" && reviewUrl !== "" && review !== undefined
-        ? comment("post failed", review, {
-            detail: `[The verdict](${reviewUrl}) was *${verdictRow(review.verdict, review.cause).heading}*.`,
-            ...(runUrl === undefined ? {} : { runUrl }),
-          })
-        : comment("failed", undefined, runUrl === undefined ? {} : { runUrl })) ??
+    chosen() ??
     `**The PRD chain parked** on PRD PR #${pr}: its review didn't finish, so there is no verdict.${runUrl === undefined ? "" : ` [Workflow run](${runUrl})`}\n\nTo move on, add \`${REVIEW_LABEL}\` to PRD PR #${pr} to run the review again. The chain moves on once a review of the PRD PR's latest commit recommends approval.`;
 
   if (inputs.MINT_OUTCOME === "failure") {

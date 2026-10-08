@@ -5,8 +5,8 @@ import {
   criterionId,
   extractCriteria,
   renderCriteriaForReview,
-} from "../shared/acceptance-criteria.js";
-import { placeFindings } from "../shared/review-findings.js";
+} from "../../review/acceptance-criteria.js";
+import { placeFindings } from "../../shared/review-findings.js";
 import {
   countFixBeforeMerge,
   deriveVerdict,
@@ -14,7 +14,7 @@ import {
   reviewOutputSchema,
   VERDICTS,
   type ReviewOutput,
-} from "../shared/review-output.js";
+} from "../../shared/review-output.js";
 
 /**
  * The review checks each pull request against its linked issue's acceptance

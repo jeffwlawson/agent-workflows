@@ -1668,7 +1668,7 @@ jobs:
       # without which GitHub reads that line as a setext heading (#353). The
       # note's text past the status line opens with a **draft-only** part,
       # between its own markers (`DRAFT_NOTE_START` and `DRAFT_NOTE_END` in
-      # `shared/pr-summary.ts`, held equal by a test), which the final review's
+      # `review/pr-summary.ts`, held equal by a test), which the final review's
       # write of the summary removes (#247). The status line, the `Closes`
       # line and the progress table are workflow-owned, each between its own
       # markers, which the review's rewrite of the summary splices around byte

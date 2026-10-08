@@ -5,7 +5,7 @@ import {
   SUMMARY_END,
   SUMMARY_START,
   summaryHeadMark,
-} from "./record.js";
+} from "../shared/record.js";
 
 /**
  * The **summary block** in a pull request's body (#218): the one part of the

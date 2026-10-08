@@ -35,7 +35,7 @@ import {
   surfaceText,
   unreadableNote,
 } from "../shared/pr-feedback.js";
-import { fetchPullRequestContext } from "../shared/review-context.js";
+import { fetchPullRequestContext } from "../review/review-context.js";
 import { findingMarker, severityBadge } from "../shared/review-findings.js";
 import { reviewRecord } from "../shared/review-output.js";
 import { carriedFindings, declineReply, resolutionReply } from "../shared/review-verification.js";

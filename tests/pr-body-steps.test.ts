@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { readSummaryBlock, summaryUpdate } from "../shared/pr-summary.js";
+import { readSummaryBlock, summaryUpdate } from "../review/pr-summary.js";
 import {
   OPENING_STATUS,
   renderPrdStatus,

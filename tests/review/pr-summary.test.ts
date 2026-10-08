@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { currentSummary, readSummaryBlock, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
-import { DRAFT_NOTE_END, DRAFT_NOTE_START, FINAL_SUMMARY_MARK, SUMMARY_END, SUMMARY_START } from "../shared/record.js";
+import { currentSummary, readSummaryBlock, summaryDue, summaryUpdate } from "../../review/pr-summary.js";
+import { DRAFT_NOTE_END, DRAFT_NOTE_START, FINAL_SUMMARY_MARK, SUMMARY_END, SUMMARY_START } from "../../shared/record.js";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const OTHER = "fedcba9876543210fedcba9876543210fedcba98";

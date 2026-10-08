@@ -2633,7 +2633,7 @@ describe("agent-fix asks for the re-review its own push needs", () => {
  * on the old head is still true of the new one and is copied verbatim. A
  * conflict resolution is the loop writing code no review has seen, so nothing is
  * copied and a review is asked for instead, one that follows no fix round
- * unless the latest verdict started one (`shared/review-round.ts`, #202).
+ * unless the latest verdict started one (`review/review-round.ts`, #202).
  *
  * Neither has a runtime symptom when it breaks. A copy that never fires leaves a
  * refreshed pull request looking unreviewed, which is merely the cost of the

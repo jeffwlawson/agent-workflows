@@ -13,7 +13,7 @@ import {
 } from "../shared/common.js";
 import { claudeAgent, runWithExtraction } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
-import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
+import { applyCriteriaRulings, renderCriteriaForReview } from "./acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { fetchReviews } from "../shared/follow-up-filing.js";
 import { earlierFollowUps } from "../shared/follow-up-plan.js";
@@ -37,7 +37,7 @@ import {
   type PrdRound,
   type SliceCriteria,
 } from "../shared/prd-round.js";
-import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
+import { currentSummary, summaryDue, summaryUpdate } from "./pr-summary.js";
 import { progressAtRoundEnd, renderPrStatus, statusBlock, type RoundEnding } from "../shared/progress-list.js";
 import {
   describeRedCheck,
@@ -49,7 +49,7 @@ import {
   withEvidence,
   type SliceRedTests,
 } from "../shared/red-check.js";
-import { fetchPullRequestContext } from "../shared/review-context.js";
+import { fetchPullRequestContext } from "./review-context.js";
 import {
   isPreviouslyMissed,
   pathErrorNote,
@@ -77,7 +77,7 @@ import {
   fixRoundProgress,
   readReviewHistory,
   unreadableHistoryNote,
-} from "../shared/review-round.js";
+} from "./review-round.js";
 import {
   renderCarriedFindings,
   renderSettledFindings,

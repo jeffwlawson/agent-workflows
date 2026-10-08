@@ -1,5 +1,5 @@
-import { FIX_BEFORE_MERGE_LABEL, type Finding } from "./review-findings.js";
-import type { CriterionResult, CriterionRuling } from "./review-output.js";
+import { FIX_BEFORE_MERGE_LABEL, type Finding } from "../shared/review-findings.js";
+import type { CriterionResult, CriterionRuling } from "../shared/review-output.js";
 
 /**
  * The linked issue's acceptance criteria, checked one by one by every review

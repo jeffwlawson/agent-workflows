@@ -72,7 +72,7 @@ export const RED_TESTS_MARKER = "agent-red-tests";
  * The **summary block** in a pull request's body (#218): the one part of the
  * body the review writes, between these two markers, which the opening run put
  * there. Text outside them is the opening run's frame and whatever a maintainer
- * added, and survives every update byte for byte (`shared/pr-summary.ts`).
+ * added, and survives every update byte for byte (`review/pr-summary.ts`).
  */
 export const SUMMARY_START = "<!-- agent:summary -->";
 
@@ -81,7 +81,7 @@ export const SUMMARY_END = "<!-- /agent:summary -->";
 /**
  * The head a summary was written at, as the first line inside the block. What
  * the update rule reads: a summary is rewritten when the pull request has
- * moved since, and left alone when it has not (`shared/pr-summary.ts`).
+ * moved since, and left alone when it has not (`review/pr-summary.ts`).
  */
 export const summaryHeadMark = (sha: string): string => `<!-- agent:summary-head ${sha} -->`;
 

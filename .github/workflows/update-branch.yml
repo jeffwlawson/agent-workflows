@@ -860,7 +860,7 @@ jobs:
       # conflict — the one thing this loop writes that no review has seen — and
       # the review it asks for describes it as a change of its own: it follows
       # no fix round unless the latest verdict started one (#202,
-      # `shared/review-round.ts`), and a resolution posts no verdict. Which is
+      # `review/review-round.ts`), and a resolution posts no verdict. Which is
       # the reading that suits it. The earlier findings have not been attempted,
       # so judging a fix round's progress on them would stop the loop on the
       # strength of the base branch having moved, about findings no fix round

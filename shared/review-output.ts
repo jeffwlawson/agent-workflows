@@ -594,7 +594,7 @@ export interface FixRounds {
  * review after it closed, matched by the ids the workflow wrote into them
  * (#202). Counts rather than the ids themselves, because the early stop only
  * asks whether any closed; the matching is `fixRoundProgress`'s, in
- * `shared/review-round.ts`.
+ * `review/review-round.ts`.
  */
 export interface FixRoundProgress {
   readonly given: number;
@@ -1309,7 +1309,7 @@ export interface ReviewBodyParts {
   readonly verdict: VerdictRow;
   /** The review as the agent produced it, which is what the verdict was derived from. */
   readonly output: ReviewOutput;
-  /** The note a round that could not be established carries; see `shared/review-round.ts`. */
+  /** The note a round that could not be established carries; see `review/review-round.ts`. */
   readonly roundNote?: string | undefined;
   /**
    * The findings with their placements, from `placeFindings` — every one of

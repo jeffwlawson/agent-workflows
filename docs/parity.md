@@ -655,7 +655,7 @@ expensive to rediscover.
   **Until #202** a second bound sat under the first, and it is what made the leg safe to automate
   rather than merely acyclic. The review a fix asks for was by construction a **round 2** (an earlier
   verdict stands, every commit since is the loop's own, and at least one of them is a non-merge
-  commit — `shared/review-round.ts`), and a round-2 review could never produce the **round-1**
+  commit — `review/review-round.ts`), and a round-2 review could never produce the **round-1**
   *Changes recommended*: findings that survived a fix round got the round-2 row instead, whose line
   drops the promise of an automatic re-review and asks the maintainer to read the review, adding
   guidance where it helps, before labelling again (#96 decision 5, enforced in `deriveVerdict`, not in the prompt). The two rows share a heading and
@@ -669,7 +669,7 @@ expensive to rediscover.
   now is the budget and the **early stop** (#201 and #202, below). A later review may recommend
   changes and, with budget left, start another round; and after a fix round that closed none of the
   findings it was given, matched by id, none starts, whatever budget is left. Whether a review
-  follows a fix round is read from the **verdict history** (`shared/review-round.ts`): the latest
+  follows a fix round is read from the **verdict history** (`review/review-round.ts`): the latest
   verdict asked for a round (its `agent-fix-round` status, #297), and commits have landed since, or the fix run posted an out-of-scope
   note since without pushing (#213). The review still verifies every earlier
   finding, as it did in every round before.

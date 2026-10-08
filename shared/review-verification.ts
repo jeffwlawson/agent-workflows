@@ -1,10 +1,6 @@
 import { asRecord, asString } from "./common.js";
-import {
-  parseFindingMarkers,
-  RESOLUTION_MARKER,
-  withSeverityBadgesAsText,
-  type Severity,
-} from "./review-findings.js";
+import { parseFindingMarkers, withSeverityBadgesAsText, type Severity } from "./review-findings.js";
+import { RESOLUTION_MARKER } from "./record.js";
 
 /**
  * A finding an earlier review of this pull request raised and **nothing has yet
@@ -352,18 +348,22 @@ export const parseVerification = (value: unknown): VerificationEntry => {
  */
 export type ResolutionReason = "ADDRESSED" | "WONT_FIX";
 
-/** One thread the workflow closes, with the reason and the reply that record why. */
-export interface ThreadResolution {
+/**
+ * One thread the workflow closes, as the review runner hands it to
+ * `review:publish` (ADR 0007): which thread, why, and the words the reply is
+ * made of, never the reply itself. `closingReply` writes that, marker and
+ * all, from what publish read; the runner composing it would put the loop's
+ * marker in a file the agent's runner can write.
+ *
+ * `reason` is what the workflow sends as `resolutionReason`. GitHub validates
+ * it and then exposes it on no field at all, so it is the reply, not this, that
+ * a later reader can see; both come from this one value so the two cannot
+ * disagree. A thread closed as verified carries the review's note on it, and
+ * one a maintainer declined carries their reply, which the closing reply
+ * quotes.
+ */
+export type ThreadResolution = {
   readonly threadId: string;
-  /** Carried for the log and for a human reading the file, never sent to GitHub. */
-  readonly findingId: string;
-  /**
-   * What the workflow sends as `resolutionReason`. GitHub validates it and then
-   * exposes it on no field at all, so it is the reply below — not this — that a
-   * later reader can see; both are written so the two cannot disagree.
-   */
-  readonly reason: ResolutionReason;
-  readonly reply: string;
   /**
    * True where the thread already carries this reply's kind: a closing reply
    * this workflow posted for the same reason, which no human has answered
@@ -378,7 +378,10 @@ export interface ThreadResolution {
    * record on it.
    */
   readonly alreadyReplied: boolean;
-}
+} & (
+  | { readonly reason: "ADDRESSED"; readonly note?: string | undefined }
+  | { readonly reason: "WONT_FIX"; readonly maintainerReply: MaintainerReply }
+);
 
 /**
  * How each closing reply opens — what a **human** reads first, and nothing this
@@ -462,9 +465,9 @@ const NO_NOTE = "The current change resolves this.";
  * The footnote names only the closer. The contrast with the fix run is why the
  * line exists, and that belongs here rather than in every thread it closes.
  */
-export const resolutionReply = (entry: VerificationEntry): string =>
+export const resolutionReply = (note: string | undefined): string =>
   [
-    `${VERIFIED_FIXED} ${entry.note ?? NO_NOTE}`,
+    `${VERIFIED_FIXED} ${note ?? NO_NOTE}`,
     "",
     "_Resolved by the review agent._",
     "",
@@ -508,6 +511,10 @@ export const declineReply = (reply: MaintainerReply): string => {
     resolutionMarker("WONT_FIX"),
   ].join("\n");
 };
+
+/** The reply a resolution closes its thread with, written from what the runner handed over. */
+export const closingReply = (resolution: ThreadResolution): string =>
+  resolution.reason === "WONT_FIX" ? declineReply(resolution.maintainerReply) : resolutionReply(resolution.note);
 
 /**
  * What the review's verification means for each carried finding: the threads to
@@ -603,9 +610,8 @@ export const verifyCarried = (
       }
       resolutions.push({
         threadId: finding.threadId,
-        findingId: finding.id,
         reason: "WONT_FIX",
-        reply: declineReply(finding.maintainerReply),
+        maintainerReply: finding.maintainerReply,
         alreadyReplied: finding.closedAs === "WONT_FIX",
       });
       resolved.push(finding);
@@ -614,9 +620,8 @@ export const verifyCarried = (
     if (finding.threadId !== undefined) {
       resolutions.push({
         threadId: finding.threadId,
-        findingId: finding.id,
         reason: "ADDRESSED",
-        reply: resolutionReply(entry),
+        ...(entry.note === undefined ? {} : { note: entry.note }),
         alreadyReplied: finding.closedAs === "ADDRESSED",
       });
     }

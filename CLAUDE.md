@@ -60,9 +60,14 @@ repo loses the instruction the prompts depend on.
 
 ## Changing a workflow
 
-1. Decide the part first (CONTEXT.md). A guard belongs in the **reusable** half — an adopter
-   references that and gets fixes for free; anything in the caller has to be copied by hand.
-2. Edit `.github/workflows/<name>.yml`. Never add a step to a caller.
+1. Decide the part first (CONTEXT.md). A guard belongs in a **command** of the package, run from
+   the reusable: the reusable keeps only what Actions can do (ADR 0003), an adopter references
+   both through the one pin and gets fixes for free, and anything in the caller has to be copied
+   by hand. Only in a workflow whose steps have not moved yet, which CONTEXT.md's *three parts*
+   names, does a guard still go in the reusable's YAML.
+2. Put Actions-only changes (the job graph, permissions, artifacts, which step gets which token) in
+   `.github/workflows/<name>.yml`, and everything else in the workflow's folder (*Changing a
+   runner or a command*, below). Never add a step to a caller.
 3. If a caller must change too, update **both** sets: `examples/callers/` is what adopters copy,
    and `.github/workflows/agent-*.yml` is what this repo runs. `tests/workflows.test.ts` reads both
    — deliberately, so a change to one cannot silently leave the other behind. The exception is a
@@ -79,28 +84,58 @@ repo loses the instruction the prompts depend on.
    runner's `Actions orchestrator:` block in `docs/platform-spec.md`, in the same commit. Nothing
    checks it: the blocks are description, and no test reads them against the YAML.
 
-## Changing a runner
+## Changing a runner or a command
 
-1. `<name>/<name>.ts` for the logic, `<name>/prompt.md` for what the agent is told.
-2. Shared helpers live in `shared/`. Anything reading a GitHub surface goes there, not in a runner.
-3. Add tests under `tests/`, mirroring the source.
-4. **Every input a runner reads is declared** in `shared/contract.ts`, required or optional with a
-   default, and read through `readInputs` at the top of the runner. A helper is handed the values
-   it needs as arguments and reads no environment. `shared/env.ts` is the one module in a runner or
-   `shared/` that names `process.env`, and `tests/agent-cli.test.ts` fails on any other.
+A **runner** starts the agent; a **command** does an orchestrator's work on the record and starts
+none (ADR 0004). Both are subcommands, and the kind is declared: runners in `RUNNERS` and commands
+in `COMMANDS`, in `shared/contract.ts`. `tests/agent-cli.test.ts` holds the CLI's `SUBCOMMANDS`
+equal to the two maps, kind for kind, with `init` and `doctor` the only subcommands in neither.
+
+1. A runner is `<name>/<name>.ts` for the logic, `<name>/prompt.md` for what the agent is told.
+   It does its work when imported.
+2. A command is `<workflow>:<step>`, at `<workflow>/<step>.ts`, and starts no agent. Its module
+   exports one function taking its declared inputs; it reads no environment itself. `cli.ts` reads
+   the inputs, calls the function, and turns a throw into `fail()`, so throw a sentence a person
+   can act on. Only a command may declare `LOOP_TOKEN`: in a runner's declaration it is a type
+   error.
+   **A command loads nothing that loads the agent SDK.** The agent driver is `shared/agent.ts`,
+   the one module under `shared/` that imports it; `tests/agent-cli.test.ts` walks each command's
+   imports from `COMMANDS` and fails on reaching it, or on any module naming `GITHUB_OUTPUT`,
+   `GITHUB_ENV`, `GITHUB_PATH` or `GITHUB_STEP_SUMMARY`: a value an adapter needs leaves a command
+   as a declared output. So a helper that only reads GitHub or the environment never imports the
+   driver, and a record string a command writes lives in `shared/record.ts`, which imports nothing.
+3. **Folders follow the workflow** (ADR 0004). A workflow's folder, named after its reusable,
+   holds its runner where it has one and every command that runs in its jobs. `shared/` holds
+   only loop code two or more workflows use. The one folder drawn by layer is `engine/`, which
+   ADR 0005 adds: the writer, the GitHub reader and marker splicing. It imports nothing from the
+   loop, reads no environment and spells no record string, and `tests/engine/boundary.test.ts`
+   fails on each. A command's tests use the fakes in `tests/engine/fakes.ts`.
+4. Add tests under `tests/`, mirroring the source.
+5. **Every input a runner or command reads is declared** in `shared/contract.ts`, required or
+   optional with a default, and read through `readInputs`: at the top of a runner, and by `cli.ts`
+   for a command. A helper is handed the values it needs as arguments and reads no environment.
+   `shared/env.ts` is the one module in a runner, a command or `shared/` that names
+   `process.env`, and `tests/agent-cli.test.ts` fails on any other.
    **Every file it writes into `OUTPUT_DIR` is declared there too**, as its outputs, and written
    through the `writers` that declaration gives it, so an undeclared name fails typechecking. A
    computed name is typed over a fixed set, and each name in the set is listed.
+   **A command reads another subcommand's files through a directory input** (ADR 0006), declared
+   with `readsFrom` and read with `readDirectory` (`shared/hand-over.ts`), once, before its first
+   write. Each field is parsed as a target, a choice or a count, and free text comes out only as
+   `Cleaned` (`shared/clean.ts`), the type a formatter takes. Any upload of those files is held to
+   the declaration by `expectHandsOver` in `tests/workflows.test.ts`.
    **A new input is three parts, landed together**: its declaration there, its row in the runner's
-   `### Inputs` table in `docs/platform-spec.md`, and, where it is required, the reusable's `env:`
-   setting it, in the runner step or its job. `tests/platform-spec.test.ts` is red until all three
-   are in; a new output file is the same, without the third. Where the reusable needs a new caller
-   input or secret to set it, the two-step rule in *This repo runs its own loop* applies.
-5. **A change to anything a runner reads from the record** (a marker, a status context, a trailer,
+   `### Inputs` table (or the command's `#### Inputs`) in `docs/platform-spec.md`, and, where it is
+   required, the reusable's `env:` setting it, in the step or its job. `tests/platform-spec.test.ts`
+   is red until all three are in; a new output file is the same, without the third. Where the
+   reusable needs a new caller input or secret to set it, the two-step rule in *This repo runs its
+   own loop* applies.
+6. **A change to anything a runner reads from the record** (a marker, a status context, a trailer,
    a branch pattern, a trusted login) is a change to `docs/platform-spec.md` §4 in the same commit.
+   Where TypeScript spells it, it spells it once, in `shared/record.ts`.
    Nothing checks it: YAML shell steps write those strings as well as TypeScript, with no one call
    shape a test could read, and the record is exactly what a second orchestrator trips on.
-6. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say
+7. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say
    "the verify command `CLAUDE.md` names". A test enforces both over the runner surface.
 
 ## Releasing
@@ -117,11 +152,16 @@ commit, and no-ops if the version is already on the registry.
 
 **That first command is the whole release.** The version appears in twelve files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
-pin in each of the six reusable workflows, the `uses:` ref of each caller in the two caller files
+pin of each step that runs the package (thirteen: one in each of the six reusable workflows, and
+`review:gate`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
+`review:publish`, `review:conclude` and `review:advance` beside the runner in `review.yml`), the
+`npm install` pin of
+the step that installs it ahead of the red check's two (one, in `review.yml`), the `uses:` ref of
+each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
-`.github/actions/` with (nine of those: `advance-prd` once in `review.yml`, and `loop-token` once
-in each of `implement.yml`, `fix.yml` and `update-branch.yml`, twice in `implement-prd.yml` and
-three times in `review.yml`, so twenty-seven pins in the ten files). It
+`.github/actions/` with (eight of those: `loop-token` once in each of `implement.yml`, `fix.yml`
+and `update-branch.yml`, twice in `implement-prd.yml` and three times in `review.yml`, so
+thirty-four pins in the ten files). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
 stages **by path** — the ten it wrote, never `-A`: npm's dirty-tree check passes untracked
@@ -155,6 +195,14 @@ The commit's message is `.npmrc`'s `message=v%s`, the `v` matching the tag `publ
 That is the whole file: the registry and the token live in the `.npmrc` `actions/setup-node` writes
 under `RUNNER_TEMP`, and a second copy of the scope here is a second place for it to be wrong.
 
+The release also ships the dependency tree it was tested with (#414). `prepack` writes
+`npm-shrinkwrap.json` from `package-lock.json`, runtime entries only, and `postpack` removes it
+(`scripts/shrinkwrap.ts`). It is gitignored and never committed: the lockfile is the one copy, so a
+dependency change cannot ship beside a stale shrinkwrap. A leftover one at the root takes over every
+`npm install` here, since npm prefers it to the lockfile; delete it. `ci.yml` checks the tarball
+carries it, and `publish.yml` checks the registry marks the version as carrying it, without which
+npm ignores the file.
+
 The checks that made this a chore rather than a hazard are still the backstop, and are what a
 rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and
 checked against **both caller sets** — `examples/callers/*.yml` and `.github/workflows/agent-*.yml`
@@ -175,9 +223,10 @@ move those by hand.
 Changing what a pin looks like — a new workflow, a renamed one, a different invocation — is a
 change to `shared/pins.ts` and `tests/pins.test.ts` in the same commit, and to
 `scripts/sync-version.ts` and its tests if the *set* of sites changed too. `shared/pins.ts` knows
-three forms, `@<version>` for the npm spec, `@v<version>` for a caller's `uses:` ref to a reusable
-workflow, and `@v<version>` for a reusable's `uses:` ref to a composite action in
-`.github/actions/` (#257), and a fourth would be a site it skips.
+four forms, `@<version>` for the npm spec `npm exec` takes, `@<version>` for the one `npm install`
+takes (#422), `@v<version>` for a caller's `uses:` ref to a reusable workflow, and `@v<version>`
+for a reusable's `uses:` ref to a composite action in `.github/actions/` (#257), and a fifth would
+be a site it skips.
 
 The split is not cosmetic. `shared/pins.ts` is the rewrite itself and **ships**, because `init`
 (#6) performs the same rewrite into an adopter's tree; `scripts/sync-version.ts` is the release
@@ -224,8 +273,8 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
 
 ## Conventions
 
-- **Runners take no arguments.** Input comes from the environment the workflow step sets; an
-  argument is refused, not ignored. `init` and `doctor` are the exception and are not runners: they
+- **Runners and commands take no arguments.** Input comes from the environment the workflow step
+  sets; an argument is refused, not ignored. `init` and `doctor` are the exception and are not runners: they
   are typed by a human, so `--dir <path>` is the interface rather than a misunderstanding of it. An
   option they do not know is still refused.
 - **A failure must write `OUTPUT_DIR/failure_reason.txt`** before the process ends, so the workflow

@@ -1,12 +1,6 @@
 import { asRecord, gh } from "./common.js";
-import {
-  FOLLOW_UP_STUB_LABEL,
-  type FilingInput,
-  type FilingPlan,
-  type FilingReview,
-  type FilingStub,
-} from "./follow-up-plan.js";
-import { FOLLOW_UPS_LABEL } from "./review-output.js";
+import type { FilingInput, FilingPlan, FilingReview, FilingStub } from "./follow-up-plan.js";
+import { FOLLOW_UPS_LABEL, FOLLOW_UP_STUB_LABEL } from "./record.js";
 
 /**
  * The two halves either side of `planFollowUps` (#49): everything here talks to

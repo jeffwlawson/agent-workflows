@@ -131,3 +131,29 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm publish
+
+      # The shrinkwrap is only half of fixing a run's dependency tree (#414). npm
+      # reads a dependency's `npm-shrinkwrap.json` only when the registry's
+      # metadata for that version says `_hasShrinkwrap: true`, a flag the registry
+      # sets from the tarball, not one the publish sends. Installed without it,
+      # every range resolves to whatever is newest that day, exactly as if the
+      # file were not there, and nothing else would show it. The version is
+      # already published when this runs, so red here means "this release does not
+      # pin its tree", not "this release did not ship".
+      - name: Check the registry honours the shrinkwrap
+        if: steps.preflight.outputs.already-published == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            flag=$(npm view "@jeffwlawson/agent-workflows@${VERSION}" _hasShrinkwrap 2>/dev/null)
+            if [ "$flag" = "true" ]; then
+              echo "The registry marks ${VERSION} as carrying a shrinkwrap, so installs of it use the pinned tree."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::The registry does not mark @jeffwlawson/agent-workflows@${VERSION} as carrying npm-shrinkwrap.json (_hasShrinkwrap is '${flag}'). npm will ignore the shipped file and resolve each dependency range afresh on every run."
+          exit 1

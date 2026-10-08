@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { CATCH_UP_TRAILER, SLICE_TRAILER } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+import { CATCH_UP_TRAILER, SLICE_TRAILER } from "../shared/record.js";
 
 /**
  * Runs `implement-prd`'s `Merge the default branch into the PRD branch`, the

@@ -156,7 +156,7 @@ const parseConversationOutcome = (value: unknown): ConversationOutcome => {
  *
  * Returns `null` rather than throwing, which is the one place this parser
  * deliberately differs from `parseOutcome`. A throw here becomes a validation
- * issue, burns both `maxRetries` in `run-with-extraction.ts`, and if it persists
+ * issue, burns both `maxRetries` in `shared/agent.ts`'s `runWithExtraction`, and if it persists
  * takes the whole extraction down — losing every thread reply and resolve with
  * it. `threadOutcomes` is the payload the run exists to produce; this is an
  * optional side channel, and a side channel does not get veto power over the

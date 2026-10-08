@@ -1,6 +1,8 @@
 import type { Verdict } from "./review-output.js";
 import type { RoundCount, RoundCounts } from "./round-header.js";
 import type { SliceRanges } from "./slice-ranges.js";
+import { FINAL_REVIEW_MARK, PROGRESS_END, PROGRESS_START, STATUS_END, STATUS_START } from "./record.js";
+import { spliceBlock } from "../engine/splice.js";
 
 /**
  * The **progress list** in a PRD PR's body (PRD #222, #246): since #298 a
@@ -13,7 +15,8 @@ import type { SliceRanges } from "./slice-ranges.js";
  *
  * **Re-rendered from live state, never edited incrementally.** Every
  * `implement-prd` run that builds renders it as its round is asked for, and
- * the advance job writes the one the review rendered for how its round ended.
+ * `review:advance` renders and writes it for how a review's round ended, from
+ * the data the review handed over.
  * The two jobs that run no toolchain and still write it, the gate showing a
  * slice building (#312) and the finishing run requesting the final review,
  * each rewrite one row in place to exactly what this renders, held equal by a
@@ -23,20 +26,9 @@ import type { SliceRanges } from "./slice-ranges.js";
  * unchanged state is byte for byte the one before it. The **status line** at
  * the top of the PRD PR's note is rendered from the same state, beside it.
  *
- * It also holds the final review's mark, which the finishing run records and
- * every review of the PRD PR reads its round off.
+ * Its markers, the status line's and the final review's mark are record
+ * strings, spelled in `shared/record.ts`.
  */
-
-export const PROGRESS_START = "<!-- agent:progress -->";
-export const PROGRESS_END = "<!-- /agent:progress -->";
-
-/**
- * The finishing run's record that the final review is requested: a review of
- * a PRD PR whose body carries it is the final review, and a preflight that
- * finds it on a PRD of more than one slice calls the PRD finished. Held equal
- * to the workflows' copies by a test.
- */
-export const FINAL_REVIEW_MARK = "<!-- agent:final-review requested -->";
 
 /** One of the parent's sub-issues, as the sub-issues API lists them. */
 export interface ProgressSubIssue {
@@ -59,8 +51,8 @@ export type SliceState =
 export type FinalReviewState = "in review" | "fixing" | "parked" | "approved";
 
 export interface ProgressInputs {
-  /** In the sub-issues API's order, which is execution order. */
-  readonly subIssues: readonly ProgressSubIssue[];
+  /** In the sub-issues API's order, which is execution order. No title is rendered. */
+  readonly subIssues: readonly Pick<ProgressSubIssue, "number" | "state">[];
   /** `sliceRanges` over the PRD branch and the same sub-issues. */
   readonly ranges: SliceRanges;
   /**
@@ -226,15 +218,6 @@ export const renderProgressList = (inputs: ProgressInputs): string => {
   ].join("\n");
 };
 
-/**
- * The **status line** (#298): one line at the top of the PRD PR's note, saying
- * where the chain is now, between its own markers. Workflow-owned like the
- * progress table, and rendered from the same state, so the two cannot
- * disagree. It links the latest review where the chain waits on it.
- */
-export const STATUS_START = "<!-- agent:status -->";
-export const STATUS_END = "<!-- /agent:status -->";
-
 const findings = (open: number | undefined): string | undefined =>
   open === undefined || open === 0 ? undefined : `${open} ${open === 1 ? "finding" : "findings"} open`;
 
@@ -301,26 +284,6 @@ export const OPENING_STATUS = "**🔍 In review:** waiting for its first review.
 export const statusBlock = (line: string): string => `${STATUS_START}\n> ${line}\n> ${STATUS_END}`;
 
 /**
- * The text between `start` and `end` in `body` replaced by `block`, markers
- * and all. Undefined for half a block, or two: which marker is the real one is
- * where a maintainer's text ends, and that is not a guess to make. A body with
- * none gets `block` appended where `append`, and is returned as it is where
- * not.
- */
-const spliceBlock = (body: string, start: string, end: string, block: string, append: boolean): string | undefined => {
-  const starts = body.split(start);
-  const ends = body.split(end);
-  if (starts.length === 1 && ends.length === 1) {
-    if (!append) return body;
-    return body === "" ? block : `${body}${body.endsWith("\n") ? "\n" : "\n\n"}${block}`;
-  }
-  const [before = "", after = ""] = starts;
-  const inside = after.split(end);
-  if (starts.length === 2 && ends.length === 2 && inside.length === 2) return `${before}${block}${inside[1] ?? ""}`;
-  return undefined;
-};
-
-/**
  * `body` with its status line replaced by `block`. A body with none is left as
  * it is: the line belongs at the top of the note the opening run wrote, and
  * appended anywhere else it would be a second note. Undefined for half a line,
@@ -328,7 +291,7 @@ const spliceBlock = (body: string, start: string, end: string, block: string, ap
  * one by a test.
  */
 export const spliceStatus = (body: string, block: string): string | undefined =>
-  spliceBlock(body, STATUS_START, STATUS_END, block, false);
+  spliceBlock(body, { start: STATUS_START, end: STATUS_END }, block, "leave");
 
 /**
  * `body` with its progress list replaced by `block`, or `block` appended to a
@@ -338,10 +301,10 @@ export const spliceStatus = (body: string, block: string): string | undefined =>
  * are held to this one by a test.
  */
 export const spliceProgressList = (body: string, block: string): string | undefined =>
-  spliceBlock(body, PROGRESS_START, PROGRESS_END, block, true);
+  spliceBlock(body, { start: PROGRESS_START, end: PROGRESS_END }, block, "append");
 
 /**
- * How a review round on the PRD PR can leave the chain, as the advance job
+ * How a review round on the PRD PR can leave the chain, as `review:advance`
  * tells them apart: on an approval, parked on any other ending, or still
  * running because the verdict started a fix round.
  */
@@ -351,7 +314,7 @@ export type RoundEnding = "approved" | "parked" | "running";
 export interface RoundEnd {
   /** The reviews and fix rounds before this review, where they could be read. */
   readonly rounds?: RoundCounts | undefined;
-  /** Where this review will be once it is posted, or the slot the advance job puts that in. */
+  /** The posted review, or the pull request where none was posted. */
   readonly review: string;
   /** The findings open as this review leaves them. */
   readonly open: number;
@@ -367,9 +330,8 @@ const plusThisReview = (count: RoundCount | undefined, review: string, fixes: nu
 
 /**
  * The progress table and the status line for each way a round can end,
- * rendered by the review while it holds the PRD branch and the token, for the
- * advance job to write whichever one its round ended on. That job runs no
- * toolchain, and it is the one that knows how the round ended.
+ * rendered by `review:advance`, the one that knows how the round ended, from
+ * the PRD branch and the rounds the review read while it held the token.
  *
  * The round's own scope, the current slice or the final review, counts this
  * review and links it; the ending that starts a fix round counts that round

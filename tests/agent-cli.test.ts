@@ -2,10 +2,15 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import ts from "typescript";
 import { parse } from "yaml";
-import { COMMANDS, run, type CliIo } from "../cli.js";
+import { run, SUBCOMMANDS, type CliIo } from "../cli.js";
+import { file as fileFollowUps } from "../follow-ups/file.js";
+import { gate } from "../review/gate.js";
+import { publish } from "../review/publish.js";
+import { COMMANDS, RUNNERS } from "../shared/contract.js";
+import * as record from "../shared/record.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import { copyAssets } from "../scripts/copy-assets.js";
 import { callersIn, readInstalledCallers, REFERENCE_CALLER_FILES } from "../setup/callers.js";
@@ -53,6 +58,14 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
 });
+
+// The one command there is, stood in for: a test of the CLI's half of a
+// command (read its inputs, call it, turn a throw into `fail()`) must not reach
+// GitHub through the real one.
+vi.mock("../follow-ups/file.js", () => ({ file: vi.fn() }));
+// And the one that writes through the engine, for the same reason.
+vi.mock("../review/publish.js", () => ({ publish: vi.fn() }));
+vi.mock("../review/gate.js", () => ({ gate: vi.fn() }));
 
 /** Every write of a `failure_reason.txt` since the spy was last cleared. */
 const reasonsWritten = (): readonly unknown[] =>
@@ -170,8 +183,9 @@ const replayed = async <T>(
  *   That failure only appears on a published version, in CI, in another repo.
  *
  * The table is deliberately open: `init` and `doctor`
- * (jeffwlawson/winget-manifest-lint#112) are two more entries, so the checks
- * below say *every runner is a command*, never *every command is a runner*.
+ * (jeffwlawson/winget-manifest-lint#112) are two more entries, and the commands
+ * (ADR 0004) are more again, so the checks below say *every runner is a
+ * subcommand*, never *every subcommand is a runner*.
  */
 
 const PACKAGE_DIR = ".";
@@ -208,6 +222,12 @@ const runnerDirs = fs
   .map((entry) => entry.name)
   .filter((name) => fs.existsSync(path.join(PACKAGE_DIR, name, `${name}.ts`)))
   .sort();
+
+/**
+ * A command's module: `<workflow>:<step>` is `<workflow>/<step>.ts` (ADR 0004).
+ * Read off the contract, which declares the kind, rather than off the folders.
+ */
+const commandModules = Object.keys(COMMANDS).map((name) => `${name.replace(":", "/")}.ts`);
 
 const manifest = JSON.parse(
   fs.readFileSync(path.join(PACKAGE_DIR, "package.json"), "utf8"),
@@ -279,7 +299,6 @@ describe("the runner CLI dispatches on a subcommand", () => {
   it("finds the runners to check", () => {
     expect(runnerDirs).toEqual([
       "fix",
-      "follow-ups",
       "implement",
       "implement-prd",
       "review",
@@ -288,14 +307,14 @@ describe("the runner CLI dispatches on a subcommand", () => {
   });
 
   it.each(runnerDirs)("%s: is reachable as a subcommand", (name: string) => {
-    expect(Object.keys(COMMANDS)).toContain(name);
+    expect(Object.keys(SUBCOMMANDS)).toContain(name);
   });
 
-  it("lists every command in its usage", async () => {
+  it("lists every subcommand in its usage", async () => {
     const { code, out } = await invoke(["help"]);
 
     expect(code).toBe(0);
-    for (const name of Object.keys(COMMANDS)) expect(out).toContain(name);
+    for (const name of Object.keys(SUBCOMMANDS)) expect(out).toContain(name);
   });
 
   /**
@@ -360,9 +379,9 @@ describe("the runner CLI dispatches on a subcommand", () => {
    *
    * The handover line is asserted on the same invocation, since it is printed
    * before the runner is reached: every run says which version it is on, for the
-   * reason `shared/common.ts` echoes the model id.
+   * reason `shared/agent.ts` echoes the model id.
    */
-  it.each(runnerDirs)(
+  it.each([...runnerDirs, ...Object.keys(COMMANDS)])(
     "%s: refuses arguments rather than ignoring them",
     async (name: string) => {
       const { code, out, err } = await invoke([name, "--dry-run"]);
@@ -374,7 +393,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
   );
 
   /**
-   * `follow-ups` (#49) is the one runner that runs no model, and that is a
+   * `follow-ups:file` (#49) is a command, so it runs no model, and that is a
    * security property rather than an implementation detail: its workflow is the
    * only one in the loop holding `issues: write`, and a model reading arbitrary
    * issue bodies while holding it is a prompt-injection surface nothing here
@@ -384,14 +403,298 @@ describe("the runner CLI dispatches on a subcommand", () => {
    * half is the workflow's to state; this half is invisible until something
    * imports `claudeAgent` and the loop quietly grows a sixth model call.
    */
-  it("follow-ups runs no model and holds no prompt", () => {
+  it("follow-ups:file runs no model and holds no prompt", () => {
     const dir = path.join(PACKAGE_DIR, "follow-ups");
 
     expect(fs.readdirSync(dir).filter((entry) => entry.endsWith(".md"))).toEqual([]);
-    const source = fs.readFileSync(path.join(dir, "follow-ups.ts"), "utf8");
+    const source = fs.readFileSync(path.join(dir, "file.ts"), "utf8");
     expect(source).not.toContain("claudeAgent");
     expect(source).not.toContain("sandcastle");
     expect(source).not.toContain("runWithExtraction");
+  });
+});
+
+/**
+ * The kind of a subcommand is declared, not inferred (ADR 0004): `RUNNERS` and
+ * `COMMANDS` in `shared/contract.ts` are what an orchestrator reads to know
+ * which subcommand may be handed the write token, and the CLI's table is what
+ * runs. Held equal both ways, kind for kind, so a subcommand registered without
+ * a declaration, or a declaration left behind by a subcommand that is gone,
+ * fails here by name.
+ */
+describe("every subcommand is declared in the contract, as its kind", () => {
+  /**
+   * The install path, which a human types and which takes flags: in neither
+   * map, and the only subcommands that are not. A third has to be added here
+   * on purpose.
+   */
+  const INSTALL_PATH = ["doctor", "init"];
+
+  const registered = (kind: string): string[] =>
+    Object.entries(SUBCOMMANDS)
+      .filter(([, subcommand]) => subcommand.kind === kind)
+      .map(([name]) => name)
+      .sort();
+
+  it("registers a runner for each entry in RUNNERS, and no other", () => {
+    expect(registered("runner")).toEqual(Object.keys(RUNNERS).sort());
+  });
+
+  it("registers a command for each entry in COMMANDS, and no other", () => {
+    expect(registered("command")).toEqual(Object.keys(COMMANDS).sort());
+  });
+
+  it("leaves only the install path out of both maps", () => {
+    expect(registered("install")).toEqual(INSTALL_PATH);
+    expect(Object.keys(SUBCOMMANDS).filter((name) => !(name in RUNNERS) && !(name in COMMANDS)).sort()).toEqual(
+      INSTALL_PATH,
+    );
+  });
+
+  it.each(Object.keys(COMMANDS))("%s: is named <workflow>:<step>", (name) => {
+    expect(name).toMatch(/^[a-z-]+:[a-z-]+$/);
+  });
+
+  it.each(commandModules)("%s: is where its command's module is", (module) => {
+    expect(fs.existsSync(path.join(PACKAGE_DIR, module))).toBe(true);
+  });
+});
+
+/**
+ * A command is a function the CLI calls (ADR 0004): it reads the declared
+ * inputs, hands them over, and turns a throw into `fail()`, so a command's
+ * failure reads like a runner's. The function here is a stand-in, mocked at
+ * the top of this file.
+ */
+describe("the CLI runs a command", () => {
+  class Exited extends Error {}
+  const INPUTS = { GH_REPO: "o/r", GH_TOKEN: "a-token", PR_NUMBER: "7" } as const;
+  const previous = Object.fromEntries(Object.keys(INPUTS).map((name) => [name, process.env[name]]));
+  const command = vi.mocked(fileFollowUps);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    Object.assign(process.env, INPUTS);
+    command.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it("hands the function exactly its declared inputs, and its declared outputs, and exits 0", async () => {
+    const { code } = await invoke(["follow-ups:file"]);
+
+    expect(code).toBe(0);
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith({ OUTPUT_DIR: scratch, ...INPUTS }, expect.objectContaining({ writeJson: expect.any(Function) }));
+  });
+
+  it("turns a throw into fail(): the reason in failure_reason.txt, exit 1", async () => {
+    command.mockImplementation(() => {
+      throw new Error("The pull request could not be read.");
+    });
+
+    await expect(invoke(["follow-ups:file"])).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("The pull request could not be read.");
+  });
+
+  it("stops at a missing input, naming it, before the function is called", async () => {
+    delete process.env["PR_NUMBER"];
+
+    await expect(invoke(["follow-ups:file"])).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(command).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: PR_NUMBER");
+  });
+});
+
+/**
+ * A command that reads GitHub and writes nothing to it, `review:gate` (#420),
+ * is handed its inputs, a reader and its declared output files, and no writer.
+ */
+describe("the CLI runs a command that reads", () => {
+  class Exited extends Error {}
+  const INPUTS = {
+    GH_REPO: "o/r",
+    GH_TOKEN: "a-token",
+    PR_NUMBER: "7",
+    BRANCH: "agent/issue-12-do-the-thing",
+    HEAD_SHA: "c".repeat(40),
+    PR_STATE: "open",
+  } as const;
+  const previous = Object.fromEntries(Object.keys(INPUTS).map((name) => [name, process.env[name]]));
+  const command = vi.mocked(gate);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    Object.assign(process.env, INPUTS);
+    command.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it("hands the function its declared inputs, a reader and its outputs, and no writer", async () => {
+    command.mockImplementation(async (_inputs, io) => {
+      expect(typeof io.github.branchTip).toBe("function");
+      expect(io).not.toHaveProperty("writers");
+      io.outputs.writeJson("gate.json", { proceed: "true" });
+    });
+
+    const { code } = await invoke(["review:gate"]);
+
+    expect(code).toBe(0);
+    expect(command).toHaveBeenCalledWith(
+      expect.objectContaining({ OUTPUT_DIR: scratch, HEAD_WAIT_SECONDS: "60", HEAD_POLL_SECONDS: "5", ...INPUTS }),
+      expect.anything(),
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(scratch, "gate.json"), "utf8"))).toEqual({ proceed: "true" });
+  });
+
+  it("turns a throw into fail(): the reason in failure_reason.txt, exit 1", async () => {
+    command.mockImplementation(async () => {
+      throw new Error("The repository variable is wrong.");
+    });
+
+    await expect(invoke(["review:gate"])).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("The repository variable is wrong.");
+  });
+
+  it("stops at a missing input, naming it, before the function is called", async () => {
+    delete process.env["HEAD_SHA"];
+
+    await expect(invoke(["review:gate"])).rejects.toThrow(Exited);
+
+    expect(command).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: HEAD_SHA");
+  });
+});
+
+/**
+ * A command that writes through the engine (ADR 0005) is handed, besides its
+ * inputs, the writers and the reader the CLI builds from them, and the CLI
+ * keeps its write log: every line as the writers make it, and the last line
+ * for how the command ended, whether it returned or threw.
+ */
+describe("the CLI runs a command that writes", () => {
+  class Exited extends Error {}
+  const INPUTS = {
+    GH_REPO: "o/r",
+    GH_TOKEN: "a-token",
+    LOOP_TOKEN: "a-loop-token",
+    LOOP_TOKEN_SOURCE: "app",
+    PR_NUMBER: "7",
+    BRANCH: "agent/issue-12-do-the-thing",
+    REVIEWED_SHA: "c".repeat(40),
+    REVIEW_DIR: "/nowhere",
+  } as const;
+  const previous = Object.fromEntries(Object.keys(INPUTS).map((name) => [name, process.env[name]]));
+  const command = vi.mocked(publish);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+  const log = (): unknown[] =>
+    fs.readFileSync(path.join(scratch, "write_log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as unknown);
+
+  beforeEach(() => {
+    Object.assign(process.env, INPUTS);
+    command.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it("hands the function its declared inputs, both writers and a reader, and ends the log", async () => {
+    command.mockImplementation(async (_inputs, io) => {
+      const writers = io.writers({});
+      expect(Object.keys(writers).sort()).toEqual(["loop", "workflow"]);
+      expect(typeof io.github.reviewThreadIds).toBe("function");
+    });
+
+    const { code } = await invoke(["review:publish"]);
+
+    expect(code).toBe(0);
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ OUTPUT_DIR: scratch, ...INPUTS }), expect.anything());
+    expect(log()).toEqual([{ ended: "finished", writes: 0 }]);
+  });
+
+  it("turns a throw into fail(), and ends the log on the reason", async () => {
+    command.mockImplementation(async (_inputs, io) => {
+      io.writers({});
+      throw new Error("The hand-over names a thread on another pull request.");
+    });
+
+    await expect(invoke(["review:publish"])).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe(
+      "The hand-over names a thread on another pull request.",
+    );
+    expect(log()).toEqual([{ ended: "stopped", writes: 0, reason: "The hand-over names a thread on another pull request." }]);
+  });
+
+  it("writes no log for a command that never asked for its writers", async () => {
+    command.mockImplementation(async () => {
+      throw new Error("REVIEWED_SHA is not a commit.");
+    });
+
+    await expect(invoke(["review:publish"])).rejects.toThrow(Exited);
+
+    expect(fs.existsSync(path.join(scratch, "write_log.jsonl"))).toBe(false);
+  });
+
+  it("stops at a missing token, naming it, before the function is called", async () => {
+    delete process.env["LOOP_TOKEN"];
+
+    await expect(invoke(["review:publish"])).rejects.toThrow(Exited);
+
+    expect(command).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: LOOP_TOKEN");
   });
 });
 
@@ -432,7 +735,7 @@ describe("every input a runner reads goes through its declaration", () => {
     return lines;
   };
 
-  const surface = [...runnerDirs, "shared"].flatMap((dir) =>
+  const surface = [...new Set([...runnerDirs, ...commandModules.map((module) => path.posix.dirname(module)), "shared"])].flatMap((dir) =>
     fs
       .readdirSync(path.join(PACKAGE_DIR, dir), { recursive: true, encoding: "utf8" })
       .filter((name) => name.endsWith(".ts"))
@@ -440,10 +743,11 @@ describe("every input a runner reads goes through its declaration", () => {
   );
   const source = (rel: string): string => fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8");
 
-  it("walks every runner and shared/, the accessor's module among them", () => {
+  it("walks every runner, every command and shared/, the accessor's module among them", () => {
     expect(surface).toContain(ACCESSOR);
     expect(surface).toContain("shared/common.ts");
     for (const dir of runnerDirs) expect(surface).toContain(`${dir}/${dir}.ts`);
+    for (const module of commandModules) expect(surface).toContain(module);
   });
 
   it("names process.env nowhere outside the accessor's module", () => {
@@ -472,6 +776,161 @@ describe("every input a runner reads goes through its declaration", () => {
     ].join("\n");
 
     expect(envReads(text)).toEqual([4, 5, 6, 7]);
+  });
+});
+
+/**
+ * What a command loads, it loads beside the write token (ADR 0004): a command
+ * that imports the agent driver, even only to name a marker, puts the agent
+ * SDK and everything it pulls in into the process holding `LOOP_TOKEN`. So the
+ * walk starts at each command in `COMMANDS` and follows every import that runs
+ * (a type-only import is erased, and loads nothing), and fails on reaching the
+ * driver, `shared/agent.ts`, or any module that loads the SDK itself.
+ *
+ * The same walk keeps a command's result out of Actions' step files. A value an
+ * adapter needs leaves a command only as a declared output, which is what a
+ * second orchestrator reads; a write to `GITHUB_OUTPUT` and its siblings is
+ * state only Actions reads back. Workflow-command lines on stdout
+ * (`::warning::` and the like) are inert text outside Actions, and allowed.
+ */
+describe("a command's imports never reach the agent driver", () => {
+  const DRIVER = "shared/agent.ts";
+  const SDK = /^@ai-hero\/sandcastle(\/|$)/;
+  const STEP_FILES = /\bGITHUB_(OUTPUT|ENV|PATH|STEP_SUMMARY)\b/;
+
+  interface Module {
+    /** Relative modules it loads, as paths from the package root. */
+    readonly local: readonly string[];
+    /** Packages it loads, by specifier. */
+    readonly packages: readonly string[];
+    /** Code (not comments) naming one of Actions' step files. */
+    readonly stepFiles: readonly string[];
+  }
+
+  /** What `text`, the module at `rel`, loads and names. */
+  const read = (rel: string, text: string): Module => {
+    const file = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true);
+    const specifiers: string[] = [];
+    const stepFiles: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && !node.importClause?.isTypeOnly) {
+        specifiers.push(node.moduleSpecifier.text);
+      }
+      if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) && !node.isTypeOnly) {
+        specifiers.push(node.moduleSpecifier.text);
+      }
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments[0] !== undefined &&
+        ts.isStringLiteralLike(node.arguments[0])
+      ) {
+        specifiers.push(node.arguments[0].text);
+      }
+      const named = ts.isIdentifier(node) ? node.text : ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node) ? node.text : "";
+      const match = STEP_FILES.exec(named);
+      if (match) stepFiles.push(match[0]);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const local = specifiers
+      .filter((s) => s.startsWith("."))
+      .map((s) => path.posix.normalize(path.posix.join(path.posix.dirname(rel), s.replace(/\.js$/, ".ts"))));
+    return { local, packages: specifiers.filter((s) => !s.startsWith(".")), stepFiles };
+  };
+
+  /** Every module `entry` loads, directly or not, itself included. */
+  const graph = (entry: string): ReadonlyMap<string, Module> => {
+    const seen = new Map<string, Module>();
+    const pending = [entry];
+    for (let rel = pending.pop(); rel !== undefined; rel = pending.pop()) {
+      if (seen.has(rel)) continue;
+      const module = read(rel, fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8"));
+      seen.set(rel, module);
+      pending.push(...module.local);
+    }
+    return seen;
+  };
+
+  /** The modules in a graph that are, or load, the agent driver. */
+  const driverIn = (modules: ReadonlyMap<string, Module>): string[] =>
+    [...modules].filter(([rel, module]) => rel === DRIVER || module.packages.some((p) => SDK.test(p))).map(([rel]) => rel);
+
+  it.each(commandModules)("%s: loads nothing that loads the agent SDK", (module) => {
+    expect(driverIn(graph(module))).toEqual([]);
+  });
+
+  it.each(commandModules)("%s: names none of Actions' step files", (module) => {
+    const named = [...graph(module)].flatMap(([rel, m]) => m.stepFiles.map((name) => `${rel}: ${name}`));
+
+    expect(named).toEqual([]);
+  });
+
+  /** The walk can fail: a runner's graph reaches the driver, through the module that is it. */
+  it("finds the driver from a runner that starts the agent", () => {
+    expect(driverIn(graph("review/review.ts"))).toContain(DRIVER);
+  });
+
+  it("finds the SDK in the driver, and in no other module under shared/", () => {
+    const loaders = fs
+      .readdirSync(path.join(PACKAGE_DIR, "shared"))
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => `shared/${name}`)
+      .filter((rel) => read(rel, fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8")).packages.some((p) => SDK.test(p)));
+
+    expect(loaders).toEqual([DRIVER]);
+  });
+
+  it("reads loads and names from code, not comments, and not type-only imports", () => {
+    const text = [
+      'import type { A } from "./a.js";',
+      'import { type B } from "./b.js";',
+      'export { C } from "./c.js";',
+      'export type { D } from "./d.js";',
+      'import * as sdk from "@ai-hero/sandcastle";',
+      'const lazy = () => import("../e.js");',
+      "// writes GITHUB_OUTPUT",
+      'const step = process.env["GITHUB_STEP_SUMMARY"];',
+      "const path = `${GITHUB_ENV}`;",
+      'console.log("::warning::GITHUB_OUTPUTS is not a step file");',
+    ].join("\n");
+
+    expect(read("shared/x.ts", text)).toEqual({
+      local: ["shared/b.ts", "shared/c.ts", "e.ts"],
+      packages: ["@ai-hero/sandcastle"],
+      stepFiles: ["GITHUB_STEP_SUMMARY", "GITHUB_ENV"],
+    });
+  });
+});
+
+/**
+ * The record strings a command writes sit in a module that imports nothing, so
+ * naming one can never pull anything else into a command's process.
+ */
+describe("the record strings import nothing", () => {
+  it("shared/record.ts has no import or re-export", () => {
+    const file = ts.createSourceFile("record.ts", fs.readFileSync(path.join(PACKAGE_DIR, "shared", "record.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+    const loads: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node)) loads.push(node.getText());
+      if (ts.isExportDeclaration(node) && node.moduleSpecifier) loads.push(node.getText());
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) loads.push(node.getText());
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+
+    expect(loads).toEqual([]);
+  });
+
+  /** Each label spelled there is one `init` installs or advises, so the two cannot drift apart. */
+  it("spells each label as init names it", () => {
+    const installed = [...TRIGGER_LABELS, ...STATE_LABELS, ...Object.values(ADVISORY_LABELS).flat()].map((label) => label.name);
+    const spelled = Object.entries(record)
+      .filter(([name]) => name.endsWith("_LABEL"))
+      .map(([, value]) => value);
+
+    expect(spelled.length).toBeGreaterThan(0);
+    expect([...spelled].sort()).toEqual([...installed].sort());
   });
 });
 
@@ -3561,11 +4020,12 @@ describe("doctor names the failures that otherwise look like something else", ()
 
   /**
    * The default `doctor` assumes is the one the review applies, read out of
-   * the budget step itself: two copies of the number, held equal.
+   * `review:gate`, which settles the budget: two copies of the number, held
+   * equal.
    */
   it("assumes the default budget the review applies", () => {
     const review = fs.readFileSync(path.join(".github", "workflows", "review.yml"), "utf8");
-    expect(review).toContain(`budget="\${MAX_FIX_ROUNDS:-${DEFAULT_FIX_ROUNDS}}"`);
+    expect(fs.readFileSync(path.join("review", "gate.ts"), "utf8")).toContain(`inputs.MAX_FIX_ROUNDS === "" ? "${DEFAULT_FIX_ROUNDS}"`);
     expect(review).toContain(`MAX_FIX_ROUNDS: \${{ vars.${FIX_ROUNDS_VARIABLE} }}`);
   });
 
@@ -3988,7 +4448,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   it("is reachable as a subcommand and refuses a flag it does not know", async () => {
-    expect(Object.keys(COMMANDS)).toContain("doctor");
+    expect(Object.keys(SUBCOMMANDS)).toContain("doctor");
 
     const { code, err } = await invoke(["doctor", "--fix"]);
 

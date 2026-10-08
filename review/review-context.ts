@@ -4,19 +4,19 @@ import {
   fetchTrustedIssue,
   gh,
   renderTrustedComments,
-} from "./common.js";
+} from "../shared/common.js";
 import {
   fetchPullRequestFeedback,
   unreadableNote,
   type UnreadableSelection,
-} from "./pr-feedback.js";
-import { keyedByChangedFiles, parseDiffLines } from "./diff-lines.js";
-import type { PostedNote } from "./fix-notes.js";
+} from "../shared/pr-feedback.js";
+import { keyedByChangedFiles, parseDiffLines } from "../shared/diff-lines.js";
+import type { PostedNote } from "../shared/fix-notes.js";
 import {
   carriedFindings,
   type CarriedFinding,
   type SettledFinding,
-} from "./review-verification.js";
+} from "../shared/review-verification.js";
 
 export interface PullRequestContext {
   /**

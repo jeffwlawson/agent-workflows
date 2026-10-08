@@ -1,13 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { EVERY_RUNNER, EVERY_RUNNER_OUTPUTS, type Input, type Inputs, type Outputs } from "./contract.js";
+import { EVERY_SUBCOMMAND, EVERY_SUBCOMMAND_OUTPUTS, type Input, type Inputs, type Outputs } from "./contract.js";
 
 /**
- * The one module in a runner or `shared/` that touches the process's
- * environment, and a test in `tests/agent-cli.test.ts` holds it to that: every
- * input a runner reads is declared in `shared/contract.ts` and read through
- * `readInputs` or `input` here, and a helper that needs one is handed the value
- * by its runner. A read anywhere else would be an input the declaration does
+ * The one module in a runner, a command or `shared/` that touches the
+ * process's environment, and a test in `tests/agent-cli.test.ts` holds it to
+ * that: every input a subcommand reads is declared in `shared/contract.ts` and
+ * read through `readInputs` or `input` here, and a helper that needs one is
+ * handed the value by its subcommand. A command is handed its inputs by the
+ * CLI, which reads them here. A read anywhere else would be an input the declaration does
  * not have, which is the quiet default the declarations exist to end.
  *
  * Three things here touch the environment besides the accessor, and each is
@@ -53,7 +54,7 @@ const writeOutput = (filename: string, value: string): void => {
 };
 
 /**
- * The writers for the files `declared` lists, a runner's outputs in
+ * The writers for the files `declared` lists, a subcommand's outputs in
  * `shared/contract.ts`: a name it does not list fails typechecking, so a new
  * output file cannot be written without being declared first. `declared` is
  * read for its type alone.
@@ -61,13 +62,24 @@ const writeOutput = (filename: string, value: string): void => {
 export const writers = <D extends Outputs>(declared: D) => ({
   writeText: (filename: D[number], value: string): void => writeOutput(filename, value),
   writeJson: (filename: D[number], value: unknown): void => writeOutput(filename, JSON.stringify(value, null, 2)),
+  /**
+   * One line added to the end of the file, for a log kept as it happens: the
+   * engine's write log, so a command cancelled half way leaves every write it
+   * made. The other two replace the file.
+   */
+  appendLine: (filename: D[number], line: string): void => {
+    const dir = present("OUTPUT_DIR");
+    if (dir === undefined) return;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, filename), `${line}\n`);
+  },
 });
 
 /**
- * The writers for the file every runner writes, `failure_reason.txt`: what
+ * The writers for the file every subcommand writes, `failure_reason.txt`: what
  * `fail()` writes through, and the CLI's refusals and `doctor` with it.
  */
-export const commonWriters = writers(EVERY_RUNNER_OUTPUTS);
+export const commonWriters = writers(EVERY_SUBCOMMAND_OUTPUTS);
 
 /**
  * Write the reason somewhere the workflow's `if: failure()` step can read it,
@@ -135,7 +147,7 @@ export const readInputs = <D extends Inputs>(declared: D): InputValues<D> => {
  * caller that reaches for it is past the start-of-run check, so a missing one
  * here is a runner that never made it.
  */
-export const outputDir = (): string => input(EVERY_RUNNER, "OUTPUT_DIR");
+export const outputDir = (): string => input(EVERY_SUBCOMMAND, "OUTPUT_DIR");
 
 /**
  * Remove the GitHub tokens from this process's environment. The agent runs

@@ -4,29 +4,34 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { DRAFT_NOTE_END, DRAFT_NOTE_START, SUMMARY_END, SUMMARY_START } from "../shared/pr-summary.js";
 import {
-  FINAL_REVIEW_MARK,
   finalReviewRequestedLines,
-  PROGRESS_END,
-  PROGRESS_START,
   renderPrdStatus,
   renderProgressList,
-  STATUS_END,
-  STATUS_START,
   statusBlock,
   type ProgressInputs,
 } from "../shared/progress-list.js";
 import { renderCriteriaGroup, VERDICTS, type CriterionResult } from "../shared/review-output.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+import {
+  DRAFT_NOTE_END,
+  DRAFT_NOTE_START,
+  FINAL_REVIEW_MARK,
+  PROGRESS_END,
+  PROGRESS_START,
+  STATUS_END,
+  STATUS_START,
+  SUMMARY_END,
+  SUMMARY_START,
+} from "../shared/record.js";
 
 /**
  * Runs `implement-prd`'s preflight — the real `run:` block, read out of
  * `.github/workflows/implement-prd.yml` — under `bash -e` against the recorded
- * `gh` in `tests/fixtures/gh-replay`, the seam `tests/review-ci-wait.test.ts`
- * built for the same reason: a string assertion passes on a step `gh` refuses
- * (#28).
+ * `gh` in `tests/fixtures/gh-replay`, the seam the review's CI-wait test built
+ * before that step became `review:collect-checks` (#421), for this reason: a
+ * string assertion passes on a step `gh` refuses (#28).
  *
  * What it executes is the preflight's state table (PRD #222, #243), every row
  * of it. Which sub-issues are built is read off the PRD branch, from the
@@ -69,7 +74,12 @@ const stepById = (id: string): Step => {
 
 const preflight = (): Step => stepById("preflight");
 
-/** Bounded, for the reason `review-ci-wait.test.ts` gives its own copy. */
+/**
+ * Bounded like every spawn here, and the one place it matters most: this runs
+ * at module scope, outside any test body, where no `testTimeout` could reach a
+ * hang. A killed spawn reports `null`, so an overrun skips the suite rather
+ * than stalling the run.
+ */
 const onPath = (command: string): boolean =>
   process.platform === "win32"
     ? spawnSync("where", [command], { timeout: SUBPROCESS_TIMEOUT }).status === 0
@@ -974,7 +984,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
    */
   it("opens it with the progress table and status line the runner rendered, and the slice's chapter marker", () => {
     const inputs: ProgressInputs = {
-      subIssues: [{ number: 172, title: "Slice 1", state: "OPEN" }],
+      subIssues: [{ number: 172, state: "OPEN" }],
       ranges: sliceRanges([{ sha: "a", parents: ["b"], slice: 172 }], [{ number: 172, state: "OPEN" }]),
       verdict: "none",
       running: { kind: "review" },

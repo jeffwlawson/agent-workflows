@@ -1,11 +1,7 @@
-import { isWorkflowBot, safeGh } from "./common.js";
-import {
-  FIX_ROUND_STATUS,
-  LEGACY_FIX_ROUND_STARTED,
-  VERDICT_CONTEXT,
-  type FixRoundProgress,
-} from "./review-output.js";
-import type { CarriedFinding } from "./review-verification.js";
+import { isWorkflowBot, safeGh } from "../shared/common.js";
+import { LEGACY_FIX_ROUND_STARTED, type FixRoundProgress } from "../shared/review-output.js";
+import type { CarriedFinding } from "../shared/review-verification.js";
+import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../shared/record.js";
 
 /**
  * What the verdicts already posted on a pull request say about the review now
@@ -49,7 +45,7 @@ export interface ReviewHistory {
    *
    * What reads it is `describeHistory`, for the brief. Whether the summary
    * block is rewritten is not read from here: the block records the head it
-   * was written at (`shared/pr-summary.ts`, #218).
+   * was written at (`review/pr-summary.ts`, #218).
    *
    * **False wherever the history could not be read.** A fact this file could
    * not establish is not one to assert.

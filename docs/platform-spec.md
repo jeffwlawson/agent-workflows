@@ -24,20 +24,20 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
 
 **Why some parts are links.** A fact with a tested home is linked rather than restated: label
-meanings are [ADOPTING §3](./ADOPTING.md#3-labels)'s, and each runner's inputs and outputs are
-declared once, in [`shared/contract.ts`](../shared/contract.ts), which an orchestrator can import
-to build the environment it hands a runner. The tables below are the same facts read twice, and a
-test holds them equal, so they are not a copy that can drift.
+meanings are [ADOPTING §3](./ADOPTING.md#3-labels)'s, and each runner's and command's inputs and
+outputs are declared once, in [`shared/contract.ts`](../shared/contract.ts), which an orchestrator
+can import to build the environment it hands a runner or a command. The tables below are the same
+facts read twice, and a test holds them equal, so they are not a copy that can drift.
 
 **Tested, and held by convention.** `tests/platform-spec.test.ts` holds:
 
-- the §2.2 table and each runner's `### Inputs` table to its declaration, on name and on required
-  or optional, in both directions;
-- the §2.4 table and each runner's `### Outputs` table to its declared output files, in both
-  directions;
-- that every runner section, both its tables and its record part are present, and so are §3 and
-  §4.1 to §4.3;
-- that each Actions reusable sets every input its runner declares required;
+- the §2.2 table and each runner's and command's `Inputs` table to its declaration, on name and on
+  required or optional, in both directions;
+- the §2.4 table and each runner's and command's `Outputs` table to its declared output files, in
+  both directions;
+- that every runner section, both its tables and its record part are present, that every command
+  has a section with both its tables in its workflow's, and that §3 and §4.1 to §4.3 are present;
+- that each Actions reusable sets every input its runners and commands declare required;
 - that the binding words appear only in bold, and never in an orchestrator block.
 
 Everything else here is held by convention: the conventions in
@@ -52,10 +52,13 @@ cannot check is one only an orchestrator's author will catch.
 
 ## 1. Terms
 
-- **Runner.** One of six subcommands of this package's binary: `implement`, `implement-prd`,
-  `review`, `fix`, `update-branch` and `follow-ups`. It reads its inputs from the environment, does
-  its step, and writes files and commits. It is not the agent: five of the six start the agent, and
-  `follow-ups` runs no model at all.
+- **Runner.** One of five subcommands of this package's binary: `implement`, `implement-prd`,
+  `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
+  and writes files and commits. It is not the agent.
+- **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
+  named `<workflow>:<step>`: `follow-ups:file`, `review:gate`, `review:collect-checks`,
+  `review:red-check-place`, `review:red-check-classify`, `review:publish`, `review:conclude` and
+  `review:advance`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -69,6 +72,11 @@ cannot check is one only an orchestrator's author will catch.
 
 ## 2. The process boundary
 
+This section is written of a runner, and holds for a command too, with one difference: a command
+starts no agent, so §2.5's `claude` precondition and §3's outcomes about the agent do not apply to
+it, and it is the one kind of subcommand an orchestrator may hand a write credential. Which kind a
+subcommand is, is declared in `shared/contract.ts`, in `RUNNERS` and `COMMANDS`.
+
 ### 2.1 Invocation
 
 An orchestrator ***must*** invoke a runner as `<bin> <runner>`, with `<bin>` the package's binary,
@@ -81,7 +89,10 @@ workflows, which the build reads.
 
 > **Actions orchestrator:** each reusable's runner step is
 > `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@<version> -- agent-workflows <runner>`,
-> with the inputs in that step's `env:` and its job's.
+> with the inputs in that step's `env:` and its job's, and each command step the same with the
+> command's name. The red check's job installs the package first, with
+> `npm install --prefix "$RUNNER_TEMP"`, and runs its two commands from `RUNNER_TEMP`, where that
+> line finds the install without asking the registry (§8).
 
 ### 2.2 Inputs
 
@@ -97,7 +108,16 @@ Every input is an environment variable, declared in `shared/contract.ts` as **re
   one whose absence means something stated, never a quiet fallback nobody chose. An input read only
   by a subprocess, such as `GH_TOKEN` read by `gh`, is declared all the same and checked at start.
 
-Defaults and meanings are prose; the test compares the name and the required column only.
+A command may declare a third kind, a **directory** input: the path of another subcommand's
+`OUTPUT_DIR`, required like any other, naming that subcommand, its producer, and exactly the files
+read from it. Its row's Kind is `directory`, and its last cell names the producer and each file,
+with `(where written)` after a file the producer writes only on some outcomes. Such a file that is
+not there reads as absent. A file the producer always writes that is missing, or any declared file
+that does not parse, fails the command (§2.4) before its first write. The command reads no other
+file in the directory, so an orchestrator ***must*** hand over at least the files named there.
+
+Defaults and meanings are prose; the test compares the name and the Kind column only, and a
+directory input's producer and files.
 
 **`doctor` cannot check this.** For the Actions orchestrator the reusable sets the runner's inputs,
 and the build holds each reusable to them. A caller missing a required input of its own (a
@@ -111,9 +131,13 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The five runners that start the agent only read with it; `follow-ups` files issues with it. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, and `review:advance` a PRD PR's progress list and its notes there. |
 
-Each runner's own inputs are in its section, §6 to §11.
+A command that runs where no token is held, as the red check's two do beside the pull request's own
+code, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
+nor `GH_TOKEN`, and an orchestrator hands it neither.
+
+Each runner's and command's own inputs are in its workflow's section, §6 to §11.
 
 ### 2.3 Outputs
 
@@ -144,7 +168,7 @@ repository.
 |---|---|
 | `0` | The runner did its step. |
 | `1` | The run failed. The reason is on stderr, and in `failure_reason.txt` where `OUTPUT_DIR` is set. |
-| `2` | Bad usage: an unknown runner, or an argument (§2.1). Reported the same way. |
+| `2` | Bad usage: an unknown subcommand, or an argument (§2.1). Reported the same way. |
 
 An orchestrator ***must*** report every run that does not exit 0 somewhere a human will read it,
 with the text of `failure_reason.txt` where the file exists. Where it does not, the runner never
@@ -258,7 +282,7 @@ control post as one.
 
 The same list, without the association half (`isWorkflowBot`), is what a runner asks where the
 question is *did the loop post this* rather than *is this trusted*: the verdict status it counts
-rounds by (§4.3), and the review bodies `follow-ups` files from.
+rounds by (§4.3), and the review bodies `follow-ups:file` files from.
 
 The list is fixed in this release, and an orchestrator cannot pass in its own; #376 will let it.
 
@@ -312,20 +336,23 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 
 | String | Where it sits | Written by | Read by |
 |---|---|---|---|
-| `## Agent review` | The opening of a review's body, after its round header. A review by the loop with this heading is one round. | `review`'s `review_payload.json`, posted by the orchestrator | `review`, `fix`, `implement-prd`, to count rounds |
-| `**Review <r>**`, `**Slice <k> of <n> · #<sub> · review <r>**`, `**Final review · review <r>**` | The round header, the first line of a review or fix comment. | `review` and `fix`, in their outputs | the same three, to tell a PRD PR's rounds apart by slice |
-| `<!-- agent-finding <id> … -->` | Each finding's inline comment, and the review body for a finding with no line. | `review`'s `review_payload.json` | `review`, `fix`, as the findings still open |
-| `<!-- agent-resolution ADDRESSED -->`, `<!-- agent-resolution WONT_FIX -->` | The reply that closes a finding's thread. | `review`'s `thread_resolutions.json` | `review`, `fix`, as the findings settled |
+| `## Agent review` | The opening of a review's body, after its round header. A review by the loop with this heading is one round. | `review:publish`, from `review`'s `review_body.json` | `review`, `fix`, `implement-prd`, to count rounds |
+| `**Review <r>**`, `**Slice <k> of <n> · #<sub> · review <r>**`, `**Final review · review <r>**` | The round header, the first line of a review or fix comment. | `review:publish`, from `review`'s `review_body.json`, and `fix`, in its outputs | the same three, to tell a PRD PR's rounds apart by slice |
+| `<!-- agent-finding <id> … -->` | Each finding's inline comment, and the review body for a finding with no line. | `review:publish`, from `review`'s `findings.json` and `review_body.json` | `review`, `fix`, as the findings still open |
+| `<!-- agent-resolution ADDRESSED -->`, `<!-- agent-resolution WONT_FIX -->` | The reply that closes a finding's thread. | `review:publish`, from `review`'s `thread_resolutions.json` | `review`, `fix`, as the findings settled |
 | `<!-- agent-fix:out-of-scope {…} -->` | A note on a finding the fix judged out of scope. | `fix`'s `out_of_scope_notes.json` | `review`, which rules on it; `fix`, to not repeat it |
 | `<!-- agent-fix:top-level -->` | A top-level comment the fix posted. Read on a trusted author's post too. | `fix`'s `top_level_comments.json` | `review`, `fix`, to leave the loop's own comments out of the feedback |
 | `<!-- agent-fix:conversation-outcomes -->` | The comment saying what the fix did with the conversation. | `fix`'s `conversation_outcomes.md` | `review`, `fix`, the same |
-| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings. An edited review's is refused. | `review`'s `review_payload.json` | `review`, to not record one twice; `follow-ups`, to file them |
-| `<!-- agent-red-tests {…} -->` | A slice round's review body: the red check's tests. | `review`'s `review_payload.json` | `review`, on the PRD PR's final review |
-| `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review`'s `review_payload.json` | `review`, on later rounds of the same slice |
-| `<!--{"version",…,"location","pr","seq"}-->` | The body of a filed follow-up issue. | `follow-ups`, which files it | `follow-ups`, to not file one twice |
+| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings. An edited review's is refused. | `review:publish`, from `review`'s `review_body.json` | `review`, to not record one twice; `follow-ups:file`, to file them |
+| `<!-- agent-red-tests {…} -->` | A slice round's review body: the red check's tests. | `review:publish`, from `review`'s `review_body.json` | `review`, on the PRD PR's final review |
+| `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review:publish`, from `review`'s `review_body.json` | `review`, on later rounds of the same slice |
+| `<!--{"version",…,"location","pr","seq"}-->` | The body of a filed follow-up issue. | `follow-ups:file`, which files it | `follow-ups:file`, to not file one twice |
 
-**Markers in a pull request's body.** The orchestrator writes the body; a runner writes the blocks
-into its output files and reads them back from the body.
+**Markers in a pull request's body.** The orchestrator writes the body; `review:publish` writes
+the summary block, its marks and a regular pull request's status line from `review`'s hand-over,
+`review:advance` a PRD PR's progress list and status line from `review`'s park hand-over, and the
+other blocks are written from a runner's output files. A runner reads them back from the
+body.
 
 | String | What it holds | Read by |
 |---|---|---|
@@ -339,8 +366,8 @@ only a status whose creator is the loop's identity (§4.1).
 
 | Context | What it records | Written by | Read by |
 |---|---|---|---|
-| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review`'s `verdict.json`, posted by the orchestrator | `review`, to know what changed since the last verdict |
-| `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict |
+| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude` | `review`, to know what changed since the last verdict |
+| `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict; `review:gate`, to count the rounds the budget has spent |
 
 **Commit trailers.** Read from the PRD branch's first-parent log.
 
@@ -361,8 +388,8 @@ only a status whose creator is the loop's identity (§4.1).
 | Event | What it records | Read by |
 |---|---|---|
 | `agent:fix` added to the pull request | One fix round, automatic or by hand, each time it was added. | `review`, `fix`, `implement-prd`, to count rounds |
-| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed. | `follow-ups` |
-| `pr-follow-up` on an issue | An issue `follow-ups` filed earlier, read with its body's key. | `follow-ups` |
+| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed. | `follow-ups:file` |
+| `pr-follow-up` on an issue | An issue `follow-ups:file` filed earlier, read with its body's key. | `follow-ups:file` |
 
 **`doctor` cannot check this.** These strings are written by the orchestrator's posting code, and
 read back at run time; nothing in a repository holds them before a run.
@@ -371,6 +398,9 @@ read back at run time; nothing in a repository holds them before a run.
 
 The contract holds within one release. An orchestrator ***must*** pin one exact runner version,
 and read this spec at that version's tag.
+
+A release fixes its dependency tree too: the package ships an `npm-shrinkwrap.json` derived from its
+lockfile when it is packed, so the version pinned selects every package that runs with it.
 
 There is no promise across releases, and no changelog of contract changes beside this file's own
 history: `git diff v<a>..v<b> -- docs/platform-spec.md` is what changed between two releases. Read
@@ -487,9 +517,9 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 > progress list and status line into its body, and adds `agent:review`. A run that fails has its
 > commits pushed to `RESCUE_BRANCH`, and the `stopped` lists written.
 
-> **Service orchestrator:** the chain moves on only when a review ends on an approval and the
-> Actions orchestrator's review advance puts `agent:implement` back on the parent. An orchestrator
-> that does not run that advance leaves the chain waiting on a human to add the label.
+> **Service orchestrator:** the chain moves on only when a review ends on an approval and
+> `review:advance` puts `agent:implement` back on the parent. An orchestrator that does not run it
+> leaves the chain waiting on a human to add the label.
 
 ## 8. `review`
 
@@ -517,31 +547,21 @@ so the diff matches GitHub's.
 | `FIX_ROUND_BUDGET` | optional | `""` | The budget, for the same line. Both have to be numbers for it to be written. |
 | `RED_CHECK_CONFIGURED` | optional | `""` | `true` where the red check is configured. |
 | `RED_CHECK_FILE` | optional | `""` | The red check's report. |
-| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the links to the pull request and the run. Empty renders none. |
-| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
-| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
 
 ### Outputs
 
 | Output | When it is written |
 |---|---|
-| `review_payload.json` | The review to post: body, findings and the commit reviewed. |
-| `summary.md` | The review's body, as a human debugging the run reads it. |
-| `review_body.json` | What the body is rebuilt from once the posting knows which thread resolutions held. |
-| `thread_resolutions.json` | The earlier findings this review verified, with their replies. Written on every run. |
-| `verdict.json` | The commit status to post: context, state and line, and the fix round it starts, if any. |
-| `pr_summary.json` | Signals by existing: the title and summary block to write into the pull request. |
-| `pr_status.md` | Off a PRD PR, the status line for the pull request's body. |
-| `follow_ups.md` | Signals by existing: out-of-scope findings were recorded, to be filed on merge. |
-| `park.md` | On a slice round that does not end on an approval: the comment that parks the chain. |
-| `park_posted.md` | On a slice round: the comment for a verdict posted whose posting then failed. |
-| `park_failed.md` | On a slice round: the comment for a review that fails, written before the work. |
-| `progress_running.md` | On a PRD PR: the progress list while the round runs on. |
-| `status_running.md` | Its status line, to match. |
-| `progress_approved.md` | On a PRD PR: the progress list where the round ends on an approval. |
-| `status_approved.md` | Its status line, to match. |
-| `progress_parked.md` | On a PRD PR: the progress list where the round parks. |
-| `status_parked.md` | Its status line, to match. |
+| `findings.json` | The findings to open a thread for: where each goes, its severity and title, the agent's text, and whether an earlier review had read its code. |
+| `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria, the follow-ups, and the data behind the header, the round note and the red tests. |
+| `thread_resolutions.json` | The earlier findings this review verified: each thread, why it closes, and the agent's note or the maintainer's reply to quote. Written on every run. |
+| `verdict.json` | The verdict's key, whether it starts a fix round, and how many findings it leaves open. |
+| `pr_summary.json` | Signals by existing: the title, the agent's summary, whether the round is final, and the data behind the Evidence and the Merge Danger. |
+| `park.json` | On a PRD PR: the round, the findings open before this review and, once it has ruled, its verdict, why its round parks where it does, and the findings it leaves open. Written before the work, and again once the review has ruled. |
+| `progress.json` | On a PRD PR whose branch could be read: the sub-issues, the slice ranges, whether the final review is requested, the rounds so far and the findings left open, which the progress list and status line are rendered from. Written with `park.json`. |
+
+None of these files holds a marker, a status context or a commit: they carry decisions and raw
+text, and `review:publish` and `review:advance` write every final string from them.
 
 **`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
 
@@ -563,20 +583,490 @@ so the diff matches GitHub's.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** before the runner, the review job waits up to 15 minutes for the pull
-> request's other checks and writes `CI_STATUS_FILE` and `CI_RESULT_FILE`, and a separate job may
-> run the red check. A posting job then answers and resolves the verified threads, posts the
-> review, writes the summary and the status line, posts the verdict and marks the pull request
-> ready on an approval. It adds `agent:fix` where `verdict.json` says a fix round starts, marks the
-> pull request with `agent:follow-ups` where `follow_ups.md` exists, and on a slice round runs the
-> advance: `agent:implement` back on the PRD parent on an approval, or the park comment on its
-> parent otherwise.
+> **Actions orchestrator:** the review job starts with `review:gate`, before its checkout, and runs
+> the rest only where it went ahead, on the commit it settled on, handing the runner its budget and
+> its round. Before the runner, `review:collect-checks` waits up to 15 minutes for the pull
+> request's other checks and writes the files the runner reads as `CI_STATUS_FILE` and
+> `CI_RESULT_FILE`. Where the red check is configured, a separate job runs
+> `review:red-check-place`, the adopter's install and test command, and `review:red-check-classify`,
+> whose report the runner reads as `RED_CHECK_FILE`. A posting job then mints the loop's token,
+> sets up Node, downloads the hand-over, and runs `review:publish`, which answers and resolves the verified threads, posts the
+> review, marks the pull request with `agent:follow-ups`, writes the title, the summary and the
+> status line, and posts the verdict. `review:conclude` then ends the run however it ended: the
+> refusal's note, or the error verdict and the failure comment, or the ready mark; `agent:review`
+> off; and the hand-off, `agent:review` again where the head moved, else `agent:fix` where the
+> review asked for a fix round. A glue step copies its `ended.json` into the job's outputs, and the
+> job keeps both commands' write logs as one artifact. On a PRD PR an advance job follows, which
+> sets up Node, mints the loop's token, downloads the runner's park hand-over and runs
+> `review:advance`: the progress list for how the round ended, then `agent:implement` back on the
+> PRD's parent on a slice round's approval, or the park comment there on any ending but an approval
+> or a fix round starting.
 
-> **Service orchestrator:** the CI wait is the Actions orchestrator's step, not the runner's. A
-> service with no wait of its own leaves both CI files unset, and the review reads the checks as
-> unknown, so it never recommends an approval. Chaining is each orchestrator's too: the runner adds
+> **Service orchestrator:** the CI wait is `review:collect-checks`, not the runner's. A service
+> that does not run it leaves both CI files unset, and the review reads the checks as unknown, so it
+> never recommends an approval. Chaining is each orchestrator's too: the runner adds
 > no label, so a service that does not add `agent:fix` or run the advance leaves the next step to a
 > human.
+
+### `review:gate`
+
+Decides, before anything is checked out, whether the review runs, which commit it reviews, and what
+kind of round it is. It runs no model and needs no checkout, and it writes nothing to the record:
+what it decided is handed on, and the posting step says it. In order:
+
+- **The pre-flight.** A pull request whose `PR_STATE` is not `open`, or that is `PR_MERGED`, is
+  refused with `This PR is closed.`, and not blocked. Otherwise the commit is settled. `BRANCH`'s
+  tip is read from the repository's refs, which move the moment a push lands, since the pull
+  request's head moves asynchronously after one: a tip that is `HEAD_SHA` is reviewed; a tip that
+  descends from it is reviewed once the pull request shows it as its head, waiting up to
+  `HEAD_WAIT_SECONDS`; a tip that does not descend from it, whose ancestry cannot be read, or that
+  the pull request never shows, is refused, blocked, with one sentence for all three. A tip that
+  cannot be read proceeds on `HEAD_SHA`, with a warning.
+- **The time limit.** A `REVIEW_TIMEOUT_MINUTES` that is set and is not a positive integer is
+  refused, naming the variable.
+- **The fix-round budget.** `DEPRECATED_AUTO_FIX`, where set, is a budget of 1 (`true`) or 0
+  (`false`), and anything else is refused; otherwise `MAX_FIX_ROUNDS`, 3 where unset, and a value
+  that is not a whole number is refused, naming it. The rounds spent are the loop's own
+  `agent-fix-round` statuses on the pull request's commits, and 0.7.6's round-starting
+  `agent-review` verdicts, counted once per link. A round starts where fewer are spent than the
+  budget and `LOOP_TOKEN_SOURCE` is `app` or `pat`; a count that cannot be read starts none.
+- **The round.** On a PRD branch only: `final` where the pull request's body carries the final
+  review's mark, else `slice`. A body that cannot be read fails the command.
+
+A refusal of the pre-flight's is a decision, and the command succeeds. A variable it refuses is
+written to `refusal_reason.txt` and the command fails, so the run ends as one that didn't run.
+`gate.json` is written however the command ends, with what was decided by then.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch, whose tip is read, and which tells a PRD PR. |
+| `HEAD_SHA` | required | | The head the request to review named. |
+| `PR_STATE` | required | | The pull request's state as the request saw it: `open` or `closed`. |
+| `PR_MERGED` | optional | `""` | `true` where the request saw it merged. |
+| `HEAD_WAIT_SECONDS` | optional | `"60"` | How long the pull request gets to show a tip that moved on as its head. |
+| `HEAD_POLL_SECONDS` | optional | `"5"` | How often it is asked meanwhile. |
+| `REVIEW_TIMEOUT_MINUTES` | optional | `""` | The review's own time limit, as configured; empty is the default. |
+| `MAX_FIX_ROUNDS` | optional | `""` | The fix-round budget, as configured; empty is 3. |
+| `DEPRECATED_AUTO_FIX` | optional | `""` | The deprecated `auto-fix` setting, which wins over `MAX_FIX_ROUNDS` where set. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where the loop's token will come from: `app`, `pat` or `workflow`. No round starts on anything but the first two. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `gate.json` | Always. Its decisions, every value a string: `proceed`, and `refusal` and `blocked` where it refused; `sha`, the commit to review; `budget`, `spent` (empty where it could not be counted) and `start`; and `round` on a PRD PR. A name not yet decided when it ended is absent. |
+| `refusal_reason.txt` | Where it refuses a variable: the sentence, before it fails. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- `BRANCH`'s tip, and how it relates to `HEAD_SHA`.
+- The pull request `PR_NUMBER` names, for its head while it waits and, on a PRD branch, for the
+  final review's mark in its body.
+- The statuses on the pull request's commits, for the loop's own `agent-fix-round`, and
+  `agent-review` with 0.7.6's round-starting description, counting only the loop's own (§4.1).
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the review job's first work, after its clock and a Node set up for it,
+> since nothing is checked out yet. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the label's event's;
+> the budget and the time limit are the caller's repository variables, and `LOOP_TOKEN_SOURCE` is
+> the `time-limit` job's choice, made where no agent runs. `OUTPUT_DIR` is `runner.temp`, where the
+> job's outcome step reads `refusal_reason.txt`. A glue step copies `gate.json` into step outputs
+> under its own names, `always()`, which the later steps' `if:`s, the runner and the posting job
+> read; `review:conclude` says the refusal.
+
+### `review:collect-checks`
+
+Waits for the pull request's other checks on `REVIEWED_SHA`, then writes their results for the
+runner: evidence for the agent, and one word the verdict's CI half is derived from. It runs no
+model, needs no checkout, and writes nothing to the record.
+
+It reads three surfaces, because each sees what the others cannot: the commit's check runs, its
+commit statuses (the latest per context), and its workflow runs, the only place a run that is
+queued or waiting for approval shows. The loop's own are left out of all three: a check run named
+`SELF_CHECK`, or whose name either side of ` / ` is one of the loop's job ids; the `agent-review`
+status; and the run `SELF_RUN_ID`, a run whose workflow is named `Agent …`, or one that calls the
+loop's reusable workflows.
+
+- **The wait.** Up to 15 minutes, ending as soon as nothing it can see is pending: no check run
+  unfinished (one waiting on an environment's reviewers aside), no status `pending`, and no
+  workflow run unfinished (one waiting for approval aside, since it cannot start until a human
+  acts). Where nothing has reported at all, it keeps looking for up to a minute, since a run is
+  created a moment after the push that starts it. A check-run read that fails ends the wait at
+  once.
+- **The word.** Each surface is `none`, `red` where something completed without passing,
+  `unknown` where something is unfinished, waiting for approval or could not be read, else
+  `green`. `none` on all three is green, and the evidence says no CI ran. `red` on any beats
+  `unknown`, and `green` needs all three.
+- **The evidence.** Each check run with its conclusion or status, the workflow runs that did not
+  pass and those waiting for approval with their links, the ceiling where it was reached, and the
+  end of each failed run's failing jobs' logs. Each surface that could not be read is said.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `REVIEWED_SHA` | required | | The commit `review:gate` settled. |
+| `SELF_CHECK` | required | | The name of the check run the job it runs in appears under, which is not CI. |
+| `SELF_RUN_ID` | optional | `""` | The workflow run it runs in, which is not CI. Empty is none. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `ci_status.md` | Unless it fails: the other checks' results, as evidence for the agent. |
+| `ci_result.txt` | Unless it fails: `green`, `red` or `unknown`. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The `agent-review` status on `REVIEWED_SHA`, only to leave it out: it is the verdict this review
+  has not posted yet.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** a step of the review job after the adopter's installs, where the gate
+> went ahead, with `REVIEWED_SHA` from the gate, `SELF_CHECK` the caller's `self-check` input and
+> `SELF_RUN_ID` the caller's run. `continue-on-error`, so it never fails the review: a command that
+> wrote nothing leaves the runner reading the checks as unknown. `OUTPUT_DIR` is a directory of its
+> own under `runner.temp`, and the runner reads its two files from there as `CI_STATUS_FILE` and
+> `CI_RESULT_FILE`. The `time-limit` job adds its 15 minutes to the review's own.
+
+### `review:red-check-place`
+
+Puts the test files a pull request adds or changes over the code as it was before the change, in
+the pull request's checkout, so the red check's tests run against it. It runs no model, reads no
+repository, holds no token, and writes nothing to the record. Each outcome below is a placement,
+written to `place.json`, and only a failure of git itself fails the command.
+
+- **Misconfigured.** An empty `REPORT_PATH` or `TEST_GLOBS` (whitespace only) is `misconfigured`,
+  with a reason naming the caller's input that is missing.
+- **The final review.** On a PRD branch whose `PR_BODY` carries the final review's mark, nothing is
+  placed: `final-review`.
+- **The base.** The merge-base of the checkout's `HEAD` and `origin/<BASE_REF>`, or
+  `no-merge-base` where there is none. On a PRD branch, the first parent of the earliest
+  first-parent commit of the slice started last, by the `Agent-Slice` trailer, since `BASE_REF`; a
+  PRD branch with no trailered commit keeps the merge-base, with a warning.
+- **The files.** `TEST_GLOBS` is one `:(glob)` pathspec a line. The non-test files changed between
+  the base and the head, deleted ones included, are its `source`. The test files added or changed,
+  renames split, are put over the base, the base checked out detached and each file taken from the
+  head as a literal path; none is `no-test-files`, and some is `ready`. A name with a line break is
+  dropped from both lists.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The pull request's checkout, at its head, with `origin/<BASE_REF>` fetched. |
+| `BRANCH` | required | | Its head branch, which tells a PRD PR. |
+| `BASE_REF` | required | | Its base branch. |
+| `PR_BODY` | optional | `""` | Its body, as the request saw it, for the final review's mark. |
+| `REPORT_PATH` | optional | `""` | Where the test command writes its JUnit report. Empty is `misconfigured`. |
+| `TEST_GLOBS` | optional | `""` | Which files are tests, one glob a line. Empty is `misconfigured`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `place.json` | Unless it fails: `status`, `ready`, `no-test-files`, `misconfigured`, `final-review` or `no-merge-base`; `reason` where it is one; `head`; `base` and `slice` where they were found; `files`, the test files placed, which the test command is handed; and `source` where `base` was found. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The final review's mark in `PR_BODY`, on a PRD branch.
+- The `Agent-Slice` trailers on the PRD branch's first-parent commits since `BASE_REF`.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the `red-check` job, where `red-check-command` is set, after a checkout
+> that persists no credential. That job runs the pull request's code, so it holds no secret, and
+> the package is installed before any of that code runs, by the one step handed the registry
+> token, `npm install --prefix "$RUNNER_TEMP"`. This command and `review:red-check-classify` run
+> from `RUNNER_TEMP`, where `npm exec` finds that install without asking the registry, and neither
+> is handed a token. `CHECKOUT` is the workspace, `BRANCH` and `PR_BODY` the label's event's, and
+> `REPORT_PATH` and `TEST_GLOBS` the caller's `red-check-report` and `red-check-test-globs`. A glue
+> step copies `place.json`'s `status` into a step output, which gates the adopter's toolchain,
+> their `setup` and their `red-check-command`, handed the files as `RED_CHECK_FILES`.
+
+### `review:red-check-classify`
+
+Writes the red check's report, `red_check.json`, whatever happened before it, so the review can
+tell "no red test" from "the check did not run". It runs no model, reads no repository, holds no
+token, and writes nothing to the record. The report is what `review`'s `RED_CHECK_FILE` reads:
+`status`, `base`, `head` (each `null` where unknown), `files`, `exitCode`, `tests` and `skipped`,
+with `reason`, `slice` and `source` where `review:red-check-place` gave them.
+
+- **The status.** `place.json`'s, or `failed` where there is none. Where it is `ready`:
+  `setup-failed` where `SETUP_OUTCOME` is `failure`, `not-run` where `EXIT_CODE` is not a number,
+  `no-report` where `REPORT_PATH` is not a file, `unreadable-report`, with the parser's reason,
+  where it is not well-formed XML or its declaration names an encoding other than UTF-8, else `ran`.
+- **Each test.** Each `testcase` of every element of the JUnit report: an `<error>` is `broken`; a
+  `<failure>` is `red`, unless the testcase is a file or a `describe` rather than a test (named as
+  its classname and its suite are, or, with every testcase after it, a failure named like a
+  `describe` the others are named under), which is `broken`; a `<skipped>` is counted and left
+  out; anything else is `passed`. A failure's or an error's `message`, or else its body's first
+  line, is kept, cut at 2,000 characters. A test reported twice under one name, classname and file
+  is one test, with the worse result.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The pull request's checkout, which `REPORT_PATH` is relative to. |
+| `REPORT_PATH` | optional | `""` | Where the test command wrote its JUnit report. |
+| `SETUP_OUTCOME` | optional | `""` | The outcome of the adopter's install step, empty where it did not run. |
+| `EXIT_CODE` | optional | `""` | The test command's exit code, empty where it did not run. |
+| `PLACE_DIR` | directory | | `review:red-check-place`'s `OUTPUT_DIR`. Reads `place.json` (where written). |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `red_check.json` | Unless it fails: the report. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. Its inputs are the checkout and what `review:red-check-place` wrote.
+
+> **Actions orchestrator:** the `red-check` job's step after the adopter's test command,
+> `always()`, from the install `review:red-check-place` used and with no token, since the pull
+> request's code has run and could have changed anything on the runner. An install that code
+> removed fails the step, which leaves no report, and the review reads that as unreadable, never
+> as "no red tests". `OUTPUT_DIR` is `runner.temp`, and the job uploads `red_check.json` as the
+> `agent-red-check` artifact, `always()`, which the review job downloads.
+
+### `review:publish`
+
+Resolves the threads a review closed and posts the review, then writes the pull request's title,
+summary and status line and posts the verdict, from the runner's hand-over, which it reads and
+checks in full before its first write. It runs no model, so it needs no `claude` and no checkout.
+It writes every final string itself: the body and its groups, each thread's body, the two closing
+replies, the summary block with its Evidence and Merge Danger, the status line and every marker in
+them, holding the body to GitHub's limit and shedding in a fixed order down to cutting
+out-of-scope follow-ups. Each commit status's context, state and description are its own, chosen
+by the verdict's key and cause, never read from the hand-over. The pull request's node id is read
+from the pull request `PR_NUMBER` names, and every thread id in the hand-over has to be a review
+thread on it, the verdict and the fix-round claim are read strictly into their fixed sets, and
+`verdict.json` has to name the verdict `review_body.json` does, or nothing is written.
+
+The order: every reply and resolve first, a thread that will not resolve tolerated and listed in
+the body as still open; then the review, on `REVIEWED_SHA`, its *Resolved since last review* naming
+only the threads that resolved; then `agent:follow-ups`, only where follow-ups survive the body's
+shedding; then, where `pr_summary.json` is there, the title and the summary block, spliced against
+the body as it stands, headed by `REVIEWED_SHA` (a body with half a block, or two, gets the title
+alone, and the final review's write drops the draft-only note); then, off a PRD PR, the status
+line, between its markers and nowhere else; then the `agent-review` status on `REVIEWED_SHA`,
+linking the review, and `agent-fix-round` beside it where the review claimed a fix round. The
+title, summary, status line and statuses are tolerated: one GitHub refuses is a warning, since a
+posted review is worth more than any of them. A server error on the review (a 5xx, or GraphQL's "An internal error occurred") is read
+back before it is taken as "not posted": a review on `REVIEWED_SHA` with the posted body is this
+run's, and the command goes on with its URL.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | required | | The token whose writes start the loop's next workflow. |
+| `LOOP_TOKEN_SOURCE` | required | | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | The pull request's head branch. A PRD branch's pull request gets no status line here: it is the advance's. |
+| `REVIEWED_SHA` | required | | The commit the review read, recorded before the agent ran; the review and the verdict are posted on it. |
+| `REVIEW_DIR` | directory | | The `review` runner's `OUTPUT_DIR`. Reads `findings.json`, `review_body.json`, `thread_resolutions.json`, `pr_summary.json` (where written) and `verdict.json`. |
+| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the body ends with. Empty renders none. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `published.json` | The posted review's URL, `reviewUrl`, written the moment the review is posted. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The pull request `PR_NUMBER` names, for its node id, and its review threads, for the ids the
+  hand-over may name.
+- The pull request's title and body as they stand when it writes them, for the summary block, the
+  draft-only note and the status line it splices.
+- On a server error posting the review, the pull request's reviews, for one on `REVIEWED_SHA` with
+  the body it posted.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the posting job's mint runs first, so the command holds the loop's
+> token; it is the one step handed both tokens, the workflow's as `GH_TOKEN`. `REVIEWED_SHA` is the review job's `sha`
+> output, `BRANCH` is the head the event names, `REVIEW_DIR` is where the review's artifact is downloaded, and `OUTPUT_DIR` is a
+> directory of its own under `runner.temp`, whose `published.json` and `failure_reason.txt`
+> `review:conclude` reads. A failure is commented on the pull request, with `agent:blocked`, by
+> `review:conclude`.
+
+### `review:conclude`
+
+Ends every review run, success included, in the loop's one order: every result posted, then
+`agent:review` off, then the label that names the next step. It runs no model and needs no
+checkout. It is told how the run went rather than reading it off which steps ran: the review's
+result and outputs, and the outcome of each step the orchestrator ran before it, and it works out
+the ending from them. Each is one of:
+
+- **A refusal** (`PROCEED` is `false`): the comment `` **`agent:review` didn't run:** `` and
+  `REFUSAL`, then `agent:review` off, then `agent:blocked` where `BLOCKED` is `true`.
+- **A review cancelled before deciding** (`PROCEED` is neither, and `REVIEW_RESULT` is not
+  `failure`): `agent:review` off, and nothing else, since nothing is known to say. One that
+  *failed* before deciding, as a gate whose package would not install does, is a run that did not
+  finish, below, with no verdict, since no commit was settled.
+- **A run that did not finish**, the review's or the posting's: the `agent-review` status `error`
+  on `REVIEWED_SHA`, then the failure comment, then `agent:review` off, then `agent:blocked`. The
+  comment's reason is, in order: the time limit or a cancel where the review was cancelled; the
+  review's refusal or failure reason where it failed; and where the review finished, the first of
+  the mint, the download and publish that did not succeed: a fixed sentence for the mint and the
+  download, publish's `failure_reason.txt`, or a cancel where that step was cancelled or skipped.
+- **A posted review**: `agent:blocked` off; the ready mark, unless a fix round is about to start,
+  and on a PRD PR only on the final review's approval; `agent:review` off; then, where the pull
+  request is open and its head has moved on from `REVIEWED_SHA`, `agent:review` again with the
+  loop's token, or a comment saying it was not asked for where `LOOP_TOKEN_SOURCE` is neither `app`
+  nor `pat`, or nothing where another trigger label is on. Otherwise, on *changes recommended*
+  with `FIX_ROUND` `true`, `agent:fix`, removed and added with the loop's token, unless it is
+  already on, a newer `agent-review` verdict than this review's stands on the head, or the head
+  lacks this review's `agent-fix-round` status. A round that does not start where it should is said
+  on the pull request, which is marked ready off a PRD PR, and the command fails.
+
+Every write but the last case's fix round is tolerated: one GitHub refuses is a warning, so a run
+that cannot comment still takes its label off. The labels a run fires on (`agent:review` again,
+`agent:fix`) and the ready mark are made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow. Empty where it was not minted, which is one of the endings this reports. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch, which tells a PRD PR. |
+| `REVIEW_RESULT` | required | | How the review ended: `success`, `failure` or `cancelled`. |
+| `PROCEED` | optional | `""` | `true` where the pre-flight let the review go ahead, `false` where it refused. |
+| `REFUSAL` | optional | `""` | The pre-flight's refusal, where it refused. |
+| `BLOCKED` | optional | `""` | `true` where the refusal needs a maintainer, and adds `agent:blocked`. |
+| `REVIEWED_SHA` | optional | `""` | The commit the review read; the error verdict goes on it, and a head that is not it has moved. |
+| `VERDICT` | optional | `""` | The verdict's key. |
+| `FIX_ROUND` | optional | `""` | `true` where the review asked for an automatic fix round. |
+| `ROUND` | optional | `""` | `final` on a PRD PR's final review. |
+| `FAILURE_REASON` | optional | `""` | The reason a failed review gave. |
+| `REFUSAL_REASON` | optional | `""` | A variable the review refused before reviewing anything. |
+| `TIMED_OUT` | optional | `""` | `true` where a cancelled review ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting `LOOP_TOKEN`: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the review's hand-over. |
+| `PUBLISH_OUTCOME` | optional | `""` | The same, for `review:publish`. |
+| `PUBLISH_DIR` | directory | | `review:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
+| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the failure comment and the error verdict name. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `ended.json` | `moved`, whether the head moved while the review ran, and `reviewUrl`, the posted review's, where there is one. Written before the fix round's hand-off, so a round that does not start still has it. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The pull request `PR_NUMBER` names, once the review is posted, for its state, its head and its
+  trigger labels.
+- Where it would start a fix round, the statuses on that head, for the newest `agent-review` and
+  the `agent-fix-round` beside it, counting only the loop's own (§4.1).
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the posting job's step after publish, run `always()`. It is told the
+> review job's result and outputs, and the outcomes of the mint, the download and publish, and
+> reads publish's directory. `ended.json` is copied by a glue step into the job's two outputs,
+> `moved` and `review-url`, which the advance job reads with the job's result. It fails only on a
+> fix round that did not start, so the job's result still means "everything posted".
+
+### `review:advance`
+
+Moves a PRD PR's chain on after a review, or parks it (PRD #222). It runs no model and needs no
+checkout. It is told how the review and its posting ended, rather than reading it off which steps
+ran, and works out how the round ended: **approved** where both finished and the verdict is
+*approval recommended*; **running** where both finished on *changes recommended* with `FIX_ROUND`
+`true`; **parked** on every other ending, a run that did not finish included. Where `MOVED` is
+`true` it does nothing: the review of the new head decides. Otherwise, in order:
+
+- **The progress list and status line**, rendered from `progress.json` for that ending, linking
+  `REVIEW_URL` where a review was posted and the pull request where not, and spliced into the PRD
+  PR's live body between their markers with `GH_TOKEN`: a body with no list gets one appended, and
+  half a list, or two, is left as it stands. Tolerated: one GitHub refuses is a warning.
+- **On a slice round's approval**, `agent:implement` removed from and added to the PRD's parent,
+  read off `BRANCH`, with `LOOP_TOKEN`. Where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat`,
+  nothing is added, and a comment on the PRD PR says which re-label advances the chain by hand.
+  Where `MINT_OUTCOME` is `failure`, the same comment names the mint's failure, and the command
+  fails.
+- **On a parked ending**, the park comment on the PRD's parent with `LOOP_TOKEN`: the round, why it
+  stopped, the open findings and the ways on. For a round that ended, the reason in `park.json` and
+  the verdict's next step; for a verdict posted whose posting then failed, that verdict, linked;
+  otherwise, that the review did not finish, with the findings open before it. Where the hand-over
+  is missing, a comment saying only that the review did not finish. Without the App or the PAT
+  the comment goes on the PRD PR, saying where it was meant for; where the mint failed, the same
+  with the reason, and the command fails. A comment that cannot be posted fails the command.
+
+A head that is not `agent/prd-<parent>-<slug>`, where the parent is needed, fails the command.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow, and the one the parent is written with. Empty where it was not minted. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `PR_NUMBER` | required | | The PRD PR. |
+| `BRANCH` | required | | Its head branch, which names the PRD's parent. |
+| `REVIEW_RESULT` | required | | How the review ended: `success`, `failure` or `cancelled`. |
+| `POSTING_RESULT` | required | | How the posting ended, the same way. Its `success` means everything was posted. |
+| `MOVED` | optional | `""` | `true` where the head moved while the review ran. |
+| `REVIEW_URL` | optional | `""` | The posted review, where one was posted. |
+| `VERDICT` | optional | `""` | The verdict's key. |
+| `FIX_ROUND` | optional | `""` | `true` where the review asked for an automatic fix round. |
+| `ROUND` | optional | `""` | `slice` on a slice round, `final` on the final review. Only a slice round's approval moves the chain on. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting `LOOP_TOKEN`: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `PARK_DIR` | directory | | The `review` runner's `OUTPUT_DIR`. Reads `park.json` (where written) and `progress.json` (where written). |
+| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the links to the pull request and the run. Empty renders none. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- Its head, `BRANCH`, against `agent/prd-<parent>-<slug>`, for the PRD's parent.
+- The PRD PR's body, live, for the `agent:progress` and `agent:status` blocks it replaces.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the advance job, after the posting job, on a same-repository PRD PR's
+> `agent:review` where the review went ahead and the head did not move. It sets up Node, mints the
+> loop's token, downloads the runner's park hand-over and runs this, each of the last two whatever
+> the mint did. It is told the review job's and the posting job's results and outputs, and the
+> mint's outcome. It holds `pull-requests: write` and `packages: read`.
 
 ## 9. `fix`
 
@@ -674,24 +1164,28 @@ neither.
 Trigger label: `agent:follow-ups`, on a merged pull request. `doctor` does not demand the label,
 since only a repository that installed the filing caller reads it.
 
+A workflow with no runner: one command, and no agent.
+
+### `follow-ups:file`
+
 Files the out-of-scope findings a pull request's reviews recorded, as issues. It runs no model, so
 it needs no `claude` and no checkout.
 
-### Inputs
+#### Inputs
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
 | `PR_NUMBER` | required | | The merged pull request. |
 
-### Outputs
+#### Outputs
 
 | Output | When it is written |
 |---|---|
 | | Nothing beyond §2.4. The result is the issues it files. |
 
-**`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
 
-### What it reads from the record
+#### What it reads from the record
 
 - `agent:follow-ups` on the pull request, read live, so a second run files nothing.
 - The newest review by the loop's identity carrying `agent-follow-ups`; an edited one is refused.
@@ -699,5 +1193,5 @@ it needs no `claude` and no checkout.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** the runner files the issues itself, so its `GH_TOKEN` can write issues,
-> unlike the other five runners'. A failure is commented on the pull request.
+> **Actions orchestrator:** the command files the issues itself, with its `GH_TOKEN`, which can
+> write issues, unlike any runner's. A failure is commented on the pull request.

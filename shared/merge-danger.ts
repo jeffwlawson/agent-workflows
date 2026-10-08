@@ -20,7 +20,9 @@ import type { FollowUp, ReviewOutput } from "./review-output.js";
  */
 export const MERGE_DANGER_HEADING = "## Merge Danger";
 
-export type MergeDanger = Pick<ReviewOutput, "door" | "doorNote" | "blastRadius" | "blastRadiusNote" | "breaking">;
+export type MergeDanger = Pick<ReviewOutput, "door" | "doorNote" | "blastRadius" | "blastRadiusNote"> & {
+  readonly breaking?: readonly string[] | undefined;
+};
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 

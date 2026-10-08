@@ -396,7 +396,7 @@ token yourself: `init` says you can, and does neither.
 
 ## 2b. Choosing the model
 
-Defaults are baked into the runner package (`shared/common.ts` in its sources), and **most specific
+Defaults are baked into the runner package (`shared/agent.ts` in its sources), and **most specific
 wins**:
 
 | Source | Scope |
@@ -1531,8 +1531,9 @@ misconfigured, and leaves the review with unknown red evidence; `doctor` warns a
 is missing, and notes whether the check is configured at all.
 
 **It is evidence for the review and never a required status.** The job runs the pull request's
-code, so it holds no secret and only `contents: read`, carries the review's fork guard, and nothing
-it produces is trusted beyond its report. The review waits for it but runs whether it passed, failed
+code, so it holds no secret, and only `contents: read` and the `packages: read` that installs the
+loop's package, before any of that code runs and by the one step handed the job's token. It carries
+the review's fork guard, and nothing it produces is trusted beyond its report. The review waits for it but runs whether it passed, failed
 or was skipped, and its check run is excluded from the CI the review waits on, so it never turns the
 CI result red. Do not make it required: a pull request that only refactors has no red test to show,
 and is not wrong for it.
@@ -1771,7 +1772,7 @@ you cannot reason about, and the paragraph after the table is a decision only yo
 | **Scrub the GitHub token** from the agent's environment after fetching context | the agent runs unsandboxed; it has no legitimate `gh` use once context is read |
 | **`contents: read`** on the review job | the one agent structurally unable to mutate the branch. The posting job beside it holds `contents: write`, because closing a thread needs it, and so it runs no agent and checks nothing out |
 | **The loop's credentials never on the agent's runner** | the App's key, any token minted from it, and `AGENT_PAT` are named only in jobs that run no agent (§2). An agent that was steered, unsandboxed with `sudo`, can read every secret its own job names; its job names none of these, which is what makes the App's Workflows: write acceptable |
-| **No model in the job that files** | `follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the runner |
+| **No model in the job that files** | `follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the command |
 
 **Neither the trigger nor the input gate is the write boundary, and it is the same role on both
 sides.** The **trigger** is a label, and GitHub's **Triage** role can add labels with no push access

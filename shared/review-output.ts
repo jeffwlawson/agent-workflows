@@ -20,6 +20,7 @@ import {
   type CarriedFinding,
   type VerificationEntry,
 } from "./review-verification.js";
+import { BODY_HEADING, FIX_ROUND_STATUS, FOLLOW_UPS_LABEL, FOLLOW_UPS_MARKER } from "./record.js";
 
 /**
  * A problem the review found and this pull request will not fix — a defect in a
@@ -415,42 +416,19 @@ export interface VerdictRow {
    * two cases apart, and the hand-off to the fix round selects on it.
    */
   readonly startsFixRound?: true;
+  /**
+   * Which of *needs a closer look*'s causes chose this row's lines, on that
+   * row and no other: what the runner hands over for publish to choose the
+   * same lines by, since the key alone names three.
+   */
+  readonly cause?: CloserLookCause;
 }
-
-/**
- * The context the verdict is posted under. One per commit per context, so a
- * later review of the same commit replaces its own verdict and nothing else —
- * and a new commit carries none until one is posted for it, which is what stops
- * a stale approval surviving a push.
- */
-export const VERDICT_CONTEXT = "agent-review";
-
-/**
- * The record that a review asked for an automatic fix round (#297): a second
- * status, under a context of its own, posted beside the verdict on the same
- * commit and linking the same review, only where the row has
- * `startsFixRound`.
- *
- * The verdict's line used to be that record: a fix round's status line was
- * its own, and the budget counted rounds by it, word for word. #201's
- * *Verdict lines* made every line fixed whatever the state, so the fact moved
- * here. It is what *Settle the fix-round budget* counts rounds by and what
- * `readReviewHistory` reads a fix round off, matched to its verdict by link.
- *
- * `success`, because it records a step taken rather than something left to
- * do, and a `pending` one would read as a check that never finished.
- */
-export const FIX_ROUND_STATUS = {
-  context: "agent-fix-round",
-  state: "success",
-  description: "This review asked for an automatic fix round.",
-} as const;
 
 /**
  * The line a 0.7.6 verdict carried where it started a round, before
  * `FIX_ROUND_STATUS` existed (#297). A pull request whose round was in flight
  * at the upgrade has only this to show for it, so the two readers of a round,
- * `readReviewHistory` and *Settle the fix-round budget*, count an
+ * `readReviewHistory` and `review:gate`, count an
  * `agent-review` status carrying it as a round too. For one release: the
  * statuses outlive it, but a round started under 0.7.6 has finished by then.
  */
@@ -622,7 +600,7 @@ export interface FixRounds {
  * review after it closed, matched by the ids the workflow wrote into them
  * (#202). Counts rather than the ids themselves, because the early stop only
  * asks whether any closed; the matching is `fixRoundProgress`'s, in
- * `shared/review-round.ts`.
+ * `review/review-round.ts`.
  */
 export interface FixRoundProgress {
   readonly given: number;
@@ -967,7 +945,7 @@ const entryLine = (entry: RecordEntry): string =>
 export const PREVIOUSLY_MISSED_SUBTITLE = "In code that hasn't changed since last review";
 
 /**
- * How a group the posting job renders opens: its title, whether it starts
+ * How one of the resolved groups opens: its title, whether it starts
  * expanded, and the line under its summary where it has one (#257).
  */
 export interface GroupHead {
@@ -976,7 +954,7 @@ export interface GroupHead {
   readonly subtitle?: string;
 }
 
-/** *Resolved since last review*, as `renderReviewBody` renders it and the posting job does. */
+/** *Resolved since last review*: the closures publish made. */
 export const RESOLVED_GROUP: GroupHead = { title: "Resolved since last review", open: false };
 
 /**
@@ -986,8 +964,9 @@ export const RESOLVED_GROUP: GroupHead = { title: "Resolved since last review", 
  * than listing it under *Resolved*, and the next review retries it.
  *
  * Expanded, as *Open* is: an open thread is something a reader may have to act
- * on. Rendered by nothing here, since the runner cannot know which resolves will
- * fail; the posting job renders it, from these words, where one did.
+ * on. Only `review:publish` can tell which closures held, since it makes them,
+ * so the runner hands every one over as resolved and publish moves the ones
+ * that did not hold here.
  */
 export const UNCLOSED_GROUP: GroupHead = {
   title: "Still open",
@@ -1130,20 +1109,6 @@ const unresolvedSentence = (record: ReviewRecord): string => {
 };
 
 /**
- * The fixed heading the body opens with.
- *
- * Every agent in the loop posts as `github-actions[bot]`, so in the timeline a
- * review overview and a fix run's thread replies look like the same author
- * saying more things. A heading marks the one to read, and this wording matches
- * the `agent-review` status and the `agent:review` label — the way Copilot's
- * overview opens with "Copilot review overview".
- *
- * Level 2 rather than level 1: `#` renders very large inside a comment, and the
- * assessment heading below it stays level 3.
- */
-export const BODY_HEADING = "## Agent review";
-
-/**
  * How this was checked: the collapsed section that, with the summary block in
  * the pull request's body (#218), replaced one 250-word paragraph.
  *
@@ -1261,69 +1226,212 @@ const shedSentence = (shed: Shed): string | undefined => {
  * the run rather than about the change. Both belong above the count, where a
  * reader meets them before deciding what the count means.
  *
- * A function rather than two dozen lines in the runner, because this is the
- * part of the review a human acts on and the runner is a script with no test
- * around it.
+ * Written by `review:publish` (ADR 0007), from what the runner handed over and
+ * the threads publish managed to resolve, which is why it is the last thing
+ * publish composes before the post.
  */
 export const renderReviewBody = (parts: ReviewBodyParts): string => renderReviewPost(parts).body;
 
 /**
- * The body, and what the posting job needs to put *Resolved since last review*
- * right after it has tried to resolve the threads (#257).
- *
- * The review job runs the model and posts nothing; a job that runs no model
- * resolves the threads this review closed and then posts the body. So the body
- * cannot know, when it is rendered, which of those closures will hold. `body` is
- * the body as it reads where every one did, and is what the run log and the
- * payload carry. `slotted` is the same body with `slot` where the resolved group
- * goes, and `resolved` is that group's lines, worst first, each with the thread
- * the posting job has to have resolved for the line to stay there. A line whose
- * thread it could not resolve moves to `UNCLOSED_GROUP` instead, in the same
- * place in the body.
- *
- * The lines are rendered here, shed as the rest of the body was, so the posting
- * job writes no entry and composes only the two group wrappers, from `groups`.
- * A legacy body entry has no thread and closes by not being listed again, so it
- * carries no `threadId` and always stays.
- *
- * Measured with the resolved group in place. A closure that fails costs the
- * unclosed group's summary and subtitle on top, a few hundred bytes inside the
- * margin `REVIEW_BODY_BUDGET` keeps under GitHub's limit.
+ * The body, and the follow-ups it records once it fits: the list the shedding
+ * left, which is what `agent:follow-ups` is added for, and only where it is
+ * not empty.
  */
 export interface ReviewPost {
   readonly body: string;
-  readonly slotted: string;
-  readonly slot: string;
-  readonly resolved: readonly { readonly threadId?: string; readonly line: string }[];
-  readonly groups: { readonly resolved: GroupHead; readonly unclosed: GroupHead };
+  readonly followUps: readonly FollowUp[];
 }
 
 /**
- * Where the resolved groups go in `ReviewPost.slotted`: an HTML comment, so a
- * slot nothing replaced renders as nothing.
+ * A resolved entry, with the thread the review closed for it where it has
+ * one. A legacy body entry has no thread and closes by not being listed again,
+ * so it carries no `threadId` and always stays under *Resolved*.
  */
-export const RESOLVED_SLOT = "<!-- agent-review:resolved-groups -->";
+export interface ClosingEntry extends RecordEntry {
+  readonly threadId?: string | undefined;
+}
 
-export const renderReviewPost = (parts: ReviewBodyParts): ReviewPost => {
-  const record = reviewRecord(parts);
+/**
+ * What the review runner hands `review:publish` for the body (ADR 0007):
+ * every choice, and the agent's text raw, with nothing rendered. The record's
+ * groups as the runner sorted them, the verdict as its key and, on *needs a
+ * closer look*, its cause, and the follow-ups with the numbers their payload
+ * carries. The runner adds the header's, the round note's and the red tests'
+ * data beside these, which publish formats into `ReviewBodyParts`.
+ */
+export interface ReviewBodyHandOver {
+  readonly verdict: Verdict;
+  readonly cause?: CloserLookCause | undefined;
+  /** The review's sentence naming what is unresolved, where it wrote one. */
+  readonly assessment?: string | undefined;
+  readonly needsYou?: string | undefined;
+  readonly howChecked?: string | undefined;
+  readonly open: readonly RecordEntry[];
+  readonly missed: readonly RecordEntry[];
+  /** Worst first, in the record's order, each with the thread it closes where it has one. */
+  readonly resolved: readonly ClosingEntry[];
+  /**
+   * How many of this review's findings were moved to `followUps` for having no
+   * anchor in the diff, the same number `deriveVerdict` subtracted, and the
+   * length of the list's exempt prefix.
+   */
+  readonly movedToFollowUps: number;
+  /**
+   * This review's whole follow-up list, from `recordFollowUps`: the moved
+   * findings first, then the out-of-scope ones the cap kept. And what the cap
+   * cost, which is a number about the second half alone.
+   *
+   * **The moved ones lead it**, and that is a fact this relies on rather than
+   * one it checks: `movedToFollowUps` above is written into the payload as the
+   * length of the exempt prefix, so a list that appended them instead would
+   * exempt the wrong entries at the filing end. One function builds the list and
+   * the count together for that reason.
+   *
+   * The **payload** goes out with every review, empty list included: the filing
+   * half reads it on merge, and a round that recorded nothing has to be able to
+   * say so.
+   */
+  readonly followUps: readonly FollowUp[];
+  readonly droppedFollowUps: number;
+  /** The cap `recordFollowUps` held the list to, written into the payload for the filing end to re-apply (#247). */
+  readonly followUpsCap: number;
+  /**
+   * Whether earlier rounds' entries lead the capped list (#247): the cap then
+   * drops the newest rather than the least serious, and the body says so.
+   */
+  readonly followUpsCarried: boolean;
+  /**
+   * The fix run's out-of-scope notes this review chose not to file, each with
+   * its reason (#213), from `applyNoteRulings`. The promoted ones are in
+   * `followUps` above and are not repeated here.
+   */
+  readonly droppedNotes: readonly DroppedNote[];
+  /** The linked issue's acceptance criteria and what this review said about each (#214), from `applyCriteriaRulings`. */
+  readonly criteria: readonly CriterionResult[];
+}
+
+/** What the runner decided, which `reviewBodyHandOver` turns into what it hands over. */
+export interface ReviewDecisions {
+  /** The row the derivation chose. */
+  readonly verdict: VerdictRow;
+  /** The review as the agent produced it, which is what the verdict was derived from. */
+  readonly output: ReviewOutput;
+  /**
+   * The findings with their placements, from `placeFindings` — every one of
+   * which has a thread (#127, decision 1), so each entry here is the one-line
+   * version of something a maintainer can reply to.
+   *
+   * The ones that reached no placement are not in this list and are not in the
+   * record: they are in `followUps`, and `movedToFollowUps` is what the body
+   * says about them.
+   *
+   * Required rather than defaulted to empty: the wrong default is the one with
+   * no symptom, a body with a finding missing from it and nothing saying so.
+   */
+  readonly placed: readonly PlacedFinding[];
+  readonly movedToFollowUps: number;
+  /**
+   * The earlier reviews' findings this one checked and found still open, from
+   * `verifyCarried`. Listed under *Open* beside this round's, each with the id
+   * it has carried since it was raised (#111).
+   *
+   * Required for the reason `placed` is: one forgotten is a body whose record
+   * is shorter than the count the verdict was derived from — the exact
+   * disagreement #105 closed.
+   */
+  readonly stillOpen: readonly CarriedFinding[];
+  /**
+   * The ones it found settled, from the same call. This is the half with no
+   * other trace at all: a thread closes and disappears from the next round's
+   * feedback, so a body that omitted this would be a record with no memory of
+   * the work that was done.
+   */
+  readonly resolved: readonly CarriedFinding[];
+  readonly followUps: readonly FollowUp[];
+  readonly droppedFollowUps: number;
+  /** `MAX_FOLLOW_UPS` where absent, which is every regular pull request's. */
+  readonly followUpsCap?: number | undefined;
+  readonly followUpsCarried?: boolean | undefined;
+  readonly droppedNotes?: readonly DroppedNote[] | undefined;
+  readonly criteria?: readonly CriterionResult[] | undefined;
+}
+
+/**
+ * The body's half of the hand-over, from what the runner decided: the record
+ * grouped and sorted, each resolved entry with the thread whose closure it
+ * stands on.
+ *
+ * Handed the whole `output` so the set it records cannot be a different set
+ * from the one `deriveVerdict` counted, which is the disagreement #105 closed.
+ */
+export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOver => {
+  const record = reviewRecord(decisions);
   // The resolved entries with their threads, in the record's order: the same
   // comparator over the same list, and `Array#sort` is stable.
-  const closures = parts.resolved
-    .map((finding) => ({ threadId: finding.threadId, entry: carriedEntry(finding, false) }))
-    .sort((a, b) => severityRank(a.entry.severity) - severityRank(b.entry.severity));
-  const body = renderBody(parts, record);
-  const cut = cutFor(body.shed);
-
+  const resolved = decisions.resolved
+    .map((finding) => ({ ...carriedEntry(finding, false), ...(finding.threadId === undefined ? {} : { threadId: finding.threadId }) }))
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+  const { output } = decisions;
   return {
-    body: body.text,
-    slotted: body.compose(body.shed, true),
-    slot: RESOLVED_SLOT,
-    resolved: closures.map(({ threadId, entry }) => ({
-      ...(threadId === undefined ? {} : { threadId }),
-      line: entryLine(cut([entry])[0] as RecordEntry),
-    })),
-    groups: { resolved: RESOLVED_GROUP, unclosed: UNCLOSED_GROUP },
+    verdict: decisions.verdict.verdict,
+    ...(decisions.verdict.cause === undefined ? {} : { cause: decisions.verdict.cause }),
+    ...(output.assessment === undefined ? {} : { assessment: output.assessment }),
+    ...(output.needsYou === undefined ? {} : { needsYou: output.needsYou }),
+    ...(output.howChecked === undefined ? {} : { howChecked: output.howChecked }),
+    open: record.open,
+    missed: record.missed,
+    resolved,
+    movedToFollowUps: decisions.movedToFollowUps,
+    followUps: decisions.followUps,
+    droppedFollowUps: decisions.droppedFollowUps,
+    followUpsCap: decisions.followUpsCap ?? MAX_FOLLOW_UPS,
+    followUpsCarried: decisions.followUpsCarried ?? false,
+    droppedNotes: decisions.droppedNotes ?? [],
+    criteria: decisions.criteria ?? [],
   };
+};
+
+/** What `renderReviewBody` is handed: the hand-over, and what only publish knows. */
+export interface ReviewBodyParts extends ReviewBodyHandOver {
+  /**
+   * The threads publish resolved, of those the resolved entries stand on
+   * (#257). An entry whose thread is not here moves from *Resolved since last
+   * review* to `UNCLOSED_GROUP`, in the same place in the body, so the record
+   * never claims a closure that did not happen.
+   */
+  readonly closed: ReadonlySet<string>;
+  /** The note a round that could not be established carries; see `review/review-round.ts`. */
+  readonly roundNote?: string | undefined;
+  /**
+   * On a PRD PR's slice round, the red check's record of the slice's red tests
+   * (#235), as `renderRedTestsBlock` writes it: invisible, and read back by the
+   * final review, which lists each slice's.
+   */
+  readonly redTestsBlock?: string | undefined;
+  /**
+   * The run that produced this review. Optional — it is a link, and a review
+   * that could not name its own run is still a review — so a caller outside
+   * Actions renders a body without one rather than failing.
+   */
+  readonly runUrl?: string | undefined;
+  /** The round's header (#298), from `roundHeader` in `shared/round-header.ts`: the body's first line. */
+  readonly header?: string | undefined;
+  /** Where to say what was shed when the body had to be made to fit: the run log's copy. */
+  readonly log?: ((line: string) => void) | undefined;
+}
+
+export const renderReviewPost = (parts: ReviewBodyParts): ReviewPost => {
+  const findings = parts.open.length + parts.missed.length;
+  const record: ReviewRecord = {
+    open: [...parts.open],
+    missed: [...parts.missed],
+    resolved: [...parts.resolved],
+    findings,
+  };
+  const unclosed = parts.resolved.filter((entry) => entry.threadId !== undefined && !parts.closed.has(entry.threadId));
+  const closed = parts.resolved.filter((entry) => entry.threadId === undefined || parts.closed.has(entry.threadId));
+  const { text, shed } = renderBody(parts, record, { closed, unclosed });
+  return { body: text, followUps: parts.followUps.slice(0, parts.followUps.length - shed.cutFollowUps) };
 };
 
 /** The record's entries as a shed renders them: titles cut where it cut them. */
@@ -1334,153 +1442,20 @@ const cutFor =
       ? entries.map((entry) => ({ ...entry, title: shortened(entry.title, SHED_TITLE_LENGTH) }))
       : [...entries];
 
-/** What `renderReviewBody` is handed. */
-export interface ReviewBodyParts {
-  /**
-   * The row the derivation chose. The body opens with its heading and then its
-   * next step — the same two halves the commit status carries, except that the
-   * status fronts its line with `label` because a description refuses the
-   * heading's marker (see `label`), so the two surfaces cannot say different
-   * things — and the heading is *not* repeated inside the step, which is why
-   * the status's `description` is not what is rendered here.
-   *
-   * The step is put through `labelsAsCode` on the way in: the body renders
-   * Markdown and the status does not, so the same sentence is written once and
-   * decorated for the surface it is going to.
-   */
-  readonly verdict: VerdictRow;
-  /** The review as the agent produced it, which is what the verdict was derived from. */
-  readonly output: ReviewOutput;
-  /** The note a round that could not be established carries; see `shared/review-round.ts`. */
-  readonly roundNote?: string | undefined;
-  /**
-   * The findings with their placements, from `placeFindings` — every one of
-   * which has a thread (#127, decision 1), so each entry here is the one-line
-   * version of something a maintainer can reply to.
-   *
-   * The ones that reached no placement are not in this list and are not in the
-   * record: they are in `followUps`, and `movedToFollowUps` below is what the
-   * body says about them.
-   *
-   * Required rather than defaulted to empty, for the reason `round` is: the
-   * wrong default is the one with no symptom. A caller that forgot this posts a
-   * body with a finding missing from it and nothing saying so.
-   */
-  readonly placed: readonly PlacedFinding[];
-  /**
-   * How many of this review's findings were moved to `followUps` for having no
-   * anchor in the diff — the same number `deriveVerdict` subtracted.
-   *
-   * A count rather than the findings themselves: they are already rendered, in
-   * the *Follow-ups* group below, and a second copy here would be the body
-   * telling a reader the same finding twice under two headings.
-   */
-  readonly movedToFollowUps: number;
-  /**
-   * The earlier reviews' findings this one checked and found still open, from
-   * `verifyCarried`. Listed under *Open* beside this round's, each with the id
-   * it has carried since it was raised (#111).
-   *
-   * Required rather than defaulted, for the reason `placed` is: a caller that
-   * forgot this posts a body whose record is shorter than the count the verdict
-   * was derived from — the exact disagreement #105 closed — and, for a finding
-   * with no thread of its own, drops the only record that it is still open.
-   */
-  readonly stillOpen: readonly CarriedFinding[];
-  /**
-   * The ones it found settled, from the same call. Required for the reason the
-   * two above are, and this is the half with no other trace at all: a thread
-   * closes and disappears from the next round's feedback, so a body that
-   * omitted this would be a record with no memory of the work that was done.
-   */
-  readonly resolved: readonly CarriedFinding[];
-  /**
-   * This review's whole follow-up list, from `recordFollowUps`: the moved
-   * findings first, then the out-of-scope ones the cap kept. And what the cap
-   * cost, which is a number about the second half alone.
-   *
-   * **The moved ones lead it**, and that is a fact this relies on rather than
-   * one it checks: `movedToFollowUps` above is written into the payload as the
-   * length of the exempt prefix, so a caller that appended them instead would
-   * exempt the wrong entries at the filing end. One function builds the list and
-   * the count together for that reason.
-   *
-   * Rendered as a group like the others rather than appended after the body,
-   * which is where they used to land — below the run link, looking unlike
-   * everything above them. The **payload** is unchanged and still goes out with
-   * every review, empty list included: the filing half reads it on merge, and a
-   * round that recorded nothing has to be able to say so.
-   */
-  readonly followUps: readonly FollowUp[];
-  readonly droppedFollowUps: number;
-  /**
-   * The cap `recordFollowUps` held the list to, written into the payload for
-   * the filing end to re-apply (#247). `MAX_FOLLOW_UPS` where absent, which is
-   * every regular pull request's.
-   */
-  readonly followUpsCap?: number | undefined;
-  /**
-   * Whether earlier rounds' entries lead the capped list (#247), from
-   * `recordFollowUps`: the cap then drops the newest rather than the least
-   * serious, and the body says so.
-   */
-  readonly followUpsCarried?: boolean | undefined;
-  /**
-   * The fix run's out-of-scope notes this review chose not to file, each with
-   * its reason (#213), from `applyNoteRulings`. The promoted ones are in
-   * `followUps` above and are not repeated here.
-   *
-   * Optional, because nearly every review is handed no notes; empty and absent
-   * both render nothing.
-   */
-  readonly droppedNotes?: readonly DroppedNote[] | undefined;
-  /**
-   * The linked issue's acceptance criteria and what this review said about
-   * each (#214), from `applyCriteriaRulings`. Optional, because a pull request
-   * with no linked issue, or one whose issue names no criteria, has none; empty
-   * and absent both render nothing.
-   */
-  readonly criteria?: readonly CriterionResult[] | undefined;
-  /**
-   * On a PRD PR's slice round, the red check's record of the slice's red tests
-   * (#235), as `renderRedTestsBlock` writes it: invisible, and read back by the
-   * final review, which lists each slice's. Optional, because only a slice
-   * round where the check is configured has one.
-   */
-  readonly redTestsBlock?: string | undefined;
-  /**
-   * The run that produced this review. Optional — it is a link, and a review
-   * that could not name its own run is still a review — so a caller outside
-   * Actions renders a body without one rather than failing.
-   */
-  readonly runUrl?: string | undefined;
-  /**
-   * The round's header (#298), from `reviewHeader` in `shared/round-header.ts`:
-   * the body's first line, above the heading. Optional, because a caller
-   * outside a pull request's record has no round to number.
-   */
-  readonly header?: string | undefined;
-  /**
-   * Where to say what was shed when the body had to be made to fit. Optional,
-   * because the body says it too; this is the run log's copy, for the human who
-   * opens the run rather than the review.
-   */
-  readonly log?: ((line: string) => void) | undefined;
-}
+/** The verdict's row, from the key and, on *needs a closer look*, the cause the hand-over names. */
+export const verdictRow = (verdict: Verdict, cause?: CloserLookCause): VerdictRow =>
+  verdict === "needs a closer look" ? closerLook(cause ?? "needs you") : VERDICTS[verdict];
 
-/**
- * The body, measured and shed until it fits, and how to compose it again: the
- * slotted copy `renderReviewPost` needs is the same composition, with the same
- * shed.
- */
+/** The body, measured and shed until it fits. */
 const renderBody = (
   parts: ReviewBodyParts,
   record: ReviewRecord,
+  resolved: { readonly closed: readonly RecordEntry[]; readonly unclosed: readonly RecordEntry[] },
 ): {
   readonly text: string;
   readonly shed: Shed;
-  readonly compose: (shed: Shed, slotted?: boolean) => string;
 } => {
+  const verdict = verdictRow(parts.verdict, parts.cause);
 
   // The review's own sentence, and a sentence built from the record where it
   // wrote none. The fallback is not a lesser version of the same thing: it says
@@ -1492,10 +1467,10 @@ const renderBody = (
   // model emits, and this is the same question asked of whatever a caller was
   // handed — a body with an empty line under its heading is the failure either
   // one of them missing it produces.
-  const written = parts.output.assessment?.trim();
+  const written = parts.assessment?.trim();
   const assessment = written === undefined || written === "" ? unresolvedSentence(record) : written;
 
-  const compose = (shed: Shed, slotted = false): string => {
+  const compose = (shed: Shed): string => {
     const cut = cutFor(shed);
     const followUps = parts.followUps.slice(0, parts.followUps.length - shed.cutFollowUps);
     // The payload accounts for every entry it does not carry, so `dropped` is
@@ -1508,29 +1483,24 @@ const renderBody = (
       // Which round of which slice this is (#298), above everything else.
       parts.header,
       BODY_HEADING,
-      `### ${parts.verdict.heading}`,
+      `### ${verdict.heading}`,
       assessment,
-      `_${labelsAsCode(parts.verdict.nextStep)}_`,
-      parts.output.needsYou,
+      `_${labelsAsCode(verdict.nextStep)}_`,
+      parts.needsYou,
       parts.roundNote === undefined ? undefined : labelsAsCode(parts.roundNote),
       findingsLine(record),
       movedSentence(parts.movedToFollowUps),
       shedSentence(shed),
       renderGroup("Open", cut(record.open), true),
       renderGroup("Previously missed", cut(record.missed), true, PREVIOUSLY_MISSED_SUBTITLE),
-      slotted
-        ? RESOLVED_SLOT
-        : renderGroup(RESOLVED_GROUP.title, cut(record.resolved), RESOLVED_GROUP.open),
-      renderCriteriaGroup(parts.criteria ?? [], shed.titles),
-      renderFollowUpsGroup(
-        followUps,
-        parts.droppedFollowUps,
-        !shed.followUpTitles,
-        parts.followUpsCap,
-        parts.followUpsCarried,
-      ),
-      renderDroppedNotesGroup(parts.droppedNotes ?? []),
-      renderHowChecked(parts.output.howChecked),
+      // A closure GitHub would not make is listed as still open, ahead of the
+      // ones it made, in the place the resolved group has (#257).
+      renderGroup(UNCLOSED_GROUP.title, cut(resolved.unclosed), UNCLOSED_GROUP.open, UNCLOSED_GROUP.subtitle),
+      renderGroup(RESOLVED_GROUP.title, cut(resolved.closed), RESOLVED_GROUP.open),
+      renderCriteriaGroup(parts.criteria, shed.titles),
+      renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap, parts.followUpsCarried),
+      renderDroppedNotesGroup(parts.droppedNotes),
+      renderHowChecked(parts.howChecked),
       // The only rule in the body, and it is here rather than between the groups
       // because this is the only place the subject changes: everything above is
       // the review, and this is the run that posted it.
@@ -1560,7 +1530,7 @@ const renderBody = (
   // the body it was before the measurement existed.
   let shed = NOTHING_SHED;
   let body = compose(shed);
-  if (reviewBodySize(body) <= REVIEW_BODY_BUDGET) return { text: body, shed, compose };
+  if (reviewBodySize(body) <= REVIEW_BODY_BUDGET) return { text: body, shed };
 
   const unexempt = parts.followUps.length - parts.movedToFollowUps;
   const steps: Shed[] = [
@@ -1591,7 +1561,7 @@ const renderBody = (
   parts.log?.(
     `Review body: ${shedSentence(shed)?.replace(/^_|_$/g, "")} It is now ${size} bytes.`,
   );
-  return { text: body, shed, compose };
+  return { text: body, shed };
 };
 
 /**
@@ -1659,6 +1629,7 @@ export const deriveVerdict = (output: ReviewOutput, inputs: VerdictInputs): Verd
 const closerLook = (cause: CloserLookCause): VerdictRow => ({
   ...VERDICTS["needs a closer look"],
   ...CLOSER_LOOK[cause],
+  cause,
 });
 
 /**
@@ -2167,16 +2138,6 @@ export const recordFollowUps = (
 };
 
 /**
- * What a reader selects the payload on, and nothing more than that. The
- * marker is a **selector, not a control**: it says where the block is and
- * contributes nothing to trusting it. Whatever reads this establishes that the
- * review is the runner's own by checking who posted it and whether it was
- * edited — never by the presence of this string, which anyone who can comment
- * can type.
- */
-export const FOLLOW_UPS_MARKER = "agent-follow-ups";
-
-/**
  * The payload shape a reader gets back. Versioned because the review runner and
  * whatever reads this are same-version at *install* time and not at *read*
  * time: a review posted before a release is read after it. The field is the
@@ -2189,9 +2150,6 @@ export const FOLLOW_UPS_MARKER = "agent-follow-ups";
  * body the previous release had already posted.
  */
 export const FOLLOW_UPS_VERSION = 1;
-
-/** The label whose removal opts a pull request out of having these filed. */
-export const FOLLOW_UPS_LABEL = "agent:follow-ups";
 
 /**
  * JSON that survives being put inside an HTML comment.
@@ -2533,8 +2491,7 @@ export const renderDroppedNotesGroup = (dropped: readonly DroppedNote[]): string
 };
 
 /**
- * Both halves together, for the artifact a human debugging the run opens
- * (`follow_ups.md`).
+ * Both halves together, as a body carries them.
  *
  * The posted body composes the two separately — the group sits with the other
  * groups and the payload goes last, invisibly — so this is not how the review

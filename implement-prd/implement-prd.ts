@@ -2,7 +2,6 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
-  claudeAgent,
   fail,
   fetchTrustedComments,
   fetchTrustedIssue,
@@ -11,15 +10,16 @@ import {
   scrubGitHubTokens,
   writers,
 } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
+import { claudeAgent } from "../shared/agent.js";
+import { RUNNERS } from "../shared/contract.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { renderPrdStatus, renderProgressList, statusBlock, type ProgressInputs } from "../shared/progress-list.js";
 import { readRoundRecord, roundCounts, type RoundCounts } from "../shared/round-header.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 
-const INPUTS = readInputs(CONTRACT["implement-prd"].inputs);
-const { writeText } = writers(CONTRACT["implement-prd"].outputs);
+const INPUTS = readInputs(RUNNERS["implement-prd"].inputs);
+const { writeText } = writers(RUNNERS["implement-prd"].outputs);
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;

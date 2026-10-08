@@ -3,6 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
+import type { CommandIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
+import { fail, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
 
 /**
@@ -12,10 +15,10 @@ import { VERSION } from "./shared/manifest.js";
  * under `pull_request_target` and retires the stale-runner trap.
  *
  * Dispatch is a table rather than separate bins because the package has two
- * surfaces: the runners a workflow step invokes, and the install path `init`
- * and `doctor` are (#6). They belong to the same version as the runners
- * they set up — the version that writes a pin has to be the version that pin
- * names — so one install, one binary, one thing to keep in step. A table also
+ * surfaces: the runners and commands a workflow step invokes, and the install
+ * path `init` and `doctor` are (#6). They belong to the same version as the
+ * runners they set up (the version that writes a pin has to be the version
+ * that pin names), so one install, one binary, one thing to keep in step. A table also
  * means adding a runner is one entry rather than a new bin, a new pin and a new
  * workflow line.
  */
@@ -26,7 +29,15 @@ export { VERSION };
 /** Bad usage, as distinct from a run that failed — see the exit codes below. */
 class UsageError extends Error {}
 
-export interface Command {
+/**
+ * Every subcommand the binary dispatches on, of one of three kinds. A runner
+ * and a command are declared in `shared/contract.ts`, in `RUNNERS` and
+ * `COMMANDS`, and the kind here is held to the map it is declared in by
+ * `tests/agent-cli.test.ts`. The install path is declared in neither: a human
+ * types it, and it takes flags.
+ */
+export interface Subcommand {
+  readonly kind: "runner" | "command" | "install";
   /** One line, shown in `help`. */
   readonly summary: string;
   /**
@@ -48,16 +59,128 @@ export interface Command {
  * a top-level script that does its work on load and exits non-zero through
  * `fail()`. So nothing may load before the argument check.
  */
-const runner = (name: string, load: () => Promise<unknown>, summary?: string): Command => ({
-  // Named where it is not "run the agent". `follow-ups` runs no model at all,
-  // and help that said it did would describe the one runner whose whole point
-  // is the opposite (#49).
-  summary: summary ?? `Run the ${name} agent (input comes from the environment).`,
+const runner = (name: Runner, load: () => Promise<unknown>): Subcommand => ({
+  kind: "runner",
+  summary: `Run the ${name} agent (input comes from the environment).`,
   run: async (args) => {
-    if (args.length > 0) {
-      throw new UsageError(`\`${name}\` takes no arguments, but got: ${args.join(" ")}`);
-    }
+    refuseArguments(name, args);
     await load();
+  },
+});
+
+/** Refused rather than ignored, by runners and commands alike: see `runner`. */
+const refuseArguments = (name: string, args: readonly string[]): void => {
+  if (args.length > 0) {
+    throw new UsageError(`\`${name}\` takes no arguments, but got: ${args.join(" ")}`);
+  }
+};
+
+/**
+ * A command (ADR 0004): `<workflow>:<step>`, invoked the way a runner is, with
+ * no arguments and its whole input in the environment. Unlike a runner it does
+ * nothing on import. Its module exports one function, and this reads the
+ * inputs its declaration in `COMMANDS` names, calls it, and turns a throw into
+ * `fail()`, so a command failure reads like a runner failure: the reason on
+ * stderr and in `failure_reason.txt`, exit 1.
+ *
+ * The inputs are read after the module loads and before the call, so a
+ * missing one stops the command at start, by name, with none of its own work
+ * done. It is handed its declared output files beside them, and nothing that
+ * reads or writes GitHub.
+ */
+const command = <C extends Command>(
+  name: C,
+  load: () => Promise<
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, outputs: OutputWriters<(typeof COMMANDS)[C]["outputs"]>) => unknown
+  >,
+  summary: string,
+): Subcommand => ({
+  kind: "command",
+  summary,
+  run: async (args) => {
+    refuseArguments(name, args);
+    const fn = await load();
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
+    try {
+      await fn(inputs, writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+/**
+ * A command that reads GitHub and writes nothing to it: handed, besides its
+ * inputs, the reader the CLI builds over its `GH_TOKEN`, and its declared
+ * output files. Only a command that declares the repository and the token
+ * can be one: the red check's two read neither (#422).
+ */
+type ReadingCommand = {
+  [C in Command]: (typeof COMMANDS)[C]["inputs"] extends { readonly GH_REPO: unknown; readonly GH_TOKEN: unknown } ? C : never;
+}[Command];
+
+const readingCommand = <C extends ReadingCommand>(
+  name: C,
+  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: ReadingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
+  summary: string,
+): Subcommand => ({
+  kind: "command",
+  summary,
+  run: async (args) => {
+    refuseArguments(name, args);
+    const fn = await load();
+    const { liveReadingIo } = await import("./shared/command-io.js");
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
+    try {
+      await fn(inputs, liveReadingIo(inputs, writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs)));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+/**
+ * A command that writes through the engine's writer (ADR 0005): one that
+ * declares the loop's token and a write log, and is handed, besides its
+ * inputs, the real writers over both tokens and the reader, built here from
+ * those inputs. Every write it makes is appended to `write_log.jsonl` as it
+ * lands, and the log's last line says how the command ended, whether it
+ * returned or threw.
+ */
+type WritingCommand = {
+  [C in Command]: (typeof COMMANDS)[C]["inputs"] extends { readonly LOOP_TOKEN: unknown }
+    ? "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number]
+      ? C
+      : never
+    : never;
+}[Command];
+
+const writingCommand = <C extends WritingCommand>(
+  name: C,
+  load: () => Promise<
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CommandIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+  >,
+  summary: string,
+): Subcommand => ({
+  kind: "command",
+  summary,
+  run: async (args) => {
+    refuseArguments(name, args);
+    const fn = await load();
+    const { liveCommandIo } = await import("./shared/command-io.js");
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
+    const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
+    const { io, end } = liveCommandIo(inputs, outputs, (line) => outputs.appendLine("write_log.jsonl", line));
+    try {
+      await fn(inputs, io);
+      end();
+    } catch (error) {
+      end(error);
+      fail(error instanceof Error ? error.message : String(error));
+    }
   },
 });
 
@@ -119,8 +242,9 @@ const installArgs = (
   return { dir: path.resolve(dir), switches };
 };
 
-export const COMMANDS: Readonly<Record<string, Command>> = {
+export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
   doctor: {
+    kind: "install",
     summary: "Check an adopting repo for the setup failures that fail silently.",
     run: async (args, io) => {
       const { runDoctor } = await import("./setup/doctor.js");
@@ -133,14 +257,15 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
     },
   },
   fix: runner("fix", () => import("./fix/fix.js")),
-  "follow-ups": runner(
-    "follow-ups",
-    () => import("./follow-ups/follow-ups.js"),
+  "follow-ups:file": command(
+    "follow-ups:file",
+    async () => (await import("./follow-ups/file.js")).file,
     "File a closed PR's recorded review findings as triageable issues (no model).",
   ),
   implement: runner("implement", () => import("./implement/implement.js")),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
   init: {
+    kind: "install",
     summary: "Install the caller workflows into this repo, create the loop's GitHub App, and say what is left.",
     run: async (args, io) => {
       const { init } = await import("./setup/init.js");
@@ -162,26 +287,61 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
     },
   },
   review: runner("review", () => import("./review/review.js")),
+  "review:gate": readingCommand(
+    "review:gate",
+    async () => (await import("./review/gate.js")).gate,
+    "Settle whether a review runs, on which commit, with what fix-round budget and in which round (no model).",
+  ),
+  "review:collect-checks": readingCommand(
+    "review:collect-checks",
+    async () => (await import("./review/collect-checks.js")).collectChecks,
+    "Wait for a pull request's other checks and summarise them for the review (no model).",
+  ),
+  "review:red-check-place": command(
+    "review:red-check-place",
+    async () => (await import("./review/red-check-place.js")).place,
+    "Put a pull request's test files over the code as it was before it, for the red check (no model).",
+  ),
+  "review:red-check-classify": command(
+    "review:red-check-classify",
+    async () => (await import("./review/red-check-classify.js")).classify,
+    "Classify each test in the red check's JUnit report as red, broken or passed (no model).",
+  ),
+  "review:publish": writingCommand(
+    "review:publish",
+    async () => (await import("./review/publish.js")).publish,
+    "Resolve the threads a review closed and post the review (no model).",
+  ),
+  "review:conclude": writingCommand(
+    "review:conclude",
+    async () => (await import("./review/conclude.js")).conclude,
+    "End a review run however it ended: its labels, its failure comment and the hand-off (no model).",
+  ),
+  "review:advance": writingCommand(
+    "review:advance",
+    async () => (await import("./review/advance.js")).advance,
+    "Move a PRD PR's chain on after a review, or park it, and write its progress list (no model).",
+  ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
 };
 
 /**
- * Generated from the table, so a command added later documents itself. A
+ * Generated from the table, so a subcommand added later documents itself. A
  * hand-written list is the copy that goes stale first, and `help` is exactly
  * where a stale copy is read as authoritative.
  */
 const usage = (): string => {
-  const width = Math.max(...Object.keys(COMMANDS).map((name) => name.length));
-  const commands = Object.entries(COMMANDS)
-    .map(([name, command]) => `  ${name.padEnd(width)}  ${command.summary}`)
+  const width = Math.max(...Object.keys(SUBCOMMANDS).map((name) => name.length));
+  const commands = Object.entries(SUBCOMMANDS)
+    .map(([name, subcommand]) => `  ${name.padEnd(width)}  ${subcommand.summary}`)
     .join("\n");
 
-  return `Usage: agent-workflows <command>
+  return `Usage: agent-workflows <subcommand>
 
-Runners for a GitHub Actions agent loop, invoked one per workflow step, plus
-the install path \`init\` and \`doctor\`, which you run by hand.
+Runners and commands for a GitHub Actions agent loop, invoked one per workflow
+step, plus the install path \`init\` and \`doctor\`, which you run by hand.
 
-Commands:
+Subcommands:
 ${commands}
   ${"--version".padEnd(width)}  Print the version this run is on.
 
@@ -221,7 +381,7 @@ const refuse = (io: CliIo, message: string): number => {
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   const [name, ...args] = argv;
 
-  if (name === undefined) return refuse(io, "No command given.");
+  if (name === undefined) return refuse(io, "No subcommand given.");
   if (name === "help" || name === "--help" || name === "-h") {
     io.stdout(usage());
     return 0;
@@ -231,18 +391,18 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     return 0;
   }
 
-  const command = COMMANDS[name];
-  if (!command) {
-    const known = Object.keys(COMMANDS).join(", ");
-    return refuse(io, `Unknown command "${name}". Known commands: ${known}.`);
+  const subcommand = SUBCOMMANDS[name];
+  if (!subcommand) {
+    const known = Object.keys(SUBCOMMANDS).join(", ");
+    return refuse(io, `Unknown subcommand "${name}". Known subcommands: ${known}.`);
   }
 
   try {
-    // Echoed for the reason the model id is (`shared/common.ts`): "which version
+    // Echoed for the reason the model id is (`shared/agent.ts`): "which version
     // produced this?" is the first question asked of output that looks wrong,
     // and the answer should not depend on reading the YAML as of that week.
     io.stdout(`agent-workflows ${VERSION}: ${name}\n`);
-    return (await command.run(args, io)) ?? 0;
+    return (await subcommand.run(args, io)) ?? 0;
   } catch (error) {
     if (error instanceof UsageError) return refuse(io, error.message);
     throw error;

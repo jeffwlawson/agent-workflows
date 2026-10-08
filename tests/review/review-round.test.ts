@@ -16,9 +16,10 @@ import {
   readReviewHistory,
   unreadableHistoryNote,
   type ReviewHistory,
-} from "../shared/review-round.js";
-import { FIX_ROUND_STATUS, LEGACY_FIX_ROUND_STARTED, VERDICT_CONTEXT, VERDICTS } from "../shared/review-output.js";
-import type { CarriedFinding } from "../shared/review-verification.js";
+} from "../../review/review-round.js";
+import { LEGACY_FIX_ROUND_STARTED, VERDICTS } from "../../shared/review-output.js";
+import type { CarriedFinding } from "../../shared/review-verification.js";
+import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../../shared/record.js";
 
 /**
  * What the verdicts on a pull request say about the review now running (#202,

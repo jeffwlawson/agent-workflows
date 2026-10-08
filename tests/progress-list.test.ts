@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  FINAL_REVIEW_MARK,
   finalReviewRequestedLines,
-  PROGRESS_END,
-  PROGRESS_START,
   progressAtRoundEnd,
   renderPrdStatus,
   renderPrStatus,
@@ -11,14 +8,13 @@ import {
   sliceStates,
   spliceProgressList,
   spliceStatus,
-  STATUS_END,
-  STATUS_START,
   statusBlock,
   type ProgressInputs,
   type ProgressSubIssue,
 } from "../shared/progress-list.js";
 import type { RoundCounts } from "../shared/round-header.js";
 import { sliceRanges, type BranchCommit } from "../shared/slice-ranges.js";
+import { FINAL_REVIEW_MARK, PROGRESS_END, PROGRESS_START, STATUS_END, STATUS_START } from "../shared/record.js";
 
 /**
  * The PRD PR's progress list (#246), a table since #298: one row per
@@ -296,26 +292,26 @@ describe("the list a stopped build run writes back", () => {
 });
 
 describe("the list for each way a round ends", () => {
-  const end = { review: "{{AGENT_REVIEW_URL}}", open: 2, prUrl: PR, rounds: ROUNDS };
+  const end = { review: "https://example.test/review/9", open: 2, prUrl: PR, rounds: ROUNDS };
 
   it("renders approved, parked and fixing from one reading of the branch, counting this review", () => {
     const branch = { subIssues: SUBS, ranges: sliceRanges(REAL_LOG, SUBS), finalReview: "not requested" as const };
     const lists = progressAtRoundEnd(branch, end);
 
-    expect(lists.approved.progress).toContain("| 2 · #11 | ✅ Approved | [2]({{AGENT_REVIEW_URL}}) | 0 |");
-    expect(lists.parked.progress).toContain("| 2 · #11 | ⏸️ Parked · 2 open | [2]({{AGENT_REVIEW_URL}}) | 0 |");
-    expect(lists.running.progress).toContain("| 2 · #11 | 🔧 Fixing · 2 open | [2]({{AGENT_REVIEW_URL}}) | 1 |");
-    expect(lists.parked.status).toBe(statusBlock("**⏸️ Slice 2 of 3 parked** · #11 · 2 findings open. [See it]({{AGENT_REVIEW_URL}})"));
+    expect(lists.approved.progress).toContain("| 2 · #11 | ✅ Approved | [2](https://example.test/review/9) | 0 |");
+    expect(lists.parked.progress).toContain("| 2 · #11 | ⏸️ Parked · 2 open | [2](https://example.test/review/9) | 0 |");
+    expect(lists.running.progress).toContain("| 2 · #11 | 🔧 Fixing · 2 open | [2](https://example.test/review/9) | 1 |");
+    expect(lists.parked.status).toBe(statusBlock("**⏸️ Slice 2 of 3 parked** · #11 · 2 findings open. [See it](https://example.test/review/9)"));
     expect(lists.approved.status).toBe(statusBlock("**✅ Slice 2 of 3 approved** · #11"));
   });
 
   it("renders the final review's ending on the final review", () => {
     const lists = progressAtRoundEnd({ subIssues: SUBS, ranges: sliceRanges(built(10, 11, 12), SUBS), finalReview: "requested" }, end);
 
-    expect(lists.approved.progress).toContain("| Final review | ✅ Approved | [1]({{AGENT_REVIEW_URL}}) | 0 |");
+    expect(lists.approved.progress).toContain("| Final review | ✅ Approved | [1](https://example.test/review/9) | 0 |");
     expect(lists.parked.progress).toContain("| Final review | ⏸️ Parked · 2 open |");
-    expect(lists.running.progress).toContain("| Final review | 🔧 Fixing · 2 open | [1]({{AGENT_REVIEW_URL}}) | 1 |");
-    expect(lists.parked.status).toBe(statusBlock("**⏸️ Final review parked:** 2 findings open. [See it]({{AGENT_REVIEW_URL}})"));
+    expect(lists.running.progress).toContain("| Final review | 🔧 Fixing · 2 open | [1](https://example.test/review/9) | 1 |");
+    expect(lists.parked.status).toBe(statusBlock("**⏸️ Final review parked:** 2 findings open. [See it](https://example.test/review/9)"));
     for (const list of Object.values(lists)) expect(list.progress).toContain(FINAL_REVIEW_MARK);
   });
 

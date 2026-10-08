@@ -190,8 +190,7 @@ const jobStep = (command: string, job: string, name: string): string => {
 
 /**
  * The PR side's writes (#320), by the source the resolver reported: the
- * re-review fix and update-branch ask for, the PRD chain's advance and park,
- * and the ready-mark. Each is made with the token the resolver produced,
+ * re-review fix and update-branch ask for, and the ready-mark. Each is made with the token the resolver produced,
  * whatever it is, and only the workflow token, which fires nothing on a label
  * and cannot write to the parent issue, draws the warning and the comment
  * that say what to do by hand instead.
@@ -239,121 +238,11 @@ describe.skipIf(!CAN_RUN)("the PR side's writes, by the resolver's source", () =
     });
   });
 
-  describe("review's advance of the PRD chain", () => {
-    interface Composite {
-      readonly runs: { readonly steps: readonly Step[] };
-    }
-    const advanceRun = (): string =>
-      (parse(fs.readFileSync(path.join(".github", "actions", "advance-prd", "action.yml"), "utf8")) as Composite).runs.steps[0]?.run ?? "";
+  // Review's advance and park of the PRD chain are `review:advance`'s
+  // (#423), held in `tests/review/advance.test.ts`.
 
-    it.each(SOURCES)("labels the parent with the resolved token, or says so on the PRD PR (source %j)", (source, warns) => {
-      const outcome = execute(advanceRun(), {
-        GH_TOKEN: tokenOf(source),
-        TOKEN_SOURCE: source,
-        PR_NUMBER: "330",
-        HEAD_REF: "agent/prd-314-a-prd",
-      });
-
-      expect(outcome.status, outcome.stdout).toBe(0);
-      for (const call of outcome.gh) expect(call.startsWith(`${tokenOf(source)} `), call).toBe(true);
-      if (warns) {
-        expect(outcome.gh.filter((call) => call.includes("--add-label"))).toEqual([]);
-        expect(outcome.gh.some((call) => call.includes("pr comment 330"))).toBe(true);
-        expect(outcome.stdout).toMatch(fallback);
-      } else {
-        expect(outcome.gh).toContain(`${tokenOf(source)} issue edit 314 --add-label agent:implement`);
-        expect(outcome.stdout).not.toMatch(fallback);
-      }
-    });
-  });
-
-  describe("review's park of the PRD chain", () => {
-    it.each(SOURCES)("comments on the parent with the resolved token, or on the PRD PR with the job's (source %j)", (source, warns) => {
-      const outcome = execute(jobStep("review", "advance", "Park the PRD chain"), {
-        GH_TOKEN: "job-token",
-        LOOP_TOKEN: tokenOf(source),
-        TOKEN_SOURCE: source,
-        TOKEN_OUTCOME: "success",
-        PR_NUMBER: "330",
-        HEAD_REF: "agent/prd-314-a-prd",
-        ENDED: "false",
-        REVIEWED: "false",
-        REVIEW_URL: "",
-        REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}",
-        RUN_URL: "https://example.invalid/run",
-        RUNNER_TEMP: os.tmpdir(),
-      });
-
-      // One call, whose multi-line body runs on over the log lines after it.
-      const calls = outcome.gh.filter((line) => /^[\w-]+-token /.test(line));
-
-      expect(outcome.status, outcome.stdout).toBe(0);
-      if (warns) {
-        expect(calls).toEqual([expect.stringMatching(/^job-token pr comment 330 /)]);
-        expect(outcome.stdout).toMatch(fallback);
-      } else {
-        expect(calls).toEqual([expect.stringMatching(new RegExp(`^${tokenOf(source)} issue comment 314 `))]);
-      }
-    });
-
-    /**
-     * A mint that failed (#330 review): the park still goes on the PRD PR,
-     * with the workflow token and the reason the resolver wrote, and the step
-     * fails, as the job already has. Never on the parent with whatever token
-     * the resolver fell back to: the source still says `app`.
-     */
-    it("parks on the PRD PR with the job's token and the mint's reason where the mint failed", () => {
-      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-park-"));
-      fs.writeFileSync(path.join(temp, "failure_reason.txt"), "Couldn't mint a token for the loop's GitHub App.\n");
-      const outcome = execute(jobStep("review", "advance", "Park the PRD chain"), {
-        GH_TOKEN: "job-token",
-        LOOP_TOKEN: "pat-token",
-        TOKEN_SOURCE: "app",
-        TOKEN_OUTCOME: "failure",
-        PR_NUMBER: "330",
-        HEAD_REF: "agent/prd-314-a-prd",
-        ENDED: "false",
-        REVIEWED: "false",
-        REVIEW_URL: "",
-        REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}",
-        RUN_URL: "https://example.invalid/run",
-        RUNNER_TEMP: temp,
-      });
-      fs.rmSync(temp, { recursive: true, force: true });
-      const calls = outcome.gh.filter((line) => /^[\w-]+-token /.test(line));
-
-      expect(outcome.status).toBe(1);
-      expect(calls).toEqual([expect.stringMatching(/^job-token pr comment 330 /)]);
-      expect(outcome.gh.join("\n")).toContain("_This was meant for #314, but it could not be posted there: Couldn't mint a token for the loop's GitHub App._");
-    });
-  });
-
-  /** …and the advance skipped by it says on the PRD PR which re-label does it by hand. */
-  describe("review's word on an advance a failed mint skipped", () => {
-    it("names the reason and the re-label, with the job's token", () => {
-      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-advance-"));
-      fs.writeFileSync(path.join(temp, "failure_reason.txt"), "Couldn't mint a token for the loop's GitHub App.\n");
-      const outcome = execute(jobStep("review", "advance", "Say the PRD chain did not advance"), {
-        GH_TOKEN: "job-token",
-        PR_NUMBER: "330",
-        HEAD_REF: "agent/prd-314-a-prd",
-        RUN_URL: "https://example.invalid/run",
-        RUNNER_TEMP: temp,
-      });
-      fs.rmSync(temp, { recursive: true, force: true });
-      const log = outcome.gh.join("\n");
-
-      expect(outcome.status, outcome.stdout).toBe(0);
-      expect(outcome.gh[0]).toMatch(/^job-token pr comment 330 /);
-      expect(log).toContain("the PRD chain did not advance: Couldn't mint a token for the loop's GitHub App.");
-      expect(log).toContain("re-add `agent:implement` to #314 by hand");
-    });
-  });
-
-  describe.each([
-    ["review", "post-review"],
-    ["fix", "publish"],
-  ] as const)("%s's ready-mark", (command, job) => {
+  /** Review's is `review:conclude`'s (#419), held in `tests/review/conclude.test.ts`. */
+  describe.each([["fix", "publish"]] as const)("%s's ready-mark", (command, job) => {
     it.each(["app", "pat", "workflow"])("marks the PR ready with the resolved token (source %j)", (source) => {
       const outcome = execute(jobStep(command, job, "Mark PR ready for review"), { GH_TOKEN: tokenOf(source), PR_NUMBER: "152" });
 

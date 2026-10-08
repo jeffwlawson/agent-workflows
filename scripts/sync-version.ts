@@ -10,7 +10,10 @@ import { ACTION_DIR, assertPinnable, escapeRe, rewritePins, WORKFLOW_DIR } from 
  *
  * A release names its version in twelve files. `npm version` bumps two of
  * them — the manifest and the lockfile — and the other ten hold the pins: one
- * `--package=…@<version>` per reusable workflow, and one `…yml@v<version>` per
+ * `--package=…@<version>` per step of a reusable workflow that runs the
+ * package (review's runner and each of its commands, #417), one
+ * `npm install … @<version>` per step that installs it ahead of them (the red
+ * check's, #422), and one `…yml@v<version>` per
  * caller in each of the two caller sets, whose callers sit two caller files to
  * a set (#225). `v0.1.4` and `v0.1.5` were both cut by editing
  * them by hand and folding the result into the version commit.
@@ -84,8 +87,9 @@ const sameSet = (a: readonly string[], b: readonly string[]): boolean => {
  * is the property that makes a silent partial success impossible: a file whose
  * pin has been reworded, moved or written in a form the core does not know
  * matches zero times, and zero is an error rather than a no-op. A file can hold
- * more than one site: a reusable workflow's `npm exec` pin and one `action` pin
- * per step naming a composite action in this repository (#257), and a caller
+ * more than one site: a reusable workflow's `npm exec` pin per step that runs
+ * the package (#417) and one `action` pin per step naming a composite action
+ * in this repository (#257), and a caller
  * file's one `ref` pin per caller it holds (#225). So the
  * forms found are compared with the forms expected, as a list. Returns the new
  * text; nothing is written from here, so a refusal later in the run leaves the
@@ -168,8 +172,16 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
    * What a file names, counted by the path rather than by the pin: a `uses:`
    * that names one under any ref but a pin is a site this would otherwise skip,
    * and is refused instead. The composite actions a reusable names (#257) and
-   * the reusable workflows a caller file names are found the same way.
+   * the reusable workflows a caller file names are found the same way, and so
+   * is each step that runs the package (#417), by `--package=<name>@` under
+   * any spec, and each that installs it (#422), by `npm install … <name>@`.
    */
+  const packageUse = new RegExp(`--package=${escapeRe(packageName)}@`, "g");
+  const packagesIn = (file: string): readonly PinForm[] =>
+    (readFile(packageDir, file).match(packageUse) ?? []).map(() => "package" as const);
+  const installUse = new RegExp(`npm install [^\\n]*?${escapeRe(packageName)}@`, "g");
+  const installsIn = (file: string): readonly PinForm[] =>
+    (readFile(packageDir, file).match(installUse) ?? []).map(() => "install" as const);
   const slug = escapeRe(packageName.replace(/^@/, ""));
   const actionUse = new RegExp(`${slug}/${escapeRe(ACTION_DIR)}/`, "g");
   const workflowUse = new RegExp(`${slug}/${escapeRe(WORKFLOW_DIR)}/([A-Za-z0-9._-]+)\\.yml@`, "g");
@@ -206,7 +218,7 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
   const sites: readonly VersionSite[] = [
     ...reusableNames.flatMap((name) => {
       const file = `${WORKFLOW_DIR}/${name}.yml`;
-      return (["package", ...actionsIn(file)] as const).map((form) => ({ file, form }));
+      return [...packagesIn(file), ...installsIn(file), ...actionsIn(file)].map((form) => ({ file, form }));
     }),
     ...sets.flatMap(({ files }) =>
       files.flatMap((file) => calledBy(file).map(() => ({ file, form: "ref" as const }))),

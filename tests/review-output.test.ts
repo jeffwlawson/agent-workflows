@@ -5,6 +5,7 @@ import { parseDiffLines } from "../shared/diff-lines.js";
 import {
   findingMarker,
   placeFindings,
+  findingsHandOver,
   reviewThreads,
   severityBadge,
   type Finding,
@@ -22,7 +23,6 @@ import {
   followUpsCap,
   countFixBeforeMerge,
   deriveVerdict,
-  FOLLOW_UPS_MARKER,
   hasFollowUpsBlock,
   MAX_FOLLOW_UPS,
   MAX_HOW_CHECKED_WORDS,
@@ -32,22 +32,22 @@ import {
   recordFollowUps,
   renderFollowUpsBlock,
   renderFollowUpsGroup,
-  renderReviewBody,
-  renderReviewPost,
   RESOLVED_GROUP,
-  RESOLVED_SLOT,
+  reviewBodyHandOver,
+  UNCLOSED_GROUP,
   REVIEW_BODY_LIMIT,
   reviewBodySize,
   PREVIOUSLY_MISSED_SUBTITLE,
   reviewOutputSchema,
   reviewRecord,
-  VERDICT_CONTEXT,
   VERDICTS,
   type CiResult,
   type FollowUp,
   type ReviewOutput,
   type VerdictRow,
 } from "../shared/review-output.js";
+import { FOLLOW_UPS_MARKER, VERDICT_CONTEXT } from "../shared/record.js";
+import { renderDecided, postDecided, type Decided } from "./review/decided.js";
 
 /** Every row a verdict can post: the table's three, and each cause of a closer look. */
 const EVERY_ROW: readonly VerdictRow[] = [
@@ -1474,8 +1474,8 @@ describe("the posted review body", () => {
     followUps: [],
     droppedFollowUps: 0,
   };
-  const render = (over: Partial<Parameters<typeof renderReviewBody>[0]> = {}): string =>
-    renderReviewBody({ ...parts, ...over });
+  const render = (over: Partial<Decided> = {}): string =>
+    renderDecided({ ...parts, ...over });
 
   /** The same finding, in code an earlier review had already read. */
   const missedFinding = (over: Partial<Finding> = {}): PlacedFinding[] => [
@@ -1641,53 +1641,66 @@ describe("the posted review body", () => {
   });
 
   /**
-   * **The body and the slot the posting job fills** (#257). The posting job
-   * resolves the threads before it posts, so the body is handed over twice:
-   * as it reads where every closure held, and with a slot where *Resolved
-   * since last review* goes, beside that group's lines and the thread each one
-   * needs to have resolved. Put back with every line, the slot is the group.
+   * **What resolved, and what did not** (#257). Publish resolves the threads
+   * before it posts, so the runner hands every resolved entry over with the
+   * thread whose closure it stands on, and the body publish renders lists an
+   * entry whose thread it could not resolve as still open, in the place the
+   * resolved group has, rather than claiming a closure that never happened.
    */
-  describe("the body the posting job puts back together", () => {
+  describe("the resolved group, from the closures that held", () => {
     const resolved = [
       { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", severity: "low" as const },
       { id: "f-2", threadId: "PRRT_two", text: "the cache key omits the tenant", severity: "high" as const },
       { id: "f-3", text: "a legacy body entry" },
     ];
-    const post = () => renderReviewPost({ ...parts, resolved });
+    const lines = (body: string, title: string): string[] => {
+      const at = body.indexOf(`<summary><b>${title}</b>`);
+      return at < 0 ? [] : body.slice(at, body.indexOf("</details>", at)).split("\n").filter((line) => line.startsWith("- "));
+    };
 
-    it("hands over the same body renderReviewBody posts", () => {
-      expect(post().body).toBe(render({ resolved }));
+    it("hands over each resolved entry worst first, with the thread it needs resolved", () => {
+      const handed = reviewBodyHandOver({ ...parts, resolved });
+
+      expect(handed.resolved.map((entry) => entry.threadId)).toEqual(["PRRT_two", "PRRT_one", undefined]);
+      expect(handed.resolved.map((entry) => entry.title)).toEqual([
+        "the cache key omits the tenant",
+        "the guard runs after the return",
+        "a legacy body entry",
+      ]);
     });
 
-    it("leaves the slot exactly where the resolved group was, and nowhere else", () => {
-      const { body, slotted, slot } = post();
-      const group = body.slice(body.indexOf("<details>\n<summary><b>Resolved"), body.indexOf("</details>", body.indexOf("<summary><b>Resolved")) + "</details>".length);
+    it("lists every entry as resolved where every closure held", () => {
+      const body = render({ resolved });
 
-      expect(slot).toBe(RESOLVED_SLOT);
-      expect(slotted.split(slot)).toHaveLength(2);
-      expect(slotted.replace(slot, group)).toBe(body);
+      expect(lines(body, RESOLVED_GROUP.title)).toHaveLength(3);
+      expect(body).not.toContain(UNCLOSED_GROUP.title);
     });
 
-    it("lists the group's lines worst first, each with the thread it needs resolved", () => {
-      const { resolved: lines, groups } = post();
+    it("lists an entry whose thread did not close as still open, ahead of the resolved ones", () => {
+      const body = render({ resolved, closed: new Set(["PRRT_two"]) });
+      const open = lines(body, UNCLOSED_GROUP.title);
 
-      expect(lines.map((line) => line.threadId)).toEqual(["PRRT_two", "PRRT_one", undefined]);
-      expect(lines.map((line) => line.line).join("\n")).toBe(
-        post()
-          .body.split("\n")
-          .filter((line) => line.startsWith("- "))
-          .join("\n"),
-      );
-      expect(groups.resolved).toBe(RESOLVED_GROUP);
-      expect(groups.unclosed.open).toBe(true);
-      expect(groups.unclosed.subtitle ?? "").not.toBe("");
+      expect(open).toHaveLength(1);
+      expect(open[0]).toContain("the guard runs after the return");
+      expect(lines(body, RESOLVED_GROUP.title).join("\n")).not.toContain("the guard runs after the return");
+      expect(body).toContain("<summary><b>Still open</b> (1)</summary>");
+      expect(body).toContain(`_${UNCLOSED_GROUP.subtitle ?? ""}_`);
+      expect(body).toContain("<summary><b>Resolved since last review</b> (2)</summary>");
+      expect(body.indexOf(UNCLOSED_GROUP.title)).toBeLessThan(body.indexOf(RESOLVED_GROUP.title));
     });
 
-    it("still carries a slot where nothing was resolved, which fills with nothing", () => {
-      const empty = renderReviewPost(parts);
+    it("keeps a legacy entry with no thread as resolved, whatever else closed", () => {
+      const body = render({ resolved, closed: new Set() });
 
-      expect(empty.resolved).toEqual([]);
-      expect(empty.slotted.replace(`\n\n${empty.slot}`, "")).toBe(empty.body);
+      expect(lines(body, UNCLOSED_GROUP.title)).toHaveLength(2);
+      expect(lines(body, RESOLVED_GROUP.title)).toEqual([expect.stringContaining("a legacy body entry")]);
+    });
+
+    it("drops both groups where nothing was resolved", () => {
+      const body = render();
+
+      expect(body).not.toContain(RESOLVED_GROUP.title);
+      expect(body).not.toContain(UNCLOSED_GROUP.title);
     });
   });
 
@@ -2269,7 +2282,7 @@ describe("the record and the count are one set", () => {
   const record = (over: Partial<ReviewOutput>) =>
     reviewRecord({ output: output(over), placed: place(over), stillOpen: [], resolved: [] });
   const body = (over: Partial<ReviewOutput>): string =>
-    renderReviewBody({
+    renderDecided({
       verdict: VERDICTS["changes recommended"],
       output: output(over),
       placed: place(over),
@@ -2421,7 +2434,7 @@ describe("a finding the record does not read a label on", () => {
 
   it("is listed in the posted body and threaded, rather than posted nowhere", () => {
     const placed = place([unlabelled]);
-    const body = renderReviewBody({
+    const body = renderDecided({
       verdict: VERDICTS["changes recommended"],
       output: output([unlabelled]),
       placed,
@@ -2433,7 +2446,7 @@ describe("a finding the record does not read a label on", () => {
     });
 
     expect(body).toContain("the cache key omits the tenant");
-    expect(reviewThreads(placed).map((t) => t.path)).toEqual(["src/queue.ts"]);
+    expect(reviewThreads(findingsHandOver(placed)).map((t) => t.path)).toEqual(["src/queue.ts"]);
   });
 
   /** And it must not derive *approval recommended* over the group it is in. */
@@ -2707,7 +2720,7 @@ index 0ff3bbb..c6ca7ae 100644
   const { followUps } = recordFollowUps(unanchored, []);
   const reviewed = output({ findings, followUps });
   const render = (): string =>
-    renderReviewBody({
+    renderDecided({
       verdict: deriveVerdict(reviewed, { autoFix: false,
         ci: "green",
         fixRoundProgress: undefined,
@@ -2729,7 +2742,7 @@ index 0ff3bbb..c6ca7ae 100644
   });
 
   it("opens a thread for every finding it placed", () => {
-    const posted = reviewThreads(placed).map((t) => t.body).join("\n");
+    const posted = reviewThreads(findingsHandOver(placed)).map((t) => t.body).join("\n");
 
     for (const f of [ON_A_LINE, PAST_THE_HUNKS]) expect(posted).toContain(f.title);
     expect(posted).not.toContain(IN_AN_UNTOUCHED_FILE.title);
@@ -2802,7 +2815,7 @@ index 0ff3bbb..c6ca7ae 100644
     const { placed: none, unanchored: moved } = placeFindings(four, DIFF_LINES);
     const recorded = recordFollowUps(moved, []);
     const reviewedFour = output({ findings: four, followUps: recorded.followUps });
-    const posted = renderReviewBody({
+    const posted = renderDecided({
       verdict: VERDICTS["approval recommended"],
       output: reviewedFour,
       placed: none,
@@ -2824,7 +2837,7 @@ index 0ff3bbb..c6ca7ae 100644
 
   it("says nothing about moving where it moved nothing", () => {
     const kept = output({ findings: [ON_A_LINE] });
-    const body = renderReviewBody({
+    const body = renderDecided({
       verdict: VERDICTS["changes recommended"],
       output: kept,
       placed: placeFindings(kept.findings, DIFF_LINES).placed,
@@ -2862,7 +2875,7 @@ index 0ff3bbb..c6ca7ae 100644
 
   /** Each thread carries the id the workflow wrote for it. */
   it("gives every posted finding an id a later round can read back", () => {
-    const posted = [...reviewThreads(placed).map((t) => t.body), render()].join("\n");
+    const posted = [...reviewThreads(findingsHandOver(placed)).map((t) => t.body), render()].join("\n");
 
     expect(new Set(placed.map((p) => p.id)).size).toBe(2);
     for (const p of placed) {
@@ -3134,7 +3147,12 @@ describe("the review brief's Merge Danger", () => {
     for (const text of [PROMPT, EXTRACTION, RUNNER]) expect(text).not.toContain("behaviourChanges");
     expect(finalShape()).toMatch(/`breaking`/);
     expect(finalShape()).toMatch(/Differs from the PRD/);
-    expect(RUNNER).toMatch(/renderPrdSummary\(\{\s*outcome: output\.summary,\s*danger: output,/);
+    // The runner hands the review's danger fields over, and publish lays the
+    // PRD's Merge Danger out from them (ADR 0007).
+    expect(RUNNER).toMatch(/danger: \{\s*\.\.\.\(output\.door === undefined/);
+    expect(fs.readFileSync(path.join("review", "publish.ts"), "utf8")).toMatch(
+      /renderPrdSummary\(\{\s*outcome: summary\.summary,\s*danger: summary\.danger,/,
+    );
   });
 });
 
@@ -3277,7 +3295,7 @@ describe("a body entry from a v0.4.0 review", () => {
     const { stillOpen, resolved } = verifyCarried(carried, [
       { id: "f-legacy", status: "open", note: "The key still omits the tenant." },
     ]);
-    const body = renderReviewBody({
+    const body = renderDecided({
       verdict: VERDICTS["changes recommended"],
       output,
       placed: [],
@@ -3305,7 +3323,7 @@ describe("a body entry from a v0.4.0 review", () => {
     const { resolutions, stillOpen, resolved } = verifyCarried(carried, [
       { id: "f-legacy", status: "landed", note: "`key()` now hashes the tenant too." },
     ]);
-    const body = renderReviewBody({
+    const body = renderDecided({
       verdict: VERDICTS["approval recommended"],
       output,
       placed: [],
@@ -3355,9 +3373,9 @@ describe("the review body against GitHub's size limit", () => {
   it("renders a body that fits exactly as it did before anything measured it", () => {
     const stillOpen = carriedOpen(3, "the key omits the tenant");
     const lines: string[] = [];
-    const body = renderReviewBody({ ...parts, stillOpen, log: (line) => lines.push(line) });
+    const body = renderDecided({ ...parts, stillOpen, log: (line) => lines.push(line) });
 
-    expect(body).toBe(renderReviewBody({ ...parts, stillOpen }));
+    expect(body).toBe(renderDecided({ ...parts, stillOpen }));
     expect(body).not.toContain("To fit GitHub's");
     expect(lines).toEqual([]);
   });
@@ -3365,7 +3383,7 @@ describe("the review body against GitHub's size limit", () => {
   it("shortens an oversized Open group's evidence, says so, and keeps every id", () => {
     const stillOpen = carriedOpen(100, "x".repeat(2_000));
     const lines: string[] = [];
-    const body = renderReviewBody({ ...parts, stillOpen, log: (line) => lines.push(line) });
+    const body = renderDecided({ ...parts, stillOpen, log: (line) => lines.push(line) });
 
     expect(reviewBodySize(body)).toBeLessThanOrEqual(REVIEW_BODY_LIMIT);
     expect(body).toContain("the evidence quoted in the entries below was shortened");
@@ -3385,7 +3403,7 @@ describe("the review body against GitHub's size limit", () => {
     expect(unmeasured.length).toBeLessThan(REVIEW_BODY_LIMIT);
     expect(reviewBodySize(unmeasured)).toBeGreaterThan(REVIEW_BODY_LIMIT);
 
-    const body = renderReviewBody({ ...parts, stillOpen });
+    const body = renderDecided({ ...parts, stillOpen });
     expect(reviewBodySize(body)).toBeLessThanOrEqual(REVIEW_BODY_LIMIT);
     expect(body).toContain("was shortened");
   });
@@ -3398,7 +3416,7 @@ describe("the review body against GitHub's size limit", () => {
       followUp({ title: `oos ${i}`, location: `src/o${i}.ts`, body: "o".repeat(5_000) }),
     );
     const lines: string[] = [];
-    const body = renderReviewBody({
+    const body = renderDecided({
       ...parts,
       movedToFollowUps: 50,
       followUps: [...moved, ...outOfScope],
@@ -3444,7 +3462,7 @@ describe("the review body against GitHub's size limit", () => {
     );
 
     expect(() =>
-      renderReviewBody({ ...parts, movedToFollowUps: 70, followUps: moved }),
+      renderDecided({ ...parts, movedToFollowUps: 70, followUps: moved }),
     ).toThrow(new RegExp(`is \\d+ bytes .*${REVIEW_BODY_LIMIT}-character limit`));
   });
 });

@@ -2,7 +2,6 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
-  claudeAgent,
   fail,
   fetchTrustedComments,
   fetchTrustedIssue,
@@ -10,9 +9,10 @@ import {
   readInputs,
   scrubGitHubTokens,
 } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
+import { claudeAgent } from "../shared/agent.js";
+import { RUNNERS } from "../shared/contract.js";
 
-const INPUTS = readInputs(CONTRACT["implement"].inputs);
+const INPUTS = readInputs(RUNNERS["implement"].inputs);
 
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
 const ISSUE_TITLE = INPUTS.ISSUE_TITLE;

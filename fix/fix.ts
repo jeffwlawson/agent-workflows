@@ -3,7 +3,6 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
-  claudeAgent,
   fail,
   git,
   readInputs,
@@ -11,7 +10,8 @@ import {
   sh,
   writers,
 } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
+import { claudeAgent, runWithExtraction } from "../shared/agent.js";
+import { RUNNERS } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
 import {
   filterConversationOutcomes,
@@ -30,11 +30,10 @@ import {
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { fixHeader, fixScope, readRoundRecord, roundCounts, withHeader } from "../shared/round-header.js";
 import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
-import { runWithExtraction } from "../shared/run-with-extraction.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
-const INPUTS = readInputs(CONTRACT["fix"].inputs);
-const { writeJson, writeText } = writers(CONTRACT["fix"].outputs);
+const INPUTS = readInputs(RUNNERS["fix"].inputs);
+const { writeJson, writeText } = writers(RUNNERS["fix"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;

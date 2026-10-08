@@ -13,19 +13,6 @@
  * Pure. The caller reads the log and the sub-issues; this rules on plain values.
  */
 
-/** The trailer key a build run's commits carry, as `Agent-Slice: #<sub>`. */
-export const SLICE_TRAILER = "Agent-Slice";
-
-/**
- * The trailer key `implement-prd`'s own merge of the default branch carries,
- * as `Agent-Catch-Up: #<sub>` naming the slice it was made before (#245). The
- * one mark that tells that merge from `update-branch`'s conflict resolution,
- * which has the same shape (an untrailered merge of the default branch) and
- * belongs to the slice whose round it was. Not `Agent-Slice`, so nothing reads
- * it as a slice's commit.
- */
-export const CATCH_UP_TRAILER = "Agent-Catch-Up";
-
 /** One commit of the PRD branch's first-parent log. */
 export interface BranchCommit {
   readonly sha: string;

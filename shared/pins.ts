@@ -1,10 +1,11 @@
 /**
  * The version pin, and the rewrite both halves of the loop perform on it.
  *
- * A pin names this package and an exact version, in one of three forms: the npm
- * spec a reusable workflow hands to `npm exec`, the `uses:` ref a caller points
- * at this repository with, and the `uses:` ref a reusable workflow's step names
- * one of this repository's composite actions with. Rewriting one is the same operation in two
+ * A pin names this package and an exact version, in one of four forms: the npm
+ * spec a reusable workflow hands to `npm exec`, the one it hands to
+ * `npm install`, the `uses:` ref a caller points at this repository with, and
+ * the `uses:` ref a reusable workflow's step names one of this repository's
+ * composite actions with. Rewriting one is the same operation in two
  * places, for opposite reasons.
  *
  * `scripts/sync-version.ts` does it at **release** time, over this repository's
@@ -33,7 +34,7 @@
 export const WORKFLOW_DIR = ".github/workflows";
 
 /**
- * A pin is an exact `major.minor.patch`, in both forms. `tests/workflows.test.ts`
+ * A pin is an exact `major.minor.patch`, in every form. `tests/workflows.test.ts`
  * matches no `^`, no `~` and no dist-tag in the `npm exec` line, and a `uses:`
  * ref has to be a tag `publish.yml` would accept. So a version that cannot be
  * written as a valid pin is refused rather than written into a file, whichever
@@ -48,8 +49,13 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
  * action in this repository, `owner/repo/.github/actions/<name>@v<version>`.
  * GitHub fetches it from the tag, as it does the reusable workflow a caller
  * names, so it is pinned like one and moves with the release.
+ *
+ * `install` is the fourth (#422): a reusable workflow's step installing the
+ * package ahead of the steps that run it, `npm install … <name>@<version>`,
+ * where a job hands the registry token to that step alone. An npm spec, as
+ * `package` is, so no `v`.
  */
-export type PinForm = "package" | "ref" | "action";
+export type PinForm = "package" | "install" | "ref" | "action";
 
 /** Where this repository's composite actions live, inside the YAML that names them. */
 export const ACTION_DIR = ".github/actions";
@@ -107,6 +113,11 @@ const pinForms = ({ packageName, version }: Pinning): readonly {
   {
     form: "package",
     pin: new RegExp(`(--package=${escapeRe(packageName)}@)\\d+\\.\\d+\\.\\d+`, "g"),
+    replacement: `$1${version}`,
+  },
+  {
+    form: "install",
+    pin: new RegExp(`(npm install [^\\n]*?${escapeRe(packageName)}@)\\d+\\.\\d+\\.\\d+`, "g"),
     replacement: `$1${version}`,
   },
   {

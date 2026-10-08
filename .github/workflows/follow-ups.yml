@@ -9,7 +9,7 @@ name: Agent Follow-ups (reusable)
 # `issues: write`, which is why most of what follows is about what it may not
 # do. It **runs no model**: installing Claude Code is a step this file simply
 # omits, so reading arbitrary issue bodies while holding that permission is not
-# a prompt-injection surface. The judgement is a pure function in the runner
+# a prompt-injection surface. The judgement is a pure function in the command
 # instead, unit-tested from plain objects.
 #
 # **What fires it, and what each case does.** Per trigger and per state, here
@@ -191,7 +191,7 @@ jobs:
           package-manager-cache: false
 
       # No `npm install -g @anthropic-ai/claude-code` above this step, and that
-      # absence is the point: this is the runner subcommand that runs no model.
+      # absence is the point: `follow-ups:file` is a command, and runs no model.
       - name: File the recorded follow-ups
         env:
           # Reads the `.npmrc` the step above wrote. `GITHUB_TOKEN`, carrying the
@@ -203,7 +203,7 @@ jobs:
         # version: `npx pkg@version` would reuse this repository's own checkout
         # as the package, which has no `dist/`, and the step would die
         # `command not found` before any runner code ran (#8).
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.11 -- agent-workflows follow-ups
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.11 -- agent-workflows follow-ups:file
 
       # A failure has to say what failed where a human will see it, or the run
       # is indistinguishable from the silent no-op that is this job's ordinary
@@ -214,7 +214,7 @@ jobs:
       # pull request: that label is the open pipeline's "a human has to look at
       # this before the loop continues", and there is no pipeline left on a
       # merged PR to block. The marker is what carries the state instead — the
-      # runner removes it only on success, so a failed run leaves it in place,
+      # command removes it only on success, so a failed run leaves it in place,
       # and re-adding an already-present label fires no event
       # (docs/ADOPTING.md §1). Hence the gesture named below.
       - name: Report the failure on the PR

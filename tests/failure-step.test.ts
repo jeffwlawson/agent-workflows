@@ -21,6 +21,11 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * And it executes the one pattern every one of them is written in (#253):
  * `**\`agent:X\` stopped:** <Reason>.`, then the run and what to do.
  *
+ * Review's is no step any more: `review:conclude` says how its run ended
+ * (#419), and `tests/review/conclude.test.ts` holds those scenarios. What
+ * stays here of review is the half that is still YAML, the review job's own
+ * measure of how it ended, which only that job's clock knows.
+ *
  * Skipped where `bash` is not on PATH.
  */
 
@@ -45,7 +50,6 @@ const CASES = [
   { command: "implement-prd", label: "agent:implement", step: "Mark blocked on failure", minutes: 30, blocks: true },
   { command: "fix", label: "agent:fix", step: "Mark blocked on failure", minutes: 30, blocks: true },
   { command: "update-branch", label: "agent:update-branch", step: "Mark blocked on failure", minutes: 30, blocks: true },
-  { command: "review", label: "agent:review", step: "Mark blocked on failure", minutes: 20, blocks: true },
   // No `agent:blocked` on a merged pull request, on a failure or otherwise:
   // there is no pipeline left there to block (see the step's own note).
   { command: "follow-ups", label: "agent:follow-ups", step: "Report the failure on the PR", minutes: 10, blocks: false },
@@ -54,14 +58,11 @@ const CASES = [
 type Case = (typeof CASES)[number];
 
 /**
- * The job each failure step is in: its workflow's own, except the review's,
- * which is its posting job (#257). The review job runs the model and writes
- * nothing, so it measures how it ended and hands that over. And implement's,
- * which is its publish job: the agent's job writes nothing either, and the
- * publish job reads how it ended from `needs`.
+ * The job each failure step is in: its workflow's own, except where it is a
+ * publish job: the agent's job writes nothing, and the publish job reads how
+ * it ended from `needs`.
  */
 const JOB: Readonly<Record<string, string>> = {
-  review: "post-review",
   implement: "publish",
   fix: "publish",
   "update-branch": "publish",
@@ -99,27 +100,27 @@ const outputsOf = (text: string): Record<string, string> => {
 
 /**
  * The review job's half (#257): *Hand the outcome to the posting job*, run as
- * the job ended, which is where the clock and the reason files are. What it
- * hands over is what the posting job's failure step reads, as the posting job
- * sees it: the review job's result, and its outputs.
+ * the job ended `status`, `elapsed` seconds after its clock started, with the
+ * reason files `files` in its temp. What it hands over is what
+ * `review:conclude` is told: its outputs.
  */
 const reviewOutcome = (
-  temp: string,
-  bin: string,
-  status: "failure" | "cancelled",
+  status: "success" | "failure" | "cancelled",
   elapsed: number,
   minutes: string,
+  files: Readonly<Record<string, string>> = {},
 ): Record<string, string> => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-review-outcome-"));
   const script = path.join(temp, "outcome.sh");
   const output = path.join(temp, "outcome.out");
   fs.writeFileSync(script, stepOf("review", "review", "Hand the outcome to the posting job"));
   fs.writeFileSync(output, "");
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(temp, name), text);
   const result = spawnSync("bash", ["-e", script], {
     encoding: "utf8",
     timeout: SUBPROCESS_TIMEOUT,
     env: {
       ...process.env,
-      PATH: `${bin}${path.delimiter}${process.env["PATH"] ?? ""}`,
       RUNNER_TEMP: temp,
       GITHUB_OUTPUT: output,
       JOB_STATUS: status,
@@ -129,15 +130,8 @@ const reviewOutcome = (
   });
   expect(result.status, result.stderr).toBe(0);
   const outputs = outputsOf(fs.readFileSync(output, "utf8"));
-  // The posting job has a temp of its own: nothing the review job wrote is in it.
-  for (const name of ["failure_reason.txt", "refusal_reason.txt"]) fs.rmSync(path.join(temp, name), { force: true });
-  return {
-    REVIEW_RESULT: status,
-    JOB_STATUS: "success",
-    REVIEW_REASON: outputs["failure-reason"] ?? "",
-    REVIEW_REFUSAL: outputs["refusal-reason"] ?? "",
-    TIMED_OUT: outputs["timed-out"] ?? "",
-  };
+  fs.rmSync(temp, { recursive: true, force: true });
+  return outputs;
 };
 
 interface Outcome {
@@ -170,11 +164,6 @@ const run = (
   fs.writeFileSync(path.join(bin, "gh"), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n', { mode: 0o755 });
   for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(temp, name), text);
   fs.writeFileSync(script, runOf(c));
-  // Unless the case names what was handed over itself, as a failed post does.
-  const handed =
-    c.command === "review" && extra["REVIEW_RESULT"] === undefined
-      ? reviewOutcome(temp, bin, status, elapsed, minutes)
-      : {};
 
   const result = spawnSync("bash", ["-e", script], {
     encoding: "utf8",
@@ -195,7 +184,6 @@ const run = (
       JOB_STARTED: String(Math.floor(Date.now() / 1000) - elapsed),
       TIMEOUT_MINUTES: minutes,
       REFUSED: refused,
-      ...handed,
       ...extra,
     },
   });
@@ -256,44 +244,8 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
     const none = run(c, "failure", 120, String(c.minutes), "false", {});
     expect(none.comment).toMatch(pattern);
     expect(none.comment).toContain("It stopped without giving a reason.");
-    // Five runs, so five spawns' worth of ceiling (`vitest.config.ts`), and
-    // twice that for the review, whose run is two steps in two jobs (#257).
-  }, 10 * SUBPROCESS_TIMEOUT);
-
-  /**
-   * The other pattern (#253): a review that refused a repository variable
-   * before it reviewed anything did not run, rather than stopped. It says so
-   * from its own file, with no run link, and is still blocked, since the
-   * maintainer has to change the variable.
-   */
-  it("review: a variable it refused before reviewing says it didn't run, and still blocks", () => {
-    const review = CASES.find((c) => c.command === "review") as Case;
-    const refusal =
-      "The repository variable `AGENT_MAX_FIX_ROUNDS` is `abc`. It must be a whole number (0 or more), or delete it to use the default of 3. Then add `agent:review` again.";
-    const outcome = run(review, "failure", 120, "20", "false", { "refusal_reason.txt": `${refusal}\n` });
-
-    expect(outcome.comment).toBe(`**\`agent:review\` didn't run:** ${refusal}\n`);
-    expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
-  });
-
-  /**
-   * And a review that finished whose posting failed (#257): the reason is the
-   * posting job's own, from the file its post step wrote, and the review job's
-   * clock has nothing to say about it.
-   */
-  it("review: a review that finished and could not be posted says why, and blocks", () => {
-    const review = CASES.find((c) => c.command === "review") as Case;
-    const outcome = run(review, "failure", 120, "20", "false", { "failure_reason.txt": "GitHub refused the review.\n" }, {
-      REVIEW_RESULT: "success",
-      JOB_STATUS: "failure",
-      REVIEW_REASON: "",
-      REVIEW_REFUSAL: "",
-      TIMED_OUT: "false",
-    });
-
-    expect(outcome.comment).toContain("stopped:** GitHub refused the review.\n");
-    expect(outcome.gh.some((argv) => argv.includes("--add-label agent:blocked"))).toBe(true);
-  });
+    // Five runs, so five spawns' worth of ceiling (`vitest.config.ts`).
+  }, 5 * SUBPROCESS_TIMEOUT);
 
   /**
    * A limit `fromJSON` reads as a number but bash arithmetic does not: `1.5`,
@@ -330,7 +282,6 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
     "implement-prd": "issue edit 135 --remove-label agent:implement",
     fix: "pr edit 152 --remove-label agent:fix",
     "update-branch": "pr edit 152 --remove-label agent:update-branch",
-    review: "pr edit 152 --remove-label agent:review",
   };
 
   it.each(CASES.filter((c) => c.blocks))("$command: comments, then takes its label off, then blocks", (c: Case) => {
@@ -417,6 +368,38 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
         expect(outcome.comment).not.toContain("timed out");
       });
     }
+  });
+});
+
+/**
+ * The review job's measure of how it ended (#220, #257), which stays YAML:
+ * only that job's clock knows whether a cancel was its limit (ADR 0003). What
+ * it hands over is what `review:conclude` says, and conclude's tests take it
+ * from there.
+ */
+describe.skipIf(!CAN_RUN)("review hands over how its job ended", () => {
+  it("says a job cancelled at its limit timed out", () => {
+    expect(reviewOutcome("cancelled", 20 * 60, "20")["timed-out"]).toBe("true");
+  });
+
+  it("says a job cancelled early, or one that failed at its limit, did not time out", () => {
+    expect(reviewOutcome("cancelled", 120, "20")["timed-out"]).toBe("false");
+    expect(reviewOutcome("failure", 20 * 60, "20")["timed-out"]).toBe("false");
+  }, 2 * SUBPROCESS_TIMEOUT);
+
+  /** `fromJSON` reads each as a number, which bash arithmetic does not: not compared, it reads as a cancel. */
+  it.each(["1.5", "1e1", "1.0", "0", "-5"])("reads a limit of %s it cannot compare as no timeout", (minutes) => {
+    expect(reviewOutcome("cancelled", 20 * 60, minutes)["timed-out"]).toBe("false");
+  });
+
+  it("hands over the reason and the refusal the runner wrote, whole", () => {
+    const outputs = reviewOutcome("failure", 120, "20", {
+      "failure_reason.txt": "The agent stopped.\nOn a second line.\n",
+      "refusal_reason.txt": "The repository variable `AGENT_MAX_FIX_ROUNDS` is `abc`.\n",
+    });
+
+    expect(outputs["failure-reason"]).toBe("The agent stopped.\nOn a second line.");
+    expect(outputs["refusal-reason"]).toBe("The repository variable `AGENT_MAX_FIX_ROUNDS` is `abc`.");
   });
 });
 

@@ -13,8 +13,12 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
  * one read the step makes.
  *
  * What it executes is #236: a trigger label is on while its run works and
- * comes off however the run ends, and a review or a refresh whose pull request
- * moved while it worked, because somebody pushed, asks for itself again.
+ * comes off however the run ends, and a refresh whose pull request moved
+ * while it worked, because somebody pushed, asks for itself again.
+ *
+ * Review's is no step any more: `review:conclude` takes `agent:review` off
+ * and asks for it again (#419), and `tests/review/conclude.test.ts` holds
+ * those scenarios.
  *
  * Skipped where `bash` is not on PATH.
  */
@@ -34,12 +38,10 @@ interface Workflow {
 const STEP = "Always remove the trigger label";
 
 /**
- * The job the step is in: the workflow's own, except the review's, whose
- * posting job writes every label (#257), and implement's, whose publish job
- * does, the agent's job holding no token that writes.
+ * The job the step is in: the workflow's own, except where a publish job
+ * writes every label, the agent's job holding no token that writes.
  */
 const JOB: Readonly<Record<string, string>> = {
-  review: "post-review",
   implement: "publish",
   fix: "publish",
   "update-branch": "publish",
@@ -66,8 +68,6 @@ interface Scenario {
   readonly source?: "app" | "pat" | "workflow";
   /** update-branch's `steps.request.outputs.requested`: this run asked for the review of its resolution. */
   readonly requested?: string;
-  /** The review job's result, as its posting job reads it (#257). */
-  readonly reviewed?: "success" | "failure" | "cancelled";
   /**
    * update-branch's gate's and agent's job's results, as its publish job
    * reads them (#308). The agent's is skipped on a clean merge.
@@ -114,7 +114,6 @@ const run = (
       PR_NUMBER: "152",
       PROCEEDED: scenario.proceeded ?? "true",
       JOB_STATUS: scenario.status ?? "success",
-      REVIEW_RESULT: scenario.reviewed ?? "success",
       GATE_RESULT: scenario.gate ?? "success",
       AGENT_RESULT: scenario.agent ?? "skipped",
       LEFT_SHA: REVIEWED,
@@ -131,7 +130,6 @@ const run = (
 const TRIGGERS = [
   ["implement", "agent:implement", "issue edit 135"],
   ["implement-prd", "agent:implement", "issue edit 135"],
-  ["review", "agent:review", "pr edit 152"],
   ["fix", "agent:fix", "pr edit 152"],
   ["update-branch", "agent:update-branch", "pr edit 152"],
 ] as const;
@@ -147,10 +145,7 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
     expect(outcome.gh.filter((call) => call.includes("--add-label"))).toEqual([]);
   });
 
-  describe.each([
-    ["review", "agent:review"],
-    ["update-branch", "agent:update-branch"],
-  ] as const)("%s", (command, label) => {
+  describe.each([["update-branch", "agent:update-branch"]] as const)("%s", (command, label) => {
     /**
      * The acceptance case: a push while the run worked moved the head, and a
      * label added then fired nothing, since it was on. So the step asks again,
@@ -253,41 +248,6 @@ describe.skipIf(!CAN_RUN)("the trigger label step, executed", () => {
       expect(comment).toContain(`Add \`${label}\` by hand`);
     });
   });
-  /**
-   * The review says the head moved, on every arm that found it moved, so that
-   * its fix-round and advance hand-offs stand down on a verdict about a commit the pull
-   * request has left (#236): re-requested, left to a queued run, or left to a
-   * human for want of the PAT.
-   */
-  it.each([
-    ["re-requested", { live: `OPEN ${PUSHED}` }],
-    ["left to a queued run", { live: `OPEN ${PUSHED} agent:fix` }],
-    ["left to a human without the App or the PAT", { live: `OPEN ${PUSHED}`, source: "workflow" }],
-  ] as const)("review: says the head moved where it was %s", (_case, scenario) => {
-    expect(run("review", scenario).output).toContain("moved=true");
-  });
-
-  it.each([
-    ["the head did not move", { live: `OPEN ${REVIEWED}` }],
-    ["the run failed", { live: `OPEN ${PUSHED}`, status: "failure" }],
-    ["the review job failed", { live: `OPEN ${PUSHED}`, reviewed: "failure" }],
-    ["the review job was cancelled", { live: `OPEN ${PUSHED}`, reviewed: "cancelled" }],
-    ["the pull request is closed", { live: `CLOSED ${PUSHED}` }],
-  ] as const)("review: says nothing about the head where %s", (_case, scenario) => {
-    expect(run("review", scenario).output).not.toContain("moved=");
-  });
-
-  /**
-   * The posting job runs after the review job however it ended (#257), so a
-   * review that failed is a result it reads rather than a status of its own,
-   * and asks for nothing either.
-   */
-  it.each(["failure", "cancelled"] as const)("review: asks for nothing after a review job that ended %s", (reviewed) => {
-    const outcome = run("review", { reviewed, live: `OPEN ${PUSHED}` });
-
-    expect(outcome.gh).toEqual(["workflow-token pr edit 152 --remove-label agent:review"]);
-  });
-
   /**
    * update-branch hands off one way or the other, never both: where it asked
    * for the review of its resolution, that review is queued in the group, and

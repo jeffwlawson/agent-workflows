@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   earlierFollowUps,
-  FOLLOW_UP_STUB_LABEL,
   MAX_STUB_TITLE,
   planFollowUps,
-  TRIAGE_LABEL,
   type FilingReview,
   type FilingStub,
 } from "../shared/follow-up-plan.js";
@@ -15,6 +13,7 @@ import {
   renderFollowUpsBlock,
   type FollowUp,
 } from "../shared/review-output.js";
+import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_MARKER, TRIAGE_LABEL } from "../shared/record.js";
 
 /**
  * The one seam in the filing half (#48). Everything worth arguing about — who
@@ -1065,12 +1064,10 @@ describe("the stub key and the review block version independently", () => {
       STUB_KEY_VERSION: 99,
     }));
 
-    const { renderFollowUpsBlock: render, FOLLOW_UPS_MARKER: marker } = await import(
-      "../shared/review-output.js"
-    );
+    const { renderFollowUpsBlock: render } = await import("../shared/review-output.js");
 
     expect(render([], 0, 0)).toBe(
-      `<!-- ${marker} {"version":1,"dropped":0,"moved":0,"cap":3,"followUps":[]} -->`,
+      `<!-- ${FOLLOW_UPS_MARKER} {"version":1,"dropped":0,"moved":0,"cap":3,"followUps":[]} -->`,
     );
   });
 });

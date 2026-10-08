@@ -118,7 +118,11 @@ new findings in one call, whose *Resolved since last review* lists only the thre
 resolved (one whose resolve failed is listed as still open, with a note), then the pull request's
 title and summary block where anything was pushed since the summary was written, then the verdict status
 and the ready state, then takes `agent:review` off, then hands off. A refusal or a failure in the
-review job is said by the posting job too, since nothing else can write it.
+review job is said by the posting job too, since nothing else can write it. The posting is two
+commands (#417, #419): `review:publish` posts the results, and `review:conclude`, run however the
+job went, ends the run. Conclude is told how the review job and each step before it ended, and
+works out the ending from that, so a hand-off that fails after the review posted is said as a
+failed hand-off, never as a review that did not finish.
 
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
@@ -148,9 +152,9 @@ A review asked for **right after a push** is about the pushed commit, and two ha
 (#229). GitHub moves a pull request's head asynchronously after a push, so a label added at once
 can carry the commit before the push in its payload. Each run that pushes waits, about a minute,
 for the pull request to show the pushed commit before it labels, and labels anyway with a warning
-if it never does. And the review does not trust its payload: it reads the branch tip from git,
-reviews the tip where it descends from the labelled commit, refuses by name where it does not,
-and checks out, waits on CI for and posts every status on that one commit.
+if it never does. And the review does not trust its payload: `review:gate` reads the branch tip
+from the repository's refs, reviews the tip where it descends from the labelled commit, refuses by
+name where it does not, and checks out, waits on CI for and posts every status on that one commit.
 
 Review adds a trigger label in two cases. The first is on the pull request (#102): the posting
 job's last step adds `agent:fix` when the verdict is *Changes recommended* and the pull request has
@@ -190,12 +194,14 @@ naming the slice (or "final review"), why the round stopped (the fix-round budge
 progress, a review that needs a closer look, a run that did not finish), the open findings with
 links, and the three ways on: `agent:fix` for another round; decline a finding by replying to it,
 then `agent:review`; or push a commit, then `agent:review`. A verdict that started a fix round is
-neither, and the job does nothing on it. At every ending it first re-renders the progress list.
+neither, and the job does nothing on it. At every ending it first writes the progress list.
 `fix` has no copy of it: only a review posts an approval, and every fix run on a PRD PR ends in
 one. It cannot cycle: it never labels a pull request, the run it starts builds one slice and asks
 for one round, or refuses at the gate, and it is **bounded by the number of sub-issues**, because a
-finished PRD refuses the label. It runs a composite action, `.github/actions/advance-prd`, pinned
-to the release like the runner (no checkout, no model, `AGENT_PAT` or nothing).
+finished PRD refuses the label. It is a command, `review:advance` (#423), pinned to the release
+like the runner (no checkout, no model, and the loop's App or `AGENT_PAT` for the parent, or
+nothing there). The review hands it the round, the park reason, the open findings and what the
+progress list is rendered from, as data, and it writes every string itself.
 
 `update-branch` asks only on the half of its work an agent wrote. A **clean** merge changed nothing
 the last review read, so it carries that review's verdict on to the merge commit instead — a
@@ -404,7 +410,7 @@ every such job in the file, and a job-level block replaces that one rather than 
 (`setup/callers.ts`, `permissionsFrom`). Where `CLAUDE.md` says "both caller sets" it means the
 files: `examples/callers/` and `.github/workflows/agent-*.yml`. A caller an adopter does not have is a workflow they declined, whether the file is missing or only the job.
 
-**The reusable workflow** holds what only Actions can do: the job graph and its conditions, the
+**The reusable workflow** keeps only what Actions can do: the job graph and its conditions, the
 fork guard, the permissions ceiling, which job names which secret, the concurrency group and the
 timeouts; glue that only carries a value into one of those; the adopter's own setup and test
 commands; and checkout, Node setup, artifacts and the token's mint. An adopter *references* it, so
@@ -415,9 +421,11 @@ release, so a fix in the package reaches them the same way.
 anything, is package code, run in the same job its shell would have run in. That includes the
 guards written as steps, such as the preflight refusals and the bundle check, and the choice of
 which token each write uses. [ADR 0003](./docs/adr/0003-reusable-keeps-what-only-actions-can-do.md)
-records the rule and why it replaced "every guard and every step" in the reusable. It is the target
-rather than the state: **all six reusables still run their steps as inline shell**, and `review`
-moves first (#393). Until a reusable has moved, a fix to one of its steps still goes in its YAML.
+records the rule and why it replaced "every guard and every step" in the reusable. `review` has
+moved (PRD #409): every one of its steps that reads or changes the record or decides is a command.
+**Five reusables still run their steps as inline shell**: `implement`, `implement-prd`, `fix`,
+`update-branch` and `follow-ups`, whose filing alone is a command, `follow-ups:file`. Until a
+reusable has moved, a fix to one of its steps still goes in its YAML.
 
 **A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked
 as one subcommand of one published binary. It takes its whole input from the environment; passing
@@ -428,20 +436,33 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `follow-ups` is the one command today, still declared and named as a
-runner until review's move renames it `follow-ups:file`; every other step a command will be still
-runs as YAML shell. [ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
+name is always a runner. `follow-ups:file`, `review:gate`, `review:collect-checks`,
+`review:red-check-place`, `review:red-check-classify`, `review:publish`, `review:conclude` and
+`review:advance` are the commands today; every other step a command will be still runs as YAML
+shell, in the five reusables that have not moved. A command that
+only decides or reads, as `review:gate` does before the review job's checkout (#420) and
+`review:collect-checks` does for the CI wait (#421), is handed the GitHub
+reader and no writer, and what it settles leaves it as a declared file: the gate's the YAML copies
+into step outputs, and the CI wait's the runner reads. A command that runs beside the pull
+request's own code, as the red check's two do around the adopter's test command (#422), is handed
+no token at all: it reads no repository, and the package it runs from was installed before that
+code ran, by the one step that held the registry token. The kind is declared, not inferred: `shared/contract.ts` holds
+runners in `RUNNERS` and commands in `COMMANDS`.
+[ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
 
 **The writer** is the engine's way to change the record. A command calls it once per write, with a
-type named for what GitHub does (add a label, set a commit status, replace the block between two
-markers), never for what the loop means. The loop passes in its own strings. The writer enforces a
-count limit per type, stops at the first failure, and keeps a **write log**: each write it applied
-and how it went, written as one of the command's outputs. A command is handed two writers, one per
-token. The agent's text reaches a command already cleaned, and the loop adds its markers after
+type named for what GitHub does (add a label, set a commit status, edit a pull request's title and
+body against the live body, post a review, reply to a thread and resolve it), never for what the
+loop means. The loop passes in its own strings, and splices its markers with the engine's helper.
+The writer enforces a count limit per type set by each command, throws on the first failure
+without latching, and keeps a **write log**: one line per write as it lands, and a last line for
+how the command ended, appended to one of the command's declared outputs. A command is handed two
+writers, one per token, sharing the log and the limits. The agent's text reaches a command already cleaned, and the loop adds its markers after
 that. A job's package code is one command per stretch between steps only Actions can take, plus an
 `always()` command where the job has a failure path.
 [ADR 0005](./docs/adr/0005-writes-are-calls-with-a-log.md) records why there is no list of writes
-planned before applying. Like commands, the writer is the target: nothing uses it yet.
+planned before applying. The writer is in `engine/`, and review's posting job's two commands and
+its `review:advance` write through it.
 
 **The hand-over** is what crosses from the agent's phase to the commands that act on it: the
 runner's files that each command declares it reads, checked and cleaned when they are read. The
@@ -452,9 +473,9 @@ The files carry the runner's decisions as data and the agent's raw text, never f
 the command that posts writes every final string and every marker, so no marker in the record
 came from a file the agent could write.
 [ADR 0006](./docs/adr/0006-hand-over-between-agent-and-publish.md) records the rule, and
-[ADR 0007](./docs/adr/0007-publish-writes-every-final-string.md) what the files hold. It is the
-target: today `review.yml` uploads a hand-kept list of files, and nothing checks them before
-posting.
+[ADR 0007](./docs/adr/0007-publish-writes-every-final-string.md) what the files hold. Review's two,
+to `review:publish` and to `review:advance`, are uploaded by exactly the files each declares, which
+`tests/workflows.test.ts` holds, and read through checked readers before the first write.
 
 **A workflow's folder** holds that workflow's package code: its runner, as `<name>/<name>.ts`, where
 it has one, and every command that runs in its jobs, whatever the command writes to. So review's
@@ -485,7 +506,7 @@ are here so the glossary and the contract use one vocabulary.
 - **The record.** What the loop leaves on GitHub that a later run reads back: posts by the loop's
   accounts, markers in their text, status contexts, commit trailers and branch names.
 - **The agent.** The model CLI a runner drives inside its sandbox: Claude Code. It is not the
-  runner, which starts it, and `follow-ups`, filed as a runner until it becomes a command, starts none.
+  runner, which starts it, and no command starts one.
 
 ### And the install path, which is none of the three
 

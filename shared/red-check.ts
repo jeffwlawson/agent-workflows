@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import { asArray, asRecord, asString } from "./common.js";
 import { MERGE_DANGER_HEADING } from "./merge-danger.js";
 import { embeddableJson, type CiResult, type TestSketch } from "./review-output.js";
+import { RED_TESTS_MARKER } from "./record.js";
 
 /**
  * The red check's evidence, as the review reads it (#232, PRD #212).
@@ -60,6 +61,25 @@ export interface RedCheckReport {
   readonly tests: readonly RedCheckTest[];
   readonly skipped: number;
 }
+
+/**
+ * The part of a report the body's Evidence reads (#355), and all the review
+ * hands `review:publish` of it (ADR 0007): what ran, against what, and each
+ * test's result.
+ */
+export type EvidenceReport = Pick<RedCheckReport, "status" | "base" | "head" | "slice" | "tests">;
+
+/** The red check as the Evidence reads it: `RedCheck`, its report narrowed to `EvidenceReport`. */
+export type EvidenceCheck =
+  | Exclude<RedCheck, { readonly kind: "ran" }>
+  | { readonly kind: "ran"; readonly report: EvidenceReport };
+
+/** `check` narrowed to what the Evidence reads, as the review hands it over. */
+export const evidenceCheck = (check: RedCheck): EvidenceCheck => {
+  if (check.kind !== "ran") return check;
+  const { status, base, head, slice, tests } = check.report;
+  return { kind: "ran", report: { status, base, head, ...(slice === undefined ? {} : { slice }), tests } };
+};
 
 const RESULTS: readonly string[] = ["red", "broken", "passed"];
 
@@ -188,13 +208,13 @@ const withMessage = (test: RedCheckTest): string =>
  * PRD branch as it stood before the slice (#235), which holds every earlier
  * slice.
  */
-const before = (report: RedCheckReport): string =>
+const before = (report: Pick<RedCheckReport, "slice">): string =>
   report.slice === undefined ? "the merge-base" : `the PRD branch as it stood before this slice (#${report.slice})`;
 
 const list = (files: readonly string[]): string => files.map((file) => `- ${code(file)}`).join("\n");
 
 /** Whose changes the report covers: the pull request's, or on a slice round the slice's alone. */
-const whose = (report: RedCheckReport): string => (report.slice === undefined ? "this pull request" : "this slice");
+const whose = (report: Pick<RedCheckReport, "slice">): string => (report.slice === undefined ? "this pull request" : "this slice");
 
 const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -496,7 +516,7 @@ export interface EvidenceInputs {
  * check that is off, and one whose report could not be read or held no
  * result, each say so, because an empty list would read as "none was red".
  */
-export const renderEvidence = (check: RedCheck, inputs: EvidenceInputs): string => {
+export const renderEvidence = (check: EvidenceCheck, inputs: EvidenceInputs): string => {
   const { ci, head } = inputs;
   const section = ((): string => {
     switch (check.kind) {
@@ -585,7 +605,7 @@ export const withoutCarriedSections = (summary: string): string => {
  * a body written before #355 carries the old one. Cut at the Merge Danger's
  * heading too (#356), which follows the Evidence and is written afresh with it.
  */
-export const withEvidence = (summary: string, check: RedCheck, inputs: EvidenceInputs): string => {
+export const withEvidence = (summary: string, check: EvidenceCheck, inputs: EvidenceInputs): string => {
   const own = withoutCarriedSections(summary);
   const section = renderEvidence(check, inputs);
   return own === "" ? section : `${own}\n\n${section}`;
@@ -608,12 +628,6 @@ export interface RedTestsRecord {
   /** Red tests past the cap, counted and not named. */
   readonly more: number;
 }
-
-/**
- * What a reader selects the record on: a selector, not a control, as
- * `FOLLOW_UPS_MARKER` is. Only a review this loop posted is read.
- */
-export const RED_TESTS_MARKER = "agent-red-tests";
 
 /** Versioned for the reason the follow-ups payload is: a review posted before a release is read after it. */
 export const RED_TESTS_VERSION = 1;

@@ -4,20 +4,18 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
-  claudeAgent,
   fail,
   readInputs,
   scrubGitHubTokens,
   sh,
-  workflowRunUrl,
   writers,
 } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
-import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
+import { claudeAgent, runWithExtraction } from "../shared/agent.js";
+import { RUNNERS } from "../shared/contract.js";
+import { applyCriteriaRulings, renderCriteriaForReview } from "./acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { fetchReviews } from "../shared/follow-up-filing.js";
 import { earlierFollowUps } from "../shared/follow-up-plan.js";
-import { renderMergeDanger } from "../shared/merge-danger.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import {
   firstLine,
@@ -25,52 +23,45 @@ import {
   readPrdBranch,
   readSliceRound,
   renderFinalReviewBrief,
-  renderParkComment,
-  renderPrdSummary,
   renderSliceRoundBrief,
-  REVIEW_URL_SLOT,
   roundName,
   sliceCriteria,
   sliceRedTests,
   type ParkFinding,
+  type ParkRound,
   type PrdBranch,
   type PrdRound,
   type SliceCriteria,
 } from "../shared/prd-round.js";
-import { currentSummary, summaryDue, summaryUpdate } from "../shared/pr-summary.js";
-import { progressAtRoundEnd, renderPrStatus, statusBlock, type RoundEnding } from "../shared/progress-list.js";
+import { currentSummary, summaryDue } from "./pr-summary.js";
 import {
   describeRedCheck,
+  evidenceCheck,
   readRedCheck,
   redTestsRecord,
   renderRedCheck,
   renderRedCheckForFinal,
-  renderRedTestsBlock,
-  withEvidence,
   type SliceRedTests,
 } from "../shared/red-check.js";
-import { fetchPullRequestContext } from "../shared/review-context.js";
+import { fetchPullRequestContext } from "./review-context.js";
 import {
+  findingsHandOver,
   isPreviouslyMissed,
   pathErrorNote,
   pathErrors,
   placeFindings,
-  reviewMutation,
   type Severity,
 } from "../shared/review-findings.js";
 import {
   countFixBeforeMerge,
   dedupeFollowUps,
   deriveVerdict,
-  FIX_ROUND_STATUS,
   followUpsCap,
   MAX_FOLLOW_UPS,
   recordFollowUps,
   type EarlierFollowUps,
-  renderFollowUpsBlock,
-  renderReviewPost,
+  reviewBodyHandOver,
   reviewOutputSchema,
-  VERDICT_CONTEXT,
   type CiResult,
   type FixRounds,
 } from "../shared/review-output.js";
@@ -78,8 +69,7 @@ import {
   describeHistory,
   fixRoundProgress,
   readReviewHistory,
-  unreadableHistoryNote,
-} from "../shared/review-round.js";
+} from "./review-round.js";
 import {
   renderCarriedFindings,
   renderSettledFindings,
@@ -87,11 +77,26 @@ import {
   type CarriedFinding,
   type ResolutionReason,
 } from "../shared/review-verification.js";
-import { readRoundRecord, reviewHeader, roundCounts, type RoundCounts, type RoundScope } from "../shared/round-header.js";
-import { runWithExtraction } from "../shared/run-with-extraction.js";
+import {
+  readRoundRecord,
+  reviewHeader,
+  reviewNumber,
+  roundCounts,
+  type RoundCounts,
+  type RoundScope,
+} from "../shared/round-header.js";
+import type {
+  ParkHandOver,
+  ProgressHandOver,
+  PrSummary,
+  PrSummaryText,
+  ReviewBody,
+  ThreadResolutions,
+  VerdictHandOver,
+} from "./hand-over.js";
 
-const INPUTS = readInputs(CONTRACT["review"].inputs);
-const { writeJson, writeText } = writers(CONTRACT["review"].outputs);
+const INPUTS = readInputs(RUNNERS["review"].inputs);
+const { writeJson, writeText } = writers(RUNNERS["review"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;
@@ -168,7 +173,7 @@ const readCiResult = (): CiResult => {
 
 /**
  * Whether the workflow will start a fix round itself if this review recommends
- * changes (#201): what *Settle the fix-round budget* decided from the
+ * changes (#201): what `review:gate` decided from the
  * repository's budget, the rounds this pull request has spent and the PAT.
  * None of those is readable here once the token is gone, and the job that adds
  * `agent:fix` selects on the field this decides, so the step's one answer is
@@ -286,24 +291,14 @@ try {
   const redCheck = readRedCheck(INPUTS.RED_CHECK_CONFIGURED === "true", INPUTS.RED_CHECK_FILE);
   console.log(`Red check: ${describeRedCheck(redCheck)}.`);
 
-  // The park comment for a round that does not finish (PRD #222), written now
-  // because a failure later has no chance to: the advance job posts it on the
-  // PRD's parent if the review or its posting fails. What is open is what was
-  // open before this review, since nothing after this point is known to have
-  // happened.
-  const runUrl = workflowRunUrl(INPUTS);
-  if (round !== undefined) {
-    writeText(
-      "park_failed.md",
-      renderParkComment({
-        round,
-        prNumber: PR_NUMBER,
-        reason: "failed",
-        findings: context.carriedFindings.map(carriedForPark),
-        ...(runUrl === undefined ? {} : { runUrl }),
-      }),
-    );
-  }
+  // What `review:advance` parks the chain with (PRD #222), as data (ADR
+  // 0007), written now because a failure later has no chance to: it parks on
+  // the PRD's parent if the review or its posting fails. What is open is what
+  // was open before this review, since nothing after this point is known to
+  // have happened. Written again, with the review's ruling, once it has one.
+  const parkRound = round === undefined ? undefined : toParkRound(round);
+  const openBefore = context.carriedFindings.map(carriedForPark);
+  if (parkRound !== undefined) writeJson("park.json", { round: parkRound, carried: openBefore } satisfies ParkHandOver);
 
   // The PRD branch, read once for what follows, while the token is in hand.
   // Undefined off a PRD PR, or where it cannot be read, which each use below
@@ -333,37 +328,39 @@ try {
       : round?.kind === "slice" && round.slice !== undefined
         ? { kind: "slice", k: round.slice.k, n: round.slice.n, subIssue: round.slice.subIssue }
         : { kind: "regular" };
-  const header = counts === undefined ? undefined : reviewHeader(scope, counts);
-  console.log(`Header: ${header ?? "none, since the earlier rounds could not be read"}.`);
-  const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo } = INPUTS;
-  const prUrl = server && repo ? `${server}/${repo}/pull/${PR_NUMBER}` : undefined;
+  // The header's scope and number, for publish to write (#298).
+  const header = counts === undefined ? undefined : { scope, number: reviewNumber(scope, counts) };
+  console.log(`Header: ${counts === undefined ? "none, since the earlier rounds could not be read" : reviewHeader(scope, counts)}.`);
 
-  // The PRD PR's progress table and status line for each way this round can
-  // end (#246, #298), for the advance job, which knows how it ended and runs
-  // no toolchain, to write into the body. Written now, so a run that fails
-  // has them, and again once the review knows what it leaves open. A list
-  // that cannot be rendered is left as it stands, and says so: it is a view
-  // of the chain, and a review is worth more than it.
+  // What the PRD PR's progress table and status line are rendered from
+  // (#246, #298), for `review:advance`, which knows how the round ended, to
+  // render and write into the body. Data, not the table (ADR 0007): the PRD
+  // branch and the rounds, read here while the token is in hand, and the
+  // findings left open. Written now, so a run that fails has it, and again
+  // once the review knows what it leaves open. A list that cannot be read is
+  // left as it stands, and says so: it is a view of the chain, and a review
+  // is worth more than it.
   const writeProgress = (open: number): void => {
     if (round === undefined) return;
     if (prdBranch === undefined) {
       console.log("::warning::The PRD PR's progress list could not be rendered, so it is left as it stands.");
       return;
     }
-    const lists = progressAtRoundEnd(
-      {
-        subIssues: prdBranch.subIssues,
-        ranges: prdBranch.ranges,
-        finalReview: round.kind === "final" ? "requested" : "not requested",
-      },
-      { rounds: counts, review: REVIEW_URL_SLOT, open, prUrl },
-    );
-    // Keyed on `RoundEnding`, not `Object.entries`'s `string`, so each name is
-    // one the declaration lists.
-    for (const [ending, list] of Object.entries(lists) as [RoundEnding, (typeof lists)[RoundEnding]][]) {
-      writeText(`progress_${ending}.md`, list.progress);
-      writeText(`status_${ending}.md`, list.status);
-    }
+    writeJson("progress.json", {
+      subIssues: prdBranch.subIssues.map(({ number, state }) => ({ number, state })),
+      ranges: prdBranch.ranges,
+      finalReview: round.kind === "final" ? "requested" : "not requested",
+      ...(counts === undefined
+        ? {}
+        : {
+            rounds: {
+              slices: Object.entries(counts.slices).map(([subIssue, count]) => ({ subIssue: Number(subIssue), ...count })),
+              final: counts.final,
+              all: counts.all,
+            },
+          }),
+      open,
+    } satisfies ProgressHandOver);
   };
   writeProgress(context.carriedFindings.length);
 
@@ -516,9 +513,8 @@ try {
   // complete restatement each round and the filing half reads the latest one,
   // so recording none has to be sayable: otherwise round 1's findings stay the
   // newest thing on the pull request and a merge after round 2 fixed them files
-  // a stub for work already done. Both halves are `renderReviewBody`'s to
-  // place; what is written here is the artifact a human debugging the run
-  // opens.
+  // a stub for work already done. Both halves are publish's to write, from
+  // the list handed over here.
   //
   // The findings the diff gave no anchor to lead the list and are exempt from
   // that cap: a moved finding is one the review meant to stop the merge with,
@@ -559,229 +555,142 @@ try {
     autoFix: willAutoFix(),
     ...(rounds === undefined ? {} : { fixRounds: rounds }),
   });
-  // And a history nothing could establish says so in the body as well as in
-  // the brief. The agent was told it followed a fix round; what it cannot say,
-  // and what changes how a reader weighs the review, is that this was the
-  // stricter reading rather than a fact about this pull request.
+  // What `review:publish` posts the review from (ADR 0007): the decisions
+  // and the agent's raw text, and nothing rendered. Publish writes the body,
+  // each thread, the closing replies and every marker in them, from what it
+  // reads back cleaned, so no file here holds a loop string an agent steered
+  // by what it read could have rewritten. It also holds the body to GitHub's
+  // limit, since only the finished text can be measured.
   //
-  // What the body is made of, and in what order, is `renderReviewBody`'s: it is
-  // the part of the review a human acts on, and this file is a script with no
-  // test around it (#105). It is handed the output whole rather than the fields
-  // it reads, so the record it renders is the set the verdict above was counted
-  // from and not a second reading of it (#113).
+  // `findings.json`: a thread per placed finding, where and what.
+  writeJson("findings.json", findingsHandOver(placed));
+
+  // `review_body.json`: the record as this review decided it (#109, decision
+  // 8), handed the output whole so the set it records is the set the verdict
+  // was counted from and not a second reading of it (#113). Every resolved
+  // entry carries the thread it closes, so publish lists one whose thread it
+  // could not resolve as still open (#257).
   //
-  // The follow-ups are a group in it now rather than a block appended after it
-  // (#109, decision 8 as the maintainer settled it), and the payload the filing
-  // half reads on merge goes out last and invisibly — so the posted body is
-  // what this returns, with nothing concatenated on afterwards.
+  // A history nothing could establish says so in the body as well as in the
+  // brief: the agent was told it followed a fix round, and what it cannot
+  // say, and what changes how a reader weighs the review, is that this was
+  // the stricter reading rather than a fact about this pull request.
   //
   // A slice round records its red tests in its review (#235), invisibly: the
   // body's failing-first list is rewritten by the next slice, and the review
   // is the one record of a slice that outlives it, for the final review to
   // list by slice.
   const redTests = round?.kind === "slice" ? redTestsRecord(redCheck) : undefined;
-  const post = renderReviewPost({
-    verdict,
-    output,
-    roundNote: unreadableHistoryNote(history),
-    placed,
-    movedToFollowUps: movedFollowUps,
-    stillOpen,
-    resolved,
-    followUps,
-    droppedFollowUps,
-    followUpsCap: followUpsCapUsed,
-    followUpsCarried,
-    droppedNotes: notes.dropped,
-    criteria: criteriaRulings.results,
-    ...(redTests === undefined ? {} : { redTestsBlock: renderRedTestsBlock(redTests) }),
-    runUrl: workflowRunUrl(INPUTS),
-    header,
-    // What was shed, where the body had to be cut to fit GitHub's limit (#140).
-    // A body that cannot be made to fit throws, and the catch below writes the
-    // reason rather than letting the post meet the limit as a 422.
-    log: (line) => console.log(line),
-  });
-  const reviewBody = post.body;
+  const reviewBody: ReviewBody = {
+    ...reviewBodyHandOver({
+      verdict,
+      output,
+      placed,
+      movedToFollowUps: movedFollowUps,
+      stillOpen,
+      resolved,
+      followUps,
+      droppedFollowUps,
+      followUpsCap: followUpsCapUsed,
+      followUpsCarried,
+      droppedNotes: notes.dropped,
+      criteria: criteriaRulings.results,
+    }),
+    ...(header === undefined ? {} : { header }),
+    ...(history.unreadable === undefined ? {} : { historyUnreadable: history.unreadable }),
+    ...(redTests === undefined ? {} : { redTests }),
+  };
+  writeJson("review_body.json", reviewBody);
 
-  // A GraphQL request body, posted by the workflow with `gh api graphql
-  // --input`. REST `POST /pulls/{n}/reviews` cannot open a **file-level**
-  // thread — it answers one with a 422 — and its `comments` field is deprecated
-  // in favour of `threads` besides (#109, decision 5). `commitOID` pins the
-  // review to the head that was reviewed, exactly as `commit_id` did.
-  //
-  // Composed by a tested function rather than written out here, for the reason
-  // the body is: this file is a script with no test around it, and the shape it
-  // writes is the shape a `--jq` path in the workflow reads back.
-  writeJson(
-    "review_payload.json",
-    reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body: reviewBody, placed }),
-  );
-  writeText("summary.md", reviewBody);
+  // `thread_resolutions.json`: the threads this review verified, why each
+  // closes, and the words its reply quotes. Written on every run, empty list
+  // included: "there was nothing to resolve" is an answer publish should not
+  // have to infer from a missing file.
+  writeJson("thread_resolutions.json", resolutions satisfies ThreadResolutions);
 
-  // What the posting job puts *Resolved since last review* back together from
-  // (#257), once it knows which of this review's closures held: this job runs
-  // the model and posts nothing, and the job that resolves the threads posts
-  // the body afterwards. A thread it could not resolve is listed as still open
-  // rather than resolved. The payload above carries the body as it reads where
-  // every closure held, which is also the body a human debugging the run reads.
-  writeJson("review_body.json", {
-    slotted: post.slotted,
-    slot: post.slot,
-    resolved: post.resolved,
-    groups: post.groups,
-  });
+  // `pr_summary.json`: the title and the summary block, for publish to write
+  // (#218). Written only where this review rewrites them, so the file's
+  // existence is the whole condition. Publish splices the summary into the
+  // body as it stands then, not as it was read here, so an edit made outside
+  // the block while this review ran survives it.
+  //
+  // The agent's words and the data the rest of the block is laid out from,
+  // and nothing rendered (ADR 0007): publish writes the Evidence (#355) and
+  // the Merge Danger (#356) under the summary, and on the final review the
+  // PRD's lines per slice (#247, #356), with every marker the block carries.
+  // Each comes from what this review decided: CI's result at the head, the
+  // sketches the review wrote, the red check as it was read here, or each
+  // landed slice's records off the reviews of it. The Merge Danger's known
+  // issues are the follow-ups `review_body.json` records.
+  if (writesSummary && (final || output.title !== undefined || output.summary !== undefined)) {
+    const text: PrSummaryText = {
+      ...(output.title === undefined ? {} : { title: output.title }),
+      ...(output.summary === undefined ? {} : { summary: output.summary }),
+      ci,
+      testSketches: output.testSketches ?? [],
+      danger: {
+        ...(output.door === undefined ? {} : { door: output.door }),
+        ...(output.doorNote === undefined ? {} : { doorNote: output.doorNote }),
+        ...(output.blastRadius === undefined ? {} : { blastRadius: output.blastRadius }),
+        ...(output.blastRadiusNote === undefined ? {} : { blastRadiusNote: output.blastRadiusNote }),
+        ...(output.breaking === undefined ? {} : { breaking: output.breaking }),
+      },
+    };
+    const summary: PrSummary = final
+      ? {
+          ...text,
+          final,
+          prd: {
+            ...(slicesCriteria === undefined ? {} : { criteria: slicesCriteria }),
+            // Each slice's red tests (#235), where the check is configured.
+            ...(redCheck.kind === "not-configured" ? {} : { redTests: slicesRedTests === undefined ? {} : { slices: slicesRedTests } }),
+          },
+        }
+      : { ...text, final, redCheck: evidenceCheck(redCheck) };
+    writeJson("pr_summary.json", summary);
+  }
 
-  // The threads this review verified, for the workflow step that closes them.
-  // Written on every run, empty list included: the step reads the file rather
-  // than deciding anything, and "there was nothing to resolve" is an answer it
-  // should not have to infer from a missing file.
-  //
-  // The reply is composed here rather than in YAML for the reason the body is:
-  // it is the only record of *why* a thread closed — GitHub takes
-  // `resolutionReason` and then exposes it nowhere — and this file is a script
-  // with no test around it.
-  writeJson("thread_resolutions.json", resolutions);
-
-  // The title and the summary block, for the posting job to write (#218).
-  // Written only where this review rewrites them, so the file's existence is
-  // the whole condition, as `follow_ups.md`'s is. The posting job splices the
-  // summary into the body as it stands then, not as it was read here, so an
-  // edit made outside the block while this review ran survives it.
-  //
-  // The final review's summary is the PRD's (#247, #356): its outcome, then a
-  // line per slice that changed or dropped a criterion, laid out here.
-  //
-  // Every summary write ends with the Merge Danger (#356), from the review's
-  // door, blast radius and breaking changes, its known issues the follow-ups
-  // this review records to be filed on merge.
-  //
-  // What the Evidence's After and its test sketches come from (#355): CI's
-  // result at the head the summary describes, and the sketches the review
-  // wrote, which the render attaches only to tests listed as failing first.
-  const evidence = { ci, head: headSha, testSketches: output.testSketches };
-  const written = final
-    ? {
-        ...output,
-        summary: renderPrdSummary({
-          outcome: output.summary,
-          danger: output,
-          slices: slicesCriteria,
-          followUps,
-          // Each slice's red tests (#235), where the check is configured.
-          ...(redCheck.kind === "not-configured" ? {} : { redTests: { slices: slicesRedTests } }),
-          evidence,
-        }),
-      }
-    : output.summary === undefined
-      ? output
-      : // A slice or a regular pull request's body gives its Evidence under
-        // the summary (#234, #355), from the red check's report and CI's
-        // result rather than the agent's word, so the agent's text and the
-        // Evidence are kept apart. The final review's is laid out by slice.
-        {
-          ...output,
-          summary: `${withEvidence(output.summary, redCheck, evidence)}\n\n${renderMergeDanger(output, followUps)}`,
-        };
-  const summary = writesSummary ? summaryUpdate(written, headSha, final) : undefined;
-  if (summary !== undefined) writeJson("pr_summary.json", summary);
-
-  // What the workflow posts the commit status from — context, state and line.
-  // A file rather than a step output, for the same reason the payload above is
-  // one: the step that posts cannot read this process, and the table all three
-  // come from is tested here rather than restated in YAML. The only copy of the
-  // context that is *not* read from here is the one the failure arm posts,
-  // which by definition runs on a review that wrote no file.
-  //
-  // `verdict` is the row's key rather than its heading, so the workflow
-  // selects on something no rewording moves. `fixRound` is the status that
-  // records a round this review asked for (#297), present only where the
-  // automatic fix (#102) starts one: the posting step posts it beside the
-  // verdict, and the hand-off selects on its presence.
+  // `verdict.json`: what publish posts the commit status from, and the rest
+  // of the posting job reads the verdict by. The row's key rather than its
+  // heading, so everything that selects on it selects on something no
+  // rewording moves, and whether the automatic fix (#102) starts a round
+  // (#297). Publish takes the context, the state and the line from its own
+  // table, keyed by this and by the cause in `review_body.json`, so nothing
+  // here names a status. Beside them, how many findings this review leaves
+  // open, for the status line publish writes into the note (#298).
+  const open = stillOpen.length + placed.length;
   writeJson("verdict.json", {
-    context: VERDICT_CONTEXT,
     verdict: verdict.verdict,
-    state: verdict.state,
-    description: verdict.description,
-    ...(verdict.startsFixRound === true ? { fixRound: FIX_ROUND_STATUS } : {}),
-  });
+    fixRound: verdict.startsFixRound === true,
+    open,
+  } satisfies VerdictHandOver);
 
-  // And on a PRD PR, what the advance job says on the parent where this round
-  // ends without approval and with no fix round starting (PRD #222): the
-  // round, the stop and every finding still open, the ones raised here linking
-  // the review the posting job is about to post. Written only in that case,
-  // so the file's existence is the whole condition, as `follow_ups.md`'s is.
-  //
-  // Beside it, whatever the verdict, `park_posted.md`: the comment for a round
-  // whose verdict was posted but whose posting job failed after it, which
-  // parks the chain on any verdict. It names the verdict and the same
-  // findings, since the review that raised them is on the pull request.
-  if (round !== undefined) {
-    const openFindings: ParkFinding[] = [
-      ...stillOpen.map(carriedForPark),
-      ...placed.map(
-        (p): ParkFinding => ({
-          title: p.finding.title,
-          anchor: `${p.finding.path}:${p.finding.line}`,
-          url: REVIEW_URL_SLOT,
-        }),
-      ),
-    ];
+  // And on a PRD PR, what `review:advance` parks the chain with, now with
+  // the review's ruling (PRD #222): the verdict, the reason its round stops
+  // where it does, and every finding still open, the ones raised here to be
+  // linked to the review the posting job is about to post. The reason is
+  // absent where the round moves on or a fix round starts; the verdict is
+  // there whatever it is, since a posting job that fails after it parks the
+  // chain on any verdict.
+  if (parkRound !== undefined) {
     const parkReason = parkReasonOf(verdict);
-    if (parkReason !== undefined) {
-      writeText(
-        "park.md",
-        renderParkComment({
-          round,
-          prNumber: PR_NUMBER,
-          reason: parkReason,
-          detail: verdict.nextStep,
-          findings: openFindings,
-        }),
-      );
-    }
-    writeText(
-      "park_posted.md",
-      renderParkComment({
-        round,
-        prNumber: PR_NUMBER,
-        reason: "post failed",
-        detail: `[The verdict](${REVIEW_URL_SLOT}) was *${verdict.heading}*.`,
-        findings: openFindings,
-        ...(runUrl === undefined ? {} : { runUrl }),
-      }),
-    );
+    writeJson("park.json", {
+      round: parkRound,
+      carried: openBefore,
+      review: {
+        verdict: verdict.verdict,
+        ...(verdict.cause === undefined ? {} : { cause: verdict.cause }),
+        ...(parkReason === undefined ? {} : { reason: parkReason }),
+        stillOpen: stillOpen.map(carriedForPark),
+        raised: placed.map((p) => ({ title: p.finding.title, anchor: `${p.finding.path}:${p.finding.line}` })),
+      },
+    } satisfies ParkHandOver);
   }
 
   // The progress table and status line again, now that this review knows
-  // what it leaves open (#298). Off a PRD PR, the status line the posting job
-  // writes into the note (#298), linking this review once it is posted.
-  const open = stillOpen.length + placed.length;
+  // what it leaves open (#298). Off a PRD PR, publish writes the status line
+  // from `verdict.json`.
   writeProgress(open);
-  if (round === undefined) {
-    writeText(
-      "pr_status.md",
-      statusBlock(
-        renderPrStatus({ verdict: verdict.verdict, startsFixRound: verdict.startsFixRound === true, open, review: REVIEW_URL_SLOT }),
-      ),
-    );
-  }
-
-  // How the workflow knows to mark the pull request: a step cannot read this
-  // process's memory, and the marker label has to go on when — and only when —
-  // this run recorded something. Written only in that case, so its *existence*
-  // is the whole condition and the step needs no parsing. The content is the
-  // block exactly as posted, which is what a human debugging the run wants.
-  //
-  // Keyed on the findings rather than on the block, which is no longer the same
-  // question: the block is posted either way, and a retraction is precisely the
-  // run that must not mark the pull request.
-  if (followUps.length > 0) {
-    writeText(
-      "follow_ups.md",
-      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps, followUpsCapUsed, followUpsCarried),
-    );
-  }
 
   console.log("Review complete.");
   console.log(
@@ -840,6 +749,13 @@ function renderCarriedFollowUps(carried: readonly EarlierFollowUps[]): string {
     "",
     "**These are carried forward by the workflow**, into this review's record, and filed when this pull request merges. Do not record any of them again in `followUps`: record only what is new in this round.",
   ].join("\n");
+}
+
+/** A PRD PR's round as a park comment names it: no parent and no commits. */
+function toParkRound(round: PrdRound): ParkRound {
+  if (round.kind === "final") return { kind: "final" };
+  const slice = round.slice;
+  return { kind: "slice", slice: slice === undefined ? undefined : { subIssue: slice.subIssue, k: slice.k, n: slice.n } };
 }
 
 /** An earlier finding still open, as a park comment lists it: linked to its thread. */

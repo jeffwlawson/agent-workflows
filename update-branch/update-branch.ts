@@ -5,7 +5,6 @@ import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   asRecord,
   asString,
-  claudeAgent,
   fail,
   fetchPullRequestHeading,
   outputDir,
@@ -15,11 +14,11 @@ import {
   standardSchema,
   writers,
 } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
-import { runWithExtraction } from "../shared/run-with-extraction.js";
+import { claudeAgent, runWithExtraction } from "../shared/agent.js";
+import { RUNNERS } from "../shared/contract.js";
 
-const INPUTS = readInputs(CONTRACT["update-branch"].inputs);
-const { writeText } = writers(CONTRACT["update-branch"].outputs);
+const INPUTS = readInputs(RUNNERS["update-branch"].inputs);
+const { writeText } = writers(RUNNERS["update-branch"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;

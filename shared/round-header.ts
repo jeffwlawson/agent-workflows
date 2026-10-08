@@ -1,8 +1,8 @@
 import { gh, isWorkflowBot } from "./common.js";
 import { fetchReviews } from "./follow-up-filing.js";
 import type { FilingReview } from "./follow-up-plan.js";
-import { BODY_HEADING } from "./review-output.js";
 import type { SliceRanges } from "./slice-ranges.js";
+import { BODY_HEADING, FIX_LABEL } from "./record.js";
 
 /**
  * The **header** every top-level review and fix comment opens with (#298), and
@@ -157,9 +157,12 @@ export const countFor = (counts: RoundCounts, scope: RoundScope): RoundCount =>
       ? (counts.slices[scope.subIssue] ?? { reviews: 0, fixes: 0 })
       : counts.all;
 
-/** The header a review of `scope` opens with: one more than the reviews of it so far. */
+/** The number a review of `scope` takes: one more than the reviews of it so far. */
+export const reviewNumber = (scope: RoundScope, counts: RoundCounts): number => countFor(counts, scope).reviews + 1;
+
+/** The header a review of `scope` opens with. */
 export const reviewHeader = (scope: RoundScope, counts: RoundCounts): string =>
-  roundHeader(scope, "review", countFor(counts, scope).reviews + 1);
+  roundHeader(scope, "review", reviewNumber(scope, counts));
 
 /**
  * The header a fix run's top-level comments open with. Its own `agent:fix` is
@@ -203,7 +206,7 @@ export const readRoundRecord = (repo: string, prNumber: string): RoundRecord => 
     `repos/${repo}/issues/${prNumber}/events`,
     "--paginate",
     "--jq",
-    '.[] | select(.event == "labeled" and .label.name == "agent:fix") | .created_at',
+    `.[] | select(.event == "labeled" and .label.name == "${FIX_LABEL}") | .created_at`,
   ])
     .split("\n")
     .map((line) => line.trim())

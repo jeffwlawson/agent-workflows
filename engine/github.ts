@@ -11,6 +11,8 @@ export interface RestRequest {
   /** From the API root, leading slash included: `/repos/o/r/issues/7/labels`. */
   readonly path: string;
   readonly body?: unknown;
+  /** The answer is plain text, such as a job's log, and is returned as it is rather than parsed. */
+  readonly text?: true;
 }
 
 /** What the writer and the reader call. The real one is `fetchTransport`. */
@@ -43,7 +45,7 @@ export const isServerError = (error: unknown): boolean =>
 
 /** The transport over `fetch`, for `token`. */
 export const fetchTransport = (token: string, apiUrl = "https://api.github.com"): Transport => {
-  const rest = async ({ method, path, body }: RestRequest): Promise<unknown> => {
+  const rest = async ({ method, path, body, text: plain }: RestRequest): Promise<unknown> => {
     const response = await fetch(`${apiUrl}${path}`, {
       method,
       headers: {
@@ -55,6 +57,7 @@ export const fetchTransport = (token: string, apiUrl = "https://api.github.com")
     });
     const text = await response.text();
     if (!response.ok) throw new GitHubError(`${method} ${path}: ${response.status} ${text.slice(0, 300)}`, response.status);
+    if (plain === true) return text;
     return text === "" ? undefined : JSON.parse(text);
   };
   return {

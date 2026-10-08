@@ -283,6 +283,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./review/gate.js")).gate,
     "Settle whether a review runs, on which commit, with what fix-round budget and in which round (no model).",
   ),
+  "review:collect-checks": readingCommand(
+    "review:collect-checks",
+    async () => (await import("./review/collect-checks.js")).collectChecks,
+    "Wait for a pull request's other checks and summarise them for the review (no model).",
+  ),
   "review:publish": writingCommand(
     "review:publish",
     async () => (await import("./review/publish.js")).publish,

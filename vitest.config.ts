@@ -3,9 +3,8 @@ import { defineConfig } from "vitest/config";
 /**
  * How long one test may take, and how long any one synchronous spawn inside it
  * may run. Two roles, one figure — every test that spawns imports this rather
- * than repeating it (`tests/review-ci-wait.test.ts`,
- * `tests/sync-version.test.ts`), so the ceiling and the bound cannot drift
- * apart.
+ * than repeating it (`tests/red-check.test.ts`, `tests/sync-version.test.ts`),
+ * so the ceiling and the bound cannot drift apart.
  *
  * As `testTimeout` it is a **flake guard, not a hang guard.** Several tests here
  * spawn `bash`, `jq`, `node`, a replay `gh` or the real `gh` through

@@ -289,6 +289,61 @@ describe("githubReader", () => {
     expect(await githubReader(REPO, transport).compare("a".repeat(40), SHA)).toBe("ahead");
     expect(sent).toEqual([{ rest: { method: "GET", path: `/repos/o/r/compare/${"a".repeat(40)}...${SHA}?per_page=1` } }]);
   });
+
+  const paths = (sent: readonly Sent[]): readonly string[] => sent.map((s) => ("rest" in s ? s.rest.path : ""));
+
+  it("reads every page of a commit's check runs", async () => {
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1")
+        ? { total_count: 101, check_runs: Array.from({ length: 100 }, (_, i) => ({ name: `c${i}`, status: "completed", conclusion: "success", id: i })) }
+        : { total_count: 101, check_runs: [{ name: "last", status: "queued", conclusion: null, id: 100 }] },
+    );
+
+    const runs = await githubReader(REPO, transport).checkRuns(SHA);
+
+    expect(runs).toHaveLength(101);
+    expect(runs[100]).toEqual({ name: "last", status: "queued", conclusion: null });
+    expect(paths(sent)).toEqual([`/repos/o/r/commits/${SHA}/check-runs?per_page=100&page=1`, `/repos/o/r/commits/${SHA}/check-runs?per_page=100&page=2`]);
+  });
+
+  it("reads a commit's latest status per context from the combined endpoint", async () => {
+    const { transport, sent } = recording(() => ({ state: "pending", statuses: [{ context: "ci/build", state: "pending", target_url: null }] }));
+
+    expect(await githubReader(REPO, transport).latestStatuses(SHA)).toEqual([{ context: "ci/build", state: "pending" }]);
+    expect(paths(sent)).toEqual([`/repos/o/r/commits/${SHA}/status?per_page=100&page=1`]);
+  });
+
+  it("reads the workflow runs whose head is a commit, with what each calls", async () => {
+    const { transport, sent } = recording(() => ({
+      total_count: 2,
+      workflow_runs: [
+        { id: 1, name: "CI", status: "completed", conclusion: "failure", html_url: "https://u/1", referenced_workflows: [{ path: "o/agent-workflows/.github/workflows/fix.yml@v1" }] },
+        { id: 2, name: null, status: "queued", conclusion: null, html_url: "https://u/2" },
+      ],
+    }));
+
+    expect(await githubReader(REPO, transport).workflowRuns(SHA)).toEqual([
+      { id: 1, name: "CI", status: "completed", conclusion: "failure", url: "https://u/1", referencedWorkflows: ["o/agent-workflows/.github/workflows/fix.yml@v1"] },
+      { id: 2, name: "", status: "queued", conclusion: null, url: "https://u/2", referencedWorkflows: [] },
+    ]);
+    expect(paths(sent)).toEqual([`/repos/o/r/actions/runs?head_sha=${SHA}&per_page=100&page=1`]);
+  });
+
+  /** A job's log is plain text, so it is asked for as text rather than parsed. */
+  it("reads the log of each job of a run that failed, as text", async () => {
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.includes("/jobs?")
+        ? { total_count: 3, jobs: [{ id: 11, conclusion: "success" }, { id: 12, conclusion: "failure" }, { id: 13, conclusion: "failure" }] }
+        : `log of ${"rest" in s ? s.rest.path : ""}`,
+    );
+
+    expect(await githubReader(REPO, transport).failedJobLogs(7)).toEqual(["log of /repos/o/r/actions/jobs/12/logs", "log of /repos/o/r/actions/jobs/13/logs"]);
+    expect(sent).toEqual([
+      { rest: { method: "GET", path: "/repos/o/r/actions/runs/7/jobs?per_page=100&page=1" } },
+      { rest: { method: "GET", path: "/repos/o/r/actions/jobs/12/logs", text: true } },
+      { rest: { method: "GET", path: "/repos/o/r/actions/jobs/13/logs", text: true } },
+    ]);
+  });
 });
 
 describe("a server error", () => {

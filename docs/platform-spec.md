@@ -56,7 +56,8 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `follow-ups:file`, `review:gate`, `review:publish` and `review:conclude`. §2 says where it differs from a runner.
+  named `<workflow>:<step>`: `follow-ups:file`, `review:gate`, `review:collect-checks`,
+  `review:publish` and `review:conclude`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -587,9 +588,9 @@ and `review:publish` writes every final string from them.
 
 > **Actions orchestrator:** the review job starts with `review:gate`, before its checkout, and runs
 > the rest only where it went ahead, on the commit it settled on, handing the runner its budget and
-> its round. Before the runner, the review job waits up to 15 minutes for the pull
-> request's other checks and writes `CI_STATUS_FILE` and `CI_RESULT_FILE`, and a separate job may
-> run the red check. A posting job then mints the loop's token, sets up Node, downloads the
+> its round. Before the runner, `review:collect-checks` waits up to 15 minutes for the pull
+> request's other checks and writes the files the runner reads as `CI_STATUS_FILE` and
+> `CI_RESULT_FILE`, and a separate job may run the red check. A posting job then mints the loop's token, sets up Node, downloads the
 > hand-over, and runs `review:publish`, which answers and resolves the verified threads, posts the
 > review, marks the pull request with `agent:follow-ups`, writes the title, the summary and the
 > status line, and posts the verdict. `review:conclude` then ends the run however it ended: the
@@ -600,9 +601,9 @@ and `review:publish` writes every final string from them.
 > `agent:implement` back on the PRD parent on an approval, or the park comment on its parent
 > otherwise.
 
-> **Service orchestrator:** the CI wait is the Actions orchestrator's step, not the runner's. A
-> service with no wait of its own leaves both CI files unset, and the review reads the checks as
-> unknown, so it never recommends an approval. Chaining is each orchestrator's too: the runner adds
+> **Service orchestrator:** the CI wait is `review:collect-checks`, not the runner's. A service
+> that does not run it leaves both CI files unset, and the review reads the checks as unknown, so it
+> never recommends an approval. Chaining is each orchestrator's too: the runner adds
 > no label, so a service that does not add `agent:fix` or run the advance leaves the next step to a
 > human.
 
@@ -677,6 +678,64 @@ written to `refusal_reason.txt` and the command fails, so the run ends as one th
 > job's outcome step reads `refusal_reason.txt`. A glue step copies `gate.json` into step outputs
 > under its own names, `always()`, which the later steps' `if:`s, the runner and the posting job
 > read; `review:conclude` says the refusal.
+
+### `review:collect-checks`
+
+Waits for the pull request's other checks on `REVIEWED_SHA`, then writes their results for the
+runner: evidence for the agent, and one word the verdict's CI half is derived from. It runs no
+model, needs no checkout, and writes nothing to the record.
+
+It reads three surfaces, because each sees what the others cannot: the commit's check runs, its
+commit statuses (the latest per context), and its workflow runs, the only place a run that is
+queued or waiting for approval shows. The loop's own are left out of all three: a check run named
+`SELF_CHECK`, or whose name either side of ` / ` is one of the loop's job ids; the `agent-review`
+status; and the run `SELF_RUN_ID`, a run whose workflow is named `Agent …`, or one that calls the
+loop's reusable workflows.
+
+- **The wait.** Up to 15 minutes, ending as soon as nothing it can see is pending: no check run
+  unfinished (one waiting on an environment's reviewers aside), no status `pending`, and no
+  workflow run unfinished (one waiting for approval aside, since it cannot start until a human
+  acts). Where nothing has reported at all, it keeps looking for up to a minute, since a run is
+  created a moment after the push that starts it. A check-run read that fails ends the wait at
+  once.
+- **The word.** Each surface is `none`, `red` where something completed without passing,
+  `unknown` where something is unfinished, waiting for approval or could not be read, else
+  `green`. `none` on all three is green, and the evidence says no CI ran. `red` on any beats
+  `unknown`, and `green` needs all three.
+- **The evidence.** Each check run with its conclusion or status, the workflow runs that did not
+  pass and those waiting for approval with their links, the ceiling where it was reached, and the
+  end of each failed run's failing jobs' logs. Each surface that could not be read is said.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `REVIEWED_SHA` | required | | The commit `review:gate` settled. |
+| `SELF_CHECK` | required | | The name of the check run the job it runs in appears under, which is not CI. |
+| `SELF_RUN_ID` | optional | `""` | The workflow run it runs in, which is not CI. Empty is none. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `ci_status.md` | Unless it fails: the other checks' results, as evidence for the agent. |
+| `ci_result.txt` | Unless it fails: `green`, `red` or `unknown`. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The `agent-review` status on `REVIEWED_SHA`, only to leave it out: it is the verdict this review
+  has not posted yet.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** a step of the review job after the adopter's installs, where the gate
+> went ahead, with `REVIEWED_SHA` from the gate, `SELF_CHECK` the caller's `self-check` input and
+> `SELF_RUN_ID` the caller's run. `continue-on-error`, so it never fails the review: a command that
+> wrote nothing leaves the runner reading the checks as unknown. `OUTPUT_DIR` is a directory of its
+> own under `runner.temp`, and the runner reads its two files from there as `CI_STATUS_FILE` and
+> `CI_RESULT_FILE`. The `time-limit` job adds its 15 minutes to the review's own.
 
 ### `review:publish`
 

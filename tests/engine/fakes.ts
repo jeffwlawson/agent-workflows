@@ -9,7 +9,7 @@
  * it reaches the fake.
  */
 import { GitHubError } from "../../engine/github.js";
-import type { CommitStatus, GitHubReader, PullRequest } from "../../engine/read.js";
+import type { CheckRun, CommitStatus, GitHubReader, PullRequest, WorkflowRun } from "../../engine/read.js";
 import {
   createWriters,
   type Backend,
@@ -48,6 +48,12 @@ export interface FakeGitHub {
   readonly commits: Map<number, string[]>;
   /** The compare API's `status`, by `<base>...<head>`. A pair not here is not found. */
   readonly comparisons: Map<string, string>;
+  /** Per commit, its check runs. A commit not here has none. */
+  readonly checkRuns: Map<string, CheckRun[]>;
+  /** Per commit, the workflow runs whose head it is. A commit not here has none. */
+  readonly workflowRuns: Map<string, WorkflowRun[]>;
+  /** Per workflow run, the log of each of its jobs that failed. A run not here has none. */
+  readonly jobLogs: Map<number, string[]>;
   readonly comments: { readonly token: string; readonly issue: number; readonly body: string }[];
   /** Every review posted, in order, with the pull request's node id and the commit it was posted on. */
   readonly reviews: FakeReview[];
@@ -104,6 +110,9 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   branches: new Map(),
   commits: new Map(),
   comparisons: new Map(),
+  checkRuns: new Map(),
+  workflowRuns: new Map(),
+  jobLogs: new Map(),
   comments: [],
   reviews: [],
   fails: () => false,
@@ -169,6 +178,27 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       const status = github.comparisons.get(`${base}...${head}`);
       if (status === undefined) throw new GitHubError(`compare ${base}...${head}: 404 Not Found`, 404);
       return status;
+    },
+    checkRuns: async (sha) => {
+      reads.push({ method: "checkRuns", args: [sha] });
+      return [...(github.checkRuns.get(sha) ?? [])];
+    },
+    latestStatuses: async (sha) => {
+      reads.push({ method: "latestStatuses", args: [sha] });
+      // The statuses are newest first, so the first of each context is its latest.
+      const latest = new Map<string, string>();
+      for (const status of github.statuses.get(sha) ?? []) {
+        if (!latest.has(status.context)) latest.set(status.context, status.state);
+      }
+      return [...latest].map(([context, state]) => ({ context, state }));
+    },
+    workflowRuns: async (sha) => {
+      reads.push({ method: "workflowRuns", args: [sha] });
+      return [...(github.workflowRuns.get(sha) ?? [])];
+    },
+    failedJobLogs: async (runId) => {
+      reads.push({ method: "failedJobLogs", args: [runId] });
+      return [...(github.jobLogs.get(runId) ?? [])];
     },
   };
   return { reader, reads };

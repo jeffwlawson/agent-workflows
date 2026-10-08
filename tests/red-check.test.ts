@@ -33,8 +33,8 @@ import { renderDecided } from "./review/decided.js";
  * command, and the one that classifies each test in a JUnit XML report.
  *
  * `tests/workflows.test.ts` asserts what the job holds and where it sits. What
- * it does to a tree, and what it makes of a report, only running it can show,
- * for the reason `tests/review-ci-wait.test.ts` gives.
+ * it does to a tree, and what it makes of a report, only running it can show:
+ * a step that matched every string assertion has shipped unable to run (#28).
  *
  * Skipped where `bash`, `git` or `python3` is not on PATH: authored on Windows
  * and gated on Linux CI, where all three are present and the coverage is real.

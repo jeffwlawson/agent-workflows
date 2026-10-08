@@ -194,8 +194,8 @@ jobs:
         id: limits
         env:
           REVIEW_MINUTES: ${{ vars.AGENT_REVIEW_TIMEOUT_MINUTES }}
-          # `WAIT_SECONDS` in *Wait for other checks*, in minutes. A test holds
-          # the two equal.
+          # `CI_WAIT_SECONDS` in `review:collect-checks`, in minutes. A test
+          # holds the two equal.
           CI_WAIT_MINUTES: "15"
         run: |
           own="${REVIEW_MINUTES:-5}"
@@ -265,7 +265,7 @@ jobs:
   #
   # **And it never stops the review.** The review `needs:` it so the report is
   # there to read, but runs whether this job was skipped, failed or timed out,
-  # and the CI wait excludes its check run, so it never feeds `ci_result`.
+  # and the CI wait excludes its check run, so it never feeds the CI result.
   red-check:
     if: >-
       github.event.label.name == 'agent:review' &&
@@ -958,563 +958,35 @@ jobs:
         if: steps.state.outputs.proceed == 'true'
         run: npm install -g @anthropic-ai/claude-code
 
-      # Wait for the PR's other checks, then hand their results to the agent.
+      # Wait for the PR's other checks, then hand their results to the agent
+      # (#421). `review/collect-checks.ts` says why each part is as it is: the
+      # sibling jobs left out of the wait, the bounded wait and its grace
+      # period, the three surfaces it reads, and a CI run waiting for approval
+      # reading as unknown.
       #
-      # Why: a review running while CI is still going has no evidence beyond the
-      # diff, so it reasons from the issue's spec. That is exactly how a review
-      # once certified a rule "corpus-safe" 96 seconds before the corpus failed
-      # with 13 false positives from that very rule. Waiting alone would not have
-      # helped — the *results* have to reach the prompt.
+      # On the commit the gate settled, read with this job's read-only token.
+      # `SELF_CHECK` is this job's own check run, which the caller was made to
+      # state, and `SELF_RUN_ID` this run, the caller's, since a called
+      # workflow contributes none of its own: neither is CI. Its own
+      # directory, so a reason it fails with never lands where *Hand the
+      # outcome to the posting job* reads the runner's; the runner reads its
+      # two files from there as `CI_STATUS_FILE` and `CI_RESULT_FILE`.
       #
-      # This job is itself a check on the PR, so `gh pr checks --watch` would
-      # deadlock waiting on itself. Poll the check-runs API excluding our own
-      # job name instead. Never fails the run: missing CI context degrades the
-      # review, it does not invalidate it.
-      #
-      # Three surfaces, because each sees something the others cannot: check
-      # runs, commit statuses for CI outside Actions, and the commit's workflow
-      # runs, which are the only place a run that is queued or waiting for
-      # approval shows (#221). The wait ends when nothing it can see is pending,
-      # after a short grace period for a run to appear; a run waiting for
-      # approval is named and reads `unknown`, and so does a check still running
-      # at the ceiling. Neither is green, and neither is a failure.
-      #
-      # The exclusion is every *agent* job, not just this one, and that became
-      # load-bearing when review joined the shared per-PR concurrency group
-      # (jeffwlawson/winget-manifest-lint#102). A `fix` labelled while a review
-      # is running now sits queued behind it — and a queued job is a check run
-      # in a non-completed state, so waiting on it is waiting on a job that
-      # cannot start until we finish. The timeout bounds that at the whole
-      # 15-minute wait, which is not a bound worth having. They are not CI
-      # either way: "fix: queued" is not evidence about the diff.
+      # `continue-on-error`: missing CI context degrades the review, it does
+      # not invalidate it. A command that never wrote leaves no result, which
+      # the runner reads as unknown.
       - name: Wait for other checks, collect results
         if: steps.state.outputs.proceed == 'true'
         continue-on-error: true
         env:
-          HEAD_SHA: ${{ steps.state.outputs.sha }}
-          # The sibling agent jobs, which the conversion renamed too: a called
-          # workflow's job appears as `<caller job id> / <this workflow's job
-          # id>`, so `agent-fix.yml` now produces `fix / fix`. The pattern
-          # matches a name whose *either* half is an agent job, because the two
-          # halves are owned by different people — the second is a job id in one
-          # of these reusable files and cannot change under an adopter, the
-          # first is whatever they called their caller job. `^(…)$` alone
-          # stopped matching every sibling the moment the loop was split, which
-          # put a queued `fix` back in the wait: review would burn the full
-          # 900 s on a job that cannot start until review ends, then review on
-          # the degraded evidence jeffwlawson/winget-manifest-lint#48 exists to
-          # prevent.
-          #
-          # Still bounded at both ends, which is the point of anchoring at all:
-          # `fixtures`, `CI / fix-lint` and `build / fixtures` are repo checks,
-          # not agents, and none of them match.
-          #
-          # `follow-ups` joins the list even though its exclusion is dead at
-          # runtime — this wait only runs on an open pull request and that
-          # workflow only fires on a closed one (#50). Joining costs one word in
-          # one string; carving it out would cost a comment justifying a timing
-          # argument that could stop being true.
-          #
-          # `post-review` is this workflow's posting job (#257), which runs after
-          # this one, so a review never waits on its own. But an adopter who
-          # renamed the caller job gets `agent-review / post-review`, which
-          # nothing else here matches, and it is not evidence about the diff
-          # either way. Named `post-review` rather than `post` so the pattern
-          # cannot swallow a repository's own CI job called `post`.
-          #
-          # `advance` is this workflow's job (PRD #222) that runs after the
-          # posting job on a PRD PR, to move the chain on or park it. A later
-          # round on the same head would otherwise read `review / advance` as
-          # CI. The alternation is anchored on `( / |$)`, so `advance` does not
-          # match a name that goes on past it.
-          #
-          # `time-limit` (#220) runs *before* this job, so it has finished by the
-          # time this wait reads anything. Named all the same, for the reason
-          # `post-review` is: under a renamed caller job it is `agent-review /
-          # time-limit`, and a job that sums two numbers is not CI.
-          #
-          # `red-check` (#231) also runs before this job, and is excluded for a
-          # stronger reason than a renamed caller: it is **never** CI. It runs
-          # the PR's tests against the merge-base, where a fix's new test is
-          # meant to fail, so its check run reading red is the check working.
-          # Counted here, it would turn `ci_result` red on every PR it found a
-          # red test on. Its result reaches the review as its report instead.
-          AGENT_CHECKS: '(^|/ )(review|time-limit|red-check|post-review|advance|fix|follow-ups|update-branch|implement-prd|implement)( / |$)'
-          # This job's own check run, named the same way. Overlapping with the
-          # pattern above is deliberate, not redundant: that one is a heuristic
-          # over names nobody declares, and this is the exact answer the caller
-          # was made to state. Self-exclusion is the case with no error to read
-          # when it is wrong, so it does not get to depend on a regex. Compared
-          # as a literal via jq's `env`, never folded into that regex — a job
-          # id is not a regex, and a `.` in one would quietly match a
-          # neighbouring check too.
+          # Reads the `.npmrc` *Set up Node for the gate* wrote. `GITHUB_TOKEN`,
+          # carrying the `packages: read` the caller granted.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/collect-checks
+          REVIEWED_SHA: ${{ steps.state.outputs.sha }}
           SELF_CHECK: ${{ inputs.self-check }}
-          # The verdict's own context, excluded from the commit statuses this
-          # step reduces to a word — see the arm that reads them. Spelled out
-          # here rather than read from the runner: this step runs long before
-          # the runner does, and a test holds the literal to `VERDICT_CONTEXT`.
-          VERDICT_CONTEXT: agent-review
-          # This run's id, which the workflow-runs read drops as itself (#221).
-          # The caller's run, since a called workflow contributes none of its
-          # own. Through `env:` like the rest, never interpolated into the script.
           SELF_RUN_ID: ${{ github.run_id }}
-          # The ceiling, and not a fixed wait: the loop ends as soon as nothing
-          # it can see is pending. Reaching it reads `unknown`, never `red`.
-          WAIT_SECONDS: "900"
-          # How long the wait keeps looking when no CI has reported at all,
-          # because a run is created a moment after the push that starts it
-          # (#221). Never longer than `WAIT_SECONDS`.
-          GRACE_SECONDS: "60"
-          POLL_SECONDS: "20"
-        run: |
-          set -uo pipefail
-          out="${RUNNER_TEMP}/ci_status.md"
-          # Whatever the last `gh`/`jq` attempt wrote to stderr — the count's,
-          # and then the listing's, each truncating it before it runs. Kept out
-          # of the evidence — the agent cannot act on it — and out of the log
-          # too until a failure arm fires, at which point it is the only thing
-          # that separates the causes those arms now have.
-          err="${RUNNER_TEMP}/ci_status.err"
-          : > "$out"
-
-          # Prints exactly one number, or nothing at all when the API call
-          # fails, and never fails itself. All three are load-bearing.
-          #
-          # `--slurp` is what makes it one number. `--paginate --jq` applies
-          # the filter *per page*, so a commit with more than one page of
-          # check runs (>30, the endpoint default) prints `0\n0` — several
-          # counts, no total. Slurped, the pages arrive as one array and the
-          # filter runs once over all of them.
-          #
-          # The filter is a **pipe into standalone jq**, not gh's `--jq`, and
-          # it has to be: gh refuses the two together — "the `--slurp` option
-          # is not supported with `--jq` or `--template`" — at flag-parse time,
-          # before any request. Written as one gh invocation it shipped in
-          # v0.1.5 and collected no evidence at all for a day (#28). Nothing
-          # caught it because everything checking it matched *text*; what
-          # covers it now runs the step (tests/review-ci-wait.test.ts).
-          #
-          # Printing nothing on failure is what makes the caller's
-          # non-numeric arm mean "the API did not answer". This used to fall
-          # back to a literal zero, which turned a failure into a plausible
-          # count: a clean non-zero exit became "nothing pending" and the
-          # review ran blind, and a 403 whose body reached stdout became
-          # `{"message":…}0`, which `-eq` rejects every iteration until the
-          # deadline. Both had the same trigger — check runs on a private
-          # repository need `checks: read`, granted on this job above.
-          #
-          # Which is why the count is gated on gh's **exit status** and not on
-          # what it printed. Under `--slurp` a failed request still writes
-          # JSON: `[]` for a connection failure, and `[{"message":"Resource
-          # not accessible by integration",…}]` for that same 403 (recorded
-          # from gh 2.100.0). The first of those counts, through this filter,
-          # as a perfectly plausible zero — the old lie with a new source.
-          #
-          # `|| return 0` and `|| true` are both there because GitHub runs a
-          # `run:` block carrying no `shell:` under `bash -e`: a non-zero gh
-          # inside `$( )` ends the step where it stands, ahead of the arm
-          # below that exists to report exactly that. The agent then gets an
-          # empty file and reviews saying "no checks reported" — the same
-          # blindness, minus the diagnosis. That is what v0.1.5 did.
-          #
-          # Both halves send stderr to `$err` rather than `/dev/null`, because
-          # the arm below no longer has one cause. It fires for a non-zero gh,
-          # for a jq filter error, and for no `jq` on the runner at all — and
-          # the grant its `::error::` names is the one thing it cannot be: a
-          # caller short of `checks: read` is refused before any job starts
-          # (#146), so a poll that ran holds the read. Discarding the stderr is
-          # how the invocation gh refuses stayed invisible for a release; the
-          # arm prints whatever landed here underneath it, which is the only
-          # thing that tells the three apart.
-          pending_count() {
-            : > "$err"
-            body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err") || return 0
-            printf '%s' "$body" \
-              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | select(.status != \"completed\" and .status != \"waiting\")] | length" \
-              2>>"$err" || true
-          }
-
-          # The same count over the **other** CI surface (#107): commit
-          # statuses still `pending`, minus `agent-review` — this job's own
-          # output, the answer it has not written yet. Without this a review
-          # that starts before status-based CI finishes reads that CI as
-          # pending, and the verdict asks for a human on a pull request that
-          # would have been ready a minute later. Combined endpoint for the
-          # reason the verdict's read below gives: one state per context.
-          #
-          # Same shape as `pending_count` — one number or nothing, gated on
-          # gh's exit status — but *nothing* here is not the blind arm below.
-          # That arm is about check runs, and names them; a status read that
-          # failed is reported by the verdict's own read of the same endpoint
-          # further down, with its stderr, and reads as `unknown` there. So the
-          # wait counts an unreadable status half as zero rather than spinning
-          # on it, and its stderr goes to a file of its own so it cannot
-          # clobber the check-run count's.
-          pending_statuses() {
-            body=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>"${err}.status") || return 0
-            printf '%s' "$body" \
-              | jq "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | select(.state == \"pending\")] | length" \
-              2>>"${err}.status" || true
-          }
-
-          # The third CI surface (#221): this commit's **workflow runs**, which
-          # see what neither of the two above can. A run that is queued, or
-          # waiting for approval, has created no check run yet, so a wait over
-          # check runs and statuses alone saw nothing, ended at once, and called
-          # the commit green with no CI having run. Since 2026-06-11 a push made
-          # with `GITHUB_TOKEN` starts `pull_request` runs that **wait for
-          # approval**, and that is the loop's own no-`AGENT_PAT` fallback.
-          #
-          # The loop's own runs are dropped, on `AGENT_CHECKS`'s grounds and
-          # three ways, each for a case the others miss: this run by its id (the
-          # caller's, since a called workflow contributes no run of its own), an
-          # `Agent …` workflow by its name, as the failure-log tail always has,
-          # and a renamed caller by what it calls, which is how `init` and
-          # `doctor` recognise one too.
-          #
-          # A run is `awaiting` when it needs a maintainer to approve it
-          # (`action_required`, as a status or a conclusion) or a protection
-          # rule holds it (`waiting`). Neither is pending: it cannot start until
-          # a human acts, so waiting for it would spend the whole ceiling on
-          # nothing. The same goes for a job in it whose check run is `waiting`
-          # on an environment's reviewers, which `pending_count` skips for that
-          # reason; the verdict below still reads it as unfinished.
-          #
-          # A run is `failed` when it completed with any conclusion a check run
-          # would read as red, approval aside. Most of those also fail a check
-          # run, but not all: a `startup_failure` (a workflow file GitHub could
-          # not run) creates no job, so no check run, and is seen here or nowhere.
-          ci_runs_filter='[.[].workflow_runs[]
-            | select((.id | tostring) != env.SELF_RUN_ID)
-            | select((.name // "") | startswith("Agent ") | not)
-            | select(any(.referenced_workflows[]?; (.path // "") | test("^[^/]+/agent-workflows/\\.github/workflows/")) | not)
-            | {id, name, status, conclusion, html_url,
-               awaiting: (.status == "action_required" or .status == "waiting" or .conclusion == "action_required"),
-               failed: (.status == "completed" and (.conclusion // "" | IN("success", "neutral", "skipped", "action_required") | not))}]'
-
-          # The filtered runs as one JSON array, or nothing when the read
-          # fails. Gated on gh's exit status, and slurped, for the reasons
-          # `pending_count` gives. *Nothing* reads as no run pending, as an
-          # unreadable status half does: the read after the wait reports it.
-          ci_runs() {
-            body=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" --paginate --slurp 2>"${err}.runs") || return 0
-            printf '%s' "$body" | jq -c "$ci_runs_filter" 2>>"${err}.runs" || true
-          }
-
-          # Whether anything that is CI has reported on this commit at all, on
-          # any of the three surfaces: what the grace period below waits for.
-          # Only asked while nothing is pending, so it costs no call on a commit
-          # whose CI is running. A read that fails counts as nothing seen, which
-          # at worst spends the rest of the grace period looking again.
-          ci_seen() {
-            seen_checks=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>/dev/null \
-              | jq "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not)] | length" 2>/dev/null) || seen_checks=0
-            seen_statuses=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>/dev/null \
-              | jq "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT)] | length" 2>/dev/null) || seen_statuses=0
-            seen_runs=$(printf '%s' "$runs" | jq 'length' 2>/dev/null) || seen_runs=0
-            for n in "$seen_checks" "$seen_statuses" "$seen_runs"; do
-              case "$n" in
-                "" | 0 | *[!0-9]*) ;;
-                *) return 0 ;;
-              esac
-            done
-            return 1
-          }
-
-          # A run is created a moment after the push that starts it, so a review
-          # that begins first would see no CI at all and say so. The grace
-          # period is how long the wait keeps looking before it believes that,
-          # never longer than the wait itself.
-          started=$(date +%s)
-          deadline=$(( started + WAIT_SECONDS ))
-          grace=$(( started + (GRACE_SECONDS < WAIT_SECONDS ? GRACE_SECONDS : WAIT_SECONDS) ))
-          while :; do
-            pending=$(pending_count)
-            statuses_pending=$(pending_statuses)
-            case "$statuses_pending" in
-              "" | *[!0-9]*) statuses_pending=0 ;;
-            esac
-            runs=$(ci_runs)
-            runs_pending=$(printf '%s' "$runs" | jq '[.[] | select(.status != "completed" and (.awaiting | not))] | length' 2>/dev/null)
-            case "$runs_pending" in
-              "" | *[!0-9]*) runs_pending=0 ;;
-            esac
-
-            # Not a number — the API call failed rather than returning a
-            # count. Say so once, loudly, and stop: waiting cannot fix a
-            # permission error, and spinning to the deadline turns a
-            # diagnosable 403 into fifteen quiet minutes. The step stays
-            # `continue-on-error`, so the review still runs; what changes is
-            # that both the log and the agent's evidence say it is blind.
-            case "$pending" in
-              "" | *[!0-9]*)
-                echo "::error::Could not read check runs for ${HEAD_SHA}. It is not the caller's \`checks: read\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the read (jeffwlawson/agent-workflows docs/ADOPTING.md §4). Reviewing without CI evidence."
-                # `if`, not `[ -s … ] && …`: under `bash -e` a test that fails
-                # as the last command of this arm ends the step, which is the
-                # defect this whole block was rewritten to stop doing.
-                if [ -s "$err" ]; then
-                  echo "…and this is what \`gh\`/\`jq\` said, which is the part that tells the three apart:"
-                  cat "$err"
-                fi
-                echo "_Could not read this commit's check runs, so the review below has no CI evidence._" >> "$out"
-                break
-                ;;
-            esac
-
-            # After the arm above, not before it: a sum would turn a failed
-            # check-run read into a plausible number.
-            #
-            # Runs are counted apart from checks, not summed into them: a
-            # running workflow has running check runs too, so one sum would
-            # count most CI twice.
-            pending=$(( pending + statuses_pending ))
-            if [ "$pending" -eq 0 ] && [ "$runs_pending" -eq 0 ]; then
-              # `if`, not `&& continue`, on the `bash -e` grounds of the arm above.
-              if [ "$(date +%s)" -lt "$grace" ] && ! ci_seen; then
-                echo "No CI has reported on this commit yet; looking again for up to ${GRACE_SECONDS} s in case a run is still being created…"
-                sleep "$POLL_SECONDS"
-                continue
-              fi
-              break
-            fi
-            # The ceiling is not a failure (#221). A check still running has
-            # not failed, so this reads `unknown` below rather than `red`, and
-            # the evidence says what it was rather than that something broke.
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "_Still running after $(( WAIT_SECONDS / 60 )) minutes: ${pending} check(s) and ${runs_pending} workflow run(s) had not finished, so CI is unknown here rather than failed, and the results below may be incomplete._" >> "$out"
-              break
-            fi
-            echo "Waiting for ${pending} check(s) and ${runs_pending} workflow run(s)…"
-            sleep "$POLL_SECONDS"
-          done
-
-          # Slurped and piped for the same reason as the count, and `jq -r` to
-          # match what gh's own `--jq` does with a string result: print it
-          # unquoted. Without `-r` every line reaches the agent wrapped in
-          # quotes it would have to read past.
-          #
-          # Stderr goes to `$err` here for the same reason it does in the
-          # count, and it is a separate failure: this call can fail on a run
-          # where the count succeeded — a transient 5xx, a secondary rate
-          # limit, a later change to this filter alone — and the count's arm
-          # never fires to explain it. Without this the agent would be handed
-          # `- (could not read check runs)` and the log would say nothing at
-          # all about why. Discarding the stderr is the habit that hid #28 for
-          # a release; it does not get to survive three lines below the fix.
-          #
-          # `if !`, not `|| { …; [ -s … ] && cat …; }`, on the same grounds as
-          # the arm above: under `bash -e` a test as the last command of the
-          # arm ends the step, which is the defect this block was rewritten to
-          # stop doing.
-          echo "Checks on this commit:" >> "$out"
-          : > "$err"
-          if ! gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
-            | jq -r ".[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | \"- \(.name): \(.conclusion // .status)\"" \
-            2>>"$err" >> "$out"; then
-            echo "- (could not read check runs)" >> "$out"
-            echo "::warning::Could not list check runs for ${HEAD_SHA}, so the review's check list is empty. It is not the \`checks: read\` grant, which a run that started holds. See what \`gh\`/\`jq\` said below."
-            if [ -s "$err" ]; then
-              cat "$err"
-            fi
-          fi
-
-          # The same check runs again, as **one word** this time: the CI half of
-          # the verdict the runner derives (#96).
-          #
-          # Separate from the evidence above on purpose. That file is prose for
-          # the agent — notes, failure logs, whatever the listing managed — and
-          # a derivation that parsed it would be a second description of a
-          # format written three lines up, drifting from it on the release that
-          # edits either. This reads `.conclusion` from the API instead, with
-          # the same two exclusions: a queued sibling agent job is not a red
-          # check, and this job's own run is not evidence about the diff.
-          #
-          # Three values, and `unknown` is not folded into `red`: a review that
-          # could not see the checks has not seen a failure, it has seen
-          # nothing. Both send a finding-free review to a human — the
-          # derivation reads anything but `green` that way — and they say
-          # different things about why. A step that dies before writing the
-          # file leaves no file at all, which the runner reads as `unknown`
-          # too.
-          #
-          # A check that has not *passed* is not green, and one that has not
-          # *finished* has not failed either (#221): a still-pending one (the
-          # ceiling above) is `unknown`, so the evidence and the word both say
-          # it was still running. A failure seen beside it still reads `red`.
-          # A commit with no other checks at all is `none`,
-          # which the arm below the statuses turns into a word: green, since there
-          # is nothing failing, which is the honest reading for an adopter
-          # whose repository runs none.
-          #
-          # `if !` rather than `|| { … }` on the same grounds as the arms above:
-          # under `bash -e` a test as the last command of the arm ends the step.
-          : > "$err"
-          if ! checks=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" --paginate --slurp 2>"$err" \
-            | jq -r "[.[].check_runs[] | select(.name != env.SELF_CHECK) | select(.name | test(\"${AGENT_CHECKS}\") | not) | {status, conclusion}] | if length == 0 then \"none\" elif any(.status == \"completed\" and (.conclusion | IN(\"success\", \"neutral\", \"skipped\") | not)) then \"red\" elif any(.status != \"completed\") then \"unknown\" else \"green\" end" \
-            2>>"$err"); then
-            checks=unknown
-            echo "::warning::Could not decide whether this commit's check runs are green, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
-            if [ -s "$err" ]; then
-              cat "$err"
-            fi
-          fi
-
-          # And the **other** CI surface, which check runs are not (#105). A
-          # repository whose CI reports through the commit-status API — most
-          # things outside Actions, and every `create-status` integration — has
-          # no check run to read at all, so a derivation over check runs alone
-          # calls that commit green and can recommend approving a red one.
-          #
-          # `agent-review` is excluded by context, and that exclusion is the
-          # whole reason this can be read at all: it is the context this very
-          # job posts the verdict under, so counting it would make a `failure`
-          # verdict on the previous round part of the evidence for the next one
-          # — and every "changes recommended" would derive "needs a closer look"
-          # one round later, by reading its own answer back.
-          #
-          # `pending` is `unknown` for the reason a queued check run is: a
-          # status that has not passed has not passed, and one that has not
-          # finished has not failed. This step has already spent its wait.
-          #
-          # The combined endpoint rather than the per-post list, because it
-          # returns the latest status per context — the list returns one entry
-          # per *post*, and a context that went `pending → success` would be
-          # read as both.
-          : > "$err"
-          if ! commit_statuses=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/status" --paginate --slurp 2>"$err" \
-            | jq -r "[.[].statuses[] | select(.context != env.VERDICT_CONTEXT) | .state] | if length == 0 then \"none\" elif any(. == \"failure\" or . == \"error\") then \"red\" elif any(. == \"pending\") then \"unknown\" else \"green\" end" \
-            2>>"$err"); then
-            commit_statuses=unknown
-            echo "::warning::Could not read this commit's statuses, so the verdict below will ask for a human rather than claim the pull request is ready. See what \`gh\`/\`jq\` said below."
-            if [ -s "$err" ]; then
-              cat "$err"
-            fi
-          fi
-
-          # And the **workflow runs** (#221), read once more for the word, for the
-          # evidence and for the failure-log tail below. This is the only
-          # surface on which a run waiting for approval shows at all, so it is
-          # the one that keeps such a commit from reading green: a run that
-          # never started has failed nothing and passed nothing, and the
-          # evidence names it with a link a maintainer can approve it from.
-          #
-          # A run that completed without passing is `red` here as well as in the
-          # check runs, because not every such run has a check run to fail: a
-          # `startup_failure` creates no job at all, and with no statuses either
-          # it would otherwise read as no CI, and green. Each one is named with
-          # its conclusion. A run still going at the ceiling is `unknown`, as a
-          # check run is.
-          #
-          # Unreadable is `unknown` rather than skipped: green needs every
-          # surface to have answered, and a run waiting for approval would be
-          # missing from the other two without a word. It is not the grant:
-          # the job declares `actions: read`, so a caller short of it is refused
-          # before any job starts (#146).
-          : > "${err}.runs"
-          if ! runs=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" --paginate --slurp 2>"${err}.runs" \
-            | jq -c "$ci_runs_filter" 2>>"${err}.runs"); then
-            runs="[]"
-            workflow_runs=unknown
-            echo "::warning::Could not list this commit's workflow runs, so a run waiting for approval could not be seen and the review has no failure-log output. It is not the \`actions: read\` grant, which a run that started holds. What \`gh\`/\`jq\` said is below."
-            if [ -s "${err}.runs" ]; then
-              cat "${err}.runs"
-            fi
-            echo "_Could not list this commit's workflow runs, so a run waiting for approval or still going could not be seen here, and failure-log output is missing rather than absent._" >> "$out"
-          else
-            workflow_runs=$(printf '%s' "$runs" | jq -r 'if length == 0 then "none" elif any(.failed) then "red" elif any(.awaiting or .status != "completed") then "unknown" else "green" end')
-            failed=$(printf '%s' "$runs" | jq -r '.[] | select(.failed) | "- \(.name): \(.conclusion), \(.html_url)"')
-            if [ -n "$failed" ]; then
-              {
-                echo
-                echo "_Workflow runs that did not pass:_"
-                echo "$failed"
-              } >> "$out"
-            fi
-            awaiting=$(printf '%s' "$runs" | jq -r '.[] | select(.awaiting) | "- \(.name): waiting for approval, \(.html_url)"')
-            if [ -n "$awaiting" ]; then
-              echo "::warning::A CI run on this commit is waiting for approval, so CI is unknown here rather than green."
-              {
-                echo
-                echo "_CI waiting for approval: these runs have not run, so CI is unknown here rather than green. A push made with \`GITHUB_TOKEN\` starts runs that wait for a maintainer to approve them (jeffwlawson/agent-workflows docs/ADOPTING.md §1)._"
-                echo "$awaiting"
-              } >> "$out"
-            fi
-          fi
-
-          # **No CI at all** (`none` from every surface) stays green (PRD #171,
-          # story 58), so an adopter with no CI anywhere is unchanged, but the
-          # evidence says plainly that nothing ran (#221): "no failures" is not
-          # "CI passed", and the agent is told which one it is reading. Every
-          # surface, not check runs alone: CI that reports only through commit
-          # statuses ran.
-          #
-          # A PRD PR is no exception (PRD #222): its base is the default
-          # branch, so CI configured for the default branch runs on every
-          # slice round there.
-          if [ "${checks}/${commit_statuses}/${workflow_runs}" = "none/none/none" ]; then
-            echo "_No CI ran on this commit: nothing but the loop's own jobs reported on it, so there are no CI results to read here, passing or failing._" >> "$out"
-          fi
-          if [ "$checks" = none ]; then
-            checks=green
-          fi
-          if [ "$commit_statuses" = none ]; then
-            commit_statuses=green
-          fi
-          if [ "$workflow_runs" = none ]; then
-            workflow_runs=green
-          fi
-
-          # One word out of three, and `red` beats `unknown`: a failure that was
-          # seen is more than another surface failing to be read, and the three
-          # fail independently. `green` needs every one to have answered it.
-          case "${checks}/${commit_statuses}/${workflow_runs}" in
-            red/* | */red/* | */red) ci_result=red ;;
-            unknown/* | */unknown/* | */unknown) ci_result=unknown ;;
-            *) ci_result=green ;;
-          esac
-          echo "$ci_result" > "${RUNNER_TEMP}/ci_result.txt"
-          echo "Checks on this commit are: ${ci_result} (check runs ${checks}, commit statuses ${commit_statuses}, workflow runs ${workflow_runs})."
-
-          # Tail the failing steps so the agent sees *what* failed, not merely
-          # that something did. Capped so a noisy failure cannot swamp the prompt.
-          #
-          # Read off the workflow runs listed above, so excluded on the same
-          # grounds and by the same filter: a failed `Agent Fix` says nothing
-          # about this diff, and its 60 lines crowd out the CI failure that does.
-          # A listing that failed lists nothing here and has already said so in
-          # the evidence; one that answered with no failed run adds nothing.
-          #
-          # These logs used to be a private repository's to withhold: the job
-          # did not declare `actions: read`, on the grounds that a run log can
-          # carry an accidentally echoed secret and a log tail is not worth that
-          # (#80). The grant is declared now, because seeing a run that waits
-          # for approval needs it (#221), so the tail reads private logs too,
-          # on the failed runs of the repository's own CI only.
-          failed_runs=$(printf '%s' "$runs" | jq -r '.[] | select(.conclusion == "failure") | .id' 2>/dev/null) || failed_runs=""
-          for rid in $failed_runs; do
-            rname=$(printf '%s' "$runs" | jq -r --arg id "$rid" '.[] | select((.id | tostring) == $id) | .name' 2>/dev/null) || rname=""
-            rname="${rname:-run ${rid}}"
-            # `|| echo` on the same grounds as the count above, and it is the
-            # same bug: `gh run view --log-failed` exits non-zero whenever a
-            # failed run's logs cannot be had — expired, still uploading, a
-            # token without `actions: read` — and with `pipefail` under
-            # `bash -e` that failing *pipeline* ends the step, inside a group
-            # already redirected to `$out`. The step is `continue-on-error`, so
-            # nothing goes red; the agent simply never gets the runs after this
-            # one, nor the `--- collected CI context ---` dump, and the
-            # truncation is silent. Same blindness as #28, one loop further on.
-            {
-              echo
-              echo "### Failure output: ${rname}"
-              echo '```'
-              gh run view "$rid" --log-failed 2>/dev/null | sed 's/^[^Z]*Z //' | tail -60 \
-                || echo "(no failure log available for run ${rid})"
-              echo '```'
-            } >> "$out"
-          done
-
-          echo "--- collected CI context ---"
-          cat "$out"
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.10 -- agent-workflows review:collect-checks
 
       # The red check's report (#232), the `red-check` job's artifact, read as
       # evidence the way the CI results above are. Into a directory of its own,
@@ -1604,11 +1076,11 @@ jobs:
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_MODEL_REVIEW: ${{ vars.AGENT_MODEL_REVIEW }}
           OUTPUT_DIR: ${{ runner.temp }}
-          CI_STATUS_FILE: ${{ runner.temp }}/ci_status.md
+          CI_STATUS_FILE: ${{ runner.temp }}/collect-checks/ci_status.md
           # The evidence and the fact are two files, not one. The first is what
           # the agent reads; the second is what the verdict is derived from, and
           # keeping them apart is what stops the derivation reading prose.
-          CI_RESULT_FILE: ${{ runner.temp }}/ci_result.txt
+          CI_RESULT_FILE: ${{ runner.temp }}/collect-checks/ci_result.txt
           # The red check's report and whether it is on (#232). Three cases the
           # review keeps apart: off, on with no readable report, and ran. Like
           # the CI evidence, it is never a fact the verdict is derived from.

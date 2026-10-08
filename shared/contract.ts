@@ -394,6 +394,14 @@ const REVIEW_PUBLISH = {
  *   of the live state it reads itself. `gate.json` is its decisions, every
  *   value a string, under the names an orchestrator hands on, and
  *   `refusal_reason.txt` is a variable it refused, written before it fails.
+ * - `review:collect-checks` waits for the pull request's other checks on
+ *   `REVIEWED_SHA`, the commit `review:gate` settled, and writes nothing to
+ *   the record. `SELF_CHECK` is the name of the check run of the job it runs
+ *   in, and `SELF_RUN_ID` the run it runs in, empty where there is none: its
+ *   own, which it leaves out of the wait. `ci_status.md` is their results
+ *   for the agent, and `ci_result.txt` the one word the runner derives the
+ *   verdict's CI half from, which the runner reads as `CI_STATUS_FILE` and
+ *   `CI_RESULT_FILE`.
  * - `review:publish` resolves the threads a review closed and posts it on
  *   `REVIEWED_SHA`, the commit the review job recorded before the agent ran
  *   (ADR 0006), then writes the title, the summary, the status line and the
@@ -434,6 +442,15 @@ export const COMMANDS = {
       LOOP_TOKEN_SOURCE: EMPTY,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", "refusal_reason.txt"],
+  },
+  "review:collect-checks": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      REVIEWED_SHA: REQUIRED,
+      SELF_CHECK: REQUIRED,
+      SELF_RUN_ID: EMPTY,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "ci_status.md", "ci_result.txt"],
   },
   "review:publish": REVIEW_PUBLISH,
   "review:conclude": {

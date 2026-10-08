@@ -35,6 +35,30 @@ export interface Review {
   readonly author: string;
 }
 
+/** A check run on a commit. `conclusion` is `null` until it completes. */
+export interface CheckRun {
+  readonly name: string;
+  readonly status: string;
+  readonly conclusion: string | null;
+}
+
+/** A commit status as the combined endpoint gives it: the latest one per context. */
+export interface LatestStatus {
+  readonly context: string;
+  readonly state: string;
+}
+
+/** A workflow run on a commit. `conclusion` is `null` until it completes. */
+export interface WorkflowRun {
+  readonly id: number;
+  readonly name: string;
+  readonly status: string;
+  readonly conclusion: string | null;
+  readonly url: string;
+  /** The path of every reusable workflow it calls, `owner/repo/.github/workflows/<file>@<ref>`. */
+  readonly referencedWorkflows: readonly string[];
+}
+
 export interface GitHubReader {
   pullRequest(number: number): Promise<PullRequest>;
   /** Every status set on `sha`, newest first, as the endpoint documents. */
@@ -56,6 +80,14 @@ export interface GitHubReader {
    * `diverged`.
    */
   compare(base: string, head: string): Promise<string>;
+  /** Every check run on `sha`, the latest of each, as the endpoint documents. */
+  checkRuns(sha: string): Promise<readonly CheckRun[]>;
+  /** The latest status of each context on `sha`. */
+  latestStatuses(sha: string): Promise<readonly LatestStatus[]>;
+  /** Every workflow run whose head is `sha`, newest first, as the endpoint documents. */
+  workflowRuns(sha: string): Promise<readonly WorkflowRun[]>;
+  /** The log of each job of run `runId` that failed, as text, in the order the jobs are listed. */
+  failedJobLogs(runId: number): Promise<readonly string[]>;
 }
 
 /** The REST pull request, as far as `PullRequest` reads it. */
@@ -96,6 +128,15 @@ interface RawReview {
   readonly user: { readonly login: string } | null;
 }
 
+interface RawWorkflowRun {
+  readonly id: number;
+  readonly name: string | null;
+  readonly status: string;
+  readonly conclusion: string | null;
+  readonly html_url: string;
+  readonly referenced_workflows?: readonly { readonly path: string }[] | null;
+}
+
 interface ThreadPage {
   readonly repository: {
     readonly pullRequest: {
@@ -116,6 +157,16 @@ const THREAD_IDS = `query($owner:String!,$name:String!,$number:Int!,$after:Strin
 /** The reader over `transport`, for `repo` (`owner/name`). */
 export const githubReader = (repo: string, transport: Transport): GitHubReader => {
   const [owner = "", name = ""] = repo.split("/");
+  /** Every item of a paged listing, `items` out of each page, until a page comes back short. */
+  const paged = async <T>(path: string, items: (page: unknown) => readonly T[]): Promise<T[]> => {
+    const all: T[] = [];
+    const separator = path.includes("?") ? "&" : "?";
+    for (let page = 1; ; page++) {
+      const found = items(await transport.rest({ method: "GET", path: `${path}${separator}per_page=100&page=${page}` }));
+      all.push(...found);
+      if (found.length < 100) return all;
+    }
+  };
   return {
     pullRequest: async (number) =>
       toPullRequest((await transport.rest({ method: "GET", path: `/repos/${repo}/pulls/${number}` })) as RawPullRequest),
@@ -185,6 +236,44 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
         path: `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
       })) as { readonly status: string };
       return raw.status;
+    },
+    checkRuns: (sha) =>
+      paged(`/repos/${repo}/commits/${sha}/check-runs`, (page) =>
+        (page as { readonly check_runs: readonly CheckRun[] }).check_runs.map((run) => ({
+          name: run.name,
+          status: run.status,
+          conclusion: run.conclusion,
+        })),
+      ),
+    latestStatuses: (sha) =>
+      paged(`/repos/${repo}/commits/${sha}/status`, (page) =>
+        (page as { readonly statuses: readonly LatestStatus[] }).statuses.map((status) => ({
+          context: status.context,
+          state: status.state,
+        })),
+      ),
+    workflowRuns: (sha) =>
+      paged(`/repos/${repo}/actions/runs?head_sha=${encodeURIComponent(sha)}`, (page) =>
+        (page as { readonly workflow_runs: readonly RawWorkflowRun[] }).workflow_runs.map((run) => ({
+          id: run.id,
+          name: run.name ?? "",
+          status: run.status,
+          conclusion: run.conclusion,
+          url: run.html_url,
+          referencedWorkflows: (run.referenced_workflows ?? []).map((called) => called.path),
+        })),
+      ),
+    failedJobLogs: async (runId) => {
+      const jobs = await paged(
+        `/repos/${repo}/actions/runs/${runId}/jobs`,
+        (page) => (page as { readonly jobs: readonly { readonly id: number; readonly conclusion: string | null }[] }).jobs,
+      );
+      const logs: string[] = [];
+      for (const job of jobs) {
+        if (job.conclusion !== "failure") continue;
+        logs.push((await transport.rest({ method: "GET", path: `/repos/${repo}/actions/jobs/${job.id}/logs`, text: true })) as string);
+      }
+      return logs;
     },
   };
 };

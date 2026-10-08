@@ -22,6 +22,7 @@ import {
   type Verdict,
   VERDICTS,
 } from "../shared/review-output.js";
+import { AGENT_CHECKS, CI_WAIT_SECONDS } from "../review/collect-checks.js";
 import { REVIEW_URL_SLOT } from "../shared/prd-round.js";
 import { rescueRef } from "../shared/rescue.js";
 import { finalReviewRequestedLines, OPENING_STATUS, renderPrdStatus, statusBlock } from "../shared/progress-list.js";
@@ -722,7 +723,7 @@ const RESOLVING: readonly string[] = [
   path.join(WORKFLOW_DIR, "update-branch.yml"),
 ];
 
-/** `agent-review`'s CI-collection step, which several checks below pick apart. */
+/** `agent-review`'s CI-collection step, `review:collect-checks` (#421). */
 const waitStep = (): Step => {
   const step = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
 
@@ -1062,7 +1063,7 @@ describe("every PR workflow shares one concurrency group per PR", () => {
    * from the wait, not just review's own.
    */
   it("agent-review waits on no agent job", () => {
-    const excluded = new RegExp(waitStep().env?.["AGENT_CHECKS"] ?? "");
+    const excluded = AGENT_CHECKS;
 
     // The names the loop actually produces, derived from the workflows rather
     // than listed: a called workflow's job is `<caller job id> / <called job
@@ -1141,57 +1142,10 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     for (const name of ["fixtures", "CI", "CI / verify", "CI / fix-lint", "build / fixtures"]) {
       expect(name).not.toMatch(excluded);
     }
-    // Every jq pass over the check runs carries it — the one that decides
-    // whether to keep waiting, the one that writes the list into the prompt,
-    // and the one that reduces them to the verdict's single word (#96). Counted
-    // against the passes rather than against a literal, so a fourth arrives
-    // here as a failure rather than as a pattern nobody extended: one that
-    // skipped this would deadlock on a queued agent job, or read a sibling
-    // agent's failure as this commit's CI.
-    const passes = [...(waitStep().run ?? "").matchAll(/\.\[\]\.check_runs\[\]/g)];
-    const filters = [...(waitStep().run ?? "").matchAll(/test\(\\"\$\{AGENT_CHECKS\}\\"\)/g)];
-
-    expect(passes.length).toBeGreaterThanOrEqual(3);
-    expect(filters).toHaveLength(passes.length);
-  });
-
-  /**
-   * The same set, one step further on: the failure-log tail skipped only
-   * `Agent Review` while the wait above excluded all four, so a failed `Agent
-   * Fix` still got 60 lines of its log into the prompt — not evidence about the
-   * diff, and crowding out the CI failure that is. Matched on the workflow
-   * *run* name, a different namespace from the check names in `AGENT_CHECKS`:
-   * every agent workflow is `name: Agent …` and the repo's own are `CI` and
-   * `Corpus`, so the prefix is the whole test. Since #221 the tail reads the
-   * same filtered listing the wait does, so the prefix is applied once, there,
-   * beside this run's own id and a renamed caller's `uses:` target.
-   */
-  it("agent-review tails no agent workflow's failure log", () => {
-    const run = waitStep().run ?? "";
-
-    expect(run).toContain('select((.name // "") | startswith("Agent ") | not)');
-    expect(run).toContain("select((.id | tostring) != env.SELF_RUN_ID)");
-    expect(run).toContain("agent-workflows/\\\\.github/workflows/");
-    expect(waitStep().env?.["SELF_RUN_ID"]).toBe("${{ github.run_id }}");
-    expect(run).toMatch(/failed_runs=\$\(printf '%s' "\$runs"/);
-    expect(run).not.toContain('[ "$rname" = "Agent Review" ]');
-  });
-
-  /**
-   * The runs listing feeds the tail and, since #221, the verdict, and it is
-   * gated on gh's exit status: fed straight to `for`, a refusal was silent, or
-   * iterated an error body's JSON words as run ids (#80). A failure says in the
-   * evidence what is missing, and reads `unknown`. Behaviour is
-   * `tests/review-ci-wait.test.ts`'s; this pins the shape and the ceiling.
-   */
-  it("agent-review says so when it cannot list the workflow runs", () => {
-    const run = waitStep().run ?? "";
-
-    expect(run).toContain('if ! runs=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}');
-    expect(run).toContain("for rid in $failed_runs; do");
-    expect(run).not.toMatch(/for rid in \$\(gh api/);
-    expect(run).toMatch(/Could not list this commit's workflow runs[^\n]*>> "\$out"/);
-    expect(run).toMatch(/workflow_runs=unknown/);
+    // The pattern is the command's (#421), which reads every check run through
+    // one filter: the wait, the list written into the prompt and the verdict's
+    // single word (#96) alike, as `tests/review/collect-checks.test.ts` runs.
+    expect(waitStep().run ?? "").toMatch(/-- agent-workflows review:collect-checks$/);
   });
 
   /**
@@ -1207,65 +1161,6 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     for (const job of halves) expect(job.permissions?.["actions"]).toBe("read");
     // Only the review job: the posting job and the rest read no runs.
     expect(workflowOf(REVIEW).jobs["post-review"]?.permissions).not.toHaveProperty("actions");
-  });
-
-  /**
-   * An unreadable check-runs API must stop the wait, not extend it.
-   *
-   * `pending_count` used to end `|| echo 0`, which had two failure shapes and
-   * both were silent. A clean non-zero exit became `0` — "nothing pending" —
-   * and the review ran blind. A 403 whose body reached stdout became
-   * `{"message":…}0`, which `-eq` rejects as non-numeric on every iteration,
-   * so the loop spun out all 900 s and *then* reviewed blind. The trigger for
-   * both: check runs on a **private** repository need `checks: read`, and no
-   * public repo in the pilot ever needed the grant to read them. That trigger
-   * is gone — the job declares the scope and a caller short of it never starts
-   * (#146) — and the two failure shapes are not, since a transient API failure
-   * produces each of them just the same.
-   *
-   * What is asserted is the property, not the shell: a non-numeric count is
-   * matched explicitly, it breaks rather than sleeps, and it says so in the
-   * log *and* in the evidence handed to the agent — a review with no CI
-   * behind it should never look like one that had it.
-   */
-  it("agent-review stops the CI wait when check runs cannot be read", () => {
-    const run = waitStep().run ?? "";
-
-    // The count is never defaulted over a failed call.
-    expect(run).not.toContain("|| echo 0");
-
-    // Non-numeric — including empty — is handled as its own case.
-    expect(run).toContain('case "$pending" in');
-    expect(run).toContain('"" | *[!0-9]*)');
-
-    // …and the count is one number, so that arm means what it says. `gh api
-    // --paginate --jq` applies the filter per page, so a commit with more
-    // than one page of check runs (>30) prints `0\n0` — which the arm above
-    // would classify as an API failure and report as a blind review, on a
-    // repo whose permissions are fine. Slurped, the filter runs once over
-    // every page.
-    //
-    // These two lines match *text*, and text is all they have ever matched.
-    // They were green for a release over `--paginate --slurp --jq`, which gh
-    // refuses outright and which therefore collected nothing at all (#28) —
-    // the shape was right and the command could not run. What settles that
-    // question is `tests/review-ci-wait.test.ts`, which executes this step
-    // against a recorded `gh`; keep these as the cheap statement of intent
-    // and put any new claim about *behaviour* there.
-    expect(run).toContain("--paginate --slurp");
-    expect(run).toContain("[.[].check_runs[]");
-
-    // Loud in the run log, and named in the evidence the agent reads.
-    expect(run).toContain("::error::Could not read check runs");
-    expect(run).toMatch(/Could not read this commit's check runs[^\n]*>> "\$out"/);
-
-    // And the grant is named as the thing it is *not*, where someone hitting
-    // this will look for it: a caller short of `checks: read` is refused before
-    // any job starts, so a step that ran holds the read and a reader sent to
-    // their own caller is sent to a file that is already correct (#146).
-    expect(run).toContain("checks: read");
-    expect(run).toContain("before any job starts");
-    expect(run).not.toMatch(/this is a missing `checks: read` grant/);
   });
 
   /**
@@ -1464,7 +1359,7 @@ describe("agent-review settles on one commit and reads nothing else", () => {
     const named = (prefix: string): Step | undefined => steps.find((s) => (s.name ?? "").startsWith(prefix));
 
     expect(named("Checkout PR head")?.with?.["ref"]).toBe(RESOLVED);
-    expect(named("Wait for other checks")?.env?.["HEAD_SHA"]).toBe(RESOLVED);
+    expect(named("Wait for other checks")?.env?.["REVIEWED_SHA"]).toBe(RESOLVED);
     // The posting job reads the same answer, handed over as the review job's
     // `sha` (#257), and never the payload's.
     expect(jobOf(REVIEW).outputs?.["sha"]).toBe(RESOLVED);
@@ -1794,49 +1689,43 @@ describe("agent-review posts its verdict as a commit status", () => {
 
   /**
    * The CI half of the derivation, which the runner must not read out of the
-   * prose the same step writes for the agent. One word, from the check runs'
-   * own `conclusion`, with the same two exclusions the evidence above uses —
-   * a queued sibling agent job is not a red check.
+   * prose the same step writes for the agent: one word, in a file of its own.
+   * Both are `review:collect-checks`'s declared outputs (#421), written into
+   * its own directory, and the runner reads them from there. What the word is
+   * on each surface, the verdict's own context skipped, is
+   * `tests/review/collect-checks.test.ts`'s.
    */
-  /**
-   * Check runs are an Actions concept, and CI that reports through the
-   * commit-status API has none — so a word derived from check runs alone calls
-   * that commit green and lets the review recommend approving a red one
-   * (#105). Both surfaces, and the verdict's **own** context skipped: it is
-   * the answer this job is about to post, so counting it would feed each
-   * round's verdict into the next round's evidence.
-   */
-  it("reads the commit's statuses as well as its check runs, minus its own", () => {
-    const wait = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
-    const run = wait?.run ?? "";
-
-    expect(run).toContain("commits/${HEAD_SHA}/status");
-    expect(run).toContain(".[].statuses[]");
-    // Held to the runner's constant, not merely to a string: the exclusion is
-    // only correct because it names the context the verdict posts under.
-    expect(wait?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
-    expect(run).toContain("select(.context != env.VERDICT_CONTEXT)");
-    // A status that has not passed has not passed — the same reading the check
-    // runs get, and the step has already spent its wait. Read past the YAML's
-    // own backslashes, which is what the jq inside a double-quoted shell string
-    // costs and not something this assertion is about.
-    const unescaped = run.replace(/\\/g, "");
-
-    for (const state of ["failure", "error", "pending"]) {
-      expect(unescaped, state).toContain(`. == "${state}"`);
-    }
-  });
-
   it("hands the runner the checks' result as a word, not as prose", () => {
-    const wait = stepsOf(REVIEW).find((s) => (s.name ?? "").startsWith("Wait for other checks"));
+    const wait = waitStep();
     const agent = stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent");
 
-    expect(wait?.run ?? "").toContain('${RUNNER_TEMP}/ci_result.txt');
-    expect(agent?.env?.["CI_RESULT_FILE"]).toBe("${{ runner.temp }}/ci_result.txt");
+    expect(COMMANDS["review:collect-checks"].outputs).toEqual(expect.arrayContaining(["ci_status.md", "ci_result.txt"]));
+    expect(wait.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}/collect-checks");
+    expect(agent?.env?.["CI_RESULT_FILE"]).toBe(`${wait.env?.["OUTPUT_DIR"]}/ci_result.txt`);
     // Distinct from the evidence file: one is what the agent reads, the other
     // is what the verdict is derived from, and collapsing them would put the
     // derivation back in the prose it was taken out of.
-    expect(agent?.env?.["CI_STATUS_FILE"]).toBe("${{ runner.temp }}/ci_status.md");
+    expect(agent?.env?.["CI_STATUS_FILE"]).toBe(`${wait.env?.["OUTPUT_DIR"]}/ci_status.md`);
+  });
+
+  /**
+   * Like the shell step before it, it never fails the review: missing CI
+   * context degrades the review, it does not invalidate it, and a command that
+   * wrote no word leaves the runner reading `unknown`. It runs where the gate
+   * let the run go ahead, after the adopter's installs and before the red
+   * check's report is fetched.
+   */
+  it("waits for the other checks where the run goes ahead, and never fails the job", () => {
+    const wait = waitStep();
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+
+    expect(wait["continue-on-error"]).toBe(true);
+    expect(wait.if).toBe("steps.state.outputs.proceed == 'true'");
+    expect(wait.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
+    expect(wait.env ?? {}).not.toHaveProperty("GH_TOKEN");
+    expect(wait.env?.["SELF_RUN_ID"]).toBe("${{ github.run_id }}");
+    expect(names.indexOf("Install Claude Code")).toBeLessThan(names.indexOf(wait.name ?? ""));
+    expect(names.indexOf(wait.name ?? "")).toBeLessThan(names.indexOf("Fetch the red check's report"));
   });
 });
 
@@ -4452,18 +4341,12 @@ describe("agent-review tells its caller what it cannot know", () => {
    * is the one case with no error to read when it is wrong, so it does not get
    * to depend on a heuristic.
    */
-  it("excludes its own check run from the wait, in every filter", () => {
-    const step = waitStep();
-
-    expect(step.env?.["SELF_CHECK"]).toBe("${{ inputs.self-check }}");
-    // Counted against the jq passes over the check runs rather than against a
-    // literal: the verdict's word is a third one (#96), and a fourth must fail
-    // here rather than quietly reading this job's own run as evidence.
-    const passes = [...(step.run ?? "").matchAll(/\.\[\]\.check_runs\[\]/g)];
-    const filters = [...(step.run ?? "").matchAll(/select\(\.name != env\.SELF_CHECK\)/g)];
-
-    expect(passes.length).toBeGreaterThanOrEqual(3);
-    expect(filters).toHaveLength(passes.length);
+  it("excludes its own check run from the wait, by the name the caller states", () => {
+    // Handed to `review:collect-checks` (#421), which compares it as a literal
+    // in the one filter every read of the check runs goes through
+    // (`tests/review/collect-checks.test.ts`).
+    expect(waitStep().env?.["SELF_CHECK"]).toBe("${{ inputs.self-check }}");
+    expect(COMMANDS["review:collect-checks"].inputs.SELF_CHECK).toEqual({ required: true });
   });
 
   /**
@@ -7520,7 +7403,7 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
     it("adds the CI wait the review actually waits", () => {
       const wait = Number(sum().env?.["CI_WAIT_MINUTES"]);
 
-      expect(wait * 60).toBe(Number(waitStep().env?.["WAIT_SECONDS"]));
+      expect(wait * 60).toBe(CI_WAIT_SECONDS);
       expect(sum().run ?? "").toContain('minutes=$((CI_WAIT_MINUTES + own))');
     });
 
@@ -8597,8 +8480,8 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
 
   /** Its check run reads red when it finds a red test, which is not CI. */
   it("never feeds ci_result", () => {
-    expect("review / red-check").toMatch(new RegExp(waitStep().env?.["AGENT_CHECKS"] ?? ""));
-    expect("agent-review / red-check").toMatch(new RegExp(waitStep().env?.["AGENT_CHECKS"] ?? ""));
+    expect("review / red-check").toMatch(AGENT_CHECKS);
+    expect("agent-review / red-check").toMatch(AGENT_CHECKS);
   });
 
   /**
@@ -9763,7 +9646,14 @@ describe("each status read and write is made with a token holding its scope", ()
   );
 
   it("finds the calls it rules on", () => {
-    expect(calls.filter((c) => c.scope === "statuses").length).toBeGreaterThan(5);
+    expect(calls.filter((c) => c.scope === "statuses").length).toBeGreaterThan(2);
+    // The CI wait's reads of check runs, statuses and workflow runs are
+    // `review:collect-checks`'s now (#421), made by the engine's reader with
+    // the job's `GH_TOKEN`, which its read scopes cover.
+    for (const scope of ["checks", "statuses", "actions"]) {
+      expect(jobNamed(REVIEW, "review").permissions?.[scope], scope).toBe("read");
+    }
+    expect(waitStep().env ?? {}).not.toHaveProperty("GH_TOKEN");
     // The review job's count of the rounds spent is `review:gate`'s now
     // (#420), made by the engine's reader with the job's `GH_TOKEN`, which
     // its `statuses: read` covers.

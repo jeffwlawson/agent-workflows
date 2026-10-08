@@ -29,9 +29,9 @@ import {
 /**
  * Runs `implement-prd`'s preflight — the real `run:` block, read out of
  * `.github/workflows/implement-prd.yml` — under `bash -e` against the recorded
- * `gh` in `tests/fixtures/gh-replay`, the seam `tests/review-ci-wait.test.ts`
- * built for the same reason: a string assertion passes on a step `gh` refuses
- * (#28).
+ * `gh` in `tests/fixtures/gh-replay`, the seam the review's CI-wait test built
+ * before that step became `review:collect-checks` (#421), for this reason: a
+ * string assertion passes on a step `gh` refuses (#28).
  *
  * What it executes is the preflight's state table (PRD #222, #243), every row
  * of it. Which sub-issues are built is read off the PRD branch, from the
@@ -74,7 +74,12 @@ const stepById = (id: string): Step => {
 
 const preflight = (): Step => stepById("preflight");
 
-/** Bounded, for the reason `review-ci-wait.test.ts` gives its own copy. */
+/**
+ * Bounded like every spawn here, and the one place it matters most: this runs
+ * at module scope, outside any test body, where no `testTimeout` could reach a
+ * hang. A killed spawn reports `null`, so an overrun skips the suite rather
+ * than stalling the run.
+ */
 const onPath = (command: string): boolean =>
   process.platform === "win32"
     ? spawnSync("where", [command], { timeout: SUBPROCESS_TIMEOUT }).status === 0

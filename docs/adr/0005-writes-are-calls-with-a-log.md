@@ -96,6 +96,9 @@ and throws on failure, and `cli.ts` turns the throw into `fail()`.
 - `follow-ups:file` writes outside the writer until its own workflow moves.
 - #391's criterion that every write path goes through cleanup becomes a property of the readers.
   The hand-over's readers (#398) must give out the agent's text already cleaned.
+- Cleaning on read keeps a forged marker out only if no hand-over file carries a loop string. [ADR
+  0007](./0007-publish-writes-every-final-string.md) moves the formatting to publish for that
+  reason.
 
 ## Revisit when
 

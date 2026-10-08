@@ -73,6 +73,9 @@ and the token are in different jobs.
   stops publish before its first write.
 - The agent job's two upload steps are checked against the declared sets of `review:publish` and
   `review:advance`, rather than kept by hand.
+- [ADR 0007](./0007-publish-writes-every-final-string.md) changes what the files hold: decisions
+  and raw text, never finished text. That takes review's hand-over from seven files to five, and
+  removes the `commitOID` check, since no file names a commit any more.
 
 ## Revisit when
 

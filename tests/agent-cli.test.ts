@@ -537,6 +537,7 @@ describe("the CLI runs a command that writes", () => {
     LOOP_TOKEN: "a-loop-token",
     LOOP_TOKEN_SOURCE: "app",
     PR_NUMBER: "7",
+    BRANCH: "agent/issue-12-do-the-thing",
     REVIEWED_SHA: "c".repeat(40),
     REVIEW_DIR: "/nowhere",
   } as const;

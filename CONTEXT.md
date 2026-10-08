@@ -443,6 +443,15 @@ that. A job's package code is one command per stretch between steps only Actions
 [ADR 0005](./docs/adr/0005-writes-are-calls-with-a-log.md) records why there is no list of writes
 planned before applying. Like commands, the writer is the target: nothing uses it yet.
 
+**The hand-over** is what crosses from the agent's phase to the commands that act on it: the
+runner's files that each command declares it reads, checked and cleaned when they are read. The
+facts recorded before the agent ran, such as the reviewed commit, are not part of it. They travel
+apart, where the agent cannot write them, because they are what its output is checked against.
+The agent's phase always runs as a process of its own, so the write token never reaches it.
+[ADR 0006](./docs/adr/0006-hand-over-between-agent-and-publish.md) records the rule. It is the
+target: today `review.yml` uploads a hand-kept list of files, and nothing checks them before
+posting.
+
 **A workflow's folder** holds that workflow's package code: its runner, as `<name>/<name>.ts`, where
 it has one, and every command that runs in its jobs, whatever the command writes to. So review's
 `advance` lives in `review/` although it changes the PRD chain's parent, and `follow-ups/` is a

@@ -3182,6 +3182,38 @@ describe("the review posts last, from one job", () => {
     );
   });
 
+  /**
+   * **A token only where it writes** (#417). No job-level `GH_TOKEN`, so the
+   * Node setup, the download, the glue and the log's upload hold none; the
+   * command step is the one handed both tokens, and the loop's goes to no step
+   * but it and the shell steps that still add a label something fires on, or
+   * mark the pull request ready.
+   */
+  it("hands a token only to the steps that write with it", () => {
+    const steps = posting().steps ?? [];
+    const tokens = (step: Step): string[] => Object.keys(step.env ?? {}).filter((name) => /TOKEN/.test(name));
+    const loopToken = (step: Step): boolean => JSON.stringify(step.env ?? {}).includes("steps.token.outputs.token");
+
+    expect(posting().env ?? {}).not.toHaveProperty("GH_TOKEN");
+    for (const name of ["Authenticate to GitHub Packages", "Fetch what the review wrote", "Read what publish reported", "Keep the write log"]) {
+      const step = steps.find((s) => s.name === name);
+      expect(step, name).toBeDefined();
+      expect(tokens(step ?? {}), name).toEqual([]);
+    }
+    expect(tokens(steps.find((s) => s.name === "Publish the review") ?? {}).sort()).toEqual([
+      "GH_TOKEN",
+      "LOOP_TOKEN",
+      "LOOP_TOKEN_SOURCE",
+      "NODE_AUTH_TOKEN",
+    ]);
+    expect(steps.filter(loopToken).map((s) => s.name)).toEqual([
+      "Publish the review",
+      "Mark PR ready for review",
+      "Always remove the trigger label",
+      "Start the automatic fix round",
+    ]);
+  });
+
   /** And the review job writes nothing: no comment, label, status or review. */
   it("posts nothing from the job that runs the model", () => {
     for (const step of stepsOf(REVIEW)) {

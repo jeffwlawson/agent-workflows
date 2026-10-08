@@ -1531,8 +1531,9 @@ misconfigured, and leaves the review with unknown red evidence; `doctor` warns a
 is missing, and notes whether the check is configured at all.
 
 **It is evidence for the review and never a required status.** The job runs the pull request's
-code, so it holds no secret and only `contents: read`, carries the review's fork guard, and nothing
-it produces is trusted beyond its report. The review waits for it but runs whether it passed, failed
+code, so it holds no secret, and only `contents: read` and the `packages: read` that installs the
+loop's package, before any of that code runs and by the one step handed the job's token. It carries
+the review's fork guard, and nothing it produces is trusted beyond its report. The review waits for it but runs whether it passed, failed
 or was skipped, and its check run is excluded from the CI the review waits on, so it never turns the
 CI result red. Do not make it required: a pull request that only refactors has no red test to show,
 and is not wrong for it.

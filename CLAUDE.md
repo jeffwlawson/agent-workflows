@@ -147,13 +147,15 @@ commit, and no-ops if the version is already on the registry.
 
 **That first command is the whole release.** The version appears in twelve files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
-pin of each step that runs the package (ten: one in each of the six reusable workflows, and
-`review:gate`, `review:collect-checks`, `review:publish` and `review:conclude` beside the runner in
-`review.yml`), the `uses:` ref of each caller in the two caller files
+pin of each step that runs the package (twelve: one in each of the six reusable workflows, and
+`review:gate`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
+`review:publish` and `review:conclude` beside the runner in `review.yml`), the `npm install` pin of
+the step that installs it ahead of the red check's two (one, in `review.yml`), the `uses:` ref of
+each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
 `.github/actions/` with (nine of those: `advance-prd` once in `review.yml`, and `loop-token` once
 in each of `implement.yml`, `fix.yml` and `update-branch.yml`, twice in `implement-prd.yml` and
-three times in `review.yml`, so thirty-one pins in the ten files). It
+three times in `review.yml`, so thirty-four pins in the ten files). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
 stages **by path** — the ten it wrote, never `-A`: npm's dirty-tree check passes untracked
@@ -215,9 +217,10 @@ move those by hand.
 Changing what a pin looks like — a new workflow, a renamed one, a different invocation — is a
 change to `shared/pins.ts` and `tests/pins.test.ts` in the same commit, and to
 `scripts/sync-version.ts` and its tests if the *set* of sites changed too. `shared/pins.ts` knows
-three forms, `@<version>` for the npm spec, `@v<version>` for a caller's `uses:` ref to a reusable
-workflow, and `@v<version>` for a reusable's `uses:` ref to a composite action in
-`.github/actions/` (#257), and a fourth would be a site it skips.
+four forms, `@<version>` for the npm spec `npm exec` takes, `@<version>` for the one `npm install`
+takes (#422), `@v<version>` for a caller's `uses:` ref to a reusable workflow, and `@v<version>`
+for a reusable's `uses:` ref to a composite action in `.github/actions/` (#257), and a fifth would
+be a site it skips.
 
 The split is not cosmetic. `shared/pins.ts` is the rewrite itself and **ships**, because `init`
 (#6) performs the same rewrite into an adopter's tree; `scripts/sync-version.ts` is the release

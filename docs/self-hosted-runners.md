@@ -133,7 +133,7 @@ loop the VM is the sandbox, and bwrap matters only to an adopter who wants a sec
 | `implement-prd : implement-prd` | Agent | same | **Yes** | Same |
 | `fix : fix` | Agent | same | **Yes** | Same |
 | `update-branch : update-branch` | Agent | same | **Yes** | Same; runs only on a conflicted merge |
-| `review : red-check` | No secret, runs the **PR's code** | `contents: read`, no cache | **Yes, with the agent jobs** | Same threat class as the agent (untrusted code, no secret) and same isolation needs. Never ran in the data |
+| `review : red-check` | No secret, runs the **PR's code** | `contents: read`, `packages: read` for the install before that code runs, no cache | **Yes, with the agent jobs** | Same threat class as the agent (untrusted code, no secret) and same isolation needs. Never ran in the data |
 | `review : time-limit` | Credential | App key, `AGENT_PAT` (choose-only) | **No** | Names the key though it mints nothing (`review.yml:215-223`) |
 | `review : post-review` | Credential | mints the App token | **No** | All of review's writes |
 | `review : advance` | Credential | mints | **No** | Re-labels the PRD parent |

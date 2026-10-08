@@ -274,7 +274,7 @@ describe("the review reads the red check's report as evidence", () => {
 
   /**
    * Only a run that reached the test command says it ran it. Every status the
-   * classify step writes, by how far the job got: stopped before placing
+   * classify command writes, by how far the job got: stopped before placing
    * anything, placed but never ran the command, and ran it with no readable
    * report.
    */

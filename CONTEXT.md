@@ -432,12 +432,16 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `follow-ups:file`, `review:gate`, `review:collect-checks`, `review:publish`
-and `review:conclude` are the commands today; every other step a command will be still runs as YAML shell. A command that
+name is always a runner. `follow-ups:file`, `review:gate`, `review:collect-checks`,
+`review:red-check-place`, `review:red-check-classify`, `review:publish` and `review:conclude` are
+the commands today; every other step a command will be still runs as YAML shell. A command that
 only decides or reads, as `review:gate` does before the review job's checkout (#420) and
 `review:collect-checks` does for the CI wait (#421), is handed the GitHub
 reader and no writer, and what it settles leaves it as a declared file: the gate's the YAML copies
-into step outputs, and the CI wait's the runner reads. The kind is declared, not inferred: `shared/contract.ts` holds
+into step outputs, and the CI wait's the runner reads. A command that runs beside the pull
+request's own code, as the red check's two do around the adopter's test command (#422), is handed
+no token at all: it reads no repository, and the package it runs from was installed before that
+code ran, by the one step that held the registry token. The kind is declared, not inferred: `shared/contract.ts` holds
 runners in `RUNNERS` and commands in `COMMANDS`.
 [ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
 

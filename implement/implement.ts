@@ -10,9 +10,9 @@ import {
   readInputs,
   scrubGitHubTokens,
 } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
+import { RUNNERS } from "../shared/contract.js";
 
-const INPUTS = readInputs(CONTRACT["implement"].inputs);
+const INPUTS = readInputs(RUNNERS["implement"].inputs);
 
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
 const ISSUE_TITLE = INPUTS.ISSUE_TITLE;

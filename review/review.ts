@@ -12,7 +12,7 @@ import {
   workflowRunUrl,
   writers,
 } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
+import { RUNNERS } from "../shared/contract.js";
 import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { fetchReviews } from "../shared/follow-up-filing.js";
@@ -90,8 +90,8 @@ import {
 import { readRoundRecord, reviewHeader, roundCounts, type RoundCounts, type RoundScope } from "../shared/round-header.js";
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 
-const INPUTS = readInputs(CONTRACT["review"].inputs);
-const { writeJson, writeText } = writers(CONTRACT["review"].outputs);
+const INPUTS = readInputs(RUNNERS["review"].inputs);
+const { writeJson, writeText } = writers(RUNNERS["review"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;

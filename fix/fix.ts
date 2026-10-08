@@ -11,7 +11,7 @@ import {
   sh,
   writers,
 } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
+import { RUNNERS } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
 import {
   filterConversationOutcomes,
@@ -33,8 +33,8 @@ import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.j
 import { runWithExtraction } from "../shared/run-with-extraction.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
-const INPUTS = readInputs(CONTRACT["fix"].inputs);
-const { writeJson, writeText } = writers(CONTRACT["fix"].outputs);
+const INPUTS = readInputs(RUNNERS["fix"].inputs);
+const { writeJson, writeText } = writers(RUNNERS["fix"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
 const BRANCH = INPUTS.BRANCH;

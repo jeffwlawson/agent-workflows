@@ -37,7 +37,7 @@ import {
   writers,
 } from "../shared/common.js";
 import { scrubGitHubTokens } from "../shared/env.js";
-import { CONTRACT, EVERY_RUNNER, type Input, type Inputs, type Runner } from "../shared/contract.js";
+import { COMMANDS, EVERY_SUBCOMMAND, RUNNERS, type Input, type Inputs, type Outputs, type Runner, type RunnerInputs } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 const spawned = vi.mocked(execFileSync);
@@ -724,13 +724,16 @@ describe("fetchPullRequestHeading — the jq program survives the crossing", () 
  * so nothing used to notice it missing, and every trusted fetch quietly came
  * back empty.
  */
-describe("readInputs and input — a runner's declared inputs, read loudly", () => {
+describe("readInputs and input: a subcommand's declared inputs, read loudly", () => {
   const VAR = "AGENT_WORKFLOWS_TEST_ONLY_VAR";
-  const RUNNERS = Object.keys(CONTRACT) as Runner[];
-  const declared = (runner: Runner): [string, Input][] => Object.entries(CONTRACT[runner].inputs);
-  const requiredOf = (runner: Runner): string[] =>
-    declared(runner).filter(([, d]) => d.required).map(([name]) => name);
-  const NAMES = [...new Set([...RUNNERS.flatMap((r) => declared(r).map(([name]) => name)), VAR])];
+  /** Runners and commands alike: both read their inputs through the accessor. */
+  const CONTRACT: Readonly<Record<string, { readonly inputs: Inputs }>> = { ...RUNNERS, ...COMMANDS };
+  const SUBCOMMANDS = Object.keys(CONTRACT);
+  const inputsOf = (subcommand: string): Inputs => CONTRACT[subcommand]?.inputs ?? {};
+  const declared = (subcommand: string): [string, Input][] => Object.entries(inputsOf(subcommand));
+  const requiredOf = (subcommand: string): string[] =>
+    declared(subcommand).filter(([, d]) => d.required).map(([name]) => name);
+  const NAMES = [...new Set([...SUBCOMMANDS.flatMap((r) => declared(r).map(([name]) => name)), VAR])];
   const previous = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
   const written = vi.mocked(fs.writeFileSync);
 
@@ -748,11 +751,11 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
 
   const reasonFile = (): string => path.join(scratch, "failure_reason.txt");
 
-  /** Every input any runner declares, required ones set and optional ones not, so each test removes what it is about. */
+  /** Every input any subcommand declares, required ones set and optional ones not, so each test removes what it is about. */
   beforeEach(() => {
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), "common-inputs-"));
     for (const n of NAMES) delete process.env[n];
-    for (const n of new Set(RUNNERS.flatMap(requiredOf))) process.env[n] = "given";
+    for (const n of new Set(SUBCOMMANDS.flatMap(requiredOf))) process.env[n] = "given";
     process.env["OUTPUT_DIR"] = scratch;
     process.env["GH_REPO"] = "o/r";
     process.env["GH_TOKEN"] = "a-token";
@@ -777,21 +780,39 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
   });
 
   it("returns every declared input, and writes nothing, when all are set", () => {
-    expect(readInputs(EVERY_RUNNER)).toEqual({ OUTPUT_DIR: scratch, GH_REPO: "o/r", GH_TOKEN: "a-token" });
+    expect(readInputs(EVERY_SUBCOMMAND)).toEqual({ OUTPUT_DIR: scratch, GH_REPO: "o/r", GH_TOKEN: "a-token" });
     expect(fs.existsSync(reasonFile())).toBe(false);
   });
 
-  it("refuses, at typecheck, a read of an input the runner has not declared", () => {
+  it("refuses, at typecheck, a read of an input the subcommand has not declared", () => {
     delete process.env["BASE_REF"];
-    const inputs = readInputs(CONTRACT["follow-ups"].inputs);
+    const inputs = readInputs(COMMANDS["follow-ups:file"].inputs);
 
-    // @ts-expect-error: `follow-ups` declares no `BASE_REF`, so it may not read one.
+    // @ts-expect-error: `follow-ups:file` declares no `BASE_REF`, so it may not read one.
     expect(inputs.BASE_REF).toBeUndefined();
     // @ts-expect-error: nor may a single read name one.
-    expect(() => input(CONTRACT["follow-ups"].inputs, "BASE_REF")).toThrow(Exited);
+    expect(() => input(COMMANDS["follow-ups:file"].inputs, "BASE_REF")).toThrow(Exited);
   });
 
-  describe.each(RUNNERS)("%s", (runner) => {
+  /**
+   * A runner may not declare the loop's write token: a runner that starts the
+   * agent leaves its environment where the agent can read it (ADR 0004). The
+   * compiler is the check, so the check here is that the compiler refuses it.
+   */
+  it("refuses, at typecheck, LOOP_TOKEN in a runner's declaration, and not in a command's", () => {
+    const runners = {
+      // @ts-expect-error: a runner may not declare the write token.
+      leaky: { inputs: { ...EVERY_SUBCOMMAND, LOOP_TOKEN: { required: true } }, outputs: [] },
+    } as const satisfies Readonly<Record<string, { readonly inputs: RunnerInputs; readonly outputs: Outputs }>>;
+    const commands = {
+      writes: { inputs: { ...EVERY_SUBCOMMAND, LOOP_TOKEN: { required: true } }, outputs: [] },
+    } as const satisfies Readonly<Record<string, { readonly inputs: Inputs; readonly outputs: Outputs }>>;
+
+    expect(runners.leaky.inputs).toHaveProperty("LOOP_TOKEN");
+    expect(commands.writes.inputs).toHaveProperty("LOOP_TOKEN");
+  });
+
+  describe.each(SUBCOMMANDS)("%s", (runner) => {
     /**
      * Every required input, `GH_REPO` and `GH_TOKEN` among them, stops the run
      * by name. `OUTPUT_DIR` is the one that cannot name itself in the file it
@@ -800,21 +821,21 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
     it.each(requiredOf(runner).filter((n) => n !== "OUTPUT_DIR"))("stops at start without %s, naming it in failure_reason.txt", (name) => {
       delete process.env[name];
 
-      expect(() => readInputs(CONTRACT[runner].inputs)).toThrow(Exited);
+      expect(() => readInputs(inputsOf(runner))).toThrow(Exited);
 
       expect(exitCode).toBe(1);
       expect(fs.readFileSync(reasonFile(), "utf8")).toBe(`Missing required env var: ${name}`);
     });
 
-    it("declares the three every runner reads, required", () => {
-      for (const name of Object.keys(EVERY_RUNNER)) {
-        expect(CONTRACT[runner].inputs, name).toHaveProperty(name, { required: true });
+    it("declares the three every subcommand reads, required", () => {
+      for (const name of Object.keys(EVERY_SUBCOMMAND)) {
+        expect(inputsOf(runner), name).toHaveProperty(name, { required: true });
       }
     });
 
     /** Empty where unset, the reading each of them had before it was declared. */
     it("reads each optional input as its default where it is not given", () => {
-      const values: Readonly<Record<string, string>> = readInputs(CONTRACT[runner].inputs);
+      const values: Readonly<Record<string, string>> = readInputs(inputsOf(runner));
       for (const [name, declaration] of declared(runner)) {
         if (!declaration.required) expect(values[name], name).toBe(declaration.default);
       }
@@ -826,17 +847,17 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
    * it: the declaration is held to the name `agentModel` computes, and every
    * runner that starts the agent declares what `claudeAgent` reads.
    */
-  it.each(RUNNERS.filter((r) => r !== "follow-ups"))("%s declares the inputs that start the agent", (runner) => {
-    expect(CONTRACT[runner].inputs).toHaveProperty(overrideVar(runner), { required: false, default: "" });
-    expect(CONTRACT[runner].inputs).toHaveProperty("AGENT_MODEL", { required: false, default: "" });
-    expect(CONTRACT[runner].inputs).toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN", { required: true });
+  it.each(Object.keys(RUNNERS) as Runner[])("%s declares the inputs that start the agent", (runner) => {
+    expect(RUNNERS[runner].inputs).toHaveProperty(overrideVar(runner), { required: false, default: "" });
+    expect(RUNNERS[runner].inputs).toHaveProperty("AGENT_MODEL", { required: false, default: "" });
+    expect(RUNNERS[runner].inputs).toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN", { required: true });
   });
 
   /** As an unset `vars.X` interpolates: into `""`, and that is the same absence. */
   it("treats an empty value as missing", () => {
     process.env["GH_TOKEN"] = "";
 
-    expect(() => readInputs(CONTRACT.implement.inputs)).toThrow(Exited);
+    expect(() => readInputs(RUNNERS.implement.inputs)).toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(reasonFile(), "utf8")).toContain("GH_TOKEN");
@@ -846,7 +867,7 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
     delete process.env["GH_REPO"];
     delete process.env["GH_TOKEN"];
 
-    expect(() => readInputs(CONTRACT.fix.inputs)).toThrow(Exited);
+    expect(() => readInputs(RUNNERS.fix.inputs)).toThrow(Exited);
 
     expect(fs.readFileSync(reasonFile(), "utf8")).toBe("Missing required env vars: GH_REPO, GH_TOKEN");
   });
@@ -854,7 +875,7 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
   it("fails one read the same way", () => {
     delete process.env["GH_REPO"];
 
-    expect(() => input(EVERY_RUNNER, "GH_REPO")).toThrow(Exited);
+    expect(() => input(EVERY_SUBCOMMAND, "GH_REPO")).toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(reasonFile(), "utf8")).toBe("Missing required env var: GH_REPO");
@@ -889,7 +910,7 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
   it("reports a missing OUTPUT_DIR on stderr, exits non-zero, and writes no file", () => {
     delete process.env["OUTPUT_DIR"];
 
-    expect(() => readInputs(CONTRACT["update-branch"].inputs)).toThrow(Exited);
+    expect(() => readInputs(RUNNERS["update-branch"].inputs)).toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(logged).toHaveBeenCalledWith(expect.stringContaining("Missing required env var: OUTPUT_DIR"));
@@ -900,11 +921,11 @@ describe("readInputs and input — a runner's declared inputs, read loudly", () 
    * A runner's outputs are declared the way its inputs are, and checked the
    * same way: at typecheck, which is where an undeclared output file fails.
    */
-  it("refuses, at typecheck, a write of a file the runner has not declared", () => {
-    const { writeText } = writers(CONTRACT["follow-ups"].outputs);
+  it("refuses, at typecheck, a write of a file the subcommand has not declared", () => {
+    const { writeText } = writers(COMMANDS["follow-ups:file"].outputs);
 
     writeText("failure_reason.txt", "declared");
-    // @ts-expect-error: `follow-ups` declares no `summary.md`, so it may not write one.
+    // @ts-expect-error: `follow-ups:file` declares no `summary.md`, so it may not write one.
     writeText("summary.md", "undeclared");
 
     expect(fs.readFileSync(reasonFile(), "utf8")).toBe("declared");

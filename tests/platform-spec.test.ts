@@ -2,7 +2,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { CONTRACT, EVERY_RUNNER, EVERY_RUNNER_OUTPUTS, type Inputs, type Runner } from "../shared/contract.js";
+import {
+  COMMANDS,
+  EVERY_SUBCOMMAND,
+  EVERY_SUBCOMMAND_OUTPUTS,
+  RUNNERS,
+  type Command,
+  type Inputs,
+  type Runner,
+} from "../shared/contract.js";
 
 /**
  * The one place `docs/platform-spec.md` meets the code (PRD #375). The spec's
@@ -17,7 +25,15 @@ import { CONTRACT, EVERY_RUNNER, EVERY_RUNNER_OUTPUTS, type Inputs, type Runner 
 
 const SPEC = fs.readFileSync(path.join("docs", "platform-spec.md"), "utf8");
 
-const RUNNERS = Object.keys(CONTRACT) as Runner[];
+const RUNNER_NAMES = Object.keys(RUNNERS) as Runner[];
+const COMMAND_NAMES = Object.keys(COMMANDS) as Command[];
+
+/** A command's workflow, the part of `<workflow>:<step>` before the colon. */
+const workflowOf = (command: Command): string => command.slice(0, command.indexOf(":"));
+
+/** A subcommand's declaration, runner or command. */
+const declarationOf = (subcommand: Runner | Command) =>
+  subcommand in RUNNERS ? RUNNERS[subcommand as Runner] : COMMANDS[subcommand as Command];
 
 /** The text under each heading of `level`, keyed by the heading's own text. */
 const sectionsOf = (text: string, level: number): ReadonlyMap<string, string> => {
@@ -63,18 +79,34 @@ const rowsOf = (table: readonly (readonly string[])[] | undefined): ReadonlyMap<
 
 const PROCESS = sectionsOf(sectionStarting(sectionsOf(SPEC, 2), "2. "), 3);
 
-/** §2.2's "every runner" table, name to `required` or `optional`. */
+/** §2.2's "every subcommand" table, name to `required` or `optional`. */
 const everyRunnerInputs = (): ReadonlyMap<string, string> => rowsOf(tablesIn(sectionStarting(PROCESS, "2.2 "))[0]);
 
 /** §2.4's common outputs table: its first, ahead of the exit codes. */
 const everyRunnerOutputs = (): readonly string[] => [...rowsOf(tablesIn(sectionStarting(PROCESS, "2.4 "))[0]).keys()];
 
-/** The runner's own section, `## <n>. \`<runner>\``. */
-const runnerSection = (runner: Runner): string =>
-  [...sectionsOf(SPEC, 2)].find(([heading]) => new RegExp(`^\\d+\\. \`${runner}\`$`).test(heading))?.[1] ?? "";
+/**
+ * A workflow's own section, `## <n>. \`<workflow>\``: its runner's, where it
+ * has one, and its commands'.
+ */
+const workflowSection = (workflow: string): string =>
+  [...sectionsOf(SPEC, 2)].find(([heading]) => new RegExp(`^\\d+\\. \`${workflow}\`$`).test(heading))?.[1] ?? "";
 
-const runnerTable = (runner: Runner, heading: "Inputs" | "Outputs") =>
-  tablesIn(sectionsOf(runnerSection(runner), 3).get(heading) ?? "")[0];
+/** A runner's section is its workflow's, which is named after it. */
+const runnerSection = workflowSection;
+
+/** A command's section, `### \`<workflow>:<step>\``, inside its workflow's. */
+const commandSection = (command: Command): string =>
+  sectionsOf(workflowSection(workflowOf(command)), 3).get(`\`${command}\``) ?? "";
+
+/**
+ * A subcommand's `Inputs` or `Outputs` table: a runner's at `###` in its
+ * workflow's section, and a command's at `####` in its own.
+ */
+const tableOf = (subcommand: Runner | Command, heading: "Inputs" | "Outputs") =>
+  subcommand in RUNNERS
+    ? tablesIn(sectionsOf(runnerSection(subcommand), 3).get(heading) ?? "")[0]
+    : tablesIn(sectionsOf(commandSection(subcommand as Command), 4).get(heading) ?? "")[0];
 
 const kindOf = (inputs: Inputs): ReadonlyMap<string, string> =>
   new Map(Object.entries(inputs).map(([name, input]) => [name, input.required ? "required" : "optional"]));
@@ -87,19 +119,41 @@ describe("the spec's structure", () => {
    * that is not found compares as empty. So a restructured spec would pass
    * the equality checks by comparing nothing; this is what stops it.
    */
-  it.each(RUNNERS)("has a section for %s, with its trigger label, both tables and what it reads from the record", (runner) => {
+  it.each(RUNNER_NAMES)("has a section for %s, with its trigger label, both tables and what it reads from the record", (runner) => {
     const section = runnerSection(runner);
 
     expect(section).toMatch(/^Trigger label: `agent:[a-z-]+`/m);
-    expect(runnerTable(runner, "Inputs")?.[0]?.[0]).toBe("Input");
-    expect(runnerTable(runner, "Outputs")?.[0]?.[0]).toBe("Output");
+    expect(tableOf(runner, "Inputs")?.[0]?.[0]).toBe("Input");
+    expect(tableOf(runner, "Outputs")?.[0]?.[0]).toBe("Output");
     expect(sectionsOf(section, 3).has("What it reads from the record")).toBe(true);
     expect(section).toMatch(/^> \*\*Actions orchestrator:\*\*/m);
   });
 
-  it("has a section for no runner the contract lacks", () => {
+  /**
+   * A command sits in its workflow's section, after the runner where the
+   * workflow has one (ADR 0004), under a heading of its own with both tables
+   * beneath it.
+   */
+  it.each(COMMAND_NAMES)("has a section for %s in its workflow's, with both tables", (command) => {
+    const section = commandSection(command);
+
+    expect(workflowSection(workflowOf(command))).toMatch(/^Trigger label: `agent:[a-z-]+`/m);
+    expect(tableOf(command, "Inputs")?.[0]?.[0]).toBe("Input");
+    expect(tableOf(command, "Outputs")?.[0]?.[0]).toBe("Output");
+    expect(section).toMatch(/^> \*\*Actions orchestrator:\*\*/m);
+  });
+
+  it("has a section for no workflow the contract lacks", () => {
     const sections = [...sectionsOf(SPEC, 2).keys()].flatMap((heading) => /^\d+\. `([^`]+)`$/.exec(heading)?.[1] ?? []);
-    expect([...sections].sort()).toEqual([...RUNNERS].sort());
+    const workflows = new Set([...RUNNER_NAMES, ...COMMAND_NAMES.map(workflowOf)]);
+    expect([...sections].sort()).toEqual([...workflows].sort());
+  });
+
+  it("has a section for no command the contract lacks", () => {
+    const sections = [...sectionsOf(SPEC, 2).values()].flatMap((section) =>
+      [...sectionsOf(section, 3).keys()].flatMap((heading) => /^`([a-z-]+:[a-z-]+)`$/.exec(heading)?.[1] ?? []),
+    );
+    expect([...sections].sort()).toEqual([...COMMAND_NAMES].sort());
   });
 
   it("has the reading guide, the terms, the process boundary, safety, the record and the version rule", () => {
@@ -120,33 +174,33 @@ describe("the spec's structure", () => {
 });
 
 describe("the spec's tables equal the declarations", () => {
-  it("§2.2's table is the inputs every runner reads", () => {
-    expect(sorted(everyRunnerInputs())).toEqual(sorted(kindOf(EVERY_RUNNER)));
+  it("§2.2's table is the inputs every subcommand reads", () => {
+    expect(sorted(everyRunnerInputs())).toEqual(sorted(kindOf(EVERY_SUBCOMMAND)));
   });
 
-  it("§2.4's table carries failure_reason.txt, the file every runner writes", () => {
-    expect(everyRunnerOutputs()).toEqual([...EVERY_RUNNER_OUTPUTS]);
+  it("§2.4's table carries failure_reason.txt, the file every subcommand writes", () => {
+    expect(everyRunnerOutputs()).toEqual([...EVERY_SUBCOMMAND_OUTPUTS]);
   });
 
   /**
-   * §2.2's table plus the runner's own make its input set. A name in one of
-   * the runner's tables and §2.2's both is refused rather than merged: it
-   * would be two rows for one input, free to disagree.
+   * §2.2's table plus the subcommand's own make its input set. A name in one
+   * of the subcommand's tables and §2.2's both is refused rather than merged:
+   * it would be two rows for one input, free to disagree.
    */
-  it.each(RUNNERS)("%s: the inputs, by name and kind, both ways", (runner) => {
-    const own = rowsOf(runnerTable(runner, "Inputs"));
+  it.each([...RUNNER_NAMES, ...COMMAND_NAMES])("%s: the inputs, by name and kind, both ways", (subcommand) => {
+    const own = rowsOf(tableOf(subcommand, "Inputs"));
     const every = everyRunnerInputs();
 
     expect([...own.keys()].filter((name) => every.has(name))).toEqual([]);
-    expect(sorted(new Map([...every, ...own]))).toEqual(sorted(kindOf(CONTRACT[runner].inputs)));
+    expect(sorted(new Map([...every, ...own]))).toEqual(sorted(kindOf(declarationOf(subcommand).inputs)));
   });
 
-  it.each(RUNNERS)("%s: the output files, both ways", (runner) => {
-    const own = [...rowsOf(runnerTable(runner, "Outputs")).keys()];
+  it.each([...RUNNER_NAMES, ...COMMAND_NAMES])("%s: the output files, both ways", (subcommand) => {
+    const own = [...rowsOf(tableOf(subcommand, "Outputs")).keys()];
     const every = everyRunnerOutputs();
 
     expect(own.filter((name) => every.includes(name))).toEqual([]);
-    expect([...every, ...own].sort()).toEqual([...CONTRACT[runner].outputs].sort());
+    expect([...every, ...own].sort()).toEqual([...declarationOf(subcommand).outputs].sort());
   });
 });
 
@@ -215,14 +269,14 @@ describe("only binding sentences say must", () => {
 });
 
 /**
- * Each reusable sets every input its runner declares required, in the runner
- * step's `env:` or its job's. A runner gaining a required input the reusable
- * does not set would be released and then fail every run in every adopter,
- * at start, naming an input no adopter can set.
+ * Each reusable sets every input its runners and commands declare required,
+ * in the step's `env:` or its job's. A subcommand gaining a required input the
+ * reusable does not set would be released and then fail every run in every
+ * adopter, at start, naming an input no adopter can set.
  *
  * Optional inputs are not checked: unset is their declared default.
  */
-describe("each reusable sets its runner's required inputs", () => {
+describe("each reusable sets its subcommands' required inputs", () => {
   interface Step {
     readonly run?: string;
     readonly env?: Readonly<Record<string, unknown>>;
@@ -232,20 +286,24 @@ describe("each reusable sets its runner's required inputs", () => {
     readonly steps?: readonly Step[];
   }
 
-  /** Each step that invokes `runner`, with the env its job and itself give it. */
-  const runnerSteps = (runner: Runner): readonly Readonly<Record<string, unknown>>[] => {
-    const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${runner}.yml`), "utf8")) as {
+  /**
+   * Each step that invokes `subcommand`, in the reusable named after its
+   * workflow, with the env its job and itself give it.
+   */
+  const subcommandSteps = (subcommand: Runner | Command): readonly Readonly<Record<string, unknown>>[] => {
+    const workflowName = subcommand in RUNNERS ? subcommand : workflowOf(subcommand as Command);
+    const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${workflowName}.yml`), "utf8")) as {
       readonly jobs: Readonly<Record<string, Job>>;
     };
-    const invokes = new RegExp(`agent-workflows ${runner}\\s*$`, "m");
+    const invokes = new RegExp(`agent-workflows ${subcommand}\\s*$`, "m");
     return Object.values(workflow.jobs).flatMap((job) =>
       (job.steps ?? []).filter((step) => invokes.test(step.run ?? "")).map((step) => ({ ...job.env, ...step.env })),
     );
   };
 
-  it.each(RUNNERS)("%s", (runner) => {
-    const steps = runnerSteps(runner);
-    const required = Object.entries(CONTRACT[runner].inputs)
+  it.each([...RUNNER_NAMES, ...COMMAND_NAMES])("%s", (subcommand) => {
+    const steps = subcommandSteps(subcommand);
+    const required = Object.entries(declarationOf(subcommand).inputs as Inputs)
       .filter(([, input]) => input.required)
       .map(([name]) => name);
 

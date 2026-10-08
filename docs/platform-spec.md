@@ -24,20 +24,20 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
 
 **Why some parts are links.** A fact with a tested home is linked rather than restated: label
-meanings are [ADOPTING §3](./ADOPTING.md#3-labels)'s, and each runner's inputs and outputs are
-declared once, in [`shared/contract.ts`](../shared/contract.ts), which an orchestrator can import
-to build the environment it hands a runner. The tables below are the same facts read twice, and a
-test holds them equal, so they are not a copy that can drift.
+meanings are [ADOPTING §3](./ADOPTING.md#3-labels)'s, and each runner's and command's inputs and
+outputs are declared once, in [`shared/contract.ts`](../shared/contract.ts), which an orchestrator
+can import to build the environment it hands a runner or a command. The tables below are the same
+facts read twice, and a test holds them equal, so they are not a copy that can drift.
 
 **Tested, and held by convention.** `tests/platform-spec.test.ts` holds:
 
-- the §2.2 table and each runner's `### Inputs` table to its declaration, on name and on required
-  or optional, in both directions;
-- the §2.4 table and each runner's `### Outputs` table to its declared output files, in both
-  directions;
-- that every runner section, both its tables and its record part are present, and so are §3 and
-  §4.1 to §4.3;
-- that each Actions reusable sets every input its runner declares required;
+- the §2.2 table and each runner's and command's `Inputs` table to its declaration, on name and on
+  required or optional, in both directions;
+- the §2.4 table and each runner's and command's `Outputs` table to its declared output files, in
+  both directions;
+- that every runner section, both its tables and its record part are present, that every command
+  has a section with both its tables in its workflow's, and that §3 and §4.1 to §4.3 are present;
+- that each Actions reusable sets every input its runners and commands declare required;
 - that the binding words appear only in bold, and never in an orchestrator block.
 
 Everything else here is held by convention: the conventions in
@@ -52,10 +52,11 @@ cannot check is one only an orchestrator's author will catch.
 
 ## 1. Terms
 
-- **Runner.** One of six subcommands of this package's binary: `implement`, `implement-prd`,
-  `review`, `fix`, `update-branch` and `follow-ups`. It reads its inputs from the environment, does
-  its step, and writes files and commits. It is not the agent: five of the six start the agent, and
-  `follow-ups` runs no model at all.
+- **Runner.** One of five subcommands of this package's binary: `implement`, `implement-prd`,
+  `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
+  and writes files and commits. It is not the agent.
+- **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
+  named `<workflow>:<step>`: so far only `follow-ups:file`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -68,6 +69,11 @@ cannot check is one only an orchestrator's author will catch.
   part of the record rather than as untrusted text.
 
 ## 2. The process boundary
+
+This section is written of a runner, and holds for a command too, with one difference: a command
+starts no agent, so §2.5's `claude` precondition and §3's outcomes about the agent do not apply to
+it, and it is the one kind of subcommand an orchestrator may hand a write credential. Which kind a
+subcommand is, is declared in `shared/contract.ts`, in `RUNNERS` and `COMMANDS`.
 
 ### 2.1 Invocation
 
@@ -111,9 +117,9 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The five runners that start the agent only read with it; `follow-ups` files issues with it. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it; `follow-ups:file` files issues with it. |
 
-Each runner's own inputs are in its section, §6 to §11.
+Each runner's and command's own inputs are in its workflow's section, §6 to §11.
 
 ### 2.3 Outputs
 
@@ -144,7 +150,7 @@ repository.
 |---|---|
 | `0` | The runner did its step. |
 | `1` | The run failed. The reason is on stderr, and in `failure_reason.txt` where `OUTPUT_DIR` is set. |
-| `2` | Bad usage: an unknown runner, or an argument (§2.1). Reported the same way. |
+| `2` | Bad usage: an unknown subcommand, or an argument (§2.1). Reported the same way. |
 
 An orchestrator ***must*** report every run that does not exit 0 somewhere a human will read it,
 with the text of `failure_reason.txt` where the file exists. Where it does not, the runner never
@@ -258,7 +264,7 @@ control post as one.
 
 The same list, without the association half (`isWorkflowBot`), is what a runner asks where the
 question is *did the loop post this* rather than *is this trusted*: the verdict status it counts
-rounds by (§4.3), and the review bodies `follow-ups` files from.
+rounds by (§4.3), and the review bodies `follow-ups:file` files from.
 
 The list is fixed in this release, and an orchestrator cannot pass in its own; #376 will let it.
 
@@ -319,10 +325,10 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | `<!-- agent-fix:out-of-scope {…} -->` | A note on a finding the fix judged out of scope. | `fix`'s `out_of_scope_notes.json` | `review`, which rules on it; `fix`, to not repeat it |
 | `<!-- agent-fix:top-level -->` | A top-level comment the fix posted. Read on a trusted author's post too. | `fix`'s `top_level_comments.json` | `review`, `fix`, to leave the loop's own comments out of the feedback |
 | `<!-- agent-fix:conversation-outcomes -->` | The comment saying what the fix did with the conversation. | `fix`'s `conversation_outcomes.md` | `review`, `fix`, the same |
-| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings. An edited review's is refused. | `review`'s `review_payload.json` | `review`, to not record one twice; `follow-ups`, to file them |
+| `<!-- agent-follow-ups {…} -->` | A review body that recorded out-of-scope findings. An edited review's is refused. | `review`'s `review_payload.json` | `review`, to not record one twice; `follow-ups:file`, to file them |
 | `<!-- agent-red-tests {…} -->` | A slice round's review body: the red check's tests. | `review`'s `review_payload.json` | `review`, on the PRD PR's final review |
 | `<summary><b>Acceptance criteria</b>` | A review body's criteria group, its `- **Changed:**` and `- **Unmet:**` lines. | `review`'s `review_payload.json` | `review`, on later rounds of the same slice |
-| `<!--{"version",…,"location","pr","seq"}-->` | The body of a filed follow-up issue. | `follow-ups`, which files it | `follow-ups`, to not file one twice |
+| `<!--{"version",…,"location","pr","seq"}-->` | The body of a filed follow-up issue. | `follow-ups:file`, which files it | `follow-ups:file`, to not file one twice |
 
 **Markers in a pull request's body.** The orchestrator writes the body; a runner writes the blocks
 into its output files and reads them back from the body.
@@ -361,8 +367,8 @@ only a status whose creator is the loop's identity (§4.1).
 | Event | What it records | Read by |
 |---|---|---|
 | `agent:fix` added to the pull request | One fix round, automatic or by hand, each time it was added. | `review`, `fix`, `implement-prd`, to count rounds |
-| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed. | `follow-ups` |
-| `pr-follow-up` on an issue | An issue `follow-ups` filed earlier, read with its body's key. | `follow-ups` |
+| `agent:follow-ups` on the pull request | Findings wait to be filed. Read live, and taken off once filed. | `follow-ups:file` |
+| `pr-follow-up` on an issue | An issue `follow-ups:file` filed earlier, read with its body's key. | `follow-ups:file` |
 
 **`doctor` cannot check this.** These strings are written by the orchestrator's posting code, and
 read back at run time; nothing in a repository holds them before a run.
@@ -674,24 +680,28 @@ neither.
 Trigger label: `agent:follow-ups`, on a merged pull request. `doctor` does not demand the label,
 since only a repository that installed the filing caller reads it.
 
+A workflow with no runner: one command, and no agent.
+
+### `follow-ups:file`
+
 Files the out-of-scope findings a pull request's reviews recorded, as issues. It runs no model, so
 it needs no `claude` and no checkout.
 
-### Inputs
+#### Inputs
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
 | `PR_NUMBER` | required | | The merged pull request. |
 
-### Outputs
+#### Outputs
 
 | Output | When it is written |
 |---|---|
 | | Nothing beyond §2.4. The result is the issues it files. |
 
-**`doctor` cannot check this.** These tables are the runner's, for the reason §6 gives.
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
 
-### What it reads from the record
+#### What it reads from the record
 
 - `agent:follow-ups` on the pull request, read live, so a second run files nothing.
 - The newest review by the loop's identity carrying `agent-follow-ups`; an edited one is refused.
@@ -699,5 +709,5 @@ it needs no `claude` and no checkout.
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** the runner files the issues itself, so its `GH_TOKEN` can write issues,
-> unlike the other five runners'. A failure is commented on the pull request.
+> **Actions orchestrator:** the command files the issues itself, with its `GH_TOKEN`, which can
+> write issues, unlike any runner's. A failure is commented on the pull request.

@@ -1,6 +1,11 @@
 /**
- * What each runner needs from whatever invokes it: the runner half of the
- * runner ⇄ orchestrator contract, declared once.
+ * What each subcommand needs from whatever invokes it: the package's half of
+ * the runner ⇄ orchestrator contract, declared once. Two kinds, in two maps
+ * (ADR 0004): `RUNNERS`, which start the agent, and `COMMANDS`, which do an
+ * orchestrator's work on the record and start no agent. The kind is what tells
+ * an orchestrator which subcommand may be handed the write token, a command
+ * and never a runner, so it is declared here rather than read off the
+ * package's folders, which an orchestrator cannot see.
  *
  * The prose of that contract is the platform spec, read at the release you
  * run: `https://github.com/jeffwlawson/agent-workflows/blob/v<version>/docs/platform-spec.md`,
@@ -9,19 +14,19 @@
  * not know, and stale from the next release.
  *
  * No side effects and no imports, like `shared/pins.ts`, so an orchestrator
- * that is not Actions can import it to build the environment it hands a runner
- * without loading a runner, the agent SDK, or anything that reads the
+ * that is not Actions can import it to build the environment it hands a
+ * subcommand without loading one, the agent SDK, or anything that reads the
  * environment on import. Reading is `readInputs` and `input` in
  * `shared/env.ts`, which take a declaration from here.
  */
 
-/** An input the runner cannot run without. Empty counts as missing. */
+/** An input the subcommand cannot run without. Empty counts as missing. */
 export interface RequiredInput {
   readonly required: true;
 }
 
 /**
- * An input the runner can do without, and what it reads in its place. The
+ * An input the subcommand can do without, and what it reads in its place. The
  * default is not optional: an input that may be absent and says nothing about
  * what that means is a quiet default nobody chose, so the type refuses one.
  */
@@ -32,25 +37,25 @@ export interface OptionalInput {
 
 export type Input = RequiredInput | OptionalInput;
 
-/** Input name, as the environment variable the runner reads, to what it needs of it. */
+/** Input name, as the environment variable the subcommand reads, to what it needs of it. */
 export type Inputs = Readonly<Record<string, Input>>;
 
 /**
- * The inputs every runner reads, so an orchestrator sets them once for any of
- * them.
+ * The inputs every subcommand reads, runner or command, so an orchestrator
+ * sets them once for any of them.
  *
- * - `OUTPUT_DIR`: where the runner writes its results and its
+ * - `OUTPUT_DIR`: where the subcommand writes its results and its
  *   `failure_reason.txt`. Fresh and empty for every run.
  * - `GH_REPO`: the repository, `owner/name`. Required rather than left to
  *   whatever `gh` infers from the working directory, which is a guess.
- * - `GH_TOKEN`: read by `gh` rather than by the runner, and declared anyway, so
+ * - `GH_TOKEN`: read by `gh` rather than by the subcommand, and declared anyway, so
  *   a missing token stops the run at start instead of every read degrading to
  *   "untrusted, empty".
  *
  * `OUTPUT_DIR` is first so that, when several are missing, the one the
  * failure report is written into is checked before the others.
  */
-export const EVERY_RUNNER = {
+export const EVERY_SUBCOMMAND = {
   OUTPUT_DIR: { required: true },
   GH_REPO: { required: true },
   GH_TOKEN: { required: true },
@@ -94,13 +99,13 @@ const RUN_LINK = {
 } as const satisfies Inputs;
 
 /**
- * The files a runner writes into `OUTPUT_DIR`, by name. Every file it can
+ * The files a subcommand writes into `OUTPUT_DIR`, by name. Every file it can
  * write is listed, including one written only on some outcomes, whose
- * existence is the signal. The writers in `shared/env.ts` take a runner's list
+ * existence is the signal. The writers in `shared/env.ts` take a subcommand's list
  * and accept no other name, so a new output file fails typechecking until it
  * is declared here.
  *
- * A name a runner computes is computed over a fixed set, typed where it is
+ * A name a subcommand computes is computed over a fixed set, typed where it is
  * written as a template literal over that set, and listed here one literal per
  * name: a name the set gains and this list lacks fails typechecking at the
  * write.
@@ -108,21 +113,39 @@ const RUN_LINK = {
 export type Outputs = readonly string[];
 
 /**
- * The file every runner writes when it fails: the reason, in words a human
+ * The file every subcommand writes when it fails: the reason, in words a human
  * can act on. The CLI's own refusals and `doctor` write it too, through the
  * same writer, and nothing else.
  */
-export const EVERY_RUNNER_OUTPUTS = ["failure_reason.txt"] as const satisfies Outputs;
+export const EVERY_SUBCOMMAND_OUTPUTS = ["failure_reason.txt"] as const satisfies Outputs;
+
+/**
+ * A runner's inputs: any but `LOOP_TOKEN`, the token whose writes start the
+ * loop's next workflow. A runner that starts the agent leaves its environment
+ * where the agent can read it, so the write token is refused here, by the
+ * compiler, rather than by a check that has to be remembered (ADR 0004). A
+ * command may declare it.
+ */
+export type RunnerInputs = Inputs & { readonly LOOP_TOKEN?: never };
 
 /** One runner's side of the contract. */
 export interface RunnerContract {
+  readonly inputs: RunnerInputs;
+  readonly outputs: Outputs;
+}
+
+/**
+ * One command's side of the contract. The same shape as a runner's today; a
+ * command differs in what it may declare, not in how it is declared.
+ */
+export interface CommandContract {
   readonly inputs: Inputs;
   readonly outputs: Outputs;
 }
 
 /**
- * Every runner, by the subcommand that invokes it: the inputs every runner
- * reads, and its own.
+ * Every runner, by the subcommand that invokes it: the inputs every
+ * subcommand reads, and its own.
  *
  * - `ROUND` is `final` on a PRD PR's final review, and anything else is a
  *   slice round or an ordinary pull request.
@@ -139,10 +162,10 @@ export interface RunnerContract {
  * - `review`'s `progress_${ending}.md` and `status_${ending}.md` are over
  *   `RoundEnding` in `shared/progress-list.ts`.
  */
-export const CONTRACT = {
+export const RUNNERS = {
   implement: {
     inputs: {
-      ...EVERY_RUNNER,
+      ...EVERY_SUBCOMMAND,
       ...AGENT,
       AGENT_MODEL_IMPLEMENT: EMPTY,
       ISSUE_NUMBER: REQUIRED,
@@ -150,11 +173,11 @@ export const CONTRACT = {
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
     },
-    outputs: [...EVERY_RUNNER_OUTPUTS],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
   },
   "implement-prd": {
     inputs: {
-      ...EVERY_RUNNER,
+      ...EVERY_SUBCOMMAND,
       ...AGENT,
       AGENT_MODEL_IMPLEMENT_PRD: EMPTY,
       ISSUE_NUMBER: REQUIRED,
@@ -169,7 +192,7 @@ export const CONTRACT = {
       ...PULL_REQUEST_LINK,
     },
     outputs: [
-      ...EVERY_RUNNER_OUTPUTS,
+      ...EVERY_SUBCOMMAND_OUTPUTS,
       "progress.md",
       "status.md",
       "progress_stopped.md",
@@ -181,7 +204,7 @@ export const CONTRACT = {
   },
   review: {
     inputs: {
-      ...EVERY_RUNNER,
+      ...EVERY_SUBCOMMAND,
       ...AGENT,
       AGENT_MODEL_REVIEW: EMPTY,
       PR_NUMBER: REQUIRED,
@@ -198,7 +221,7 @@ export const CONTRACT = {
       ...RUN_LINK,
     },
     outputs: [
-      ...EVERY_RUNNER_OUTPUTS,
+      ...EVERY_SUBCOMMAND_OUTPUTS,
       "park_failed.md",
       "progress_approved.md",
       "status_approved.md",
@@ -220,7 +243,7 @@ export const CONTRACT = {
   },
   fix: {
     inputs: {
-      ...EVERY_RUNNER,
+      ...EVERY_SUBCOMMAND,
       ...AGENT,
       AGENT_MODEL_FIX: EMPTY,
       PR_NUMBER: REQUIRED,
@@ -229,7 +252,7 @@ export const CONTRACT = {
       RESCUE_BRANCH: REQUIRED,
     },
     outputs: [
-      ...EVERY_RUNNER_OUTPUTS,
+      ...EVERY_SUBCOMMAND_OUTPUTS,
       "nothing_to_do.txt",
       "rescue_ignored.md",
       "thread_outcomes.json",
@@ -240,22 +263,36 @@ export const CONTRACT = {
   },
   "update-branch": {
     inputs: {
-      ...EVERY_RUNNER,
+      ...EVERY_SUBCOMMAND,
       ...AGENT,
       AGENT_MODEL_UPDATE_BRANCH: EMPTY,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
     },
-    outputs: [...EVERY_RUNNER_OUTPUTS, "update_comment.md"],
-  },
-  "follow-ups": {
-    inputs: {
-      ...EVERY_RUNNER,
-      PR_NUMBER: REQUIRED,
-    },
-    outputs: [...EVERY_RUNNER_OUTPUTS],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "update_comment.md"],
   },
 } as const satisfies Readonly<Record<string, RunnerContract>>;
 
-export type Runner = keyof typeof CONTRACT;
+export type Runner = keyof typeof RUNNERS;
+
+/**
+ * Every command, by the subcommand that invokes it, `<workflow>:<step>`: the
+ * inputs every subcommand reads, and its own. Its code is `<step>.ts` in the
+ * workflow's folder, and exports one function the CLI calls with the inputs
+ * declared here.
+ *
+ * - `follow-ups:file` writes issues with its `GH_TOKEN` itself, outside the
+ *   engine's writer, until its own workflow moves (ADR 0005).
+ */
+export const COMMANDS = {
+  "follow-ups:file": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      PR_NUMBER: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+  },
+} as const satisfies Readonly<Record<string, CommandContract>>;
+
+export type Command = keyof typeof COMMANDS;

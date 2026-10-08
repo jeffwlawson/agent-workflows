@@ -12,17 +12,18 @@ npx --yes @jeffwlawson/agent-workflows@<version> implement-prd
 npx --yes @jeffwlawson/agent-workflows@<version> review
 npx --yes @jeffwlawson/agent-workflows@<version> fix
 npx --yes @jeffwlawson/agent-workflows@<version> update-branch
-npx --yes @jeffwlawson/agent-workflows@<version> follow-ups
+npx --yes @jeffwlawson/agent-workflows@<version> follow-ups:file
 ```
 
-Each runner takes its whole input from the environment the workflow step sets — issue or PR number,
-branch, `CLAUDE_CODE_OAUTH_TOKEN`, model overrides, `OUTPUT_DIR`. None of them takes an argument,
-and passing one is refused rather than ignored.
+Each runner and command takes its whole input from the environment the workflow step sets: issue
+or PR number, branch, `CLAUDE_CODE_OAUTH_TOKEN`, model overrides, `OUTPUT_DIR`. None of them takes
+an argument, and passing one is refused rather than ignored.
 
-`follow-ups` is the one that runs **no model**: it files the out-of-scope findings a review
-recorded, once the pull request has closed, and needs no `CLAUDE_CODE_OAUTH_TOKEN` because nothing
-in it is an agent. Its caller is the one file in the loop that is optional — copy it and merged
-pull requests file their findings, leave it out and they stay in the review body, unfiled.
+`follow-ups:file` is a command rather than a runner, and runs **no model**: it files the
+out-of-scope findings a review recorded, once the pull request has closed, and needs no
+`CLAUDE_CODE_OAUTH_TOKEN` because nothing in it is an agent. Its caller is the one file in the
+loop that is optional — copy it and merged pull requests file their findings, leave it out and they
+stay in the review body, unfiled.
 
 Two more subcommands are the **install path**, run by a human rather than by a workflow:
 

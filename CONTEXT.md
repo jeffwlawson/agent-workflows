@@ -428,9 +428,10 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `follow-ups` is the one command today, still declared and named as a
-runner until review's move renames it `follow-ups:file`; every other step a command will be still
-runs as YAML shell. [ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
+name is always a runner. `follow-ups:file` is the one command today; every other step a command
+will be still runs as YAML shell. The kind is declared, not inferred: `shared/contract.ts` holds
+runners in `RUNNERS` and commands in `COMMANDS`.
+[ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
 
 **The writer** is the engine's way to change the record. A command calls it once per write, with a
 type named for what GitHub does (add a label, set a commit status, replace the block between two
@@ -485,7 +486,7 @@ are here so the glossary and the contract use one vocabulary.
 - **The record.** What the loop leaves on GitHub that a later run reads back: posts by the loop's
   accounts, markers in their text, status contexts, commit trailers and branch names.
 - **The agent.** The model CLI a runner drives inside its sandbox: Claude Code. It is not the
-  runner, which starts it, and `follow-ups`, filed as a runner until it becomes a command, starts none.
+  runner, which starts it, and no command starts one.
 
 ### And the install path, which is none of the three
 

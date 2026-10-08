@@ -2,10 +2,12 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import ts from "typescript";
 import { parse } from "yaml";
-import { COMMANDS, run, type CliIo } from "../cli.js";
+import { run, SUBCOMMANDS, type CliIo } from "../cli.js";
+import { file as fileFollowUps } from "../follow-ups/file.js";
+import { COMMANDS, RUNNERS } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import { copyAssets } from "../scripts/copy-assets.js";
 import { callersIn, readInstalledCallers, REFERENCE_CALLER_FILES } from "../setup/callers.js";
@@ -53,6 +55,11 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
 });
+
+// The one command there is, stood in for: a test of the CLI's half of a
+// command (read its inputs, call it, turn a throw into `fail()`) must not reach
+// GitHub through the real one.
+vi.mock("../follow-ups/file.js", () => ({ file: vi.fn() }));
 
 /** Every write of a `failure_reason.txt` since the spy was last cleared. */
 const reasonsWritten = (): readonly unknown[] =>
@@ -170,8 +177,9 @@ const replayed = async <T>(
  *   That failure only appears on a published version, in CI, in another repo.
  *
  * The table is deliberately open: `init` and `doctor`
- * (jeffwlawson/winget-manifest-lint#112) are two more entries, so the checks
- * below say *every runner is a command*, never *every command is a runner*.
+ * (jeffwlawson/winget-manifest-lint#112) are two more entries, and the commands
+ * (ADR 0004) are more again, so the checks below say *every runner is a
+ * subcommand*, never *every subcommand is a runner*.
  */
 
 const PACKAGE_DIR = ".";
@@ -208,6 +216,12 @@ const runnerDirs = fs
   .map((entry) => entry.name)
   .filter((name) => fs.existsSync(path.join(PACKAGE_DIR, name, `${name}.ts`)))
   .sort();
+
+/**
+ * A command's module: `<workflow>:<step>` is `<workflow>/<step>.ts` (ADR 0004).
+ * Read off the contract, which declares the kind, rather than off the folders.
+ */
+const commandModules = Object.keys(COMMANDS).map((name) => `${name.replace(":", "/")}.ts`);
 
 const manifest = JSON.parse(
   fs.readFileSync(path.join(PACKAGE_DIR, "package.json"), "utf8"),
@@ -279,7 +293,6 @@ describe("the runner CLI dispatches on a subcommand", () => {
   it("finds the runners to check", () => {
     expect(runnerDirs).toEqual([
       "fix",
-      "follow-ups",
       "implement",
       "implement-prd",
       "review",
@@ -288,14 +301,14 @@ describe("the runner CLI dispatches on a subcommand", () => {
   });
 
   it.each(runnerDirs)("%s: is reachable as a subcommand", (name: string) => {
-    expect(Object.keys(COMMANDS)).toContain(name);
+    expect(Object.keys(SUBCOMMANDS)).toContain(name);
   });
 
-  it("lists every command in its usage", async () => {
+  it("lists every subcommand in its usage", async () => {
     const { code, out } = await invoke(["help"]);
 
     expect(code).toBe(0);
-    for (const name of Object.keys(COMMANDS)) expect(out).toContain(name);
+    for (const name of Object.keys(SUBCOMMANDS)) expect(out).toContain(name);
   });
 
   /**
@@ -362,7 +375,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
    * before the runner is reached: every run says which version it is on, for the
    * reason `shared/common.ts` echoes the model id.
    */
-  it.each(runnerDirs)(
+  it.each([...runnerDirs, ...Object.keys(COMMANDS)])(
     "%s: refuses arguments rather than ignoring them",
     async (name: string) => {
       const { code, out, err } = await invoke([name, "--dry-run"]);
@@ -374,7 +387,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
   );
 
   /**
-   * `follow-ups` (#49) is the one runner that runs no model, and that is a
+   * `follow-ups:file` (#49) is a command, so it runs no model, and that is a
    * security property rather than an implementation detail: its workflow is the
    * only one in the loop holding `issues: write`, and a model reading arbitrary
    * issue bodies while holding it is a prompt-injection surface nothing here
@@ -384,14 +397,125 @@ describe("the runner CLI dispatches on a subcommand", () => {
    * half is the workflow's to state; this half is invisible until something
    * imports `claudeAgent` and the loop quietly grows a sixth model call.
    */
-  it("follow-ups runs no model and holds no prompt", () => {
+  it("follow-ups:file runs no model and holds no prompt", () => {
     const dir = path.join(PACKAGE_DIR, "follow-ups");
 
     expect(fs.readdirSync(dir).filter((entry) => entry.endsWith(".md"))).toEqual([]);
-    const source = fs.readFileSync(path.join(dir, "follow-ups.ts"), "utf8");
+    const source = fs.readFileSync(path.join(dir, "file.ts"), "utf8");
     expect(source).not.toContain("claudeAgent");
     expect(source).not.toContain("sandcastle");
     expect(source).not.toContain("runWithExtraction");
+  });
+});
+
+/**
+ * The kind of a subcommand is declared, not inferred (ADR 0004): `RUNNERS` and
+ * `COMMANDS` in `shared/contract.ts` are what an orchestrator reads to know
+ * which subcommand may be handed the write token, and the CLI's table is what
+ * runs. Held equal both ways, kind for kind, so a subcommand registered without
+ * a declaration, or a declaration left behind by a subcommand that is gone,
+ * fails here by name.
+ */
+describe("every subcommand is declared in the contract, as its kind", () => {
+  /**
+   * The install path, which a human types and which takes flags: in neither
+   * map, and the only subcommands that are not. A third has to be added here
+   * on purpose.
+   */
+  const INSTALL_PATH = ["doctor", "init"];
+
+  const registered = (kind: string): string[] =>
+    Object.entries(SUBCOMMANDS)
+      .filter(([, subcommand]) => subcommand.kind === kind)
+      .map(([name]) => name)
+      .sort();
+
+  it("registers a runner for each entry in RUNNERS, and no other", () => {
+    expect(registered("runner")).toEqual(Object.keys(RUNNERS).sort());
+  });
+
+  it("registers a command for each entry in COMMANDS, and no other", () => {
+    expect(registered("command")).toEqual(Object.keys(COMMANDS).sort());
+  });
+
+  it("leaves only the install path out of both maps", () => {
+    expect(registered("install")).toEqual(INSTALL_PATH);
+    expect(Object.keys(SUBCOMMANDS).filter((name) => !(name in RUNNERS) && !(name in COMMANDS)).sort()).toEqual(
+      INSTALL_PATH,
+    );
+  });
+
+  it.each(Object.keys(COMMANDS))("%s: is named <workflow>:<step>", (name) => {
+    expect(name).toMatch(/^[a-z-]+:[a-z-]+$/);
+  });
+
+  it.each(commandModules)("%s: is where its command's module is", (module) => {
+    expect(fs.existsSync(path.join(PACKAGE_DIR, module))).toBe(true);
+  });
+});
+
+/**
+ * A command is a function the CLI calls (ADR 0004): it reads the declared
+ * inputs, hands them over, and turns a throw into `fail()`, so a command's
+ * failure reads like a runner's. The function here is a stand-in, mocked at
+ * the top of this file.
+ */
+describe("the CLI runs a command", () => {
+  class Exited extends Error {}
+  const INPUTS = { GH_REPO: "o/r", GH_TOKEN: "a-token", PR_NUMBER: "7" } as const;
+  const previous = Object.fromEntries(Object.keys(INPUTS).map((name) => [name, process.env[name]]));
+  const command = vi.mocked(fileFollowUps);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    Object.assign(process.env, INPUTS);
+    command.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it("hands the function exactly its declared inputs, and exits 0", async () => {
+    const { code } = await invoke(["follow-ups:file"]);
+
+    expect(code).toBe(0);
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith({ OUTPUT_DIR: scratch, ...INPUTS });
+  });
+
+  it("turns a throw into fail(): the reason in failure_reason.txt, exit 1", async () => {
+    command.mockImplementation(() => {
+      throw new Error("The pull request could not be read.");
+    });
+
+    await expect(invoke(["follow-ups:file"])).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("The pull request could not be read.");
+  });
+
+  it("stops at a missing input, naming it, before the function is called", async () => {
+    delete process.env["PR_NUMBER"];
+
+    await expect(invoke(["follow-ups:file"])).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(command).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: PR_NUMBER");
   });
 });
 
@@ -432,7 +556,7 @@ describe("every input a runner reads goes through its declaration", () => {
     return lines;
   };
 
-  const surface = [...runnerDirs, "shared"].flatMap((dir) =>
+  const surface = [...new Set([...runnerDirs, ...commandModules.map((module) => path.posix.dirname(module)), "shared"])].flatMap((dir) =>
     fs
       .readdirSync(path.join(PACKAGE_DIR, dir), { recursive: true, encoding: "utf8" })
       .filter((name) => name.endsWith(".ts"))
@@ -440,10 +564,11 @@ describe("every input a runner reads goes through its declaration", () => {
   );
   const source = (rel: string): string => fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8");
 
-  it("walks every runner and shared/, the accessor's module among them", () => {
+  it("walks every runner, every command and shared/, the accessor's module among them", () => {
     expect(surface).toContain(ACCESSOR);
     expect(surface).toContain("shared/common.ts");
     for (const dir of runnerDirs) expect(surface).toContain(`${dir}/${dir}.ts`);
+    for (const module of commandModules) expect(surface).toContain(module);
   });
 
   it("names process.env nowhere outside the accessor's module", () => {
@@ -3988,7 +4113,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   it("is reachable as a subcommand and refuses a flag it does not know", async () => {
-    expect(Object.keys(COMMANDS)).toContain("doctor");
+    expect(Object.keys(SUBCOMMANDS)).toContain("doctor");
 
     const { code, err } = await invoke(["doctor", "--fix"]);
 

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { APP_PERMISSIONS } from "../setup/app.js";
 import { isWorkflowBot } from "../shared/common.js";
-import { CONTRACT } from "../shared/contract.js";
+import { RUNNERS } from "../shared/contract.js";
 import {
   ADD_REVIEW_MUTATION,
   FIX_BEFORE_MERGE_LABEL,
@@ -976,7 +976,7 @@ describe("the loop works against a base ref it is told, never a literal", () => 
 
     expect(text).not.toContain("main..HEAD");
     expect(text).toContain("const BASE_REF = INPUTS.BASE_REF;");
-    expect(CONTRACT.implement.inputs.BASE_REF).toEqual({ required: true });
+    expect(RUNNERS.implement.inputs.BASE_REF).toEqual({ required: true });
   });
 
   /**
@@ -992,7 +992,7 @@ describe("the loop works against a base ref it is told, never a literal", () => 
     );
 
     expect(text).toContain("const BASE_REF = INPUTS.BASE_REF;");
-    expect(CONTRACT["update-branch"].inputs.BASE_REF).toEqual({ required: true });
+    expect(RUNNERS["update-branch"].inputs.BASE_REF).toEqual({ required: true });
     expect(text).not.toMatch(/\|\|\s*"main"/);
   });
 });
@@ -1603,7 +1603,7 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
   });
 
   it("needs no new required input, so no caller changes", () => {
-    const inputs = Object.entries(CONTRACT.review.inputs)
+    const inputs = Object.entries(RUNNERS.review.inputs)
       .filter(([, input]) => input.required)
       .map(([name]) => name);
     expect(inputs).toEqual(["OUTPUT_DIR", "GH_REPO", "GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "PR_NUMBER", "BRANCH", "BASE_REF"]);
@@ -6165,9 +6165,12 @@ describe("every workflow invokes the runners at a pinned version", () => {
    * no `latest` and no dist-tag. Same reasoning as `.nvmrc` — a floating pin is
    * a runner that changes under a PR nobody touched, which is the trap above
    * with a longer fuse.
+   *
+   * The subcommand is captured up to any `:<step>`: a command (ADR 0004) is
+   * its workflow's by the part before the colon, as a runner is by its name.
    */
   const PIN = new RegExp(
-    `^npm exec --prefix "\\$RUNNER_TEMP" --yes --package=${escaped}@(\\d+\\.\\d+\\.\\d+) -- agent-workflows ([a-z-]+)$`,
+    `^npm exec --prefix "\\$RUNNER_TEMP" --yes --package=${escaped}@(\\d+\\.\\d+\\.\\d+) -- agent-workflows ([a-z-]+)(?::[a-z-]+)?$`,
   );
 
   /**
@@ -9619,7 +9622,7 @@ describe("no checkout an agent runs in leaves a credential behind", () => {
  * moment its job runs one.
  */
 describe("no job that runs an agent names a secret that writes", () => {
-  const AGENT_COMMANDS = RUNNER_COMMANDS.filter((c) =>
+  const AGENT_COMMANDS = Object.keys(RUNNERS).filter((c) =>
     fs.readFileSync(path.join(c, `${c}.ts`), "utf8").includes('from "@ai-hero/sandcastle"'),
   );
   const reusables = fs
@@ -9698,7 +9701,7 @@ describe("every agent run keeps its session transcript, redacted, for a few days
    * list below it is what the derivation must find, so an empty one cannot
    * pass by asserting over nothing.
    */
-  const AGENT_COMMANDS = RUNNER_COMMANDS.filter((c) =>
+  const AGENT_COMMANDS = Object.keys(RUNNERS).filter((c) =>
     fs.readFileSync(path.join(c, `${c}.ts`), "utf8").includes('from "@ai-hero/sandcastle"'),
   );
   /** Each workflow's step that runs the agent. */

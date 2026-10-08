@@ -1771,7 +1771,7 @@ you cannot reason about, and the paragraph after the table is a decision only yo
 | **Scrub the GitHub token** from the agent's environment after fetching context | the agent runs unsandboxed; it has no legitimate `gh` use once context is read |
 | **`contents: read`** on the review job | the one agent structurally unable to mutate the branch. The posting job beside it holds `contents: write`, because closing a thread needs it, and so it runs no agent and checks nothing out |
 | **The loop's credentials never on the agent's runner** | the App's key, any token minted from it, and `AGENT_PAT` are named only in jobs that run no agent (§2). An agent that was steered, unsandboxed with `sudo`, can read every secret its own job names; its job names none of these, which is what makes the App's Workflows: write acceptable |
-| **No model in the job that files** | `follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the runner |
+| **No model in the job that files** | `follow-ups` holds `issues: write` and reads issue bodies to decide what is a duplicate. Both at once is a prompt-injection surface, so it installs no agent, declares no secrets and checks nothing out; what would be an agent's judgement is a pure function in the command |
 
 **Neither the trigger nor the input gate is the write boundary, and it is the same role on both
 sides.** The **trigger** is a label, and GitHub's **Triage** role can add labels with no push access

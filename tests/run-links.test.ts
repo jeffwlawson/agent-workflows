@@ -7,7 +7,7 @@ import { COMMANDS, RUNNERS } from "../shared/contract.js";
  * **Every link to a workflow run is labelled `[Workflow run](…)`** (#298),
  * wherever the loop posts one, and no run's URL is posted bare. Held over the
  * sources that write posted text: the workflows and the composite action, the
- * shared helpers, and the runners.
+ * shared helpers, and every module in a runner's or a command's folder.
  *
  * A run URL is `RUN_URL` in a workflow, a `runUrl` interpolated into a
  * template, or a literal `…/actions/runs/…`. Each one must sit in a Markdown
@@ -22,6 +22,19 @@ const SUBCOMMAND_MODULES = [
   ...Object.keys(COMMANDS).map((name) => path.join(...name.split(":")) + ".ts"),
 ];
 
+/**
+ * Every `.ts` file in each workflow's folder, not only its entry module: a
+ * folder follows its workflow (ADR 0004), so a helper only one workflow uses
+ * lives there rather than in `shared/`, and may build posted text.
+ */
+const WORKFLOW_FOLDERS = [...new Set(SUBCOMMAND_MODULES.map((module) => path.dirname(module)))];
+const WORKFLOW_SOURCES = WORKFLOW_FOLDERS.flatMap((dir) =>
+  fs
+    .readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => path.join(dir, f)),
+);
+
 const SOURCES: readonly string[] = [
   ...fs
     .readdirSync(path.join(".github", "workflows"))
@@ -35,7 +48,7 @@ const SOURCES: readonly string[] = [
     .readdirSync("shared")
     .filter((f) => f.endsWith(".ts"))
     .map((f) => path.join("shared", f)),
-  ...SUBCOMMAND_MODULES,
+  ...WORKFLOW_SOURCES,
 ];
 
 /** One occurrence of a run's URL in a line. */
@@ -84,6 +97,8 @@ describe("every posted link to a workflow run is labelled Workflow run", () => {
     expect(SOURCES).toContain(path.join(".github", "workflows", "implement.yml"));
     expect(SOURCES).toContain(path.join("shared", "review-output.ts"));
     expect(SOURCES).toContain(path.join("review", "review.ts"));
+    expect(SOURCES).toContain(path.join("review", "pr-summary.ts"));
+    for (const module of SUBCOMMAND_MODULES) expect(SOURCES).toContain(module);
     expect(SOURCES).toContain(path.join(".github", "actions", "advance-prd", "action.yml"));
   });
 

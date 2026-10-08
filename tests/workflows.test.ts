@@ -8407,12 +8407,94 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
     );
   });
 
-  it("holds only contents: read, and no secret", () => {
-    expect(redCheck().permissions).toEqual({ contents: "read" });
-    const text = JSON.stringify(redCheck());
+  /**
+   * Installing the package needs `packages: read`, since GitHub Packages has
+   * no anonymous install, and that is all the job adds (#422). It holds no
+   * secret of the caller's, and the one token it names, the job's own, is the
+   * install's, handed to that step alone: nothing that runs the PR's code, and
+   * not `review:red-check-classify`, which runs after it.
+   */
+  it("holds only contents: read and packages: read, and hands the token to the install alone", () => {
+    expect(redCheck().permissions).toEqual({ contents: "read", packages: "read" });
+    expect(redCheck().env ?? {}).not.toHaveProperty("NODE_AUTH_TOKEN");
+    expect(redCheck().env ?? {}).not.toHaveProperty("GH_TOKEN");
+    const steps = redCheck().steps ?? [];
+    const naming = steps.filter((s) => /secrets\.|github\.token|GITHUB_TOKEN|GH_TOKEN|LOOP_TOKEN/.test(JSON.stringify(s)));
 
-    expect(text).not.toMatch(/secrets\./);
-    expect(text).not.toMatch(/github\.token|GITHUB_TOKEN|GH_TOKEN/);
+    expect(naming.map((s) => s.name)).toEqual(["Install the package"]);
+    expect(naming[0]?.env).toEqual({ NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" });
+    expect(JSON.stringify(redCheck())).not.toMatch(/secrets\.(?!GITHUB_TOKEN\b)/);
+  });
+
+  /**
+   * Install before, no token after (#422). The package is installed while
+   * nothing of the PR's has run, and both commands run that install from
+   * `RUNNER_TEMP`, where `npm exec` takes it without asking the registry; so
+   * `review:red-check-classify`, after the PR's code, has no token to lose,
+   * and an install that code removed fails it, which leaves no report, read as
+   * unreadable.
+   */
+  it("installs the package before the PR's code runs, and runs both commands from that install", () => {
+    const steps = redCheck().steps ?? [];
+    const names = steps.map((s) => s.name ?? "");
+
+    expect(names).toEqual([
+      "Checkout PR head",
+      "Set up Node for the package",
+      "Install the package",
+      "Put the PR's test files over the merge-base",
+      "Hand the placement to the job",
+      "Setup Node.js",
+      "Install dependencies",
+      "Run the tests against the merge-base",
+      "Classify each test as red, broken or passed",
+      "Hand the report to the review",
+    ]);
+    const install = steps[names.indexOf("Install the package")];
+    expect(install?.run).toBe(`npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${PIN.slice(1)}`);
+    expect(install?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(install?.if).toBeUndefined();
+
+    for (const [name, command] of [
+      ["Put the PR's test files over the merge-base", "review:red-check-place"],
+      ["Classify each test as red, broken or passed", "review:red-check-classify"],
+    ] as const) {
+      const step = steps[names.indexOf(name)];
+      expect(step?.run, name).toBe(
+        `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${PIN.slice(1)} -- agent-workflows ${command}`,
+      );
+      expect(step?.["working-directory"], name).toBe("${{ runner.temp }}");
+      expect(step?.env?.["CHECKOUT"], name).toBe("${{ github.workspace }}");
+      // Each input it declares, from its step or its job, and nothing else
+      // from its step.
+      const declared = Object.keys(COMMANDS[command].inputs);
+      expect(declared.filter((input) => !(input in { ...redCheck().env, ...step?.env })), name).toEqual([]);
+      expect(Object.keys(step?.env ?? {}).filter((input) => !declared.includes(input)), name).toEqual([]);
+    }
+    // However the steps before it ended, so a run that placed or ran nothing
+    // still says so.
+    expect(steps[names.indexOf("Classify each test as red, broken or passed")]?.if).toBe("always()");
+  });
+
+  /**
+   * What `place` decided reaches the adopter's steps as one step output, and
+   * the placement directory `classify` reads is the one `place` writes.
+   */
+  it("gates the adopter's steps on the placement, and hands classify place's directory", () => {
+    const steps = redCheck().steps ?? [];
+    const place = steps.find((s) => s.id === "place");
+    const glue = steps.find((s) => s.id === "placed");
+    const classify = steps.find((s) => s.name === "Classify each test as red, broken or passed");
+
+    expect(glue?.run ?? "").toContain(`"\${RUNNER_TEMP}/red-check-place/place.json"`);
+    expect(place?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}/red-check-place");
+    expect(classify?.env?.["PLACE_DIR"]).toBe(place?.env?.["OUTPUT_DIR"]);
+    expect(classify?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
+    expect(classify?.env?.["SETUP_OUTCOME"]).toBe("${{ steps.setup.outcome }}");
+    expect(classify?.env?.["EXIT_CODE"]).toBe("${{ steps.run.outputs.exit-code }}");
+    for (const name of ["Setup Node.js", "Install dependencies", "Run the tests against the merge-base"]) {
+      expect(steps.find((s) => s.name === name)?.if ?? "", name).toMatch(/^steps\.placed\.outputs\.status == 'ready'/);
+    }
   });
 
   /**
@@ -8423,28 +8505,29 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
   it("leaves no credential behind and saves no cache", () => {
     const steps = redCheck().steps ?? [];
     const checkout = steps.find((s) => (s.uses ?? "").startsWith("actions/checkout@"));
-    const node = steps.find((s) => (s.uses ?? "").startsWith("actions/setup-node@"));
+    const nodes = steps.filter((s) => (s.uses ?? "").startsWith("actions/setup-node@"));
 
     expect(checkout?.with?.["persist-credentials"]).toBe(false);
     expect(checkout?.with?.["ref"]).toBe("${{ github.event.pull_request.head.sha }}");
-    expect(node?.with?.["cache"]).toBeUndefined();
-    expect(node?.with?.["package-manager-cache"]).toBe(false);
+    expect(nodes).toHaveLength(2);
+    for (const node of nodes) {
+      expect(node.with?.["cache"], node.name).toBeUndefined();
+      expect(node.with?.["package-manager-cache"], node.name).toBe(false);
+    }
   });
 
   /**
    * On a slice round its base is the PRD branch before the slice (#235), and
-   * on the final review it runs nothing. It tells the two apart by the mark
-   * the finishing run writes, a third spelling of it, held to the one the
-   * progress list writes. The body reaches the shell through `env:`, never
-   * inline: it is the pull request's to write.
+   * on the final review it runs nothing, told apart by the mark the finishing
+   * run writes, which the command names from `shared/record.ts`. The body and
+   * the branch reach it through `env:`, never inline: they are the pull
+   * request's to write.
    */
-  it("tells a slice round from the final review by the mark the finishing run writes", () => {
+  it("hands the command the pull request's body and branch as data", () => {
     const place = (redCheck().steps ?? []).find((s) => s.id === "place");
 
-    expect(place?.env?.["FINAL_REVIEW_MARK"]).toBe(FINAL_REVIEW_MARK);
     expect(place?.env?.["PR_BODY"]).toBe("${{ github.event.pull_request.body }}");
-    expect(place?.env?.["HEAD_REF"]).toBe("${{ github.event.pull_request.head.ref }}");
-    expect(place?.run ?? "").toContain('if [[ "$HEAD_REF" == agent/prd-* && "$PR_BODY" == *"$FINAL_REVIEW_MARK"* ]]; then');
+    expect(place?.env?.["BRANCH"]).toBe("${{ github.event.pull_request.head.ref }}");
     expect(place?.run ?? "").not.toContain("github.event");
   });
 

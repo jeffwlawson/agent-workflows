@@ -6,6 +6,7 @@ import {
   COMMANDS,
   EVERY_SUBCOMMAND,
   EVERY_SUBCOMMAND_OUTPUTS,
+  TOKENLESS,
   isDirectoryInput,
   readsFrom,
   RUNNERS,
@@ -232,7 +233,13 @@ describe("the spec's tables equal the declarations", () => {
    */
   it.each([...RUNNER_NAMES, ...COMMAND_NAMES])("%s: the inputs, by name and kind, both ways", (subcommand) => {
     const own = rowsOf(tableOf(subcommand, "Inputs"));
-    const every = everyRunnerInputs();
+    const all = everyRunnerInputs();
+    // A command that holds no token reads `TOKENLESS` of §2.2's, which §2.2
+    // says, and only a command may.
+    const tokenless = !("GH_TOKEN" in declarationOf(subcommand).inputs);
+    const every = tokenless ? new Map([...all].filter(([name]) => name in TOKENLESS)) : all;
+
+    if (tokenless) expect(subcommand in COMMANDS).toBe(true);
 
     expect([...own.keys()].filter((name) => every.has(name))).toEqual([]);
     expect(sorted(new Map([...every, ...own]))).toEqual(sorted(kindOf(declarationOf(subcommand).inputs)));

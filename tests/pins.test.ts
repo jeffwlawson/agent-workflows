@@ -175,6 +175,27 @@ describe("the pin rewrite is a core init can use", () => {
     ]);
   });
 
+  /**
+   * The fourth form (#422): a step installing the package ahead of the steps
+   * that run it, where only that step is handed the registry token. An npm
+   * spec, as `package` is, so no `v`, and told apart from it, since the
+   * release counts each. Another package's install is not a pin.
+   */
+  it("tells an install from an exec, and writes each as an npm spec", () => {
+    const text = [
+      `        run: npm install --prefix "$RUNNER_TEMP" --no-save ${PACKAGE}@0.0.1`,
+      `        run: npm exec --yes --package=${PACKAGE}@0.0.1 -- agent-workflows review:red-check-place`,
+      "        run: npm install -g @anthropic-ai/claude-code@1.2.3",
+    ].join("\n");
+
+    const rewrite = rewritePins(text, { packageName: PACKAGE, version: TARGET });
+
+    expect(rewrite.found).toEqual(["package", "install"]);
+    expect(rewrite.text).toContain(`--no-save ${PACKAGE}@${TARGET}\n`);
+    expect(rewrite.text).toContain(`--package=${PACKAGE}@${TARGET} --`);
+    expect(rewrite.text).toContain("@anthropic-ai/claude-code@1.2.3");
+  });
+
   /** The one policy it does keep: a version that cannot be written as a pin. */
   it("refuses a version that is not a pin, wherever it is being written", () => {
     expect(() => rewritePins("", { packageName: PACKAGE, version: "latest" })).toThrow(/version/i);

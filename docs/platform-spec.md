@@ -89,7 +89,9 @@ workflows, which the build reads.
 > **Actions orchestrator:** each reusable's runner step is
 > `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@<version> -- agent-workflows <runner>`,
 > with the inputs in that step's `env:` and its job's, and each command step the same with the
-> command's name.
+> command's name. The red check's job installs the package first, with
+> `npm install --prefix "$RUNNER_TEMP"`, and runs its two commands from `RUNNER_TEMP`, where that
+> line finds the install without asking the registry (§8).
 
 ### 2.2 Inputs
 
@@ -129,6 +131,10 @@ The inputs every runner reads, set once for any of them:
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
 | `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, and `review:conclude` its comments, its error verdict and the labels nothing fires on. |
+
+A command that runs where no token is held, as the red check's two do beside the pull request's own
+code, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
+nor `GH_TOKEN`, and an orchestrator hands it neither.
 
 Each runner's and command's own inputs are in its workflow's section, §6 to §11.
 
@@ -590,8 +596,10 @@ and `review:publish` writes every final string from them.
 > the rest only where it went ahead, on the commit it settled on, handing the runner its budget and
 > its round. Before the runner, `review:collect-checks` waits up to 15 minutes for the pull
 > request's other checks and writes the files the runner reads as `CI_STATUS_FILE` and
-> `CI_RESULT_FILE`, and a separate job may run the red check. A posting job then mints the loop's token, sets up Node, downloads the
-> hand-over, and runs `review:publish`, which answers and resolves the verified threads, posts the
+> `CI_RESULT_FILE`. Where the red check is configured, a separate job runs
+> `review:red-check-place`, the adopter's install and test command, and `review:red-check-classify`,
+> whose report the runner reads as `RED_CHECK_FILE`. A posting job then mints the loop's token,
+> sets up Node, downloads the hand-over, and runs `review:publish`, which answers and resolves the verified threads, posts the
 > review, marks the pull request with `agent:follow-ups`, writes the title, the summary and the
 > status line, and posts the verdict. `review:conclude` then ends the run however it ended: the
 > refusal's note, or the error verdict and the failure comment, or the ready mark; `agent:review`
@@ -736,6 +744,112 @@ loop's reusable workflows.
 > wrote nothing leaves the runner reading the checks as unknown. `OUTPUT_DIR` is a directory of its
 > own under `runner.temp`, and the runner reads its two files from there as `CI_STATUS_FILE` and
 > `CI_RESULT_FILE`. The `time-limit` job adds its 15 minutes to the review's own.
+
+### `review:red-check-place`
+
+Puts the test files a pull request adds or changes over the code as it was before the change, in
+the pull request's checkout, so the red check's tests run against it. It runs no model, reads no
+repository, holds no token, and writes nothing to the record. Each outcome below is a placement,
+written to `place.json`, and only a failure of git itself fails the command.
+
+- **Misconfigured.** An empty `REPORT_PATH` or `TEST_GLOBS` (whitespace only) is `misconfigured`,
+  with a reason naming the caller's input that is missing.
+- **The final review.** On a PRD branch whose `PR_BODY` carries the final review's mark, nothing is
+  placed: `final-review`.
+- **The base.** The merge-base of the checkout's `HEAD` and `origin/<BASE_REF>`, or
+  `no-merge-base` where there is none. On a PRD branch, the first parent of the earliest
+  first-parent commit of the slice started last, by the `Agent-Slice` trailer, since `BASE_REF`; a
+  PRD branch with no trailered commit keeps the merge-base, with a warning.
+- **The files.** `TEST_GLOBS` is one `:(glob)` pathspec a line. The non-test files changed between
+  the base and the head, deleted ones included, are its `source`. The test files added or changed,
+  renames split, are put over the base, the base checked out detached and each file taken from the
+  head as a literal path; none is `no-test-files`, and some is `ready`. A name with a line break is
+  dropped from both lists.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The pull request's checkout, at its head, with `origin/<BASE_REF>` fetched. |
+| `BRANCH` | required | | Its head branch, which tells a PRD PR. |
+| `BASE_REF` | required | | Its base branch. |
+| `PR_BODY` | optional | `""` | Its body, as the request saw it, for the final review's mark. |
+| `REPORT_PATH` | optional | `""` | Where the test command writes its JUnit report. Empty is `misconfigured`. |
+| `TEST_GLOBS` | optional | `""` | Which files are tests, one glob a line. Empty is `misconfigured`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `place.json` | Unless it fails: `status`, `ready`, `no-test-files`, `misconfigured`, `final-review` or `no-merge-base`; `reason` where it is one; `head`; `base` and `slice` where they were found; `files`, the test files placed, one a line for the test command; and `source` where `base` was found. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The final review's mark in `PR_BODY`, on a PRD branch.
+- The `Agent-Slice` trailers on the PRD branch's first-parent commits since `BASE_REF`.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the `red-check` job, where `red-check-command` is set, after a checkout
+> that persists no credential. That job runs the pull request's code, so it holds no secret, and
+> the package is installed before any of that code runs, by the one step handed the registry
+> token, `npm install --prefix "$RUNNER_TEMP"`. This command and `review:red-check-classify` run
+> from `RUNNER_TEMP`, where `npm exec` finds that install without asking the registry, and neither
+> is handed a token. `CHECKOUT` is the workspace, `BRANCH` and `PR_BODY` the label's event's, and
+> `REPORT_PATH` and `TEST_GLOBS` the caller's `red-check-report` and `red-check-test-globs`. A glue
+> step copies `place.json`'s `status` into a step output, which gates the adopter's toolchain,
+> their `setup` and their `red-check-command`, handed the files as `RED_CHECK_FILES`.
+
+### `review:red-check-classify`
+
+Writes the red check's report, `red_check.json`, whatever happened before it, so the review can
+tell "no red test" from "the check did not run". It runs no model, reads no repository, holds no
+token, and writes nothing to the record. The report is what `review`'s `RED_CHECK_FILE` reads:
+`status`, `base`, `head` (each `null` where unknown), `files`, `exitCode`, `tests` and `skipped`,
+with `reason`, `slice` and `source` where `review:red-check-place` gave them.
+
+- **The status.** `place.json`'s, or `failed` where there is none. Where it is `ready`:
+  `setup-failed` where `SETUP_OUTCOME` is `failure`, `not-run` where `EXIT_CODE` is not a number,
+  `no-report` where `REPORT_PATH` is not a file, `unreadable-report`, with the parser's reason,
+  where it is not well-formed XML, else `ran`.
+- **Each test.** Each `testcase` of every element of the JUnit report: an `<error>` is `broken`; a
+  `<failure>` is `red`, unless the testcase is a file or a `describe` rather than a test (named as
+  its classname and its suite are, or, with every testcase after it, a failure named like a
+  `describe` the others are named under), which is `broken`; a `<skipped>` is counted and left
+  out; anything else is `passed`. A failure's or an error's `message`, or else its body's first
+  line, is kept, cut at 2,000 characters. A test reported twice under one name, classname and file
+  is one test, with the worse result.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `CHECKOUT` | required | | The pull request's checkout, which `REPORT_PATH` is relative to. |
+| `REPORT_PATH` | optional | `""` | Where the test command wrote its JUnit report. |
+| `SETUP_OUTCOME` | optional | `""` | The outcome of the adopter's install step, empty where it did not run. |
+| `EXIT_CODE` | optional | `""` | The test command's exit code, empty where it did not run. |
+| `PLACE_DIR` | directory | | `review:red-check-place`'s `OUTPUT_DIR`. Reads `place.json` (where written). |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `red_check.json` | Unless it fails: the report. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+Nothing. Its inputs are the checkout and what `review:red-check-place` wrote.
+
+> **Actions orchestrator:** the `red-check` job's step after the adopter's test command,
+> `always()`, from the install `review:red-check-place` used and with no token, since the pull
+> request's code has run and could have changed anything on the runner. An install that code
+> removed fails the step, which leaves no report, and the review reads that as unreadable, never
+> as "no red tests". `OUTPUT_DIR` is `runner.temp`, and the job uploads `red_check.json` as the
+> `agent-red-check` artifact, `always()`, which the review job downloads.
 
 ### `review:publish`
 

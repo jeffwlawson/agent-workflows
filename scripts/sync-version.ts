@@ -11,7 +11,9 @@ import { ACTION_DIR, assertPinnable, escapeRe, rewritePins, WORKFLOW_DIR } from 
  * A release names its version in twelve files. `npm version` bumps two of
  * them — the manifest and the lockfile — and the other ten hold the pins: one
  * `--package=…@<version>` per step of a reusable workflow that runs the
- * package (review's runner and each of its commands, #417), and one `…yml@v<version>` per
+ * package (review's runner and each of its commands, #417), one
+ * `npm install … @<version>` per step that installs it ahead of them (the red
+ * check's, #422), and one `…yml@v<version>` per
  * caller in each of the two caller sets, whose callers sit two caller files to
  * a set (#225). `v0.1.4` and `v0.1.5` were both cut by editing
  * them by hand and folding the result into the version commit.
@@ -172,11 +174,14 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
    * and is refused instead. The composite actions a reusable names (#257) and
    * the reusable workflows a caller file names are found the same way, and so
    * is each step that runs the package (#417), by `--package=<name>@` under
-   * any spec.
+   * any spec, and each that installs it (#422), by `npm install … <name>@`.
    */
   const packageUse = new RegExp(`--package=${escapeRe(packageName)}@`, "g");
   const packagesIn = (file: string): readonly PinForm[] =>
     (readFile(packageDir, file).match(packageUse) ?? []).map(() => "package" as const);
+  const installUse = new RegExp(`npm install [^\\n]*?${escapeRe(packageName)}@`, "g");
+  const installsIn = (file: string): readonly PinForm[] =>
+    (readFile(packageDir, file).match(installUse) ?? []).map(() => "install" as const);
   const slug = escapeRe(packageName.replace(/^@/, ""));
   const actionUse = new RegExp(`${slug}/${escapeRe(ACTION_DIR)}/`, "g");
   const workflowUse = new RegExp(`${slug}/${escapeRe(WORKFLOW_DIR)}/([A-Za-z0-9._-]+)\\.yml@`, "g");
@@ -213,7 +218,7 @@ export const syncVersion = (version: string, packageDir = "."): readonly Version
   const sites: readonly VersionSite[] = [
     ...reusableNames.flatMap((name) => {
       const file = `${WORKFLOW_DIR}/${name}.yml`;
-      return [...packagesIn(file), ...actionsIn(file)].map((form) => ({ file, form }));
+      return [...packagesIn(file), ...installsIn(file), ...actionsIn(file)].map((form) => ({ file, form }));
     }),
     ...sets.flatMap(({ files }) =>
       files.flatMap((file) => calledBy(file).map(() => ({ file, form: "ref" as const }))),

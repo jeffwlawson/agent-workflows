@@ -36,7 +36,7 @@ import {
 } from "../shared/common.js";
 import { agentModel, overrideVar } from "../shared/agent.js";
 import { scrubGitHubTokens } from "../shared/env.js";
-import { COMMANDS, EVERY_SUBCOMMAND, RUNNERS, type Input, type Inputs, type Outputs, type Runner, type RunnerInputs } from "../shared/contract.js";
+import { COMMANDS, EVERY_SUBCOMMAND, RUNNERS, TOKENLESS, type Input, type Inputs, type Outputs, type Runner, type RunnerInputs } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 
 const spawned = vi.mocked(execFileSync);
@@ -826,9 +826,19 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
       expect(fs.readFileSync(reasonFile(), "utf8")).toBe(`Missing required env var: ${name}`);
     });
 
+    /**
+     * Or, a command that runs where no token is held (#422), `TOKENLESS`'s
+     * one of them, and neither the repository nor the token.
+     */
     it("declares the three every subcommand reads, required", () => {
-      for (const name of Object.keys(EVERY_SUBCOMMAND)) {
+      const tokenless = !("GH_TOKEN" in inputsOf(runner));
+      for (const name of Object.keys(tokenless ? TOKENLESS : EVERY_SUBCOMMAND)) {
         expect(inputsOf(runner), name).toHaveProperty(name, { required: true });
+      }
+      if (tokenless) {
+        expect(runner in COMMANDS).toBe(true);
+        expect(inputsOf(runner)).not.toHaveProperty("GH_REPO");
+        expect(inputsOf(runner)).not.toHaveProperty("LOOP_TOKEN");
       }
     });
 

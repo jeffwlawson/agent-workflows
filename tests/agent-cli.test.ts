@@ -495,12 +495,12 @@ describe("the CLI runs a command", () => {
     }
   });
 
-  it("hands the function exactly its declared inputs, and exits 0", async () => {
+  it("hands the function exactly its declared inputs, and its declared outputs, and exits 0", async () => {
     const { code } = await invoke(["follow-ups:file"]);
 
     expect(code).toBe(0);
     expect(command).toHaveBeenCalledTimes(1);
-    expect(command).toHaveBeenCalledWith({ OUTPUT_DIR: scratch, ...INPUTS });
+    expect(command).toHaveBeenCalledWith({ OUTPUT_DIR: scratch, ...INPUTS }, expect.objectContaining({ writeJson: expect.any(Function) }));
   });
 
   it("turns a throw into fail(): the reason in failure_reason.txt, exit 1", async () => {

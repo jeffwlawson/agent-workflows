@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CommandIo, ReadingIo } from "./shared/command-io.js";
+import type { CommandIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -85,11 +85,14 @@ const refuseArguments = (name: string, args: readonly string[]): void => {
  *
  * The inputs are read after the module loads and before the call, so a
  * missing one stops the command at start, by name, with none of its own work
- * done.
+ * done. It is handed its declared output files beside them, and nothing that
+ * reads or writes GitHub.
  */
 const command = <C extends Command>(
   name: C,
-  load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>) => unknown>,
+  load: () => Promise<
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, outputs: OutputWriters<(typeof COMMANDS)[C]["outputs"]>) => unknown
+  >,
   summary: string,
 ): Subcommand => ({
   kind: "command",
@@ -97,9 +100,10 @@ const command = <C extends Command>(
   run: async (args) => {
     refuseArguments(name, args);
     const fn = await load();
-    const inputs = readInputs(COMMANDS[name].inputs);
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
     try {
-      await fn(inputs);
+      await fn(inputs, writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs));
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
     }
@@ -109,9 +113,14 @@ const command = <C extends Command>(
 /**
  * A command that reads GitHub and writes nothing to it: handed, besides its
  * inputs, the reader the CLI builds over its `GH_TOKEN`, and its declared
- * output files.
+ * output files. Only a command that declares the repository and the token
+ * can be one: the red check's two read neither (#422).
  */
-const readingCommand = <C extends Command>(
+type ReadingCommand = {
+  [C in Command]: (typeof COMMANDS)[C]["inputs"] extends { readonly GH_REPO: unknown; readonly GH_TOKEN: unknown } ? C : never;
+}[Command];
+
+const readingCommand = <C extends ReadingCommand>(
   name: C,
   load: () => Promise<(inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: ReadingIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>>,
   summary: string,
@@ -287,6 +296,16 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "review:collect-checks",
     async () => (await import("./review/collect-checks.js")).collectChecks,
     "Wait for a pull request's other checks and summarise them for the review (no model).",
+  ),
+  "review:red-check-place": command(
+    "review:red-check-place",
+    async () => (await import("./review/red-check-place.js")).place,
+    "Put a pull request's test files over the code as it was before it, for the red check (no model).",
+  ),
+  "review:red-check-classify": command(
+    "review:red-check-classify",
+    async () => (await import("./review/red-check-classify.js")).classify,
+    "Classify each test in the red check's JUnit report as red, broken or passed (no model).",
   ),
   "review:publish": writingCommand(
     "review:publish",

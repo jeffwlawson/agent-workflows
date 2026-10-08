@@ -81,6 +81,9 @@ export type Inputs = Readonly<Record<string, Input>>;
  *
  * `OUTPUT_DIR` is first so that, when several are missing, the one the
  * failure report is written into is checked before the others.
+ *
+ * Every subcommand but a command that runs where no token is held, which
+ * reads `OUTPUT_DIR` alone of these (`TOKENLESS`).
  */
 export const EVERY_SUBCOMMAND = {
   OUTPUT_DIR: { required: true },
@@ -379,6 +382,42 @@ const REVIEW_PUBLISH = {
 } as const satisfies CommandContract;
 
 /**
+ * What a command that runs where no token is held reads of
+ * `EVERY_SUBCOMMAND`: `OUTPUT_DIR`, and neither the repository nor the token,
+ * since it reads no repository and is handed none. The red check's two
+ * (#422), whose job runs the pull request's own code.
+ */
+export const TOKENLESS = {
+  OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
+} as const satisfies Inputs;
+
+/**
+ * What the red check's two commands read beside their own: `TOKENLESS`, and
+ * the pull request's checkout, which they work in.
+ */
+const RED_CHECK = {
+  ...TOKENLESS,
+  CHECKOUT: REQUIRED,
+} as const satisfies Inputs;
+
+/**
+ * `review:red-check-place`, declared ahead of `COMMANDS` so that
+ * `review:red-check-classify` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const REVIEW_RED_CHECK_PLACE = {
+  inputs: {
+    ...RED_CHECK,
+    BRANCH: REQUIRED,
+    BASE_REF: REQUIRED,
+    PR_BODY: EMPTY,
+    REPORT_PATH: EMPTY,
+    TEST_GLOBS: EMPTY,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "place.json"],
+} as const satisfies CommandContract;
+
+/**
  * Every command, by the subcommand that invokes it, `<workflow>:<step>`: the
  * inputs every subcommand reads, and its own. Its code is `<step>.ts` in the
  * workflow's folder, and exports one function the CLI calls with the inputs
@@ -402,6 +441,20 @@ const REVIEW_PUBLISH = {
  *   for the agent, and `ci_result.txt` the one word the runner derives the
  *   verdict's CI half from, which the runner reads as `CI_STATUS_FILE` and
  *   `CI_RESULT_FILE`.
+ * - `review:red-check-place` puts the test files the pull request adds or
+ *   changes over the code as it was before it, in `CHECKOUT`: the merge-base
+ *   with `BASE_REF`, or on a slice round of a PRD PR the PRD branch before the
+ *   slice. `BRANCH` and `PR_BODY` are the pull request's head branch and body
+ *   as the event saw them, which say whether it is a PRD PR's final review.
+ *   `REPORT_PATH` and `TEST_GLOBS` are the adopter's `red-check-report` and
+ *   `red-check-test-globs`, and it refuses neither: a missing one is its
+ *   `misconfigured` placement. `place.json` is what it placed and on what.
+ * - `review:red-check-classify` classifies each test in the JUnit report at
+ *   `REPORT_PATH`, in `CHECKOUT`, as red, broken or passed, and writes
+ *   `red_check.json`, the report the review reads. `SETUP_OUTCOME` is the
+ *   adopter's install step's outcome and `EXIT_CODE` their test command's,
+ *   each empty where it did not run, and what place decided it reads through
+ *   `PLACE_DIR`.
  * - `review:publish` resolves the threads a review closed and posts it on
  *   `REVIEWED_SHA`, the commit the review job recorded before the agent ran
  *   (ADR 0006), then writes the title, the summary, the status line and the
@@ -451,6 +504,19 @@ export const COMMANDS = {
       SELF_RUN_ID: EMPTY,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "ci_status.md", "ci_result.txt"],
+  },
+  "review:red-check-place": REVIEW_RED_CHECK_PLACE,
+  "review:red-check-classify": {
+    inputs: {
+      ...RED_CHECK,
+      REPORT_PATH: EMPTY,
+      SETUP_OUTCOME: EMPTY,
+      EXIT_CODE: EMPTY,
+      PLACE_DIR: readsFromCommand("review:red-check-place", REVIEW_RED_CHECK_PLACE, {
+        "place.json": "sometimes",
+      }),
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "red_check.json"],
   },
   "review:publish": REVIEW_PUBLISH,
   "review:conclude": {

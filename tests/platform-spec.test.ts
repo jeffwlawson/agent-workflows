@@ -6,8 +6,11 @@ import {
   COMMANDS,
   EVERY_SUBCOMMAND,
   EVERY_SUBCOMMAND_OUTPUTS,
+  isDirectoryInput,
+  readsFrom,
   RUNNERS,
   type Command,
+  type DirectoryInput,
   type Inputs,
   type Runner,
 } from "../shared/contract.js";
@@ -108,8 +111,48 @@ const tableOf = (subcommand: Runner | Command, heading: "Inputs" | "Outputs") =>
     ? tablesIn(sectionsOf(runnerSection(subcommand), 3).get(heading) ?? "")[0]
     : tablesIn(sectionsOf(commandSection(subcommand as Command), 4).get(heading) ?? "")[0];
 
+/** An input's Kind column: `directory` for a directory input, else `required` or `optional`. */
 const kindOf = (inputs: Inputs): ReadonlyMap<string, string> =>
-  new Map(Object.entries(inputs).map(([name, input]) => [name, input.required ? "required" : "optional"]));
+  new Map(
+    Object.entries(inputs).map(([name, input]) => [
+      name,
+      isDirectoryInput(input) ? "directory" : input.required ? "required" : "optional",
+    ]),
+  );
+
+/** A table's rows keyed on the backticked first column, to the whole row. */
+const fullRowsOf = (table: readonly (readonly string[])[] | undefined): ReadonlyMap<string, readonly string[]> =>
+  new Map(
+    (table ?? []).flatMap((row) => {
+      const name = /^`([^`]+)`$/.exec(row[0] ?? "")?.[1];
+      return name === undefined ? [] : [[name, row] as const];
+    }),
+  );
+
+/**
+ * Whether a directory input's row says what its declaration does: the row's
+ * last cell names the producer, and the producer's outputs it names are the
+ * declared files, each marked "where written" exactly when the producer writes
+ * it only sometimes. Each disagreement comes back as a sentence.
+ */
+const directoryRowDrift = (row: readonly string[], declared: DirectoryInput, producerOutputs: readonly string[]): readonly string[] => {
+  const cell = row[row.length - 1] ?? "";
+  const named = [...cell.matchAll(/`([^`]+)`( \(where written\))?/g)];
+  const files = new Map(
+    named.filter(([, name]) => producerOutputs.includes(name ?? "")).map(([, name, sometimes]) => [name ?? "", sometimes ? "sometimes" : "always"]),
+  );
+  return [
+    ...(named.some(([, name]) => name === declared.producer) ? [] : [`does not name its producer, \`${declared.producer}\``]),
+    ...Object.entries(declared.files)
+      .filter(([file, presence]) => files.get(file) !== presence)
+      .map(([file, presence]) => `does not name \`${file}\`${presence === "sometimes" ? " (where written)" : ""}`),
+    ...[...files.keys()].filter((file) => !(file in declared.files)).map((file) => `names \`${file}\`, which is not declared`),
+  ];
+};
+
+/** A producer's declared outputs, runner or command. */
+const outputsOf = (producer: string): readonly string[] =>
+  producer in RUNNERS ? RUNNERS[producer as Runner].outputs : producer in COMMANDS ? COMMANDS[producer as Command].outputs : [];
 
 const sorted = <T>(map: ReadonlyMap<string, T>): [string, T][] => [...map].sort(([a], [b]) => a.localeCompare(b));
 
@@ -193,6 +236,46 @@ describe("the spec's tables equal the declarations", () => {
 
     expect([...own.keys()].filter((name) => every.has(name))).toEqual([]);
     expect(sorted(new Map([...every, ...own]))).toEqual(sorted(kindOf(declarationOf(subcommand).inputs)));
+  });
+
+  /**
+   * A directory input's row names the producer and the files read from it,
+   * so an orchestrator reading the spec knows which outputs to keep. One
+   * loop over every directory input rather than a case each, since there
+   * may be none.
+   */
+  it("each directory input's row names its producer and exactly its files", () => {
+    for (const subcommand of [...RUNNER_NAMES, ...COMMAND_NAMES]) {
+      const rows = fullRowsOf(tableOf(subcommand, "Inputs"));
+      for (const [name, input] of Object.entries(declarationOf(subcommand).inputs as Inputs)) {
+        if (!isDirectoryInput(input)) continue;
+        expect(outputsOf(input.producer), `${subcommand}'s ${name}: no such producer`).not.toEqual([]);
+        expect(directoryRowDrift(rows.get(name) ?? [], input, outputsOf(input.producer)), `${subcommand}'s ${name}`).toEqual([]);
+      }
+    }
+  });
+
+  /** The row's own rules, on a table no command has yet, so the check above is reading something. */
+  it("accepts a directory input row, and names what one leaves out", () => {
+    const declared = readsFrom("review", { "verdict.json": "always", "pr_summary.json": "sometimes" });
+    const table = tablesIn(
+      [
+        "| Input | Kind | Default | What it is |",
+        "|---|---|---|---|",
+        "| `REVIEW_DIR` | directory | | The `review` runner's `OUTPUT_DIR`. Reads `verdict.json`, and `pr_summary.json` (where written). |",
+        "| `PARTIAL_DIR` | directory | | Reads `verdict.json` (where written) and `summary.md`. |",
+      ].join("\n"),
+    )[0];
+    const outputs = outputsOf("review");
+
+    expect(sorted(rowsOf(table))).toEqual(sorted(kindOf({ REVIEW_DIR: declared, PARTIAL_DIR: declared })));
+    expect(directoryRowDrift(fullRowsOf(table).get("REVIEW_DIR") ?? [], declared, outputs)).toEqual([]);
+    expect(directoryRowDrift(fullRowsOf(table).get("PARTIAL_DIR") ?? [], declared, outputs)).toEqual([
+      "does not name its producer, `review`",
+      "does not name `verdict.json`",
+      "does not name `pr_summary.json` (where written)",
+      "names `summary.md`, which is not declared",
+    ]);
   });
 
   it.each([...RUNNER_NAMES, ...COMMAND_NAMES])("%s: the output files, both ways", (subcommand) => {

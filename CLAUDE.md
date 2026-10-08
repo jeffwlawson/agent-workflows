@@ -114,6 +114,11 @@ equal to the two maps, kind for kind, with `init` and `doctor` the only subcomma
    **Every file it writes into `OUTPUT_DIR` is declared there too**, as its outputs, and written
    through the `writers` that declaration gives it, so an undeclared name fails typechecking. A
    computed name is typed over a fixed set, and each name in the set is listed.
+   **A command reads another subcommand's files through a directory input** (ADR 0006), declared
+   with `readsFrom` and read with `readDirectory` (`shared/hand-over.ts`), once, before its first
+   write. Each field is parsed as a target, a choice or a count, and free text comes out only as
+   `Cleaned` (`shared/clean.ts`), the type a formatter takes. Any upload of those files is held to
+   the declaration by `expectHandsOver` in `tests/workflows.test.ts`.
    **A new input is three parts, landed together**: its declaration there, its row in the runner's
    `### Inputs` table (or the command's `#### Inputs`) in `docs/platform-spec.md`, and, where it is
    required, the reusable's `env:` setting it, in the step or its job. `tests/platform-spec.test.ts`

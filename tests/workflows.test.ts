@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { APP_PERMISSIONS } from "../setup/app.js";
 import { isWorkflowBot } from "../shared/common.js";
-import { RUNNERS } from "../shared/contract.js";
+import { type DirectoryInput, readsFrom, RUNNERS } from "../shared/contract.js";
 import {
   ADD_REVIEW_MUTATION,
   FIX_BEFORE_MERGE_LABEL,
@@ -421,6 +421,38 @@ const stepsOf = (file: string): readonly Step[] => {
   if (split === undefined) return jobOf(file).steps ?? [];
   jobOf(file);
   return split.flatMap((id) => jobNamed(file, id).steps ?? []);
+};
+
+/**
+ * The files an artifact step hands over or fetches, by name: its `path:`, one
+ * per line, each `${{ runner.temp }}/<name>` since `OUTPUT_DIR` is
+ * `runner.temp`. A line of any other shape comes back whole, so a comparison
+ * names it rather than dropping it.
+ */
+const artifactFiles = (step: Step | undefined): readonly string[] =>
+  String(step?.with?.["path"] ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((line) => line.replace(/^\$\{\{ runner\.temp \}\}\/(?=[^/]+$)/, ""));
+
+/**
+ * Holds an artifact step's paths equal to the files a directory input
+ * declares (ADR 0006), both ways: a file the step hands over and no command
+ * reads, and a file a command reads and the step never hands over, each fail
+ * by name. So the list is the declaration's, and the YAML is checked against
+ * it rather than kept beside it by hand.
+ */
+const expectHandsOver = (step: Step | undefined, declared: DirectoryInput): void => {
+  expect(step, "no such artifact step").toBeDefined();
+  const handed = artifactFiles(step);
+  const files = Object.keys(declared.files);
+  const undeclared = handed.filter((file) => !files.includes(file));
+  const missing = files.filter((file) => !handed.includes(file));
+  expect(
+    { undeclared, missing },
+    `handed over, not declared: ${undeclared.join(", ") || "none"}; declared, not handed over: ${missing.join(", ") || "none"}`,
+  ).toEqual({ undeclared: [], missing: [] });
 };
 
 /**
@@ -9978,5 +10010,48 @@ describe("each status read and write is made with a token holding its scope", ()
     const short = calls.filter((c) => LEVEL.indexOf(c.held[c.scope] ?? "none") < LEVEL.indexOf(c.level));
 
     expect(short.map((c) => `${c.where} needs ${c.scope}: ${c.level} for ${c.line}`)).toEqual([]);
+  });
+});
+
+describe("an artifact step hands over exactly the files a command declares", () => {
+  const upload = (name: string): Step | undefined => stepsOf(REVIEW).find((s) => s.name === name);
+
+  /**
+   * Today's hand-over, declared here until `review:publish` declares it
+   * itself: the helper is the check a command's directory input will be held
+   * to, and the review job's upload already lists files by name.
+   */
+  it("holds the review job's hand-over to a declaration of its files", () => {
+    expectHandsOver(
+      upload("Hand the review to the posting job"),
+      readsFrom("review", {
+        "review_payload.json": "always",
+        "review_body.json": "always",
+        "verdict.json": "always",
+        "thread_resolutions.json": "always",
+        "follow_ups.md": "sometimes",
+        "pr_summary.json": "sometimes",
+        "pr_status.md": "sometimes",
+      }),
+    );
+  });
+
+  it("names a file declared and not handed over, and one handed over and not declared", () => {
+    const step = upload("Hand the review to the posting job");
+    const files = artifactFiles(step);
+
+    expect(files).toContain("verdict.json");
+    expect(() => expectHandsOver(step, readsFrom("review", { "verdict.json": "always", "summary.md": "always" }))).toThrow(
+      /summary\.md/,
+    );
+    expect(() => expectHandsOver(step, readsFrom("review", { "verdict.json": "always" }))).toThrow(/review_payload\.json/);
+  });
+
+  it("reads a path that is not one file in runner.temp whole", () => {
+    expect(artifactFiles({ with: { path: "${{ runner.temp }}/a.json\n${{ runner.temp }}/sub/b.json\nc.json\n" } })).toEqual([
+      "a.json",
+      "${{ runner.temp }}/sub/b.json",
+      "c.json",
+    ]);
   });
 });

@@ -35,7 +35,34 @@ export interface OptionalInput {
   readonly default: string;
 }
 
-export type Input = RequiredInput | OptionalInput;
+/** Whether a producer writes a file every time it ends, or only on some outcomes. */
+export type Presence = "always" | "sometimes";
+
+/** File name to whether the producer always writes it. */
+export type DirectoryFiles = Readonly<Record<string, Presence>>;
+
+/**
+ * An input naming a directory another subcommand wrote into, its
+ * `OUTPUT_DIR`, and exactly the files read from it (ADR 0004, ADR 0006).
+ * Required like any other, since the path is what the environment carries,
+ * and with two more things declared: the **producer**, a subcommand by name,
+ * and the **files**, each with whether the producer always writes it. A file
+ * written only on some outcomes reads as absent where it is not there; one
+ * always written is a failure where it is not.
+ *
+ * Built with `readsFrom`, which takes only names the producer declares as
+ * outputs, and read with `readDirectory` in `shared/hand-over.ts`, which reads
+ * these files and no others. So a renamed output is a type error at both.
+ */
+export interface DirectoryInput<F extends DirectoryFiles = DirectoryFiles> extends RequiredInput {
+  readonly producer: string;
+  readonly files: F;
+}
+
+export type Input = RequiredInput | OptionalInput | DirectoryInput;
+
+/** Whether `input` is a directory input rather than a plain one. */
+export const isDirectoryInput = (input: Input): input is DirectoryInput => "producer" in input;
 
 /** Input name, as the environment variable the subcommand reads, to what it needs of it. */
 export type Inputs = Readonly<Record<string, Input>>;
@@ -275,6 +302,16 @@ export const RUNNERS = {
 } as const satisfies Readonly<Record<string, RunnerContract>>;
 
 export type Runner = keyof typeof RUNNERS;
+
+/**
+ * A directory input reading `files` from the runner `producer`'s `OUTPUT_DIR`.
+ * Each name has to be one of the runner's declared outputs: one it does not
+ * declare, or one renamed since, fails typechecking here.
+ */
+export const readsFrom = <P extends Runner, const F extends DirectoryFiles>(
+  producer: P,
+  files: F & Readonly<Record<Exclude<keyof F, (typeof RUNNERS)[P]["outputs"][number]>, never>>,
+): DirectoryInput<F> => ({ required: true, producer, files });
 
 /**
  * Every command, by the subcommand that invokes it, `<workflow>:<step>`: the

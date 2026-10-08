@@ -103,7 +103,16 @@ Every input is an environment variable, declared in `shared/contract.ts` as **re
   one whose absence means something stated, never a quiet fallback nobody chose. An input read only
   by a subprocess, such as `GH_TOKEN` read by `gh`, is declared all the same and checked at start.
 
-Defaults and meanings are prose; the test compares the name and the required column only.
+A command may declare a third kind, a **directory** input: the path of another subcommand's
+`OUTPUT_DIR`, required like any other, naming that subcommand, its producer, and exactly the files
+read from it. Its row's Kind is `directory`, and its last cell names the producer and each file,
+with `(where written)` after a file the producer writes only on some outcomes. Such a file that is
+not there reads as absent. A file the producer always writes that is missing, or any declared file
+that does not parse, fails the command (§2.4) before its first write. The command reads no other
+file in the directory, so an orchestrator ***must*** hand over at least the files named there.
+
+Defaults and meanings are prose; the test compares the name and the Kind column only, and a
+directory input's producer and files.
 
 **`doctor` cannot check this.** For the Actions orchestrator the reusable sets the runner's inputs,
 and the build holds each reusable to them. A caller missing a required input of its own (a

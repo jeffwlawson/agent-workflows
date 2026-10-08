@@ -434,15 +434,17 @@ runners in `RUNNERS` and commands in `COMMANDS`.
 [ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
 
 **The writer** is the engine's way to change the record. A command calls it once per write, with a
-type named for what GitHub does (add a label, set a commit status, replace the block between two
-markers), never for what the loop means. The loop passes in its own strings. The writer enforces a
-count limit per type, stops at the first failure, and keeps a **write log**: each write it applied
-and how it went, written as one of the command's outputs. A command is handed two writers, one per
-token. The agent's text reaches a command already cleaned, and the loop adds its markers after
+type named for what GitHub does (add a label, set a commit status, edit a pull request's title and
+body against the live body, post a review, reply to a thread and resolve it), never for what the
+loop means. The loop passes in its own strings, and splices its markers with the engine's helper.
+The writer enforces a count limit per type set by each command, throws on the first failure
+without latching, and keeps a **write log**: one line per write as it lands, and a last line for
+how the command ended, appended to one of the command's declared outputs. A command is handed two
+writers, one per token, sharing the log and the limits. The agent's text reaches a command already cleaned, and the loop adds its markers after
 that. A job's package code is one command per stretch between steps only Actions can take, plus an
 `always()` command where the job has a failure path.
 [ADR 0005](./docs/adr/0005-writes-are-calls-with-a-log.md) records why there is no list of writes
-planned before applying. Like commands, the writer is the target: nothing uses it yet.
+planned before applying. The writer is in `engine/`, and no command uses it yet.
 
 **The hand-over** is what crosses from the agent's phase to the commands that act on it: the
 runner's files that each command declares it reads, checked and cleaned when they are read. The

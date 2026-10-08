@@ -929,6 +929,18 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
 
     expect(fs.readFileSync(reasonFile(), "utf8")).toBe("declared");
   });
+
+  /** The write log's form: each line lands as it is made, after the ones before it. */
+  it("appends a line at a time to a declared file, and refuses an undeclared one at typecheck", () => {
+    const { appendLine } = writers(COMMANDS["follow-ups:file"].outputs);
+
+    appendLine("failure_reason.txt", "first");
+    appendLine("failure_reason.txt", "second");
+    // @ts-expect-error: `follow-ups:file` declares no `write_log.jsonl`, so it may not append to one.
+    appendLine("write_log.jsonl", "undeclared");
+
+    expect(fs.readFileSync(reasonFile(), "utf8")).toBe("first\nsecond\n");
+  });
 });
 
 /**

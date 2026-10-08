@@ -152,7 +152,7 @@ export const VERDICT_CONTEXT = "agent-review";
  * The verdict's line used to be that record: a fix round's status line was
  * its own, and the budget counted rounds by it, word for word. #201's
  * *Verdict lines* made every line fixed whatever the state, so the fact moved
- * here. It is what *Settle the fix-round budget* counts rounds by and what
+ * here. It is what `review:gate` counts rounds by and what
  * `readReviewHistory` reads a fix round off, matched to its verdict by link.
  *
  * `success`, because it records a step taken rather than something left to

@@ -428,7 +428,7 @@ export interface VerdictRow {
  * The line a 0.7.6 verdict carried where it started a round, before
  * `FIX_ROUND_STATUS` existed (#297). A pull request whose round was in flight
  * at the upgrade has only this to show for it, so the two readers of a round,
- * `readReviewHistory` and *Settle the fix-round budget*, count an
+ * `readReviewHistory` and `review:gate`, count an
  * `agent-review` status carrying it as a round too. For one release: the
  * statuses outlive it, but a round started under 0.7.6 has finished by then.
  */

@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import { GitHubError, type RestRequest, type Transport } from "../../engine/github.js";
 import { githubReader } from "../../engine/read.js";
 import { ADD_REVIEW, githubWrites, MARK_READY, REPLY_TO_THREAD, RESOLVE_THREAD } from "../../engine/writes.js";
-import { createWriters, WriteFailed } from "../../engine/writer.js";
+import { createWriters, WriteFailed, type PullRequestEdit } from "../../engine/writer.js";
+import { fakeGitHub, fakeWriters } from "./fakes.js";
 
 const REPO = "o/r";
 const SHA = "b".repeat(40);
@@ -140,6 +141,47 @@ describe("githubWrites", () => {
     await writers.workflow.editPullRequest(7, { title: "Title", body: (live) => `${live}spliced` });
 
     expect(sent.at(-1)).toEqual({ rest: { method: "PATCH", path: "/repos/o/r/pulls/7", body: { body: "spliced" } } });
+  });
+
+  /**
+   * Every shape an edit can take, title or body or both or neither, is judged
+   * against the live pull request, so one with nothing to change is `unchanged`
+   * and sends no PATCH, whichever field it names.
+   */
+  it("leaves a title-only edit that changes nothing, and sends one that does", async () => {
+    const { transport, sent } = recording((s) => ("rest" in s && s.rest.method === "GET" ? rawPull({ title: "Same" }) : {}));
+    const { writers, log } = writerOver(transport);
+
+    expect(await writers.workflow.editPullRequest(7, { title: "Same" })).toEqual({ outcome: "unchanged" });
+    expect(await writers.workflow.editPullRequest(7, {})).toEqual({ outcome: "unchanged" });
+    expect(await writers.workflow.editPullRequest(7, { title: "New" })).toEqual({ outcome: "applied" });
+
+    expect(sent.filter((s) => "rest" in s && s.rest.method === "PATCH")).toEqual([
+      { rest: { method: "PATCH", path: "/repos/o/r/pulls/7", body: { title: "New" } } },
+    ]);
+    expect(log.entries.map((e) => [e.target, e.outcome, e.calls])).toEqual([
+      ["#7 title", "unchanged", ["GET pull ok"]],
+      ["#7", "unchanged", ["GET pull ok"]],
+      ["#7 title", "applied", ["GET pull ok", "PATCH title ok"]],
+    ]);
+  });
+
+  /** The fake a command's test stands on logs what a run logs, for every shape of edit. */
+  it.each<[string, PullRequestEdit]>([
+    ["the same title", { title: "Title" }],
+    ["a new title", { title: "New" }],
+    ["the same body", { body: (live) => live }],
+    ["a new body", { body: (live) => `${live}!` }],
+    ["a body left alone", { body: () => undefined }],
+    ["the same title and a new body", { title: "Title", body: (live) => `${live}!` }],
+    ["nothing", {}],
+  ])("logs an edit of %s as the fake does", async (_name, edit) => {
+    const { transport } = recording((s) => ("rest" in s && s.rest.method === "GET" ? rawPull() : {}));
+    const real = writerOver(transport);
+    const fake = fakeWriters(fakeGitHub([{ number: 7, title: "Title", body: "Body" }]), ["workflow"], { editPullRequest: 1 });
+
+    expect(await real.writers.workflow.editPullRequest(7, edit)).toEqual(await fake.writers.workflow.editPullRequest(7, edit));
+    expect(real.log.entries).toEqual(fake.entries);
   });
 });
 

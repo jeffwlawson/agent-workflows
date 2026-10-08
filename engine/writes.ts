@@ -94,11 +94,13 @@ export const githubWrites = (repo: string, transport: Transport): Backend => {
       return { outcome: "applied" };
     },
     editPullRequest: async (call, number, edit) => {
-      const live = edit.body === undefined ? undefined : await livePull(call, number);
-      const body = live === undefined || edit.body === undefined ? undefined : edit.body(live.body);
+      // Read whatever the edit names, title or body or neither, so "nothing to
+      // change" is judged against the live pull request the same way for each.
+      const live = await livePull(call, number);
+      const body = edit.body?.(live.body);
       const patch = {
-        ...(edit.title === undefined || edit.title === live?.title ? {} : { title: edit.title }),
-        ...(body === undefined || body === live?.body ? {} : { body }),
+        ...(edit.title === undefined || edit.title === live.title ? {} : { title: edit.title }),
+        ...(body === undefined || body === live.body ? {} : { body }),
       };
       if (Object.keys(patch).length === 0) return { outcome: "unchanged" };
       await call(`PATCH ${Object.keys(patch).join("+")}`, () => transport.rest({ method: "PATCH", path: pull(number), body: patch }));

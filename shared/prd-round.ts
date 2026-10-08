@@ -14,7 +14,8 @@ import {
   type CriterionChange,
   type FollowUp,
 } from "./review-output.js";
-import { CATCH_UP_TRAILER, SLICE_TRAILER, sliceRanges, type BranchCommit, type SliceRanges } from "./slice-ranges.js";
+import { sliceRanges, type BranchCommit, type SliceRanges } from "./slice-ranges.js";
+import { CATCH_UP_TRAILER, SLICE_TRAILER } from "./record.js";
 
 /**
  * A review round on a **PRD PR** (PRD #222, #244): what the review is told

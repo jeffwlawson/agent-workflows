@@ -4,11 +4,11 @@ import {
   capFollowUps,
   embeddableJson,
   type EarlierFollowUps,
-  FOLLOW_UPS_LABEL,
   hasFollowUpsBlock,
   parseFollowUpsBlock,
   type FollowUp,
 } from "./review-output.js";
+import { FOLLOW_UPS_LABEL, FOLLOW_UP_STUB_LABEL, TRIAGE_LABEL } from "./record.js";
 
 /**
  * The filing decision (#48): everything gathered from GitHub in, the list of
@@ -22,18 +22,6 @@ import {
  * the duplicate rules can be argued with from plain objects, rather than
  * observed in production while holding `issues: write`.
  */
-
-/** The triage vocabulary's entry point. A stub arrives as work to judge, not as work to do. */
-export const TRIAGE_LABEL = "needs-triage";
-
-/**
- * And the label that says where a stub came from. Also the candidate filter the
- * gather half lists on: **list and match, never search**. A label filter is
- * exact, where issue search tokenizes on path punctuation and is fuzzy in both
- * directions — and a spurious search hit skips a real finding silently, which
- * is the one direction nothing here fails in.
- */
-export const FOLLOW_UP_STUB_LABEL = "pr-follow-up";
 
 export const STUB_LABELS: readonly string[] = [TRIAGE_LABEL, FOLLOW_UP_STUB_LABEL];
 

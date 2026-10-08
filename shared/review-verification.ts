@@ -1,10 +1,6 @@
 import { asRecord, asString } from "./common.js";
-import {
-  parseFindingMarkers,
-  RESOLUTION_MARKER,
-  withSeverityBadgesAsText,
-  type Severity,
-} from "./review-findings.js";
+import { parseFindingMarkers, withSeverityBadgesAsText, type Severity } from "./review-findings.js";
+import { RESOLUTION_MARKER } from "./record.js";
 
 /**
  * A finding an earlier review of this pull request raised and **nothing has yet

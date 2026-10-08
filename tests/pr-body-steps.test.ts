@@ -4,30 +4,29 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import {
-  DRAFT_NOTE_END,
-  DRAFT_NOTE_START,
-  readSummaryBlock,
-  SUMMARY_END,
-  SUMMARY_START,
-  summaryUpdate,
-} from "../shared/pr-summary.js";
+import { readSummaryBlock, summaryUpdate } from "../shared/pr-summary.js";
 import {
   OPENING_STATUS,
-  PROGRESS_END,
-  PROGRESS_START,
   renderPrdStatus,
   renderProgressList,
   spliceProgressList,
   spliceStatus,
-  STATUS_END,
-  STATUS_START,
   statusBlock,
   type ProgressInputs,
 } from "../shared/progress-list.js";
 import { REVIEW_URL_SLOT } from "../shared/prd-round.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+import {
+  DRAFT_NOTE_END,
+  DRAFT_NOTE_START,
+  PROGRESS_END,
+  PROGRESS_START,
+  STATUS_END,
+  STATUS_START,
+  SUMMARY_END,
+  SUMMARY_START,
+} from "../shared/record.js";
 
 /**
  * The pull request body's two writers (#218), run as the real `run:` blocks

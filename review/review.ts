@@ -4,7 +4,6 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
-  claudeAgent,
   fail,
   readInputs,
   scrubGitHubTokens,
@@ -12,6 +11,7 @@ import {
   workflowRunUrl,
   writers,
 } from "../shared/common.js";
+import { claudeAgent, runWithExtraction } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { applyCriteriaRulings, renderCriteriaForReview } from "../shared/acceptance-criteria.js";
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
@@ -62,7 +62,6 @@ import {
   countFixBeforeMerge,
   dedupeFollowUps,
   deriveVerdict,
-  FIX_ROUND_STATUS,
   followUpsCap,
   MAX_FOLLOW_UPS,
   recordFollowUps,
@@ -70,7 +69,6 @@ import {
   renderFollowUpsBlock,
   renderReviewPost,
   reviewOutputSchema,
-  VERDICT_CONTEXT,
   type CiResult,
   type FixRounds,
 } from "../shared/review-output.js";
@@ -88,7 +86,7 @@ import {
   type ResolutionReason,
 } from "../shared/review-verification.js";
 import { readRoundRecord, reviewHeader, roundCounts, type RoundCounts, type RoundScope } from "../shared/round-header.js";
-import { runWithExtraction } from "../shared/run-with-extraction.js";
+import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../shared/record.js";
 
 const INPUTS = readInputs(RUNNERS["review"].inputs);
 const { writeJson, writeText } = writers(RUNNERS["review"].outputs);

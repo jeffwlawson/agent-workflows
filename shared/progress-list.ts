@@ -1,6 +1,7 @@
 import type { Verdict } from "./review-output.js";
 import type { RoundCount, RoundCounts } from "./round-header.js";
 import type { SliceRanges } from "./slice-ranges.js";
+import { FINAL_REVIEW_MARK, PROGRESS_END, PROGRESS_START, STATUS_END, STATUS_START } from "./record.js";
 
 /**
  * The **progress list** in a PRD PR's body (PRD #222, #246): since #298 a
@@ -23,20 +24,9 @@ import type { SliceRanges } from "./slice-ranges.js";
  * unchanged state is byte for byte the one before it. The **status line** at
  * the top of the PRD PR's note is rendered from the same state, beside it.
  *
- * It also holds the final review's mark, which the finishing run records and
- * every review of the PRD PR reads its round off.
+ * Its markers, the status line's and the final review's mark are record
+ * strings, spelled in `shared/record.ts`.
  */
-
-export const PROGRESS_START = "<!-- agent:progress -->";
-export const PROGRESS_END = "<!-- /agent:progress -->";
-
-/**
- * The finishing run's record that the final review is requested: a review of
- * a PRD PR whose body carries it is the final review, and a preflight that
- * finds it on a PRD of more than one slice calls the PRD finished. Held equal
- * to the workflows' copies by a test.
- */
-export const FINAL_REVIEW_MARK = "<!-- agent:final-review requested -->";
 
 /** One of the parent's sub-issues, as the sub-issues API lists them. */
 export interface ProgressSubIssue {
@@ -225,15 +215,6 @@ export const renderProgressList = (inputs: ProgressInputs): string => {
     PROGRESS_END,
   ].join("\n");
 };
-
-/**
- * The **status line** (#298): one line at the top of the PRD PR's note, saying
- * where the chain is now, between its own markers. Workflow-owned like the
- * progress table, and rendered from the same state, so the two cannot
- * disagree. It links the latest review where the chain waits on it.
- */
-export const STATUS_START = "<!-- agent:status -->";
-export const STATUS_END = "<!-- /agent:status -->";
 
 const findings = (open: number | undefined): string | undefined =>
   open === undefined || open === 0 ? undefined : `${open} ${open === 1 ? "finding" : "findings"} open`;

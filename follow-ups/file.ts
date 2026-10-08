@@ -6,7 +6,7 @@ import {
   hasFollowUpsMarker,
 } from "../shared/follow-up-filing.js";
 import { planFollowUps } from "../shared/follow-up-plan.js";
-import { FOLLOW_UPS_LABEL } from "../shared/review-output.js";
+import { FOLLOW_UPS_LABEL } from "../shared/record.js";
 
 /**
  * File the out-of-scope findings a review recorded, once the pull request has

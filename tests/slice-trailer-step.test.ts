@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { SLICE_TRAILER } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+import { SLICE_TRAILER } from "../shared/record.js";
 
 /**
  * Runs `implement-prd`'s `Mark the slice's commits`, the real `run:` block read

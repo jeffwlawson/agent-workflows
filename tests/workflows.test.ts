@@ -20,28 +20,25 @@ import {
 import {
   CLOSER_LOOK,
   deriveVerdict,
-  FIX_ROUND_STATUS,
-  FOLLOW_UPS_LABEL,
   LEGACY_FIX_ROUND_STARTED,
   renderReviewBody,
   type Verdict,
-  VERDICT_CONTEXT,
   VERDICTS,
 } from "../shared/review-output.js";
 import { REVIEW_URL_SLOT } from "../shared/prd-round.js";
 import { rescueRef } from "../shared/rescue.js";
+import { finalReviewRequestedLines, OPENING_STATUS, renderPrdStatus, statusBlock } from "../shared/progress-list.js";
+import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import {
   FINAL_REVIEW_MARK,
-  finalReviewRequestedLines,
-  OPENING_STATUS,
-  renderPrdStatus,
-  STATUS_END,
-  STATUS_START,
-  statusBlock,
+  FIX_ROUND_STATUS,
+  FOLLOW_UPS_LABEL,
   PROGRESS_END,
   PROGRESS_START,
-} from "../shared/progress-list.js";
-import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+  STATUS_END,
+  STATUS_START,
+  VERDICT_CONTEXT,
+} from "../shared/record.js";
 
 /**
  * Guards `.github/workflows/**` against a failure class nothing else here

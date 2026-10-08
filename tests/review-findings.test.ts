@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { parseDiffLines } from "../shared/diff-lines.js";
 import { PACKAGE_NAME, VERSION } from "../shared/manifest.js";
 import {
-  FINDING_MARKER,
   findingMarker,
   isPreviouslyMissed,
   lastFindingMarker,
@@ -38,6 +37,7 @@ import {
   type ReviewOutput,
 } from "../shared/review-output.js";
 import { carriedFindings } from "../shared/review-verification.js";
+import { FINDING_MARKER } from "../shared/record.js";
 
 /**
  * Where a finding is posted is the workflow's decision, taken from the diff —

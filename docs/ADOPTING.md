@@ -396,7 +396,7 @@ token yourself: `init` says you can, and does neither.
 
 ## 2b. Choosing the model
 
-Defaults are baked into the runner package (`shared/common.ts` in its sources), and **most specific
+Defaults are baked into the runner package (`shared/agent.ts` in its sources), and **most specific
 wins**:
 
 | Source | Scope |

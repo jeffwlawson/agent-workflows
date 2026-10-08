@@ -284,7 +284,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   }
 
   try {
-    // Echoed for the reason the model id is (`shared/common.ts`): "which version
+    // Echoed for the reason the model id is (`shared/agent.ts`): "which version
     // produced this?" is the first question asked of output that looks wrong,
     // and the answer should not depend on reading the YAML as of that week.
     io.stdout(`agent-workflows ${VERSION}: ${name}\n`);

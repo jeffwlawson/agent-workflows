@@ -1,11 +1,7 @@
 import { isWorkflowBot, safeGh } from "./common.js";
-import {
-  FIX_ROUND_STATUS,
-  LEGACY_FIX_ROUND_STARTED,
-  VERDICT_CONTEXT,
-  type FixRoundProgress,
-} from "./review-output.js";
+import { LEGACY_FIX_ROUND_STARTED, type FixRoundProgress } from "./review-output.js";
 import type { CarriedFinding } from "./review-verification.js";
+import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "./record.js";
 
 /**
  * What the verdicts already posted on a pull request say about the review now

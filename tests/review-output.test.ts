@@ -22,7 +22,6 @@ import {
   followUpsCap,
   countFixBeforeMerge,
   deriveVerdict,
-  FOLLOW_UPS_MARKER,
   hasFollowUpsBlock,
   MAX_FOLLOW_UPS,
   MAX_HOW_CHECKED_WORDS,
@@ -41,13 +40,13 @@ import {
   PREVIOUSLY_MISSED_SUBTITLE,
   reviewOutputSchema,
   reviewRecord,
-  VERDICT_CONTEXT,
   VERDICTS,
   type CiResult,
   type FollowUp,
   type ReviewOutput,
   type VerdictRow,
 } from "../shared/review-output.js";
+import { FOLLOW_UPS_MARKER, VERDICT_CONTEXT } from "../shared/record.js";
 
 /** Every row a verdict can post: the table's three, and each cause of a closer look. */
 const EVERY_ROW: readonly VerdictRow[] = [

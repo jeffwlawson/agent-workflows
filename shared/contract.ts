@@ -72,7 +72,7 @@ const EMPTY = { required: false, default: "" } as const satisfies Input;
 
 /**
  * What a runner that drives the agent reads to start it: the model token, and
- * the model, resolved in `shared/common.ts`'s `agentModel` from the runner's
+ * the model, resolved in `shared/agent.ts`'s `agentModel` from the runner's
  * own override, then `AGENT_MODEL`, then the baked default. The override's
  * name is computed from the runner's (`update-branch` reads
  * `AGENT_MODEL_UPDATE_BRANCH`), so each runner below names its own, and a test

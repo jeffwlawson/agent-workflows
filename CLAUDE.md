@@ -93,6 +93,12 @@ equal to the two maps, kind for kind, with `init` and `doctor` the only subcomma
    the inputs, calls the function, and turns a throw into `fail()`, so throw a sentence a person
    can act on. Only a command may declare `LOOP_TOKEN`: in a runner's declaration it is a type
    error.
+   **A command loads nothing that loads the agent SDK.** The agent driver is `shared/agent.ts`,
+   the one module under `shared/` that imports it; `tests/agent-cli.test.ts` walks each command's
+   imports from `COMMANDS` and fails on reaching it, or on any module naming `GITHUB_OUTPUT`,
+   `GITHUB_ENV`, `GITHUB_PATH` or `GITHUB_STEP_SUMMARY`: a value an adapter needs leaves a command
+   as a declared output. So a helper that only reads GitHub or the environment never imports the
+   driver, and a record string a command writes lives in `shared/record.ts`, which imports nothing.
 3. **Folders follow the workflow** (ADR 0004). A workflow's folder, named after its reusable,
    holds its runner where it has one and every command that runs in its jobs. `shared/` holds
    only loop code two or more workflows use. The one folder drawn by layer is `engine/`, which
@@ -114,6 +120,7 @@ equal to the two maps, kind for kind, with `init` and `doctor` the only subcomma
    own loop* applies.
 6. **A change to anything a runner reads from the record** (a marker, a status context, a trailer,
    a branch pattern, a trusted login) is a change to `docs/platform-spec.md` §4 in the same commit.
+   Where TypeScript spells it, it spells it once, in `shared/record.ts`.
    Nothing checks it: YAML shell steps write those strings as well as TypeScript, with no one call
    shape a test could read, and the record is exactly what a second orchestrator trips on.
 7. **Prompts name no domain.** No consuming repo's vocabulary, and never the gate command — say

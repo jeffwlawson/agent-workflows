@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  FINAL_REVIEW_MARK,
   finalReviewRequestedLines,
-  PROGRESS_END,
-  PROGRESS_START,
   progressAtRoundEnd,
   renderPrdStatus,
   renderPrStatus,
@@ -11,14 +8,13 @@ import {
   sliceStates,
   spliceProgressList,
   spliceStatus,
-  STATUS_END,
-  STATUS_START,
   statusBlock,
   type ProgressInputs,
   type ProgressSubIssue,
 } from "../shared/progress-list.js";
 import type { RoundCounts } from "../shared/round-header.js";
 import { sliceRanges, type BranchCommit } from "../shared/slice-ranges.js";
+import { FINAL_REVIEW_MARK, PROGRESS_END, PROGRESS_START, STATUS_END, STATUS_START } from "../shared/record.js";
 
 /**
  * The PRD PR's progress list (#246), a table since #298: one row per

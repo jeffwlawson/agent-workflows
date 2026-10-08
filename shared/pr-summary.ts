@@ -1,3 +1,12 @@
+import {
+  DRAFT_NOTE_END,
+  DRAFT_NOTE_START,
+  FINAL_SUMMARY_MARK,
+  SUMMARY_END,
+  SUMMARY_START,
+  summaryHeadMark,
+} from "./record.js";
+
 /**
  * The **summary block** in a pull request's body (#218): the one part of the
  * body the review writes, between two markers the opening run put there.
@@ -12,17 +21,12 @@
  * the body as it stands when the review is posted rather than as it was read
  * here: a review spends minutes waiting on CI, and a maintainer's edit in that
  * window is outside the block and must survive it. So the splice is the posting
- * job's, and this file hands it the markers to find rather than the posting job
- * keeping a second copy of them.
+ * job's, and `shared/record.ts` hands it the markers to find rather than the
+ * posting job keeping a second copy of them.
  */
 
-export const SUMMARY_START = "<!-- agent:summary -->";
-export const SUMMARY_END = "<!-- /agent:summary -->";
-
 /**
- * The head a summary was written at, as the first line inside the block. What
- * the update rule reads: a summary is rewritten when the pull request has moved
- * since, and left alone when it has not.
+ * The head a summary was written at (`summaryHeadMark`), read back.
  *
  * In the block rather than read off the verdict history, which says whether a
  * *verdict* has seen the commits rather than whether a *summary* has: a review
@@ -31,29 +35,7 @@ export const SUMMARY_END = "<!-- /agent:summary -->";
  */
 const HEAD_MARK = /<!-- agent:summary-head ([0-9a-f]{7,64}) -->\r?\n?/g;
 
-const headMark = (sha: string): string => `<!-- agent:summary-head ${sha} -->`;
-
-/**
- * Written inside the block by a PRD PR's **final review** (#247), beside the
- * head mark. The last slice round wrote the block at the same head the final
- * review reads, so the head alone would leave the final review's title and PRD
- * sections unwritten: a block without this mark is due to the final review
- * whatever head it was written at.
- */
-export const FINAL_SUMMARY_MARK = "<!-- agent:summary-final -->";
-
 const FINAL_MARK = /<!-- agent:summary-final -->\r?\n?/g;
-
-/**
- * The PRD PR frame's **draft-only** text (#247): the note that the PR stays a
- * draft until every slice is done, between these markers, which the opening
- * run writes and the final review's write of the summary removes, markers and
- * all. Once the final review runs every slice is done, and a ready PRD PR
- * carries nothing that says otherwise. Held equal to `implement-prd.yml`'s
- * frame by a test.
- */
-export const DRAFT_NOTE_START = "<!-- agent:draft-note -->";
-export const DRAFT_NOTE_END = "<!-- /agent:draft-note -->";
 
 /**
  * The block's text, and the head it was written at where a review wrote it.
@@ -138,7 +120,7 @@ export const summaryUpdate = (
           summary: {
             start: SUMMARY_START,
             end: SUMMARY_END,
-            inner: `${headMark(headSha)}\n${final ? `${FINAL_SUMMARY_MARK}\n` : ""}${written.summary}`,
+            inner: `${summaryHeadMark(headSha)}\n${final ? `${FINAL_SUMMARY_MARK}\n` : ""}${written.summary}`,
           },
         }),
   };

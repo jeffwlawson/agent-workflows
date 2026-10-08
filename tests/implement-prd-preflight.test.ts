@@ -4,22 +4,27 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { DRAFT_NOTE_END, DRAFT_NOTE_START, SUMMARY_END, SUMMARY_START } from "../shared/pr-summary.js";
 import {
-  FINAL_REVIEW_MARK,
   finalReviewRequestedLines,
-  PROGRESS_END,
-  PROGRESS_START,
   renderPrdStatus,
   renderProgressList,
-  STATUS_END,
-  STATUS_START,
   statusBlock,
   type ProgressInputs,
 } from "../shared/progress-list.js";
 import { renderCriteriaGroup, VERDICTS, type CriterionResult } from "../shared/review-output.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+import {
+  DRAFT_NOTE_END,
+  DRAFT_NOTE_START,
+  FINAL_REVIEW_MARK,
+  PROGRESS_END,
+  PROGRESS_START,
+  STATUS_END,
+  STATUS_START,
+  SUMMARY_END,
+  SUMMARY_START,
+} from "../shared/record.js";
 
 /**
  * Runs `implement-prd`'s preflight — the real `run:` block, read out of

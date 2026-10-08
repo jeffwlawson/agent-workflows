@@ -2,7 +2,6 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
-  claudeAgent,
   fail,
   fetchTrustedComments,
   fetchTrustedIssue,
@@ -11,6 +10,7 @@ import {
   scrubGitHubTokens,
   writers,
 } from "../shared/common.js";
+import { claudeAgent } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";

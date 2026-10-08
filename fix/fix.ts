@@ -3,7 +3,6 @@ import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
-  claudeAgent,
   fail,
   git,
   readInputs,
@@ -11,6 +10,7 @@ import {
   sh,
   writers,
 } from "../shared/common.js";
+import { claudeAgent, runWithExtraction } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
 import {
@@ -30,7 +30,6 @@ import {
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { fixHeader, fixScope, readRoundRecord, roundCounts, withHeader } from "../shared/round-header.js";
 import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
-import { runWithExtraction } from "../shared/run-with-extraction.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
 const INPUTS = readInputs(RUNNERS["fix"].inputs);

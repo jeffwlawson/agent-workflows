@@ -1,8 +1,8 @@
 import { gh, isWorkflowBot } from "./common.js";
 import { fetchReviews } from "./follow-up-filing.js";
 import type { FilingReview } from "./follow-up-plan.js";
-import { BODY_HEADING } from "./review-output.js";
 import type { SliceRanges } from "./slice-ranges.js";
+import { BODY_HEADING, FIX_LABEL } from "./record.js";
 
 /**
  * The **header** every top-level review and fix comment opens with (#298), and
@@ -203,7 +203,7 @@ export const readRoundRecord = (repo: string, prNumber: string): RoundRecord => 
     `repos/${repo}/issues/${prNumber}/events`,
     "--paginate",
     "--jq",
-    '.[] | select(.event == "labeled" and .label.name == "agent:fix") | .created_at',
+    `.[] | select(.event == "labeled" and .label.name == "${FIX_LABEL}") | .created_at`,
   ])
     .split("\n")
     .map((line) => line.trim())

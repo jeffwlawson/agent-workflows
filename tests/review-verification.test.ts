@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  findingMarker,
-  RESOLUTION_MARKER,
-  severityBadge,
-} from "../shared/review-findings.js";
+import { findingMarker, severityBadge } from "../shared/review-findings.js";
 import {
   carriedFindings,
   closingReplyReason,
@@ -17,6 +13,7 @@ import {
   type CarriedFinding,
   type VerificationEntry,
 } from "../shared/review-verification.js";
+import { RESOLUTION_MARKER } from "../shared/record.js";
 
 /**
  * The half of #109 decision 1 that is a derivation rather than a workflow step:

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { asRecord, asString } from "./common.js";
 import { unquotePath } from "./diff-lines.js";
 import { PACKAGE_NAME, VERSION } from "./manifest.js";
+import { FINDING_MARKER, RESOLUTION_MARKER } from "./record.js";
 
 /**
  * How bad a finding is, for **display and ordering and nothing else** (#109,
@@ -285,26 +286,6 @@ export interface PlacedFinding {
   readonly placement: Placement;
   readonly finding: Finding;
 }
-
-/**
- * What a reader selects a finding's id on, and nothing more than that. The
- * marker is a **selector, not a control**, exactly as the follow-ups block's
- * is: anyone who can comment can type one, so whatever reads this establishes
- * that the thread is the loop's own by who opened it.
- */
-export const FINDING_MARKER = "agent-finding";
-
-/**
- * The other marker this loop writes into a body it posts: the one on a closing
- * reply, saying which reason a thread was closed under (#133). Its format and
- * its reader live with the replies that carry it
- * (`shared/review-verification.ts`); what lives here is the **name**, because
- * the strip below is by name and this is the file that strips.
- *
- * A selector rather than a control, exactly as `FINDING_MARKER` is, and read
- * only off a comment the workflow bot wrote.
- */
-export const RESOLUTION_MARKER = "agent-resolution";
 
 /**
  * The marker as written. One format, one place it is spelled.

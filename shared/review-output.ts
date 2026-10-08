@@ -20,6 +20,7 @@ import {
   type CarriedFinding,
   type VerificationEntry,
 } from "./review-verification.js";
+import { BODY_HEADING, FIX_ROUND_STATUS, FOLLOW_UPS_LABEL, FOLLOW_UPS_MARKER } from "./record.js";
 
 /**
  * A problem the review found and this pull request will not fix — a defect in a
@@ -416,35 +417,6 @@ export interface VerdictRow {
    */
   readonly startsFixRound?: true;
 }
-
-/**
- * The context the verdict is posted under. One per commit per context, so a
- * later review of the same commit replaces its own verdict and nothing else —
- * and a new commit carries none until one is posted for it, which is what stops
- * a stale approval surviving a push.
- */
-export const VERDICT_CONTEXT = "agent-review";
-
-/**
- * The record that a review asked for an automatic fix round (#297): a second
- * status, under a context of its own, posted beside the verdict on the same
- * commit and linking the same review, only where the row has
- * `startsFixRound`.
- *
- * The verdict's line used to be that record: a fix round's status line was
- * its own, and the budget counted rounds by it, word for word. #201's
- * *Verdict lines* made every line fixed whatever the state, so the fact moved
- * here. It is what *Settle the fix-round budget* counts rounds by and what
- * `readReviewHistory` reads a fix round off, matched to its verdict by link.
- *
- * `success`, because it records a step taken rather than something left to
- * do, and a `pending` one would read as a check that never finished.
- */
-export const FIX_ROUND_STATUS = {
-  context: "agent-fix-round",
-  state: "success",
-  description: "This review asked for an automatic fix round.",
-} as const;
 
 /**
  * The line a 0.7.6 verdict carried where it started a round, before
@@ -1128,20 +1100,6 @@ const unresolvedSentence = (record: ReviewRecord): string => {
   const head = `${record.findings} ${plural(record.findings, "finding is", "findings are")} open`;
   return clauses.length === 0 ? `${head}.` : `${head}, ${clauses.join(", ")}.`;
 };
-
-/**
- * The fixed heading the body opens with.
- *
- * Every agent in the loop posts as `github-actions[bot]`, so in the timeline a
- * review overview and a fix run's thread replies look like the same author
- * saying more things. A heading marks the one to read, and this wording matches
- * the `agent-review` status and the `agent:review` label — the way Copilot's
- * overview opens with "Copilot review overview".
- *
- * Level 2 rather than level 1: `#` renders very large inside a comment, and the
- * assessment heading below it stays level 3.
- */
-export const BODY_HEADING = "## Agent review";
 
 /**
  * How this was checked: the collapsed section that, with the summary block in
@@ -2167,16 +2125,6 @@ export const recordFollowUps = (
 };
 
 /**
- * What a reader selects the payload on, and nothing more than that. The
- * marker is a **selector, not a control**: it says where the block is and
- * contributes nothing to trusting it. Whatever reads this establishes that the
- * review is the runner's own by checking who posted it and whether it was
- * edited — never by the presence of this string, which anyone who can comment
- * can type.
- */
-export const FOLLOW_UPS_MARKER = "agent-follow-ups";
-
-/**
  * The payload shape a reader gets back. Versioned because the review runner and
  * whatever reads this are same-version at *install* time and not at *read*
  * time: a review posted before a release is read after it. The field is the
@@ -2189,9 +2137,6 @@ export const FOLLOW_UPS_MARKER = "agent-follow-ups";
  * body the previous release had already posted.
  */
 export const FOLLOW_UPS_VERSION = 1;
-
-/** The label whose removal opts a pull request out of having these filed. */
-export const FOLLOW_UPS_LABEL = "agent:follow-ups";
 
 /**
  * JSON that survives being put inside an HTML comment.

@@ -23,19 +23,18 @@ vi.mock("node:fs", async (importOriginal) => {
 
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import {
-  agentModel,
   fetchPullRequestHeading,
   fetchTrustedComments,
   fetchTrustedIssue,
   ghOutcome,
   input,
   isTrustedAuthor,
-  overrideVar,
   readInputs,
   safeGh,
   workflowRunUrl,
   writers,
 } from "../shared/common.js";
+import { agentModel, overrideVar } from "../shared/agent.js";
 import { scrubGitHubTokens } from "../shared/env.js";
 import { COMMANDS, EVERY_SUBCOMMAND, RUNNERS, type Input, type Inputs, type Outputs, type Runner, type RunnerInputs } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";

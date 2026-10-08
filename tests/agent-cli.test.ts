@@ -8,6 +8,7 @@ import { parse } from "yaml";
 import { run, SUBCOMMANDS, type CliIo } from "../cli.js";
 import { file as fileFollowUps } from "../follow-ups/file.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
+import * as record from "../shared/record.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import { copyAssets } from "../scripts/copy-assets.js";
 import { callersIn, readInstalledCallers, REFERENCE_CALLER_FILES } from "../setup/callers.js";
@@ -373,7 +374,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
    *
    * The handover line is asserted on the same invocation, since it is printed
    * before the runner is reached: every run says which version it is on, for the
-   * reason `shared/common.ts` echoes the model id.
+   * reason `shared/agent.ts` echoes the model id.
    */
   it.each([...runnerDirs, ...Object.keys(COMMANDS)])(
     "%s: refuses arguments rather than ignoring them",
@@ -597,6 +598,161 @@ describe("every input a runner reads goes through its declaration", () => {
     ].join("\n");
 
     expect(envReads(text)).toEqual([4, 5, 6, 7]);
+  });
+});
+
+/**
+ * What a command loads, it loads beside the write token (ADR 0004): a command
+ * that imports the agent driver, even only to name a marker, puts the agent
+ * SDK and everything it pulls in into the process holding `LOOP_TOKEN`. So the
+ * walk starts at each command in `COMMANDS` and follows every import that runs
+ * (a type-only import is erased, and loads nothing), and fails on reaching the
+ * driver, `shared/agent.ts`, or any module that loads the SDK itself.
+ *
+ * The same walk keeps a command's result out of Actions' step files. A value an
+ * adapter needs leaves a command only as a declared output, which is what a
+ * second orchestrator reads; a write to `GITHUB_OUTPUT` and its siblings is
+ * state only Actions reads back. Workflow-command lines on stdout
+ * (`::warning::` and the like) are inert text outside Actions, and allowed.
+ */
+describe("a command's imports never reach the agent driver", () => {
+  const DRIVER = "shared/agent.ts";
+  const SDK = /^@ai-hero\/sandcastle(\/|$)/;
+  const STEP_FILES = /\bGITHUB_(OUTPUT|ENV|PATH|STEP_SUMMARY)\b/;
+
+  interface Module {
+    /** Relative modules it loads, as paths from the package root. */
+    readonly local: readonly string[];
+    /** Packages it loads, by specifier. */
+    readonly packages: readonly string[];
+    /** Code (not comments) naming one of Actions' step files. */
+    readonly stepFiles: readonly string[];
+  }
+
+  /** What `text`, the module at `rel`, loads and names. */
+  const read = (rel: string, text: string): Module => {
+    const file = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true);
+    const specifiers: string[] = [];
+    const stepFiles: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && !node.importClause?.isTypeOnly) {
+        specifiers.push(node.moduleSpecifier.text);
+      }
+      if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) && !node.isTypeOnly) {
+        specifiers.push(node.moduleSpecifier.text);
+      }
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments[0] !== undefined &&
+        ts.isStringLiteralLike(node.arguments[0])
+      ) {
+        specifiers.push(node.arguments[0].text);
+      }
+      const named = ts.isIdentifier(node) ? node.text : ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node) ? node.text : "";
+      const match = STEP_FILES.exec(named);
+      if (match) stepFiles.push(match[0]);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const local = specifiers
+      .filter((s) => s.startsWith("."))
+      .map((s) => path.posix.normalize(path.posix.join(path.posix.dirname(rel), s.replace(/\.js$/, ".ts"))));
+    return { local, packages: specifiers.filter((s) => !s.startsWith(".")), stepFiles };
+  };
+
+  /** Every module `entry` loads, directly or not, itself included. */
+  const graph = (entry: string): ReadonlyMap<string, Module> => {
+    const seen = new Map<string, Module>();
+    const pending = [entry];
+    for (let rel = pending.pop(); rel !== undefined; rel = pending.pop()) {
+      if (seen.has(rel)) continue;
+      const module = read(rel, fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8"));
+      seen.set(rel, module);
+      pending.push(...module.local);
+    }
+    return seen;
+  };
+
+  /** The modules in a graph that are, or load, the agent driver. */
+  const driverIn = (modules: ReadonlyMap<string, Module>): string[] =>
+    [...modules].filter(([rel, module]) => rel === DRIVER || module.packages.some((p) => SDK.test(p))).map(([rel]) => rel);
+
+  it.each(commandModules)("%s: loads nothing that loads the agent SDK", (module) => {
+    expect(driverIn(graph(module))).toEqual([]);
+  });
+
+  it.each(commandModules)("%s: names none of Actions' step files", (module) => {
+    const named = [...graph(module)].flatMap(([rel, m]) => m.stepFiles.map((name) => `${rel}: ${name}`));
+
+    expect(named).toEqual([]);
+  });
+
+  /** The walk can fail: a runner's graph reaches the driver, through the module that is it. */
+  it("finds the driver from a runner that starts the agent", () => {
+    expect(driverIn(graph("review/review.ts"))).toContain(DRIVER);
+  });
+
+  it("finds the SDK in the driver, and in no other module under shared/", () => {
+    const loaders = fs
+      .readdirSync(path.join(PACKAGE_DIR, "shared"))
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => `shared/${name}`)
+      .filter((rel) => read(rel, fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8")).packages.some((p) => SDK.test(p)));
+
+    expect(loaders).toEqual([DRIVER]);
+  });
+
+  it("reads loads and names from code, not comments, and not type-only imports", () => {
+    const text = [
+      'import type { A } from "./a.js";',
+      'import { type B } from "./b.js";',
+      'export { C } from "./c.js";',
+      'export type { D } from "./d.js";',
+      'import * as sdk from "@ai-hero/sandcastle";',
+      'const lazy = () => import("../e.js");',
+      "// writes GITHUB_OUTPUT",
+      'const step = process.env["GITHUB_STEP_SUMMARY"];',
+      "const path = `${GITHUB_ENV}`;",
+      'console.log("::warning::GITHUB_OUTPUTS is not a step file");',
+    ].join("\n");
+
+    expect(read("shared/x.ts", text)).toEqual({
+      local: ["shared/b.ts", "shared/c.ts", "e.ts"],
+      packages: ["@ai-hero/sandcastle"],
+      stepFiles: ["GITHUB_STEP_SUMMARY", "GITHUB_ENV"],
+    });
+  });
+});
+
+/**
+ * The record strings a command writes sit in a module that imports nothing, so
+ * naming one can never pull anything else into a command's process.
+ */
+describe("the record strings import nothing", () => {
+  it("shared/record.ts has no import or re-export", () => {
+    const file = ts.createSourceFile("record.ts", fs.readFileSync(path.join(PACKAGE_DIR, "shared", "record.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+    const loads: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node)) loads.push(node.getText());
+      if (ts.isExportDeclaration(node) && node.moduleSpecifier) loads.push(node.getText());
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) loads.push(node.getText());
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+
+    expect(loads).toEqual([]);
+  });
+
+  /** Each label spelled there is one `init` installs or advises, so the two cannot drift apart. */
+  it("spells each label as init names it", () => {
+    const installed = [...TRIGGER_LABELS, ...STATE_LABELS, ...Object.values(ADVISORY_LABELS).flat()].map((label) => label.name);
+    const spelled = Object.entries(record)
+      .filter(([name]) => name.endsWith("_LABEL"))
+      .map(([, value]) => value);
+
+    expect(spelled.length).toBeGreaterThan(0);
+    expect([...spelled].sort()).toEqual([...installed].sort());
   });
 });
 

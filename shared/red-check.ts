@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import { asArray, asRecord, asString } from "./common.js";
 import { MERGE_DANGER_HEADING } from "./merge-danger.js";
 import { embeddableJson, type CiResult, type TestSketch } from "./review-output.js";
+import { RED_TESTS_MARKER } from "./record.js";
 
 /**
  * The red check's evidence, as the review reads it (#232, PRD #212).
@@ -608,12 +609,6 @@ export interface RedTestsRecord {
   /** Red tests past the cap, counted and not named. */
   readonly more: number;
 }
-
-/**
- * What a reader selects the record on: a selector, not a control, as
- * `FOLLOW_UPS_MARKER` is. Only a review this loop posted is read.
- */
-export const RED_TESTS_MARKER = "agent-red-tests";
 
 /** Versioned for the reason the follow-ups payload is: a review posted before a release is read after it. */
 export const RED_TESTS_VERSION = 1;

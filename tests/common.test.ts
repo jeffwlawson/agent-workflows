@@ -832,8 +832,14 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
       }
     });
 
-    /** Empty where unset, the reading each of them had before it was declared. */
+    /**
+     * Empty where unset, the reading each of them had before it was declared.
+     * One subcommand's optional input can be another's required one, set
+     * above (`LOOP_TOKEN` is `review:conclude`'s and `review:publish`'s), so
+     * each is unset here first.
+     */
     it("reads each optional input as its default where it is not given", () => {
+      for (const [name, declaration] of declared(runner)) if (!declaration.required) delete process.env[name];
       const values: Readonly<Record<string, string>> = readInputs(inputsOf(runner));
       for (const [name, declaration] of declared(runner)) {
         if (!declaration.required) expect(values[name], name).toBe(declaration.default);

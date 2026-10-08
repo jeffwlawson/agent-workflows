@@ -257,6 +257,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./review/publish.js")).publish,
     "Resolve the threads a review closed and post the review (no model).",
   ),
+  "review:conclude": writingCommand(
+    "review:conclude",
+    async () => (await import("./review/conclude.js")).conclude,
+    "End a review run however it ended: its labels, its failure comment and the hand-off (no model).",
+  ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
 };
 

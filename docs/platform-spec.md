@@ -127,7 +127,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, and `review:conclude` its comments, its error verdict and the labels nothing fires on. |
 
 Each runner's and command's own inputs are in its workflow's section, §6 to §11.
 
@@ -357,7 +357,7 @@ only a status whose creator is the loop's identity (§4.1).
 
 | Context | What it records | Written by | Read by |
 |---|---|---|---|
-| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by the orchestrator | `review`, to know what changed since the last verdict |
+| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude` | `review`, to know what changed since the last verdict |
 | `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict |
 
 **Commit trailers.** Read from the PRD branch's first-parent log.
@@ -587,12 +587,14 @@ and `review:publish` writes every final string from them.
 
 > **Actions orchestrator:** before the runner, the review job waits up to 15 minutes for the pull
 > request's other checks and writes `CI_STATUS_FILE` and `CI_RESULT_FILE`, and a separate job may
-> run the red check. A posting job then mints the loop's token, sets up Node, and runs
-> `review:publish`, which answers and resolves the verified threads, posts the review, marks the
-> pull request with `agent:follow-ups`, writes the title, the summary and the status line, and
-> posts the verdict. Its shell steps then read the review's URL from `published.json` and mark the
-> pull request ready on an approval, and it keeps `publish`'s write log as an artifact. It adds
-> `agent:fix` where `verdict.json` says a fix round starts, and on a slice round runs the advance:
+> run the red check. A posting job then mints the loop's token, sets up Node, downloads the
+> hand-over, and runs `review:publish`, which answers and resolves the verified threads, posts the
+> review, marks the pull request with `agent:follow-ups`, writes the title, the summary and the
+> status line, and posts the verdict. `review:conclude` then ends the run however it ended: the
+> refusal's note, or the error verdict and the failure comment, or the ready mark; `agent:review`
+> off; and the hand-off, `agent:review` again where the head moved, else `agent:fix` where the
+> review asked for a fix round. A glue step copies its `ended.json` into the job's outputs, and the
+> job keeps both commands' write logs as one artifact. On a slice round the advance job follows:
 > `agent:implement` back on the PRD parent on an approval, or the park comment on its parent
 > otherwise.
 
@@ -666,9 +668,93 @@ run's, and the command goes on with its URL.
 > **Actions orchestrator:** the posting job's mint runs first, so the command holds the loop's
 > token; it is the one step handed both tokens, the workflow's as `GH_TOKEN`. `REVIEWED_SHA` is the review job's `sha`
 > output, `BRANCH` is the head the event names, `REVIEW_DIR` is where the review's artifact is downloaded, and `OUTPUT_DIR` is a
-> directory of its own under `runner.temp`, whose `published.json` a glue step turns into the
-> `review-url` the steps after it and the advance job read. A failure is commented on the pull
-> request, with `agent:blocked`, by the posting job's failure step.
+> directory of its own under `runner.temp`, whose `published.json` and `failure_reason.txt`
+> `review:conclude` reads. A failure is commented on the pull request, with `agent:blocked`, by
+> `review:conclude`.
+
+### `review:conclude`
+
+Ends every review run, success included, in the loop's one order: every result posted, then
+`agent:review` off, then the label that names the next step. It runs no model and needs no
+checkout. It is told how the run went rather than reading it off which steps ran: the review's
+result and outputs, and the outcome of each step the orchestrator ran before it, and it works out
+the ending from them. Each is one of:
+
+- **A refusal** (`PROCEED` is `false`): the comment `` **`agent:review` didn't run:** `` and
+  `REFUSAL`, then `agent:review` off, then `agent:blocked` where `BLOCKED` is `true`.
+- **A review that stopped before deciding** (`PROCEED` is neither): `agent:review` off, and nothing
+  else, since nothing is known to say.
+- **A run that did not finish**, the review's or the posting's: the `agent-review` status `error`
+  on `REVIEWED_SHA`, then the failure comment, then `agent:review` off, then `agent:blocked`. The
+  comment's reason is, in order: the time limit or a cancel where the review was cancelled; the
+  review's refusal or failure reason where it failed; and where the review finished, the first of
+  the mint, the download and publish that did not succeed: a fixed sentence for the mint and the
+  download, publish's `failure_reason.txt`, or a cancel where that step was cancelled or skipped.
+- **A posted review**: `agent:blocked` off; the ready mark, unless a fix round is about to start,
+  and on a PRD PR only on the final review's approval; `agent:review` off; then, where the pull
+  request is open and its head has moved on from `REVIEWED_SHA`, `agent:review` again with the
+  loop's token, or a comment saying it was not asked for where `LOOP_TOKEN_SOURCE` is neither `app`
+  nor `pat`, or nothing where another trigger label is on. Otherwise, on *changes recommended*
+  with `FIX_ROUND` `true`, `agent:fix`, removed and added with the loop's token, unless it is
+  already on, a newer `agent-review` verdict than this review's stands on the head, or the head
+  lacks this review's `agent-fix-round` status. A round that does not start where it should is said
+  on the pull request, which is marked ready off a PRD PR, and the command fails.
+
+Every write but the last case's fix round is tolerated: one GitHub refuses is a warning, so a run
+that cannot comment still takes its label off. The labels a run fires on (`agent:review` again,
+`agent:fix`) and the ready mark are made with `LOOP_TOKEN`; everything else with `GH_TOKEN`.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow. Empty where it was not minted, which is one of the endings this reports. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch, which tells a PRD PR. |
+| `REVIEW_RESULT` | required | | How the review ended: `success`, `failure` or `cancelled`. |
+| `PROCEED` | optional | `""` | `true` where the pre-flight let the review go ahead, `false` where it refused. |
+| `REFUSAL` | optional | `""` | The pre-flight's refusal, where it refused. |
+| `BLOCKED` | optional | `""` | `true` where the refusal needs a maintainer, and adds `agent:blocked`. |
+| `REVIEWED_SHA` | optional | `""` | The commit the review read; the error verdict goes on it, and a head that is not it has moved. |
+| `VERDICT` | optional | `""` | The verdict's key. |
+| `FIX_ROUND` | optional | `""` | `true` where the review asked for an automatic fix round. |
+| `ROUND` | optional | `""` | `final` on a PRD PR's final review. |
+| `FAILURE_REASON` | optional | `""` | The reason a failed review gave. |
+| `REFUSAL_REASON` | optional | `""` | A variable the review refused before reviewing anything. |
+| `TIMED_OUT` | optional | `""` | `true` where a cancelled review ran its whole limit. |
+| `TIMEOUT_MINUTES` | optional | `""` | That limit, for the comment. |
+| `MINT_OUTCOME` | optional | `""` | The outcome of minting `LOOP_TOKEN`: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
+| `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the review's hand-over. |
+| `PUBLISH_OUTCOME` | optional | `""` | The same, for `review:publish`. |
+| `PUBLISH_DIR` | directory | | `review:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
+| `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the failure comment and the error verdict name. |
+| `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
+| `GITHUB_RUN_ID` | optional | `""` | See `GITHUB_SERVER_URL`. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `ended.json` | `moved`, whether the head moved while the review ran, and `reviewUrl`, the posted review's, where there is one. Written before the fix round's hand-off, so a round that does not start still has it. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The pull request `PR_NUMBER` names, once the review is posted, for its state, its head and its
+  trigger labels.
+- Where it would start a fix round, the statuses on that head, for the newest `agent-review` and
+  the `agent-fix-round` beside it, counting only the loop's own (§4.1).
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the posting job's step after publish, run `always()`. It is told the
+> review job's result and outputs, and the outcomes of the mint, the download and publish, and
+> reads publish's directory. `ended.json` is copied by a glue step into the job's two outputs,
+> `moved` and `review-url`, which the advance job reads with the job's result. It fails only on a
+> fix round that did not start, so the job's result still means "everything posted".
 
 ## 9. `fix`
 

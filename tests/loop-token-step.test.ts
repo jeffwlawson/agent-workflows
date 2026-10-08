@@ -350,10 +350,8 @@ describe.skipIf(!CAN_RUN)("the PR side's writes, by the resolver's source", () =
     });
   });
 
-  describe.each([
-    ["review", "post-review"],
-    ["fix", "publish"],
-  ] as const)("%s's ready-mark", (command, job) => {
+  /** Review's is `review:conclude`'s (#419), held in `tests/review/conclude.test.ts`. */
+  describe.each([["fix", "publish"]] as const)("%s's ready-mark", (command, job) => {
     it.each(["app", "pat", "workflow"])("marks the PR ready with the resolved token (source %j)", (source) => {
       const outcome = execute(jobStep(command, job, "Mark PR ready for review"), { GH_TOKEN: tokenOf(source), PR_NUMBER: "152" });
 

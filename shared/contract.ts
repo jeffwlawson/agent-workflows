@@ -311,6 +311,20 @@ export const readsFrom = <P extends Runner, const F extends DirectoryFiles>(
 ): DirectoryInput<F> => ({ required: true, producer, files });
 
 /**
+ * The same, from a command: `_declared` is the producing command's own
+ * declaration, which is declared ahead of `COMMANDS` so that a command after
+ * it in the map can name its outputs, and is read for its type alone. Each
+ * name has to be one of them.
+ * `tests/platform-spec.test.ts` holds `producer` to a command whose outputs
+ * these are.
+ */
+const readsFromCommand = <O extends Outputs, const F extends DirectoryFiles>(
+  producer: string,
+  _declared: { readonly outputs: O },
+  files: F & Readonly<Record<Exclude<keyof F, O[number]>, never>>,
+): DirectoryInput<F> => ({ required: true, producer, files });
+
+/**
  * What a command that writes through the engine's writer reads beside
  * `GH_TOKEN` (ADR 0004): the token whose writes start the loop's next
  * workflow, and where it came from, `app`, `pat` or `workflow`. A command
@@ -324,11 +338,45 @@ const LOOP = {
 } as const satisfies Inputs;
 
 /**
+ * The same two, for a command that has to run where the loop's token was
+ * never minted: `review:conclude`, since a failed mint is one of the endings
+ * it reports (ADR 0004). Empty is "no loop token", and the command makes no
+ * write that needs one.
+ */
+const LOOP_IF_MINTED = {
+  LOOP_TOKEN: EMPTY,
+  LOOP_TOKEN_SOURCE: EMPTY,
+} as const satisfies Inputs;
+
+/**
  * The write log a command that writes through the engine's writer keeps, one
  * line per write as it lands and a last line for how the command ended
  * (ADR 0005).
  */
 const WRITE_LOG = "write_log.jsonl";
+
+/**
+ * `review:publish`, declared ahead of `COMMANDS` so that `review:conclude`
+ * can read its outputs (`readsFromCommand`). See `COMMANDS`.
+ */
+const REVIEW_PUBLISH = {
+  inputs: {
+    ...EVERY_SUBCOMMAND,
+    ...LOOP,
+    PR_NUMBER: REQUIRED,
+    BRANCH: REQUIRED,
+    REVIEWED_SHA: REQUIRED,
+    REVIEW_DIR: readsFrom("review", {
+      "findings.json": "always",
+      "review_body.json": "always",
+      "thread_resolutions.json": "always",
+      "pr_summary.json": "sometimes",
+      "verdict.json": "always",
+    }),
+    ...RUN_LINK,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+} as const satisfies CommandContract;
 
 /**
  * Every command, by the subcommand that invokes it, `<workflow>:<step>`: the
@@ -345,6 +393,14 @@ const WRITE_LOG = "write_log.jsonl";
  *   it is a PRD PR, whose status line is the advance job's.
  *   `published.json` is the posted review's URL, written the moment it is
  *   posted.
+ * - `review:conclude` ends every run, success included: the refusal's note,
+ *   the error verdict and the failure comment, the ready mark, `agent:review`
+ *   off, and the hand-off after it. It is told how the review job and the
+ *   posting job's steps ended (`REVIEW_RESULT`, and `MINT_OUTCOME`,
+ *   `DOWNLOAD_OUTCOME` and `PUBLISH_OUTCOME`, each a step's outcome, empty
+ *   where it did not run), and the review job's outputs, and reads what
+ *   publish wrote through `PUBLISH_DIR`. `ended.json` is whether the head
+ *   moved while the review ran, and the posted review's URL.
  */
 export const COMMANDS = {
   "follow-ups:file": {
@@ -354,23 +410,35 @@ export const COMMANDS = {
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
   },
-  "review:publish": {
+  "review:publish": REVIEW_PUBLISH,
+  "review:conclude": {
     inputs: {
       ...EVERY_SUBCOMMAND,
-      ...LOOP,
+      ...LOOP_IF_MINTED,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
-      REVIEWED_SHA: REQUIRED,
-      REVIEW_DIR: readsFrom("review", {
-        "findings.json": "always",
-        "review_body.json": "always",
-        "thread_resolutions.json": "always",
-        "pr_summary.json": "sometimes",
-        "verdict.json": "always",
+      REVIEW_RESULT: REQUIRED,
+      PROCEED: EMPTY,
+      REFUSAL: EMPTY,
+      BLOCKED: EMPTY,
+      REVIEWED_SHA: EMPTY,
+      VERDICT: EMPTY,
+      FIX_ROUND: EMPTY,
+      ROUND: EMPTY,
+      FAILURE_REASON: EMPTY,
+      REFUSAL_REASON: EMPTY,
+      TIMED_OUT: EMPTY,
+      TIMEOUT_MINUTES: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      DOWNLOAD_OUTCOME: EMPTY,
+      PUBLISH_OUTCOME: EMPTY,
+      PUBLISH_DIR: readsFromCommand("review:publish", REVIEW_PUBLISH, {
+        "published.json": "sometimes",
+        "failure_reason.txt": "sometimes",
       }),
       ...RUN_LINK,
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "ended.json", WRITE_LOG],
   },
 } as const satisfies Readonly<Record<string, CommandContract>>;
 

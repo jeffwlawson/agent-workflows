@@ -118,7 +118,11 @@ new findings in one call, whose *Resolved since last review* lists only the thre
 resolved (one whose resolve failed is listed as still open, with a note), then the pull request's
 title and summary block where anything was pushed since the summary was written, then the verdict status
 and the ready state, then takes `agent:review` off, then hands off. A refusal or a failure in the
-review job is said by the posting job too, since nothing else can write it.
+review job is said by the posting job too, since nothing else can write it. The posting is two
+commands (#417, #419): `review:publish` posts the results, and `review:conclude`, run however the
+job went, ends the run. Conclude is told how the review job and each step before it ended, and
+works out the ending from that, so a hand-off that fails after the review posted is said as a
+failed hand-off, never as a review that did not finish.
 
 `fix` and `update-branch` are the two rows that add `agent:review` **after a push to an existing
 PR** — the `implement` pair adds it too, on the PR it has just opened, which is the table's own
@@ -428,8 +432,8 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `follow-ups:file` is the one command today; every other step a command
-will be still runs as YAML shell. The kind is declared, not inferred: `shared/contract.ts` holds
+name is always a runner. `follow-ups:file`, `review:publish` and `review:conclude` are the commands
+today; every other step a command will be still runs as YAML shell. The kind is declared, not inferred: `shared/contract.ts` holds
 runners in `RUNNERS` and commands in `COMMANDS`.
 [ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
 
@@ -444,7 +448,8 @@ writers, one per token, sharing the log and the limits. The agent's text reaches
 that. A job's package code is one command per stretch between steps only Actions can take, plus an
 `always()` command where the job has a failure path.
 [ADR 0005](./docs/adr/0005-writes-are-calls-with-a-log.md) records why there is no list of writes
-planned before applying. The writer is in `engine/`, and no command uses it yet.
+planned before applying. The writer is in `engine/`, and review's posting job's two commands write
+through it.
 
 **The hand-over** is what crosses from the agent's phase to the commands that act on it: the
 runner's files that each command declares it reads, checked and cleaned when they are read. The

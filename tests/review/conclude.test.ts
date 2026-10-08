@@ -212,9 +212,10 @@ describe("review:conclude ends a review that did not finish", () => {
       "workflow addLabel agent:blocked",
     ]);
     expect(github.statuses.get(SHA)).toEqual([{ context: VERDICT_CONTEXT, state: "error", targetUrl: RUN_URL, creator: "workflow" }]);
-    expect(made?.writes[0]?.args[0]).toMatchObject({
-      description: "The review run did not finish, so there's no verdict. Check the run, then re-add agent:review.",
-    });
+    const description = (made?.writes[0]?.args[0] as { description: string }).description;
+    expect(description).toBe("The review run did not finish, so there's no verdict. Check the run, then re-add agent:review.");
+    // GitHub refuses a status description holding a 4-byte character (#121).
+    expect([...description].filter((ch) => (ch.codePointAt(0) ?? 0) > 0xffff)).toEqual([]);
     expect(comments()).toEqual([
       `**\`agent:review\` stopped:** The agent stopped.\n\n[Workflow run](${RUN_URL}) · To try again, add \`agent:review\`.\n`,
     ]);

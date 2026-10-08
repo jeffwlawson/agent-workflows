@@ -188,7 +188,7 @@ const runGuard = (options: {
 /**
  * What the refusal says, as the posting job will post it (#257): the pre-flight
  * runs in the review job, which writes nothing, so it hands the sentence over
- * and the posting job's *Say why the review didn't run* puts the pattern
+ * and the posting job's `review:conclude` (#419) puts the pattern
  * around it. It writes nothing to the tracker itself, on any arm.
  */
 const comment = (outcome: Outcome): string => {

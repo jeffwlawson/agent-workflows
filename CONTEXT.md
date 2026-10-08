@@ -432,6 +432,17 @@ name is always a runner. `follow-ups` is the one command today, still declared a
 runner until review's move renames it `follow-ups:file`; every other step a command will be still
 runs as YAML shell. [ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
 
+**The writer** is the engine's way to change the record. A command calls it once per write, with a
+type named for what GitHub does (add a label, set a commit status, replace the block between two
+markers), never for what the loop means. The loop passes in its own strings. The writer enforces a
+count limit per type, stops at the first failure, and keeps a **write log**: each write it applied
+and how it went, written as one of the command's outputs. A command is handed two writers, one per
+token. The agent's text reaches a command already cleaned, and the loop adds its markers after
+that. A job's package code is one command per stretch between steps only Actions can take, plus an
+`always()` command where the job has a failure path.
+[ADR 0005](./docs/adr/0005-writes-are-calls-with-a-log.md) records why there is no list of writes
+planned before applying. Like commands, the writer is the target: nothing uses it yet.
+
 **A workflow's folder** holds that workflow's package code: its runner, as `<name>/<name>.ts`, where
 it has one, and every command that runs in its jobs, whatever the command writes to. So review's
 `advance` lives in `review/` although it changes the PRD chain's parent, and `follow-ups/` is a

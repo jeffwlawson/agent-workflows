@@ -386,9 +386,9 @@ tested or cannot be fixed for an adopter without them editing a file.
 ```
 consumer repo                    this repo
 ─────────────                    ─────────
-.github/workflows/agent-*.yml    .github/workflows/<name>.yml     <name>/*.ts + prompt.md
-  the CALLER                       the REUSABLE workflow            the RUNNER
-  a trigger and two wires          every guard and every step       the agent's actual work
+.github/workflows/agent-*.yml    .github/workflows/<name>.yml     <name>/, shared/, setup/
+  the CALLER                       the REUSABLE workflow            the PACKAGE
+  a trigger and two wires          what only Actions can do         the runners, and every step
 ```
 
 **The caller** is what an adopter owns: the trigger, the permissions grant, the secrets, and
@@ -404,13 +404,25 @@ every such job in the file, and a job-level block replaces that one rather than 
 (`setup/callers.ts`, `permissionsFrom`). Where `CLAUDE.md` says "both caller sets" it means the
 files: `examples/callers/` and `.github/workflows/agent-*.yml`. A caller an adopter does not have is a workflow they declined, whether the file is missing or only the job.
 
-**The reusable workflow** holds everything that bounds what a wrong run can do: the fork guard, the
-permissions ceiling, the concurrency group, the preflight refusals. An adopter *references* it, so
-a fix reaches them without them touching anything.
+**The reusable workflow** holds what only Actions can do: the job graph and its conditions, the
+fork guard, the permissions ceiling, which job names which secret, the concurrency group and the
+timeouts; glue that only carries a value into one of those; the adopter's own setup and test
+commands; and checkout, Node setup, artifacts and the token's mint. An adopter *references* it, so
+a fix reaches them without them touching anything, and the pin takes the package from the same
+release, so a fix in the package reaches them the same way.
 
-**The runner** is TypeScript plus a prompt, invoked as one subcommand of one published binary. It
-takes its whole input from the environment; passing an argument is refused rather than ignored.
-Its boundary with whatever invokes it is [`docs/platform-spec.md`](./docs/platform-spec.md) §2.
+**The package** holds everything else. A step that reads or changes the PR or issue, or decides
+anything, is package code, run in the same job its shell would have run in. That includes the
+guards written as steps, such as the preflight refusals and the bundle check, and the choice of
+which token each write uses. [ADR 0003](./docs/adr/0003-reusable-keeps-what-only-actions-can-do.md)
+records the rule and why it replaced "every guard and every step" in the reusable. It is the target
+rather than the state: **all six reusables still run their steps as inline shell**, and `review`
+moves first (#393). Until a reusable has moved, a fix to one of its steps still goes in its YAML.
+
+**A runner** is the part of the package that does an agent's work: TypeScript plus a prompt, invoked
+as one subcommand of one published binary. It takes its whole input from the environment; passing
+an argument is refused rather than ignored. Its boundary with whatever invokes it is
+[`docs/platform-spec.md`](./docs/platform-spec.md) §2.
 
 **Part, not layer.** These were *the three layers* until stacked pull requests arrived: GitHub calls
 one pull request in a stack a **layer**, and that is the only meaning the word has here now. The

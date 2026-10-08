@@ -35,8 +35,8 @@ import { unreadableHistoryNote } from "./review-round.js";
  * carrying follow-ups where the review recorded any. Then it writes the
  * pull request's title and summary block, its status line, and the verdict as
  * a commit status. What the posting job does after that (ready for review,
- * the trigger label and the hand-off) stays shell for now, and reads the
- * review's URL from `published.json`.
+ * the trigger label and the hand-off) is `review:conclude`'s, which reads
+ * the review's URL from `published.json`.
  *
  * **It writes every final string itself** (ADR 0007). The runner hands over
  * decisions and the agent's raw text in five files (`review/hand-over.ts`),
@@ -158,7 +158,7 @@ export const publish = async (
     body: post.body,
     threads,
   });
-  // What the shell steps after this one read, written the moment the review
+  // What `review:conclude` reads after this, written the moment the review
   // is posted, so a later failure here still leaves it.
   io.outputs.writeJson("published.json", { reviewUrl: url });
   console.log(`Posted the review on ${reviewed}: ${url}`);

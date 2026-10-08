@@ -56,7 +56,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: so far only `follow-ups:file`. §2 says where it differs from a runner.
+  named `<workflow>:<step>`: `follow-ups:file`, `review:publish` and `review:conclude`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*

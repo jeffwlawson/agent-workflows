@@ -25,7 +25,15 @@ open and resolved grouping, the follow-up cap, the open count, and whether the s
 hands these over as data. Every step that turns those choices into text moves to publish: the
 review body (`renderReviewPost` and its parts), each thread's body, the two closing replies, the
 summary block with its Evidence and merge-danger sections, the status line and the follow-ups
-block. Every marker moves with them. No hand-over file holds a record string.
+block. Every marker moves with them, and so does every other string the loop writes into the
+record as given, such as a commit status's context and description. No hand-over file holds a
+record string.
+
+**The same holds for the files `review:advance` reads.** Today the runner writes the park comments
+and each ending's progress table and status line as finished text, and the last two carry the
+`agent:progress` and `agent:status` markers. The runner hands over the round, the park reason, the
+open findings and the data behind each ending's table instead, and `review:advance` writes the
+text and its markers.
 
 **All free text in the hand-over is cleaned on read, whoever wrote it.** Besides the agent's words,
 the formatters take in a maintainer's reply, which a declined thread's reply quotes, and text from
@@ -47,7 +55,7 @@ the record and is outside this stage.
 | `review_body.json` | The verdict, the agent's assessment, the open, resolved and missed entries, criteria results, follow-ups and their cap, and red-test results |
 | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note or the maintainer's reply to quote |
 | `pr_summary.json` | The title, the agent's summary, whether the round is final, and the data behind Evidence and merge danger |
-| `verdict.json` | Unchanged: it already holds data only |
+| `verdict.json` | The verdict's key, and whether it starts a fix round. Publish takes the status contexts, states and descriptions from its own constants (`VERDICT_CONTEXT`, `FIX_ROUND_STATUS` and the verdict table) |
 
 `pr_status.md` goes, because publish builds the status line from the verdict and the open count.
 `follow_ups.md` goes, because publish adds the `agent:follow-ups` label when the list is not empty
@@ -73,6 +81,9 @@ it where it is used, in code the model cannot reach.
 ## Consequences
 
 - ADR 0005's "an agent cannot forge one" rests on this ADR.
+- The agent's runner can no longer name a status context, or start a fix round by adding
+  `fixRound`. It can still claim a verdict or a fix round, which is a choice like any other and is
+  checked as #403 decided; what it posts is one of publish's own statuses.
 - ADR 0006's check of the payload's `commitOID` against the reviewed commit goes away. Publish
   builds the review request from the reviewed commit it is given as an input, so no hand-over file
   names a commit.

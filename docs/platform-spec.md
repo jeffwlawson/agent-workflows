@@ -781,7 +781,7 @@ written to `place.json`, and only a failure of git itself fails the command.
 
 | Output | When it is written |
 |---|---|
-| `place.json` | Unless it fails: `status`, `ready`, `no-test-files`, `misconfigured`, `final-review` or `no-merge-base`; `reason` where it is one; `head`; `base` and `slice` where they were found; `files`, the test files placed, one a line for the test command; and `source` where `base` was found. |
+| `place.json` | Unless it fails: `status`, `ready`, `no-test-files`, `misconfigured`, `final-review` or `no-merge-base`; `reason` where it is one; `head`; `base` and `slice` where they were found; `files`, the test files placed, which the test command is handed; and `source` where `base` was found. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
 

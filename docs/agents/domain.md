@@ -65,7 +65,8 @@ test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the
 explicitly avoids.
 
 In particular, `CONTEXT.md`'s *three parts* distinction — **caller**, **reusable workflow**,
-**runner** — decides where a change belongs, and the part names are the vocabulary. "The workflow"
+**package** — decides where a change belongs, and the part names are the vocabulary. A **runner**
+is the part of the package that does an agent's work, not the whole of it. "The workflow"
 is ambiguous between two of them; say which.
 
 If the concept you need isn't in the glossary yet, that's a signal — either you're inventing

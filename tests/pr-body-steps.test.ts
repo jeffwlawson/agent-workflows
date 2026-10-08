@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { readSummaryBlock, summaryUpdate } from "../review/pr-summary.js";
 import {
   OPENING_STATUS,
   renderPrdStatus,
@@ -14,6 +13,8 @@ import {
   statusBlock,
   type ProgressInputs,
 } from "../shared/progress-list.js";
+import { spliceBlock } from "../engine/splice.js";
+import { summaryBlock } from "../review/pr-summary.js";
 import { REVIEW_URL_SLOT } from "../shared/prd-round.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -29,10 +30,12 @@ import {
 } from "../shared/record.js";
 
 /**
- * The pull request body's two writers (#218), run as the real `run:` blocks
- * read out of the workflows under `bash -e`, against a `gh` that records what
- * it was sent: the **frame** each opening run writes once, and the posting
- * job's splice of the review's summary into the body as it stands.
+ * The pull request body's writers that are still shell (#218), run as the
+ * real `run:` blocks read out of the workflows under `bash -e`, against a `gh`
+ * that records what it was sent: the **frame** each opening run writes once,
+ * and the splices of the progress list and the status line. The review's
+ * summary, and a regular pull request's status line, are `review:publish`'s,
+ * and its tests hold them (`tests/review/publish.test.ts`).
  *
  * Skipped where `bash` or `jq` are not on PATH.
  */
@@ -261,250 +264,6 @@ describe.skipIf(!CAN_RUN)("the frame a pull request opens with", () => {
       ].join("\n"),
     );
   });
-});
-
-const HEAD = "0123456789abcdef0123456789abcdef01234567";
-
-/** For a case that runs the step twice: two spawns' worth (`vitest.config.ts`). */
-const CEILING = 2 * SUBPROCESS_TIMEOUT;
-
-const FRAME = [
-  "Closes #123\r\n",
-  "> [!NOTE]\r\n> Opened by the agent loop from #123.\r\n",
-  SUMMARY_START,
-  "_The review will summarize this change here after its first pass._",
-  SUMMARY_END,
-  "\r\nMy own note, with a trailing newline and a CRLF.\n",
-].join("\n");
-
-const writeSummary = (
-  body: string | null,
-  update: { readonly title?: string; readonly summary?: string } | null = {
-    title: "feat: write the title",
-    summary: "It writes the title.\n\n- **Breaking:** the old field is gone.",
-  },
-  fail = "",
-  final = false,
-): Outcome & { readonly request: { title?: string; body?: string } | undefined } => {
-  const file = update === null ? undefined : summaryUpdate(update, HEAD, final);
-  const outcome = runStep(
-    stepRun("review", "post-review", "Write the PR title and summary"),
-    { PR_NUMBER: "152", GH_FAIL: fail },
-    {
-      "pr.json": JSON.stringify({ number: 152, title: "Fix #123: Do the thing", body }),
-      ...(file === undefined ? {} : { "pr_summary.json": JSON.stringify(file) }),
-    },
-  );
-  return {
-    ...outcome,
-    request: outcome.sent === undefined ? undefined : (JSON.parse(outcome.sent) as { title?: string; body?: string }),
-  };
-};
-
-/** What surrounds the block, which is every byte the review does not own. */
-const outside = (body: string): [string, string] => {
-  const start = body.indexOf(SUMMARY_START);
-  const end = body.indexOf(SUMMARY_END) + SUMMARY_END.length;
-  return [body.slice(0, start), body.slice(end)];
-};
-
-describe.skipIf(!CAN_RUN)("the posting job writes the title and the summary block", () => {
-  it("splices the summary between the markers and keeps every other byte", () => {
-    const outcome = writeSummary(FRAME);
-    const written = outcome.request?.body ?? "";
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outside(written)).toEqual(outside(FRAME));
-    expect(readSummaryBlock(written)).toEqual({
-      text: "It writes the title.\n\n- **Breaking:** the old field is gone.",
-      head: HEAD,
-      final: false,
-    });
-    expect(outcome.request?.title).toBe("feat: write the title");
-    expect(outcome.gh.some((call) => call.startsWith("api --method PATCH repos/{owner}/{repo}/pulls/152"))).toBe(true);
-  });
-
-  /**
-   * The PRD PR's `Closes` block is outside the summary block and is the
-   * chain's, so the review's rewrite carries it over byte for byte: merging
-   * the PRD PR closes what it always said it would.
-   */
-  it("leaves the PRD PR's Closes block as it is", () => {
-    const prd = [
-      CLOSES_START,
-      "Closes #14",
-      "Closes #15",
-      CLOSES_END,
-      "",
-      SUMMARY_START,
-      "_The final review will summarize the whole PRD here._",
-      SUMMARY_END,
-      "",
-    ].join("\n");
-    const written = writeSummary(prd).request?.body ?? "";
-
-    expect(outside(written)).toEqual(outside(prd));
-    expect(written.startsWith(`${CLOSES_START}\nCloses #14\nCloses #15\n${CLOSES_END}\n`)).toBe(true);
-  });
-
-  /**
-   * And the progress list beside it (#246), which the chain re-renders and
-   * the review never touches: both blocks come through the rewrite byte for
-   * byte, whatever the summary becomes.
-   */
-  it("leaves the PRD PR's Closes block and progress list as they are", () => {
-    const list = renderProgressList(PROGRESS);
-    const prd = [
-      CLOSES_START,
-      "Closes #14",
-      "Closes #15",
-      CLOSES_END,
-      "",
-      list,
-      "",
-      "> [!NOTE]\r\n> A note.",
-      "",
-      SUMMARY_START,
-      "_The final review will summarize the whole PRD here._",
-      SUMMARY_END,
-      "",
-    ].join("\n");
-    const written = writeSummary(prd).request?.body ?? "";
-
-    expect(outside(written)).toEqual(outside(prd));
-    expect(written.startsWith(`${CLOSES_START}\nCloses #14\nCloses #15\n${CLOSES_END}\n\n${list}\n\n`)).toBe(true);
-  });
-
-  /** Rewriting a block a review already wrote replaces it, and only it. */
-  it("replaces an earlier summary rather than adding a second", () => {
-    const once = writeSummary(FRAME).request?.body ?? "";
-    const twice = writeSummary(once, { summary: "Now it does more." }).request?.body ?? "";
-
-    expect(twice.split(SUMMARY_START)).toHaveLength(2);
-    expect(readSummaryBlock(twice)?.text).toBe("Now it does more.");
-    expect(outside(twice)).toEqual(outside(FRAME));
-  }, CEILING);
-
-  it("appends a block to a body that has none, keeping what is there", () => {
-    const written = writeSummary("Closes #9\n\nA body from before the frame.").request?.body ?? "";
-
-    expect(written.startsWith("Closes #9\n\nA body from before the frame.\n\n")).toBe(true);
-    expect(readSummaryBlock(written)?.head).toBe(HEAD);
-    expect(readSummaryBlock(writeSummary(null).request?.body ?? "")?.head).toBe(HEAD);
-  }, CEILING);
-
-  /**
-   * Half a block, or two, is not written into: which marker is the real one is
-   * where a maintainer's text ends, and that is not a guess to make. The title
-   * still is.
-   */
-  it.each([
-    ["a start with no end", `Closes #1\n${SUMMARY_START}\nmine`],
-    ["two blocks", `${FRAME}\n${SUMMARY_START}\nx\n${SUMMARY_END}`],
-    ["the end before the start", `${SUMMARY_END}\nmine\n${SUMMARY_START}`],
-  ])("writes the title alone over %s, and says why", (_case, body) => {
-    const outcome = writeSummary(body);
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.request).toEqual({ title: "feat: write the title" });
-    expect(outcome.stdout).toContain("half a summary block, or two");
-  });
-
-  /**
-   * **The final review leaves no draft-only text** (#247, #216): the frame's
-   * note that the PRD PR stays a draft goes, markers and all, with the blank
-   * line after it, when the final review writes the summary. Every other byte
-   * outside the summary block stays, the `Closes` block and the progress list
-   * included.
-   */
-  describe("on a PRD PR's final review", () => {
-    const NOTE = [
-      DRAFT_NOTE_START,
-      "> [!NOTE]",
-      "> The agent loop builds PRD #14 here, one sub-issue at a time. It stays a draft until every slice is done.",
-      DRAFT_NOTE_END,
-    ].join("\n");
-    const prd = (note: string): string =>
-      [
-        CLOSES_START,
-        "Closes #14",
-        "Closes #15",
-        CLOSES_END,
-        "",
-        PROGRESS_START,
-        "- ✅ **Approved:** #15 Slice",
-        PROGRESS_END,
-        "",
-        note,
-        "",
-        SUMMARY_START,
-        "_The final review will summarize the whole PRD here._",
-        SUMMARY_END,
-        "",
-        "A maintainer's note.",
-      ].join("\n");
-
-    it("removes the draft-only note and writes the PRD's summary, marked as the final review's", () => {
-      const outcome = writeSummary(prd(NOTE), undefined, "", true);
-      const written = outcome.request?.body ?? "";
-
-      expect(outcome.status, outcome.stdout).toBe(0);
-      expect(written).not.toContain(DRAFT_NOTE_START);
-      expect(written).not.toContain("stays a draft");
-      expect(written).not.toContain("_The final review will summarize");
-      expect(outside(written)).toEqual(outside(prd(NOTE).replace(`${NOTE}\n\n`, "")));
-      expect(readSummaryBlock(written)).toMatchObject({ head: HEAD, final: true });
-      expect(outcome.request?.title).toBe("feat: write the title");
-    });
-
-    it("removes the note even where it writes only the title", () => {
-      const outcome = writeSummary(prd(NOTE), { title: "feat: the whole PRD" }, "", true);
-
-      expect(outcome.status, outcome.stdout).toBe(0);
-      expect(outcome.request?.body).toBe(prd(NOTE).replace(`${NOTE}\n\n`, ""));
-    });
-
-    it("leaves a body with no note, or half of one, as it is outside the summary", () => {
-      const none = writeSummary(prd("My own text."), undefined, "", true);
-      expect(outside(none.request?.body ?? "")).toEqual(outside(prd("My own text.")));
-
-      const half = writeSummary(prd(DRAFT_NOTE_START), undefined, "", true);
-      expect(outside(half.request?.body ?? "")).toEqual(outside(prd(DRAFT_NOTE_START)));
-    }, CEILING);
-
-    /** A slice round's write is not the final review's, and the note stays. */
-    it("leaves the note where a slice round writes the summary", () => {
-      const outcome = writeSummary(prd(NOTE));
-
-      expect(outcome.request?.body).toContain(NOTE);
-      expect(readSummaryBlock(outcome.request?.body ?? "")?.final).toBe(false);
-    });
-  });
-
-  /** Nothing pushed since the summary was written: the runner wrote no file. */
-  it("writes nothing where the review left the title and summary as they are", () => {
-    const outcome = writeSummary(FRAME, null);
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.gh).toEqual([]);
-    expect(outcome.stdout).toContain("left as they are");
-  });
-
-  it("writes only the half the review produced", () => {
-    expect(writeSummary(FRAME, { title: "fix: x" }).request).toEqual({ title: "fix: x" });
-    expect(writeSummary(FRAME, { summary: "Only this." }).request?.title).toBeUndefined();
-  }, CEILING);
-
-  it("warns and goes on where the pull request cannot be read or written", () => {
-    const unread = writeSummary(FRAME, { title: "fix: x" }, "read");
-    expect(unread.status, unread.stdout).toBe(0);
-    expect(unread.stdout).toContain("::warning::Could not read PR #152");
-    expect(unread.gh.some((call) => call.includes("PATCH"))).toBe(false);
-
-    const unwritten = writeSummary(FRAME, { title: "fix: x" }, "patch");
-    expect(unwritten.status, unwritten.stdout).toBe(0);
-    expect(unwritten.stdout).toContain("::warning::Could not write the title and summary of PR #152");
-  }, CEILING);
 });
 
 /**
@@ -874,6 +633,8 @@ describe.skipIf(!CAN_RUN)("a build run's gate shows the slice building", () => {
  * final review's summary. The table comes through every one byte for byte.
  */
 describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
+  const HEAD = "0123456789abcdef0123456789abcdef01234567";
+  const SUMMARY = { start: SUMMARY_START, end: SUMMARY_END };
   const TABLE = [
     "<!-- agent:slices -->",
     "| Slice | PR | Verdict | Open findings |",
@@ -956,9 +717,9 @@ describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
     expect(advanced.status, advanced.stdout).toBe(0);
     const afterAdvance = keepsTable((JSON.parse(advanced.sent ?? "{}") as { body?: string }).body);
 
-    const sliceRound = writeSummary(afterAdvance);
-    expect(sliceRound.status, sliceRound.stdout).toBe(0);
-    const afterSliceRound = keepsTable(sliceRound.request?.body);
+    // The slice round's summary, which `review:publish` writes by the
+    // engine's splice (`tests/review/publish.test.ts` holds it to that).
+    const afterSliceRound = keepsTable(spliceBlock(afterAdvance, SUMMARY, summaryBlock("What slice 1 did.", HEAD, false), "append"));
 
     const stopped = runStep(
       stepRun("implement-prd", "publish", "Show the stopped slice in the progress list"),
@@ -968,10 +729,8 @@ describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
     expect(stopped.status, stopped.stdout).toBe(0);
     const afterStopped = keepsTable((JSON.parse(stopped.sent ?? "{}") as { body?: string }).body);
 
-    const finalReview = writeSummary(afterStopped, undefined, "", true);
-    expect(finalReview.status, finalReview.stdout).toBe(0);
-    keepsTable(finalReview.request?.body);
-  }, 5 * SUBPROCESS_TIMEOUT);
+    keepsTable(spliceBlock(afterStopped, SUMMARY, summaryBlock("The PRD.", HEAD, true), "append"));
+  }, 3 * SUBPROCESS_TIMEOUT);
 
   /** The block goes in only where no `Closes` marker is: a body with one is left to the splice alone. */
   it("gets the Closes block once, on the first build run that reuses the PRD PR", () => {
@@ -1007,8 +766,8 @@ describe.skipIf(!CAN_RUN)("an old slices table in the PRD PR's body", () => {
 
 /**
  * The status line at the top of the note (#298), written by every writer of
- * the progress table beside it, and on a regular pull request by the posting
- * job. Each keeps `spliceStatus`'s rule: replaced between its markers, a body
+ * the progress table beside it (on a regular pull request, by `review:publish`,
+ * whose tests hold it). Each keeps `spliceStatus`'s rule: replaced between its markers, a body
  * with none left as it is, and half a line, or two, left alone, while the
  * table beside it is still written.
  */
@@ -1113,38 +872,5 @@ describe.skipIf(!CAN_RUN)("the status line is spliced into the note", () => {
 
     expect(outcome.status, outcome.stdout).toBe(0);
     expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: expected(body, status) });
-  });
-
-  const writeStatus = (body: string, files: Record<string, string> = { "pr_status.md": status }): Outcome =>
-    runStep(
-      stepRun("review", "post-review", "Write the PR status line"),
-      {
-        PR_NUMBER: "152",
-        REVIEW_URL: "https://github.com/acme/widgets/pull/152#pullrequestreview-9",
-        REVIEW_URL_SLOT,
-        STATUS_START,
-        STATUS_END,
-      },
-      { "pr.json": JSON.stringify({ number: 152, body }), ...files },
-    );
-
-  it.each(bodies)("the posting job over %s keeps spliceStatus's rule on a regular pull request", (_case, body) => {
-    const outcome = writeStatus(body);
-    const line = status.replace("{{AGENT_REVIEW_URL}}", "https://github.com/acme/widgets/pull/152#pullrequestreview-9");
-    const spliced = spliceStatus(body, line);
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    if (spliced === undefined || spliced === body) {
-      expect(outcome.gh.some((call) => call.includes("PATCH"))).toBe(false);
-    } else {
-      expect(JSON.parse(outcome.sent ?? "{}")).toEqual({ body: spliced });
-    }
-  });
-
-  it("the posting job writes nothing where the review wrote no status line", () => {
-    const outcome = writeStatus(bodies[0]?.[1] ?? "", {});
-
-    expect(outcome.status, outcome.stdout).toBe(0);
-    expect(outcome.gh).toEqual([]);
   });
 });

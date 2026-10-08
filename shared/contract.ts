@@ -263,7 +263,6 @@ export const RUNNERS = {
       "verdict.json",
       "park.md",
       "park_posted.md",
-      "pr_status.md",
     ],
   },
   fix: {
@@ -341,8 +340,11 @@ const WRITE_LOG = "write_log.jsonl";
  *   engine's writer, until its own workflow moves (ADR 0005).
  * - `review:publish` resolves the threads a review closed and posts it on
  *   `REVIEWED_SHA`, the commit the review job recorded before the agent ran
- *   (ADR 0006). `published.json` is the posted review's URL, written the
- *   moment it is posted.
+ *   (ADR 0006), then writes the title, the summary, the status line and the
+ *   verdict. `BRANCH` is the pull request's head branch, which says whether
+ *   it is a PRD PR, whose status line is the advance job's.
+ *   `published.json` is the posted review's URL, written the moment it is
+ *   posted.
  */
 export const COMMANDS = {
   "follow-ups:file": {
@@ -357,11 +359,14 @@ export const COMMANDS = {
       ...EVERY_SUBCOMMAND,
       ...LOOP,
       PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
       REVIEWED_SHA: REQUIRED,
       REVIEW_DIR: readsFrom("review", {
         "findings.json": "always",
         "review_body.json": "always",
         "thread_resolutions.json": "always",
+        "pr_summary.json": "sometimes",
+        "verdict.json": "always",
       }),
       ...RUN_LINK,
     },

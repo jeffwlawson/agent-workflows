@@ -3,13 +3,31 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WriteLog, Writer } from "../../engine/writer.js";
-import type { ReviewBody } from "../../review/hand-over.js";
+import type { PrSummary, ReviewBody, VerdictHandOver } from "../../review/hand-over.js";
 import { publish } from "../../review/publish.js";
 import type { CommandIo, Token } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
-import { FOLLOW_UPS_LABEL, FOLLOW_UPS_MARKER, RESOLUTION_MARKER } from "../../shared/record.js";
+import { readSummaryBlock } from "../../review/pr-summary.js";
+import { renderMergeDanger } from "../../shared/merge-danger.js";
+import { renderPrdSummary } from "../../shared/prd-round.js";
+import { renderPrStatus, spliceStatus, statusBlock } from "../../shared/progress-list.js";
+import { withEvidence } from "../../shared/red-check.js";
+import {
+  DRAFT_NOTE_END,
+  DRAFT_NOTE_START,
+  FIX_ROUND_STATUS,
+  FOLLOW_UPS_LABEL,
+  FOLLOW_UPS_MARKER,
+  RESOLUTION_MARKER,
+  STATUS_END,
+  STATUS_START,
+  SUMMARY_END,
+  SUMMARY_START,
+  VERDICT_CONTEXT,
+} from "../../shared/record.js";
 import { findingsHandOver, severityBadge, type PlacedFinding } from "../../shared/review-findings.js";
 import {
+  CLOSER_LOOK,
   REVIEW_BODY_BUDGET,
   reviewBodyHandOver,
   VERDICTS,
@@ -112,6 +130,18 @@ const decide = (over: Partial<ReviewDecisions> = {}): { decisions: ReviewDecisio
   };
 };
 
+/** A regular pull request's `pr_summary.json`, as the runner writes it where the summary is due. */
+const prSummary = (over: Partial<Extract<PrSummary, { final: false }>> = {}): PrSummary => ({
+  title: "feat: release the lock on the error path",
+  summary: "It releases the queue's lock on every path.",
+  final: false,
+  ci: "green",
+  testSketches: [],
+  danger: { door: "two-way", blastRadius: "small", blastRadiusNote: "Callers of the queue, on merge." },
+  redCheck: { kind: "not-configured" },
+  ...over,
+});
+
 let dir: string;
 let github: FakeGitHub;
 let files: Map<string, unknown>;
@@ -143,7 +173,15 @@ const handOver = (decided = decide(), extra: Partial<ReviewBody> = {}): void => 
   put("findings.json", findingsHandOver(decided.decisions.placed));
   put("review_body.json", { ...reviewBodyHandOver(decided.decisions), ...extra } satisfies ReviewBody);
   put("thread_resolutions.json", decided.resolutions);
+  put("verdict.json", verdictOf(decided.decisions));
 };
+
+/** `verdict.json` as the runner writes it from its decisions: the key, the fix round, and what it leaves open. */
+const verdictOf = (decisions: ReviewDecisions): VerdictHandOver => ({
+  verdict: decisions.verdict.verdict,
+  fixRound: decisions.verdict.startsFixRound === true,
+  open: decisions.stillOpen.length + decisions.placed.length,
+});
 
 type Inputs = Parameters<typeof publish>[0];
 
@@ -154,6 +192,7 @@ const INPUTS = (): Inputs => ({
   LOOP_TOKEN: "loop-token",
   LOOP_TOKEN_SOURCE: "app",
   PR_NUMBER: String(PR),
+  BRANCH: "agent/issue-12-do-the-thing",
   REVIEWED_SHA: SHA,
   REVIEW_DIR: dir,
   GITHUB_SERVER_URL: "https://github.com",
@@ -212,7 +251,15 @@ describe("review:publish resolves first, then posts what resolved", () => {
 
     await run();
 
-    expect(writeTypes()).toEqual(["replyAndResolve", "replyAndResolve", "replyAndResolve", "postReview", "addLabel"]);
+    expect(writeTypes()).toEqual([
+      "replyAndResolve",
+      "replyAndResolve",
+      "replyAndResolve",
+      "postReview",
+      "addLabel",
+      "editPullRequest",
+      "setCommitStatus",
+    ]);
     expect(writes().every((w) => w.token === "workflow")).toBe(true);
     expect(github.pullRequests.get(PR)?.labels).toEqual([FOLLOW_UPS_LABEL]);
     expect(files.get("published.json")).toEqual({ reviewUrl: "https://github.com/o/r/pull/0#pullrequestreview-1" });
@@ -258,7 +305,7 @@ describe("review:publish resolves first, then posts what resolved", () => {
     expect(github.threads.get(PR)?.get("PRRT_one")).toEqual({ replies: [expect.stringContaining("Verified fixed.")] });
     expect(logLines()[0]).toMatchObject({ type: "replyAndResolve", outcome: "partial" });
     // Tolerated: the last line names no write that stopped it.
-    expect(logLines().at(-1)).toEqual({ ended: "finished", writes: 5 });
+    expect(logLines().at(-1)).toEqual({ ended: "finished", writes: 7 });
   });
 
   /** A reply that would not post leaves its thread open, and never resolved: the reply is its only record. */
@@ -377,10 +424,12 @@ describe("review:publish writes every string it posts", () => {
   it("holds no marker, status context or commit in any hand-over file", () => {
     handOver(decide(), { header: { scope: { kind: "final" }, number: 2 } });
 
-    for (const name of ["findings.json", "review_body.json", "thread_resolutions.json"]) {
+    put("pr_summary.json", prSummary());
+    for (const name of ["findings.json", "review_body.json", "thread_resolutions.json", "pr_summary.json", "verdict.json"]) {
       const text = fs.readFileSync(path.join(dir, name), "utf8");
       expect(text, name).not.toContain("<!--");
       expect(text, name).not.toContain("agent-review");
+      expect(text, name).not.toContain("agent-fix-round");
       expect(text, name).not.toContain(SHA);
     }
   });
@@ -418,7 +467,7 @@ describe("review:publish adds agent:follow-ups only for follow-ups left after sh
 
     await run();
 
-    expect(writeTypes().at(-1)).toBe("addLabel");
+    expect(writeTypes()).toContain("addLabel");
     expect(posted()?.body).toContain("2 out-of-scope follow-ups were cut");
   });
 
@@ -428,7 +477,7 @@ describe("review:publish adds agent:follow-ups only for follow-ups left after sh
 
     await run();
 
-    expect(logLines().at(-2)).toMatchObject({ type: "addLabel", outcome: "failed" });
+    expect(logLines().find((line) => line["type"] === "addLabel")).toMatchObject({ outcome: "failed" });
     expect(logLines().at(-1)).toMatchObject({ ended: "finished" });
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining("::warning::Could not add `agent:follow-ups`"));
   });
@@ -549,7 +598,7 @@ describe("review:publish when GitHub refuses or fails the review", () => {
 
     expect(github.reviews).toHaveLength(1);
     expect(files.get("published.json")).toEqual({ reviewUrl: github.reviews[0]?.url });
-    expect(writeTypes().at(-1)).toBe("addLabel");
+    expect(writeTypes().slice(-3)).toEqual(["addLabel", "editPullRequest", "setCommitStatus"]);
     expect(logLines().find((line) => line["type"] === "postReview")).toMatchObject({ outcome: "failed" });
     expect(logLines().at(-1)).toMatchObject({ ended: "finished" });
   });
@@ -610,8 +659,16 @@ describe("review:publish's writes are its own", () => {
     await publish(INPUTS(), io);
 
     expect(asked).toBe(1);
-    expect(limits).toEqual({ replyAndResolve: 200, postReview: 1, addLabel: 1 });
-    expect(log?.entries.map((e) => e.type)).toEqual(["replyAndResolve", "replyAndResolve", "replyAndResolve", "postReview", "addLabel"]);
+    expect(limits).toEqual({ replyAndResolve: 200, postReview: 1, addLabel: 1, editPullRequest: 2, setCommitStatus: 2 });
+    expect(log?.entries.map((e) => e.type)).toEqual([
+      "replyAndResolve",
+      "replyAndResolve",
+      "replyAndResolve",
+      "postReview",
+      "addLabel",
+      "editPullRequest",
+      "setCommitStatus",
+    ]);
   });
 
   it("keeps a log line per write, and a last line for how it ended", async () => {
@@ -625,7 +682,527 @@ describe("review:publish's writes are its own", () => {
       "replyAndResolve",
       "postReview",
       "addLabel",
+      "editPullRequest",
+      "setCommitStatus",
       "finished",
     ]);
+  });
+});
+
+/** The edits publish made, in order: what each set, as the fake received it. */
+const edits = () => writes().filter((w) => w.type === "editPullRequest");
+const body = () => github.pullRequests.get(PR)?.body ?? "";
+const title = () => github.pullRequests.get(PR)?.title ?? "";
+const statuses = () => github.statuses.get(SHA) ?? [];
+const setPr = (over: { body?: string; title?: string }): void => {
+  Object.assign(github.pullRequests.get(PR) ?? {}, over);
+};
+
+/** Every byte the review does not own: what surrounds the block. */
+const outside = (text: string): [string, string] => {
+  const start = text.indexOf(SUMMARY_START);
+  const end = text.indexOf(SUMMARY_END) + SUMMARY_END.length;
+  return [text.slice(0, start), text.slice(end)];
+};
+
+/** A regular pull request's frame, with a CRLF and a maintainer's note outside the block. */
+const FRAME = [
+  "Closes #123\r\n",
+  "> [!NOTE]\r\n> Opened by the agent loop from #123.\r\n",
+  SUMMARY_START,
+  "_The review will summarize this change here after its first pass._",
+  SUMMARY_END,
+  "\r\nMy own note, with a trailing newline and a CRLF.\n",
+].join("\n");
+
+const PRD_BRANCH = "agent/prd-14-a-prd";
+
+/**
+ * Step 3, the title and the summary block (#218), carried over from the
+ * retired step tests (`tests/pr-body-steps.test.ts`) by behaviour: spliced
+ * against the body as it stands now, every byte outside the markers kept,
+ * and the text laid out by publish from the runner's data (ADR 0007).
+ */
+describe("review:publish writes the title and the summary block", () => {
+  it("splices the summary between the markers, keeps every other byte, and writes the title", async () => {
+    setPr({ body: FRAME, title: "Fix #123: Do the thing" });
+    handOver();
+    put("pr_summary.json", prSummary());
+
+    await run();
+
+    expect(outside(body())).toEqual(outside(FRAME));
+    expect(title()).toBe("feat: release the lock on the error path");
+    expect(readSummaryBlock(body())).toMatchObject({ head: SHA, final: false });
+    expect(edits()[0]?.token).toBe("workflow");
+  });
+
+  /**
+   * The record is unchanged: the block holds what the runner's renderers made
+   * of the same data before the formatting moved here, the agent's summary,
+   * then the Evidence, then the Merge Danger naming the follow-ups.
+   */
+  it("lays the summary out as the agent's text, the Evidence and the Merge Danger", async () => {
+    setPr({ body: FRAME });
+    handOver();
+    const summary = prSummary({ ci: "red", redCheck: { kind: "unreadable", reason: "its report did not reach this review" } });
+    put("pr_summary.json", summary);
+
+    await run();
+
+    const evidence = { ci: "red" as const, head: SHA, testSketches: [] };
+    expect(readSummaryBlock(body())?.text).toBe(
+      `${withEvidence(summary.summary ?? "", { kind: "unreadable", reason: "its report did not reach this review" }, evidence)}\n\n${renderMergeDanger(summary.danger, [FOLLOW_UP])}`,
+    );
+    expect(body()).toContain(`**Before:** unknown. The test-first check is on, and its report could not be read`);
+    expect(body()).toContain("**Known issues**, filed when this merges:\n\n- Rate limit is unbounded (`src/api.ts:4`)");
+  });
+
+  it("lists the red tests the red check found, under the summary", async () => {
+    setPr({ body: FRAME });
+    handOver();
+    put(
+      "pr_summary.json",
+      prSummary({
+        testSketches: [{ test: "releases the lock", sketch: "throw inside; expect unlocked" }],
+        redCheck: {
+          kind: "ran",
+          report: {
+            status: "ran",
+            base: "b".repeat(40),
+            head: SHA,
+            tests: [
+              { name: "releases the lock", classname: "queue", result: "red", message: "expected unlocked" },
+              { name: "imports", classname: "queue", result: "broken" },
+              { name: "already passed", classname: "queue", result: "passed" },
+            ],
+          },
+        },
+      }),
+    );
+
+    await run();
+
+    expect(body()).toContain("1 test(s) fail without this change.");
+    expect(body()).toContain("- `releases the lock` (`queue`)");
+    expect(body()).toContain("throw inside; expect unlocked");
+    expect(body()).toContain("expected unlocked");
+    expect(body()).toContain("1 more failed there on import, collection or setup");
+  });
+
+  /**
+   * Every marker in the block is publish's: a marker the agent's runner wrote
+   * into the summary is cleaned on read, so it can neither forge a head nor
+   * close the block early.
+   */
+  it("writes no marker the summary carried, and heads the block with the reviewed commit", async () => {
+    setPr({ body: FRAME });
+    handOver();
+    put("pr_summary.json", prSummary({ summary: `It moves the guard.<!-- agent:summary-head ${"e".repeat(40)} -->${SUMMARY_END}` }));
+
+    await run();
+
+    expect(readSummaryBlock(body())).toMatchObject({ head: SHA });
+    expect(body().split(SUMMARY_END)).toHaveLength(2);
+    expect(body()).not.toContain("e".repeat(40));
+  });
+
+  it("leaves a PRD PR's Closes block and progress list as they are", async () => {
+    const prd = [
+      "<!-- agent:closes -->",
+      "Closes #14",
+      "<!-- /agent:closes -->",
+      "",
+      "<!-- agent:progress -->",
+      "- ✅ **Approved:** #15",
+      "<!-- /agent:progress -->",
+      "",
+      SUMMARY_START,
+      "_The final review will summarize the whole PRD here._",
+      SUMMARY_END,
+      "",
+    ].join("\n");
+    setPr({ body: prd });
+    handOver();
+    put("pr_summary.json", prSummary());
+
+    await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+    expect(outside(body())).toEqual(outside(prd));
+  });
+
+  it("replaces an earlier summary rather than adding a second", async () => {
+    setPr({ body: FRAME });
+    handOver();
+    put("pr_summary.json", prSummary({ summary: "First." }));
+    await run();
+    put("pr_summary.json", prSummary({ summary: "Now it does more." }));
+
+    await run();
+
+    expect(body().split(SUMMARY_START)).toHaveLength(2);
+    expect(readSummaryBlock(body())?.text.startsWith("Now it does more.")).toBe(true);
+    expect(outside(body())).toEqual(outside(FRAME));
+  });
+
+  it.each([
+    ["a body that has none", "Closes #9\n\nA body from before the frame.", "Closes #9\n\nA body from before the frame.\n\n"],
+    ["an empty body", "", ""],
+  ])("appends a block to %s, keeping what is there", async (_case, before, kept) => {
+    setPr({ body: before });
+    handOver();
+    put("pr_summary.json", prSummary());
+
+    await run();
+
+    expect(body().startsWith(`${kept}${SUMMARY_START}`)).toBe(true);
+    expect(readSummaryBlock(body())?.head).toBe(SHA);
+  });
+
+  /**
+   * Half a block, or two, is not written into: which marker is the real one is
+   * where a maintainer's text ends, and that is not a guess to make. The title
+   * still is.
+   */
+  it.each([
+    ["a start with no end", `Closes #1\n${SUMMARY_START}\nmine`],
+    ["two blocks", `${FRAME}\n${SUMMARY_START}\nx\n${SUMMARY_END}`],
+    ["the end before the start", `${SUMMARY_END}\nmine\n${SUMMARY_START}`],
+  ])("writes the title alone over %s, and says why", async (_case, broken) => {
+    setPr({ body: broken });
+    handOver();
+    put("pr_summary.json", prSummary());
+
+    await run();
+
+    expect(body()).toBe(broken);
+    expect(title()).toBe("feat: release the lock on the error path");
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("half a summary block, or two"));
+    expect(logLines().at(-1)).toMatchObject({ ended: "finished" });
+  });
+
+  it("writes only the half the review produced", async () => {
+    setPr({ body: FRAME, title: "Fix #123: Do the thing" });
+    handOver();
+    const { summary: _summary, ...titleOnly } = prSummary();
+    put("pr_summary.json", titleOnly);
+
+    await run();
+
+    expect(body()).toBe(FRAME);
+    expect(title()).toBe("feat: release the lock on the error path");
+
+    const { title: _title, ...summaryOnly } = prSummary();
+    put("pr_summary.json", summaryOnly);
+    setPr({ title: "Kept" });
+
+    await run();
+
+    expect(title()).toBe("Kept");
+    expect(readSummaryBlock(body())?.head).toBe(SHA);
+  });
+
+  /** Nothing pushed since the summary was written: the runner wrote no file. */
+  it("leaves the title and the summary as they are where the runner wrote no file", async () => {
+    setPr({ body: FRAME, title: "Fix #123: Do the thing" });
+    handOver();
+
+    await run();
+
+    expect(body()).toBe(FRAME);
+    expect(title()).toBe("Fix #123: Do the thing");
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("left as they are"));
+  });
+
+  /** After the review, and tolerated: a posted review is worth more than its description. */
+  it("warns and goes on to the verdict where the edit fails", async () => {
+    setPr({ body: FRAME });
+    github.fails = (_write, call) => call === "PATCH";
+    handOver();
+    put("pr_summary.json", prSummary());
+
+    await run();
+
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("::warning::Could not write the title and summary of PR #7"));
+    expect(statuses()).toHaveLength(1);
+    expect(logLines().at(-1)).toMatchObject({ ended: "finished" });
+  });
+
+  describe("on a PRD PR's final review", () => {
+    const NOTE = [
+      DRAFT_NOTE_START,
+      "> [!NOTE]",
+      "> The agent loop builds PRD #14 here, one sub-issue at a time. It stays a draft until every slice is done.",
+      DRAFT_NOTE_END,
+    ].join("\n");
+    const prd = (note: string): string =>
+      [
+        "<!-- agent:closes -->",
+        "Closes #14",
+        "<!-- /agent:closes -->",
+        "",
+        note,
+        "",
+        SUMMARY_START,
+        "_The final review will summarize the whole PRD here._",
+        SUMMARY_END,
+        "",
+        "A maintainer's note.",
+      ].join("\n");
+    const finalSummary = (): PrSummary => ({
+      title: "feat: the whole PRD",
+      summary: "The PRD delivers the queue.",
+      final: true,
+      ci: "green",
+      testSketches: [],
+      danger: { door: "one-way", doorNote: "A published release." },
+      prd: {
+        criteria: [
+          { subIssue: 15, record: { kind: "recorded", changes: [{ status: "changed", line: "The lock is per queue: shared locks deadlocked." }] } },
+          { subIssue: 16, record: { kind: "no record" } },
+        ],
+        redTests: { slices: [{ subIssue: 15, record: { known: true, red: [{ name: "locks per queue", classname: "queue" }], more: 0 } }, { subIssue: 16, record: undefined }] },
+      },
+    });
+
+    it("removes the draft-only note and writes the PRD's summary, marked as the final review's", async () => {
+      setPr({ body: prd(NOTE) });
+      handOver();
+      const summary = finalSummary();
+      put("pr_summary.json", summary);
+
+      await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+      expect(body()).not.toContain(DRAFT_NOTE_START);
+      expect(body()).not.toContain("stays a draft");
+      expect(outside(body())).toEqual(outside(prd(NOTE).replace(`${NOTE}\n\n`, "")));
+      expect(readSummaryBlock(body())).toMatchObject({ head: SHA, final: true });
+      expect(title()).toBe("feat: the whole PRD");
+      if (!summary.final) throw new Error("unreachable");
+      expect(readSummaryBlock(body())?.text).toBe(
+        renderPrdSummary({
+          outcome: summary.summary,
+          danger: summary.danger,
+          slices: summary.prd.criteria,
+          followUps: [FOLLOW_UP],
+          redTests: { slices: summary.prd.redTests?.slices },
+          evidence: { ci: "green", head: SHA, testSketches: [] },
+        }),
+      );
+      expect(body()).toContain("**Differs from the PRD:** #15 changed: The lock is per queue: shared locks deadlocked.");
+      expect(body()).toContain("- #15\n  **Before:** 1 test(s) fail without this slice.");
+    });
+
+    it("leaves a body with no note, or half of one, as it is outside the summary", async () => {
+      for (const note of ["My own text.", DRAFT_NOTE_START]) {
+        setPr({ body: prd(note) });
+        handOver();
+        put("pr_summary.json", finalSummary());
+
+        await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+        expect(outside(body())).toEqual(outside(prd(note)));
+      }
+    });
+
+    /** A slice round's write is not the final review's, and the note stays. */
+    it("leaves the note where a slice round writes the summary", async () => {
+      setPr({ body: prd(NOTE) });
+      handOver();
+      put("pr_summary.json", prSummary());
+
+      await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+      expect(body()).toContain(NOTE);
+      expect(readSummaryBlock(body())?.final).toBe(false);
+    });
+  });
+});
+
+/**
+ * Step 3b, the status line (#298), off a PRD PR: replaced between its markers
+ * and nowhere else, by `spliceStatus`'s rule, linking the review just posted.
+ * Built here from the verdict and the open count, which `pr_status.md` once
+ * carried as finished text.
+ */
+describe("review:publish writes the status line", () => {
+  const note = (line: string): string => `> [!NOTE]\n> ${line}\n>\n> Mine.\r\n`;
+  const bodies: readonly [string, string][] = [
+    ["a body with a status line", note(statusBlock("old"))],
+    ["a body with none", note("no line")],
+    ["half a line", note(`${STATUS_START}old`)],
+    ["two lines", note(statusBlock("a") + statusBlock("b"))],
+  ];
+
+  it.each(bodies)("over %s keeps spliceStatus's rule, linking the posted review", async (_case, before) => {
+    setPr({ body: before });
+    handOver();
+
+    await run();
+
+    const line = statusBlock(
+      renderPrStatus({ verdict: "changes recommended", startsFixRound: false, open: 2, review: github.reviews[0]?.url ?? "" }),
+    );
+    expect(body()).toBe(spliceStatus(before, line) ?? before);
+  });
+
+  it("says the review is fixing where it starts a fix round, and how many findings are open", async () => {
+    setPr({ body: note(statusBlock("old")) });
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));
+
+    await run();
+
+    expect(body()).toContain(`${STATUS_START}\n> **🔧 Fixing:** 2 findings open. [See it](${github.reviews[0]?.url})\n> ${STATUS_END}`);
+  });
+
+  it("is the advance job's on a PRD PR, and not written here", async () => {
+    setPr({ body: note(statusBlock("old")) });
+    handOver();
+
+    await run({ ...INPUTS(), BRANCH: PRD_BRANCH });
+
+    expect(edits()).toEqual([]);
+    expect(body()).toBe(note(statusBlock("old")));
+  });
+});
+
+/**
+ * Step 4, the verdict as a commit status (#96), and the fix round's beside it
+ * (#297). The context, the state and the line are publish's own: the hand-over
+ * names the verdict's key and whether it starts a round, and nothing more.
+ */
+describe("review:publish posts the verdict", () => {
+  it("posts the verdict's row on the reviewed commit, linking the review, with the workflow token", async () => {
+    handOver();
+
+    await run();
+
+    expect(statuses()).toEqual([
+      { context: VERDICT_CONTEXT, state: "failure", targetUrl: github.reviews[0]?.url, creator: "workflow" },
+    ]);
+    const posted = writes().find((w) => w.type === "setCommitStatus")?.args[0];
+    expect(posted).toEqual({
+      sha: SHA,
+      context: VERDICT_CONTEXT,
+      state: "failure",
+      description: VERDICTS["changes recommended"].description,
+      targetUrl: github.reviews[0]?.url,
+    });
+  });
+
+  it("posts approval as success", async () => {
+    handOver(decide({ verdict: VERDICTS["approval recommended"], placed: [], stillOpen: [] }));
+
+    await run();
+
+    expect(writes().find((w) => w.type === "setCommitStatus")?.args[0]).toMatchObject({
+      state: "success",
+      description: VERDICTS["approval recommended"].description,
+    });
+  });
+
+  /** *Needs a closer look*'s line is its cause's, which the body's hand-over names. */
+  it("takes a closer look's line from its cause", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["needs a closer look"], ...CLOSER_LOOK.red, cause: "red" } }));
+
+    await run();
+
+    expect(writes().find((w) => w.type === "setCommitStatus")?.args[0]).toMatchObject({
+      state: "failure",
+      description: CLOSER_LOOK.red.description,
+    });
+  });
+
+  it("posts the fix round's status beside the verdict where the review asked for one", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));
+
+    await run();
+
+    expect(writes().filter((w) => w.type === "setCommitStatus").map((w) => w.args[0])).toEqual([
+      expect.objectContaining({ context: VERDICT_CONTEXT }),
+      { sha: SHA, ...FIX_ROUND_STATUS, targetUrl: github.reviews[0]?.url },
+    ]);
+  });
+
+  it("posts the verdict last, after the review, the title and summary, and the status line", async () => {
+    setPr({ body: `${statusBlock("old")}\n${FRAME}` });
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));
+    put("pr_summary.json", prSummary());
+
+    await run();
+
+    expect(writeTypes().slice(3)).toEqual([
+      "postReview",
+      "addLabel",
+      "editPullRequest",
+      "editPullRequest",
+      "setCommitStatus",
+      "setCommitStatus",
+    ]);
+  });
+
+  it("warns and finishes where GitHub refuses the verdict or the fix round's status", async () => {
+    github.fails = (_write, call) => call === "POST status";
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));
+
+    await run();
+
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("::warning::Could not post the `agent-review` verdict for"));
+    // Not the adopter's grant (#121, #146): a caller short of `statuses:
+    // write` is refused before any job starts, so this is the status refused.
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("a 422 is the status itself being refused"));
+    expect(console.log).not.toHaveBeenCalledWith(expect.stringMatching(/a 403 is a caller missing/));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("::warning::Could not post the `agent-fix-round` status for"));
+    expect(logLines().at(-1)).toMatchObject({ ended: "finished" });
+  });
+
+  /**
+   * ADR 0007: the agent's runner can claim a verdict and a fix round, each
+   * read strictly into its fixed set, and can name no status. A file that
+   * tries is refused before the first write.
+   */
+  it.each([
+    ["a status context", (v: Record<string, unknown>) => ({ ...v, context: "agent-review" })],
+    ["the old fix round's status", (v: Record<string, unknown>) => ({ ...v, fixRound: FIX_ROUND_STATUS })],
+    ["an unknown verdict", (v: Record<string, unknown>) => ({ ...v, verdict: "merge it" })],
+    ["a fix round on approval", (v: Record<string, unknown>) => ({ ...v, verdict: "approval recommended" })],
+    ["a fix round claimed as a string", (v: Record<string, unknown>) => ({ ...v, fixRound: "true" })],
+    ["a negative open count", (v: Record<string, unknown>) => ({ ...v, open: -1 })],
+  ])("refuses a verdict.json carrying %s", async (_case, change) => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));
+    put("verdict.json", change(JSON.parse(fs.readFileSync(path.join(dir, "verdict.json"), "utf8")) as Record<string, unknown>));
+
+    await expect(run()).rejects.toThrow(/^review's verdict\.json /);
+    expect(writes()).toEqual([]);
+  });
+
+  it("refuses a verdict.json naming another verdict from the body's", async () => {
+    handOver();
+    put("verdict.json", { verdict: "approval recommended", fixRound: false, open: 0 });
+
+    await expect(run()).rejects.toThrow(
+      'review\'s verdict.json names the verdict "approval recommended", and its review_body.json "changes recommended", so nothing was posted.',
+    );
+    expect(writes()).toEqual([]);
+  });
+
+  it.each([
+    ["a status context", { context: "agent-review" }],
+    ["a finished block", { summary: { start: SUMMARY_START, end: SUMMARY_END, inner: "x" } }],
+    ["the final review's records off it", { final: true }],
+  ])("refuses a pr_summary.json carrying %s, before its first write", async (_case, change) => {
+    handOver();
+    put("pr_summary.json", { ...prSummary(), ...change });
+
+    await expect(run()).rejects.toThrow(/^review's pr_summary\.json /);
+    expect(writes()).toEqual([]);
+  });
+
+  it("refuses a missing verdict.json, which the runner writes on every review", async () => {
+    handOver();
+    fs.rmSync(path.join(dir, "verdict.json"));
+
+    await expect(run()).rejects.toThrow("review's verdict.json is not in");
+    expect(writes()).toEqual([]);
   });
 });

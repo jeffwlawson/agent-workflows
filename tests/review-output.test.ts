@@ -3147,7 +3147,12 @@ describe("the review brief's Merge Danger", () => {
     for (const text of [PROMPT, EXTRACTION, RUNNER]) expect(text).not.toContain("behaviourChanges");
     expect(finalShape()).toMatch(/`breaking`/);
     expect(finalShape()).toMatch(/Differs from the PRD/);
-    expect(RUNNER).toMatch(/renderPrdSummary\(\{\s*outcome: output\.summary,\s*danger: output,/);
+    // The runner hands the review's danger fields over, and publish lays the
+    // PRD's Merge Danger out from them (ADR 0007).
+    expect(RUNNER).toMatch(/danger: \{\s*\.\.\.\(output\.door === undefined/);
+    expect(fs.readFileSync(path.join("review", "publish.ts"), "utf8")).toMatch(
+      /renderPrdSummary\(\{\s*outcome: summary\.summary,\s*danger: summary\.danger,/,
+    );
   });
 });
 

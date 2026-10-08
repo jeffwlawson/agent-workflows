@@ -1446,7 +1446,7 @@ describe("agent-review settles on one commit and reads nothing else", () => {
     expect(jobOf(REVIEW).outputs?.["sha"]).toBe(RESOLVED);
     const posting = writerStepsOf(REVIEW);
     const posted = (prefix: string): Step | undefined => posting.find((s) => (s.name ?? "").startsWith(prefix));
-    expect(posted("Post the verdict as a commit status")?.env?.["HEAD_SHA"]).toBe("${{ needs.review.outputs.sha }}");
+    expect(posted("Publish the review")?.env?.["REVIEWED_SHA"]).toBe("${{ needs.review.outputs.sha }}");
     expect(posted("Post an error verdict")?.env?.["HEAD_SHA"]).toBe("${{ needs.review.outputs.sha }}");
     for (const step of [...steps.slice(steps.findIndex((s) => s.id === "state") + 1), ...posting]) {
       expect(JSON.stringify(step)).not.toContain("pull_request.head.sha");
@@ -1692,40 +1692,34 @@ describe("agent-review marks a PR whose review recorded follow-ups", () => {
 describe("agent-review posts its verdict as a commit status", () => {
   const stepNamed = (name: string): Step | undefined =>
     [...stepsOf(REVIEW), ...writerStepsOf(REVIEW)].find((s) => s.name === name);
-  const postStep = (): Step | undefined => stepNamed("Post the verdict as a commit status");
   const errorStep = (): Step | undefined => stepNamed("Post an error verdict");
 
   /**
    * On the commit the pre-flight settled on (#229), which is the same one the
    * checkout, the CI wait and the review's own `commitOID` are pinned to, and
-   * which the review job hands the posting job as `sha` (#257). Reading the
-   * payload or the live head here instead would post a verdict about a diff
-   * nobody read.
+   * which the review job hands the posting job as `sha` (#257). `review:publish`
+   * posts the verdict on `REVIEWED_SHA` (#418), and the failure arm on
+   * `HEAD_SHA`. Reading the payload or the live head here instead would post a
+   * verdict about a diff nobody read.
    */
-  it.each([
-    ["the verdict", "Post the verdict as a commit status"],
-    ["an error", "Post an error verdict"],
-  ])("posts %s on the commit that was reviewed", (_case: string, name: string) => {
-    const step = stepNamed(name);
-
+  it("posts the verdict, and an error, on the commit that was reviewed", () => {
     expect(jobOf(REVIEW).outputs?.["sha"]).toBe("${{ steps.state.outputs.sha }}");
-    expect(step?.env?.["HEAD_SHA"]).toBe("${{ needs.review.outputs.sha }}");
-    expect(step?.run ?? "").toContain('/statuses/${HEAD_SHA}');
+    expect(stepNamed("Publish the review")?.env?.["REVIEWED_SHA"]).toBe("${{ needs.review.outputs.sha }}");
+    expect(errorStep()?.env?.["HEAD_SHA"]).toBe("${{ needs.review.outputs.sha }}");
+    expect(errorStep()?.run ?? "").toContain("/statuses/${HEAD_SHA}");
   });
 
   /**
    * One context, and one place it is written. A reader of these statuses
-   * selects on it — it is how a later round tells the loop's own verdict from
-   * anything else that can post a status — so a drift between the halves is a
-   * verdict nothing recognises.
-   *
-   * The failure arm is the exception and has to be: a run that failed wrote no
-   * `verdict.json` for it to read, so that one literal is held here instead.
+   * selects on it, so a drift between the halves is a verdict nothing
+   * recognises. `review:publish` posts it from `VERDICT_CONTEXT` (#418), and
+   * no shell step posts a status but the failure arm, which runs where publish
+   * did not finish, so that one literal is held here instead.
    */
-  it("posts the verdict under the context the runner wrote", () => {
+  it("posts the verdict from publish alone, and spells the context out only on the failure arm", () => {
     expect(VERDICT_CONTEXT).toBe("agent-review");
-    expect(postStep()?.run ?? "").toContain(".context");
-    expect(postStep()?.run ?? "").toContain("context=${context}");
+    const posting = writerStepsOf(REVIEW).filter((step) => (step.run ?? "").includes("/statuses/"));
+    expect(posting.map((step) => step.name)).toEqual(["Post an error verdict"]);
   });
 
   it("posts an error under that same context, spelled out", () => {
@@ -1746,42 +1740,11 @@ describe("agent-review posts its verdict as a commit status", () => {
   });
 
   /**
-   * A refused post is ours rather than the adopter's. The warning used to name
-   * only the missing grant, so v0.3.0's rejected verdicts (a 422 on the
-   * description itself) read as every adopter's misconfiguration (#121) — and
-   * the grant it named is not a cause at all: a caller short of
-   * `statuses: write` is refused before any job starts, so a token that reached
-   * this step holds it (#146).
+   * The URL of the review publish posted, which it reports in `published.json`
+   * (#417), and glue turns into a step output, since a step's `env:` can read
+   * a step output and not a file. The verdict publish posts links it itself.
    */
-  it("does not blame the grant when the post is refused", () => {
-    const run = postStep()?.run ?? "";
-
-    expect(run).toContain("a 422 is the status itself being refused");
-    expect(run).not.toMatch(/a 403 is a caller missing/);
-    expect(run).toContain("before any job starts");
-  });
-
-  /**
-   * The state and the line a human reads come from the runner's own derivation,
-   * read out of the file it wrote. Deriving either here would be a second
-   * description of #96's table — in YAML, where nothing can unit-test it.
-   */
-  it("takes the state and the next step from what the runner derived", () => {
-    const run = postStep()?.run ?? "";
-
-    expect(run).toContain("${RUNNER_TEMP}/verdict.json");
-    expect(run).toContain(".state");
-    expect(run).toContain(".description");
-  });
-
-  /**
-   * And links the review it is the verdict on, so the one line has somewhere to
-   * go when a reader does want the detail. The URL is the posted review's own,
-   * which `review:publish` reports in `published.json` (#417), and glue turns
-   * into a step output, since a step's `env:` can read a step output and not a
-   * file.
-   */
-  it("links the review it posted, by the URL publish reported", () => {
+  it("reads the review's URL from what publish reported", () => {
     const glue = stepNamed("Read what publish reported");
 
     expect(glue?.id).toBe("published");
@@ -1789,8 +1752,6 @@ describe("agent-review posts its verdict as a commit status", () => {
     expect(glue?.run ?? "").toContain('"${RUNNER_TEMP}/publish/published.json"');
     expect(glue?.run ?? "").toContain(".reviewUrl");
     expect(glue?.run ?? "").toContain('"$GITHUB_OUTPUT"');
-    expect(postStep()?.env?.["REVIEW_URL"]).toBe("${{ steps.published.outputs.url }}");
-    expect(postStep()?.run ?? "").toContain("target_url=");
   });
 
   /**
@@ -1805,13 +1766,6 @@ describe("agent-review posts its verdict as a commit status", () => {
     expect(scripts).not.toContain("gh api graphql --input");
     expect(scripts).not.toContain("addPullRequestReview");
     expect(scripts).not.toContain("resolveReviewThread");
-  });
-
-  it("posts the verdict after the review it points at, and only if that posted", () => {
-    const names = writerStepsOf(REVIEW).map((s) => s.name ?? "");
-
-    expect(postStep()?.if).toBe("steps.published.outcome == 'success'");
-    expect(names.indexOf(postStep()?.name ?? "")).toBeGreaterThan(names.indexOf("Read what publish reported"));
   });
 
   /**
@@ -1831,30 +1785,22 @@ describe("agent-review posts its verdict as a commit status", () => {
     );
     expect(step?.run ?? "").toContain("state=error");
 
-    // Below every step it is the arm for, the verdict's own posting included:
-    // a `failure()` step covers what precedes it, so one placed beside the
-    // success arm would miss the failure that leaves no status at all.
+    // Below every step it is the arm for, publish's included, which posts the
+    // verdict: a `failure()` step covers what precedes it, so one placed
+    // beside the success arm would miss the failure that leaves no status at
+    // all.
     const names = writerStepsOf(REVIEW).map((s) => s.name ?? "");
 
-    expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(
-      names.indexOf(postStep()?.name ?? ""),
-    );
+    expect(names.indexOf(step?.name ?? "")).toBeGreaterThan(names.indexOf("Publish the review"));
   });
 
   /**
-   * Neither posting may fail the run: a posted review is worth more than its
-   * verdict. The cause is not the adopter's caller — one short of
-   * `statuses: write` is refused before any job starts (#146), so a step that
-   * ran holds the write and what lands here is GitHub refusing the status
-   * itself. A warning keeps the failure visible; `|| true` would leave a loop
-   * that posts no verdicts and looks healthy, which is the shape the marker
-   * step above is written against too.
+   * The error may not fail the run either. A warning keeps the failure
+   * visible; `|| true` would leave a loop that posts no verdicts and looks
+   * healthy. The verdict's own warning is publish's, and its tests hold it.
    */
-  it.each([
-    ["the verdict", "Post the verdict as a commit status"],
-    ["an error", "Post an error verdict"],
-  ])("warns rather than failing when %s cannot be posted", (_case: string, name: string) => {
-    const run = stepNamed(name)?.run ?? "";
+  it("warns rather than failing when an error cannot be posted", () => {
+    const run = errorStep()?.run ?? "";
 
     expect(run).toContain("::warning::");
     expect(run).not.toContain("|| true");
@@ -1948,10 +1894,8 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     expect(startStep()?.if ?? "").toContain(`needs.review.outputs.verdict == '${AUTO_FIX_VERDICT}'`);
     expect(startStep()?.if ?? "").toContain("needs.review.outputs.fix-round == 'true'");
     expect(jobNamed(REVIEW, "review").outputs?.["fix-round"]).toBe("${{ steps.verdict.outputs.fix-round }}");
-    expect(handOff?.run ?? "").toContain('"fix-round=\\(.fixRound != null)"');
-    expect(fs.readFileSync(path.join("review", "review.ts"), "utf8")).toContain(
-      "...(verdict.startsFixRound === true ? { fixRound: FIX_ROUND_STATUS } : {}),",
-    );
+    expect(handOff?.run ?? "").toContain('"fix-round=\\(.fixRound)"');
+    expect(fs.readFileSync(path.join("review", "review.ts"), "utf8")).toContain("fixRound: verdict.startsFixRound === true,");
     // No step anywhere selects on the retired key.
     for (const file of fs.readdirSync(WORKFLOW_DIR)) {
       expect(fs.readFileSync(path.join(WORKFLOW_DIR, file), "utf8"), file).not.toContain("fix round started'");
@@ -2333,20 +2277,13 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
 
   /**
    * **The record a round is counted by** (#297). The verdict's line is the
-   * same whether or not a round starts, so the posting step writes the
-   * `agent-fix-round` status beside it, out of the same file and linking the
-   * same review, and the hand-off starts no round whose record is missing:
-   * a round the budget cannot see is one nothing bounds.
+   * same whether or not a round starts, so `review:publish` posts the
+   * `agent-fix-round` status beside it, from its own `FIX_ROUND_STATUS` and
+   * linking the same review (its tests hold that), and the hand-off starts no
+   * round whose record is missing: a round the budget cannot see is one
+   * nothing bounds.
    */
-  it("posts the fix-round record beside the verdict, and starts no round without it", () => {
-    const post = (job().steps ?? []).find((s) => (s.name ?? "") === "Post the verdict as a commit status");
-    const run = post?.run ?? "";
-
-    expect(run).toContain(`jq -e '.fixRound != null' "\${RUNNER_TEMP}/verdict.json"`);
-    expect(run).toContain('-f "context=$(jq -r .fixRound.context "${RUNNER_TEMP}/verdict.json")"');
-    expect(run).toContain('record+=(-f "target_url=${REVIEW_URL}")');
-    expect(run).not.toContain("agent-fix-round\"");
-
+  it("starts no round without the fix-round record publish posts", () => {
     const start = startStep();
     expect(start?.env?.["FIX_ROUND_CONTEXT"]).toBe(FIX_ROUND_STATUS.context);
     expect(start?.run ?? "").toContain(
@@ -3122,9 +3059,10 @@ describe("the review posts last, from one job", () => {
    * The order, step by step. The refusal opens it; the loop's token is minted
    * next, so `review:publish` holds it (ADR 0005); the threads are resolved
    * before the review is posted, both in publish, so their replies are
-   * timestamped ahead of the overview; every result, the failure arm's
-   * included, is posted before the trigger label comes off; and the hand-offs
-   * come after it, then the write log is kept.
+   * timestamped ahead of the overview, and the title, summary, status line
+   * and verdict after it, all in publish (#418); every result, the failure
+   * arm's included, is posted before the trigger label comes off; and the
+   * hand-offs come after it, then the write log is kept.
    */
   it("resolves, posts, sets the verdict and the ready state, takes its label off, then hands off", () => {
     expect((posting().steps ?? []).map((s) => s.name)).toEqual([
@@ -3135,9 +3073,6 @@ describe("the review posts last, from one job", () => {
       "Fetch what the review wrote",
       "Publish the review",
       "Read what publish reported",
-      "Write the PR title and summary",
-      "Write the PR status line",
-      "Post the verdict as a commit status",
       "Mark PR ready for review",
       "Post an error verdict",
       "Mark blocked on failure",
@@ -3149,18 +3084,15 @@ describe("the review posts last, from one job", () => {
 
   /**
    * Each posting step runs on the one before it having posted: the review
-   * only on a fetched hand-over, and the verdict and the ready state only on a
-   * posted review, so a review that failed to post leaves the pull request in
-   * draft under an error status.
+   * only on a fetched hand-over, and the ready state only on a posted review,
+   * so a review that failed to post leaves the pull request in draft under an
+   * error status. Publish posts the verdict only after the review, itself.
    */
   it("posts each result only on the one before it", () => {
     const step = (name: string): Step | undefined => (posting().steps ?? []).find((s) => s.name === name);
 
     expect(step("Publish the review")?.if).toBe("steps.fetch.outcome == 'success'");
     expect(step("Read what publish reported")?.if).toBe("steps.publish.outcome == 'success'");
-    for (const name of ["Write the PR title and summary", "Post the verdict as a commit status"]) {
-      expect(step(name)?.if, name).toBe("steps.published.outcome == 'success'");
-    }
     expect(step("Mark PR ready for review")?.if ?? "").toContain("steps.published.outcome == 'success'");
     expect(step("Fetch what the review wrote")?.if).toBe(
       "needs.review.outputs.proceed == 'true' && needs.review.result == 'success'",
@@ -8393,16 +8325,15 @@ describe("the PRD chain's progress", () => {
 
     const stopped = stepsOf(PRD).find((s) => s.name === "Show the stopped slice in the progress list");
     const building = stepsOf(PRD).find((s) => s.name === "Show the slice building in the progress list");
-    const prStatus = (jobNamed(REVIEW, "post-review").steps ?? []).find((s) => s.name === "Write the PR status line");
     for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, building?.env]) {
       expect(env?.["PROGRESS_START"]).toBe(PROGRESS_START);
       expect(env?.["PROGRESS_END"]).toBe(PROGRESS_END);
     }
-    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, building?.env, prStatus?.env]) {
+    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, building?.env]) {
       expect(env?.["STATUS_START"]).toBe(STATUS_START);
       expect(env?.["STATUS_END"]).toBe(STATUS_END);
     }
-    for (const env of [progressStep()?.env, prStatus?.env]) expect(env?.["REVIEW_URL_SLOT"]).toBe(REVIEW_URL_SLOT);
+    expect(progressStep()?.env?.["REVIEW_URL_SLOT"]).toBe(REVIEW_URL_SLOT);
     expect(handover).toContain(`mark="${FINAL_REVIEW_MARK}"`);
     expect(handover).toContain(`end="${PROGRESS_END}"`);
     expect(handover).toContain(`status_start="${STATUS_START}"`);
@@ -8479,19 +8410,18 @@ describe("the PRD chain's progress", () => {
     ]);
   });
 
-  /** The regular pull request's status line is the posting job's; a PRD PR's is the advance job's. */
-  it("writes a regular pull request's status line after its summary, and never a PRD PR's", () => {
-    const names = (jobNamed(REVIEW, "post-review").steps ?? []).map((s) => s.name ?? "");
-    const step = (jobNamed(REVIEW, "post-review").steps ?? []).find((s) => s.name === "Write the PR status line");
+  /**
+   * The regular pull request's status line is `review:publish`'s, which tells
+   * a PRD PR by the head the event names (its tests hold that it writes none
+   * there); a PRD PR's is the advance job's. No shell step in the posting job
+   * writes one, and the runner hands over no finished line.
+   */
+  it("writes a regular pull request's status line from publish, and never a PRD PR's", () => {
+    const posting = jobNamed(REVIEW, "post-review").steps ?? [];
 
-    expect(names.indexOf("Write the PR status line")).toBe(names.indexOf("Write the PR title and summary") + 1);
-    expect(step?.if).toBe("steps.published.outcome == 'success' && !startsWith(github.event.pull_request.head.ref, 'agent/prd-')");
-    expect(step?.env?.["REVIEW_URL"]).toBe("${{ steps.published.outputs.url }}");
-    expect(step?.run).toContain("set -uo pipefail");
-    expect(String(stepsOf(REVIEW).find((s) => s.name === "Hand the review to the posting job")?.with?.["path"])).toContain(
-      "${{ runner.temp }}/pr_status.md",
-    );
-    expect(fs.readFileSync("review/review.ts", "utf8")).toContain('"pr_status.md"');
+    expect(posting.find((s) => s.name === "Publish the review")?.env?.["BRANCH"]).toBe("${{ github.event.pull_request.head.ref }}");
+    expect(posting.filter((s) => (s.run ?? "").includes("STATUS_START"))).toEqual([]);
+    expect(RUNNERS.review.outputs).not.toContain("pr_status.md");
   });
 
   /**
@@ -9939,21 +9869,23 @@ describe("an artifact step hands over exactly the files a command declares", () 
   const upload = (name: string): Step | undefined => stepsOf(REVIEW).find((s) => s.name === name);
 
   /**
-   * `review:publish`'s declared files (#417), and beside them the three the
-   * posting job's shell steps still read until their own command moves them:
-   * named here, so a file handed over for no reader, or one a reader wants and
-   * nothing hands over, fails by name either way.
+   * `review:publish`'s declared files (#417, #418), and no others: every file
+   * the posting job reads from the review is publish's to read, so a file
+   * handed over for no reader, or one publish wants and nothing hands over,
+   * fails by name either way.
    */
-  const STILL_READ_BY_SHELL = { "verdict.json": "always", "pr_summary.json": "sometimes", "pr_status.md": "sometimes" } as const;
-
-  it("holds the review job's hand-over to the files review:publish declares, and what shell still reads", () => {
+  it("holds the review job's hand-over to the files review:publish declares", () => {
     const declared = COMMANDS["review:publish"].inputs.REVIEW_DIR;
 
     expect(declared.producer).toBe("review");
-    expectHandsOver(upload("Hand the review to the posting job"), {
-      ...declared,
-      files: { ...declared.files, ...STILL_READ_BY_SHELL },
-    });
+    expect(Object.keys(declared.files).sort()).toEqual([
+      "findings.json",
+      "pr_summary.json",
+      "review_body.json",
+      "thread_resolutions.json",
+      "verdict.json",
+    ]);
+    expectHandsOver(upload("Hand the review to the posting job"), declared);
   });
 
   it("names a file declared and not handed over, and one handed over and not declared", () => {

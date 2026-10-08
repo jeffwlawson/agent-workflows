@@ -17,7 +17,6 @@ import { applyCriteriaRulings, renderCriteriaForReview } from "./acceptance-crit
 import { applyNoteRulings, renderNotesForReview } from "../shared/fix-notes.js";
 import { fetchReviews } from "../shared/follow-up-filing.js";
 import { earlierFollowUps } from "../shared/follow-up-plan.js";
-import { renderMergeDanger } from "../shared/merge-danger.js";
 import { describeUnreadable } from "../shared/pr-feedback.js";
 import {
   firstLine,
@@ -26,7 +25,6 @@ import {
   readSliceRound,
   renderFinalReviewBrief,
   renderParkComment,
-  renderPrdSummary,
   renderSliceRoundBrief,
   REVIEW_URL_SLOT,
   roundName,
@@ -37,15 +35,15 @@ import {
   type PrdRound,
   type SliceCriteria,
 } from "../shared/prd-round.js";
-import { currentSummary, summaryDue, summaryUpdate } from "./pr-summary.js";
-import { progressAtRoundEnd, renderPrStatus, statusBlock, type RoundEnding } from "../shared/progress-list.js";
+import { currentSummary, summaryDue } from "./pr-summary.js";
+import { progressAtRoundEnd, type RoundEnding } from "../shared/progress-list.js";
 import {
   describeRedCheck,
+  evidenceCheck,
   readRedCheck,
   redTestsRecord,
   renderRedCheck,
   renderRedCheckForFinal,
-  withEvidence,
   type SliceRedTests,
 } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "./review-context.js";
@@ -90,8 +88,7 @@ import {
   type RoundCounts,
   type RoundScope,
 } from "../shared/round-header.js";
-import type { ReviewBody, ThreadResolutions } from "./hand-over.js";
-import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../shared/record.js";
+import type { PrSummary, PrSummaryText, ReviewBody, ThreadResolutions, VerdictHandOver } from "./hand-over.js";
 
 const INPUTS = readInputs(RUNNERS["review"].inputs);
 const { writeJson, writeText } = writers(RUNNERS["review"].outputs);
@@ -615,68 +612,62 @@ try {
   // have to infer from a missing file.
   writeJson("thread_resolutions.json", resolutions satisfies ThreadResolutions);
 
-  // The title and the summary block, for the posting job to write (#218).
-  // Written only where this review rewrites them, so the file's existence is
-  // the whole condition. The posting job splices the
-  // summary into the body as it stands then, not as it was read here, so an
-  // edit made outside the block while this review ran survives it.
+  // `pr_summary.json`: the title and the summary block, for publish to write
+  // (#218). Written only where this review rewrites them, so the file's
+  // existence is the whole condition. Publish splices the summary into the
+  // body as it stands then, not as it was read here, so an edit made outside
+  // the block while this review ran survives it.
   //
-  // The final review's summary is the PRD's (#247, #356): its outcome, then a
-  // line per slice that changed or dropped a criterion, laid out here.
-  //
-  // Every summary write ends with the Merge Danger (#356), from the review's
-  // door, blast radius and breaking changes, its known issues the follow-ups
-  // this review records to be filed on merge.
-  //
-  // What the Evidence's After and its test sketches come from (#355): CI's
-  // result at the head the summary describes, and the sketches the review
-  // wrote, which the render attaches only to tests listed as failing first.
-  const evidence = { ci, head: headSha, testSketches: output.testSketches };
-  const written = final
-    ? {
-        ...output,
-        summary: renderPrdSummary({
-          outcome: output.summary,
-          danger: output,
-          slices: slicesCriteria,
-          followUps,
-          // Each slice's red tests (#235), where the check is configured.
-          ...(redCheck.kind === "not-configured" ? {} : { redTests: { slices: slicesRedTests } }),
-          evidence,
-        }),
-      }
-    : output.summary === undefined
-      ? output
-      : // A slice or a regular pull request's body gives its Evidence under
-        // the summary (#234, #355), from the red check's report and CI's
-        // result rather than the agent's word, so the agent's text and the
-        // Evidence are kept apart. The final review's is laid out by slice.
-        {
-          ...output,
-          summary: `${withEvidence(output.summary, redCheck, evidence)}\n\n${renderMergeDanger(output, followUps)}`,
-        };
-  const summary = writesSummary ? summaryUpdate(written, headSha, final) : undefined;
-  if (summary !== undefined) writeJson("pr_summary.json", summary);
+  // The agent's words and the data the rest of the block is laid out from,
+  // and nothing rendered (ADR 0007): publish writes the Evidence (#355) and
+  // the Merge Danger (#356) under the summary, and on the final review the
+  // PRD's lines per slice (#247, #356), with every marker the block carries.
+  // Each comes from what this review decided: CI's result at the head, the
+  // sketches the review wrote, the red check as it was read here, or each
+  // landed slice's records off the reviews of it. The Merge Danger's known
+  // issues are the follow-ups `review_body.json` records.
+  if (writesSummary && (final || output.title !== undefined || output.summary !== undefined)) {
+    const text: PrSummaryText = {
+      ...(output.title === undefined ? {} : { title: output.title }),
+      ...(output.summary === undefined ? {} : { summary: output.summary }),
+      ci,
+      testSketches: output.testSketches ?? [],
+      danger: {
+        ...(output.door === undefined ? {} : { door: output.door }),
+        ...(output.doorNote === undefined ? {} : { doorNote: output.doorNote }),
+        ...(output.blastRadius === undefined ? {} : { blastRadius: output.blastRadius }),
+        ...(output.blastRadiusNote === undefined ? {} : { blastRadiusNote: output.blastRadiusNote }),
+        ...(output.breaking === undefined ? {} : { breaking: output.breaking }),
+      },
+    };
+    const summary: PrSummary = final
+      ? {
+          ...text,
+          final,
+          prd: {
+            ...(slicesCriteria === undefined ? {} : { criteria: slicesCriteria }),
+            // Each slice's red tests (#235), where the check is configured.
+            ...(redCheck.kind === "not-configured" ? {} : { redTests: slicesRedTests === undefined ? {} : { slices: slicesRedTests } }),
+          },
+        }
+      : { ...text, final, redCheck: evidenceCheck(redCheck) };
+    writeJson("pr_summary.json", summary);
+  }
 
-  // What the workflow posts the commit status from — context, state and line.
-  // A file rather than a step output, for the same reason the payload above is
-  // one: the step that posts cannot read this process, and the table all three
-  // come from is tested here rather than restated in YAML. The only copy of the
-  // context that is *not* read from here is the one the failure arm posts,
-  // which by definition runs on a review that wrote no file.
-  //
-  // `verdict` is the row's key rather than its heading, so the workflow
-  // selects on something no rewording moves. `fixRound` is the status that
-  // records a round this review asked for (#297), present only where the
-  // automatic fix (#102) starts one: the posting step posts it beside the
-  // verdict, and the hand-off selects on its presence.
+  // `verdict.json`: what publish posts the commit status from, and the rest
+  // of the posting job reads the verdict by. The row's key rather than its
+  // heading, so everything that selects on it selects on something no
+  // rewording moves, and whether the automatic fix (#102) starts a round
+  // (#297). Publish takes the context, the state and the line from its own
+  // table, keyed by this and by the cause in `review_body.json`, so nothing
+  // here names a status. Beside them, how many findings this review leaves
+  // open, for the status line publish writes into the note (#298).
+  const open = stillOpen.length + placed.length;
   writeJson("verdict.json", {
-    context: VERDICT_CONTEXT,
     verdict: verdict.verdict,
-    state: verdict.state,
-    description: verdict.description,
-    ...(verdict.startsFixRound === true ? { fixRound: FIX_ROUND_STATUS } : {}),
-  });
+    fixRound: verdict.startsFixRound === true,
+    open,
+  } satisfies VerdictHandOver);
 
   // And on a PRD PR, what the advance job says on the parent where this round
   // ends without approval and with no fix round starting (PRD #222): the
@@ -726,18 +717,9 @@ try {
   }
 
   // The progress table and status line again, now that this review knows
-  // what it leaves open (#298). Off a PRD PR, the status line the posting job
-  // writes into the note (#298), linking this review once it is posted.
-  const open = stillOpen.length + placed.length;
+  // what it leaves open (#298). Off a PRD PR, publish writes the status line
+  // from `verdict.json`.
   writeProgress(open);
-  if (round === undefined) {
-    writeText(
-      "pr_status.md",
-      statusBlock(
-        renderPrStatus({ verdict: verdict.verdict, startsFixRound: verdict.startsFixRound === true, open, review: REVIEW_URL_SLOT }),
-      ),
-    );
-  }
 
   console.log("Review complete.");
   console.log(

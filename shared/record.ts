@@ -193,6 +193,15 @@ export const TRIAGE_LABEL = "needs-triage";
  */
 export const FOLLOW_UP_STUB_LABEL = "pr-follow-up";
 
+// Branch patterns.
+
+/**
+ * What a PRD branch's name starts with: `agent/prd-<parent>-<slug>`, the one
+ * branch every slice of a PRD is built on, and the head of its PRD PR
+ * (PRD #222).
+ */
+export const PRD_BRANCH_PREFIX = "agent/prd-";
+
 // Commit trailers.
 
 /** The trailer key a build run's commits carry, as `Agent-Slice: #<sub>`. */

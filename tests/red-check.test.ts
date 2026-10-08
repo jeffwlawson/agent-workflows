@@ -1072,14 +1072,18 @@ describe("the pull request's body gives its Evidence, Before and After (#234, #3
     ).toBe(`Fixes scaling.\n\n${section}`);
   });
 
-  it("is what the review writes under a slice or regular pull request's summary, the Merge Danger after it", () => {
+  it("is what publish writes under a slice or regular pull request's summary, the Merge Danger after it", () => {
     const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+    const publish = fs.readFileSync(path.join("review", "publish.ts"), "utf8");
     const prompt = fs.readFileSync(path.join("review", "prompt.md"), "utf8");
 
-    expect(runner).toMatch(
-      /summary: `\$\{withEvidence\(output\.summary, redCheck, evidence\)\}\\n\\n\$\{renderMergeDanger\(output, followUps\)\}`/,
+    // The runner hands over the red check as the Evidence reads it, and
+    // publish lays the section out (ADR 0007).
+    expect(runner).toContain("redCheck: evidenceCheck(redCheck)");
+    expect(publish).toMatch(
+      /`\$\{withEvidence\(summary\.summary, summary\.redCheck, evidence\)\}\\n\\n\$\{renderMergeDanger\(summary\.danger, followUps\)\}`/,
     );
-    expect(runner).toMatch(/const evidence = \{ ci, head: headSha, testSketches: output\.testSketches \}/);
+    expect(publish).toMatch(/const evidence = \{ ci: summary\.ci, head, testSketches: summary\.testSketches \}/);
     expect(prompt).toContain("`## Evidence`");
     expect(prompt).not.toContain("Failing-first tests");
   });
@@ -1294,7 +1298,8 @@ describe("a slice round's red check, and its record for the final review (#235)"
     expect(runner).toMatch(/\.\.\.\(redTests === undefined \? \{\} : \{ redTests \}\)/);
     expect(publish).toMatch(/redTestsBlock: renderRedTestsBlock\(redTests\)/);
     expect(runner).toMatch(/slicesRedTests = sliceRedTests\(reviews, prdBranch\.ranges\)/);
-    expect(runner).toMatch(/redTests: \{ slices: slicesRedTests \}/);
+    expect(runner).toMatch(/redTests: slicesRedTests === undefined \? \{\} : \{ slices: slicesRedTests \}/);
+    expect(publish).toMatch(/redTests: \{ slices: summary\.prd\.redTests\.slices \}/);
     expect(runner).toMatch(/final && redCheck\.kind !== "not-configured"\s*\? renderRedCheckForFinal\(slicesRedTests\)/);
   });
 });

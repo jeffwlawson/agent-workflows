@@ -1959,16 +1959,15 @@ jobs:
         run: |
           file="${RUNNER_TEMP}/verdict.json"
           [ -f "$file" ] || { echo "No verdict file; nothing to hand over."; exit 0; }
-          jq -r '"verdict=\(.verdict)", "fix-round=\(.fixRound != null)"' "$file" >> "$GITHUB_OUTPUT"
+          jq -r '"verdict=\(.verdict)", "fix-round=\(.fixRound)"' "$file" >> "$GITHUB_OUTPUT"
 
       # Everything the runner wrote for posting, handed to the posting job
       # (#257): what `review:publish` reads, exactly the files its `REVIEW_DIR`
-      # declares (the findings, the body's parts and the threads this review
-      # closed, as decisions and raw text, ADR 0007), and what the posting
-      # job's shell steps still read beside it: the verdict, the status line
-      # and the title and summary block where this review rewrites them
-      # (#218). `tests/workflows.test.ts` holds the list to the declaration. A
-      # job cannot read another job's `RUNNER_TEMP`.
+      # declares (the findings, the body's parts, the threads this review
+      # closed, the title and summary where this review rewrites them, and the
+      # verdict, as decisions and raw text, ADR 0007). `tests/workflows.test.ts`
+      # holds the list to the declaration. A job cannot read another job's
+      # `RUNNER_TEMP`.
       #
       # **An artifact rather than an output**, for size. The payload is the
       # body, up to GitHub's 64 KB, plus a thread per finding, and an output
@@ -1990,7 +1989,6 @@ jobs:
             ${{ runner.temp }}/thread_resolutions.json
             ${{ runner.temp }}/verdict.json
             ${{ runner.temp }}/pr_summary.json
-            ${{ runner.temp }}/pr_status.md
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -2210,7 +2208,7 @@ jobs:
       # there does not buy a review with no verdict on it: a caller granting
       # less than this block declares fails the whole run before any job starts
       # (probed, #146), which is what `setup/doctor.ts` reports as an error,
-      # before a label rather than after one. The step that posts the status
+      # before a label rather than after one. `review:publish`, which posts it,
       # warns rather than failing all the same, a posted review is worth more
       # than the line summarising it, so where the token is short for some
       # other reason this is the one failure in this job that looks like the
@@ -2305,11 +2303,15 @@ jobs:
           name: agent-review
           path: ${{ runner.temp }}
 
-      # Steps 1 and 2 (#417): the earlier findings this review ruled on,
+      # Steps 1 to 4 (#417, #418): the earlier findings this review ruled on,
       # replied to and resolved, then the review and its new findings in one
       # call, its *Resolved since last review* naming only the threads that
-      # resolved, then `agent:follow-ups` where follow-ups survive in its body.
-      # `review/publish.ts` says why each is as it is.
+      # resolved, then `agent:follow-ups` where follow-ups survive in its body,
+      # then the title and summary block where this review rewrites them, the
+      # status line off a PRD PR, and the verdict as a commit status, with the
+      # fix round's beside it where the review asked for one. Every string,
+      # context and state is publish's own. `review/publish.ts` says why each
+      # is as it is.
       #
       # It reads the hand-over from `REVIEW_DIR`, exactly the files its
       # declaration names, and writes into a directory of its own:
@@ -2317,7 +2319,8 @@ jobs:
       # `write_log.jsonl`, every write as it lands; and `failure_reason.txt`
       # where it stops. The commit it posts on is the review job's `sha`,
       # recorded before the agent ran, and no file the agent's runner wrote
-      # names one (ADR 0006).
+      # names one (ADR 0006). `BRANCH` is the head the event names, which
+      # tells a PRD PR, whose status line is the advance job's.
       #
       # The one step here given both tokens: `GH_TOKEN`, the workflow's, which
       # publish posts and reads with, and the loop's, which it holds for the
@@ -2335,6 +2338,7 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/publish
           REVIEW_DIR: ${{ runner.temp }}
           REVIEWED_SHA: ${{ needs.review.outputs.sha }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on the
         # runner step in the review job.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.10 -- agent-workflows review:publish
@@ -2347,201 +2351,6 @@ jobs:
         id: published
         if: steps.publish.outcome == 'success'
         run: jq -r '"url=\(.reviewUrl)"' "${RUNNER_TEMP}/publish/published.json" >> "$GITHUB_OUTPUT"
-
-      # Step 3: the pull request's title, and the summary block in its body
-      # (#218). The review wrote both; the workflow writes them, and only where
-      # anything was pushed since the summary was last written, which the runner
-      # decided and said by writing `pr_summary.json` at all.
-      #
-      # **The body is read here, not where the review read it.** A review spends
-      # minutes waiting on CI, and a maintainer's edit outside the block in that
-      # window has to survive. So the splice is against the body as it stands
-      # now: every byte outside the markers is kept as it is, `Closes #N` and
-      # a PRD PR's own blocks included, and the review's text goes between them. The
-      # markers come from the runner's file rather than being spelled here, so
-      # there is one copy of them. A body with no block gets one appended; a
-      # body with half of one, or two, is not written at all, since guessing
-      # which marker is the real one is guessing where a maintainer's text ends.
-      # The title is written either way.
-      #
-      # A PRD PR's **final review** also drops the frame's draft-only note
-      # (#247), which the runner names in the same file: every slice is built,
-      # and a PRD PR marked ready carries nothing that says it is a draft.
-      #
-      # After the review, and never fails the run: a posted review is worth
-      # more than its description, and a warning says so where `|| true`
-      # would not.
-      - name: Write the PR title and summary
-        if: steps.published.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -uo pipefail
-          update="${RUNNER_TEMP}/pr_summary.json"
-          [ -f "$update" ] || { echo "Nothing was pushed since the summary was last written, so the title and the summary are left as they are."; exit 0; }
-          current="${RUNNER_TEMP}/pr_current.json"
-          request="${RUNNER_TEMP}/pr_edit.json"
-          if ! gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER}" > "$current"; then
-            echo "::warning::Could not read PR #${PR_NUMBER} to write its title and summary, so both are left as they are. The review is posted."
-            exit 0
-          fi
-          jq --slurpfile update "$update" '
-            $update[0] as $u
-            | (.body // "") as $b
-            | (if $u.summary == null then null
-               else
-                 $u.summary.start as $s | $u.summary.end as $e
-                 | "\($s)\n\($u.summary.inner)\n\($e)" as $block
-                 | if $b == "" then $block
-                   else
-                     ($b | split($s)) as $starts
-                     | ($b | split($e)) as $ends
-                     | if ($starts | length) == 1 and ($ends | length) == 1 then
-                         $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block
-                       elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
-                         $starts[0] + $block + ($starts[1] | split($e))[1]
-                       else null end
-                   end
-               end) as $body
-            # Draft-only text the final review removes (#247), markers and
-            # all, from the body as composed: only where it holds exactly one
-            # such block, by the same rule as the splice, and with the blank
-            # line after it. Anything else is left as it is, and so is a body
-            # whose summary could not be spliced, which is warned about below.
-            | (if $u.drop == null or ($u.summary != null and $body == null) then $body
-               else
-                 ($body // $b) as $d
-                 | ($d | split($u.drop.start)) as $starts
-                 | ($d | split($u.drop.end)) as $ends
-                 | if ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($u.drop.end) | length) == 2 then
-                     $starts[0] + (($starts[1] | split($u.drop.end))[1] | sub("^(\r?\n){1,2}"; ""))
-                   else $body end
-               end) as $body
-            | {}
-              + (if $u.title == null then {} else {title: $u.title} end)
-              + (if $body == null then {} else {body: $body} end)
-          ' "$current" > "$request" || { echo "::warning::Could not compose the title and summary for PR #${PR_NUMBER}, so both are left as they are."; exit 0; }
-          if [ "$(jq -r '.summary != null' "$update")" = "true" ] && [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
-            echo "::warning::PR #${PR_NUMBER}'s body carries half a summary block, or two, so the summary was not written. Restore the missing marker, or delete the markers and the text between them, and the next review writes it again."
-          fi
-          if [ "$(jq -r 'length' "$request")" = "0" ]; then
-            echo "Nothing to write."
-            exit 0
-          fi
-          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PR_NUMBER}" --input "$request" > /dev/null \
-            && echo "Wrote $(jq -r 'keys | join(" and ")' "$request") of PR #${PR_NUMBER}." \
-            || echo "::warning::Could not write the title and summary of PR #${PR_NUMBER}. GitHub's reply is above; the review is posted."
-
-      # Step 3b: off a PRD PR, the **status line** at the top of the body's
-      # note (#298), as this review leaves the pull request: ready for a human,
-      # fixing, or parked on one, linking the review just posted. The runner
-      # rendered it, `pr_status.md`, with a slot where the link goes. A PRD
-      # PR's is the advance job's, beside its progress table, since only that
-      # job knows how the round ended.
-      #
-      # Replaced between its markers and nowhere else: a body with none, one
-      # opened before #298, is left as it is, since the line belongs at the
-      # top of the note the opening run wrote. `spliceStatus` in
-      # `shared/progress-list.ts` is the same rule, and a test holds the two
-      # equal. Never fails the run, for the summary's reason.
-      - name: Write the PR status line
-        if: steps.published.outcome == 'success' && !startsWith(github.event.pull_request.head.ref, 'agent/prd-')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REVIEW_URL: ${{ steps.published.outputs.url }}
-          # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
-          REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
-          # `STATUS_START` and `STATUS_END` in `shared/progress-list.ts`; a
-          # test holds them equal.
-          STATUS_START: "<!-- agent:status -->"
-          STATUS_END: "<!-- /agent:status -->"
-        run: |
-          set -uo pipefail
-          file="${RUNNER_TEMP}/pr_status.md"
-          [ -f "$file" ] || { echo "The review wrote no status line, so the note's is left as it stands."; exit 0; }
-          line=$(cat "$file")
-          line="${line//"$REVIEW_URL_SLOT"/"$REVIEW_URL"}"
-          current="${RUNNER_TEMP}/pr_status_current.json"
-          request="${RUNNER_TEMP}/pr_status_edit.json"
-          if ! gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER}" > "$current"; then
-            echo "::warning::Could not read PR #${PR_NUMBER}, so its status line is left as it stands. The review is posted."
-            exit 0
-          fi
-          jq --arg line "$line" '
-            (.body // "") as $b
-            | env.STATUS_START as $s | env.STATUS_END as $e
-            | ($b | split($s)) as $starts
-            | ($b | split($e)) as $ends
-            | if $b != "" and ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
-                {body: ($starts[0] + $line + ($starts[1] | split($e))[1])}
-              else {} end
-          ' "$current" > "$request" || { echo "::warning::Could not compose PR #${PR_NUMBER}'s status line, so it is left as it stands."; exit 0; }
-          if [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
-            echo "PR #${PR_NUMBER}'s body has no status line, or half of one, or two, so none is written."
-            exit 0
-          fi
-          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PR_NUMBER}" --input "$request" > /dev/null \
-            && echo "Wrote PR #${PR_NUMBER}'s status line." \
-            || echo "::warning::Could not write PR #${PR_NUMBER}'s status line. GitHub's reply is above; the review is posted."
-
-      # Step 4: the verdict, what a maintainer does next, on the commit it is
-      # about.
-      #
-      # A commit status rather than a comment or a label, for the one property
-      # neither of those has — it is attached to a **commit**. A new commit
-      # carries no verdict until one is posted for it, so a stale "ready to
-      # merge" cannot survive a push, and the status history is the only record
-      # of what earlier rounds said. One context, so a later review of the same
-      # commit replaces its own verdict and nothing else.
-      #
-      # The context, the state and the line all come out of `verdict.json`,
-      # which the runner wrote from a derivation that is unit-tested. So does
-      # the `agent-fix-round` status posted beside it where the review asked
-      # for an automatic fix round (#297): the record *Settle the fix-round
-      # budget* counts rounds by, linking the same review. The verdict's line
-      # is fixed whatever the state, so it can no longer be that record. Deriving
-      # any of them here would be a second copy of that table, in YAML, where
-      # nothing can test it — and the line is the whole feature: it is what
-      # makes the outcome actionable without reading the review.
-      #
-      # Never fails the run, on the same grounds as the summary step above: a
-      # posted review is worth more than its verdict. Not because the adopter's
-      # caller is the likely cause — a caller short of `statuses: write` is
-      # refused before any job starts (#146), so a step that ran holds the
-      # write, and what lands here is GitHub refusing the status itself. A
-      # warning says so where `|| true` would leave a loop posting no verdicts
-      # and looking healthy.
-      - name: Post the verdict as a commit status
-        if: steps.published.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ needs.review.outputs.sha }}
-          REVIEW_URL: ${{ steps.published.outputs.url }}
-        run: |
-          context=$(jq -r .context "${RUNNER_TEMP}/verdict.json")
-          state=$(jq -r .state "${RUNNER_TEMP}/verdict.json")
-          description=$(jq -r .description "${RUNNER_TEMP}/verdict.json")
-          args=(--method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}"
-                -f "context=${context}" -f "state=${state}" -f "description=${description}")
-          # `if`, not `[ -n … ] && …`: under `bash -e` an unset URL would end
-          # the step here — with the review posted and no verdict on it, which
-          # is the state this whole step exists to make impossible.
-          if [ -n "$REVIEW_URL" ]; then
-            args+=(-f "target_url=${REVIEW_URL}")
-          fi
-          gh api "${args[@]}" \
-            || echo "::warning::Could not post the \`agent-review\` verdict for ${HEAD_SHA}. The review is posted; what is missing is the one line saying what to do about it. GitHub's reply is printed above. It is not the caller's \`statuses:\` grant: a caller granting less than this job declares fails the run before any job starts, so a token that got this far holds the write (jeffwlawson/agent-workflows docs/ADOPTING.md §4); a 422 is the status itself being refused, which is ours to fix."
-          if jq -e '.fixRound != null' "${RUNNER_TEMP}/verdict.json" >/dev/null; then
-            record=(--method POST "repos/{owner}/{repo}/statuses/${HEAD_SHA}"
-                    -f "context=$(jq -r .fixRound.context "${RUNNER_TEMP}/verdict.json")"
-                    -f "state=$(jq -r .fixRound.state "${RUNNER_TEMP}/verdict.json")"
-                    -f "description=$(jq -r .fixRound.description "${RUNNER_TEMP}/verdict.json")")
-            if [ -n "$REVIEW_URL" ]; then
-              record+=(-f "target_url=${REVIEW_URL}")
-            fi
-            gh api "${record[@]}" \
-              || echo "::warning::Could not post the \`agent-fix-round\` status for ${HEAD_SHA}, which is what the fix-round budget counts, so the automatic fix round will not start. GitHub's reply is printed above."
-          fi
 
       # Step 5. Draft means "the automated pipeline has not finished", not "the
       # agent is still writing code", so this belongs here rather than at the
@@ -2620,16 +2429,16 @@ jobs:
       #
       # Two ways to get here (#257): the review job failed, or it finished and
       # posting failed in this job. Below every step it is the arm for, so
-      # every posting step above it is covered, including the one that posts
-      # the verdict itself, whose own failure would otherwise be the one that
-      # leaves no status at all. Above the hand-off, so a hand-off that fails
+      # every posting step above it is covered, `review:publish` included,
+      # which posts the verdict last and would otherwise leave no status at all
+      # where it stopped before it. Above the hand-off, so a hand-off that fails
       # after the review was posted is not reported as a review that did not
       # finish. And above the failure comment, which is where the labels move
       # (#236): every result is posted before this run takes its own label off.
       #
-      # The one step that spells the context out. A run that failed wrote no
-      # `verdict.json` to read it from, so this literal is held to
-      # `VERDICT_CONTEXT` by a test instead.
+      # The one copy of the context outside `review:publish`, which posts it
+      # from `VERDICT_CONTEXT`. This step runs where publish did not finish,
+      # so the literal is held to that constant by a test instead.
       - name: Post an error verdict
         if: >-
           needs.review.outputs.proceed == 'true' &&

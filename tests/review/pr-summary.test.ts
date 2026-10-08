@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { currentSummary, readSummaryBlock, summaryDue, summaryUpdate } from "../../review/pr-summary.js";
-import { DRAFT_NOTE_END, DRAFT_NOTE_START, FINAL_SUMMARY_MARK, SUMMARY_END, SUMMARY_START } from "../../shared/record.js";
+import { currentSummary, readSummaryBlock, summaryBlock, summaryDue } from "../../review/pr-summary.js";
+import { FINAL_SUMMARY_MARK, SUMMARY_END, SUMMARY_START } from "../../shared/record.js";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const OTHER = "fedcba9876543210fedcba9876543210fedcba98";
@@ -85,29 +85,16 @@ describe("currentSummary", () => {
   });
 });
 
-describe("summaryUpdate", () => {
-  it("hands the posting job the title, and the block's markers with what goes between them", () => {
-    expect(summaryUpdate({ title: "feat: x", summary: "It does x." }, HEAD)).toEqual({
-      title: "feat: x",
-      summary: {
-        start: SUMMARY_START,
-        end: SUMMARY_END,
-        inner: `<!-- agent:summary-head ${HEAD} -->\nIt does x.`,
-      },
-    });
+describe("summaryBlock", () => {
+  it("is the markers, the head the summary was written at, and the text", () => {
+    expect(summaryBlock("It does x.", HEAD, false)).toBe(`${SUMMARY_START}\n<!-- agent:summary-head ${HEAD} -->\nIt does x.\n${SUMMARY_END}`);
   });
 
-  it("carries only the half the review wrote, and nothing where it wrote neither", () => {
-    expect(summaryUpdate({ title: "feat: x" }, HEAD)).toEqual({ title: "feat: x" });
-    expect(summaryUpdate({ summary: "It does x." }, HEAD)?.title).toBeUndefined();
-    expect(summaryUpdate({}, HEAD)).toBeUndefined();
-  });
-
-  /** What it writes is what the next review reads back as written at this head. */
+  /** What publish writes is what the next review reads back as written at this head. */
   it("writes a block the next review reads as written at this head", () => {
-    const inner = summaryUpdate({ summary: "It does x." }, HEAD)?.summary?.inner ?? "";
-    expect(summaryDue(body(inner), HEAD)).toBe(false);
-    expect(readSummaryBlock(body(inner))?.text).toBe("It does x.");
+    const written = `Closes #12\n\n${summaryBlock("It does x.", HEAD, false)}\n\nMy own notes.`;
+    expect(summaryDue(written, HEAD)).toBe(false);
+    expect(readSummaryBlock(written)?.text).toBe("It does x.");
   });
 });
 
@@ -126,20 +113,12 @@ describe("the final review's summary", () => {
   });
 
   it("is not due again to a later final review with nothing pushed", () => {
-    const inner = summaryUpdate({ title: "feat: the PRD", summary: "The PRD." }, HEAD, true)?.summary?.inner ?? "";
+    const written = `Closes #12\n\n${summaryBlock("The PRD.", HEAD, true)}`;
 
-    expect(inner).toContain(FINAL_SUMMARY_MARK);
-    expect(summaryDue(body(inner), HEAD, true)).toBe(false);
-    expect(summaryDue(body(inner), OTHER, true)).toBe(true);
-    expect(readSummaryBlock(body(inner))).toEqual({ text: "The PRD.", head: HEAD, final: true });
-    expect(currentSummary(body(inner))).toBe("The PRD.");
-  });
-
-  it("asks the posting job to remove the draft-only note, and only on the final review", () => {
-    expect(summaryUpdate({ title: "feat: the PRD" }, HEAD, true)).toEqual({
-      title: "feat: the PRD",
-      drop: { start: DRAFT_NOTE_START, end: DRAFT_NOTE_END },
-    });
-    expect(summaryUpdate({ title: "feat: x" }, HEAD)).toEqual({ title: "feat: x" });
+    expect(written).toContain(FINAL_SUMMARY_MARK);
+    expect(summaryDue(written, HEAD, true)).toBe(false);
+    expect(summaryDue(written, OTHER, true)).toBe(true);
+    expect(readSummaryBlock(written)).toEqual({ text: "The PRD.", head: HEAD, final: true });
+    expect(currentSummary(written)).toBe("The PRD.");
   });
 });

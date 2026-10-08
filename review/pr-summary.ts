@@ -1,6 +1,4 @@
 import {
-  DRAFT_NOTE_END,
-  DRAFT_NOTE_START,
   FINAL_SUMMARY_MARK,
   SUMMARY_END,
   SUMMARY_START,
@@ -17,12 +15,11 @@ import {
  * the markers survives every update byte for byte.
  *
  * Read here, in the review job, to decide whether this review rewrites it and
- * to hand the agent what it says now. **Written** by the posting job, against
+ * to hand the agent what it says now. **Written** by `review:publish`, against
  * the body as it stands when the review is posted rather than as it was read
  * here: a review spends minutes waiting on CI, and a maintainer's edit in that
- * window is outside the block and must survive it. So the splice is the posting
- * job's, and `shared/record.ts` hands it the markers to find rather than the
- * posting job keeping a second copy of them.
+ * window is outside the block and must survive it. So the splice is publish's,
+ * through the engine's live edit, and the markers are `shared/record.ts`'s.
  */
 
 /**
@@ -41,7 +38,7 @@ const FINAL_MARK = /<!-- agent:summary-final -->\r?\n?/g;
  * The block's text, and the head it was written at where a review wrote it.
  * `undefined` where the body has no block, or half of one: exactly one start
  * marker with exactly one end marker after it is a block, and anything else is
- * not one this file will say what is inside of. The posting job applies the
+ * not one this file will say what is inside of. `review:publish` splices by the
  * same rule, so the two cannot disagree about which text is the review's.
  */
 export const readSummaryBlock = (
@@ -71,7 +68,7 @@ export const readSummaryBlock = (
  *
  * A block no review has written yet, a body with no block at all, and a broken
  * one all read as due. The title is written in every one of those cases, and
- * the posting job decides what it can do with the body.
+ * `review:publish` decides what it can do with the body.
  *
  * And for a PRD PR's **final review**, a block no final review wrote (#247):
  * the last slice round wrote it at this same head, about one slice.
@@ -92,38 +89,9 @@ export const currentSummary = (body: string): string => {
 };
 
 /**
- * What the posting job writes, from what the review produced: the title, and
- * the block's new inner text with the markers it goes between. Either half is
- * left out where the review wrote none, and `undefined` is "write nothing".
+ * The block as `review:publish` writes it, from the text it laid out (ADR
+ * 0007): the markers, the head the summary was written at, and on a PRD PR's
+ * final review its mark (#247), then the text.
  */
-export interface SummaryUpdate {
-  readonly title?: string;
-  readonly summary?: { readonly start: string; readonly end: string; readonly inner: string };
-  /**
-   * Draft-only text to remove from the body, markers and all, where the body
-   * carries exactly one such block (#247). Only the final review's update has
-   * it.
-   */
-  readonly drop?: { readonly start: string; readonly end: string };
-}
-
-export const summaryUpdate = (
-  written: { readonly title?: string; readonly summary?: string },
-  headSha: string,
-  final = false,
-): SummaryUpdate | undefined => {
-  const update: SummaryUpdate = {
-    ...(written.title === undefined ? {} : { title: written.title }),
-    ...(written.summary === undefined
-      ? {}
-      : {
-          summary: {
-            start: SUMMARY_START,
-            end: SUMMARY_END,
-            inner: `${summaryHeadMark(headSha)}\n${final ? `${FINAL_SUMMARY_MARK}\n` : ""}${written.summary}`,
-          },
-        }),
-  };
-  if (update.title === undefined && update.summary === undefined) return undefined;
-  return final ? { ...update, drop: { start: DRAFT_NOTE_START, end: DRAFT_NOTE_END } } : update;
-};
+export const summaryBlock = (text: string, headSha: string, final: boolean): string =>
+  `${SUMMARY_START}\n${summaryHeadMark(headSha)}\n${final ? `${FINAL_SUMMARY_MARK}\n` : ""}${text}\n${SUMMARY_END}`;

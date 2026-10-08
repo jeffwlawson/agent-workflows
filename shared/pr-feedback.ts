@@ -838,23 +838,35 @@ const threeDotRange = (baseRef: string | undefined): string => {
 };
 
 /**
+ * The most of a three-dot patch the review reads: 4 MiB.
+ *
+ * It was `execFileSync`'s default buffer, 1 MiB, which nobody chose, and a PRD
+ * PR reaches that by its eleventh slice, because every slice round reads the
+ * whole PRD's diff against its base (#424 stopped at 1,101,424 bytes). The
+ * diff goes into the agent's prompt whole, so the ceiling is the model's
+ * context rather than the buffer: 4 MiB is already around a million tokens,
+ * and a refusal that names the size reads better than a prompt that will not
+ * fit.
+ */
+export const DIFF_READ_LIMIT_BYTES = 4 * 1024 * 1024;
+
+/**
  * The three-dot patch, or a refusal that says why there is none (#138).
  *
- * `git()` reads through `execFileSync`'s default buffer, 1 MiB, and a pull
- * request past that — a regenerated lockfile, a vendored directory, a large
- * fixture — made Node throw `spawnSync git ENOBUFS`, which names neither the
- * pull request nor the limit. That overflow, and only that, becomes a refusal
- * through `fail()`: any other git failure is thrown on unchanged, and the diff
- * is never truncated, because a review of part of a change reads as a review
- * of all of it.
+ * A pull request past `DIFF_READ_LIMIT_BYTES` — a regenerated lockfile, a
+ * vendored directory, a large fixture, a long PRD — makes Node throw
+ * `spawnSync git ENOBUFS`, which names neither the pull request nor the limit.
+ * That overflow, and only that, becomes a refusal through `fail()`: any other
+ * git failure is thrown on unchanged, and the diff is never truncated, because
+ * a review of part of a change reads as a review of all of it.
  */
 const readDiff = (prNumber: string, baseRef: string): string => {
   try {
-    return git(diffCommandAgainstBase(baseRef));
+    return git(diffCommandAgainstBase(baseRef), { maxBuffer: DIFF_READ_LIMIT_BYTES });
   } catch (error) {
     if ((error as { code?: unknown }).code !== "ENOBUFS") throw error;
     return fail(
-      `The diff of pull request #${prNumber} against its base is larger than the 1 MiB this run can read, so the run stopped rather than work from part of it. Split the change, or keep generated and vendored files out of it.`,
+      `The diff of pull request #${prNumber} against its base is larger than the ${DIFF_READ_LIMIT_BYTES / (1024 * 1024)} MiB this run can read, so the run stopped rather than work from part of it. Split the change, or keep generated and vendored files out of it.`,
     );
   }
 };

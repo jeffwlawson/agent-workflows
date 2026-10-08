@@ -29,6 +29,7 @@ import {
 } from "../shared/fix-output.js";
 import { renderOutOfScopeNote } from "../shared/fix-notes.js";
 import {
+  DIFF_READ_LIMIT_BYTES,
   fetchPullRequestFeedback,
   nothingToActOn,
   refusalReason,
@@ -2650,11 +2651,11 @@ describe("the out-of-scope notes a review is handed", () => {
 });
 
 /**
- * `git()` reads through `execFileSync`'s default 1 MiB buffer, and a three-dot
- * diff past that — a regenerated lockfile, a vendored directory — threw a bare
- * `spawnSync git ENOBUFS` that named neither the pull request nor the limit
- * (#138). The overflow is now a refusal through `fail()`; everything else git
- * can throw still propagates as it did.
+ * A three-dot diff past the read limit — a regenerated lockfile, a vendored
+ * directory, a long PRD — threw a bare `spawnSync git ENOBUFS` that named
+ * neither the pull request nor the limit (#138). The overflow is now a refusal
+ * through `fail()`; everything else git can throw still propagates as it did.
+ * The limit was `execFileSync`'s default 1 MiB until PRD PR #424 passed it.
  */
 describe("a diff too large to read", () => {
   class Exited extends Error {}
@@ -2703,8 +2704,24 @@ describe("a diff too large to read", () => {
     expect(exitCode).toBe(1);
     const reason = fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8");
     expect(reason).toContain("#12");
-    expect(reason).toContain("1 MiB");
+    expect(reason).toContain("4 MiB");
     expect(reason).not.toContain("ENOBUFS");
+  });
+
+  it("reads the diff with a 4 MiB buffer, not execFileSync's default 1 MiB", () => {
+    spawned.mockImplementation(((file: string, args: readonly string[]) => {
+      if (file === "git") return "";
+      if (file === "gh" && args[0] === "api") return response(pullRequest());
+      throw new Error(`unexpected call: ${file} ${args.join(" ")}`);
+    }) as never);
+
+    fetchPullRequestFeedback("o/r", "12", "main");
+
+    const diffRead = spawned.mock.calls.find(
+      ([file, args]) => file === "git" && !(args as readonly string[]).includes("--name-status"),
+    );
+    expect(DIFF_READ_LIMIT_BYTES).toBe(4 * 1024 * 1024);
+    expect(diffRead?.[2]).toMatchObject({ maxBuffer: DIFF_READ_LIMIT_BYTES });
   });
 
   it("lets any other git failure through unchanged", () => {

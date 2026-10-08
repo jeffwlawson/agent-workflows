@@ -209,7 +209,7 @@ jobs:
       # secrets, so the two cannot disagree; but no token.
       - name: Say which token the loop writes with
         id: token
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.10
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.11
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -865,7 +865,7 @@ jobs:
           LOOP_TOKEN_SOURCE: ${{ needs.time-limit.outputs.token-source }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on the
         # runner step below.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.10 -- agent-workflows review:gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.11 -- agent-workflows review:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decisions, copied into
       # step outputs under the names every later `if:`, the runner and the
@@ -986,7 +986,7 @@ jobs:
           REVIEWED_SHA: ${{ steps.state.outputs.sha }}
           SELF_CHECK: ${{ inputs.self-check }}
           SELF_RUN_ID: ${{ github.run_id }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.10 -- agent-workflows review:collect-checks
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.11 -- agent-workflows review:collect-checks
 
       # The red check's report (#232), the `red-check` job's artifact, read as
       # evidence the way the CI results above are. Into a directory of its own,
@@ -1113,7 +1113,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.10 -- agent-workflows review
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.11 -- agent-workflows review
 
       # The agent's own record of the session (#269), so a run can be profiled
       # and debugged from what it did and not only from the log, which shows
@@ -1492,7 +1492,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: needs.review.outputs.proceed == 'true' && needs.review.result == 'success'
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.10
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.11
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -1566,7 +1566,7 @@ jobs:
           BRANCH: ${{ github.event.pull_request.head.ref }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on the
         # runner step in the review job.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.10 -- agent-workflows review:publish
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.11 -- agent-workflows review:publish
 
       # Steps 5 to 7, and every other ending (#419): the refusal's note, or
       # the error verdict and the failure comment, or the block off and the
@@ -1612,7 +1612,7 @@ jobs:
           MINT_OUTCOME: ${{ steps.token.outcome }}
           DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.10 -- agent-workflows review:conclude
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.11 -- agent-workflows review:conclude
 
       # Glue only Actions can do (ADR 0003): what conclude reports, copied into
       # the job's outputs, which the advance job reads. `always()`, so a run
@@ -1807,7 +1807,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.10
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.11
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -1822,7 +1822,7 @@ jobs:
           needs.review.result == 'success' && needs.post-review.result == 'success' &&
           needs.review.outputs.round == 'slice' &&
           needs.review.outputs.verdict == 'approval recommended'
-        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.10
+        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.11
         with:
           pr-number: ${{ github.event.pull_request.number }}
           head-ref: ${{ github.event.pull_request.head.ref }}

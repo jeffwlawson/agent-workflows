@@ -189,8 +189,10 @@ export interface CommandContract {
  *
  * - `implement-prd`'s `progress${name}.md` and `status${name}.md` are over
  *   `name` in `""`, `_stopped` and `_stopped_pushed`.
- * - `review`'s `progress_${ending}.md` and `status_${ending}.md` are over
- *   `RoundEnding` in `shared/progress-list.ts`.
+ * - `review`'s `park.json` and `progress.json`, on a PRD PR, are what
+ *   `review:advance` parks the chain and writes the progress table from, as
+ *   data (ADR 0007): written before the agent runs, and again once the
+ *   review knows what it leaves open.
  */
 export const RUNNERS = {
   implement: {
@@ -248,24 +250,16 @@ export const RUNNERS = {
       FIX_ROUND_BUDGET: EMPTY,
       RED_CHECK_CONFIGURED: EMPTY,
       RED_CHECK_FILE: EMPTY,
-      ...RUN_LINK,
     },
     outputs: [
       ...EVERY_SUBCOMMAND_OUTPUTS,
-      "park_failed.md",
-      "progress_approved.md",
-      "status_approved.md",
-      "progress_parked.md",
-      "status_parked.md",
-      "progress_running.md",
-      "status_running.md",
+      "park.json",
+      "progress.json",
       "findings.json",
       "review_body.json",
       "thread_resolutions.json",
       "pr_summary.json",
       "verdict.json",
-      "park.md",
-      "park_posted.md",
     ],
   },
   fix: {
@@ -342,8 +336,8 @@ const LOOP = {
 
 /**
  * The same two, for a command that has to run where the loop's token was
- * never minted: `review:conclude`, since a failed mint is one of the endings
- * it reports (ADR 0004). Empty is "no loop token", and the command makes no
+ * never minted: `review:conclude` and `review:advance`, since a failed mint
+ * is one of the endings each reports (ADR 0004). Empty is "no loop token", and the command makes no
  * write that needs one.
  */
 const LOOP_IF_MINTED = {
@@ -470,6 +464,14 @@ const REVIEW_RED_CHECK_PLACE = {
  *   where it did not run), and the review job's outputs, and reads what
  *   publish wrote through `PUBLISH_DIR`. `ended.json` is whether the head
  *   moved while the review ran, and the posted review's URL.
+ * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
+ *   the progress table and status line for how the round ended, then
+ *   `agent:implement` back on the parent on a slice round's approval, or the
+ *   park comment on it on any ending but an approval or a fix round
+ *   starting. It is told how the review job and the posting job ended
+ *   (`REVIEW_RESULT`, `POSTING_RESULT`), the review job's outputs, the
+ *   posting job's (`MOVED`, `REVIEW_URL`) and the mint's outcome, and reads
+ *   the runner's park hand-over through `PARK_DIR`.
  */
 export const COMMANDS = {
   "follow-ups:file": {
@@ -547,6 +549,28 @@ export const COMMANDS = {
       ...RUN_LINK,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "ended.json", WRITE_LOG],
+  },
+  "review:advance": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ...LOOP_IF_MINTED,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      REVIEW_RESULT: REQUIRED,
+      POSTING_RESULT: REQUIRED,
+      MOVED: EMPTY,
+      REVIEW_URL: EMPTY,
+      VERDICT: EMPTY,
+      FIX_ROUND: EMPTY,
+      ROUND: EMPTY,
+      MINT_OUTCOME: EMPTY,
+      PARK_DIR: readsFrom("review", {
+        "park.json": "sometimes",
+        "progress.json": "sometimes",
+      }),
+      ...RUN_LINK,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, WRITE_LOG],
   },
 } as const satisfies Readonly<Record<string, CommandContract>>;
 

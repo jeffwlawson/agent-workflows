@@ -12,7 +12,7 @@ description: >-
 # gives, where they set neither. The same order today's
 # `AGENT_PAT || GITHUB_TOKEN` fallback had, with the App in front of it.
 #
-# **A composite action, pinned like a workflow** (#257), as `advance-prd` is:
+# **A composite action, pinned like a workflow** (#257):
 # fetched from the same tag as the workflow naming it,
 # `jeffwlawson/agent-workflows/.github/actions/loop-token@v<version>`, and
 # written by `scripts/sync-version.ts` on release (`shared/pins.ts`, the

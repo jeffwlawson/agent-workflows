@@ -23,7 +23,6 @@ import {
   VERDICTS,
 } from "../shared/review-output.js";
 import { AGENT_CHECKS, CI_WAIT_SECONDS } from "../review/collect-checks.js";
-import { REVIEW_URL_SLOT } from "../shared/prd-round.js";
 import { rescueRef } from "../shared/rescue.js";
 import { finalReviewRequestedLines, OPENING_STATUS, renderPrdStatus, statusBlock } from "../shared/progress-list.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -694,8 +693,6 @@ const callerFileSpec = (file: string) => CALLER_FILES[path.basename(file).replac
  */
 const REVIEW = path.join(WORKFLOW_DIR, "review.yml");
 
-/** What advancing the PRD chain is, which review's `advance` job runs (#257, PRD #222). */
-const ADVANCE_ACTION = path.join(".github", "actions", "advance-prd", "action.yml");
 /** …and the reference caller file holding the caller that triggers it. */
 const REVIEW_CALLER = path.join(CALLER_DIR, "pr.yml");
 
@@ -1998,17 +1995,15 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
     // reviewed while it worked, which nothing in the loop does, since every
     // run that pushes shares the review job's concurrency group. A human
     // pushed. The PRD chain's advance is not a label on the pull request
-    // under review at all: it goes on the PRD PR's **parent issue**, through
-    // `gh issue edit`, from the `advance-prd` action the `advance` job runs.
+    // under review at all: it goes on the PRD PR's **parent issue**, from
+    // `review:advance`, which the `advance` job runs (#423).
     expect([...added].sort()).toEqual(["agent:fix", "agent:review"]);
     expect(addedBy("conclude.ts").filter((label) => triggers.has(label)).sort()).toEqual(["agent:fix", "agent:review"]);
     // …and never in YAML: the review job writes nothing at all (#257), and
     // the posting job's writes are its commands'.
     expect(fs.readFileSync(REVIEW, "utf8")).not.toContain("--add-label");
     expect(jobOf(REVIEW).concurrency?.group).toBe("agent-pr-${{ github.event.pull_request.number }}");
-    expect(fs.readFileSync(ADVANCE_ACTION, "utf8")).toContain(
-      'gh issue edit "$parent" --add-label "agent:implement"',
-    );
+    expect(fs.readFileSync(path.join("review", "advance.ts"), "utf8")).toContain("loop.addLabel(parent, IMPLEMENT_LABEL)");
   });
 
   /**
@@ -2310,20 +2305,19 @@ describe("agent-fix asks for the re-review its own push needs", () => {
  * merge" on code an agent wrote and nobody read.
  */
 /**
- * A PRD PR's round ends in **one advance job**, in `review` (PRD #222). Each
- * slice of a PRD is reviewed in a slice round on the PRD PR, and the next slice
- * is built only after an approval. On a slice round's approval the job re-adds
- * `agent:implement` to the parent; on any other ending but a fix round
- * starting, a slice round's or the final review's, it posts the park comment
- * there. `fix` carries no copy: on a PRD PR every fix run ends by asking for a
- * review, so every ending of a round is a verdict, and every verdict lands
- * here.
+ * A PRD PR's round ends in **one advance job**, in `review` (PRD #222), which
+ * runs `review:advance` (#423). Each slice of a PRD is reviewed in a slice
+ * round on the PRD PR, and the next slice is built only after an approval.
+ * What advance does at each ending (the table, `agent:implement` on the
+ * parent, the park comment) is held in `tests/review/advance.test.ts`; what
+ * is held here is what the YAML still owns: when the job runs, its steps,
+ * what each is handed, and its grant. `fix` carries no copy: on a PRD PR
+ * every fix run ends by asking for a review, so every ending of a round is a
+ * verdict, and every verdict lands here.
  *
  * Nothing here has a runtime symptom when it breaks. An advance that never
- * fires is a chain that stops after one slice looking finished; one that fires
- * on a fix round starting builds the next slice under one still being fixed;
- * one that fires from the final review starts a run with nothing to build; and
- * a park that never posts is a chain that stopped and said so nowhere.
+ * runs is a chain that stops after one slice looking finished, and one not
+ * told how the round ended moves on or parks on the wrong ending.
  */
 describe("a PRD PR's round ends in one advance job", () => {
   const FIX = path.join(WORKFLOW_DIR, "fix.yml");
@@ -2331,15 +2325,6 @@ describe("a PRD PR's round ends in one advance job", () => {
   const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ").trim();
   const step = (name: string): Step | undefined => (job().steps ?? []).find((s) => s.name === name);
   const advanceStep = (): Step | undefined => step("Advance the PRD chain");
-  const parkStep = (): Step | undefined => step("Park the PRD chain");
-
-  interface Action {
-    readonly inputs?: Record<string, { readonly required?: boolean }>;
-    readonly runs?: { readonly using?: string; readonly steps?: readonly Step[] };
-  }
-  /** What advancing is: `.github/actions/advance-prd`. */
-  const action = (): Action => parse(fs.readFileSync(ADVANCE_ACTION, "utf8")) as Action;
-  const script = (): string => action().runs?.steps?.[0]?.run ?? "";
 
   it("is exactly one job, in review: fix has no advance, and review no advance-merged", () => {
     const holders = runnerWorkflows.flatMap((file) =>
@@ -2351,10 +2336,11 @@ describe("a PRD PR's round ends in one advance job", () => {
     expect(holders).toEqual(["review.yml advance"]);
     expect(workflowOf(FIX).jobs).not.toHaveProperty("advance");
     expect(workflowOf(REVIEW).jobs).not.toHaveProperty("advance-merged");
-    // And it is the one thing that runs the advance action.
-    const users = runnerWorkflows.filter((file) => fs.readFileSync(file, "utf8").includes("/actions/advance-prd@"));
-    expect(users).toEqual([REVIEW]);
-    expect((job().steps ?? []).filter((s) => (s.uses ?? "").includes("/actions/advance-prd@"))).toHaveLength(1);
+    // And it is the one step that runs the command.
+    const runs = runnerWorkflows.flatMap((file) =>
+      Object.values(workflowOf(file).jobs).flatMap((j) => (j.steps ?? []).filter((s) => / review:advance$/.test(s.run ?? ""))),
+    );
+    expect(runs).toEqual([advanceStep()]);
   });
 
   /**
@@ -2386,191 +2372,123 @@ describe("a PRD PR's round ends in one advance job", () => {
   });
 
   /**
-   * **Only a slice round's approval advances**, and only where the review and
-   * its posting both finished: a verdict that was never posted approves
-   * nothing. Never from the final review, after which the PRD PR is the
-   * maintainer's to merge.
+   * Node, the token's mint, the download and the command (#423). The
+   * download and the command on `!cancelled()`, so a failed mint skips
+   * neither: it is one of the endings advance reports. A failed download
+   * stops nothing, since a review that stopped early handed nothing over,
+   * and advance says so.
    */
-  it("advances only on a slice round's approval, never from the final review", () => {
-    const condition = flat(advanceStep()?.if);
-    const keys = [...condition.matchAll(/needs\.review\.outputs\.verdict == '([^']+)'/g)].map(([, key]) => key);
-
-    expect(keys).toEqual(["approval recommended"]);
-    expect(condition).toContain("needs.review.outputs.round == 'slice'");
-    expect(condition).not.toContain("final");
-    expect(condition).toContain("needs.review.result == 'success'");
-    expect(condition).toContain("needs.post-review.result == 'success'");
-    expect(condition).not.toContain("||");
-    expect(condition).not.toContain("!=");
-  });
-
-  /**
-   * **Every other ending parks**, but a fix round starting: the round has not
-   * ended, and the fix run's re-review comes back here. Every verdict key is
-   * one of the three, so a fourth row added to the table arrives here as a
-   * decision rather than as a gap.
-   */
-  it("parks on every other ending, but does nothing on a fix round starting", () => {
-    expect(flat(parkStep()?.if)).toBe(
-      "!cancelled() && !(needs.review.result == 'success' && needs.post-review.result == 'success' && " +
-        "(needs.review.outputs.verdict == 'approval recommended' || " +
-        "(needs.review.outputs.verdict == 'changes recommended' && needs.review.outputs.fix-round == 'true')))",
+  it("sets up Node, mints, fetches and runs review:advance, and nothing else", () => {
+    expect((job().steps ?? []).map((s) => s.name)).toEqual([
+      "Authenticate to GitHub Packages",
+      "Resolve the loop's token",
+      "Fetch the park data",
+      "Advance the PRD chain",
+    ]);
+    expect((job().steps ?? []).map((s) => s.uses)).toEqual([
+      "actions/setup-node@v7",
+      `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`,
+      "actions/download-artifact@v8",
+      undefined,
+    ]);
+    expect(step("Authenticate to GitHub Packages")?.if).toBeUndefined();
+    expect(step("Resolve the loop's token")?.if).toBeUndefined();
+    expect(step("Fetch the park data")?.if).toBe("!cancelled()");
+    expect(step("Fetch the park data")?.["continue-on-error"]).toBe(true);
+    expect(advanceStep()?.if).toBe("!cancelled()");
+    expect(advanceStep()?.run).toBe(
+      `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${PIN.replace(/^v/, "")} -- agent-workflows review:advance`,
     );
-    // Spared whatever else holds: a key the condition does not also tie to
-    // `fix-round`. 🟡 is spared only where a round starts (#297).
-    const spared = [...flat(parkStep()?.if).matchAll(/verdict == '([^']+)'(?! && needs\.review\.outputs\.fix-round)/g)].map(
-      ([, key]) => key ?? "",
-    );
-    const parked = Object.keys(VERDICTS).filter((key) => !spared.includes(key));
-    expect(parked.sort()).toEqual(["changes recommended", "needs a closer look"]);
+    for (const s of job().steps ?? []) {
+      expect(s.uses ?? "").not.toMatch(/^actions\/checkout@/);
+      expect(s.run ?? "").not.toContain("claude");
+    }
   });
 
   /**
-   * A mint that fails (#330 review) skips the advance, which needs the token,
-   * and a step after it says so on the PRD PR for the same ending, with the
-   * workflow token. The park runs anyway, on `!cancelled()`, and reads the
-   * mint's outcome to post on the PRD PR instead of the parent.
+   * **Advance is told the facts** (#423): how the review job and the posting
+   * job ended, the posting job's `moved` and `review-url`, the review job's
+   * verdict, fix round and round, and the mint's outcome, so the package
+   * works out the ending and the YAML decides nothing. Each input it declares
+   * is set, and nothing it does not.
    */
-  it("says on the PRD PR when a failed mint stopped the advance or the park reaching the parent", () => {
-    const said = step("Say the PRD chain did not advance");
-    const advance = flat(advanceStep()?.if);
-
-    expect(flat(said?.if)).toBe(`failure() && steps.token.outcome == 'failure' && ${advance}`);
-    expect(said?.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
-    expect(parkStep()?.env?.["TOKEN_OUTCOME"]).toBe("${{ steps.token.outcome }}");
-    const run = parkStep()?.run ?? "";
-    expect(run.indexOf('if [ "$TOKEN_OUTCOME" = "failure" ]; then')).toBeGreaterThan(0);
-    expect(run.indexOf('if [ "$TOKEN_OUTCOME" = "failure" ]; then')).toBeLessThan(run.indexOf('GH_TOKEN="$LOOP_TOKEN"'));
+  it("tells advance how each job ended, their outputs and the mint's outcome", () => {
+    expect(advanceStep()?.env).toMatchObject({
+      REVIEW_RESULT: "${{ needs.review.result }}",
+      POSTING_RESULT: "${{ needs.post-review.result }}",
+      MOVED: "${{ needs.post-review.outputs.moved }}",
+      REVIEW_URL: "${{ needs.post-review.outputs.review-url }}",
+      VERDICT: "${{ needs.review.outputs.verdict }}",
+      FIX_ROUND: "${{ needs.review.outputs.fix-round }}",
+      ROUND: "${{ needs.review.outputs.round }}",
+      MINT_OUTCOME: "${{ steps.token.outcome }}",
+      BRANCH: "${{ github.event.pull_request.head.ref }}",
+      PR_NUMBER: "${{ github.event.pull_request.number }}",
+    });
+    expect(jobNamed(REVIEW, "post-review").outputs?.["review-url"]).toBe("${{ steps.ended.outputs.review-url }}");
+    // Actions sets the three run-link variables itself, and Node's own
+    // `NODE_AUTH_TOKEN` is the install's.
+    const set = Object.keys(advanceStep()?.env ?? {}).filter((name) => name !== "NODE_AUTH_TOKEN");
+    const declared = Object.keys(COMMANDS["review:advance"].inputs).filter((name) => !name.startsWith("GITHUB_"));
+    expect(set.sort()).toEqual(declared.sort());
   });
 
   /**
-   * The comment is the runner's, rendered by a tested function and handed over
-   * as an artifact the review job uploads however it ended: `park.md` for a
-   * verdict, `park_failed.md` for a run that did not finish. The findings this
-   * round raised link the review, whose URL exists only once it is posted.
+   * The runner's park hand-over, uploaded however the review ended, since a
+   * failed run is one of the endings it is for, held to the files advance
+   * declares (ADR 0006), and downloaded where advance reads it.
    */
-  it("posts the comment the runner wrote, with the posted review's URL filled in", () => {
-    const run = parkStep()?.run ?? "";
-    const upload = stepsOf(REVIEW).find((s) => s.name === "Hand the park comment to the advance job");
+  it("hands advance exactly the files it declares, uploaded however the review ended", () => {
+    const upload = stepsOf(REVIEW).find((s) => s.name === "Hand the park data to the advance job");
+    const declared = COMMANDS["review:advance"].inputs.PARK_DIR;
 
     expect(upload?.uses).toBe("actions/upload-artifact@v7");
     expect(flat(upload?.if)).toBe("always() && steps.state.outputs.round != ''");
     expect(upload?.with?.["name"]).toBe("agent-review-park");
-    expect(upload?.with?.["path"]).toContain("park.md");
-    expect(upload?.with?.["path"]).toContain("park_failed.md");
-    expect(upload?.with?.["path"]).toContain("park_posted.md");
-    expect(step("Fetch the park comment")?.with?.["name"]).toBe("agent-review-park");
-    expect(step("Fetch the park comment")?.["continue-on-error"]).toBe(true);
-
-    expect(run).toContain('file="${RUNNER_TEMP}/park_failed.md"');
-    expect(run).toContain('file="${RUNNER_TEMP}/park.md"');
-    expect(parkStep()?.env?.["ENDED"]).toBe(
-      "${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}",
-    );
-    expect(parkStep()?.env?.["REVIEWED"]).toBe("${{ needs.review.result == 'success' }}");
-    // A posting job that failed after the verdict went up parks on that
-    // verdict, not on "no verdict": the posted review's URL is what says so.
-    expect(run).toContain(
-      'elif [ "$REVIEWED" = "true" ] && [ -n "$REVIEW_URL" ]; then\n  file="${RUNNER_TEMP}/park_posted.md"',
-    );
-    expect(parkStep()?.env?.["REVIEW_URL_SLOT"]).toBe(REVIEW_URL_SLOT);
-    expect(parkStep()?.env?.["REVIEW_URL"]).toBe("${{ needs.post-review.outputs.review-url }}");
-    expect(jobNamed(REVIEW, "post-review").outputs?.["review-url"]).toBe("${{ steps.ended.outputs.review-url }}");
-    expect(run).toContain('body="${body//"$REVIEW_URL_SLOT"/"$REVIEW_URL"}"');
+    expect(upload?.with?.["if-no-files-found"]).toBe("ignore");
+    expect(declared.producer).toBe("review");
+    expectHandsOver(upload, declared);
+    expect(step("Fetch the park data")?.with?.["name"]).toBe("agent-review-park");
+    expect(step("Fetch the park data")?.with?.["path"]).toBe(advanceStep()?.env?.["PARK_DIR"]);
   });
 
   /**
-   * On the parent, which is an issue, so with the loop's App or `AGENT_PAT`:
-   * the workflow token holds no issue scope here. Without either the comment
-   * goes on the PRD PR. The
-   * post is under `bash -e` with no `||`: a chain that parked without saying so
-   * is what this exists to end.
+   * **A token only where it writes.** The command step alone is handed one,
+   * and the loop's; the setup and the download hold none, and the job sets
+   * none for every step.
    */
-  it("parks on the parent with the loop's token, and on the PRD PR without the App or the PAT", () => {
-    const run = parkStep()?.run ?? "";
+  it("hands a token only to the command step", () => {
+    const tokens = (s: Step): string[] => Object.keys(s.env ?? {}).filter((name) => /TOKEN/.test(name));
 
-    expect(run).toContain("set -euo pipefail");
-    expect(run).toContain("^agent/prd-([0-9]+)-");
-    expect(parkStep()?.env?.["LOOP_TOKEN"]).toBe("${{ steps.token.outputs.token }}");
-    expect(parkStep()?.env?.["TOKEN_SOURCE"]).toBe("${{ steps.token.outputs.source }}");
-    const noPat = run.indexOf('if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then');
-    const post = run.indexOf('GH_TOKEN="$LOOP_TOKEN" gh issue comment "$parent" --body "$body"');
-    expect(noPat).toBeGreaterThanOrEqual(0);
-    expect(post).toBeGreaterThan(noPat);
-    const arm = run.slice(noPat, run.indexOf("\nfi", noPat));
-    expect(arm).toContain('gh pr comment "$PR_NUMBER"');
-    expect(arm).toContain("exit 0");
-    expect(run.slice(post).split("\n")[0]).not.toContain("||");
-  });
-
-  it("checks nothing out, installs nothing and runs no model", () => {
-    expect((job().steps ?? []).map((s) => s.uses).filter((uses) => uses !== undefined)).toEqual([
-      "actions/download-artifact@v8",
-      `jeffwlawson/agent-workflows/.github/actions/loop-token@${PIN}`,
-      `jeffwlawson/agent-workflows/.github/actions/advance-prd@${PIN}`,
-    ]);
-    for (const s of [...(job().steps ?? []), ...(action().runs?.steps ?? [])]) {
-      expect(s.run ?? "").not.toContain("npm exec");
-      expect(s.run ?? "").not.toContain("claude");
-      expect(s.run ?? "").not.toContain("git ");
+    expect(job().env ?? {}).not.toHaveProperty("GH_TOKEN");
+    for (const name of ["Authenticate to GitHub Packages", "Fetch the park data"]) {
+      expect(tokens(step(name) ?? {}), name).toEqual([]);
     }
-    expect(action().runs?.using).toBe("composite");
-    expect(action().runs?.steps).toHaveLength(1);
-    expect(action().runs?.steps?.[0]?.uses).toBeUndefined();
+    expect(tokens(advanceStep() ?? {}).sort()).toEqual(["GH_TOKEN", "LOOP_TOKEN", "LOOP_TOKEN_SOURCE", "NODE_AUTH_TOKEN"]);
+    expect(advanceStep()?.env?.["GH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
   });
 
   /**
-   * **No new grant.** One scope, for the no-PAT comment on the PRD PR; the
-   * parent is written with the loop's App or the PAT, or not at all, so `issues: write` stays out
-   * of this job and out of every caller's grant, which already holds what it
-   * does. The callers grant `issues: read`, for the review job's reads (#348),
-   * and that is all they grant of it.
+   * **One more grant, and none from a caller.** `pull-requests: write` for the
+   * table and the comment on the PRD PR; `packages: read` for the install,
+   * which GitHub Packages gives no one anonymously (#422), and which every
+   * caller already grants the review. The parent is written with the loop's
+   * App or the PAT, or not at all, so `issues: write` stays out of this job
+   * and out of every caller's grant. The callers grant `issues: read`, for the
+   * review job's reads (#348), and that is all they grant of it.
    */
   it("holds only what it needs, and asks no caller for more", () => {
-    expect(job().permissions).toEqual({ "pull-requests": "write" });
+    expect(job().permissions).toEqual({ "pull-requests": "write", packages: "read" });
     expect(job().concurrency).toBeUndefined();
     for (const caller of callersOfWorkflow(REVIEW)) {
       expect(caller.job.permissions?.["pull-requests"], callerName(caller)).toBe("write");
       expect(caller.job.permissions?.["issues"], callerName(caller)).toBe("read");
+      expect(caller.job.permissions?.["packages"], callerName(caller)).toBe("read");
     }
   });
 
-  /**
-   * MUST use the loop's App or `AGENT_PAT`: `agent:implement` added with
-   * `GITHUB_TOKEN` starts nothing. So without either nothing is added, and the
-   * PRD PR is told which re-label advances the chain by hand. The add itself
-   * is under `bash -e`.
-   */
-  it("advances by labelling the parent with the loop's token, and comments when it is the workflow token", () => {
-    const s = advanceStep();
-    const run = script();
-
-    expect(s?.with?.["token"]).toBe("${{ steps.token.outputs.token }}");
-    expect(s?.with?.["token-source"]).toBe("${{ steps.token.outputs.source }}");
-    expect(action().runs?.steps?.[0]?.env?.["TOKEN_SOURCE"]).toBe("${{ inputs.token-source }}");
-    expect(s?.with?.["pr-number"]).toBe("${{ github.event.pull_request.number }}");
-    expect(s?.with?.["head-ref"]).toBe("${{ github.event.pull_request.head.ref }}");
-    const inputs = Object.keys(action().inputs ?? {});
-    expect(inputs.sort()).toEqual(Object.keys(s?.with ?? {}).sort());
-    for (const input of inputs) expect(action().inputs?.[input]?.required).toBe(true);
-    expect(action().runs?.steps?.[0]?.env?.["GH_TOKEN"]).toBe("${{ inputs.token }}");
-    expect(run).toContain("set -euo pipefail");
-    expect(run).toContain("^agent/prd-([0-9]+)-");
-
-    const noPat = run.indexOf('if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then');
-    const add = run.indexOf('gh issue edit "$parent" --add-label "agent:implement"');
-    expect(noPat).toBeGreaterThanOrEqual(0);
-    expect(add).toBeGreaterThan(noPat);
-    const arm = run.slice(noPat, run.indexOf("\nfi", noPat));
-    expect(arm).toContain('gh pr comment "$PR_NUMBER"');
-    expect(arm).toContain("Re-add \\`agent:implement\\` to #${parent} by hand");
-    expect(arm).toContain("exit 0");
-    expect(arm).not.toContain("--add-label");
-    expect(run.slice(add).split("\n")[0]).not.toContain("||");
-  });
-
   it("leaves no slice PR reference in review or fix", () => {
-    for (const file of [REVIEW, FIX, ADVANCE_ACTION]) {
+    for (const file of [REVIEW, FIX]) {
       expect(fs.readFileSync(file, "utf8"), file).not.toContain("agent/slice-");
     }
   });
@@ -8113,9 +8031,6 @@ describe("what the loop posts names no internal mechanism", () => {
  * and never a closed sub-issue.
  */
 describe("the PRD chain's progress", () => {
-  const advanceSteps = (): readonly Step[] => jobNamed(REVIEW, "advance").steps ?? [];
-  const progressStep = (): Step | undefined => advanceSteps().find((s) => s.name === "Re-render the progress list");
-
   /**
    * The list's markers and the final review's mark are spelled in the
    * workflows, which run no toolchain, and held equal here to the one copy
@@ -8127,15 +8042,14 @@ describe("the PRD chain's progress", () => {
 
     const stopped = stepsOf(PRD).find((s) => s.name === "Show the stopped slice in the progress list");
     const building = stepsOf(PRD).find((s) => s.name === "Show the slice building in the progress list");
-    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, building?.env]) {
+    for (const env of [prdPr?.env, stopped?.env, building?.env]) {
       expect(env?.["PROGRESS_START"]).toBe(PROGRESS_START);
       expect(env?.["PROGRESS_END"]).toBe(PROGRESS_END);
     }
-    for (const env of [progressStep()?.env, prdPr?.env, stopped?.env, building?.env]) {
+    for (const env of [prdPr?.env, stopped?.env, building?.env]) {
       expect(env?.["STATUS_START"]).toBe(STATUS_START);
       expect(env?.["STATUS_END"]).toBe(STATUS_END);
     }
-    expect(progressStep()?.env?.["REVIEW_URL_SLOT"]).toBe(REVIEW_URL_SLOT);
     expect(handover).toContain(`mark="${FINAL_REVIEW_MARK}"`);
     expect(handover).toContain(`end="${PROGRESS_END}"`);
     expect(handover).toContain(`status_start="${STATUS_START}"`);
@@ -8147,7 +8061,7 @@ describe("the PRD chain's progress", () => {
     );
     expect(handover).toContain(
       `\${status_start}\${quoted}${renderPrdStatus({
-        subIssues: [{ number: 1, title: "", state: "OPEN" }, { number: 2, title: "", state: "OPEN" }],
+        subIssues: [{ number: 1, state: "OPEN" }, { number: 2, state: "OPEN" }],
         ranges: { slices: [], next: null, current: null },
         verdict: "none",
         running: { kind: "review" },
@@ -8227,34 +8141,26 @@ describe("the PRD chain's progress", () => {
   });
 
   /**
-   * The advance job writes the list at every ending of a round, before it
-   * advances or parks, from the files the review rendered: so the review
-   * hands them over, on the artifact that is uploaded however the run ends.
+   * The list at every ending of a review's round is `review:advance`'s
+   * (#423), rendered from the data the review hands over, never from a table
+   * it rendered: so no shell step in the advance job spells a marker, and
+   * the runner writes no finished list.
    */
-  it("re-renders the list first at every ending of a round, from what the review rendered", () => {
-    const names = advanceSteps().map((s) => s.name ?? "");
-    const step = progressStep();
-    const upload = stepsOf(REVIEW).find((s) => s.name === "Hand the park comment to the advance job");
+  it("writes a review round's list from review:advance, from the data the review hands over", () => {
+    const advance = jobNamed(REVIEW, "advance").steps ?? [];
 
-    // Behind only the fetch, and ahead of the token (#330 review): the list
-    // is the workflow token's, so a mint that fails cannot cost it.
-    expect(names.slice(0, 3)).toEqual(["Fetch the park comment", "Re-render the progress list", "Resolve the loop's token"]);
-    expect(names.indexOf("Re-render the progress list")).toBeLessThan(names.indexOf("Advance the PRD chain"));
-    expect(step?.if).toBeUndefined();
-    expect(step?.["continue-on-error"]).toBeUndefined();
-    for (const ending of ["approved", "parked", "running"]) {
-      expect(String(upload?.with?.["path"] ?? "")).toContain(`\${{ runner.temp }}/progress_${ending}.md`);
-      expect(String(upload?.with?.["path"] ?? "")).toContain(`\${{ runner.temp }}/status_${ending}.md`);
-    }
-    expect(jobNamed(REVIEW, "advance").permissions).toEqual({ "pull-requests": "write" });
+    expect(Object.keys(COMMANDS["review:advance"].inputs.PARK_DIR.files)).toContain("progress.json");
+    expect(advance.filter((s) => /PROGRESS_START|STATUS_START/.test(JSON.stringify(s)))).toEqual([]);
+    expect(RUNNERS.review.outputs.filter((name) => /^(progress|status)_/.test(name))).toEqual([]);
   });
 
-  it("renders the list in each runner while the token is still in hand", () => {
+  /** Each runner reads what its list is rendered from while the token is still in hand. */
+  it("reads the list in each runner while the token is still in hand", () => {
     const review = fs.readFileSync("review/review.ts", "utf8");
     const implement = fs.readFileSync("implement-prd/implement-prd.ts", "utf8");
 
-    expect(review.indexOf("progressAtRoundEnd(")).toBeGreaterThan(-1);
-    expect(review.indexOf("progressAtRoundEnd(")).toBeLessThan(review.indexOf("scrubGitHubTokens();"));
+    expect(review.indexOf("writeProgress(context.carriedFindings.length);")).toBeGreaterThan(-1);
+    expect(review.indexOf("writeProgress(context.carriedFindings.length);")).toBeLessThan(review.indexOf("scrubGitHubTokens();"));
     expect(implement.indexOf("writeProgress();")).toBeGreaterThan(-1);
     expect(implement.indexOf("writeProgress();")).toBeLessThan(implement.indexOf("scrubGitHubTokens();"));
     expect(stepsOf(PRD).find((s) => s.name === "Run implementation agent")?.env?.["PRD_PR"]).toBe(
@@ -8346,13 +8252,11 @@ describe("the PRD chain's progress", () => {
   it("adds no state label for progress, and closes no issue", () => {
     const added = (text: string): string[] => [...text.matchAll(/--add-label "([^"]+)"/g)].map((m) => m[1] ?? "");
     const prd = fs.readFileSync(PRD, "utf8");
-    const advance = (jobNamed(REVIEW, "advance").steps ?? []).map((s) => s.run ?? "").join("\n");
-    const action = fs.readFileSync(path.join(".github", "actions", "advance-prd", "action.yml"), "utf8");
+    const advance = fs.readFileSync(path.join("review", "advance.ts"), "utf8");
 
     expect(new Set(added(prd))).toEqual(new Set(["agent:implement", "agent:blocked", "agent:review"]));
-    expect(added(advance)).toEqual([]);
-    expect(added(action)).toEqual(["agent:implement"]);
-    for (const text of [prd, advance, action]) expect(text).not.toMatch(/gh issue close|state=closed/);
+    expect([...advance.matchAll(/\.addLabel\([^,]+, ([A-Z_]+)\)/g)].map(([, name]) => name)).toEqual(["IMPLEMENT_LABEL"]);
+    for (const text of [prd, advance]) expect(text).not.toMatch(/gh issue close|state=closed|closeIssue/);
   });
 
   /**
@@ -8990,16 +8894,16 @@ describe("the loop resolves its token in the jobs that write", () => {
    * jobs ahead handed over, and a publish job `always()`, since it also
    * reports a failed agent and takes the trigger label off after one.
    *
-   * Review's advance job resolves it **just before** that first use (#330
-   * review), and `always()`: a mint that fails skips every later step whose
-   * `if:` names no status function, and at the start that was the progress
-   * list, which does not need it.
+   * Review's advance job resolves it right after Node, ahead of the
+   * download and `review:advance` (#423), which is handed it and is told
+   * its outcome: a mint that fails no longer costs the progress list, which
+   * advance writes with the workflow token, so it need not wait (#330
+   * review).
    *
    * Review's posting job resolves it **at its start** again (ADR 0005, #417),
    * since `review:publish` and `review:conclude` are handed it: its first
    * step, with nothing ahead of it (#419).
    */
-  const LATE: readonly string[] = ["advance"];
   it.each(RESOLVING)("%s: resolves the token before the job's first use of it", (file) => {
     for (const [id, job] of mintingJobs(file)) {
       const steps = job.steps ?? [];
@@ -9012,9 +8916,9 @@ describe("the loop resolves its token in the jobs that write", () => {
         expect(steps[at]?.if).toBe("needs.review.outputs.proceed == 'true' && needs.review.result == 'success'");
         continue;
       }
-      if (LATE.includes(id)) {
-        expect(first, `${id}: the resolver is not just before its first use`).toBe(at + 1);
-        expect((steps[at]?.if ?? "").startsWith("always()"), id).toBe(true);
+      if (id === "advance") {
+        expect(steps.slice(0, at).map((s) => s.uses)).toEqual(["actions/setup-node@v7"]);
+        expect(steps[at]?.if).toBeUndefined();
         continue;
       }
       for (const before of steps.slice(0, at)) expect(before.uses ?? "", `${id}: ${before.name}`).toMatch(/^actions\/download-artifact@/);
@@ -9054,8 +8958,7 @@ describe("the loop resolves its token in the jobs that write", () => {
    * re-adds the run's own label with the workflow token, on purpose, so that
    * it fires nothing; a re-request of it is made under a token named on the
    * command. Each is made with the resolved token, and
-   * each `agent:review` or `agent:update-branch` added, and the park comment
-   * on a PRD's parent, reads the source, to warn or comment instead where it
+   * each `agent:review` or `agent:update-branch` added reads the source, to warn or comment instead where it
    * is the workflow token and the write would fire nothing or be refused.
    * `agent:fix` is added only where the budget, which read the source, said a
    * round starts.
@@ -9070,6 +8973,12 @@ describe("the loop resolves its token in the jobs that write", () => {
       .flatMap((job) => job.steps ?? [])
       .filter((s) => /\bpush (--force )?origin\b|\bgh pr create\b|\bgh pr ready\b/.test(codeOf(s)) || handOff.test(codeOf(s)) || INLINE.test(codeOf(s)));
 
+    // Review's writes are all its commands' (#417, #419, #423), each handed
+    // the resolved token as `LOOP_TOKEN`, which the test above holds.
+    if (file === REVIEW) {
+      expect(writes).toEqual([]);
+      return;
+    }
     expect(writes.length).toBeGreaterThan(0);
     for (const step of writes) {
       const code = codeOf(step);
@@ -9100,12 +9009,16 @@ describe("the loop resolves its token in the jobs that write", () => {
     }
   });
 
-  /** The PRD chain's advance chooses nothing either: it is handed the token and its source. */
-  it("hands the PRD chain's advance the resolved token and its source", () => {
-    const advance = (jobNamed(REVIEW, "advance").steps ?? []).find((s) => (s.uses ?? "").includes("/actions/advance-prd@"));
+  /**
+   * The PRD chain's advance chooses nothing either: `review:advance` is handed
+   * the token and its source, and the mint's outcome, and picks per write.
+   */
+  it("hands the PRD chain's advance the resolved token, its source and the mint's outcome", () => {
+    const advance = (jobNamed(REVIEW, "advance").steps ?? []).find((s) => s.name === "Advance the PRD chain");
 
-    expect(advance?.with?.["token"]).toBe(TOKEN);
-    expect(advance?.with?.["token-source"]).toBe(SOURCE);
+    expect(advance?.env?.["LOOP_TOKEN"]).toBe(TOKEN);
+    expect(advance?.env?.["LOOP_TOKEN_SOURCE"]).toBe(SOURCE);
+    expect(advance?.env?.["MINT_OUTCOME"]).toBe("${{ steps.token.outcome }}");
   });
 
   it.each(RESOLVING)("%s: declares the App's two secrets, optional", (file) => {
@@ -9128,7 +9041,6 @@ describe("the loop resolves its token in the jobs that write", () => {
       .filter((file) => file !== TOKEN_ACTION);
     const files = [...workflowFiles, ...actions];
 
-    expect(actions.length).toBeGreaterThan(0);
     for (const file of files) {
       const text = fs.readFileSync(file, "utf8");
       const expressions = [...text.matchAll(/\$\{\{[\s\S]*?\}\}/g)].map((m) => m[0]);
@@ -9794,8 +9706,8 @@ describe("an artifact step hands over exactly the files a command declares", () 
     const files = artifactFiles(step);
 
     expect(files).toContain("findings.json");
-    expect(() => expectHandsOver(step, readsFrom("review", { "findings.json": "always", "park.md": "always" }))).toThrow(
-      /park\.md/,
+    expect(() => expectHandsOver(step, readsFrom("review", { "findings.json": "always", "park.json": "always" }))).toThrow(
+      /park\.json/,
     );
     expect(() => expectHandsOver(step, readsFrom("review", { "findings.json": "always" }))).toThrow(/review_body\.json/);
   });

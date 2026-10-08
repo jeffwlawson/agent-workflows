@@ -965,31 +965,26 @@ jobs:
           retention-days: 7
           overwrite: true
 
-      # On a PRD PR, the park comments the runner wrote, handed to the `advance`
-      # job (PRD #222): `park.md` where the round ended without approval and
-      # with no fix round starting, `park_posted.md` for a verdict posted by a
-      # posting job that then failed, and `park_failed.md`, written before the
-      # agent ran, for a round that does not finish. Beside them the PRD PR's
-      # progress list for each way the round can end, `progress_<ending>.md`
-      # (#246), also written before the agent ran. Its own artifact and
-      # `always()`, because a failed run is one of the endings it is for, and
-      # the review's own artifact is uploaded only on success. Either file may
-      # be missing; the advance job says so where it needs one.
-      - name: Hand the park comment to the advance job
+      # On a PRD PR, what the runner wrote for `review:advance` (PRD #222),
+      # exactly the files its `PARK_DIR` declares: `park.json`, the round, what
+      # was open before this review and, once it ruled, its verdict, the
+      # reason its round parks and what it leaves open; and `progress.json`,
+      # what the PRD PR's progress table and status line are rendered from
+      # (#246). Data, not comments or tables (ADR 0007): advance writes every
+      # string and marker. `tests/workflows.test.ts` holds the list to the
+      # declaration. Both are written before the agent runs, so a failed run
+      # has them. Its own artifact and `always()`, because a failed run is one
+      # of the endings it is for, and the review's own artifact is uploaded
+      # only on success. Either file may be missing; advance says so where it
+      # needs one.
+      - name: Hand the park data to the advance job
         if: always() && steps.state.outputs.round != ''
         uses: actions/upload-artifact@v7
         with:
           name: agent-review-park
           path: |
-            ${{ runner.temp }}/park.md
-            ${{ runner.temp }}/park_posted.md
-            ${{ runner.temp }}/park_failed.md
-            ${{ runner.temp }}/progress_approved.md
-            ${{ runner.temp }}/progress_parked.md
-            ${{ runner.temp }}/progress_running.md
-            ${{ runner.temp }}/status_approved.md
-            ${{ runner.temp }}/status_parked.md
-            ${{ runner.temp }}/status_running.md
+            ${{ runner.temp }}/park.json
+            ${{ runner.temp }}/progress.json
           if-no-files-found: ignore
           retention-days: 7
           overwrite: true
@@ -1372,49 +1367,35 @@ jobs:
           overwrite: true
 
   # The PRD chain's **advance job** (PRD #222), and the one place the chain
-  # moves on from or parks at. A PRD is built as slices on one PRD branch and
-  # reviewed on one PRD PR, a **slice round** per slice, and the next slice is
-  # built only after an approval. Every way a round can end lands here, since
-  # on a PRD PR every fix run ends by asking for a review (`fix.yml`'s *Request
-  # re-review*): so this job is the whole of it, and `fix` carries no copy.
+  # moves on from or parks at. Every way a slice round or the final review on
+  # a PRD PR can end lands here, since on a PRD PR every fix run ends by asking
+  # for a review (`fix.yml`'s *Request re-review*): so this job is the whole of
+  # it, and `fix` carries no copy.
   #
-  # **What it does, by how the round ended:**
-  #
-  #  - a slice round's **approval**: re-adds `agent:implement` to the parent,
-  #    parsed from the head, `agent/prd-<parent>-…`, and the `implement-prd` run
-  #    that starts builds the next slice, or finishes. That run's preflight
-  #    reads the head's verdict again, so the label is never the gate;
-  #  - the **final review's approval**: nothing. The ready step above marks the
-  #    PRD PR ready, and the PRD is the maintainer's to merge. It never
-  #    advances from a final review;
-  #  - **a fix round started**: nothing. The round has not ended; the fix run's
-  #    re-review ends it, and comes back here;
-  #  - **the head moved** while the review ran: nothing. The review of the new
-  #    head decides;
-  #  - **any other ending**, a slice round's or the final review's: the park
-  #    comment on the parent, naming the round, why it stopped (#200's budget
-  #    spent or no progress, a review that needs a closer look, a run that did
-  #    not finish), the open findings with links, and the ways on. A parked
-  #    chain says so where a maintainer watching it looks, rather than nowhere.
-  #
-  # The comment is the runner's, rendered by `shared/prd-round.ts` and handed
-  # over as an artifact, so its wording is tested and not restated here.
+  # What it does is `review:advance` (#423), a command of the package: the
+  # progress table and status line for how the round ended, then
+  # `agent:implement` back on the parent on a slice round's approval, or the
+  # park comment there on every ending but an approval or a fix round
+  # starting. `review/advance.ts` says why each is as it is. What is left in
+  # YAML is what only Actions can do (ADR 0003): Node, the token's mint, the
+  # download and the command.
   #
   # **Only on a PRD PR**, recognised by its head, from this repository, on the
   # review's own label: the review job's two guards, restated, because
   # `always()` drops them with the rest of "every need succeeded". And only
-  # where the review proceeded: a refusal ended no round.
+  # where the review proceeded, since a refusal ended no round, and where the
+  # head did not move while the review ran, since the review of the new head
+  # decides.
   #
-  # **At every ending** it first writes the PRD PR's progress list (#246), the
-  # one the review rendered for how the round ended.
-  #
-  # **Its shape**: no checkout, no toolchain, no model, `pull-requests: write`
-  # alone for the progress list and the no-PAT arm's comment on the PRD PR, and
-  # the loop's token, the App's or `AGENT_PAT` (`.github/actions/loop-token`),
-  # for everything on the parent, or nothing there. `issues: write` stays out of
-  # this job and every caller's grant (docs/parity.md §10). **No concurrency
-  # group**, for the reason the posting job is in none. It cannot cycle: it
-  # labels and comments on an issue, never a pull request.
+  # **Its shape**: no checkout and no model. `pull-requests: write` for the
+  # progress table and the comment on the PRD PR where the parent cannot be
+  # written, and `packages: read` for the install, since GitHub Packages has no
+  # anonymous one. The caller already grants both. Everything on the parent is
+  # the loop's token's, the App's or `AGENT_PAT`
+  # (`.github/actions/loop-token`), or nothing there: `issues: write` stays out
+  # of this job and every caller's grant (docs/parity.md §10). **No
+  # concurrency group**, for the reason the posting job is in none. It cannot
+  # cycle: it labels and comments on an issue, never a pull request.
   advance:
     needs: [review, post-review]
     if: >-
@@ -1427,114 +1408,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      # The progress list in the PRD PR's body, and the no-PAT arm's comment
-      # on the PRD PR, and nothing else.
       pull-requests: write
+      packages: read
     steps:
-      # What the runner wrote. Missing where the run failed before it got that
-      # far, which the park step says in its own words.
-      - name: Fetch the park comment
-        continue-on-error: true
-        uses: actions/download-artifact@v8
+      # The Node the command runs on, and the registry it installs from. A
+      # version rather than a version file, since this job checks nothing out:
+      # the one the package's `engines.node` names, which
+      # `tests/workflows.test.ts` holds it to.
+      - name: Authenticate to GitHub Packages
+        uses: actions/setup-node@v7
         with:
-          name: agent-review-park
-          path: ${{ runner.temp }}
-
-      # The PRD PR's **progress list** (#246), re-rendered at every ending of
-      # a round: the one the runner rendered for how this round ended, written
-      # between its markers in the PRD PR's body. Approved on an approval,
-      # still in review where the verdict started a fix round, and parked on
-      # every other ending, a run that did not finish included. First, so the
-      # list says where the chain is before anything this job starts reads it.
-      #
-      # Spliced the way the review's summary is (#218): every byte outside the
-      # markers is kept, a body with no list gets one appended, and one with
-      # half a list, or two, is not written at all. `spliceProgressList` in
-      # `shared/progress-list.ts` is the same rule, and a test holds the two
-      # equal.
-      #
-      # Never fails the job: the list is a view of the chain, and the advance
-      # or the park comment after it is the chain itself. A warning says so
-      # where `|| true` would not.
-      - name: Re-render the progress list
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          ENDED: ${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}
-          VERDICT: ${{ needs.review.outputs.verdict }}
-          FIX_ROUND: ${{ needs.review.outputs.fix-round }}
-          REVIEW_URL: ${{ needs.post-review.outputs.review-url }}
-          SERVER_URL: ${{ github.server_url }}
-          # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
-          REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
-          # `PROGRESS_START`, `PROGRESS_END`, `STATUS_START` and `STATUS_END`
-          # in `shared/progress-list.ts`; a test holds them equal.
-          PROGRESS_START: "<!-- agent:progress -->"
-          PROGRESS_END: "<!-- /agent:progress -->"
-          STATUS_START: "<!-- agent:status -->"
-          STATUS_END: "<!-- /agent:status -->"
-        run: |
-          set -uo pipefail
-          ending=parked
-          if [ "$ENDED" = "true" ] && [ "$VERDICT" = "approval recommended" ]; then
-            ending=approved
-          elif [ "$ENDED" = "true" ] && [ "$VERDICT" = "changes recommended" ] && [ "${FIX_ROUND:-}" = "true" ]; then
-            ending=running
-          fi
-          list="${RUNNER_TEMP}/progress_${ending}.md"
-          [ -f "$list" ] || { echo "::warning::The review rendered no progress list, so PRD PR #${PR_NUMBER}'s is left as it stands."; exit 0; }
-          status="${RUNNER_TEMP}/status_${ending}.md"
-          [ -f "$status" ] || status=/dev/null
-          # The posted review goes where the runner left its slot (#298): the
-          # table's review count and the status line link it. Where no review
-          # was posted, the pull request stands in for it.
-          link="${REVIEW_URL:-${SERVER_URL}/${GH_REPO}/pull/${PR_NUMBER}}"
-          for file in "$list" "$status"; do
-            [ "$file" = /dev/null ] && continue
-            text=$(cat "$file")
-            printf '%s' "${text//"$REVIEW_URL_SLOT"/"$link"}" > "$file"
-          done
-          current="${RUNNER_TEMP}/progress_pr.json"
-          request="${RUNNER_TEMP}/progress_edit.json"
-          if ! gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER}" > "$current"; then
-            echo "::warning::Could not read PRD PR #${PR_NUMBER}, so its progress list is left as it stands."
-            exit 0
-          fi
-          jq --rawfile block "$list" --rawfile status "$status" '
-            def splice($b; $s; $e; $block; $append):
-              if $b == "" then (if $append then $block else $b end)
-              else
-                ($b | split($s)) as $starts
-                | ($b | split($e)) as $ends
-                | if ($starts | length) == 1 and ($ends | length) == 1 then
-                    (if $append then $b + (if ($b | endswith("\n")) then "\n" else "\n\n" end) + $block else $b end)
-                  elif ($starts | length) == 2 and ($ends | length) == 2 and ($starts[1] | split($e) | length) == 2 then
-                    $starts[0] + $block + ($starts[1] | split($e))[1]
-                  else null end
-              end;
-            (.body // "") as $b
-            | splice($b; env.PROGRESS_START; env.PROGRESS_END; $block; true) as $body
-            | (if $body == null or $status == "" then $body
-               else (splice($body; env.STATUS_START; env.STATUS_END; $status; false) // $body) end) as $body
-            | if $body == null then {} else {body: $body} end
-          ' "$current" > "$request" || { echo "::warning::Could not compose PRD PR #${PR_NUMBER}'s progress list, so it is left as it stands."; exit 0; }
-          if [ "$(jq -r 'has("body")' "$request")" != "true" ]; then
-            echo "::warning::PRD PR #${PR_NUMBER}'s body carries half a progress list, or two, so it was not written. Restore the missing marker, or delete the markers and the text between them, and the next ending of a round writes it again."
-            exit 0
-          fi
-          gh api --method PATCH "repos/{owner}/{repo}/pulls/${PR_NUMBER}" --input "$request" > /dev/null \
-            && echo "Wrote PRD PR #${PR_NUMBER}'s progress list: the round ended ${ending}." \
-            || echo "::warning::Could not write PRD PR #${PR_NUMBER}'s progress list. GitHub's reply is above."
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@jeffwlawson"
+          package-manager-cache: false
 
       # The token everything on the parent is written with: the loop's App's,
       # `AGENT_PAT`, or the workflow token, which can write nothing there, and
-      # `source` says which. After the progress list, which the workflow token
-      # writes, so a mint that fails cannot cost the list (#330 review); a
-      # failed mint is said on the PRD PR by the two steps after it.
+      # `source` says which. A mint that fails fails the step, and advance,
+      # told its outcome, says so on the PRD PR; the progress table, which the
+      # workflow token writes, is written anyway (#330 review).
       - name: Resolve the loop's token
         id: token
-        if: always()
         uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.11
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
@@ -1542,123 +1437,49 @@ jobs:
           agent-pat: ${{ secrets.AGENT_PAT }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # A slice round's approval, and nothing else. The verdict key, matched
-      # exactly, and only where the review and its posting both finished: a
-      # verdict that was never posted approves nothing.
-      - name: Advance the PRD chain
-        if: >-
-          needs.review.result == 'success' && needs.post-review.result == 'success' &&
-          needs.review.outputs.round == 'slice' &&
-          needs.review.outputs.verdict == 'approval recommended'
-        uses: jeffwlawson/agent-workflows/.github/actions/advance-prd@v0.7.11
+      # What the runner handed over. Missing where the run failed before it
+      # got that far, which advance says in its own words, so a failed
+      # download stops nothing.
+      - name: Fetch the park data
+        if: "!cancelled()"
+        continue-on-error: true
+        uses: actions/download-artifact@v8
         with:
-          pr-number: ${{ github.event.pull_request.number }}
-          head-ref: ${{ github.event.pull_request.head.ref }}
-          token-source: ${{ steps.token.outputs.source }}
-          token: ${{ steps.token.outputs.token }}
+          name: agent-review-park
+          path: ${{ runner.temp }}/park
 
-      # The advance above is skipped where the mint failed, and the job is
-      # red; this says so where the maintainer is looking, with the workflow
-      # token, which can comment on the PRD PR, and with the reason the
-      # resolver wrote. The same approval, so the same re-label by hand.
-      - name: Say the PRD chain did not advance
-        if: >-
-          failure() && steps.token.outcome == 'failure' &&
-          needs.review.result == 'success' && needs.post-review.result == 'success' &&
-          needs.review.outputs.round == 'slice' &&
-          needs.review.outputs.verdict == 'approval recommended'
+      # The table, then the advance or the park (#423). `!cancelled()`, so a
+      # failed mint does not skip it (#330 review): it is one of the endings
+      # advance reports. Told the facts, not the conclusions: how the review
+      # job and the posting job ended, their outputs and the mint's outcome,
+      # so the package works out the ending. It fails where the chain neither
+      # moved on nor said where it stands on the parent, so a red job is what
+      # says so.
+      #
+      # Given both tokens: `GH_TOKEN`, the workflow's, which writes the PRD
+      # PR, and the loop's, empty where it was not minted, for the parent.
+      - name: Advance the PRD chain
+        if: "!cancelled()"
         env:
+          # Reads the `.npmrc` the step above wrote. `GITHUB_TOKEN`, carrying the
+          # `packages: read` the caller granted — there is no anonymous install.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          parent="the PRD's parent issue"
-          if [[ "$HEAD_REF" =~ ^agent/prd-([0-9]+)- ]]; then parent="#${BASH_REMATCH[1]}"; fi
-          reason="Couldn't mint a token for the loop's GitHub App."
-          [ -f "${RUNNER_TEMP}/failure_reason.txt" ] && reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
-          gh pr comment "$PR_NUMBER" --body "This slice's round ended on an approval, but the PRD chain did not advance: ${reason} [Workflow run](${RUN_URL})
-
-          Once that is fixed, re-add \`agent:implement\` to ${parent} by hand to build the next slice." \
-            || echo "::warning::Could not say on PRD PR #${PR_NUMBER} that the chain did not advance."
-
-      # Every other ending but a fix round starting. A run that finished posts
-      # `park.md`, the comment for its verdict. One whose review finished and
-      # whose verdict was posted, but whose posting job failed after it (a fix
-      # round the review asked for that did not start, say), posts
-      # `park_posted.md`, which names that verdict and this round's findings:
-      # the review is on the pull request, so "no verdict" would be false. Any
-      # other posts `park_failed.md`, which the runner wrote before the agent
-      # ran: no verdict reached the pull request. The findings this round
-      # raised link the posted review, whose URL exists only now, so it goes
-      # into the slot the runner left for it.
-      #
-      # MUST use the loop's App or AGENT_PAT for the comment on the parent,
-      # which is an issue: the workflow token holds no issue scope here.
-      # Without either the comment
-      # goes on the PRD PR instead, saying where it was meant for. `bash -e`
-      # and no `|| true` on the post: a chain that parked without saying so is
-      # the silence this job exists to end, and a red job is the only thing
-      # left that says it.
-      #
-      # `!cancelled()`, so a failed mint above does not skip it (#330 review):
-      # the park goes on the PRD PR then too, as it does without the App or
-      # the PAT, but with the reason the mint failed, and the job stays red.
-      - name: Park the PRD chain
-        if: >-
-          !cancelled() &&
-          !(needs.review.result == 'success' && needs.post-review.result == 'success' &&
-            (needs.review.outputs.verdict == 'approval recommended' ||
-             (needs.review.outputs.verdict == 'changes recommended' && needs.review.outputs.fix-round == 'true')))
-        env:
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          ENDED: ${{ needs.review.result == 'success' && needs.post-review.result == 'success' }}
-          REVIEWED: ${{ needs.review.result == 'success' }}
-          REVIEW_URL: ${{ needs.post-review.outputs.review-url }}
-          # `REVIEW_URL_SLOT` in `shared/prd-round.ts`; a test holds the two equal.
-          REVIEW_URL_SLOT: "{{AGENT_REVIEW_URL}}"
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          TOKEN_OUTCOME: ${{ steps.token.outcome }}
-          TOKEN_SOURCE: ${{ steps.token.outputs.source }}
           LOOP_TOKEN: ${{ steps.token.outputs.token }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$HEAD_REF" =~ ^agent/prd-([0-9]+)- ]]; then
-            echo "::error::PRD PR #${PR_NUMBER}'s head \`${HEAD_REF}\` is not \`agent/prd-<parent>-…\`, so its PRD cannot be told, and the park comment was not posted."
-            exit 1
-          fi
-          parent="${BASH_REMATCH[1]}"
-          file="${RUNNER_TEMP}/park_failed.md"
-          if [ "$ENDED" = "true" ]; then
-            file="${RUNNER_TEMP}/park.md"
-          elif [ "$REVIEWED" = "true" ] && [ -n "$REVIEW_URL" ]; then
-            file="${RUNNER_TEMP}/park_posted.md"
-          fi
-          if [ -f "$file" ]; then
-            body=$(cat "$file")
-            body="${body//"$REVIEW_URL_SLOT"/"$REVIEW_URL"}"
-          else
-            # The run stopped before the runner could write either file, so
-            # nothing is known of the round but where it ran.
-            body="**The PRD chain parked** on PRD PR #${PR_NUMBER}: its review didn't finish, so there is no verdict. [Workflow run](${RUN_URL})
-
-          To move on, add \`agent:review\` to PRD PR #${PR_NUMBER} to run the review again. The chain moves on once a review of the PRD PR's latest commit recommends approval."
-          fi
-          if [ "$TOKEN_OUTCOME" = "failure" ]; then
-            reason="Couldn't mint a token for the loop's GitHub App."
-            [ -f "${RUNNER_TEMP}/failure_reason.txt" ] && reason=$(cat "${RUNNER_TEMP}/failure_reason.txt")
-            echo "::error::The loop's App's token was not minted, so the park comment goes on PRD PR #${PR_NUMBER} rather than on #${parent}."
-            gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s' "$body" "_This was meant for #${parent}, but it could not be posted there: ${reason}_")"
-            exit 1
-          fi
-          if [ "$TOKEN_SOURCE" != "app" ] && [ "$TOKEN_SOURCE" != "pat" ]; then
-            echo "::warning::Neither the loop's App nor AGENT_PAT is set, so the park comment goes on PRD PR #${PR_NUMBER} rather than on #${parent}: the workflow token cannot comment on an issue here."
-            gh pr comment "$PR_NUMBER" --body "$(printf '%s\n\n%s' "$body" "_This was meant for #${parent}, but neither the loop's App nor \`AGENT_PAT\` is set._")"
-            exit 0
-          fi
-          GH_TOKEN="$LOOP_TOKEN" gh issue comment "$parent" --body "$body"
-          echo "Posted the park comment on #${parent}."
+          LOOP_TOKEN_SOURCE: ${{ steps.token.outputs.source }}
+          OUTPUT_DIR: ${{ runner.temp }}/advance
+          PARK_DIR: ${{ runner.temp }}/park
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          POSTING_RESULT: ${{ needs.post-review.result }}
+          MOVED: ${{ needs.post-review.outputs.moved }}
+          REVIEW_URL: ${{ needs.post-review.outputs.review-url }}
+          VERDICT: ${{ needs.review.outputs.verdict }}
+          FIX_ROUND: ${{ needs.review.outputs.fix-round }}
+          ROUND: ${{ needs.review.outputs.round }}
+          MINT_OUTCOME: ${{ steps.token.outcome }}
+        # `npm exec --prefix` rather than a bare `npx`: see the long note on the
+        # runner step in the review job.
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.11 -- agent-workflows review:advance

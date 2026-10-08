@@ -99,7 +99,7 @@ describe("every posted link to a workflow run is labelled Workflow run", () => {
     expect(SOURCES).toContain(path.join("review", "review.ts"));
     expect(SOURCES).toContain(path.join("review", "pr-summary.ts"));
     for (const module of SUBCOMMAND_MODULES) expect(SOURCES).toContain(module);
-    expect(SOURCES).toContain(path.join(".github", "actions", "advance-prd", "action.yml"));
+    expect(SOURCES).toContain(path.join(".github", "actions", "loop-token", "action.yml"));
   });
 
   /** What it catches, so a check that passes is one that looked. */

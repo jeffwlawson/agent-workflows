@@ -19,7 +19,7 @@ import { CATCH_UP_TRAILER, SLICE_TRAILER } from "./record.js";
 
 /**
  * A review round on a **PRD PR** (PRD #222, #244): what the review is told
- * about it, and what the advance job says on the parent when the round ends
+ * about it, and what `review:advance` says on the parent when the round ends
  * without moving the chain on.
  *
  * A PRD PR is the PRD branch into the default branch, and every slice of the
@@ -377,8 +377,17 @@ export interface ParkFinding {
   readonly url?: string;
 }
 
+/**
+ * The round a park comment names: the final review, or a slice round with its
+ * place, where it could be told. What `review` hands `review:advance` of a
+ * `PrdRound`, which also carries the slice's commits.
+ */
+export type ParkRound =
+  | { readonly kind: "final" }
+  | { readonly kind: "slice"; readonly slice: Pick<RoundSlice, "subIssue" | "k" | "n"> | undefined };
+
 export interface ParkInputs {
-  readonly round: PrdRound;
+  readonly round: ParkRound;
   readonly prNumber: string;
   readonly reason: ParkReason;
   /** The review's own next-step line, which says the rest of why. Absent on a failed run. */
@@ -388,20 +397,12 @@ export interface ParkInputs {
   readonly runUrl?: string;
 }
 
-/**
- * Where the posted review's URL goes in a park comment the runner writes. A
- * finding this round raised has no thread yet when the comment is written, so
- * it links the review, whose URL exists only once the posting job has posted
- * it; the advance job puts it in. Held equal to that job's copy by a test.
- */
-export const REVIEW_URL_SLOT = "{{AGENT_REVIEW_URL}}";
-
 /** The reason a round that ended on `verdict` stopped, or undefined where it moved on or a round is starting. */
 export const parkReasonOf = (verdict: {
   readonly verdict: string;
   readonly stop?: "budget spent" | "no progress";
   readonly startsFixRound?: true;
-}): ParkReason | undefined => {
+}): Exclude<ParkReason, "failed" | "post failed"> | undefined => {
   if (verdict.verdict === "needs a closer look") return "needs a closer look";
   if (verdict.startsFixRound === true) return undefined;
   if (verdict.verdict === "changes recommended") return verdict.stop ?? "changes recommended";
@@ -420,7 +421,7 @@ const REASONS: Readonly<Record<ParkReason, string>> = {
 };
 
 /**
- * The comment the advance job posts on the PRD's parent when a round ends
+ * The comment `review:advance` posts on the PRD's parent when a round ends
  * without approval: which round, why it stopped, what is open, and the ways on.
  * The parent is where a maintainer watching the chain looks, and without this
  * a parked chain says nothing there at all.

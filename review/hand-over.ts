@@ -25,6 +25,7 @@ import {
   json,
   list,
   matching,
+  nullable,
   object,
   optional,
   refine,
@@ -33,12 +34,14 @@ import {
   type Parser,
 } from "../shared/hand-over.js";
 import type { MergeDanger } from "../shared/merge-danger.js";
-import type { SliceCriteria } from "../shared/prd-round.js";
+import type { ParkFinding, ParkReason, ParkRound, SliceCriteria } from "../shared/prd-round.js";
+import type { ProgressInputs } from "../shared/progress-list.js";
+import type { SliceRanges } from "../shared/slice-ranges.js";
 import type { EvidenceCheck, RedTestsRecord, SliceRedTests } from "../shared/red-check.js";
 import type { HandedFinding } from "../shared/review-findings.js";
-import type { CiResult, ReviewBodyHandOver, TestSketch, Verdict } from "../shared/review-output.js";
+import type { CiResult, CloserLookCause, ReviewBodyHandOver, TestSketch, Verdict } from "../shared/review-output.js";
 import type { ThreadResolution } from "../shared/review-verification.js";
-import type { RoundScope } from "../shared/round-header.js";
+import type { RoundCount, RoundCounts, RoundScope } from "../shared/round-header.js";
 
 /** `findings.json`: the findings to open a thread for, in the order the runner placed them. */
 export type Findings = readonly HandedFinding[];
@@ -108,6 +111,54 @@ export interface PrdRecords {
 export interface VerdictHandOver {
   readonly verdict: Verdict;
   readonly fixRound: boolean;
+  readonly open: number;
+}
+
+/**
+ * `park.json`, on a PRD PR: what `review:advance` parks the chain with, as data
+ * (ADR 0007). Written before the agent runs, with what was open before this
+ * review, so a run that does not finish has it; and again once the review has
+ * ruled, with `review` added. No comment text and no link to the posted
+ * review, which exists only once the posting job has posted it, and no
+ * parent: `review:advance` reads that off the head branch itself.
+ */
+export interface ParkHandOver {
+  readonly round: ParkRound;
+  /** The findings open before this review, each linked to its thread. */
+  readonly carried: readonly ParkFinding[];
+  /** Once the review has ruled. */
+  readonly review?: ParkReview | undefined;
+}
+
+/** What the review ruled, as a park comment names it. */
+export interface ParkReview {
+  readonly verdict: Verdict;
+  /** Which of *needs a closer look*'s causes, on that verdict, for its line. */
+  readonly cause?: CloserLookCause | undefined;
+  /** Why the round parks where it ends on this verdict, or absent where it moves on or a fix round starts. */
+  readonly reason?: Exclude<ParkReason, "failed" | "post failed"> | undefined;
+  /** The earlier findings still open, each linked to its thread. */
+  readonly stillOpen: readonly ParkFinding[];
+  /** The findings this review raised, which link the posted review: they have no thread until it is posted. */
+  readonly raised: readonly Omit<ParkFinding, "url">[];
+}
+
+/**
+ * `progress.json`, on a PRD PR, where the PRD branch could be read: the data
+ * behind the progress table and the status line (#246, #298), which
+ * `review:advance` renders for whichever way the round ended. Written with
+ * `park.json`, the second time with the findings this review leaves open.
+ * `rounds` is absent where the earlier rounds could not be read, and each
+ * slice's count is listed by sub-issue.
+ */
+export interface ProgressHandOver extends Pick<ProgressInputs, "subIssues" | "ranges" | "finalReview"> {
+  readonly rounds?:
+    | {
+        readonly slices: readonly ({ readonly subIssue: number } & RoundCount)[];
+        readonly final: RoundCount;
+        readonly all: RoundCount;
+      }
+    | undefined;
   readonly open: number;
 }
 
@@ -372,3 +423,94 @@ export const handOverParsers = (known: Known) => {
     "verdict.json": json(verdict),
   } satisfies Readonly<Record<string, Parser<unknown>>>;
 };
+
+/** The most commits a slice range may carry: far past any slice this loop has built. */
+const MAX_COMMITS = 100_000;
+
+const parkFinding = object({ title: text, anchor: optional(text), url: optional(LINK) });
+
+const parkRound = refine(
+  object({ kind: choice(["final", "slice"]), slice: optional(object({ subIssue: ISSUE, k: SLICE, n: SLICE })) }),
+  ({ kind, slice }, wrong): ParkRound => {
+    if (kind === "final") return slice === undefined ? { kind } : wrong("is the final review, and names a slice");
+    return { kind, slice };
+  },
+);
+
+const parkReview = refine(
+  object({
+    verdict: VERDICT,
+    cause: optional(choice(["needs you", "red", "unknown"])),
+    reason: optional(choice(["changes recommended", "budget spent", "no progress", "needs a closer look"])),
+    stillOpen: list(parkFinding, { max: MAX_ENTRIES }),
+    raised: list(object({ title: text, anchor: optional(text) }), { max: MAX_FINDINGS }),
+  }),
+  (r, wrong): ParkReview => (r.cause !== undefined && r.verdict !== "needs a closer look" ? wrong(`names a cause on ${r.verdict}`) : r),
+);
+
+const roundCount = object({ reviews: NUMBER, fixes: NUMBER, latestReview: optional(LINK) });
+
+const sliceRanges = refine(
+  object({
+    slices: list(
+      object({
+        subIssue: ISSUE,
+        range: nullable(object({ base: nullable(SHA), commits: list(SHA, { max: MAX_COMMITS }) })),
+      }),
+      { max: MAX_SLICES },
+    ),
+    next: nullable(ISSUE),
+    current: nullable(object({ subIssue: ISSUE, k: SLICE, n: SLICE })),
+  }),
+  (ranges, wrong): SliceRanges =>
+    ranges.slices.some((s) => s.range !== null && s.range.commits.length === 0) ? wrong("has a slice range with no commits") : ranges,
+);
+
+/**
+ * What `review:advance` reads `progress.json` as: the PRD branch as the table
+ * takes it, and the rounds keyed by sub-issue again.
+ */
+export interface ProgressRead {
+  readonly branch: Pick<ProgressInputs, "subIssues" | "ranges" | "finalReview">;
+  readonly rounds?: RoundCounts;
+  readonly open: number;
+}
+
+const progress = refine(
+  object({
+    subIssues: list(object({ number: ISSUE, state: choice(["OPEN", "CLOSED"]) }), { max: MAX_SLICES }),
+    ranges: sliceRanges,
+    finalReview: choice(["not requested", "requested"]),
+    rounds: optional(
+      object({
+        slices: list(object({ subIssue: ISSUE, reviews: NUMBER, fixes: NUMBER, latestReview: optional(LINK) }), { max: MAX_SLICES }),
+        final: roundCount,
+        all: roundCount,
+      }),
+    ),
+    open: count({ min: 0, max: MAX_ENTRIES * 2 }),
+  }),
+  ({ subIssues, ranges, finalReview, rounds, open }): ProgressRead => ({
+    branch: { subIssues, ranges, finalReview },
+    open,
+    ...(rounds === undefined
+      ? {}
+      : {
+          rounds: {
+            slices: Object.fromEntries(rounds.slices.map(({ subIssue, ...count }) => [subIssue, count])),
+            final: rounds.final,
+            all: rounds.all,
+          },
+        }),
+  }),
+);
+
+/**
+ * The parser for each file `review:advance` reads. No target among them: the
+ * parent it writes to is read off the head branch, and the pull request is
+ * its own input.
+ */
+export const PARK_PARSERS = {
+  "park.json": json(object({ round: parkRound, carried: list(parkFinding, { max: MAX_ENTRIES }), review: optional(parkReview) })),
+  "progress.json": json(progress),
+} satisfies Readonly<Record<string, Parser<unknown>>>;

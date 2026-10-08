@@ -162,13 +162,13 @@ describe("the pin rewrite is a core init can use", () => {
   it("tells a composite action's ref from a caller's, and writes it with a `v`", () => {
     const text = [
       `        run: npm exec --yes --package=${PACKAGE}@0.0.1 -- agent-workflows review`,
-      `        uses: ${PACKAGE.replace(/^@/, "")}/.github/actions/advance-prd@v0.0.1`,
+      `        uses: ${PACKAGE.replace(/^@/, "")}/.github/actions/loop-token@v0.0.1`,
     ].join("\n");
 
     const rewrite = rewritePins(text, { packageName: PACKAGE, version: TARGET });
 
     expect(rewrite.found).toEqual(["package", "action"]);
-    expect(rewrite.text).toContain(`/.github/actions/advance-prd@v${TARGET}`);
+    expect(rewrite.text).toContain(`/.github/actions/loop-token@v${TARGET}`);
     // A ref that is not a pin is not one to rewrite.
     expect(rewritePins(text.replace("@v0.0.1", "@main"), { packageName: PACKAGE, version: TARGET }).found).toEqual([
       "package",

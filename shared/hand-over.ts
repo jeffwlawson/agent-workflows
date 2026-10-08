@@ -133,6 +133,12 @@ export const optional =
   (value, at) =>
     value === undefined ? undefined : parser(value, at);
 
+/** A field that may be `null`, read as `null` where it is. Otherwise, it is read by `parser`. */
+export const nullable =
+  <T>(parser: Parser<T>): Parser<T | null> =>
+  (value, at) =>
+    value === null ? null : parser(value, at);
+
 /**
  * A value read by `parser`, then by `read`, for a rule between its fields that
  * no one field's parser can see: which fields one choice requires. `read`

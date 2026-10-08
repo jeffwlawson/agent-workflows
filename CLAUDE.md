@@ -60,9 +60,14 @@ repo loses the instruction the prompts depend on.
 
 ## Changing a workflow
 
-1. Decide the part first (CONTEXT.md). A guard belongs in the **reusable** half — an adopter
-   references that and gets fixes for free; anything in the caller has to be copied by hand.
-2. Edit `.github/workflows/<name>.yml`. Never add a step to a caller.
+1. Decide the part first (CONTEXT.md). A guard belongs in a **command** of the package, run from
+   the reusable: the reusable keeps only what Actions can do (ADR 0003), an adopter references
+   both through the one pin and gets fixes for free, and anything in the caller has to be copied
+   by hand. Only in a workflow whose steps have not moved yet, which CONTEXT.md's *three parts*
+   names, does a guard still go in the reusable's YAML.
+2. Put Actions-only changes (the job graph, permissions, artifacts, which step gets which token) in
+   `.github/workflows/<name>.yml`, and everything else in the workflow's folder (*Changing a
+   runner or a command*, below). Never add a step to a caller.
 3. If a caller must change too, update **both** sets: `examples/callers/` is what adopters copy,
    and `.github/workflows/agent-*.yml` is what this repo runs. `tests/workflows.test.ts` reads both
    — deliberately, so a change to one cannot silently leave the other behind. The exception is a
@@ -147,15 +152,16 @@ commit, and no-ops if the version is already on the registry.
 
 **That first command is the whole release.** The version appears in twelve files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
-pin of each step that runs the package (twelve: one in each of the six reusable workflows, and
+pin of each step that runs the package (thirteen: one in each of the six reusable workflows, and
 `review:gate`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
-`review:publish` and `review:conclude` beside the runner in `review.yml`), the `npm install` pin of
+`review:publish`, `review:conclude` and `review:advance` beside the runner in `review.yml`), the
+`npm install` pin of
 the step that installs it ahead of the red check's two (one, in `review.yml`), the `uses:` ref of
 each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
-`.github/actions/` with (nine of those: `advance-prd` once in `review.yml`, and `loop-token` once
-in each of `implement.yml`, `fix.yml` and `update-branch.yml`, twice in `implement-prd.yml` and
-three times in `review.yml`, so thirty-four pins in the ten files). It
+`.github/actions/` with (eight of those: `loop-token` once in each of `implement.yml`, `fix.yml`
+and `update-branch.yml`, twice in `implement-prd.yml` and three times in `review.yml`, so
+thirty-four pins in the ten files). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
 stages **by path** — the ten it wrote, never `-A`: npm's dirty-tree check passes untracked

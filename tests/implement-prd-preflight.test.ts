@@ -984,7 +984,7 @@ describe.skipIf(!CAN_RUN)("agent-implement-prd's PRD PR, executed", () => {
    */
   it("opens it with the progress table and status line the runner rendered, and the slice's chapter marker", () => {
     const inputs: ProgressInputs = {
-      subIssues: [{ number: 172, title: "Slice 1", state: "OPEN" }],
+      subIssues: [{ number: 172, state: "OPEN" }],
       ranges: sliceRanges([{ sha: "a", parents: ["b"], slice: 172 }], [{ number: 172, state: "OPEN" }]),
       verdict: "none",
       running: { kind: "review" },

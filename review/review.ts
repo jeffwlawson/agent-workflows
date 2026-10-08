@@ -8,7 +8,6 @@ import {
   readInputs,
   scrubGitHubTokens,
   sh,
-  workflowRunUrl,
   writers,
 } from "../shared/common.js";
 import { claudeAgent, runWithExtraction } from "../shared/agent.js";
@@ -24,19 +23,17 @@ import {
   readPrdBranch,
   readSliceRound,
   renderFinalReviewBrief,
-  renderParkComment,
   renderSliceRoundBrief,
-  REVIEW_URL_SLOT,
   roundName,
   sliceCriteria,
   sliceRedTests,
   type ParkFinding,
+  type ParkRound,
   type PrdBranch,
   type PrdRound,
   type SliceCriteria,
 } from "../shared/prd-round.js";
 import { currentSummary, summaryDue } from "./pr-summary.js";
-import { progressAtRoundEnd, type RoundEnding } from "../shared/progress-list.js";
 import {
   describeRedCheck,
   evidenceCheck,
@@ -88,7 +85,15 @@ import {
   type RoundCounts,
   type RoundScope,
 } from "../shared/round-header.js";
-import type { PrSummary, PrSummaryText, ReviewBody, ThreadResolutions, VerdictHandOver } from "./hand-over.js";
+import type {
+  ParkHandOver,
+  ProgressHandOver,
+  PrSummary,
+  PrSummaryText,
+  ReviewBody,
+  ThreadResolutions,
+  VerdictHandOver,
+} from "./hand-over.js";
 
 const INPUTS = readInputs(RUNNERS["review"].inputs);
 const { writeJson, writeText } = writers(RUNNERS["review"].outputs);
@@ -286,24 +291,14 @@ try {
   const redCheck = readRedCheck(INPUTS.RED_CHECK_CONFIGURED === "true", INPUTS.RED_CHECK_FILE);
   console.log(`Red check: ${describeRedCheck(redCheck)}.`);
 
-  // The park comment for a round that does not finish (PRD #222), written now
-  // because a failure later has no chance to: the advance job posts it on the
-  // PRD's parent if the review or its posting fails. What is open is what was
-  // open before this review, since nothing after this point is known to have
-  // happened.
-  const runUrl = workflowRunUrl(INPUTS);
-  if (round !== undefined) {
-    writeText(
-      "park_failed.md",
-      renderParkComment({
-        round,
-        prNumber: PR_NUMBER,
-        reason: "failed",
-        findings: context.carriedFindings.map(carriedForPark),
-        ...(runUrl === undefined ? {} : { runUrl }),
-      }),
-    );
-  }
+  // What `review:advance` parks the chain with (PRD #222), as data (ADR
+  // 0007), written now because a failure later has no chance to: it parks on
+  // the PRD's parent if the review or its posting fails. What is open is what
+  // was open before this review, since nothing after this point is known to
+  // have happened. Written again, with the review's ruling, once it has one.
+  const parkRound = round === undefined ? undefined : toParkRound(round);
+  const openBefore = context.carriedFindings.map(carriedForPark);
+  if (parkRound !== undefined) writeJson("park.json", { round: parkRound, carried: openBefore } satisfies ParkHandOver);
 
   // The PRD branch, read once for what follows, while the token is in hand.
   // Undefined off a PRD PR, or where it cannot be read, which each use below
@@ -336,35 +331,36 @@ try {
   // The header's scope and number, for publish to write (#298).
   const header = counts === undefined ? undefined : { scope, number: reviewNumber(scope, counts) };
   console.log(`Header: ${counts === undefined ? "none, since the earlier rounds could not be read" : reviewHeader(scope, counts)}.`);
-  const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo } = INPUTS;
-  const prUrl = server && repo ? `${server}/${repo}/pull/${PR_NUMBER}` : undefined;
 
-  // The PRD PR's progress table and status line for each way this round can
-  // end (#246, #298), for the advance job, which knows how it ended and runs
-  // no toolchain, to write into the body. Written now, so a run that fails
-  // has them, and again once the review knows what it leaves open. A list
-  // that cannot be rendered is left as it stands, and says so: it is a view
-  // of the chain, and a review is worth more than it.
+  // What the PRD PR's progress table and status line are rendered from
+  // (#246, #298), for `review:advance`, which knows how the round ended, to
+  // render and write into the body. Data, not the table (ADR 0007): the PRD
+  // branch and the rounds, read here while the token is in hand, and the
+  // findings left open. Written now, so a run that fails has it, and again
+  // once the review knows what it leaves open. A list that cannot be read is
+  // left as it stands, and says so: it is a view of the chain, and a review
+  // is worth more than it.
   const writeProgress = (open: number): void => {
     if (round === undefined) return;
     if (prdBranch === undefined) {
       console.log("::warning::The PRD PR's progress list could not be rendered, so it is left as it stands.");
       return;
     }
-    const lists = progressAtRoundEnd(
-      {
-        subIssues: prdBranch.subIssues,
-        ranges: prdBranch.ranges,
-        finalReview: round.kind === "final" ? "requested" : "not requested",
-      },
-      { rounds: counts, review: REVIEW_URL_SLOT, open, prUrl },
-    );
-    // Keyed on `RoundEnding`, not `Object.entries`'s `string`, so each name is
-    // one the declaration lists.
-    for (const [ending, list] of Object.entries(lists) as [RoundEnding, (typeof lists)[RoundEnding]][]) {
-      writeText(`progress_${ending}.md`, list.progress);
-      writeText(`status_${ending}.md`, list.status);
-    }
+    writeJson("progress.json", {
+      subIssues: prdBranch.subIssues.map(({ number, state }) => ({ number, state })),
+      ranges: prdBranch.ranges,
+      finalReview: round.kind === "final" ? "requested" : "not requested",
+      ...(counts === undefined
+        ? {}
+        : {
+            rounds: {
+              slices: Object.entries(counts.slices).map(([subIssue, count]) => ({ subIssue: Number(subIssue), ...count })),
+              final: counts.final,
+              all: counts.all,
+            },
+          }),
+      open,
+    } satisfies ProgressHandOver);
   };
   writeProgress(context.carriedFindings.length);
 
@@ -669,51 +665,26 @@ try {
     open,
   } satisfies VerdictHandOver);
 
-  // And on a PRD PR, what the advance job says on the parent where this round
-  // ends without approval and with no fix round starting (PRD #222): the
-  // round, the stop and every finding still open, the ones raised here linking
-  // the review the posting job is about to post. Written only in that case,
-  // so the file's existence is the whole condition.
-  //
-  // Beside it, whatever the verdict, `park_posted.md`: the comment for a round
-  // whose verdict was posted but whose posting job failed after it, which
-  // parks the chain on any verdict. It names the verdict and the same
-  // findings, since the review that raised them is on the pull request.
-  if (round !== undefined) {
-    const openFindings: ParkFinding[] = [
-      ...stillOpen.map(carriedForPark),
-      ...placed.map(
-        (p): ParkFinding => ({
-          title: p.finding.title,
-          anchor: `${p.finding.path}:${p.finding.line}`,
-          url: REVIEW_URL_SLOT,
-        }),
-      ),
-    ];
+  // And on a PRD PR, what `review:advance` parks the chain with, now with
+  // the review's ruling (PRD #222): the verdict, the reason its round stops
+  // where it does, and every finding still open, the ones raised here to be
+  // linked to the review the posting job is about to post. The reason is
+  // absent where the round moves on or a fix round starts; the verdict is
+  // there whatever it is, since a posting job that fails after it parks the
+  // chain on any verdict.
+  if (parkRound !== undefined) {
     const parkReason = parkReasonOf(verdict);
-    if (parkReason !== undefined) {
-      writeText(
-        "park.md",
-        renderParkComment({
-          round,
-          prNumber: PR_NUMBER,
-          reason: parkReason,
-          detail: verdict.nextStep,
-          findings: openFindings,
-        }),
-      );
-    }
-    writeText(
-      "park_posted.md",
-      renderParkComment({
-        round,
-        prNumber: PR_NUMBER,
-        reason: "post failed",
-        detail: `[The verdict](${REVIEW_URL_SLOT}) was *${verdict.heading}*.`,
-        findings: openFindings,
-        ...(runUrl === undefined ? {} : { runUrl }),
-      }),
-    );
+    writeJson("park.json", {
+      round: parkRound,
+      carried: openBefore,
+      review: {
+        verdict: verdict.verdict,
+        ...(verdict.cause === undefined ? {} : { cause: verdict.cause }),
+        ...(parkReason === undefined ? {} : { reason: parkReason }),
+        stillOpen: stillOpen.map(carriedForPark),
+        raised: placed.map((p) => ({ title: p.finding.title, anchor: `${p.finding.path}:${p.finding.line}` })),
+      },
+    } satisfies ParkHandOver);
   }
 
   // The progress table and status line again, now that this review knows
@@ -778,6 +749,13 @@ function renderCarriedFollowUps(carried: readonly EarlierFollowUps[]): string {
     "",
     "**These are carried forward by the workflow**, into this review's record, and filed when this pull request merges. Do not record any of them again in `followUps`: record only what is new in this round.",
   ].join("\n");
+}
+
+/** A PRD PR's round as a park comment names it: no parent and no commits. */
+function toParkRound(round: PrdRound): ParkRound {
+  if (round.kind === "final") return { kind: "final" };
+  const slice = round.slice;
+  return { kind: "slice", slice: slice === undefined ? undefined : { subIssue: slice.subIssue, k: slice.k, n: slice.n } };
 }
 
 /** An earlier finding still open, as a park comment lists it: linked to its thread. */

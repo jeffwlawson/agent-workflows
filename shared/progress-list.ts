@@ -15,7 +15,8 @@ import { spliceBlock } from "../engine/splice.js";
  *
  * **Re-rendered from live state, never edited incrementally.** Every
  * `implement-prd` run that builds renders it as its round is asked for, and
- * the advance job writes the one the review rendered for how its round ended.
+ * `review:advance` renders and writes it for how a review's round ended, from
+ * the data the review handed over.
  * The two jobs that run no toolchain and still write it, the gate showing a
  * slice building (#312) and the finishing run requesting the final review,
  * each rewrite one row in place to exactly what this renders, held equal by a
@@ -50,8 +51,8 @@ export type SliceState =
 export type FinalReviewState = "in review" | "fixing" | "parked" | "approved";
 
 export interface ProgressInputs {
-  /** In the sub-issues API's order, which is execution order. */
-  readonly subIssues: readonly ProgressSubIssue[];
+  /** In the sub-issues API's order, which is execution order. No title is rendered. */
+  readonly subIssues: readonly Pick<ProgressSubIssue, "number" | "state">[];
   /** `sliceRanges` over the PRD branch and the same sub-issues. */
   readonly ranges: SliceRanges;
   /**
@@ -303,7 +304,7 @@ export const spliceProgressList = (body: string, block: string): string | undefi
   spliceBlock(body, { start: PROGRESS_START, end: PROGRESS_END }, block, "append");
 
 /**
- * How a review round on the PRD PR can leave the chain, as the advance job
+ * How a review round on the PRD PR can leave the chain, as `review:advance`
  * tells them apart: on an approval, parked on any other ending, or still
  * running because the verdict started a fix round.
  */
@@ -313,7 +314,7 @@ export type RoundEnding = "approved" | "parked" | "running";
 export interface RoundEnd {
   /** The reviews and fix rounds before this review, where they could be read. */
   readonly rounds?: RoundCounts | undefined;
-  /** Where this review will be once it is posted, or the slot the advance job puts that in. */
+  /** The posted review, or the pull request where none was posted. */
   readonly review: string;
   /** The findings open as this review leaves them. */
   readonly open: number;
@@ -329,9 +330,8 @@ const plusThisReview = (count: RoundCount | undefined, review: string, fixes: nu
 
 /**
  * The progress table and the status line for each way a round can end,
- * rendered by the review while it holds the PRD branch and the token, for the
- * advance job to write whichever one its round ended on. That job runs no
- * toolchain, and it is the one that knows how the round ended.
+ * rendered by `review:advance`, the one that knows how the round ended, from
+ * the PRD branch and the rounds the review read while it held the token.
  *
  * The round's own scope, the current slice or the final review, counts this
  * review and links it; the ending that starts a fix round counts that round

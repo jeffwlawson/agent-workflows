@@ -15,11 +15,11 @@ import { fixOutputSchema, type FixOutput } from "../shared/fix-output.js";
 import { planFollowUps } from "../shared/follow-up-plan.js";
 import {
   recordFollowUps,
-  renderReviewBody,
   reviewOutputSchema,
   VERDICTS,
   type ReviewOutput,
 } from "../shared/review-output.js";
+import { renderDecided } from "./review/decided.js";
 
 /**
  * The fix agent's out-of-scope notes (#213). They used to be free prose in a
@@ -259,7 +259,7 @@ describe("a note's end, in the review body and on merge", () => {
   const body = (output: ReviewOutput, notes: readonly PostedNote[]): string => {
     const ruled = applyNoteRulings(notes, output.noteRulings ?? []);
     const { followUps, dropped, moved } = recordFollowUps([], [...ruled.promoted, ...output.followUps]);
-    return renderReviewBody({
+    return renderDecided({
       verdict: VERDICTS["approval recommended"],
       output,
       placed: [],

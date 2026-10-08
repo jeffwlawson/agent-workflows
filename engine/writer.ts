@@ -137,10 +137,17 @@ export type Ending =
   | { readonly ended: "finished"; readonly writes: number }
   | { readonly ended: "stopped"; readonly writes: number; readonly by?: number; readonly reason: string };
 
-/** A write that failed, thrown with its log entry. */
+/**
+ * A write that failed, thrown with its log entry, and with what GitHub threw
+ * as its `cause`: whether a failure is one the loop can read past, such as a
+ * server error on a write that may have landed, is the loop's to judge from it.
+ */
 export class WriteFailed extends Error {
-  constructor(readonly entry: LogEntry) {
-    super(`${entry.type} ${entry.target} ${entry.outcome}: ${entry.calls.at(-1) ?? "no call made"}`);
+  constructor(
+    readonly entry: LogEntry,
+    cause?: unknown,
+  ) {
+    super(`${entry.type} ${entry.target} ${entry.outcome}: ${entry.calls.at(-1) ?? "no call made"}`, { cause });
     this.name = "WriteFailed";
   }
 }
@@ -157,6 +164,19 @@ export class LimitReached extends Error {
 }
 
 const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/**
+ * The write whose throw stopped a command, where one did: `error` itself, or
+ * what it was thrown for. The loop rethrows a write's failure as a sentence a
+ * person can act on, with the write's error as its `cause`, and the log still
+ * names the write.
+ */
+const stoppedBy = (error: unknown): WriteFailed | LimitReached | undefined => {
+  for (let at = error, depth = 0; at instanceof Error && depth < 10; at = at.cause, depth++) {
+    if (at instanceof WriteFailed || at instanceof LimitReached) return at;
+  }
+  return undefined;
+};
 
 /** Each write's target, as the log names it. */
 const TARGETS: { readonly [K in WriteType]: (...args: Parameters<Writer[K]>) => string } = {
@@ -235,7 +255,7 @@ export const createWriters = <T extends string>(options: {
     } catch (error) {
       // A throw outside any call, such as from an edit's `body`, still says what it was.
       if (error !== thrown) calls.push(describe(error));
-      throw new WriteFailed(record({ token, type, target, outcome: wrote ? "partial" : "failed", calls }));
+      throw new WriteFailed(record({ token, type, target, outcome: wrote ? "partial" : "failed", calls }), error);
     }
     const result = done as Done | Posted;
     record({ token, type, target, outcome: result.outcome, calls, ...("url" in result ? { url: result.url } : {}) });
@@ -263,15 +283,11 @@ export const createWriters = <T extends string>(options: {
 
   const end = (error?: unknown): Ending => {
     const writes = entries.length;
+    const by = stoppedBy(error);
     const ending: Ending =
       error === undefined
         ? { ended: "finished", writes }
-        : {
-            ended: "stopped",
-            writes,
-            ...(error instanceof WriteFailed || error instanceof LimitReached ? { by: error.entry.seq } : {}),
-            reason: describe(error),
-          };
+        : { ended: "stopped", writes, ...(by === undefined ? {} : { by: by.entry.seq }), reason: describe(error) };
     options.appendLine(JSON.stringify(ending));
     return ending;
   };

@@ -10,9 +10,11 @@ import {
   filePath,
   json,
   list,
+  matching,
   object,
   optional,
   readDirectory,
+  refine,
   target,
   text,
 } from "../shared/hand-over.js";
@@ -143,6 +145,47 @@ describe("readDirectory", () => {
     put("failure_reason.txt", "It stopped.<!-- hidden -->");
 
     expect(readDirectory(failure, dir, { "failure_reason.txt": text })["failure_reason.txt"]).toBe("It stopped.");
+  });
+});
+
+/**
+ * The two parsers a hand-over's own shapes are built from beside the kinds:
+ * a value of a fixed shape, and a rule between fields.
+ */
+describe("a shape and a rule between fields", () => {
+  const ID = matching(/f-[0-9a-f]{8}/, "a finding id");
+  const CLOSE = refine(
+    object({ reason: choice(["ADDRESSED", "WONT_FIX"]), quote: optional(text) }),
+    (value, wrong) => (value.reason === "WONT_FIX" && value.quote === undefined ? wrong("closes as WONT_FIX with nothing to quote") : value),
+  );
+  const shapes = readsFrom("review", { "verdict.json": "always" });
+  const readWith = (parser: Parameters<typeof json>[0]) => () => readDirectory(shapes, dir, { "verdict.json": json(parser) })["verdict.json"];
+
+  it("reads a value its pattern matches whole", () => {
+    put("verdict.json", { id: "f-0123abcd" });
+
+    expect(readWith(object({ id: ID }))()).toEqual({ id: "f-0123abcd" });
+  });
+
+  it.each([
+    ["a value with more around it", "f-0123abcd -->"],
+    ["a value of another shape", "PRRT_one"],
+    ["a value that is not a string", 7],
+  ])("fails on %s, naming the field and the shape", (_case, id) => {
+    put("verdict.json", { id });
+
+    expect(readWith(object({ id: ID }))).toThrow(/^review's verdict\.json `id` is .*, where a finding id was expected\.$/);
+  });
+
+  it("holds a value to a rule between its fields, after each field is read", () => {
+    put("verdict.json", { reason: "WONT_FIX", quote: "No.<!-- x -->" });
+    expect(readWith(CLOSE)()).toEqual({ reason: "WONT_FIX", quote: "No." });
+
+    put("verdict.json", { reason: "WONT_FIX" });
+    expect(readWith(CLOSE)).toThrow("review's verdict.json closes as WONT_FIX with nothing to quote.");
+
+    put("verdict.json", { reason: "LATER" });
+    expect(readWith(CLOSE)).toThrow('`reason` is "LATER", which is not one of');
   });
 });
 

@@ -15,7 +15,7 @@ import {
   pathErrors,
   placeFindings,
   PREVIOUSLY_MISSED_LABEL,
-  reviewMutation,
+  findingsHandOver,
   reviewThreads,
   severityAssetPath,
   severityBadge,
@@ -31,13 +31,13 @@ import {
 } from "../shared/review-findings.js";
 import {
   deriveVerdict,
-  renderReviewBody,
   reviewOutputSchema,
   VERDICTS,
   type ReviewOutput,
 } from "../shared/review-output.js";
 import { carriedFindings } from "../shared/review-verification.js";
 import { FINDING_MARKER } from "../shared/record.js";
+import { renderDecided } from "./review/decided.js";
 
 /**
  * Where a finding is posted is the workflow's decision, taken from the diff —
@@ -94,6 +94,9 @@ const counting = (): (() => string) => {
 
 const place = (findings: readonly Finding[]): PlacedFinding[] =>
   placeFindings(findings, DIFF_LINES, counting()).placed;
+
+/** The threads publish opens for placed findings, through the runner's hand-over of them. */
+const threadsOf = (placed: readonly PlacedFinding[]) => reviewThreads(findingsHandOver(placed));
 
 /** The other half of the same call: what the diff gave no anchor to. */
 const unanchored = (findings: readonly Finding[]): Finding[] =>
@@ -234,7 +237,7 @@ describe("placeFindings", () => {
 
     expect(placed[0]?.placement).toBe("line");
     expect(placed[0]?.finding.path).toBe("src/queue.ts");
-    expect(reviewThreads(placed)[0]?.path).toBe("src/queue.ts");
+    expect(threadsOf(placed)[0]?.path).toBe("src/queue.ts");
   });
 
   /**
@@ -333,7 +336,7 @@ new mode 100755
     expect(placed[0]?.placement).toBe("file");
     // A file-level thread, which is the one shape GitHub takes here: the path
     // and no line at all.
-    expect(reviewThreads(placed)).toEqual([{ path, body: expect.stringContaining("the guard") }]);
+    expect(threadsOf(placed)).toEqual([{ path, body: expect.stringContaining("the guard") }]);
   });
 
   /**
@@ -394,7 +397,7 @@ describe("the id is the workflow's to write", () => {
 
     expect("id" in (output.findings[0] ?? {})).toBe(false);
 
-    const [thread] = reviewThreads(place(output.findings));
+    const [thread] = threadsOf(place(output.findings));
     expect(thread?.body).toContain(findingMarker("f-1", "medium", "t"));
     expect(thread?.body).not.toContain("f-modelwrote");
   });
@@ -422,21 +425,21 @@ describe("the id is the workflow's to write", () => {
 
 describe("reviewThreads", () => {
   it("anchors a line thread on the right side, with no range for a single line", () => {
-    const [thread] = reviewThreads(place([finding({ line: 11 })]));
+    const [thread] = threadsOf(place([finding({ line: 11 })]));
 
     expect(thread).toMatchObject({ path: "src/queue.ts", line: 11, side: "RIGHT" });
     expect("startLine" in (thread ?? {})).toBe(false);
   });
 
   it("carries a range as startLine/startSide, which is what a multi-line suggestion replaces", () => {
-    const [thread] = reviewThreads(place([finding({ startLine: 9, line: 12 })]));
+    const [thread] = threadsOf(place([finding({ startLine: 9, line: 12 })]));
 
     expect(thread).toMatchObject({ startLine: 9, startSide: "RIGHT", line: 12, side: "RIGHT" });
   });
 
   /** A file-level thread is the same call with no `line` at all — not line 0, not a null. */
   it("names the path and no line for a file-level thread", () => {
-    const [thread] = reviewThreads(place([finding({ line: 400 })]));
+    const [thread] = threadsOf(place([finding({ line: 400 })]));
 
     expect(thread?.path).toBe("src/queue.ts");
     expect("line" in (thread ?? {})).toBe(false);
@@ -451,7 +454,7 @@ describe("reviewThreads", () => {
   it("opens a thread for every placed finding", () => {
     const placed = place([finding({ line: 11 }), finding({ line: 400 })]);
 
-    expect(reviewThreads(placed)).toHaveLength(placed.length);
+    expect(threadsOf(placed)).toHaveLength(placed.length);
   });
 
   /**
@@ -460,7 +463,7 @@ describe("reviewThreads", () => {
    * them displaces both.
    */
   it("ends every thread with the finding's id and leaves the badge in front", () => {
-    const threads = reviewThreads(place([finding({ line: 11 }), finding({ line: 400 })]));
+    const threads = threadsOf(place([finding({ line: 11 }), finding({ line: 400 })]));
 
     for (const thread of threads) {
       expect(thread.body.startsWith(severityBadge("medium"))).toBe(true);
@@ -481,7 +484,7 @@ describe("reviewThreads", () => {
  */
 describe("the thread a finding opens", () => {
   const bodyOf = (over: Partial<Finding> = {}): string =>
-    reviewThreads(place([finding({ line: 11, ...over })]))[0]?.body ?? "";
+    threadsOf(place([finding({ line: 11, ...over })]))[0]?.body ?? "";
 
   it.each(SEVERITIES)("opens with the badge the record entry shows, for %s", (severity) => {
     const body = bodyOf({ severity });
@@ -515,24 +518,6 @@ describe("the thread a finding opens", () => {
     );
     expect(body).toContain("the guard runs after the return");
     expect(body).not.toMatch(/fix before merge/i);
-  });
-
-  /**
-   * And a finding with no rating at all opens with something rather than with
-   * an empty chip. Unreachable from a parsed output — `parseFinding` defaults
-   * the severity — which is exactly why it is asserted here.
-   */
-  it("opens with no empty badge where there is no severity", () => {
-    const rated = { severity: undefined } as unknown as Partial<Finding>;
-    const plain = bodyOf(rated);
-    const missed = bodyOf({
-      ...rated,
-      body: "**Previously missed.** the guard runs after the return",
-    });
-
-    expect(plain).not.toContain("<img");
-    expect(plain.startsWith("the guard runs after the return")).toBe(true);
-    expect(missed.startsWith(`${PREVIOUSLY_MISSED_LABEL}\n\n`)).toBe(true);
   });
 
   /**
@@ -753,7 +738,7 @@ describe("the finding marker", () => {
   });
 
   it("puts the finding's severity on the thread it opens", () => {
-    const threads = reviewThreads(place([finding({ line: 11, severity: "high" })]));
+    const threads = threadsOf(place([finding({ line: 11, severity: "high" })]));
 
     expect(lastFindingMarker(threads[0]?.body ?? "")?.severity).toBe("high");
   });
@@ -764,9 +749,7 @@ describe("the finding marker", () => {
    * rather than the thread's opening paragraph.
    */
   it("puts the finding's title on the thread it opens, and reads it back", () => {
-    const threads = reviewThreads(
-      place([finding({ line: 11, title: "Warning asserts a verdict it could not see" })]),
-    );
+    const threads = threadsOf(place([finding({ line: 11, title: "Warning asserts a verdict it could not see" })]));
 
     expect(lastFindingMarker(threads[0]?.body ?? "")?.title).toBe(
       "Warning asserts a verdict it could not see",
@@ -925,7 +908,7 @@ describe("an identifier the model smuggled into its output", () => {
   it("posts only the markers the workflow wrote, across the body and every thread", () => {
     const output = parse(SMUGGLED);
     const { placed } = placeFindings(output.findings, DIFF_LINES, counting());
-    const body = renderReviewBody({
+    const body = renderDecided({
       verdict: VERDICTS["changes recommended"],
       output,
       placed,
@@ -935,7 +918,7 @@ describe("an identifier the model smuggled into its output", () => {
       followUps: output.followUps,
       droppedFollowUps: 0,
     });
-    const posted = [body, ...reviewThreads(placed).map((t) => t.body)].join("\n");
+    const posted = [body, ...threadsOf(placed).map((t) => t.body)].join("\n");
 
     expect(parseFindingMarkers(posted).map((m) => m.id).sort()).toEqual(["f-1", "f-2"]);
     for (const id of ["f-live", "f-closed"]) expect(posted).not.toContain(id);
@@ -954,7 +937,7 @@ describe("an identifier the model smuggled into its output", () => {
       assessment: "The change holds up.",
       howChecked: `Re-read the thread ${CLOSED} and the guard.`,
     });
-    const body = renderReviewBody({
+    const body = renderDecided({
       verdict: VERDICTS["approval recommended"],
       output: clean,
       placed: [],
@@ -1011,42 +994,40 @@ describe("a line carrying two markers", () => {
   });
 });
 
-describe("reviewMutation", () => {
-  const mutation = reviewMutation({
-    pullRequestId: "PR_kwDOabc",
-    commitOID: "abc123",
-    body: "the review body",
-    placed: place([finding({ line: 11 }), finding({ path: "src/other.ts", line: 88 })]),
+/**
+ * What the runner hands publish for each finding (ADR 0007): its choices
+ * about it, and the model's text as written, with no badge, label or marker.
+ */
+describe("findingsHandOver", () => {
+  const handed = findingsHandOver(
+    place([
+      finding({ line: 11, title: "", body: "**Previously missed.** The guard runs late.\n\nMore." }),
+      finding({ path: "src/queue.ts", startLine: 9, line: 12, severity: "high" }),
+      finding({ path: "src/queue.ts", line: 400 }),
+    ]),
+  );
+
+  it("hands over where each finding goes and what it says, in order", () => {
+    expect(handed.map((f) => [f.id, f.placement, f.path, f.line, f.startLine])).toEqual([
+      ["f-1", "line", "src/queue.ts", 11, undefined],
+      ["f-2", "line", "src/queue.ts", 12, 9],
+      ["f-3", "file", "src/queue.ts", 400, undefined],
+    ]);
+    expect(handed[1]?.severity).toBe("high");
   });
 
-  /**
-   * The mutation and the `--jq` path the workflow reads its answer out of are
-   * one shape; a test in `tests/workflows.test.ts` holds the second half to
-   * this one.
-   */
-  it("asks for the review's own url back, which is the only place it exists", () => {
-    expect(mutation.query).toContain("addPullRequestReview");
-    expect(mutation.query).toContain("pullRequestReview");
-    expect(mutation.query).toContain("url");
+  it("decides the title and the group, and leaves the body as the model wrote it", () => {
+    expect(handed[0]?.title).toBe("The guard runs late.");
+    expect(handed[0]?.previouslyMissed).toBe(true);
+    expect(handed[1]?.previouslyMissed).toBe(false);
+    expect(handed[0]?.body).toBe("**Previously missed.** The guard runs late.\n\nMore.");
   });
 
-  it("pins the review to the head it reviewed and comments rather than approving", () => {
-    expect(mutation.variables.input).toMatchObject({
-      pullRequestId: "PR_kwDOabc",
-      commitOID: "abc123",
-      event: "COMMENT",
-      body: "the review body",
-    });
-  });
+  it("holds no marker and no badge: those are publish's to write", () => {
+    const text = JSON.stringify(handed);
 
-  it("carries only the findings that became threads", () => {
-    expect(mutation.variables.input.threads).toHaveLength(1);
-    expect(mutation.variables.input.threads[0]).toMatchObject({ path: "src/queue.ts", line: 11 });
-  });
-
-  /** It has to survive `JSON.stringify` — the runner writes it to a file. */
-  it("round-trips as JSON", () => {
-    expect(JSON.parse(JSON.stringify(mutation))).toEqual(mutation);
+    expect(text).not.toContain("<!--");
+    expect(text).not.toContain("<picture>");
   });
 });
 

@@ -256,8 +256,7 @@ export const RUNNERS = {
       "status_parked.md",
       "progress_running.md",
       "status_running.md",
-      "review_payload.json",
-      "summary.md",
+      "findings.json",
       "review_body.json",
       "thread_resolutions.json",
       "pr_summary.json",
@@ -265,7 +264,6 @@ export const RUNNERS = {
       "park.md",
       "park_posted.md",
       "pr_status.md",
-      "follow_ups.md",
     ],
   },
   fix: {
@@ -314,6 +312,26 @@ export const readsFrom = <P extends Runner, const F extends DirectoryFiles>(
 ): DirectoryInput<F> => ({ required: true, producer, files });
 
 /**
+ * What a command that writes through the engine's writer reads beside
+ * `GH_TOKEN` (ADR 0004): the token whose writes start the loop's next
+ * workflow, and where it came from, `app`, `pat` or `workflow`. A command
+ * picks the token per write, since which writes have to start a run is loop
+ * knowledge every orchestrator gets. A runner may not declare `LOOP_TOKEN`
+ * (`RunnerInputs`).
+ */
+const LOOP = {
+  LOOP_TOKEN: REQUIRED,
+  LOOP_TOKEN_SOURCE: REQUIRED,
+} as const satisfies Inputs;
+
+/**
+ * The write log a command that writes through the engine's writer keeps, one
+ * line per write as it lands and a last line for how the command ended
+ * (ADR 0005).
+ */
+const WRITE_LOG = "write_log.jsonl";
+
+/**
  * Every command, by the subcommand that invokes it, `<workflow>:<step>`: the
  * inputs every subcommand reads, and its own. Its code is `<step>.ts` in the
  * workflow's folder, and exports one function the CLI calls with the inputs
@@ -321,6 +339,10 @@ export const readsFrom = <P extends Runner, const F extends DirectoryFiles>(
  *
  * - `follow-ups:file` writes issues with its `GH_TOKEN` itself, outside the
  *   engine's writer, until its own workflow moves (ADR 0005).
+ * - `review:publish` resolves the threads a review closed and posts it on
+ *   `REVIEWED_SHA`, the commit the review job recorded before the agent ran
+ *   (ADR 0006). `published.json` is the posted review's URL, written the
+ *   moment it is posted.
  */
 export const COMMANDS = {
   "follow-ups:file": {
@@ -329,6 +351,21 @@ export const COMMANDS = {
       PR_NUMBER: REQUIRED,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+  },
+  "review:publish": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ...LOOP,
+      PR_NUMBER: REQUIRED,
+      REVIEWED_SHA: REQUIRED,
+      REVIEW_DIR: readsFrom("review", {
+        "findings.json": "always",
+        "review_body.json": "always",
+        "thread_resolutions.json": "always",
+      }),
+      ...RUN_LINK,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
   },
 } as const satisfies Readonly<Record<string, CommandContract>>;
 

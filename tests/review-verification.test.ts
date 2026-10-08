@@ -7,6 +7,7 @@ import {
   parseVerification,
   renderCarriedFindings,
   renderSettledFindings,
+  closingReply,
   resolutionReply,
   verifyCarried,
   type AgentThread,
@@ -220,14 +221,10 @@ describe("verifyCarried", () => {
       open("f-3"),
     ]);
 
+    // The decision and the review's note, and no reply: the reply, marker
+    // and all, is publish's to write (ADR 0007).
     expect(resolutions).toEqual([
-      {
-        threadId: "PRRT_one",
-        findingId: "f-1",
-        reason: "ADDRESSED",
-        reply: expect.stringContaining("The guard now runs before `apply()`."),
-        alreadyReplied: false,
-      },
+      { threadId: "PRRT_one", reason: "ADDRESSED", note: "The guard now runs before `apply()`.", alreadyReplied: false },
     ]);
     expect(stillOpen.map((f) => f.id)).toEqual(["f-2", "f-3"]);
   });
@@ -239,9 +236,10 @@ describe("verifyCarried", () => {
    */
   it("says in the reply that the review closed it rather than the fix", () => {
     const [resolution] = verifyCarried(CARRIED, [landed("f-1")]).resolutions;
+    const reply = resolution === undefined ? "" : closingReply(resolution);
 
-    expect(resolution?.reply).toContain("Verified fixed.");
-    expect(resolution?.reply).toContain("_Resolved by the review agent._");
+    expect(reply).toContain("Verified fixed.");
+    expect(reply).toContain("_Resolved by the review agent._");
   });
 
   /**
@@ -269,7 +267,7 @@ describe("verifyCarried", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { resolutions, stillOpen } = verifyCarried(CARRIED, [landed("f-1")]);
 
-    expect(resolutions.map((r) => r.findingId)).toEqual(["f-1"]);
+    expect(resolutions.map((r) => r.threadId)).toEqual(["PRRT_one"]);
     expect(stillOpen.map((f) => f.id)).toEqual(["f-2", "f-3"]);
   });
 
@@ -282,7 +280,7 @@ describe("verifyCarried", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { resolutions } = verifyCarried(CARRIED, [landed("f-made-up"), landed("f-1")]);
 
-    expect(resolutions.map((r) => r.findingId)).toEqual(["f-1"]);
+    expect(resolutions.map((r) => r.threadId)).toEqual(["PRRT_one"]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("f-made-up"));
   });
 
@@ -296,7 +294,7 @@ describe("verifyCarried", () => {
       landed("f-3"),
     ]);
 
-    expect(resolutions.map((r) => r.findingId)).toEqual(["f-2"]);
+    expect(resolutions.map((r) => r.threadId)).toEqual(["PRRT_two"]);
     expect(stillOpen.map((f) => f.id)).toEqual(["f-1"]);
   });
 
@@ -389,16 +387,10 @@ describe("a maintainer's decision settles a finding", () => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
       const { resolutions, stillOpen } = verifyCarried(CARRIED, [declined("f-1")]);
 
-      expect(resolutions).toEqual([
-        {
-          threadId: "PRRT_one",
-          findingId: "f-1",
-          reason: "WONT_FIX",
-          reply: expect.stringContaining("> Won't fix — the duplicate write is intended here."),
-          alreadyReplied: false,
-        },
-      ]);
-      expect(resolutions[0]?.reply).toContain("@maintainer");
+      expect(resolutions).toEqual([{ threadId: "PRRT_one", reason: "WONT_FIX", maintainerReply: REPLY, alreadyReplied: false }]);
+      const reply = resolutions[0] === undefined ? "" : closingReply(resolutions[0]);
+      expect(reply).toContain("> Won't fix — the duplicate write is intended here.");
+      expect(reply).toContain("@maintainer");
       expect(stillOpen.map((f) => f.id)).toEqual(["f-2"]);
     });
 
@@ -451,7 +443,7 @@ describe("a maintainer's decision settles a finding", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const { resolutions, stillOpen } = verifyCarried(CARRIED, [declined("f-2"), landed("f-1")]);
 
-      expect(resolutions.map((r) => r.findingId)).toEqual(["f-1"]);
+      expect(resolutions.map((r) => r.threadId)).toEqual(["PRRT_one"]);
       expect(stillOpen.map((f) => f.id)).toEqual(["f-2"]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("f-2"));
     });
@@ -503,15 +495,7 @@ describe("a thread that already carries its closing reply", () => {
       [landed("f-1")],
     );
 
-    expect(resolutions).toEqual([
-      {
-        threadId: "PRRT_one",
-        findingId: "f-1",
-        reason: "ADDRESSED",
-        reply: expect.stringContaining("Verified fixed."),
-        alreadyReplied: true,
-      },
-    ]);
+    expect(resolutions).toEqual([{ threadId: "PRRT_one", reason: "ADDRESSED", alreadyReplied: true }]);
     expect(resolved.map((f) => f.id)).toEqual(["f-1"]);
     expect(stillOpen).toEqual([]);
   });
@@ -586,8 +570,8 @@ describe("a thread that already carries its closing reply", () => {
  */
 describe("the closing replies, as posted", () => {
   it.each([
-    ["verified fixed", resolutionReply({ id: "f-1", status: "landed" })],
-    ["verified fixed, with a note", resolutionReply({ id: "f-1", status: "landed", note: "`key()` now hashes the tenant." })],
+    ["verified fixed", resolutionReply(undefined)],
+    ["verified fixed, with a note", resolutionReply("`key()` now hashes the tenant.")],
     ["declined", declineReply({ login: "maintainer", body: "Won't fix, the duplicate write is intended." })],
   ])("writes no em dash in the %s reply", (_: string, reply: string) => {
     expect(reply).not.toContain("—");
@@ -609,14 +593,14 @@ describe("the closing replies, as posted", () => {
  */
 describe("closingReplyReason", () => {
   it("reads both replies this file composes", () => {
-    expect(closingReplyReason(resolutionReply({ id: "f-1", status: "landed" }))).toBe("ADDRESSED");
+    expect(closingReplyReason(resolutionReply(undefined))).toBe("ADDRESSED");
     expect(closingReplyReason(declineReply({ login: "maintainer", body: "No." }))).toBe("WONT_FIX");
   });
 
   /** Both composers write it, so neither can close a thread with no record. */
   it("is a marker on both replies, not the words they open with", () => {
     for (const reply of [
-      resolutionReply({ id: "f-1", status: "landed" }),
+      resolutionReply(undefined),
       declineReply({ login: "maintainer", body: "No." }),
     ]) {
       expect(reply).toContain(RESOLUTION_MARKER);
@@ -652,7 +636,7 @@ describe("closingReplyReason", () => {
   it("takes the last marker where a body carries two", () => {
     expect(
       closingReplyReason(
-        `quoting <!-- ${RESOLUTION_MARKER} WONT_FIX --> back\n\n${resolutionReply({ id: "f-1", status: "landed" })}`,
+        `quoting <!-- ${RESOLUTION_MARKER} WONT_FIX --> back\n\n${resolutionReply(undefined)}`,
       ),
     ).toBe("ADDRESSED");
   });

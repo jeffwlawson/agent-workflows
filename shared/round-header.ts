@@ -157,9 +157,12 @@ export const countFor = (counts: RoundCounts, scope: RoundScope): RoundCount =>
       ? (counts.slices[scope.subIssue] ?? { reviews: 0, fixes: 0 })
       : counts.all;
 
-/** The header a review of `scope` opens with: one more than the reviews of it so far. */
+/** The number a review of `scope` takes: one more than the reviews of it so far. */
+export const reviewNumber = (scope: RoundScope, counts: RoundCounts): number => countFor(counts, scope).reviews + 1;
+
+/** The header a review of `scope` opens with. */
 export const reviewHeader = (scope: RoundScope, counts: RoundCounts): string =>
-  roundHeader(scope, "review", countFor(counts, scope).reviews + 1);
+  roundHeader(scope, "review", reviewNumber(scope, counts));
 
 /**
  * The header a fix run's top-level comments open with. Its own `agent:fix` is

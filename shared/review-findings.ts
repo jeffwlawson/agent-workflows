@@ -971,6 +971,45 @@ const placementOf = (finding: Finding, fileLines: Set<number> | undefined): Plac
 };
 
 /**
+ * One finding as the review runner hands it to `review:publish` (ADR 0007):
+ * every choice about it made, and none of the text the loop adds to it. Where
+ * it is posted, the title the record lists it under, how bad it is and whether
+ * an earlier review had read its code are the runner's to decide; the badge,
+ * the label and the marker its thread carries are publish's to write, from
+ * these.
+ *
+ * `body` is the model's own, label and all: taking the label off is part of
+ * writing the thread (`threadBody`), and so happens to the text publish read,
+ * cleaned, rather than to the text the runner had.
+ */
+export interface HandedFinding {
+  readonly id: string;
+  readonly placement: Placement;
+  readonly severity: Severity;
+  /** By `findingTitle`: what the record lists it as, and what its marker carries forward. */
+  readonly title: string;
+  readonly body: string;
+  readonly path: string;
+  readonly line: number;
+  readonly startLine?: number | undefined;
+  readonly previouslyMissed: boolean;
+}
+
+/** The placed findings, as the runner hands them over: one each, in order. */
+export const findingsHandOver = (placed: readonly PlacedFinding[]): HandedFinding[] =>
+  placed.map(({ id, placement, finding }) => ({
+    id,
+    placement,
+    severity: finding.severity,
+    title: findingTitle(finding),
+    body: finding.body,
+    path: finding.path,
+    line: finding.line,
+    ...(finding.startLine === undefined ? {} : { startLine: finding.startLine }),
+    previouslyMissed: isPreviouslyMissed(finding),
+  }));
+
+/**
  * One thread as `addPullRequestReview` takes it. A file-level thread is the
  * same object with **no `line` at all** — not a null and not a zero, which are
  * both rejected.
@@ -997,112 +1036,50 @@ export interface ReviewThread {
  *
  * *Previously missed* survives the strip because it is the one label that says
  * something: it decides the group the record files the finding under
- * (`isPreviouslyMissed`), and that is read off the body the model wrote, which
- * is why the strip happens here and the prompt still asks for both labels.
- *
- * A finding with **no severity** opens with the label alone, or with nothing at
- * all — never an empty badge. The type says there is always one and
- * `parseFinding` defaults it, so this arm is unreachable from a parsed output;
- * it is here because an empty `<img>` beside a finding is worse than an opening
- * this loop did not write, and because the marker below already has the same
- * arm for the same reason.
+ * (`isPreviouslyMissed`), and the runner hands that decision over beside the
+ * body, which is why the strip happens here and the prompt still asks for both
+ * labels.
  *
  * The marker goes at the **end**. What a reader's eye lands on is the badge and
  * the claim, and a hidden comment ahead of them displaces both for no gain.
  */
-const threadBody = (placed: PlacedFinding): string => {
-  const { finding } = placed;
-  const opening = [
-    finding.severity === undefined ? undefined : severityBadge(finding.severity),
-    isPreviouslyMissed(finding) ? PREVIOUSLY_MISSED_LABEL : undefined,
-  ]
+const threadBody = (finding: HandedFinding): string => {
+  const opening = [severityBadge(finding.severity), finding.previouslyMissed ? PREVIOUSLY_MISSED_LABEL : undefined]
     .filter((part) => part !== undefined)
     .join(" · ");
 
-  return [
-    opening,
-    withoutOpeningLabel(finding.body),
-    findingMarker(placed.id, finding.severity, findingTitle(finding)),
-  ]
+  return [opening, withoutOpeningLabel(finding.body), findingMarker(finding.id, finding.severity, finding.title)]
     .filter((part) => part !== "")
     .join("\n\n");
 };
 
 /**
- * The threads the mutation carries — **one per placed finding**, with nothing
- * filtered out.
+ * The threads the review carries — **one per handed finding**, with nothing
+ * filtered out. Written by `review:publish` from what the runner handed over.
  *
  * Every finding that reaches here has a thread by construction since #127:
  * `placeFindings` returns only the two threadable placements, and the ones it
  * cannot anchor never enter this list. The filter that used to stand here was
  * the half that made a body entry possible.
+ *
+ * The mutation the threads go out in is the engine's own (`engine/writes.ts`),
+ * so nothing here names a query: GraphQL's `addPullRequestReview` rather than
+ * REST, for the one thing REST cannot do, a **file-level** thread in the same
+ * call as the review (#109, decision 5).
  */
-export const reviewThreads = (placed: readonly PlacedFinding[]): ReviewThread[] =>
-  placed.map((p) =>
-    p.placement === "file"
-      ? { path: p.finding.path, body: threadBody(p) }
+export const reviewThreads = (findings: readonly HandedFinding[]): ReviewThread[] =>
+  findings.map((f) =>
+    f.placement === "file"
+      ? { path: f.path, body: threadBody(f) }
       : {
-          path: p.finding.path,
-          line: p.finding.line,
+          path: f.path,
+          line: f.line,
           side: "RIGHT" as const,
           // startLine/startSide turn the anchor into a range, which is what
           // makes a multi-line ```suggestion replace all of it rather than
           // just the last line. Omitted entirely for a single line — GitHub
           // rejects startLine == line.
-          ...(p.finding.startLine === undefined
-            ? {}
-            : { startLine: p.finding.startLine, startSide: "RIGHT" as const }),
-          body: threadBody(p),
+          ...(f.startLine === undefined ? {} : { startLine: f.startLine, startSide: "RIGHT" as const }),
+          body: threadBody(f),
         },
   );
-
-/**
- * The mutation, in the shape the GraphQL endpoint takes a request body in.
- *
- * GraphQL rather than `POST /pulls/{n}/reviews`, for the one thing REST cannot
- * do: a **file-level** thread in the same call as the review (#109, decision 5
- * — REST review-create answers that with a 422, and its `comments` field is
- * deprecated in favour of `threads` besides).
- *
- * `commitOID` pins the review to the head that was reviewed, so a push that
- * lands while the agent is running does not silently move what the threads are
- * anchored against. `event: COMMENT` because the verdict is a commit status,
- * not an approval — see `VERDICTS` in `shared/review-output.ts`.
- *
- * The `url` selection is the review's own, and the response to this call is the
- * only place it exists; the commit status links it.
- */
-export const ADD_REVIEW_MUTATION = `mutation($input: AddPullRequestReviewInput!) {
-  addPullRequestReview(input: $input) {
-    pullRequestReview { url }
-  }
-}`;
-
-export const reviewMutation = (parts: {
-  readonly pullRequestId: string;
-  readonly commitOID: string;
-  readonly body: string;
-  readonly placed: readonly PlacedFinding[];
-}): {
-  query: string;
-  variables: {
-    input: {
-      pullRequestId: string;
-      commitOID: string;
-      event: "COMMENT";
-      body: string;
-      threads: ReviewThread[];
-    };
-  };
-} => ({
-  query: ADD_REVIEW_MUTATION,
-  variables: {
-    input: {
-      pullRequestId: parts.pullRequestId,
-      commitOID: parts.commitOID,
-      event: "COMMENT",
-      body: parts.body,
-      threads: reviewThreads(parts.placed),
-    },
-  },
-});

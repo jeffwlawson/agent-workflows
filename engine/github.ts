@@ -30,6 +30,17 @@ export class GitHubError extends Error {
   }
 }
 
+/**
+ * Whether `error` is GitHub failing rather than refusing: a 5xx, or GraphQL's
+ * "An internal error occurred", which comes back with a 200 and no status.
+ * Neither says the call did nothing, and GitHub has been seen to answer a
+ * write with a 500 and make it all the same, so a caller that has to know
+ * reads back rather than taking either as "not done".
+ */
+export const isServerError = (error: unknown): boolean =>
+  error instanceof GitHubError &&
+  ((error.status !== undefined && error.status >= 500) || /\bAn internal error occurred\b/i.test(error.message));
+
 /** The transport over `fetch`, for `token`. */
 export const fetchTransport = (token: string, apiUrl = "https://api.github.com"): Transport => {
   const rest = async ({ method, path, body }: RestRequest): Promise<unknown> => {

@@ -10,11 +10,11 @@ import { placeFindings } from "../../shared/review-findings.js";
 import {
   countFixBeforeMerge,
   deriveVerdict,
-  renderReviewBody,
   reviewOutputSchema,
   VERDICTS,
   type ReviewOutput,
 } from "../../shared/review-output.js";
+import { renderDecided } from "./decided.js";
 
 /**
  * The review checks each pull request against its linked issue's acceptance
@@ -311,7 +311,7 @@ describe("the body's acceptance criteria section", () => {
   };
 
   it("renders each criterion with its status and reason, after the record", () => {
-    const body = renderReviewBody({
+    const body = renderDecided({
       ...parts,
       criteria: [
         { id: "C1", text: "The caller receives 2 recipes.", status: "changed", reason: "The endpoint answers 202." },
@@ -332,7 +332,7 @@ describe("the body's acceptance criteria section", () => {
   });
 
   it("starts folded where every criterion is met", () => {
-    const body = renderReviewBody({
+    const body = renderDecided({
       ...parts,
       criteria: [{ id: "C1", text: "Tests cover it.", status: "met" }],
     });
@@ -341,8 +341,8 @@ describe("the body's acceptance criteria section", () => {
   });
 
   it("is omitted where the linked issue has no criteria", () => {
-    expect(renderReviewBody({ ...parts, criteria: [] })).not.toContain("Acceptance criteria");
-    expect(renderReviewBody(parts)).not.toContain("Acceptance criteria");
+    expect(renderDecided({ ...parts, criteria: [] })).not.toContain("Acceptance criteria");
+    expect(renderDecided(parts)).not.toContain("Acceptance criteria");
   });
 });
 

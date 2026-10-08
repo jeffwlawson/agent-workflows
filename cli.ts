@@ -3,8 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
+import type { CommandIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
-import { fail, readInputs, type InputValues } from "./shared/env.js";
+import { fail, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
 
 /**
@@ -100,6 +101,49 @@ const command = <C extends Command>(
     try {
       await fn(inputs);
     } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+/**
+ * A command that writes through the engine's writer (ADR 0005): one that
+ * declares the loop's token and a write log, and is handed, besides its
+ * inputs, the real writers over both tokens and the reader, built here from
+ * those inputs. Every write it makes is appended to `write_log.jsonl` as it
+ * lands, and the log's last line says how the command ended, whether it
+ * returned or threw.
+ */
+type WritingCommand = {
+  [C in Command]: (typeof COMMANDS)[C]["inputs"] extends { readonly LOOP_TOKEN: unknown }
+    ? "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number]
+      ? C
+      : never
+    : never;
+}[Command];
+
+const writingCommand = <C extends WritingCommand>(
+  name: C,
+  load: () => Promise<
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CommandIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+  >,
+  summary: string,
+): Subcommand => ({
+  kind: "command",
+  summary,
+  run: async (args) => {
+    refuseArguments(name, args);
+    const fn = await load();
+    const { liveCommandIo } = await import("./shared/command-io.js");
+    const declared = COMMANDS[name];
+    const inputs = readInputs(declared.inputs);
+    const outputs = writers<(typeof COMMANDS)[C]["outputs"]>(declared.outputs);
+    const { io, end } = liveCommandIo(inputs, outputs, (line) => outputs.appendLine("write_log.jsonl", line));
+    try {
+      await fn(inputs, io);
+      end();
+    } catch (error) {
+      end(error);
       fail(error instanceof Error ? error.message : String(error));
     }
   },
@@ -208,6 +252,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     },
   },
   review: runner("review", () => import("./review/review.js")),
+  "review:publish": writingCommand(
+    "review:publish",
+    async () => (await import("./review/publish.js")).publish,
+    "Resolve the threads a review closed and post the review (no model).",
+  ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
 };
 

@@ -255,7 +255,7 @@ describe("the spec's tables equal the declarations", () => {
     }
   });
 
-  /** The row's own rules, on a table no command has yet, so the check above is reading something. */
+  /** The row's own rules, on a table of its own, so the check above is reading something. */
   it("accepts a directory input row, and names what one leaves out", () => {
     const declared = readsFrom("review", { "verdict.json": "always", "pr_summary.json": "sometimes" });
     const table = tablesIn(
@@ -263,7 +263,7 @@ describe("the spec's tables equal the declarations", () => {
         "| Input | Kind | Default | What it is |",
         "|---|---|---|---|",
         "| `REVIEW_DIR` | directory | | The `review` runner's `OUTPUT_DIR`. Reads `verdict.json`, and `pr_summary.json` (where written). |",
-        "| `PARTIAL_DIR` | directory | | Reads `verdict.json` (where written) and `summary.md`. |",
+        "| `PARTIAL_DIR` | directory | | Reads `verdict.json` (where written) and `findings.json`. |",
       ].join("\n"),
     )[0];
     const outputs = outputsOf("review");
@@ -274,7 +274,7 @@ describe("the spec's tables equal the declarations", () => {
       "does not name its producer, `review`",
       "does not name `verdict.json`",
       "does not name `pr_summary.json` (where written)",
-      "names `summary.md`, which is not declared",
+      "names `findings.json`, which is not declared",
     ]);
   });
 

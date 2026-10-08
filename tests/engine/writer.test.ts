@@ -180,6 +180,20 @@ describe("the log's last line", () => {
     ]);
   });
 
+  /** The loop rethrows a write's failure as a sentence, with the write's error as its cause, and the log still names the write. */
+  it("names the write a sentence was thrown for, through its cause", async () => {
+    const github = fakeGitHub();
+    github.fails = (write) => write.type === "postReview";
+    const { writers, log, lines } = fakeWriters(github, ["workflow"], { postReview: 1 });
+
+    const failed = await writers.workflow
+      .postReview({ pullRequestId: "PR_7", commitOID: SHA, body: "b", threads: [] })
+      .catch((e: unknown) => e);
+    log.end(new Error("GitHub refused the review, so it was not posted.", { cause: failed }));
+
+    expect(parsed(lines).at(-1)).toEqual({ ended: "stopped", writes: 1, by: 1, reason: "GitHub refused the review, so it was not posted." });
+  });
+
   it("records a stop no write caused, by its reason alone", () => {
     const { log, lines } = fakeWriters(fakeGitHub(), ["workflow"], {});
 

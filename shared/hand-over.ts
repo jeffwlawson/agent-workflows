@@ -22,7 +22,7 @@ import type { DirectoryFiles, DirectoryInput } from "./contract.js";
  *   command read for itself (`target`);
  * - a **choice**, which has to be one of a fixed set (`choice`);
  * - a **count or position**, which has to be in range and of its shape
- *   (`count`, `filePath`).
+ *   (`count`, `filePath`, `matching`).
  *
  * Free text comes out only as `Cleaned` (`text`), whoever wrote it.
  */
@@ -101,6 +101,20 @@ export const filePath: Parser<string> = (value, at) => {
 };
 
 /**
+ * A value of a fixed shape: a string `pattern` matches whole, such as an id
+ * a marker carries or a link. Shape only, like `filePath`: a pattern that
+ * refuses `<`, `>` and whitespace is one no value can close a comment with.
+ */
+export const matching =
+  (pattern: RegExp, what: string): Parser<string> =>
+  (value, at) => {
+    if (typeof value !== "string" || !new RegExp(`^(?:${pattern.source})$`, pattern.flags).test(value)) {
+      throw new Malformed(at, `is ${shown(value)}, where ${what} was expected`);
+    }
+    return value;
+  };
+
+/**
  * A target: an id a write acts on, which has to be one of `known`, the ids
  * the command read from GitHub itself (a thread on this pull request, this
  * pull request's node id). So a hand-over cannot aim a write anywhere the
@@ -119,12 +133,40 @@ export const optional =
   (value, at) =>
     value === undefined ? undefined : parser(value, at);
 
+/**
+ * A value read by `parser`, then by `read`, for a rule between its fields that
+ * no one field's parser can see: which fields one choice requires. `read`
+ * returns the value as the command reads it, narrowed to the case it is, or
+ * calls `wrong` with what is wrong with it.
+ */
+export const refine =
+  <T, U>(parser: Parser<T>, read: (value: T, wrong: (what: string) => never) => U): Parser<U> =>
+  (value, at) =>
+    read(parser(value, at), (what) => {
+      throw new Malformed(at, what);
+    });
+
 type Shape = Readonly<Record<string, Parser<unknown>>>;
 
-/** What a shape reads as: each field, as its parser reads it. */
-export type Parsed<S extends Shape> = { readonly [K in keyof S]: S[K] extends Parser<infer T> ? T : never };
+type ParsedField<P> = P extends Parser<infer T> ? T : never;
 
-/** A JSON object with the fields `shape` names, each read by its parser, and no other field. */
+/** The fields of a shape that may be left out: those whose parser can read `undefined`. */
+type OptionalField<S extends Shape> = { [K in keyof S]: undefined extends ParsedField<S[K]> ? K : never }[keyof S];
+
+/**
+ * What a shape reads as: each field, as its parser reads it, and a field that
+ * may be left out an optional property, since `object` leaves it out where it
+ * was.
+ */
+export type Parsed<S extends Shape> = {
+  readonly [K in Exclude<keyof S, OptionalField<S>>]: ParsedField<S[K]>;
+} & { readonly [K in OptionalField<S>]?: Exclude<ParsedField<S[K]>, undefined> };
+
+/**
+ * A JSON object with the fields `shape` names, each read by its parser, and no
+ * other field. A field read as `undefined` is left out, so a value read here
+ * is one an optional property can hold under `exactOptionalPropertyTypes`.
+ */
 export const object =
   <S extends Shape>(shape: S): Parser<Parsed<S>> =>
   (value, at) => {
@@ -134,7 +176,10 @@ export const object =
       throw new Malformed(at, `has ${undeclared.map((key) => `\`${key}\``).join(", ")}, which it does not declare`);
     }
     return Object.fromEntries(
-      Object.entries(shape).map(([key, parser]) => [key, parser(value[key], fieldOf(at, key))]),
+      Object.entries(shape).flatMap(([key, parser]) => {
+        const read = parser(value[key], fieldOf(at, key));
+        return read === undefined ? [] : [[key, read]];
+      }),
     ) as Parsed<S>;
   };
 

@@ -24,7 +24,6 @@ import {
 import {
   deriveVerdict,
   renderCriteriaGroup,
-  renderReviewBody,
   reviewOutputSchema,
   VERDICTS,
   type CriterionResult,
@@ -34,6 +33,7 @@ import {
 import { verifyCarried, type CarriedFinding } from "../shared/review-verification.js";
 import { renderRedTestsBlock, type RedTestsRecord } from "../shared/red-check.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
+import { renderDecided } from "./review/decided.js";
 
 /**
  * A review round on a PRD PR (PRD #222, #244): the slice-round and final-review
@@ -173,7 +173,7 @@ describe("a finding still open from an earlier slice", () => {
   it("keeps the verdict off approval where the final review ruled on nothing", () => {
     const { stillOpen, resolved } = verifyCarried([carried], []);
     const verdict = deriveVerdict(clean.value, { ...inputs, stillOpen: stillOpen.length });
-    const posted = renderReviewBody({
+    const posted = renderDecided({
       verdict,
       output: clean.value,
       placed: [],

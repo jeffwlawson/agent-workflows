@@ -10,7 +10,16 @@
  */
 import { GitHubError } from "../../engine/github.js";
 import type { CommitStatus, GitHubReader, PullRequest } from "../../engine/read.js";
-import { createWriters, type Backend, type Limits, type LogEntry, type WriteLog, type Writer, type WriteType } from "../../engine/writer.js";
+import {
+  createWriters,
+  type Backend,
+  type Limits,
+  type LogEntry,
+  type ReviewThread,
+  type WriteLog,
+  type Writer,
+  type WriteType,
+} from "../../engine/writer.js";
 
 /** One pull request's mutable state. */
 export interface FakePullRequest {
@@ -34,12 +43,33 @@ export interface FakeGitHub {
   /** Labels on issues that are not pull requests. */
   readonly issueLabels: Map<number, string[]>;
   readonly comments: { readonly token: string; readonly issue: number; readonly body: string }[];
-  readonly reviews: { readonly token: string; readonly pullRequestId: string; readonly body: string }[];
+  /** Every review posted, in order, with the pull request's node id and the commit it was posted on. */
+  readonly reviews: FakeReview[];
   /**
    * Whether the GitHub call `call` (such as `resolve`, `POST labels`) made by
-   * the write `write` fails. The default fails none.
+   * the write `write` fails, and how. `true` refuses it with a 422 and changes
+   * nothing. A `ServerError` answers with GitHub failing instead, having made
+   * the change first where `landed` says so, as GitHub has been seen to. The
+   * default fails none.
    */
-  fails: (write: { readonly token: string; readonly type: WriteType }, call: string) => boolean;
+  fails: (write: { readonly token: string; readonly type: WriteType }, call: string) => boolean | ServerError;
+}
+
+/** A review the fake holds. */
+export interface FakeReview {
+  readonly token: string;
+  readonly pullRequestId: string;
+  readonly commit: string;
+  readonly body: string;
+  readonly threads: readonly ReviewThread[];
+  readonly url: string;
+}
+
+/** GitHub failing on a call: a 500, or GraphQL's internal error where `status` is absent. */
+export interface ServerError {
+  readonly status?: number;
+  /** Whether the change was made before GitHub answered with the error. */
+  readonly landed: boolean;
 }
 
 export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [{}]): FakeGitHub => ({
@@ -107,15 +137,30 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       reads.push({ method: "reviewThreadIds", args: [number] });
       return new Set(github.threads.get(number)?.keys() ?? []);
     },
+    reviews: async (number) => {
+      reads.push({ method: "reviews", args: [number] });
+      const nodeId = pullRequestOf(github, number).nodeId;
+      return github.reviews
+        .filter((review) => review.pullRequestId === nodeId)
+        .map((review) => ({ url: review.url, commit: review.commit, body: review.body, author: review.token }));
+    },
   };
   return { reader, reads };
 };
 
 /** The backend for `token`, applying each write to `github`. */
 const fakeBackend = (github: FakeGitHub, token: string): Backend => {
-  const check = (type: WriteType, call: string): void => {
-    if (github.fails({ token, type }, call)) throw new GitHubError(`${call}: 422 refused by the fake`, 422);
+  /** `apply`, or the failure `fails` names for this call instead, or as well. */
+  const attempt = <T>(type: WriteType, call: string, apply: () => T): T => {
+    const failure = github.fails({ token, type }, call);
+    if (failure === false) return apply();
+    if (failure === true) throw new GitHubError(`${call}: 422 refused by the fake`, 422);
+    if (failure.landed) apply();
+    throw failure.status === undefined
+      ? new GitHubError(`${call}: An internal error occurred, by the fake`)
+      : new GitHubError(`${call}: ${failure.status} by the fake`, failure.status);
   };
+  const check = (type: WriteType, call: string): void => attempt(type, call, () => undefined);
   const threadOf = (threadId: string) => {
     for (const threads of github.threads.values()) {
       const thread = threads.get(threadId);
@@ -169,9 +214,18 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
     },
     postReview: async (call, variables) => {
       const url = await call("addPullRequestReview", async () => {
-        check("postReview", "addPullRequestReview");
-        github.reviews.push({ token, pullRequestId: variables.pullRequestId, body: variables.body });
-        return `https://github.com/o/r/pull/0#pullrequestreview-${github.reviews.length}`;
+        const posted = `https://github.com/o/r/pull/0#pullrequestreview-${github.reviews.length + 1}`;
+        attempt("postReview", "addPullRequestReview", () =>
+          github.reviews.push({
+            token,
+            pullRequestId: variables.pullRequestId,
+            commit: variables.commitOID,
+            body: variables.body,
+            threads: variables.threads,
+            url: posted,
+          }),
+        );
+        return posted;
       });
       return { outcome: "applied", url };
     },

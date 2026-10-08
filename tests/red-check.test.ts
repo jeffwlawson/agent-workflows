@@ -22,8 +22,9 @@ import {
   type RedCheckReport,
   type RedTestsRecord,
 } from "../shared/red-check.js";
-import { renderReviewBody, VERDICTS } from "../shared/review-output.js";
+import { VERDICTS } from "../shared/review-output.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+import { renderDecided } from "./review/decided.js";
 
 /**
  * Runs the red check's steps (#231), the real `run:` blocks read out of
@@ -1164,11 +1165,11 @@ describe("a slice round's red check, and its record for the final review (#235)"
       followUps: [],
       droppedFollowUps: 0,
     };
-    const body = renderReviewBody({ ...parts, redTestsBlock: renderRedTestsBlock(record) });
+    const body = renderDecided({ ...parts, redTestsBlock: renderRedTestsBlock(record) });
 
     expect(readRedTestsBlock(body)).toEqual(record);
     expect(body).toMatch(/<!-- agent-red-tests .* -->\n\n<!-- agent-follow-ups .* -->$/);
-    expect(renderReviewBody(parts)).not.toContain("agent-red-tests");
+    expect(renderDecided(parts)).not.toContain("agent-red-tests");
   });
 
   it("caps what it records, and counts the rest", () => {
@@ -1285,9 +1286,13 @@ describe("a slice round's red check, and its record for the final review (#235)"
 
   it("is what a slice round records in its review, and what the final review lists", () => {
     const runner = fs.readFileSync(path.join("review", "review.ts"), "utf8");
+    const publish = fs.readFileSync(path.join("review", "publish.ts"), "utf8");
 
+    // The runner hands the record over as data, and publish writes its block
+    // into the body (ADR 0007).
     expect(runner).toMatch(/const redTests = round\?\.kind === "slice" \? redTestsRecord\(redCheck\) : undefined;/);
-    expect(runner).toMatch(/redTestsBlock: renderRedTestsBlock\(redTests\)/);
+    expect(runner).toMatch(/\.\.\.\(redTests === undefined \? \{\} : \{ redTests \}\)/);
+    expect(publish).toMatch(/redTestsBlock: renderRedTestsBlock\(redTests\)/);
     expect(runner).toMatch(/slicesRedTests = sliceRedTests\(reviews, prdBranch\.ranges\)/);
     expect(runner).toMatch(/redTests: \{ slices: slicesRedTests \}/);
     expect(runner).toMatch(/final && redCheck\.kind !== "not-configured"\s*\? renderRedCheckForFinal\(slicesRedTests\)/);

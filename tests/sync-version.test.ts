@@ -9,7 +9,7 @@ import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 /**
  * `npm version` bumps two files — the manifest and the lockfile — and there are
  * twelve. The other ten hold the version pins: one `--package=…@<version>` per
- * reusable workflow, and one `…yml@v<version>` per caller in each of the two
+ * step that runs the package, and one `…yml@v<version>` per caller in each of the two
  * caller sets, two caller files to a set (#225). Both `v0.1.4` and `v0.1.5` were cut by editing them by hand and folding
  * the result into the version commit.
  *
@@ -192,8 +192,8 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * job names `advance-prd`, and each job that resolves the loop's token names
  * `loop-token` (#319, #320): implement's publish job, implement-prd's catch-up
  * and publish jobs, fix's and update-branch's publish jobs, and review's
- * `time-limit`, `post-review` and `advance` jobs. Nine, beside the six `npm
- * exec` pins and the twelve callers, so the release rewrites twenty-seven pins
+ * `time-limit`, `post-review` and `advance` jobs. Nine, beside the seven `npm
+ * exec` pins and the twelve callers, so the release rewrites twenty-eight pins
  * in ten files.
  */
 const ACTION_SITES: Readonly<Record<string, readonly string[]>> = {
@@ -204,7 +204,21 @@ const ACTION_SITES: Readonly<Record<string, readonly string[]>> = {
   ".github/workflows/update-branch.yml": ["loop-token"],
 };
 const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + actions.length, 0);
-const PACKAGE_COUNT = EVERY_SITE.filter((file) => !/\/(agent-)?(pr|issue)\.yml$/.test(file)).length;
+
+/**
+ * The steps that run the package, `npm exec … --package=…@<version>`, by
+ * file: one per reusable workflow, the runner's or the filing command's,
+ * and in `review.yml` `review:publish` beside the runner (#417).
+ */
+const PACKAGE_SITES: Readonly<Record<string, number>> = {
+  ".github/workflows/fix.yml": 1,
+  ".github/workflows/follow-ups.yml": 1,
+  ".github/workflows/implement-prd.yml": 1,
+  ".github/workflows/implement.yml": 1,
+  ".github/workflows/review.yml": 2,
+  ".github/workflows/update-branch.yml": 1,
+};
+const PACKAGE_COUNT = Object.values(PACKAGE_SITES).reduce((sum, n) => sum + n, 0);
 const PIN_COUNT = PACKAGE_COUNT + REF_COUNT + ACTION_COUNT;
 
 describe("the version propagator rewrites every pin", () => {
@@ -255,7 +269,7 @@ describe("the version propagator rewrites every pin", () => {
     );
 
     expect(() => syncVersion(TARGET, root)).toThrow(
-      /review\.yml: expected 5 version pins \[package, action, action, action, action\], found 4 \[package, action, action, action\]/,
+      /review\.yml: expected 6 version pins \[package, package, action, action, action, action\], found 5 \[package, package, action, action, action\]/,
     );
   });
 
@@ -313,14 +327,9 @@ describe("the version propagator rewrites every pin", () => {
 
     const sites = syncVersion(TARGET, root);
 
-    expect(sites.filter((s) => s.form === "package").map((s) => s.file).sort()).toEqual([
-      ".github/workflows/fix.yml",
-      ".github/workflows/follow-ups.yml",
-      ".github/workflows/implement-prd.yml",
-      ".github/workflows/implement.yml",
-      ".github/workflows/review.yml",
-      ".github/workflows/update-branch.yml",
-    ]);
+    expect(sites.filter((s) => s.form === "package").map((s) => s.file).sort()).toEqual(
+      Object.entries(PACKAGE_SITES).flatMap(([file, n]) => Array.from({ length: n }, () => file)).sort(),
+    );
     expect(sites.filter((s) => s.form === "ref")).toHaveLength(REF_COUNT);
   });
 
@@ -341,7 +350,7 @@ describe("the version propagator rewrites every pin", () => {
   });
 
   /**
-   * Twenty-seven is today's count, not the rule. `EVERY_SITE` above is a written-out
+   * Twenty-eight is today's count, not the rule. `EVERY_SITE` above is a written-out
    * list, and so is every refusal below a *half*-landed extra workflow — between
    * them they would all still pass against an implementation holding today's
    * pins hardcoded, which on the day a seventh workflow lands rewrites all but
@@ -363,11 +372,11 @@ describe("the version propagator rewrites every pin", () => {
 
     const sites = syncVersion(TARGET, root);
 
-    // Seven pins, one file more: the copy of `review.yml` names the advance
-    // action and the token resolver's three times too, and the two callers of
-    // it join the files already there.
-    expect(sites).toHaveLength(PIN_COUNT + 7);
-    expect(sites.filter((s) => s.form === "package")).toHaveLength(PACKAGE_COUNT + 1);
+    // Eight pins, one file more: the copy of `review.yml` runs the package
+    // twice and names the advance action and the token resolver's three times
+    // too, and the two callers of it join the files already there.
+    expect(sites).toHaveLength(PIN_COUNT + 8);
+    expect(sites.filter((s) => s.form === "package")).toHaveLength(PACKAGE_COUNT + 2);
     expect(sites.filter((s) => s.form === "ref")).toHaveLength(REF_COUNT + 2);
     expect([...new Set(sites.map((s) => s.file))].sort()).toEqual(
       [...EVERY_SITE, ".github/workflows/plan.yml"].sort(),
@@ -451,7 +460,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
       `${read(root, ".github/workflows/review.yml")}\n# jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.1.7\n`,
     );
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/found 6 \[package, ref, action, action, action, action\]/);
+    expect(() => syncVersion(TARGET, root)).toThrow(/found 7 \[package, package, ref, action, action, action, action\]/);
   });
 
   /**

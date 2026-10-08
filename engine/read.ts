@@ -24,12 +24,24 @@ export interface CommitStatus {
   readonly creator: string;
 }
 
+/** A review on a pull request, as far as a read-back of one needs it. */
+export interface Review {
+  readonly url: string;
+  /** The commit it was posted on. */
+  readonly commit: string;
+  readonly body: string;
+  /** The login that posted it. */
+  readonly author: string;
+}
+
 export interface GitHubReader {
   pullRequest(number: number): Promise<PullRequest>;
   /** Every status set on `sha`, newest first, as the endpoint documents. */
   commitStatuses(sha: string): Promise<readonly CommitStatus[]>;
   /** The node id of every review thread on the pull request: what a thread target is checked against (#403). */
   reviewThreadIds(number: number): Promise<ReadonlySet<string>>;
+  /** Every review on the pull request, oldest first, as the endpoint documents. */
+  reviews(number: number): Promise<readonly Review[]>;
 }
 
 /** The REST pull request, as far as `PullRequest` reads it. */
@@ -60,6 +72,13 @@ interface RawStatus {
   readonly state: string;
   readonly target_url: string | null;
   readonly creator: { readonly login: string } | null;
+}
+
+interface RawReview {
+  readonly html_url: string;
+  readonly commit_id: string | null;
+  readonly body: string | null;
+  readonly user: { readonly login: string } | null;
 }
 
 interface ThreadPage {
@@ -106,6 +125,19 @@ export const githubReader = (repo: string, transport: Transport): GitHubReader =
         for (const node of threads.nodes) ids.add(node.id);
         if (!threads.pageInfo.hasNextPage || threads.pageInfo.endCursor === null) return ids;
         after = threads.pageInfo.endCursor;
+      }
+    },
+    reviews: async (number) => {
+      const reviews: Review[] = [];
+      for (let page = 1; ; page++) {
+        const raw = (await transport.rest({
+          method: "GET",
+          path: `/repos/${repo}/pulls/${number}/reviews?per_page=100&page=${page}`,
+        })) as readonly RawReview[];
+        reviews.push(
+          ...raw.map((r) => ({ url: r.html_url, commit: r.commit_id ?? "", body: r.body ?? "", author: r.user?.login ?? "" })),
+        );
+        if (raw.length < 100) return reviews;
       }
     },
   };

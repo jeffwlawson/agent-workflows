@@ -4,7 +4,7 @@
  * sends, with the mutations the engine owns.
  */
 import { describe, expect, it } from "vitest";
-import { GitHubError, type RestRequest, type Transport } from "../../engine/github.js";
+import { GitHubError, isServerError, type RestRequest, type Transport } from "../../engine/github.js";
 import { githubReader } from "../../engine/read.js";
 import { ADD_REVIEW, githubWrites, MARK_READY, REPLY_TO_THREAD, RESOLVE_THREAD } from "../../engine/writes.js";
 import { createWriters, WriteFailed, type PullRequestEdit } from "../../engine/writer.js";
@@ -234,5 +234,57 @@ describe("githubReader", () => {
       { owner: "o", name: "r", number: 7, after: null },
       { owner: "o", name: "r", number: 7, after: "c1" },
     ]);
+  });
+
+  it("reads every page of a pull request's reviews, oldest first", async () => {
+    const review = (n: number) => ({
+      html_url: `https://github.com/o/r/pull/7#pullrequestreview-${n}`,
+      commit_id: SHA,
+      body: `review ${n}`,
+      user: { login: "github-actions[bot]" },
+    });
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1")
+        ? Array.from({ length: 100 }, (_, i) => review(i))
+        : [{ html_url: "u", commit_id: null, body: null, user: null }],
+    );
+
+    const reviews = await githubReader(REPO, transport).reviews(7);
+
+    expect(reviews).toHaveLength(101);
+    expect(reviews[0]).toEqual({ url: "https://github.com/o/r/pull/7#pullrequestreview-0", commit: SHA, body: "review 0", author: "github-actions[bot]" });
+    expect(reviews[100]).toEqual({ url: "u", commit: "", body: "", author: "" });
+    expect(sent.map((s) => ("rest" in s ? s.rest.path : ""))).toEqual([
+      "/repos/o/r/pulls/7/reviews?per_page=100&page=1",
+      "/repos/o/r/pulls/7/reviews?per_page=100&page=2",
+    ]);
+  });
+});
+
+describe("a server error", () => {
+  /** GitHub failing, not refusing: neither says the call did nothing. */
+  it("is a 5xx, or GraphQL's internal error with no status", () => {
+    expect(isServerError(new GitHubError("POST /graphql: 502 Bad Gateway", 502))).toBe(true);
+    expect(isServerError(new GitHubError("graphql: Something went wrong. An internal error occurred, please retry."))).toBe(true);
+    expect(isServerError(new GitHubError("POST /graphql: 422 Unprocessable", 422))).toBe(false);
+    expect(isServerError(new GitHubError("graphql: Could not resolve to a node"))).toBe(false);
+    expect(isServerError(new Error("An internal error occurred"))).toBe(false);
+  });
+
+  /** The loop judges a failed write by what GitHub threw, so the writer hands it on. */
+  it("reaches the loop as the cause of the write that failed", async () => {
+    const thrown = new GitHubError("graphql: An internal error occurred");
+    const { writers } = writerOver(
+      recording(() => {
+        throw thrown;
+      }).transport,
+    );
+
+    const failed = await writers.workflow
+      .postReview({ pullRequestId: "PR_7", commitOID: SHA, body: "b", threads: [] })
+      .catch((error: unknown) => error);
+
+    expect(failed).toBeInstanceOf(WriteFailed);
+    expect((failed as WriteFailed).cause).toBe(thrown);
   });
 });

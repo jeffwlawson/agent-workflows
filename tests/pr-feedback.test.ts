@@ -2163,7 +2163,7 @@ describe("a thread already carrying this workflow's closing reply", () => {
     ...AGENT,
   };
   const verified = {
-    body: resolutionReply({ id: "f-1", status: "landed" }),
+    body: resolutionReply(undefined),
     ...AGENT,
   };
   const thread = (...after: unknown[]): unknown => ({

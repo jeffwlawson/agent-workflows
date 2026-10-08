@@ -45,17 +45,16 @@ import {
   redTestsRecord,
   renderRedCheck,
   renderRedCheckForFinal,
-  renderRedTestsBlock,
   withEvidence,
   type SliceRedTests,
 } from "../shared/red-check.js";
 import { fetchPullRequestContext } from "./review-context.js";
 import {
+  findingsHandOver,
   isPreviouslyMissed,
   pathErrorNote,
   pathErrors,
   placeFindings,
-  reviewMutation,
   type Severity,
 } from "../shared/review-findings.js";
 import {
@@ -66,8 +65,7 @@ import {
   MAX_FOLLOW_UPS,
   recordFollowUps,
   type EarlierFollowUps,
-  renderFollowUpsBlock,
-  renderReviewPost,
+  reviewBodyHandOver,
   reviewOutputSchema,
   type CiResult,
   type FixRounds,
@@ -76,7 +74,6 @@ import {
   describeHistory,
   fixRoundProgress,
   readReviewHistory,
-  unreadableHistoryNote,
 } from "./review-round.js";
 import {
   renderCarriedFindings,
@@ -85,7 +82,15 @@ import {
   type CarriedFinding,
   type ResolutionReason,
 } from "../shared/review-verification.js";
-import { readRoundRecord, reviewHeader, roundCounts, type RoundCounts, type RoundScope } from "../shared/round-header.js";
+import {
+  readRoundRecord,
+  reviewHeader,
+  reviewNumber,
+  roundCounts,
+  type RoundCounts,
+  type RoundScope,
+} from "../shared/round-header.js";
+import type { ReviewBody, ThreadResolutions } from "./hand-over.js";
 import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../shared/record.js";
 
 const INPUTS = readInputs(RUNNERS["review"].inputs);
@@ -331,8 +336,9 @@ try {
       : round?.kind === "slice" && round.slice !== undefined
         ? { kind: "slice", k: round.slice.k, n: round.slice.n, subIssue: round.slice.subIssue }
         : { kind: "regular" };
-  const header = counts === undefined ? undefined : reviewHeader(scope, counts);
-  console.log(`Header: ${header ?? "none, since the earlier rounds could not be read"}.`);
+  // The header's scope and number, for publish to write (#298).
+  const header = counts === undefined ? undefined : { scope, number: reviewNumber(scope, counts) };
+  console.log(`Header: ${counts === undefined ? "none, since the earlier rounds could not be read" : reviewHeader(scope, counts)}.`);
   const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo } = INPUTS;
   const prUrl = server && repo ? `${server}/${repo}/pull/${PR_NUMBER}` : undefined;
 
@@ -514,9 +520,8 @@ try {
   // complete restatement each round and the filing half reads the latest one,
   // so recording none has to be sayable: otherwise round 1's findings stay the
   // newest thing on the pull request and a merge after round 2 fixed them files
-  // a stub for work already done. Both halves are `renderReviewBody`'s to
-  // place; what is written here is the artifact a human debugging the run
-  // opens.
+  // a stub for work already done. Both halves are publish's to write, from
+  // the list handed over here.
   //
   // The findings the diff gave no anchor to lead the list and are exempt from
   // that cap: a moved finding is one the review meant to stop the merge with,
@@ -557,93 +562,62 @@ try {
     autoFix: willAutoFix(),
     ...(rounds === undefined ? {} : { fixRounds: rounds }),
   });
-  // And a history nothing could establish says so in the body as well as in
-  // the brief. The agent was told it followed a fix round; what it cannot say,
-  // and what changes how a reader weighs the review, is that this was the
-  // stricter reading rather than a fact about this pull request.
+  // What `review:publish` posts the review from (ADR 0007): the decisions
+  // and the agent's raw text, and nothing rendered. Publish writes the body,
+  // each thread, the closing replies and every marker in them, from what it
+  // reads back cleaned, so no file here holds a loop string an agent steered
+  // by what it read could have rewritten. It also holds the body to GitHub's
+  // limit, since only the finished text can be measured.
   //
-  // What the body is made of, and in what order, is `renderReviewBody`'s: it is
-  // the part of the review a human acts on, and this file is a script with no
-  // test around it (#105). It is handed the output whole rather than the fields
-  // it reads, so the record it renders is the set the verdict above was counted
-  // from and not a second reading of it (#113).
+  // `findings.json`: a thread per placed finding, where and what.
+  writeJson("findings.json", findingsHandOver(placed));
+
+  // `review_body.json`: the record as this review decided it (#109, decision
+  // 8), handed the output whole so the set it records is the set the verdict
+  // was counted from and not a second reading of it (#113). Every resolved
+  // entry carries the thread it closes, so publish lists one whose thread it
+  // could not resolve as still open (#257).
   //
-  // The follow-ups are a group in it now rather than a block appended after it
-  // (#109, decision 8 as the maintainer settled it), and the payload the filing
-  // half reads on merge goes out last and invisibly — so the posted body is
-  // what this returns, with nothing concatenated on afterwards.
+  // A history nothing could establish says so in the body as well as in the
+  // brief: the agent was told it followed a fix round, and what it cannot
+  // say, and what changes how a reader weighs the review, is that this was
+  // the stricter reading rather than a fact about this pull request.
   //
   // A slice round records its red tests in its review (#235), invisibly: the
   // body's failing-first list is rewritten by the next slice, and the review
   // is the one record of a slice that outlives it, for the final review to
   // list by slice.
   const redTests = round?.kind === "slice" ? redTestsRecord(redCheck) : undefined;
-  const post = renderReviewPost({
-    verdict,
-    output,
-    roundNote: unreadableHistoryNote(history),
-    placed,
-    movedToFollowUps: movedFollowUps,
-    stillOpen,
-    resolved,
-    followUps,
-    droppedFollowUps,
-    followUpsCap: followUpsCapUsed,
-    followUpsCarried,
-    droppedNotes: notes.dropped,
-    criteria: criteriaRulings.results,
-    ...(redTests === undefined ? {} : { redTestsBlock: renderRedTestsBlock(redTests) }),
-    runUrl: workflowRunUrl(INPUTS),
-    header,
-    // What was shed, where the body had to be cut to fit GitHub's limit (#140).
-    // A body that cannot be made to fit throws, and the catch below writes the
-    // reason rather than letting the post meet the limit as a 422.
-    log: (line) => console.log(line),
-  });
-  const reviewBody = post.body;
+  const reviewBody: ReviewBody = {
+    ...reviewBodyHandOver({
+      verdict,
+      output,
+      placed,
+      movedToFollowUps: movedFollowUps,
+      stillOpen,
+      resolved,
+      followUps,
+      droppedFollowUps,
+      followUpsCap: followUpsCapUsed,
+      followUpsCarried,
+      droppedNotes: notes.dropped,
+      criteria: criteriaRulings.results,
+    }),
+    ...(header === undefined ? {} : { header }),
+    ...(history.unreadable === undefined ? {} : { historyUnreadable: history.unreadable }),
+    ...(redTests === undefined ? {} : { redTests }),
+  };
+  writeJson("review_body.json", reviewBody);
 
-  // A GraphQL request body, posted by the workflow with `gh api graphql
-  // --input`. REST `POST /pulls/{n}/reviews` cannot open a **file-level**
-  // thread — it answers one with a 422 — and its `comments` field is deprecated
-  // in favour of `threads` besides (#109, decision 5). `commitOID` pins the
-  // review to the head that was reviewed, exactly as `commit_id` did.
-  //
-  // Composed by a tested function rather than written out here, for the reason
-  // the body is: this file is a script with no test around it, and the shape it
-  // writes is the shape a `--jq` path in the workflow reads back.
-  writeJson(
-    "review_payload.json",
-    reviewMutation({ pullRequestId: context.prId, commitOID: headSha, body: reviewBody, placed }),
-  );
-  writeText("summary.md", reviewBody);
-
-  // What the posting job puts *Resolved since last review* back together from
-  // (#257), once it knows which of this review's closures held: this job runs
-  // the model and posts nothing, and the job that resolves the threads posts
-  // the body afterwards. A thread it could not resolve is listed as still open
-  // rather than resolved. The payload above carries the body as it reads where
-  // every closure held, which is also the body a human debugging the run reads.
-  writeJson("review_body.json", {
-    slotted: post.slotted,
-    slot: post.slot,
-    resolved: post.resolved,
-    groups: post.groups,
-  });
-
-  // The threads this review verified, for the workflow step that closes them.
-  // Written on every run, empty list included: the step reads the file rather
-  // than deciding anything, and "there was nothing to resolve" is an answer it
-  // should not have to infer from a missing file.
-  //
-  // The reply is composed here rather than in YAML for the reason the body is:
-  // it is the only record of *why* a thread closed — GitHub takes
-  // `resolutionReason` and then exposes it nowhere — and this file is a script
-  // with no test around it.
-  writeJson("thread_resolutions.json", resolutions);
+  // `thread_resolutions.json`: the threads this review verified, why each
+  // closes, and the words its reply quotes. Written on every run, empty list
+  // included: "there was nothing to resolve" is an answer publish should not
+  // have to infer from a missing file.
+  writeJson("thread_resolutions.json", resolutions satisfies ThreadResolutions);
 
   // The title and the summary block, for the posting job to write (#218).
   // Written only where this review rewrites them, so the file's existence is
-  // the whole condition, as `follow_ups.md`'s is. The posting job splices the
+  // the whole condition. The posting job splices the
   // summary into the body as it stands then, not as it was read here, so an
   // edit made outside the block while this review ran survives it.
   //
@@ -708,7 +682,7 @@ try {
   // ends without approval and with no fix round starting (PRD #222): the
   // round, the stop and every finding still open, the ones raised here linking
   // the review the posting job is about to post. Written only in that case,
-  // so the file's existence is the whole condition, as `follow_ups.md`'s is.
+  // so the file's existence is the whole condition.
   //
   // Beside it, whatever the verdict, `park_posted.md`: the comment for a round
   // whose verdict was posted but whose posting job failed after it, which
@@ -762,22 +736,6 @@ try {
       statusBlock(
         renderPrStatus({ verdict: verdict.verdict, startsFixRound: verdict.startsFixRound === true, open, review: REVIEW_URL_SLOT }),
       ),
-    );
-  }
-
-  // How the workflow knows to mark the pull request: a step cannot read this
-  // process's memory, and the marker label has to go on when — and only when —
-  // this run recorded something. Written only in that case, so its *existence*
-  // is the whole condition and the step needs no parsing. The content is the
-  // block exactly as posted, which is what a human debugging the run wants.
-  //
-  // Keyed on the findings rather than on the block, which is no longer the same
-  // question: the block is posted either way, and a retraction is precisely the
-  // run that must not mark the pull request.
-  if (followUps.length > 0) {
-    writeText(
-      "follow_ups.md",
-      renderFollowUpsBlock(followUps, droppedFollowUps, movedFollowUps, followUpsCapUsed, followUpsCarried),
     );
   }
 

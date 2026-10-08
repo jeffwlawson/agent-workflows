@@ -424,6 +424,26 @@ as one subcommand of one published binary. It takes its whole input from the env
 an argument is refused rather than ignored. Its boundary with whatever invokes it is
 [`docs/platform-spec.md`](./docs/platform-spec.md) §2.
 
+**A command** is the part of the package that does an orchestrator's work on the record: a step
+that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
+way a runner is, as one subcommand with no arguments and its whole input in the environment, and
+fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
+name is always a runner. `follow-ups` is the one command today, still declared and named as a
+runner until review's move renames it `follow-ups:file`; every other step a command will be still
+runs as YAML shell. [ADR 0004](./docs/adr/0004-command-shape-and-folders.md) records the shape.
+
+**A workflow's folder** holds that workflow's package code: its runner, as `<name>/<name>.ts`, where
+it has one, and every command that runs in its jobs, whatever the command writes to. So review's
+`advance` lives in `review/` although it changes the PRD chain's parent, and `follow-ups/` is a
+workflow folder with no runner in it. Folders follow the feature, except `engine/`, the code ADR
+0002 keeps from importing the loop, which is the one folder drawn by layer. `shared/` holds loop
+code that two or more workflows use, and nothing one workflow alone uses.
+
+**Subcommand** is the word for all of them: every entry of the binary's table is one, whether a
+runner, a command, or the install path below. *Command* alone means the kind above, never the
+umbrella, and never the adopter's own commands (`inputs.setup`, the red check's test command),
+which are always named as the adopter's.
+
 **Part, not layer.** These were *the three layers* until stacked pull requests arrived: GitHub calls
 one pull request in a stack a **layer**, and that is the only meaning the word has here now. The
 PRD chain uses no stacks: its slices are ranges of commits on one branch, not layers. Older
@@ -441,7 +461,7 @@ are here so the glossary and the contract use one vocabulary.
 - **The record.** What the loop leaves on GitHub that a later run reads back: posts by the loop's
   accounts, markers in their text, status contexts, commit trailers and branch names.
 - **The agent.** The model CLI a runner drives inside its sandbox: Claude Code. It is not the
-  runner, which starts it, and `follow-ups` is a runner that starts none.
+  runner, which starts it, and `follow-ups`, filed as a runner until it becomes a command, starts none.
 
 ### And the install path, which is none of the three
 

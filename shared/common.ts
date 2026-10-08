@@ -264,9 +264,16 @@ export const ghOutcome = (args: readonly string[], options: GhOptions = {}): GhO
  *
  * Literal `sh("git ...")` calls elsewhere are fine and deliberately left alone:
  * the rule is *variables go through argv*, not *never use `sh`*.
+ *
+ * `maxBuffer` is `execFileSync`'s, 1 MiB where it is not given. Past it the
+ * read throws `ENOBUFS` rather than returning part of the output.
  */
-export const git = (args: readonly string[]): string =>
-  execFileSync("git", [...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+export const git = (args: readonly string[], options: { readonly maxBuffer?: number } = {}): string =>
+  execFileSync("git", [...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(options.maxBuffer === undefined ? {} : { maxBuffer: options.maxBuffer }),
+  });
 
 /**
  * What the association half of the gate establishes is **org-adjacent or

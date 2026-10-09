@@ -1688,8 +1688,8 @@ describe("the findings an earlier review left open", () => {
    * findings as the open findings and the unresolved threads, so up to fifty
    * copies of what it already had added nothing but length. A trusted human's
    * review body is still discussion, and the loop's accounts are every one on
-   * its list, not only the default. The fix agent's `all` is unchanged, and
-   * the record is still read off the newest loop review.
+   * its list, not only the default. `all` is unchanged, and so is the
+   * `summaries` the fix agent reads; the record is still read off the newest loop review.
    */
   it("leaves every loop account's review bodies out of the review's discussion, and keeps a human's", () => {
     const APP = { author: { login: "my-loop" }, authorAssociation: "NONE" };
@@ -1712,6 +1712,7 @@ describe("the findings an earlier review left open", () => {
     for (const body of ["round 1 body", "round 2 body", "round 3 body"]) {
       expect(feedback.allForReview).not.toContain(body);
       expect(feedback.all).toContain(body);
+      expect(feedback.summaries).toContain(body);
     }
     expect(feedback.latestAgentReviewBody).toBe("round 3 body");
   });

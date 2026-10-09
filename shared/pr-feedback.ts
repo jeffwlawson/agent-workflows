@@ -97,7 +97,7 @@ export interface PullRequestFeedback {
    * human's kept. An earlier round's body is the record of what it found, and
    * the review is already given that record as the open findings and the
    * unresolved threads; handing it the bodies too was up to fifty copies of
-   * what it already had. The fix agent reads `all`, unchanged.
+   * what it already had. The fix agent reads `summaries`, unchanged.
    */
   readonly allForReview: string;
   /**

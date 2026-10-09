@@ -25,7 +25,8 @@
  * them fails the run through `fail()` in `readInputs`, naming the input, the
  * value and these, rather than quietly reading as whatever the reader's
  * comparison makes of it. Unset is not a value, and reads as an optional
- * input's default, which has to be one of these.
+ * input's default, which has to be one of these or empty: empty is "not
+ * given", which `ROUND` keeps for an ordinary pull request (#377).
  */
 export type Accepts = readonly [string, ...string[]];
 
@@ -110,6 +111,16 @@ const REQUIRED = { required: true } as const satisfies Input;
  * "not given" is told nothing new by a default it would treat the same way.
  */
 const EMPTY = { required: false, default: "" } as const satisfies Input;
+
+/**
+ * **Which round of a PRD PR's review this is** (#377), as `review:gate`
+ * decided it: `slice` or `final` on a PRD PR, and unset on an ordinary pull
+ * request. Read by the review runner, `review:conclude` and `review:advance`,
+ * each from this one declaration, so a value none of them expects (`Final`, a
+ * new round kind) fails the run rather than quietly reading as a slice round,
+ * as not the final review, or as not one to advance from.
+ */
+const ROUND = { required: false, default: "", accepts: ["slice", "final"] } as const satisfies Input;
 
 /**
  * **The loop's accounts** (#376, `docs/platform-spec.md` §4.1): a
@@ -210,8 +221,8 @@ export interface CommandContract {
  * Every runner, by the subcommand that invokes it: the inputs every
  * subcommand reads, and its own.
  *
- * - `ROUND` is `final` on a PRD PR's final review, and anything else is a
- *   slice round or an ordinary pull request.
+ * - `ROUND` is `final` on a PRD PR's final review, `slice` on a slice round,
+ *   and unset on an ordinary pull request. Anything else fails the run (#377).
  * - `AUTO_FIX` is `true` where the workflow will start a fix round itself, and
  *   `false` or unset where it will not. Anything else fails the run (#378): a
  *   run that could not say must not claim a fix round started.
@@ -279,7 +290,7 @@ export const RUNNERS = {
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       BASE_REF: REQUIRED,
-      ROUND: EMPTY,
+      ROUND,
       CI_STATUS_FILE: EMPTY,
       CI_RESULT_FILE: EMPTY,
       AUTO_FIX: { required: false, default: "false", accepts: ["true", "false"] },
@@ -575,7 +586,7 @@ export const COMMANDS = {
       REVIEWED_SHA: EMPTY,
       VERDICT: EMPTY,
       FIX_ROUND: EMPTY,
-      ROUND: EMPTY,
+      ROUND,
       FAILURE_REASON: EMPTY,
       REFUSAL_REASON: EMPTY,
       TIMED_OUT: EMPTY,
@@ -603,7 +614,7 @@ export const COMMANDS = {
       REVIEW_URL: EMPTY,
       VERDICT: EMPTY,
       FIX_ROUND: EMPTY,
-      ROUND: EMPTY,
+      ROUND,
       MINT_OUTCOME: EMPTY,
       PARK_DIR: readsFrom("review", {
         "park.json": "sometimes",

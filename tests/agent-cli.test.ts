@@ -5,13 +5,14 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import ts from "typescript";
 import { parse } from "yaml";
-import { run, SUBCOMMANDS, type CliIo } from "../cli.js";
+import { SUBCOMMANDS, type CliIo } from "../cli.js";
 import { file as fileFollowUps } from "../follow-ups/file.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
 import * as record from "../shared/record.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+import { declaredInputs, invoke, withInputs, type Given } from "./cli-inputs.js";
 import { copyAssets } from "../scripts/copy-assets.js";
 import { callersIn, readInstalledCallers, REFERENCE_CALLER_FILES } from "../setup/callers.js";
 import {
@@ -153,17 +154,11 @@ const replayed = async <T>(
     ...(scenario.visibility === undefined ? {} : { GH_REPLAY_VISIBILITY: scenario.visibility }),
     ...(scenario.unreadable === undefined ? {} : { GH_REPLAY_POLICY_FAILURE: scenario.unreadable.join(",") }),
   };
-  const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
-  Object.assign(process.env, env);
   try {
-    const result = await body();
+    const result = await withInputs(undefined, env, body);
     const written = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
     return { result, writes: written.map((line) => JSON.parse(line) as unknown[]) };
   } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
     fs.rmSync(temp, { recursive: true, force: true });
   }
 };
@@ -256,42 +251,20 @@ const sixFileTree = (root: string, ref: string): readonly { readonly file: strin
     });
   });
 
-interface Captured {
-  code: number;
-  out: string;
-  err: string;
-}
-
-const invoke = async (argv: string[]): Promise<Captured> => {
-  let out = "";
-  let err = "";
-  const io: CliIo = {
-    stdout: (text) => {
-      out += text;
-    },
-    stderr: (text) => {
-      err += text;
-    },
-  };
-  return { code: await run(argv, io), out, err };
-};
-
 /**
  * Every runner writes its failure reason to `OUTPUT_DIR` so the workflow's
- * `if: failure()` step can put it on the issue or PR. Point it at scratch for
- * the duration, so a test that reads the reason has somewhere to read it from.
+ * `if: failure()` step can put it on the issue or PR. A test hands the CLI
+ * scratch as its `OUTPUT_DIR`, so a test that reads the reason has somewhere
+ * to read it from, and a run here never writes into the `OUTPUT_DIR` of the
+ * job the tests run in.
  */
 let scratch = "";
-const previousOutputDir = process.env["OUTPUT_DIR"];
 
 beforeEach(() => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agent-cli-"));
-  process.env["OUTPUT_DIR"] = scratch;
 });
 
 afterEach(() => {
-  if (previousOutputDir === undefined) delete process.env["OUTPUT_DIR"];
-  else process.env["OUTPUT_DIR"] = previousOutputDir;
   fs.rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -311,7 +284,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
   });
 
   it("lists every subcommand in its usage", async () => {
-    const { code, out } = await invoke(["help"]);
+    const { code, out } = await invoke(["help"], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(0);
     for (const name of Object.keys(SUBCOMMANDS)) expect(out).toContain(name);
@@ -324,7 +297,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
    * must not require knowing what the YAML said that week.
    */
   it("reports its own version", async () => {
-    const { code, out } = await invoke(["--version"]);
+    const { code, out } = await invoke(["--version"], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(0);
     expect(out.trim()).toBe(manifest.version);
@@ -338,7 +311,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
    * one nobody checks.
    */
   it("refuses an unknown command, and says so where the workflow can read it", async () => {
-    const { code, err } = await invoke(["implment"]);
+    const { code, err } = await invoke(["implment"], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(2);
     expect(err).toContain("implment");
@@ -351,10 +324,9 @@ describe("the runner CLI dispatches on a subcommand", () => {
    * subcommand wrong has no `OUTPUT_DIR` and is reading stderr anyway.
    */
   it("refuses an unknown command on stderr alone where OUTPUT_DIR is unset", async () => {
-    delete process.env["OUTPUT_DIR"];
     vi.mocked(fs.writeFileSync).mockClear();
 
-    const { code, err } = await invoke(["implment"]);
+    const { code, err } = await invoke(["implment"], { OUTPUT_DIR: undefined });
 
     expect(code).toBe(2);
     expect(err).toContain("implment");
@@ -363,7 +335,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
   });
 
   it("refuses an empty argv with usage", async () => {
-    const { code, err } = await invoke([]);
+    const { code, err } = await invoke([], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(2);
     expect(err).toContain("Usage");
@@ -384,7 +356,7 @@ describe("the runner CLI dispatches on a subcommand", () => {
   it.each([...runnerDirs, ...Object.keys(COMMANDS)])(
     "%s: refuses arguments rather than ignoring them",
     async (name: string) => {
-      const { code, out, err } = await invoke([name, "--dry-run"]);
+      const { code, out, err } = await invoke([name, "--dry-run"], { OUTPUT_DIR: scratch });
 
       expect(code).toBe(2);
       expect(err).toContain("--dry-run");
@@ -469,14 +441,12 @@ describe("every subcommand is declared in the contract, as its kind", () => {
 describe("the CLI runs a command", () => {
   class Exited extends Error {}
   const INPUTS = { GH_REPO: "o/r", GH_TOKEN: "a-token", PR_NUMBER: "7" } as const;
-  const previous = Object.fromEntries(Object.keys(INPUTS).map((name) => [name, process.env[name]]));
   const command = vi.mocked(fileFollowUps);
   let exitCode: number | undefined;
   let exit: MockInstance<typeof process.exit>;
   let logged: MockInstance<typeof console.error>;
 
   beforeEach(() => {
-    Object.assign(process.env, INPUTS);
     command.mockReset();
     exitCode = undefined;
     exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
@@ -489,14 +459,10 @@ describe("the CLI runs a command", () => {
   afterEach(() => {
     exit.mockRestore();
     logged.mockRestore();
-    for (const [name, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
   });
 
   it("hands the function exactly its declared inputs, and its declared outputs, and exits 0", async () => {
-    const { code } = await invoke(["follow-ups:file"]);
+    const { code } = await invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...INPUTS });
 
     expect(code).toBe(0);
     expect(command).toHaveBeenCalledTimes(1);
@@ -508,16 +474,16 @@ describe("the CLI runs a command", () => {
       throw new Error("The pull request could not be read.");
     });
 
-    await expect(invoke(["follow-ups:file"])).rejects.toThrow(Exited);
+    await expect(invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...INPUTS })).rejects.toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("The pull request could not be read.");
   });
 
   it("stops at a missing input, naming it, before the function is called", async () => {
-    delete process.env["PR_NUMBER"];
+    const { PR_NUMBER: _, ...given } = INPUTS;
 
-    await expect(invoke(["follow-ups:file"])).rejects.toThrow(Exited);
+    await expect(invoke(["follow-ups:file"], { OUTPUT_DIR: scratch, ...given })).rejects.toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(command).not.toHaveBeenCalled();
@@ -539,14 +505,12 @@ describe("the CLI runs a command that reads", () => {
     HEAD_SHA: "c".repeat(40),
     PR_STATE: "open",
   } as const;
-  const previous = Object.fromEntries(Object.keys(INPUTS).map((name) => [name, process.env[name]]));
   const command = vi.mocked(gate);
   let exitCode: number | undefined;
   let exit: MockInstance<typeof process.exit>;
   let logged: MockInstance<typeof console.error>;
 
   beforeEach(() => {
-    Object.assign(process.env, INPUTS);
     command.mockReset();
     exitCode = undefined;
     exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
@@ -559,10 +523,6 @@ describe("the CLI runs a command that reads", () => {
   afterEach(() => {
     exit.mockRestore();
     logged.mockRestore();
-    for (const [name, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
   });
 
   it("hands the function its declared inputs, a reader and its outputs, and no writer", async () => {
@@ -572,7 +532,7 @@ describe("the CLI runs a command that reads", () => {
       io.outputs.writeJson("gate.json", { proceed: "true" });
     });
 
-    const { code } = await invoke(["review:gate"]);
+    const { code } = await invoke(["review:gate"], { OUTPUT_DIR: scratch, ...INPUTS });
 
     expect(code).toBe(0);
     expect(command).toHaveBeenCalledWith(
@@ -587,16 +547,16 @@ describe("the CLI runs a command that reads", () => {
       throw new Error("The repository variable is wrong.");
     });
 
-    await expect(invoke(["review:gate"])).rejects.toThrow(Exited);
+    await expect(invoke(["review:gate"], { OUTPUT_DIR: scratch, ...INPUTS })).rejects.toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("The repository variable is wrong.");
   });
 
   it("stops at a missing input, naming it, before the function is called", async () => {
-    delete process.env["HEAD_SHA"];
+    const { HEAD_SHA: _, ...given } = INPUTS;
 
-    await expect(invoke(["review:gate"])).rejects.toThrow(Exited);
+    await expect(invoke(["review:gate"], { OUTPUT_DIR: scratch, ...given })).rejects.toThrow(Exited);
 
     expect(command).not.toHaveBeenCalled();
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: HEAD_SHA");
@@ -621,7 +581,6 @@ describe("the CLI runs a command that writes", () => {
     REVIEWED_SHA: "c".repeat(40),
     REVIEW_DIR: "/nowhere",
   } as const;
-  const previous = Object.fromEntries(Object.keys(INPUTS).map((name) => [name, process.env[name]]));
   const command = vi.mocked(publish);
   let exitCode: number | undefined;
   let exit: MockInstance<typeof process.exit>;
@@ -630,7 +589,6 @@ describe("the CLI runs a command that writes", () => {
     fs.readFileSync(path.join(scratch, "write_log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as unknown);
 
   beforeEach(() => {
-    Object.assign(process.env, INPUTS);
     command.mockReset();
     exitCode = undefined;
     exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
@@ -643,10 +601,6 @@ describe("the CLI runs a command that writes", () => {
   afterEach(() => {
     exit.mockRestore();
     logged.mockRestore();
-    for (const [name, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
   });
 
   it("hands the function its declared inputs, both writers and a reader, and ends the log", async () => {
@@ -656,7 +610,7 @@ describe("the CLI runs a command that writes", () => {
       expect(typeof io.github.reviewThreadIds).toBe("function");
     });
 
-    const { code } = await invoke(["review:publish"]);
+    const { code } = await invoke(["review:publish"], { OUTPUT_DIR: scratch, ...INPUTS });
 
     expect(code).toBe(0);
     expect(command).toHaveBeenCalledWith(expect.objectContaining({ OUTPUT_DIR: scratch, ...INPUTS }), expect.anything());
@@ -669,7 +623,7 @@ describe("the CLI runs a command that writes", () => {
       throw new Error("The hand-over names a thread on another pull request.");
     });
 
-    await expect(invoke(["review:publish"])).rejects.toThrow(Exited);
+    await expect(invoke(["review:publish"], { OUTPUT_DIR: scratch, ...INPUTS })).rejects.toThrow(Exited);
 
     expect(exitCode).toBe(1);
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe(
@@ -683,18 +637,255 @@ describe("the CLI runs a command that writes", () => {
       throw new Error("REVIEWED_SHA is not a commit.");
     });
 
-    await expect(invoke(["review:publish"])).rejects.toThrow(Exited);
+    await expect(invoke(["review:publish"], { OUTPUT_DIR: scratch, ...INPUTS })).rejects.toThrow(Exited);
 
     expect(fs.existsSync(path.join(scratch, "write_log.jsonl"))).toBe(false);
   });
 
   it("stops at a missing token, naming it, before the function is called", async () => {
-    delete process.env["LOOP_TOKEN"];
+    const { LOOP_TOKEN: _, ...given } = INPUTS;
 
-    await expect(invoke(["review:publish"])).rejects.toThrow(Exited);
+    await expect(invoke(["review:publish"], { OUTPUT_DIR: scratch, ...given })).rejects.toThrow(Exited);
 
     expect(command).not.toHaveBeenCalled();
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: LOOP_TOKEN");
+  });
+});
+
+/** Whether `node` is `process.env`, spelled `process.env` or `process["env"]`, on `process` or `globalThis.process`. */
+const isProcessEnv = (node: ts.Node): boolean => {
+  const isProcess = (inner: ts.Node): boolean =>
+    (ts.isIdentifier(inner) && inner.text === "process") ||
+    (ts.isPropertyAccessExpression(inner) && inner.name.text === "process");
+  return (
+    (ts.isPropertyAccessExpression(node) && node.name.text === "env" && isProcess(node.expression)) ||
+    (ts.isElementAccessExpression(node) &&
+      ts.isStringLiteralLike(node.argumentExpression) &&
+      node.argumentExpression.text === "env" &&
+      isProcess(node.expression))
+  );
+};
+
+/**
+ * A test that runs a subcommand sees exactly the inputs it gives (#428): the
+ * subcommand's other declared inputs are unset for the run, whatever the
+ * environment `vitest` runs in holds, so a test that forgets one fails on the
+ * build agent's runner the way it fails on CI's clean one. The environment the
+ * tests run in is stood in for by `withInputs` with no subcommand, which sets
+ * and restores without unsetting anything.
+ */
+describe("a test runs a subcommand with exactly the inputs it gives", () => {
+  class Exited extends Error {}
+  const INPUTS = {
+    GH_REPO: "o/r",
+    GH_TOKEN: "a-token",
+    LOOP_TOKEN: "a-loop-token",
+    LOOP_TOKEN_SOURCE: "app",
+    PR_NUMBER: "7",
+    BRANCH: "agent/issue-12-do-the-thing",
+    REVIEWED_SHA: "c".repeat(40),
+    REVIEW_DIR: "/nowhere",
+  } as const;
+  const command = vi.mocked(publish);
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    command.mockReset();
+    exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+  });
+
+  it("reports an omitted input missing where the environment the tests run in sets it", async () => {
+    const { BRANCH: _, ...given } = INPUTS;
+
+    await withInputs(undefined, { BRANCH: "set-where-the-tests-run" }, async () => {
+      await expect(invoke(["review:publish"], { OUTPUT_DIR: scratch, ...given })).rejects.toThrow(Exited);
+    });
+
+    expect(command).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: BRANCH");
+  });
+
+  it("reads an omitted optional input as its default where the environment sets it", async () => {
+    await withInputs(undefined, { GITHUB_RUN_ID: "12345" }, () =>
+      invoke(["review:publish"], { OUTPUT_DIR: scratch, ...INPUTS }),
+    );
+
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_RUN_ID: "" }), expect.anything());
+  });
+
+  it("passes a variable the subcommand does not declare through unchanged", async () => {
+    let seen: { undeclared?: string | undefined; path?: string | undefined } = {};
+    command.mockImplementation(async () => {
+      seen = { undeclared: process.env["AGENT_CLI_UNDECLARED"], path: process.env["PATH"] };
+    });
+
+    await withInputs(undefined, { AGENT_CLI_UNDECLARED: "kept" }, () =>
+      invoke(["review:publish"], { OUTPUT_DIR: scratch, ...INPUTS }),
+    );
+
+    expect(declaredInputs("review:publish")).not.toContain("AGENT_CLI_UNDECLARED");
+    expect(declaredInputs("review:publish")).not.toContain("PATH");
+    expect(seen).toEqual({ undeclared: "kept", path: process.env["PATH"] });
+  });
+
+  it.each([
+    ["returns", async () => {}],
+    [
+      "exits through fail()",
+      async () => {
+        throw new Error("The hand-over is unreadable.");
+      },
+    ],
+  ] as const)("restores the environment after a run that %s, and leaves unset what was unset", async (_ending, body) => {
+    command.mockImplementation(body);
+
+    await withInputs(undefined, { GH_REPO: "outside", BRANCH: undefined, GITHUB_RUN_ID: "12345" }, async () => {
+      await invoke(["review:publish"], { OUTPUT_DIR: scratch, ...INPUTS }).catch((error: unknown) => {
+        expect(error).toBeInstanceOf(Exited);
+      });
+
+      expect(process.env["GH_REPO"]).toBe("outside");
+      expect(process.env["GITHUB_RUN_ID"]).toBe("12345");
+      expect(Object.hasOwn(process.env, "BRANCH")).toBe(false);
+    });
+    expect(command).toHaveBeenCalledTimes(1);
+  });
+
+  it("unsets nothing for the install path, which declares nothing", () => {
+    expect(declaredInputs("init")).toEqual([]);
+    expect(declaredInputs("doctor")).toEqual([]);
+    expect(declaredInputs("review:publish")).toEqual(Object.keys(COMMANDS["review:publish"].inputs));
+    expect(declaredInputs("implement")).toEqual(Object.keys(RUNNERS.implement.inputs));
+  });
+});
+
+/**
+ * And that holds only while the helper is the one thing setting the
+ * environment around a run. So a test file that runs the CLI, importing its
+ * `run` or the helper, writes `process.env` nowhere: not by assignment, not by
+ * `delete`, not through `Object.assign` or `vi.stubEnv`. Reading it is fine,
+ * and a test file that does not run the CLI is not walked: the `readInputs`
+ * tests set `process.env` on purpose, to exercise the reader.
+ */
+describe("a test that runs the CLI writes process.env only through the helper", () => {
+  const HELPER = "tests/cli-inputs.ts";
+  const WRITERS = new Set([
+    "Object.assign",
+    "Object.defineProperty",
+    "Object.defineProperties",
+    "Reflect.set",
+    "Reflect.deleteProperty",
+    "Reflect.defineProperty",
+  ]);
+
+  const parse = (text: string): ts.SourceFile => ts.createSourceFile("source.ts", text, ts.ScriptTarget.Latest, true);
+
+  /** Whether the file imports, as a value, the CLI's `run` or the helper. */
+  const runsCli = (file: ts.SourceFile): boolean =>
+    file.statements.some((statement) => {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) return false;
+      const clause = statement.importClause;
+      if (clause === undefined || clause.isTypeOnly) return false;
+      const named = clause.namedBindings;
+      const namespace = named !== undefined && ts.isNamespaceImport(named);
+      const values =
+        named === undefined || ts.isNamespaceImport(named)
+          ? []
+          : named.elements.filter((element) => !element.isTypeOnly).map((element) => (element.propertyName ?? element.name).text);
+      const module = statement.moduleSpecifier.text;
+      if (/(^|\/)cli-inputs\.js$/.test(module)) return clause.name !== undefined || namespace || values.length > 0;
+      if (/(^|\/)cli\.js$/.test(module)) return namespace || values.includes("run");
+      return false;
+    });
+
+  /** The lines of `file` on which code writes `process.env`. */
+  const envWrites = (file: ts.SourceFile): number[] => {
+    const lines: number[] = [];
+    const inEnv = (node: ts.Node): boolean =>
+      isProcessEnv(node) ||
+      ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && isProcessEnv(node.expression));
+    const visit = (node: ts.Node): void => {
+      const write =
+        (ts.isBinaryExpression(node) &&
+          node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+          inEnv(node.left)) ||
+        (ts.isDeleteExpression(node) && inEnv(node.expression)) ||
+        (ts.isCallExpression(node) &&
+          ((WRITERS.has(node.expression.getText(file)) && node.arguments[0] !== undefined && isProcessEnv(node.arguments[0])) ||
+            (ts.isPropertyAccessExpression(node.expression) && /^(un)?stub(All)?Envs?$/.test(node.expression.name.text))));
+      if (write) lines.push(file.getLineAndCharacterOfPosition(node.getStart()).line + 1);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    return lines;
+  };
+
+  const tests = fs
+    .readdirSync("tests", { recursive: true, encoding: "utf8" })
+    .filter((name) => name.endsWith(".ts"))
+    .map((name) => path.posix.join("tests", name.split(path.sep).join("/")))
+    .filter((rel) => rel !== HELPER);
+  const runningCli = tests.filter((rel) => runsCli(parse(fs.readFileSync(rel, "utf8"))));
+
+  it("finds the test files that run the CLI, this one among them", () => {
+    expect(runningCli).toContain("tests/agent-cli.test.ts");
+  });
+
+  it("writes process.env in none of them", () => {
+    const writes = runningCli.flatMap((rel) => envWrites(parse(fs.readFileSync(rel, "utf8"))).map((line) => `${rel}:${line}`));
+
+    expect(writes).toEqual([]);
+  });
+
+  /** The exemption is for something: the helper is where the writes are. */
+  it("finds the writes in the helper", () => {
+    expect(envWrites(parse(fs.readFileSync(HELPER, "utf8"))).length).toBeGreaterThan(0);
+  });
+
+  it("catches a direct write and allows the helper's", () => {
+    const direct = parse(
+      [
+        'import { run } from "../cli.js";',
+        'process.env["A"] = "a";',
+        "delete process.env.B;",
+        "Object.assign(process.env, { C: 'c' });",
+        "globalThis.process.env.D ??= 'd';",
+        'vi.stubEnv("E", "e");',
+        'process["env"]["F"] = "f";',
+      ].join("\n"),
+    );
+    const helped = parse(
+      [
+        'import { invoke, withInputs } from "./cli-inputs.js";',
+        'const path = process.env["PATH"];',
+        "const keys = Object.keys(process.env);",
+        'await invoke(["review:publish"], { BRANCH: "b" });',
+        'await withInputs(undefined, { PATH: "p" }, () => undefined);',
+      ].join("\n"),
+    );
+
+    expect(runsCli(direct)).toBe(true);
+    expect(envWrites(direct)).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(runsCli(helped)).toBe(true);
+    expect(envWrites(helped)).toEqual([]);
+  });
+
+  it("walks only a file that runs the CLI", () => {
+    const reader = parse(['import { readInputs } from "../shared/env.js";', 'process.env["A"] = "a";'].join("\n"));
+    const typed = parse(['import { type CliIo } from "../cli.js";', 'process.env["A"] = "a";'].join("\n"));
+
+    expect(runsCli(reader)).toBe(false);
+    expect(runsCli(typed)).toBe(false);
   });
 });
 
@@ -718,17 +909,8 @@ describe("every input a runner reads goes through its declaration", () => {
   const envReads = (text: string): number[] => {
     const file = ts.createSourceFile("source.ts", text, ts.ScriptTarget.Latest, true);
     const lines: number[] = [];
-    const isProcess = (node: ts.Node): boolean =>
-      (ts.isIdentifier(node) && node.text === "process") ||
-      (ts.isPropertyAccessExpression(node) && node.name.text === "process");
     const visit = (node: ts.Node): void => {
-      const env =
-        (ts.isPropertyAccessExpression(node) && node.name.text === "env" && isProcess(node.expression)) ||
-        (ts.isElementAccessExpression(node) &&
-          ts.isStringLiteralLike(node.argumentExpression) &&
-          node.argumentExpression.text === "env" &&
-          isProcess(node.expression));
-      if (env) lines.push(file.getLineAndCharacterOfPosition(node.getStart()).line + 1);
+      if (isProcessEnv(node)) lines.push(file.getLineAndCharacterOfPosition(node.getStart()).line + 1);
       ts.forEachChild(node, visit);
     };
     visit(file);
@@ -1309,7 +1491,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("is reachable as a subcommand and takes a directory", async () => {
     const root = adopted();
 
-    const { code, out } = await invoke(["init", "--dir", root]);
+    const { code, out } = await invoke(["init", "--dir", root], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(0);
     expect(out).toContain("agent-issue.yml");
@@ -1333,20 +1515,14 @@ describe("init installs the reference callers into an adopting repo", () => {
       `#!/bin/sh\necho "GH_REPO=\${GH_REPO:-} $*" >> "${log}"\nexit 1\n`,
       { mode: 0o755 },
     );
-    const saved = { PATH: process.env["PATH"], GH_REPO: process.env["GH_REPO"] };
-    process.env["PATH"] = `${bin}${path.delimiter}${saved.PATH ?? ""}`;
-    process.env["GH_REPO"] = "acme/live";
-    try {
-      const { code, out } = await invoke(["init", "--dir", root]);
+    const { code, out } = await invoke(["init", "--dir", root], {
+      OUTPUT_DIR: scratch,
+      PATH: `${bin}${path.delimiter}${process.env["PATH"] ?? ""}`,
+      GH_REPO: "acme/live",
+    });
 
-      expect(code).toBe(0);
-      expect(out).toMatch(/kept\s+Actions policy/);
-    } finally {
-      for (const [key, value] of Object.entries(saved)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
-    }
+    expect(code).toBe(0);
+    expect(out).toMatch(/kept\s+Actions policy/);
     const calls = fs.readFileSync(log, "utf8").trim().split("\n");
     expect(calls).toEqual([
       "GH_REPO= repo view --json visibility --jq .visibility",
@@ -1359,7 +1535,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   });
 
   it("refuses a flag it does not know rather than ignoring it", async () => {
-    const { code, err } = await invoke(["init", "--force"]);
+    const { code, err } = await invoke(["init", "--force"], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(2);
     expect(err).toContain("--force");
@@ -1375,21 +1551,17 @@ describe("init installs the reference callers into an adopting repo", () => {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), "agent-fake-gh-"));
     roots.push(bin);
     fs.writeFileSync(path.join(bin, "gh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-    const saved = process.env["PATH"];
-    process.env["PATH"] = `${bin}${path.delimiter}${saved ?? ""}`;
-    try {
-      const { code, out } = await invoke(["init", "--dir", root, "--app"]);
+    const init = await invoke(["init", "--dir", root, "--app"], {
+      OUTPUT_DIR: scratch,
+      PATH: `${bin}${path.delimiter}${process.env["PATH"] ?? ""}`,
+    });
 
-      expect(code).toBe(0);
-      expect(out).toMatch(/kept\s+GitHub App \(could not read which account owns this repository/);
-    } finally {
-      if (saved === undefined) delete process.env["PATH"];
-      else process.env["PATH"] = saved;
-    }
+    expect(init.code).toBe(0);
+    expect(init.out).toMatch(/kept\s+GitHub App \(could not read which account owns this repository/);
 
-    const { code, err } = await invoke(["doctor", "--dir", root, "--app"]);
-    expect(code).toBe(2);
-    expect(err).toContain("--app");
+    const doctor = await invoke(["doctor", "--dir", root, "--app"], { OUTPUT_DIR: scratch });
+    expect(doctor.code).toBe(2);
+    expect(doctor.err).toContain("--app");
   });
 
   /**
@@ -1403,7 +1575,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("refuses a --dir that does not exist rather than scaffolding one", async () => {
     const missing = path.join(os.tmpdir(), "agent-init-absent", "typo", "path");
 
-    const { code, err } = await invoke(["init", "--dir", missing]);
+    const { code, err } = await invoke(["init", "--dir", missing], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(2);
     expect(err).toContain(missing);
@@ -1420,7 +1592,7 @@ describe("init installs the reference callers into an adopting repo", () => {
     const file = path.join(os.tmpdir(), `agent-dir-file-${command}-${process.pid}`);
     fs.writeFileSync(file, "");
     try {
-      const { code, err } = await invoke([command, "--dir", file]);
+      const { code, err } = await invoke([command, "--dir", file], { OUTPUT_DIR: scratch });
 
       expect(code).toBe(2);
       expect(err).toContain(file);
@@ -1433,7 +1605,7 @@ describe("init installs the reference callers into an adopting repo", () => {
   it("names the directory it worked in", async () => {
     const root = adopted();
 
-    const { out } = await invoke(["init", "--dir", root]);
+    const { out } = await invoke(["init", "--dir", root], { OUTPUT_DIR: scratch });
 
     expect(out).toContain(path.resolve(root));
   });
@@ -2509,6 +2681,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   const check = async (
     root: string,
     facts: RepoFacts,
+    given: Given = { OUTPUT_DIR: scratch },
   ): Promise<{ code: number; out: string; err: string }> => {
     let out = "";
     let err = "";
@@ -2520,7 +2693,8 @@ describe("doctor names the failures that otherwise look like something else", ()
         err += text;
       },
     };
-    return { code: await runDoctor({ dir: root, facts }, io), out, err };
+    const code = await withInputs(undefined, given, () => runDoctor({ dir: root, facts }, io));
+    return { code, out, err };
   };
 
   it("passes a repository init has just set up", async () => {
@@ -3502,7 +3676,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("refuses a --dir that does not exist rather than diagnosing it", async () => {
     const missing = path.join(os.tmpdir(), "agent-doctor-absent", "typo");
 
-    const { code, err } = await invoke(["doctor", "--dir", missing]);
+    const { code, err } = await invoke(["doctor", "--dir", missing], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(2);
     expect(err).toContain(missing);
@@ -4437,10 +4611,9 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("reports on stderr and writes no file where OUTPUT_DIR is unset", async () => {
     const root = await installed();
     edit(root, "fix", (text) => text.replace(/^ *packages: read$/m, ""));
-    delete process.env["OUTPUT_DIR"];
     vi.mocked(fs.writeFileSync).mockClear();
 
-    const { code, err } = await check(root, healthy());
+    const { code, err } = await check(root, healthy(), { OUTPUT_DIR: undefined });
 
     expect(code).toBe(1);
     expect(err).toContain("packages: read");
@@ -4450,7 +4623,7 @@ describe("doctor names the failures that otherwise look like something else", ()
   it("is reachable as a subcommand and refuses a flag it does not know", async () => {
     expect(Object.keys(SUBCOMMANDS)).toContain("doctor");
 
-    const { code, err } = await invoke(["doctor", "--fix"]);
+    const { code, err } = await invoke(["doctor", "--fix"], { OUTPUT_DIR: scratch });
 
     expect(code).toBe(2);
     expect(err).toContain("--fix");

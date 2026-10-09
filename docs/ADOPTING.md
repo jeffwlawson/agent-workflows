@@ -891,17 +891,11 @@ which is handed the word rather than the tag. One surface carries no image at al
 follow-ups workflow files after the merge, whose `**Severity:**` line stays a plain `` `Medium` ``,
 because that body is an agent's task description and outlives the pull request it came from.
 
-**Nearly every entry is the one-line version of a thread**, and the thread is where you answer it.
+**Every entry is the one-line version of a thread**, and the thread is where you answer it.
 That holds for a finding about a file the pull request never touches too: such a problem is caused
 by something the change did, so the review anchors it at that change and names the untouched
 location in the thread — *"This changes the signature, but `docs/api.md:18` still describes the old
 one"* on `src/api.ts:42`. You reply, decline or resolve it exactly as you would any other.
-
-Two kinds of entry are the exception, and neither has a thread to answer on: a `fixBeforeMerge` line
-the review restated without a matching finding, and — on a pull request that was already open when
-you upgraded past #127 — an entry an older review wrote for a finding in a file that pull request
-never changed. Both count toward the verdict, and both close by a later review no longer listing
-them rather than by anything you can click.
 
 If nothing in the diff causes it, it was never this pull request's to fix. The workflow does not
 take the review's word for that: a finding anchored in a file the pull request does not change is
@@ -1027,15 +1021,12 @@ with it:
 - **A finding the loop was wrong about still holds the merge.** The cost is one click — resolve the
   thread — but it is your click, on every one of them, and on a busy repository that is the cost
   you are actually signing up for.
-- **It gates the threads, and the threads are now nearly the whole record.** Almost every finding
-  that counts toward the verdict is a thread you can answer — a finding about an untouched file is
+- **It gates the threads, and the threads are now the whole record.** Every finding that counts
+  toward the verdict is a thread you can answer: a finding about an untouched file is
   anchored at the change that causes it, and one nothing in the change causes is a follow-up rather
   than a blocker. So this setting and the required check cover much the same set from two
-  directions: the check gates the verdict, this gates each finding in it. Two kinds of entry still
-  count with no thread behind them — a body entry a review posted before #127, on a pull request
-  that was already open then, and a `fixBeforeMerge` line the review restated without a matching
-  finding — and clearing either is a re-review's job rather than this setting's. Running both is
-  still the argument, since a verdict is one line and a finding is a decision.
+  directions: the check gates the verdict, this gates each finding in it. Running both is still
+  the argument, since a verdict is one line and a finding is a decision.
 - **Give the resolutions a few rounds first.** Which threads close is a judgement the review now
   makes on its own, against code a fix run wrote, and it is the newest thing in the loop. Watch a
   handful of rounds and read what it closed and what it left open before you make those closures

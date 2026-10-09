@@ -301,7 +301,7 @@ describe("applyCriteriaRulings", () => {
 describe("the body's acceptance criteria section", () => {
   const parts = {
     verdict: VERDICTS["approval recommended"],
-    output: { findings: [], followUps: [], fixBeforeMerge: [], verified: [] },
+    output: { findings: [], followUps: [], verified: [] },
     placed: [],
     movedToFollowUps: 0,
     stillOpen: [],

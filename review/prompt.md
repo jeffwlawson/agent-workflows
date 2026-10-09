@@ -39,8 +39,8 @@ the summary you write counts as part of the body.
   merge, and the workflow raises it for you: give a one-line `reason` saying what is missing, a
   `severity`, and a `path` and `line` anchored by the usual rule (at the change nearest to it; a
   line outside the diff in a changed file is posted on the file). Do **not** also write it into
-  `findings` or `fixBeforeMerge`: ruling it `unmet` is the whole of reporting it, and a second
-  write-up is counted twice.
+  `findings`: ruling it `unmet` is the whole of reporting it, and a second write-up is counted
+  twice.
 
 A criterion you say nothing about is listed as *not checked* on the review, where a reader sees the
 gap, so rule on all of them.
@@ -84,8 +84,8 @@ but *did the last round's findings land, and did the new commits break anything?
 - Read the new commits for what they broke. A fix that resolves its own finding and regresses
   something else is the failure this pass exists to catch, and nothing else is looking for it.
 - A real problem you find in code an earlier review of this pull request already read is
-  **previously missed**: report it as a finding like any other, label it as the section below
-  says, and restate it in `fixBeforeMerge`. It is this pull request's to fix before it merges:
+  **previously missed**: report it as a finding like any other, and label it as the section below
+  says. It is this pull request's to fix before it merges:
   the record was wrong about the change, which is a stronger reason to stop the merge than an
   ordinary finding rather than a weaker one. It does **not** go to `followUps`, which is where an
   earlier version of this brief sent it.
@@ -100,7 +100,7 @@ but *did the last round's findings land, and did the new commits break anything?
 
 These were raised by an earlier review of this pull request and nothing has verified them fixed.
 Each carries the identifier the workflow gave it when it was posted; the evidence is on the thread
-it was raised in, under **EXISTING FEEDBACK** above, or in that review's body.
+it was raised in, under **EXISTING FEEDBACK** above.
 
 {{OPEN_FINDINGS}}
 
@@ -115,8 +115,7 @@ been settled: a human may have pushed the fix, or the finding may have been wron
 What follows from your answer is not yours to do and not yours to state. A finding you rule
 `landed` has its thread closed by the workflow, with your line as the reason. One you rule `open`
 counts against this pull request exactly as a finding of your own would, so **ruling it `open` is
-the whole of reporting it**: do not write it up again in `fixBeforeMerge`, and do not write it up
-again as one of your own `findings`. Identifiers are the workflow's and text is never matched, so
+the whole of reporting it**: do not write it up again as one of your own `findings`. Identifiers are the workflow's and text is never matched, so
 a second write-up is a second finding: counted twice, given a second thread, and carried
 separately every round after. If there is more to say about it than the line beside its
 identifier, say it in that line.
@@ -289,8 +288,7 @@ saying so.
 There are two, and every finding is one of them.
 
 **Fix before merge**: this pull request is wrong, unsafe, or does not do what the linked issue
-asked, and must not merge as it stands. Say so in the finding, and restate each one as a single
-line in `fixBeforeMerge`. Every finding is counted and every one is listed in the review's findings
+asked, and must not merge as it stands. Say so in the finding. Every finding is counted and every one is listed in the review's findings
 record under **Open**, so a finding only the prose carries is one nobody can act on without
 reading for it. The label is for whoever reads the thread: one you forget to write still counts
 and is still recorded, so it is not a dial for how serious you meant it.
@@ -300,8 +298,7 @@ structured output carries, on the bar stated with it.
 
 **Previously missed** is the first kind with one more thing said about it: a real problem in code
 an earlier review of this pull request already read. Open its body with `**Previously missed.**`
-instead of `**Fix before merge.**` and restate it in `fixBeforeMerge` like any other. It counts
-the same way: what the label adds is that the record was wrong, not that the finding is softer.
+instead of `**Fix before merge.**`. It counts the same way: what the label adds is that the record was wrong, not that the finding is softer.
 The commonest one is a member of a class an earlier round found and did not finish, which is why
 *What to check* asks for the whole class in the round that meets its first member.
 
@@ -310,7 +307,7 @@ overruled on: if it is not worth fixing, it is not worth the time of the person 
 it. Saying the change is clean is a finding; wishing it were different is not.
 
 **The outcome is derived, not written.** A verdict, and the next step a human should take, is
-computed from `fixBeforeMerge`, from `needsYou` below and from the check results, then posted
+computed from your findings, from `needsYou` below and from the check results, then posted
 where GitHub shows it. So do not state a verdict of your own: what decides it is what you
 record, not what your prose calls it.
 

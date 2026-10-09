@@ -141,7 +141,9 @@ export const fetchPullRequestContext = (
   // Every feedback surface on the PR, author-gated, via the same shared fetch
   // `agent:fix` uses: review summaries, unresolved inline threads (replies
   // included), and conversation comments. A re-review therefore sees the notes
-  // a human left on the previous one instead of repeating itself.
+  // a human left on the previous one instead of repeating itself. Not its own
+  // earlier review bodies (#224): it has their findings as the open findings
+  // and the threads already.
   const feedback = fetchPullRequestFeedback(ghRepo, prNumber, baseRef, accounts);
   const issueComments = renderTrustedComments(trustedIssueComments);
   // A review **degrades** where the fix runner refuses: it holds `contents:
@@ -157,7 +159,7 @@ export const fetchPullRequestContext = (
   // spans a section it has no bearing on is one the agent has to guess the
   // scope of.
   const discussion = [
-    feedback.all,
+    feedback.allForReview,
     unreadableNote(feedback.unreadable),
     issueComments && `### On the linked issue\n\n${issueComments}`,
   ]
@@ -182,12 +184,9 @@ export const fetchPullRequestContext = (
     discussion,
     unreadableFeedback: feedback.unreadable,
     // Assembled here rather than in the fetch, which reads GitHub surfaces and
-    // reports what it read. Which of those surfaces a finding is recorded on,
-    // and which copy wins when it is on both, is the review's question.
-    carriedFindings: carriedFindings({
-      threads: feedback.agentThreads,
-      latestReviewBody: feedback.latestAgentReviewBody,
-    }),
+    // reports what it read. Which threads make one finding is the review's
+    // question.
+    carriedFindings: carriedFindings(feedback.agentThreads),
     settledFindings: feedback.settledFindings,
     fixNotes: feedback.outOfScopeNotes,
     diff,

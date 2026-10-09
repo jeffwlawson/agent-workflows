@@ -17,7 +17,11 @@ import {
   unreadableHistoryNote,
   type ReviewHistory,
 } from "../../review/review-round.js";
-import { LEGACY_FIX_ROUND_STARTED, VERDICTS } from "../../shared/review-output.js";
+import { VERDICTS } from "../../shared/review-output.js";
+
+/** 0.7.6's *fix round started* verdict line, from before `FIX_ROUND_STATUS` (#297). */
+const OLD_FIX_ROUND_STARTED =
+  "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically.";
 import type { CarriedFinding } from "../../shared/review-verification.js";
 import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../../shared/record.js";
 import { loopAccounts } from "../../shared/loop-accounts.js";
@@ -279,17 +283,17 @@ describe("readReviewHistory", () => {
   });
 
   /**
-   * A round in flight at the upgrade (#297): its verdict is 0.7.6's *fix round
-   * started* line, and no `agent-fix-round` record was ever posted beside it.
-   * Counted for one release, so the early stop can still judge that round.
+   * 0.7.6's *fix round started* verdict line, with no `agent-fix-round`
+   * record beside it, was counted for one release after #297 and is not any
+   * more (#224): only the record makes a round.
    */
-  it("follows a fix round a 0.7.6 verdict started, which carries no record", () => {
+  it("does not follow a fix round a 0.7.6 verdict line names, which carries no record", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],
-      statuses: statuses({ [MIDDLE]: [verdict(LEGACY_FIX_ROUND_STARTED)] }),
+      statuses: statuses({ [MIDDLE]: [verdict(OLD_FIX_ROUND_STARTED)] }),
     });
 
-    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: true, unreviewedCommits: true });
+    expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
   /**
@@ -452,6 +456,8 @@ describe("fixRoundProgress", () => {
     id,
     threadId: `T_${id}`,
     text: `src/a.ts:1: claim ${id}`,
+    title: `claim ${id}`,
+    anchor: "src/a.ts:1",
     ...over,
   });
   const AFTER: ReviewHistory = { afterFixRound: true, unreviewedCommits: true };

@@ -349,7 +349,7 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 |---|---|---|---|
 | `## Agent review` | The opening of a review's body, after its round header. A review by the loop with this heading is one round. | `review:publish`, from `review`'s `review_body.json` | `review`, `fix`, `implement-prd`, to count rounds |
 | `**Review <r>**`, `**Slice <k> of <n> · #<sub> · review <r>**`, `**Final review · review <r>**` | The round header, the first line of a review or fix comment. | `review:publish`, from `review`'s `review_body.json`, and `fix`, in its outputs | the same three, to tell a PRD PR's rounds apart by slice |
-| `<!-- agent-finding <id> … -->` | Each finding's inline comment, and the review body for a finding with no line. | `review:publish`, from `review`'s `findings.json` and `review_body.json` | `review`, `fix`, as the findings still open |
+| `<!-- agent-finding <id> … -->` | Each finding's inline comment. A review body carries none since #224. | `review:publish`, from `review`'s `findings.json` and `review_body.json` | `review`, `fix`, as the findings still open |
 | `<!-- agent-resolution ADDRESSED -->`, `<!-- agent-resolution WONT_FIX -->` | The reply that closes a finding's thread. | `review:publish`, from `review`'s `thread_resolutions.json` | `review`, `fix`, as the findings settled |
 | `<!-- agent-fix:out-of-scope {…} -->` | A note on a finding the fix judged out of scope. | `fix`'s `out_of_scope_notes.json` | `review`, which rules on it; `fix`, to not repeat it |
 | `<!-- agent-fix:top-level -->` | A top-level comment the fix posted. Read on a trusted author's post too. | `fix`'s `top_level_comments.json` | `review`, `fix`, to leave the loop's own comments out of the feedback |
@@ -590,7 +590,7 @@ text, and `review:publish` and `review:advance` write every final string from th
   and the `agent:fix` label events.
 - The `agent-review` and `agent-fix-round` statuses on the pull request's commits, for what changed
   since the last verdict.
-- The open and settled findings: `agent-finding` markers on the loop's threads and review bodies,
+- The open and settled findings: `agent-finding` markers on the loop's threads,
   and `agent-resolution` on the loop's closing replies.
 - The fix's `agent-fix:out-of-scope` notes, posted since the last review, to rule on.
 - Earlier reviews' `agent-follow-ups`, `agent-red-tests` and acceptance criteria groups.
@@ -644,8 +644,7 @@ what it decided is handed on, and the posting step says it. In order:
 - **The fix-round budget.** `DEPRECATED_AUTO_FIX`, where set, is a budget of 1 (`true`) or 0
   (`false`), and anything else is refused; otherwise `MAX_FIX_ROUNDS`, 3 where unset, and a value
   that is not a whole number is refused, naming it. The rounds spent are the loop's own
-  `agent-fix-round` statuses on the pull request's commits, and 0.7.6's round-starting
-  `agent-review` verdicts, counted once per link. A round starts where fewer are spent than the
+  `agent-fix-round` statuses on the pull request's commits, counted once per link. A round starts where fewer are spent than the
   budget and `LOOP_TOKEN_SOURCE` is `app` or `pat`; a count that cannot be read starts none.
 - **The round.** On a PRD branch only: `final` where the pull request's body carries the final
   review's mark, else `slice`. A body that cannot be read fails the command.
@@ -685,8 +684,8 @@ written to `refusal_reason.txt` and the command fails, so the run ends as one th
 - `BRANCH`'s tip, and how it relates to `HEAD_SHA`.
 - The pull request `PR_NUMBER` names, for its head while it waits and, on a PRD branch, for the
   final review's mark in its body.
-- The statuses on the pull request's commits, for the loop's own `agent-fix-round`, and
-  `agent-review` with 0.7.6's round-starting description, counting only the loop's own (§4.1).
+- The statuses on the pull request's commits, for the loop's own `agent-fix-round`, counting only
+  the loop's own (§4.1).
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 

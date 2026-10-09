@@ -1682,6 +1682,49 @@ describe("the findings an earlier review left open", () => {
 
     expect(fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS).latestAgentReviewBody).toBe("the current record");
   });
+
+  /**
+   * **The review is not handed its own earlier bodies** (#224). It has their
+   * findings as the open findings and the unresolved threads, so up to fifty
+   * copies of what it already had added nothing but length. A trusted human's
+   * review body is still discussion, and the loop's accounts are every one on
+   * its list, not only the default. `all` is unchanged, and so is the
+   * `summaries` the fix agent reads; the record is still read off the newest loop review.
+   */
+  it("leaves every loop account's review bodies out of the review's discussion, and keeps a human's", () => {
+    const APP = { author: { login: "my-loop" }, authorAssociation: "NONE" };
+    ghAnswers(() =>
+      response({
+        reviews: {
+          nodes: [
+            { body: "round 1 body", state: "COMMENTED", ...AGENT },
+            { body: "Please keep the old flag working.", state: "COMMENTED", ...MAINTAINER },
+            { body: "round 2 body", state: "COMMENTED", ...APP },
+            { body: "round 3 body", state: "COMMENTED", ...AGENT },
+          ],
+        },
+      }),
+    );
+
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main", loopAccounts("my-loop[bot]"));
+
+    expect(feedback.allForReview).toContain("Please keep the old flag working.");
+    for (const body of ["round 1 body", "round 2 body", "round 3 body"]) {
+      expect(feedback.allForReview).not.toContain(body);
+      expect(feedback.all).toContain(body);
+      expect(feedback.summaries).toContain(body);
+    }
+    expect(feedback.latestAgentReviewBody).toBe("round 3 body");
+  });
+
+  it("hands the review no summaries section where only the loop has reviewed", () => {
+    ghAnswers(() => response({ reviews: { nodes: [{ body: "round 1 body", state: "COMMENTED", ...AGENT }] } }));
+
+    const feedback = fetchPullRequestFeedback("o/r", "12", "main", ACCOUNTS);
+
+    expect(feedback.allForReview).not.toContain("### Review summaries");
+    expect(feedback.all).toContain("### Review summaries");
+  });
 });
 
 /**
@@ -1897,10 +1940,10 @@ describe("a thread anchored to a file rather than a line", () => {
     // And through to the record, where the anchor and the clause stay out of
     // the entry's title.
     const record = reviewRecord({
-      output: { findings: [], followUps: [], fixBeforeMerge: [], verified: [] },
+      output: { findings: [], followUps: [], verified: [] },
       placed: [],
       stillOpen: [],
-      resolved: carriedFindings({ threads, latestReviewBody: "" }),
+      resolved: carriedFindings(threads),
     });
     expect(record.resolved).toEqual([
       {

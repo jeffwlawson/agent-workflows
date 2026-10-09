@@ -3,8 +3,7 @@ import type { ReadingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { isWorkflowBot, loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
-import { FINAL_REVIEW_MARK, FIX_ROUND_STATUS, PRD_BRANCH_PREFIX, REVIEW_LABEL, VERDICT_CONTEXT } from "../shared/record.js";
-import { LEGACY_FIX_ROUND_STARTED } from "../shared/review-output.js";
+import { FINAL_REVIEW_MARK, FIX_ROUND_STATUS, PRD_BRANCH_PREFIX, REVIEW_LABEL } from "../shared/record.js";
 
 type Inputs = InputValues<(typeof COMMANDS)["review:gate"]["inputs"]>;
 type Io = ReadingIo<(typeof COMMANDS)["review:gate"]["outputs"]>;
@@ -292,8 +291,8 @@ const budgetOf = (inputs: Inputs, io: Io): number => {
 
 /**
  * The automatic fix rounds the pull request has spent: one per distinct link
- * among the loop's `agent-fix-round` statuses, and 0.7.6's round-starting
- * verdicts, over every commit of the pull request. A status with no link
+ * among the loop's `agent-fix-round` statuses, over every commit of the pull
+ * request. A status with no link
  * counts on its own. The loop's are those posted by one of `accounts`, in the
  * REST spelling a status's creator has (§4.1). Throws where any of it could
  * not be read, which is not the same answer as none.
@@ -304,10 +303,7 @@ const roundsSpent = async (github: GitHubReader, pr: number, accounts: LoopAccou
   for (const sha of await github.pullRequestCommits(pr)) {
     for (const status of await github.commitStatuses(sha)) {
       if (!isWorkflowBot(status.creator, accounts)) continue;
-      const round =
-        status.context === FIX_ROUND_STATUS.context ||
-        (status.context === VERDICT_CONTEXT && status.description === LEGACY_FIX_ROUND_STARTED);
-      if (!round) continue;
+      if (status.context !== FIX_ROUND_STATUS.context) continue;
       if (status.targetUrl === null || status.targetUrl === "") unlinked += 1;
       else links.add(status.targetUrl);
     }

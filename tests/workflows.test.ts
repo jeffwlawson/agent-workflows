@@ -1114,7 +1114,13 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     // finds what it looks for, and so must never read as CI.
     expect(checkRuns).toContain("review / red-check");
     expect("agent-review / red-check").toMatch(excluded);
-    for (const name of checkRuns) expect(name).toMatch(excluded);
+    // Every one but follow-ups' (#224): it runs only on a closed pull
+    // request, so it never meets this wait.
+    expect(checkRuns).toContain("follow-ups / follow-ups");
+    for (const name of checkRuns) {
+      if (name === "follow-ups / follow-ups") expect(name).not.toMatch(excluded);
+      else expect(name).toMatch(excluded);
+    }
     expect("agent-review / advance").toMatch(excluded);
     // And under a caller job an adopter renamed, where only the second half is
     // ours to know.
@@ -1124,15 +1130,12 @@ describe("every PR workflow shares one concurrency group per PR", () => {
     expect("CI / post").not.toMatch(excluded);
     // Bare job ids too — an adopter is free to inline a job rather than call
     // one, and the pattern predates the split.
-    //
-    // `follow-ups` is in the pattern even though excluding it is dead at
-    // runtime: this wait only runs on an open pull request and that workflow
-    // only fires on a closed one (#50). One word in one string, against a
-    // carve-out whose comment would have to justify a timing argument that
-    // could stop being true.
-    for (const name of ["review", "fix", "follow-ups", "update-branch", "implement", "implement-prd"]) {
+    for (const name of ["review", "fix", "update-branch", "implement", "implement-prd"]) {
       expect(name).toMatch(excluded);
     }
+    // Not `follow-ups` (#224): that workflow only fires on a closed pull
+    // request (#50), and this wait only runs on an open one.
+    expect("follow-ups").not.toMatch(excluded);
 
     // Bounded at both ends, or the exclusion eats the CI it exists to collect.
     // These are repo checks whose names merely start or end near an agent's.
@@ -1845,8 +1848,8 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
    * later round with open findings and budget left starts another.
    */
   it("cannot fire after a fix round that closed nothing, and reads no round", () => {
-    const findings = { findings: [], followUps: [], fixBeforeMerge: ["the guard runs after the return"], verified: [] };
-    const inputs = { ci: "green", stillOpen: 0, movedToFollowUps: 0, autoFix: true } as const;
+    const findings = { findings: [], followUps: [], verified: [] };
+    const inputs = { ci: "green", stillOpen: 1, movedToFollowUps: 0, autoFix: true } as const;
     expect(
       deriveVerdict(findings, { ...inputs, fixRoundProgress: { given: 3, closed: 0 } }).startsFixRound,
       "a fix round that made no progress must not be able to ask for the round this job starts",
@@ -6317,7 +6320,6 @@ describe("the adoption doc says what to do with each verdict", () => {
       output: {
         findings: [],
         followUps: [],
-        fixBeforeMerge: [],
         verified: [],
         howChecked: "Ran the suite.",
       },
@@ -6327,7 +6329,9 @@ describe("the adoption doc says what to do with each verdict", () => {
       ],
       movedToFollowUps: 0,
       stillOpen: [],
-      resolved: [{ id: "f-done", threadId: "PRRT_one", text: "the cache key omits the tenant" }],
+      resolved: [
+        { id: "f-done", threadId: "PRRT_one", text: "the cache key omits the tenant", title: "the cache key omits the tenant", anchor: "src/a.ts:1" },
+      ],
       followUps: [
         {
           title: "Leak in parse()",

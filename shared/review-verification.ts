@@ -1,5 +1,5 @@
 import { asRecord, asString } from "./common.js";
-import { parseFindingMarkers, withSeverityBadgesAsText, type Severity } from "./review-findings.js";
+import { withSeverityBadgesAsText, type Severity } from "./review-findings.js";
 import { RESOLUTION_MARKER } from "./record.js";
 
 /**
@@ -20,17 +20,10 @@ export interface CarriedFinding {
   readonly id: string;
   /**
    * The thread it lives in, and the thing this file exists to be able to
-   * resolve.
-   *
-   * Absent for a **body entry**, which nothing writes any more: a finding in a
-   * file the pull request never touched used to be recorded in the review body
-   * for want of a diff line to hang a thread on, and since #127 it is anchored
-   * at the change that causes it or recorded as a follow-up instead. What still
-   * arrives with no thread is one of those entries on a pull request that was
-   * already open when this version landed (#127, decision 5) — carried and
-   * verified exactly as before, with nothing to close when it lands.
+   * resolve. Every finding has one since #127, and since #224 nothing reads a
+   * finding out of a review body, so there is no carried finding without it.
    */
-  readonly threadId?: string;
+  readonly threadId: string;
   /** One line: where it is and what it claims, as the review that raised it wrote it. */
   readonly text: string;
   /**
@@ -39,12 +32,10 @@ export interface CarriedFinding {
    * thread an older release wrote, the claim alone. Never `text`, which is the
    * anchor, any `(outdated …)` clause and the claim, and reads as a paragraph
    * inside a link.
-   *
-   * Absent on a body entry, whose `text` is already the title its line showed.
    */
-  readonly title?: string;
-  /** `path:line` for a threaded finding, rendered beside the title as every entry's is. */
-  readonly anchor?: string;
+  readonly title: string;
+  /** `path:line`, rendered beside the title as every entry's is. */
+  readonly anchor: string;
   /**
    * The rating the review that raised it gave it, read back off the marker the
    * workflow wrote (#109, decision 9). Absent where the finding was posted by a
@@ -114,8 +105,7 @@ export interface MaintainerReply {
  *
  * Separate from `CarriedFinding` because the two answer different questions: a
  * thread is a surface GitHub has, and a carried finding is a claim about the
- * code, which a legacy body entry records without one. Collapsing them would
- * make `threadId` a lie for those.
+ * code the review is asked to rule on.
  */
 export interface AgentThread {
   readonly threadId: string;
@@ -123,9 +113,9 @@ export interface AgentThread {
   /** Where the thread is anchored and what its first comment claims. */
   readonly text: string;
   /** What a record entry lists it as. See `CarriedFinding.title`. */
-  readonly title?: string;
+  readonly title: string;
   /** `path:line`, with no clause. See `CarriedFinding.anchor`. */
-  readonly anchor?: string;
+  readonly anchor: string;
   /** The rating on the marker the review that raised it wrote, where it carries one. */
   readonly severity?: Severity;
   /** The thread's own permalink, where the response carried one. */
@@ -161,58 +151,32 @@ export interface SettledFinding {
 }
 
 /**
- * Everything an earlier review of this pull request left open, from the two
- * surfaces a finding can be posted on.
+ * Everything an earlier review of this pull request left open, read off the
+ * threads this loop opened.
  *
- * Only the **latest** review body is read, and that is what makes the body a
- * record rather than an archive: each review re-lists what it verified as still
- * open, so the newest body is the current statement and an older one is the
- * statement it replaced. Reading them all would re-raise every finding a later
- * round already closed.
- *
- * The body half carries only the findings with no thread, because a threaded
- * finding's id is deliberately left off the body (`carriedEntry`, in
- * `shared/review-output.ts`): the
- * thread is its record, and a maintainer who resolves one by hand has settled
- * it. Since #127 that half reads only what an older release wrote — a v0.4.0
- * body entry on a pull request open at the upgrade (decision 5) — and a body
- * this version posts carries an id only for one of those it is still carrying.
- * So the two sources should be disjoint. **The thread still wins** where
- * they are not — a body posted by another version, or an id somehow written
- * twice — because taking the body's copy would leave a landed finding with no
- * `threadId` and so nothing to resolve, which is the failure that looks like
- * everything working.
+ * Only threads (#224). A v0.4.0 review recorded a finding with no anchor in
+ * the diff as a line in its body, and a later round used to read those back out
+ * of the latest review body; since #127 every finding has a thread, so the
+ * body is no longer a source. One finding per id: an id somehow on two
+ * threads is carried once, from the first.
  */
-export const carriedFindings = (parts: {
-  readonly threads: readonly AgentThread[];
-  readonly latestReviewBody: string;
-}): CarriedFinding[] => {
+export const carriedFindings = (threads: readonly AgentThread[]): CarriedFinding[] => {
   const seen = new Set<string>();
   const carried: CarriedFinding[] = [];
 
-  for (const thread of parts.threads) {
+  for (const thread of threads) {
     if (seen.has(thread.findingId)) continue;
     seen.add(thread.findingId);
     carried.push({
       id: thread.findingId,
       threadId: thread.threadId,
       text: thread.text,
-      ...(thread.title === undefined ? {} : { title: thread.title }),
-      ...(thread.anchor === undefined ? {} : { anchor: thread.anchor }),
+      title: thread.title,
+      anchor: thread.anchor,
       ...(thread.severity === undefined ? {} : { severity: thread.severity }),
       ...(thread.url === undefined ? {} : { url: thread.url }),
       ...(thread.maintainerReply === undefined ? {} : { maintainerReply: thread.maintainerReply }),
       ...(thread.closedAs === undefined ? {} : { closedAs: thread.closedAs }),
-    });
-  }
-
-  for (const entry of parseFindingMarkers(parts.latestReviewBody)) {
-    if (seen.has(entry.id)) continue;
-    seen.add(entry.id);
-    carried.push({
-      id: entry.id,
-      text: entry.text,
-      ...(entry.severity === undefined ? {} : { severity: entry.severity }),
     });
   }
 
@@ -243,8 +207,8 @@ const CLOSE_DID_NOT_LAND =
  * feedback (`shared/pr-feedback.ts`), so its line says why it is here instead.
  *
  * A badge image reaching here comes out as its alt text
- * (`withSeverityBadgesAsText`). A body entry's line is read straight out of the
- * last review that wrote it, chip and all, and this is prompt text (#135).
+ * (`withSeverityBadgesAsText`): a thread's claim may quote one, and this is
+ * prompt text (#135).
  */
 export const renderCarriedFindings = (carried: readonly CarriedFinding[]): string =>
   carried.length === 0
@@ -532,12 +496,6 @@ export const closingReply = (resolution: ThreadResolution): string =>
  * here would either resolve nothing or — if it collided — close a finding the
  * review never looked at.
  *
- * A **landed body entry** produces no resolution and no still-open entry. There
- * is no thread to close, so it simply stops being re-listed, which is how a
- * body-recorded finding closes. That arm is kept for the v0.4.0 entries still
- * in flight (#127, decision 5) — nothing writes a new one — and it is the whole
- * of what "carried and verified as before, until they close" means.
- *
  * A **declined** one closes too, as `WONT_FIX` rather than `ADDRESSED` — the
  * code did not change, the person who owns it decided — and stops counting
  * toward the verdict, which is what "the maintainer's decisions stick" costs
@@ -553,12 +511,8 @@ export const verifyCarried = (
   /**
    * Every carried finding that stopped being open on this round, whatever
    * closed it — the record's *Resolved since last review* (#109, decision 8).
-   *
-   * Not the same list as `resolutions`, and that is why it is a third field
-   * rather than a projection of the second. A landed finding with no thread
-   * produces no resolution at all, because there is nothing to close; it still
-   * closed, and a reader is owed the line saying so. What the two lists agree
-   * on is that neither includes a finding still owed.
+   * The findings whose threads `resolutions` closes, and the list the record
+   * renders them from.
    */
   resolved: CarriedFinding[];
 } => {
@@ -597,11 +551,10 @@ export const verifyCarried = (
       // prose and called it a decline; what makes that closeable is not the
       // reading but the reply it read, which reaches here only where
       // `isTrustedAuthor` passed its author. So a decline with no maintainer
-      // behind it — an untrusted stranger's, or one on a body-recorded finding
-      // that has no thread for anybody to have replied on — leaves the finding
-      // open and counting, which is the direction every other unreadable thing
-      // in this loop fails in.
-      if (finding.threadId === undefined || finding.maintainerReply === undefined) {
+      // behind it, an untrusted stranger's, leaves the finding open and
+      // counting, which is the direction every other unreadable thing in this
+      // loop fails in.
+      if (finding.maintainerReply === undefined) {
         console.warn(
           `Finding ${finding.id} was ruled declined, but no maintainer reply on it passed the author gate; it stays open.`,
         );
@@ -617,17 +570,12 @@ export const verifyCarried = (
       resolved.push(finding);
       continue;
     }
-    if (finding.threadId !== undefined) {
-      resolutions.push({
-        threadId: finding.threadId,
-        reason: "ADDRESSED",
-        ...(entry.note === undefined ? {} : { note: entry.note }),
-        alreadyReplied: finding.closedAs === "ADDRESSED",
-      });
-    }
-    // Including a legacy body-recorded one, which has no thread and so no
-    // resolution: it closes by no longer being re-listed, and the record is the
-    // only place that closure is ever visible.
+    resolutions.push({
+      threadId: finding.threadId,
+      reason: "ADDRESSED",
+      ...(entry.note === undefined ? {} : { note: entry.note }),
+      alreadyReplied: finding.closedAs === "ADDRESSED",
+    });
     resolved.push(finding);
   }
 

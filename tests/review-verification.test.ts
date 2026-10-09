@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { findingMarker, severityBadge } from "../shared/review-findings.js";
+import { severityBadge } from "../shared/review-findings.js";
 import {
   carriedFindings,
   closingReplyReason,
@@ -31,7 +31,9 @@ import { RESOLUTION_MARKER } from "../shared/record.js";
 const thread = (over: Partial<AgentThread> = {}): AgentThread => ({
   threadId: "PRRT_one",
   findingId: "f-1",
-  text: "src/queue.ts:206 — the guard runs after the return",
+  text: "src/queue.ts:206 · the guard runs after the return",
+  title: "the guard runs after the return",
+  anchor: "src/queue.ts:206",
   ...over,
 });
 
@@ -45,90 +47,31 @@ const open = (id: string): VerificationEntry => ({ id, status: "open" });
 
 describe("carriedFindings", () => {
   it("carries an open thread this loop opened, with the thread to close it on", () => {
-    expect(carriedFindings({ threads: [thread()], latestReviewBody: "" })).toEqual([
+    expect(carriedFindings([thread()])).toEqual([
       {
         id: "f-1",
         threadId: "PRRT_one",
-        text: "src/queue.ts:206 — the guard runs after the return",
+        text: "src/queue.ts:206 · the guard runs after the return",
+        title: "the guard runs after the return",
+        anchor: "src/queue.ts:206",
       },
     ]);
   });
 
-  /**
-   * A **body entry** has no thread at all, so the review body is the only record
-   * of it. It is carried with no `threadId`, which is what tells the caller
-   * there is nothing to resolve.
-   *
-   * Nothing writes one since #127 — a finding with no anchor in the diff is a
-   * follow-up now, not an entry nobody can answer — and this path is kept for
-   * the entries v0.4.0 left on pull requests that were open at the upgrade
-   * (#127, decision 5). They are carried and verified exactly as before until
-   * they close, because the entry is the only record that the finding exists.
-   */
-  it("carries an entry from the latest review body, with no thread", () => {
-    const body = [
-      "**Still open from an earlier review**",
-      "",
-      `- [ ] \`src/other.ts:88\` — the cache key omits the tenant ${findingMarker("f-9")}`,
-    ].join("\n");
-
-    expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([
-      { id: "f-9", text: "`src/other.ts:88` — the cache key omits the tenant" },
-    ]);
-  });
-
-  /**
-   * The two surfaces should be disjoint — a threaded finding's id is left off
-   * the body deliberately, so the thread stays its only record — and this is
-   * what happens when they are not, whether from another version's body or an
-   * id somehow written twice. The thread's copy wins because it is the one
-   * carrying the id of a thing that can be *closed*: take the body's and a
-   * landed finding leaves its thread open, which is the failure that looks like
-   * everything working.
-   */
-  it("prefers the thread's copy of a finding the body also names", () => {
-    const body = `- [ ] \`src/queue.ts:206\` — stated differently ${findingMarker("f-1")}`;
-
-    expect(carriedFindings({ threads: [thread()], latestReviewBody: body })).toEqual([
-      {
-        id: "f-1",
-        threadId: "PRRT_one",
-        text: "src/queue.ts:206 — the guard runs after the return",
-      },
-    ]);
+  /** One finding per id, from the first thread naming it. */
+  it("carries an id two threads name once", () => {
+    expect(carriedFindings([thread(), thread({ threadId: "PRRT_two" })]).map((f) => f.threadId)).toEqual(["PRRT_one"]);
   });
 
   it("carries nothing for the first review of a pull request", () => {
-    expect(carriedFindings({ threads: [], latestReviewBody: "" })).toEqual([]);
-  });
-
-  /**
-   * A review body carries the follow-ups payload and whatever prose the model
-   * wrote. Only the finding markers are entries.
-   */
-  it("reads only the finding markers out of a body full of other things", () => {
-    const body = [
-      "### 🟡 Changes recommended",
-      "",
-      "A paragraph mentioning agent-finding in passing.",
-      "",
-      '<!-- agent-follow-ups {"version":1,"dropped":0,"followUps":[]} -->',
-      "",
-      findingMarker("f-3"),
-      "",
-      "**`src/other.ts:88` — the cache key omits the tenant**",
-    ].join("\n");
-
-    expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([
-      { id: "f-3", text: "`src/other.ts:88` — the cache key omits the tenant" },
-    ]);
+    expect(carriedFindings([])).toEqual([]);
   });
 });
 
 describe("renderCarriedFindings", () => {
   it("leads with the id, which is what the review answers on", () => {
     const rendered = renderCarriedFindings([
-      { id: "f-1", threadId: "PRRT_one", text: "src/queue.ts:206 · the guard runs after the return" },
+      { id: "f-1", threadId: "PRRT_one", text: "src/queue.ts:206 · the guard runs after the return", title: "src/queue.ts:206 · the guard runs after the return", anchor: "src/a.ts:1" },
     ]);
 
     expect(rendered).toBe("- `f-1`: src/queue.ts:206 · the guard runs after the return");
@@ -143,17 +86,19 @@ describe("renderCarriedFindings", () => {
   });
 
   /**
-   * A body entry's line is read straight out of the last review that wrote it,
-   * severity chip and all — and this is prompt text, so the chip comes out as
-   * the word it draws (#135). The list the review answers on is the last place
-   * an `<img>` tag helps anyone.
+   * A thread's claim may quote a severity chip, and this is prompt text, so
+   * the chip comes out as the word it draws (#135). The list the review
+   * answers on is the last place an `<img>` tag helps anyone.
    */
-  it("renders a chip the body carried as the word it draws", () => {
+  it("renders a chip the claim carried as the word it draws", () => {
     const rendered = renderCarriedFindings([
       {
         id: "f-2",
+        threadId: "PRRT_two",
         severity: "high",
         text: `${severityBadge("high")} the cache key omits the tenant · \`src/other.ts:88\``,
+        title: "the cache key omits the tenant",
+        anchor: "src/other.ts:88",
       },
     ]);
 
@@ -209,9 +154,9 @@ describe("verifyCarried", () => {
   });
 
   const CARRIED: readonly CarriedFinding[] = [
-    { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return" },
-    { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour" },
-    { id: "f-3", text: "the cache key omits the tenant" },
+    { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1" },
+    { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour", title: "the new test asserts the old behaviour", anchor: "src/a.ts:1" },
+    { id: "f-3", threadId: "PRRT_three", text: "the cache key omits the tenant", title: "the cache key omits the tenant", anchor: "src/a.ts:1" },
   ];
 
   it("resolves a landed thread, quoting the review's reason", () => {
@@ -240,22 +185,6 @@ describe("verifyCarried", () => {
 
     expect(reply).toContain("Verified fixed.");
     expect(reply).toContain("_Resolved by the review agent._");
-  });
-
-  /**
-   * A body-recorded finding — a legacy one, per #127 decision 5 — has no thread,
-   * so there is nothing to close: it lands by ceasing to be re-listed, and must
-   * not become a resolution naming a thread that does not exist.
-   */
-  it("closes a landed body entry by leaving it out of both lists", () => {
-    const { resolutions, stillOpen } = verifyCarried(CARRIED, [
-      landed("f-3"),
-      open("f-1"),
-      open("f-2"),
-    ]);
-
-    expect(resolutions).toEqual([]);
-    expect(stillOpen.map((f) => f.id)).toEqual(["f-1", "f-2"]);
   });
 
   /**
@@ -294,7 +223,7 @@ describe("verifyCarried", () => {
       landed("f-3"),
     ]);
 
-    expect(resolutions.map((r) => r.threadId)).toEqual(["PRRT_two"]);
+    expect(resolutions.map((r) => r.threadId)).toEqual(["PRRT_two", "PRRT_three"]);
     expect(stillOpen.map((f) => f.id)).toEqual(["f-1"]);
   });
 
@@ -302,22 +231,6 @@ describe("verifyCarried", () => {
     expect(verifyCarried([], [])).toEqual({ resolutions: [], stillOpen: [], resolved: [] });
   });
 
-  /**
-   * And what closed is reported separately from what was *resolved on GitHub*,
-   * because a legacy body-recorded finding has no thread to close: it stops
-   * being re-listed, and the record is the only place that closure is ever
-   * visible.
-   */
-  it("reports a landed body entry as resolved though there is no thread to close", () => {
-    const { resolutions, resolved, stillOpen } = verifyCarried(
-      [{ id: "f-9", text: "`src/other.ts:88` — the cache key omits the tenant" }],
-      [landed("f-9")],
-    );
-
-    expect(resolutions).toEqual([]);
-    expect(stillOpen).toEqual([]);
-    expect(resolved.map((f) => f.id)).toEqual(["f-9"]);
-  });
 });
 
 /**
@@ -374,8 +287,8 @@ describe("a maintainer's decision settles a finding", () => {
     });
 
     const CARRIED: readonly CarriedFinding[] = [
-      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", maintainerReply: REPLY },
-      { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour" },
+      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1", maintainerReply: REPLY },
+      { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour", title: "the new test asserts the old behaviour", anchor: "src/a.ts:1" },
     ];
 
     /**
@@ -447,25 +360,6 @@ describe("a maintainer's decision settles a finding", () => {
       expect(stillOpen.map((f) => f.id)).toEqual(["f-2"]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("f-2"));
     });
-
-    /**
-     * A body-recorded finding has no thread for anybody to reply on, so a
-     * decline of one is a ruling about a conversation that cannot have
-     * happened. It stays open and keeps counting — which is #124 as it is felt
-     * from inside: a legacy entry can be closed only by being ruled *fixed*,
-     * and that is why #127 stopped creating them rather than teaching the
-     * maintainer another way to settle one.
-     */
-    it("leaves a declined body entry open, since no maintainer could have replied", () => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const carried: readonly CarriedFinding[] = [{ id: "f-3", text: "the cache key omits the tenant" }];
-
-      const { resolutions, stillOpen } = verifyCarried(carried, [declined("f-3")]);
-
-      expect(resolutions).toEqual([]);
-      expect(stillOpen.map((f) => f.id)).toEqual(["f-3"]);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("f-3"));
-    });
   });
 });
 
@@ -491,7 +385,7 @@ describe("a thread that already carries its closing reply", () => {
 
   it("is resolved again without a second reply", () => {
     const { resolutions, resolved, stillOpen } = verifyCarried(
-      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", closedAs: "ADDRESSED" }],
+      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1", closedAs: "ADDRESSED" }],
       [landed("f-1")],
     );
 
@@ -507,6 +401,8 @@ describe("a thread that already carries its closing reply", () => {
           id: "f-1",
           threadId: "PRRT_one",
           text: "the guard runs after the return",
+          title: "the guard runs after the return",
+          anchor: "src/a.ts:1",
           maintainerReply: REPLY,
           closedAs: "WONT_FIX",
         },
@@ -525,7 +421,7 @@ describe("a thread that already carries its closing reply", () => {
    */
   it("replies again when the ruling's reason differs from the one on record", () => {
     const [resolution] = verifyCarried(
-      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", closedAs: "WONT_FIX" }],
+      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1", closedAs: "WONT_FIX" }],
       [landed("f-1")],
     ).resolutions;
 
@@ -535,7 +431,7 @@ describe("a thread that already carries its closing reply", () => {
 
   it("replies on a thread that carries no closing reply", () => {
     const [resolution] = verifyCarried(
-      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return" }],
+      [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1" }],
       [landed("f-1")],
     ).resolutions;
 
@@ -544,7 +440,7 @@ describe("a thread that already carries its closing reply", () => {
 
   it("is carried with the reply it already holds", () => {
     expect(
-      carriedFindings({ threads: [thread({ closedAs: "ADDRESSED" })], latestReviewBody: "" })[0]?.closedAs,
+      carriedFindings([thread({ closedAs: "ADDRESSED" })])[0]?.closedAs,
     ).toBe("ADDRESSED");
   });
 
@@ -554,8 +450,8 @@ describe("a thread that already carries its closing reply", () => {
    */
   it("tells the review agent why the finding is back", () => {
     const rendered = renderCarriedFindings([
-      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", closedAs: "ADDRESSED" },
-      { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour" },
+      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1", closedAs: "ADDRESSED" },
+      { id: "f-2", threadId: "PRRT_two", text: "the new test asserts the old behaviour", title: "the new test asserts the old behaviour", anchor: "src/a.ts:1" },
     ]);
 
     expect(rendered.split("\n")[0]).toMatch(/already verified.*did not go through/i);

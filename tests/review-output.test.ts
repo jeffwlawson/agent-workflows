@@ -12,11 +12,7 @@ import {
   type PlacedFinding,
   type Severity,
 } from "../shared/review-findings.js";
-import {
-  carriedFindings,
-  verifyCarried,
-  type CarriedFinding,
-} from "../shared/review-verification.js";
+import type { CarriedFinding } from "../shared/review-verification.js";
 import {
   capFollowUps,
   CLOSER_LOOK,
@@ -850,25 +846,24 @@ describe("parseFollowUpsBlock", () => {
  * count, and a verdict derived from prose is the sentence nothing acts on that
  * this replaced.
  *
- * Not derived from the findings, which is the shape this could have taken: the
- * two lists are written independently, so either can be the one the model
- * forgot, and the count takes whichever is larger.
+ * Counted from `findings` alone (#224). A second list restating each finding
+ * was asked for until then; a model that still writes one has it ignored,
+ * neither refused nor counted.
  */
 describe("reviewOutputSchema: the two finding types", () => {
-  it("defaults fixBeforeMerge to empty, which is the ordinary review", () => {
-    expect(parse({ summary: "s" }).fixBeforeMerge).toEqual([]);
-  });
+  it.each([
+    ["fixBeforeMerge", { fixBeforeMerge: ["the guard runs after the return", "a second line"] }],
+    ["fix_before_merge", { fix_before_merge: ["the guard runs after the return", "a second line"] }],
+    ["a list of objects", { fixBeforeMerge: [{ title: "x" }] }],
+  ])("parses an output that still carries %s, and counts and records none of it", (_case, over) => {
+    const out = parse({ summary: "s", findings: [{ path: "src/a.ts", line: 10, body: "b" }], ...over });
 
-  it("accepts snake_case fix_before_merge, since the model emits both", () => {
-    const out = parse({ summary: "s", fix_before_merge: ["the guard runs after the return"] });
-
-    expect(out.fixBeforeMerge).toEqual(["the guard runs after the return"]);
-  });
-
-  it("refuses a finding that is not a line of text", () => {
-    expect(() => parse({ summary: "s", fixBeforeMerge: [{ title: "x" }] })).toThrow(
-      /fix-before-merge finding/,
-    );
+    expect(out).not.toHaveProperty("fixBeforeMerge");
+    expect(out).not.toHaveProperty("fix_before_merge");
+    expect(countFixBeforeMerge(out, 0)).toBe(1);
+    const record = reviewRecord({ output: out, placed: [], stillOpen: [], resolved: [] });
+    expect(record.findings).toBe(0);
+    expect(record.open).toEqual([]);
   });
 
   it("keeps needsYou when the model named the case", () => {
@@ -911,7 +906,6 @@ describe("deriveVerdict", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
     findings: [],
     followUps: [],
-    fixBeforeMerge: [],
     verified: [],
     ...over,
   });
@@ -922,7 +916,7 @@ describe("deriveVerdict", () => {
 
   it("recommends changes when the findings are the only thing wrong", () => {
     expect(
-      deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), { autoFix: false,
+      deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })] }), { autoFix: false,
         ci: "green",
         fixRoundProgress: undefined,
         stillOpen: 0, movedToFollowUps: 0 }).verdict,
@@ -1022,7 +1016,7 @@ describe("deriveVerdict", () => {
    */
   it("recommends changes when red checks come with findings that explain them", () => {
     expect(
-      deriveVerdict(output({ fixBeforeMerge: ["the new test asserts the old behaviour"] }), { autoFix: false,
+      deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the new test asserts the old behaviour" })] }), { autoFix: false,
         ci: "red",
         fixRoundProgress: undefined,
         stillOpen: 0, movedToFollowUps: 0 }).verdict,
@@ -1030,13 +1024,12 @@ describe("deriveVerdict", () => {
   });
 
   /**
-   * The list is a restatement of findings the `findings` list already carries,
-   * so either of the two can be the one the model forgot — and only one of the
-   * two mistakes has a consequence. A finding written into `findings` and left
-   * off the list used to derive *approval recommended*, which puts the unsafe
-   * answer on the one signal meant to be acted on without reading (#105).
+   * A finding counts from `findings` with nothing else beside it: one written
+   * there and left off the restating list that existed until #224 used to
+   * derive *approval recommended*, which puts the unsafe answer on the one
+   * signal meant to be acted on without reading (#105).
    */
-  it("counts a finding the list left out", () => {
+  it("counts a finding from the findings list alone", () => {
     const listless = output({
       findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
     });
@@ -1074,22 +1067,9 @@ describe("deriveVerdict", () => {
     ).toBe("changes recommended");
   });
 
-  it("counts one finding once when it is recorded in both places", () => {
-    const both = output({
-      fixBeforeMerge: ["the guard runs after the return"],
-      findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
-    });
-
-    // One set, not the sum of two: a restatement counts only where the list is
-    // longer than the findings it restates. Either way a fix is a fix, so what
-    // this pins is the arithmetic rather than the verdict.
-    expect(deriveVerdict(both, { autoFix: false, ci: "green", fixRoundProgress: undefined, stillOpen: 0, movedToFollowUps: 0 }).verdict).toBe("changes recommended");
-    expect(countFixBeforeMerge(both, 0)).toBe(1);
-  });
-
   it("prefers a closer look over a fix-before-merge finding", () => {
     expect(
-      deriveVerdict(output({ fixBeforeMerge: ["a"], needsYou: "the wrong thing was built" }), { autoFix: false,
+      deriveVerdict(output({ findings: [finding()], needsYou: "the wrong thing was built" }), { autoFix: false,
         ci: "green",
         fixRoundProgress: undefined,
         stillOpen: 0, movedToFollowUps: 0 }).verdict,
@@ -1105,7 +1085,7 @@ describe("deriveVerdict", () => {
    * new one besides, which neither counts as progress nor takes it away.
    */
   it("starts another round after a fix round that closed some of its findings", () => {
-    const row = deriveVerdict(output({ fixBeforeMerge: ["the fix broke the retry path"] }), {
+    const row = deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the fix broke the retry path" })] }), {
       ci: "green",
       fixRoundProgress: { given: 3, closed: 2 },
       stillOpen: 1,
@@ -1142,7 +1122,7 @@ describe("deriveVerdict", () => {
       { stop: "no progress" },
     ],
   ] as const)("gives the one changes-recommended line where %s", (_case, over, fields) => {
-    const row = deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
+    const row = deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })] }), {
       ci: "green",
       fixRoundProgress: undefined,
       stillOpen: 0,
@@ -1165,7 +1145,7 @@ describe("deriveVerdict", () => {
     ["a fix round given nothing", { given: 0, closed: 0 }],
   ])("never early-stops after %s", (_case, fixRoundProgress) => {
     expect(
-      deriveVerdict(output({ fixBeforeMerge: ["the guard runs after the return"] }), {
+      deriveVerdict(output({ findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })] }), {
         ci: "green", fixRoundProgress, stillOpen: 0, movedToFollowUps: 0, autoFix: true,
       }).startsFixRound,
     ).toBe(true);
@@ -1192,7 +1172,7 @@ describe("deriveVerdict", () => {
         autoFix: true,
       });
 
-    expect(after({ fixBeforeMerge: ["the guard still runs after the return"] }, 0).startsFixRound).toBeUndefined();
+    expect(after({ findings: [finding({ body: "**Fix before merge.** the guard still runs after the return" })] }, 0).startsFixRound).toBeUndefined();
     // The carried half of the count reaches the same arm, so it cannot be the
     // way in either.
     expect(after({}, 1).startsFixRound).toBeUndefined();
@@ -1408,7 +1388,7 @@ describe("the verdict's commit status", () => {
  * The body a maintainer actually reads, which is now a **record** rather than a
  * rendering (#109, decision 8).
  *
- * What it replaced was a flat checklist of `fixBeforeMerge` lines, and the
+ * What it replaced was a flat checklist of restated finding lines, and the
  * things it could not say are why this exists: a finding the last round asked
  * for and this one verified fixed disappeared with nothing saying it had ever
  * been raised, a finding an earlier review had already read the code for looked
@@ -1420,47 +1400,10 @@ describe("the verdict's commit status", () => {
  * `needsYou` fed the derivation and reached nobody, and the set the body
  * records is the set the verdict was counted from.
  */
-/**
- * A review body exactly as **v0.4.0** posted one, carrying the body entry that
- * release wrote for a finding in a file the pull request never changed: the id
- * and the rating on the entry line, and the evidence indented under it.
- *
- * Kept as a literal rather than rendered by this version, which is the whole of
- * what it tests: decision 5 says the entries already on open pull requests are
- * carried and verified until they close, and nothing here can write one any
- * more. A fixture produced by the current renderer would only prove it agrees
- * with itself.
- */
-const LEGACY_V040_BODY = `## Agent review
-
-### 🔴 Changes recommended
-
-The cache key is wrong in a way that has to be fixed first.
-
-_Add \`agent:fix\` to this pull request._
-
-**Findings:** 1 — 1 \`High\`
-
-<details open>
-<summary><b>Open</b> — 1</summary>
-
-A finding quoted in full has no thread: it is in a file this pull request does not change.
-
-- \`High\` the cache key omits the tenant — \`src/other.ts:88\` *new* <!-- agent-finding f-legacy high -->
-
-  **Fix before merge.** \`key()\` hashes the id and not the tenant, so two tenants share a row.
-
-</details>
-
----
-
-_Posted by [this workflow run](https://github.com/o/r/actions/runs/1)._`;
-
 describe("the posted review body", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
     findings: [],
     followUps: [],
-    fixBeforeMerge: [],
     verified: [],
     ...over,
   });
@@ -1582,7 +1525,7 @@ describe("the posted review body", () => {
   it("names what is unresolved, and where it came from", () => {
     const body = render({
       placed: placedFinding(),
-      stillOpen: [{ id: "f-1", threadId: "PRRT_one", text: "src/a.ts:4 — the cache key omits the tenant" }],
+      stillOpen: [{ id: "f-1", threadId: "PRRT_one", text: "src/a.ts:4 · the cache key omits the tenant", title: "the cache key omits the tenant", anchor: "src/a.ts:4" }],
     });
 
     expect(body).toContain("2 findings are open, 1 carried from an earlier review.");
@@ -1634,7 +1577,7 @@ describe("the posted review body", () => {
    * trace that the work was done.
    */
   it("counts the round's closures even when nothing is left open", () => {
-    const body = render({ resolved: [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return" }] });
+    const body = render({ resolved: [{ id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1" }] });
 
     expect(body).toContain("1 finding an earlier review raised was closed this round.");
     expect(body).toContain("<summary><b>Resolved since last review</b> (1)</summary>");
@@ -1649,9 +1592,8 @@ describe("the posted review body", () => {
    */
   describe("the resolved group, from the closures that held", () => {
     const resolved = [
-      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", severity: "low" as const },
-      { id: "f-2", threadId: "PRRT_two", text: "the cache key omits the tenant", severity: "high" as const },
-      { id: "f-3", text: "a legacy body entry" },
+      { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1", severity: "low" as const },
+      { id: "f-2", threadId: "PRRT_two", text: "the cache key omits the tenant", title: "the cache key omits the tenant", anchor: "src/a.ts:1", severity: "high" as const },
     ];
     const lines = (body: string, title: string): string[] => {
       const at = body.indexOf(`<summary><b>${title}</b>`);
@@ -1661,18 +1603,17 @@ describe("the posted review body", () => {
     it("hands over each resolved entry worst first, with the thread it needs resolved", () => {
       const handed = reviewBodyHandOver({ ...parts, resolved });
 
-      expect(handed.resolved.map((entry) => entry.threadId)).toEqual(["PRRT_two", "PRRT_one", undefined]);
+      expect(handed.resolved.map((entry) => entry.threadId)).toEqual(["PRRT_two", "PRRT_one"]);
       expect(handed.resolved.map((entry) => entry.title)).toEqual([
         "the cache key omits the tenant",
         "the guard runs after the return",
-        "a legacy body entry",
       ]);
     });
 
     it("lists every entry as resolved where every closure held", () => {
       const body = render({ resolved });
 
-      expect(lines(body, RESOLVED_GROUP.title)).toHaveLength(3);
+      expect(lines(body, RESOLVED_GROUP.title)).toHaveLength(2);
       expect(body).not.toContain(UNCLOSED_GROUP.title);
     });
 
@@ -1685,15 +1626,15 @@ describe("the posted review body", () => {
       expect(lines(body, RESOLVED_GROUP.title).join("\n")).not.toContain("the guard runs after the return");
       expect(body).toContain("<summary><b>Still open</b> (1)</summary>");
       expect(body).toContain(`_${UNCLOSED_GROUP.subtitle ?? ""}_`);
-      expect(body).toContain("<summary><b>Resolved since last review</b> (2)</summary>");
+      expect(body).toContain("<summary><b>Resolved since last review</b> (1)</summary>");
       expect(body.indexOf(UNCLOSED_GROUP.title)).toBeLessThan(body.indexOf(RESOLVED_GROUP.title));
     });
 
-    it("keeps a legacy entry with no thread as resolved, whatever else closed", () => {
+    it("lists every entry as still open where no closure held", () => {
       const body = render({ resolved, closed: new Set() });
 
       expect(lines(body, UNCLOSED_GROUP.title)).toHaveLength(2);
-      expect(lines(body, RESOLVED_GROUP.title)).toEqual([expect.stringContaining("a legacy body entry")]);
+      expect(body).not.toContain(RESOLVED_GROUP.title);
     });
 
     it("drops both groups where nothing was resolved", () => {
@@ -1773,7 +1714,7 @@ describe("the posted review body", () => {
   it("expands what is owed and folds what is done", () => {
     const body = render({
       placed: [...placedFinding(), ...missedFinding()],
-      resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding" }],
+      resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding", title: "an earlier finding", anchor: "src/a.ts:1" }],
     });
 
     expect(body).toContain("<details open>\n<summary><b>Open</b> (1)</summary>");
@@ -1789,7 +1730,7 @@ describe("the posted review body", () => {
   it("orders the groups Open, Previously missed, Resolved", () => {
     const body = render({
       placed: [...placedFinding(), ...missedFinding()],
-      resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding" }],
+      resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding", title: "an earlier finding", anchor: "src/a.ts:1" }],
     });
 
     expect([...body.matchAll(/<summary><b>(.*?)<\/b>/g)].map(([, title]) => title)).toEqual([
@@ -1824,7 +1765,7 @@ describe("the posted review body", () => {
   it("gives the subtitle to no other group", () => {
     const body = render({
       placed: placedFinding(),
-      resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding" }],
+      resolved: [{ id: "f-1", threadId: "PRRT_one", text: "an earlier finding", title: "an earlier finding", anchor: "src/a.ts:1" }],
     });
 
     expect(body).not.toContain(PREVIOUSLY_MISSED_SUBTITLE);
@@ -1862,10 +1803,10 @@ describe("the posted review body", () => {
 
   it("marks a carried finding as anything but new", () => {
     const body = render({
-      stillOpen: [{ id: "f-1", threadId: "PRRT_one", text: "src/a.ts:4 — the cache key omits the tenant" }],
+      stillOpen: [{ id: "f-1", threadId: "PRRT_one", text: "src/a.ts:4 · the cache key omits the tenant", title: "the cache key omits the tenant", anchor: "src/a.ts:4" }],
     });
 
-    expect(body).toContain("- src/a.ts:4 — the cache key omits the tenant");
+    expect(body).toContain("- the cache key omits the tenant · `src/a.ts:4`\n");
     expect(body).not.toContain("*new*");
   });
 
@@ -1930,45 +1871,11 @@ describe("the posted review body", () => {
    * would raise it in the next round anyway.
    */
   it("leaves the id off a finding whose thread is already the record", () => {
-    const threaded = { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return" };
+    const threaded = { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "the guard runs after the return", anchor: "src/a.ts:1" };
     const body = render({ stillOpen: [threaded] });
 
     expect(body).not.toContain(findingMarker("f-1"));
-    expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([]);
-  });
-
-  /**
-   * And a thread-less one keeps it, which is what makes the body a record. Such
-   * a finding has no thread to stay open on, so the newest review body naming
-   * it is the only thing keeping it alive — and the next round reads it back
-   * off exactly this line.
-   *
-   * Nothing raises one of these any more (#127, decision 1). What still arrives
-   * is a **v0.4.0 body entry** on a pull request that was open when this
-   * version landed, which decision 5 keeps carrying until it closes — so this
-   * path is the legacy one, and it has to keep working for as long as one of
-   * those pull requests is open.
-   */
-  it("keeps a thread-less finding alive by writing its id and its rating back", () => {
-    const stillOpen = [
-      { id: "f-9", severity: "low" as const, text: "`src/other.ts:88` — the cache key omits the tenant" },
-    ];
-    const carried = carriedFindings({ threads: [], latestReviewBody: render({ stillOpen }) });
-
-    expect(carried).toHaveLength(1);
-    expect(carried[0]).toMatchObject({ id: "f-9", severity: "low" });
-    expect(carried[0]?.text).toContain("the cache key omits the tenant");
-  });
-
-  /**
-   * A resolved one keeps **no** id, which is the same rule in the other
-   * direction: an id written back would carry a closed finding into the next
-   * round as something still to rule on.
-   */
-  it("writes no id back for a finding it just closed", () => {
-    const body = render({ resolved: [{ id: "f-9", text: "`src/other.ts:88` — the cache key omits the tenant" }] });
-
-    expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([]);
+    expect(body).not.toContain("agent-finding");
   });
 
   /**
@@ -2001,71 +1908,7 @@ describe("the posted review body", () => {
     expect(body).not.toContain(findingMarker("f-b", "medium"));
     expect(body).not.toContain("is in a file this pull request does not change");
     // And so the next round reads it off its thread rather than off this body.
-    expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([]);
-  });
-
-  /**
-   * And a **v0.4.0 body entry** carried into a body this version posts reads
-   * back as the claim it was, rather than as the claim plus the decorations
-   * this file wrote around it. Without the strip it collects another badge and
-   * keeps a stale *new* every round it survives — which is the round-on-round
-   * half of decision 5: these are carried until they close, so they have to
-   * survive arbitrarily many rounds unchanged.
-   */
-  it("re-enters a carried body finding without redecorating it", () => {
-    const first = LEGACY_V040_BODY;
-    const carried = carriedFindings({ threads: [], latestReviewBody: first });
-    const second = render({ stillOpen: carried });
-
-    expect(second).toContain(
-      `- ${severityBadge("high")} the cache key omits the tenant · \`src/other.ts:88\` <!--`,
-    );
-    // Not `<img …> \`High\``: the v0.4.0 code span is one of the forms the
-    // strip knows, so the entry carries this release's badge and only that.
-    expect(second).not.toContain("`High`");
-    expect(second).not.toContain("*new*");
-    // The anchor came off the v0.4.0 line behind an em dash and goes back on
-    // behind this release's separator, rather than riding along in the title.
-    expect(second).not.toContain("—");
-
-    // And it holds every round after: what round three reads is what round four
-    // would write, so the entry stops growing.
-    const again = carriedFindings({ threads: [], latestReviewBody: second });
-    expect(again).toEqual(
-      carriedFindings({ threads: [], latestReviewBody: render({ stillOpen: again }) }),
-    );
-  });
-
-  /**
-   * And it strips the badge its **own** severity would have written, not any
-   * badge: a claim that legitimately opens by quoting one is a claim somebody
-   * reviewing a codebase with severities in it will eventually make.
-   */
-  it("keeps a claim that opens with a badge it did not write", () => {
-    const body = render({
-      stillOpen: [{ id: "f-9", severity: "high", text: "`Low` is not a place for preferences" }],
-    });
-
-    expect(body).toContain(`- ${severityBadge("high")} \`Low\` is not a place for preferences`);
-  });
-
-  /**
-   * And it strips **every form a release wrote a badge in**, not the one this
-   * release writes: a body entry is read back out of whichever release last
-   * wrote it (#127, decision 5), so a form the strip does not know is an entry
-   * that collects a second badge every round it stays open (#135).
-   */
-  it.each([
-    ["this release's image chip", `${severityBadge("high")} the cache key omits the tenant`],
-    ["the bold code span", "**`High`** the cache key omits the tenant"],
-    ["v0.4.0's plain code span", "`High` the cache key omits the tenant"],
-  ])("re-badges a carried entry written with %s, once", (_form, text) => {
-    const body = render({ stillOpen: [{ id: "f-9", severity: "high", text }] });
-    const entry = body.split("\n").find((line) => line.startsWith("- ")) ?? "";
-
-    expect(entry).toContain(`- ${severityBadge("high")} the cache key omits the tenant`);
-    expect(entry).not.toContain("`High`");
-    expect(entry.match(/<img/g) ?? []).toHaveLength(1);
+    expect(body).not.toContain("agent-finding");
   });
 
   /**
@@ -2098,13 +1941,15 @@ describe("the posted review body", () => {
           id: "f-1",
           threadId: "PRRT_one",
           url: "https://github.com/o/r/pull/12#discussion_r1",
-          text: "src/a.ts:4 — the cache key omits the tenant",
+          text: "src/a.ts:4 · the cache key omits the tenant",
+          title: "the cache key omits the tenant",
+          anchor: "src/a.ts:4",
         },
       ],
     });
 
     expect(body).toContain(
-      "- [src/a.ts:4 — the cache key omits the tenant](https://github.com/o/r/pull/12#discussion_r1)",
+      "- [the cache key omits the tenant](https://github.com/o/r/pull/12#discussion_r1) · `src/a.ts:4`",
     );
   });
 
@@ -2118,20 +1963,24 @@ describe("the posted review body", () => {
     expect(render({ placed: placedFinding() })).not.toContain("](http");
   });
 
-  /**
-   * Nothing this body writes carries an em dash (#136), in any verdict and any
-   * group. A v0.4.0 body entry is carried in on purpose: its anchor arrived
-   * behind one, and it has to leave behind this release's separator. The old
-   * form is fed in and never expected out.
-   */
+  /** Nothing this body writes carries an em dash (#136), in any verdict and any group. */
   it("writes no em dash, whatever it renders", () => {
-    const legacy = carriedFindings({ threads: [], latestReviewBody: LEGACY_V040_BODY });
+    const carried: CarriedFinding[] = [
+      {
+        id: "f-legacy",
+        threadId: "PRRT_one",
+        severity: "high",
+        text: "src/other.ts:88 · the cache key omits the tenant",
+        title: "the cache key omits the tenant",
+        anchor: "src/other.ts:88",
+      },
+    ];
     for (const verdict of Object.values(VERDICTS)) {
       const body = render({
         verdict,
         placed: [...placedFinding(), ...missedFinding()],
         movedToFollowUps: 1,
-        stillOpen: legacy,
+        stillOpen: carried,
         resolved: [
           {
             id: "f-9",
@@ -2254,18 +2103,15 @@ describe("the posted review body", () => {
 });
 
 /**
- * The record is the set the **verdict was counted from** (#105), which
- * `fixBeforeMerge` alone is not: the count takes the larger of the list and the
- * labelled findings, so the case that rule exists for — a finding labelled in a
- * finding body and left off the list — posted *changes recommended* over an
- * empty checklist. Round 2 is then told that checklist is what to verify
- * against, under a verdict line saying the fixes are clear.
+ * The record is the set the **verdict was counted from** (#105). When the model
+ * restated its findings in a second list, a finding labelled in a finding body
+ * and left off the list posted *changes recommended* over an empty checklist.
+ * Both are `findings` alone since #224.
  */
 describe("the record and the count are one set", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
     findings: [],
     followUps: [],
-    fixBeforeMerge: [],
     verified: [],
     ...over,
   });
@@ -2293,7 +2139,7 @@ describe("the record and the count are one set", () => {
       droppedFollowUps: 0,
     });
 
-  it("records a labelled finding the list left out, anchored where it was made", () => {
+  it("records a labelled finding, anchored where it was made", () => {
     const missing = {
       findings: [
         finding({
@@ -2329,54 +2175,6 @@ describe("the record and the count are one set", () => {
     expect(suggested).toContain("this comment describes the old behaviour.");
     expect(suggested).not.toContain("```suggestion");
   });
-
-  /**
-   * A review that did as it was asked is recorded once. The list restates the
-   * findings the record already carries, so a second entry per finding would be
-   * the same work read twice.
-   */
-  it("records each finding once when the list accounts for every one of them", () => {
-    const both = {
-      fixBeforeMerge: ["the guard runs after the return"],
-      findings: [finding({ body: "**Fix before merge.** the guard runs after the return" })],
-    };
-
-    expect(record(both).findings).toBe(1);
-    expect(body(both).match(/^- /gm)).toHaveLength(1);
-  });
-
-  /**
-   * And when the list outnumbers them, all of it is recorded rather than the
-   * lines it left out: the list restates the same findings in the model's own
-   * words, so telling which line restates which finding is prose-matching. A
-   * finding written down twice costs a reader a moment; one written down
-   * nowhere is the failure this exists to remove.
-   */
-  it("records every restatement once the findings are short, rather than guessing which", () => {
-    const short = {
-      fixBeforeMerge: ["the guard runs after the return", "the new test asserts the old behaviour"],
-      findings: [finding({ path: "a.ts", body: "**Fix before merge.** the guard runs after the return" })],
-    };
-
-    expect(body(short)).toContain("- the guard runs after the return");
-    expect(body(short)).toContain("- the new test asserts the old behaviour");
-    // Three: the finding, and both restatements, because which of the two it
-    // restates is not knowable without matching prose. The count says three
-    // too — the record and the count are one set, so the price of never losing
-    // a finding is paid in both places or in neither.
-    expect(countFixBeforeMerge(output(short), 0)).toBe(3);
-    expect(record(short).findings).toBe(countFixBeforeMerge(output(short), 0));
-  });
-
-  /** A restatement has no finding behind it to rate, so it sorts last and shows no badge. */
-  it("gives a restatement no severity it did not come with", () => {
-    const short = {
-      fixBeforeMerge: ["one", "two"],
-      findings: [finding({ severity: "low", body: "**Fix before merge.** a low finding" })],
-    };
-
-    expect(record(short).open.map((entry) => entry.severity)).toEqual(["low", undefined, undefined]);
-  });
 });
 
 /**
@@ -2404,7 +2202,6 @@ describe("a finding the record does not read a label on", () => {
   const output = (findings: Finding[]): ReviewOutput => ({
     findings,
     followUps: [],
-    fixBeforeMerge: [],
     verified: [],
   });
   // One changed file with one line in a hunk: line 88 is past it, so the
@@ -2536,25 +2333,16 @@ describe("the record's size is the count the verdict was given", () => {
         ],
       },
     ],
-    ["the list alone, with no findings", { fixBeforeMerge: ["a", "b"] }],
-    [
-      "a list longer than the findings",
-      { fixBeforeMerge: ["a", "b"], findings: [at({ body: "**Fix before merge.** x" })] },
-    ],
-    [
-      "a list the findings account for",
-      { fixBeforeMerge: ["x"], findings: [at({ body: "**Fix before merge.** x" })] },
-    ],
   ];
 
   const CARRIED: readonly (readonly [string, CarriedFinding[]])[] = [
     ["nothing carried", []],
-    ["one carried finding still open", [{ id: "f-1", threadId: "PRRT_one", text: "an earlier one" }]],
+    ["one carried finding still open", [{ id: "f-1", threadId: "PRRT_one", text: "an earlier one", title: "an earlier one", anchor: "src/a.ts:1" }]],
     [
       "two carried findings still open",
       [
-        { id: "f-1", threadId: "PRRT_one", text: "an earlier one" },
-        { id: "f-2", text: "an earlier one with no thread" },
+        { id: "f-1", threadId: "PRRT_one", text: "an earlier one", title: "an earlier one", anchor: "src/a.ts:1" },
+        { id: "f-2", threadId: "PRRT_two", text: "another earlier one", title: "another earlier one", anchor: "src/b.ts:2" },
       ],
     ],
   ];
@@ -2567,7 +2355,6 @@ describe("the record's size is the count the verdict was given", () => {
     const reviewed: ReviewOutput = {
       findings: [],
       followUps: [],
-      fixBeforeMerge: [],
       verified: [],
       ...over,
     };
@@ -2618,7 +2405,6 @@ describe("severity changes no outcome", () => {
       }),
     ),
     followUps: severities.map((severity) => followUp({ severity })),
-    fixBeforeMerge: ["one", "two", "three"],
     verified: [],
   });
 
@@ -2677,7 +2463,6 @@ describe("every finding leaves by a thread or by the follow-ups", () => {
   const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
     findings: [],
     followUps: [],
-    fixBeforeMerge: [],
     verified: [],
     ...over,
   });
@@ -2908,8 +2693,13 @@ describe("the review's finding vocabulary", () => {
     expect(text.toLowerCase()).not.toContain("blocking");
   });
 
-  it.each(halves)("%s asks for the countable list by name", (_half, text) => {
-    expect(text).toContain("fixBeforeMerge");
+  /**
+   * Counted from `findings` alone (#224): neither half asks for the second
+   * list that restated each finding, nor names it at all.
+   */
+  it.each(halves)("%s asks for no second list of findings", (_half, text) => {
+    expect(text).toContain("`findings`");
+    expect(text).not.toMatch(/fixBeforeMerge|fix_before_merge/);
   });
 
   /**
@@ -2975,19 +2765,14 @@ describe("the review's finding vocabulary", () => {
 
   /**
    * **Ruling a carried finding `open` is the whole of reporting it.** The
-   * brief forbade restating it in `fixBeforeMerge` and said nothing about
-   * `findings`, which is where the rest of it says every finding goes — and
-   * nothing dedupes, by design: ids are the workflow's and text is never
+   * brief once forbade restating it only in a second list and said nothing
+   * about `findings`, which is where the rest of it says every finding goes,
+   * and nothing dedupes, by design: ids are the workflow's and text is never
    * matched. So a re-raise mints a second thread, a second id and a second
    * entry in the count, carried separately every round after.
    */
   it.each(halves)("%s forbids writing an open carried finding up again", (_half, text) => {
-    expect(plain(text)).toMatch(/not (?:also )?(?:write it up again|restate it)/i);
-    // Both lists named together, so the instruction cannot be read as covering
-    // one of them — `fixBeforeMerge` was the only one it named.
-    expect(plain(text)).toMatch(
-      /(fixBeforeMerge[^.]{0,160}`findings`|`findings`[^.]{0,160}fixBeforeMerge)/,
-    );
+    expect(plain(text)).toMatch(/not (?:also )?(?:write it up again|restate it)[^.]{0,160}`findings`/i);
   });
 
   /**
@@ -3250,111 +3035,12 @@ describe("the review brief asks for the class rather than the member", () => {
 });
 
 /**
- * **The body entries v0.4.0 already wrote are carried until they close** (#127,
- * decision 5).
- *
- * Nothing creates one any more, so the temptation is to delete the machinery
- * with the feature. What that would do is silently drop a *fix before merge*
- * finding off every pull request that was open at the upgrade: the entry is the
- * only record it exists, so a version that stopped reading it would post a body
- * with nothing about it and a verdict counting nothing for it, and the finding
- * would end as though a review had settled it.
- *
- * Kept deliberately simple, which is the other half of the decision: these are
- * rare and this only has to cover the pull requests open at one upgrade. So the
- * test is the round trip a real one takes — read out of the v0.4.0 body, ruled
- * on, and closed — rather than a re-implementation of the release that wrote it.
- */
-describe("a body entry from a v0.4.0 review", () => {
-  const output: ReviewOutput = {
-    findings: [],
-    followUps: [],
-    fixBeforeMerge: [],
-    verified: [],
-  };
-  const carried = carriedFindings({ threads: [], latestReviewBody: LEGACY_V040_BODY });
-
-  it("is read back out of that body as a carried finding, with its rating", () => {
-    expect(carried).toEqual([
-      {
-        id: "f-legacy",
-        severity: "high",
-        // The line as the v0.4.0 body wrote it. The decorations come off at
-        // render time (`carriedClaim`), not here, which is what stops the entry
-        // collecting a second badge every round it survives.
-        text: "`High` the cache key omits the tenant — `src/other.ts:88` *new*",
-      },
-    ]);
-  });
-
-  /**
-   * Still open, and still counting. It has no thread, so this body is the only
-   * thing keeping it alive — which is why the entry carries its id again.
-   */
-  it("is re-listed with its id where the review leaves it open", () => {
-    const { stillOpen, resolved } = verifyCarried(carried, [
-      { id: "f-legacy", status: "open", note: "The key still omits the tenant." },
-    ]);
-    const body = renderDecided({
-      verdict: VERDICTS["changes recommended"],
-      output,
-      placed: [],
-      movedToFollowUps: 0,
-      stillOpen,
-      resolved,
-      followUps: [],
-      droppedFollowUps: 0,
-    });
-
-    expect(body).toContain("**Findings:** 1");
-    expect(body).toContain(findingMarker("f-legacy", "high"));
-    expect(carriedFindings({ threads: [], latestReviewBody: body }).map((f) => f.id)).toEqual([
-      "f-legacy",
-    ]);
-  });
-
-  /**
-   * And it **closes** when a review rules it landed: there is no thread to
-   * resolve, so what closes it is the next body not naming it — which is the
-   * only way a body entry could ever close, and the reason #124 called it a
-   * finding a maintainer could not settle.
-   */
-  it("closes when a review rules it landed, by dropping out of the next body", () => {
-    const { resolutions, stillOpen, resolved } = verifyCarried(carried, [
-      { id: "f-legacy", status: "landed", note: "`key()` now hashes the tenant too." },
-    ]);
-    const body = renderDecided({
-      verdict: VERDICTS["approval recommended"],
-      output,
-      placed: [],
-      movedToFollowUps: 0,
-      stillOpen,
-      resolved,
-      followUps: [],
-      droppedFollowUps: 0,
-    });
-
-    // Nothing to resolve on GitHub, and nothing left owed.
-    expect(resolutions).toEqual([]);
-    expect(stillOpen).toEqual([]);
-    expect(resolved.map((f) => f.id)).toEqual(["f-legacy"]);
-
-    // It is in the record as closed, and its id is not — so the round after
-    // this one is handed nothing to rule on.
-    expect(body).toContain("<summary><b>Resolved since last review</b> (1)</summary>");
-    expect(body).toContain("the cache key omits the tenant");
-    expect(body).not.toContain("f-legacy");
-    expect(carriedFindings({ threads: [], latestReviewBody: body })).toEqual([]);
-  });
-});
-
-/**
  * GitHub's ceiling on a review body (#140). Over it the post is a 422 that
  * loses the threads along with the body, so the body is measured and shed in a
  * stated order — and refused by name where shedding is not enough.
  */
 describe("the review body against GitHub's size limit", () => {
-  const output: ReviewOutput = { findings: [], followUps: [], fixBeforeMerge: [], verified: [] };
+  const output: ReviewOutput = { findings: [], followUps: [], verified: [] };
   const parts = {
     verdict: VERDICTS["changes recommended"],
     output,
@@ -3366,9 +3052,16 @@ describe("the review body against GitHub's size limit", () => {
     droppedFollowUps: 0,
   };
 
-  /** Carried body entries, which carry their whole claim into the Open group. */
+  /** Carried findings, each with its whole claim as the title the Open group lists. */
   const carriedOpen = (n: number, text: string): CarriedFinding[] =>
-    Array.from({ length: n }, (_, i) => ({ id: `f-${i}`, severity: "medium", text: `${i} ${text}` }));
+    Array.from({ length: n }, (_, i) => ({
+      id: `f-${i}`,
+      threadId: `PRRT_${i}`,
+      severity: "medium",
+      text: `${i} ${text}`,
+      title: `${i} ${text}`,
+      anchor: `src/${i}.ts:1`,
+    }));
 
   it("renders a body that fits exactly as it did before anything measured it", () => {
     const stillOpen = carriedOpen(3, "the key omits the tenant");
@@ -3380,7 +3073,7 @@ describe("the review body against GitHub's size limit", () => {
     expect(lines).toEqual([]);
   });
 
-  it("shortens an oversized Open group's evidence, says so, and keeps every id", () => {
+  it("shortens an oversized Open group's evidence, says so, and keeps every entry", () => {
     const stillOpen = carriedOpen(100, "x".repeat(2_000));
     const lines: string[] = [];
     const body = renderDecided({ ...parts, stillOpen, log: (line) => lines.push(line) });
@@ -3388,7 +3081,7 @@ describe("the review body against GitHub's size limit", () => {
     expect(reviewBodySize(body)).toBeLessThanOrEqual(REVIEW_BODY_LIMIT);
     expect(body).toContain("the evidence quoted in the entries below was shortened");
     expect(body).toContain("**Findings:** 100");
-    expect(carriedFindings({ threads: [], latestReviewBody: body })).toHaveLength(100);
+    expect(body.split("\n").filter((line) => line.startsWith("- "))).toHaveLength(100);
     expect(lines.join("\n")).toMatch(/evidence .* was shortened/);
   });
 

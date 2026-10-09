@@ -24,18 +24,15 @@ import {
   severityWord,
   SEVERITIES,
   withoutFindingMarkers,
-  withoutSeverityBadge,
   withSeverityBadgesAsText,
   type Finding,
   type PlacedFinding,
 } from "../shared/review-findings.js";
 import {
-  deriveVerdict,
   reviewOutputSchema,
   VERDICTS,
   type ReviewOutput,
 } from "../shared/review-output.js";
-import { carriedFindings } from "../shared/review-verification.js";
 import { FINDING_MARKER } from "../shared/record.js";
 import { renderDecided } from "./review/decided.js";
 
@@ -680,32 +677,6 @@ describe("severity", () => {
     }
   });
 
-  /**
-   * The strip `carriedClaim` reads a body entry back with, in every form a
-   * release has written a badge in — the image, the bold code span of the
-   * decision the image superseded, and the plain span v0.4.0 and v0.5.0 bodies
-   * carry. A form this does not know is an entry that collects a second badge
-   * every round it stays open.
-   */
-  it.each([
-    ["the image chip", severityBadge("medium")],
-    ["the bold code span", "**`Medium`**"],
-    ["the plain code span", "`Medium`"],
-    ["a bare chip from another release", '<img src="https://x/assets/severity-medium.svg" alt="Medium">'],
-  ])("strips %s off a carried claim", (_form, badge) => {
-    expect(withoutSeverityBadge(`${badge} the cache key omits the tenant`, "medium")).toBe(
-      "the cache key omits the tenant",
-    );
-  });
-
-  /** This entry's own badge and no other: a claim may legitimately quote one. */
-  it("leaves a badge this entry's severity would not have written", () => {
-    expect(withoutSeverityBadge("`Low` is not a place for preferences", "high")).toBe(
-      "`Low` is not a place for preferences",
-    );
-    expect(withoutSeverityBadge(`${severityBadge("low")} chips`, "high")).toContain("<img");
-  });
-
   it("ranks worst first, and an unrated entry last of all", () => {
     expect(severityRank("high")).toBeLessThan(severityRank("medium"));
     expect(severityRank("medium")).toBeLessThan(severityRank("low"));
@@ -839,7 +810,6 @@ describe("an identifier the model smuggled into its output", () => {
     title: `fix: move the guard ${CLOSED}`,
     summary: `It moves the guard above the return. ${LIVE}\n\n- the guard moved ${CLOSED}`,
     needsYou: `the issue asked for the opposite ${CLOSED}`,
-    fixBeforeMerge: [`the guard runs after the return ${LIVE}`],
     findings: [
       {
         title: `the guard runs after the return ${CLOSED}`,
@@ -948,17 +918,8 @@ describe("an identifier the model smuggled into its output", () => {
       droppedFollowUps: 0,
     });
 
-    const carried = carriedFindings({ threads: [], latestReviewBody: body });
-
-    expect(carried).toEqual([]);
-    expect(
-      deriveVerdict(parse({}), { autoFix: false,
-        ci: "green",
-        fixRoundProgress: { given: 0, closed: 0 },
-        stillOpen: carried.length,
-        movedToFollowUps: 0,
-      }).verdict,
-    ).toBe("approval recommended");
+    expect(parseFindingMarkers(body)).toEqual([]);
+    expect(body).not.toContain("f-closed");
   });
 });
 

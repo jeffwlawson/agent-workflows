@@ -6,8 +6,8 @@
  * and its children. Comments, processing instructions and a document type are
  * read past.
  *
- * Written here rather than taken as a dependency, since the release ships the
- * dependency tree beside the code (#414), and a JUnit report needs no more of
+ * Written here rather than taken as a dependency, since the release ships its
+ * dependency tree inside the package (#430), and a JUnit report needs no more of
  * XML than this. It reads as the Python standard library's parser, which the
  * step it replaces used, did: line breaks normalised, whitespace in an
  * attribute's value read as a space, the five predefined entities and

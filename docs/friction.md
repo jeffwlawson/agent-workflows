@@ -2466,3 +2466,19 @@ most failures were tests that looked a step up in "the" job by its id. A split r
 spread across jobs, so a lookup by job id fails loudly, which is the good outcome; the quiet one
 was `conditionOf`, which matched a step to its job by name and found the gate's `Checkout PR head`
 for the agent's, until it compared whole steps.
+
+## 2026-10-09: the shrinkwrap that shipped and was never read
+
+#414 shipped an `npm-shrinkwrap.json` so that every `npm exec` of a release installed the tree the
+suite ran, and added a publish step to check the registry marked the version as carrying it. v0.7.12
+was the first release with the file, and that step went red on it: npm reads a dependency's
+shrinkwrap only when the registry's metadata sets `_hasShrinkwrap`, and GitHub Packages never sets
+it. The tarball carried the file, the file was right, and nothing would ever read it. The drift it
+was meant to stop was already live: the lockfile held `yaml` at 2.8.1, and the registry had 2.9.1
+inside `^2.8.1`.
+
+#430 bundles the runtime dependencies instead, which npm installs from the tarball whatever the
+registry says, and the shrinkwrap went rather than staying beside it: a file npm ignores is not
+protection. The release grew from about 0.3 MB to 3.1 MB, nearly all of it `sandcastle`. The habit:
+the check that read the registry, not the tarball, is the one that found it. A guard that relies on
+another system's behaviour wants a check of that system, run on the first release.

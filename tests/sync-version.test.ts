@@ -652,6 +652,12 @@ describe("the release hook stays out of what ships", () => {
 
     expect(program).not.toContain(path.join("scripts", "sync-version.ts"));
   });
+
+  // The publish's check of the bundled dependencies (#430) is run from source
+  // the same way, and is held out of the build on the same terms.
+  it("leaves the bundled-dependencies check out of the build too", () => {
+    expect(compiled()).not.toContain(path.join("scripts", "bundled-tree.ts"));
+  });
 });
 
 /**

@@ -55,6 +55,10 @@ jobs:
       # `bin` guard below greps a warning string, and `copy-assets` only skips
       # Markdown.
       #
+      # Scoped to the package's own files. The runtime dependencies are bundled
+      # (#430), and a dependency's own `test/` folder is its business, not a sign
+      # this build leaked; `tests/bundled-tree.test.ts` holds what is bundled.
+      #
       # `--ignore-scripts` because the Build step above already produced `dist/`,
       # and letting `prepack` run again prints to stdout and corrupts the JSON.
       - name: The tarball ships the runner and nothing else
@@ -63,6 +67,7 @@ jobs:
           leaked=$(npm pack --dry-run --json --ignore-scripts \
             | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
                 console.log(JSON.parse(s)[0].files.map(f=>f.path)
+                  .filter(p=>!p.startsWith('node_modules/'))
                   .filter(p=>/(^|\/)tests?\//.test(p)||/\.test\./.test(p)||/vitest/.test(p))
                   .join('\n'));});")
           if [ -n "$leaked" ]; then
@@ -95,22 +100,3 @@ jobs:
             exit 1
           fi
           echo "Publish-time manifest normalisation removed nothing."
-
-      # The release's dependency tree (#414). `prepack` writes `npm-shrinkwrap.json`
-      # from the lockfile and `postpack` removes it, so it exists only inside a
-      # pack, and this dry run is the step in CI that packs with scripts on. The
-      # tarball check above passes `--ignore-scripts` and so never sees it.
-      - name: The published tarball carries the shrinkwrap
-        run: |
-          set -uo pipefail
-          out=$(npm publish --dry-run 2>&1) || true
-          if ! printf '%s\n' "$out" | grep -Eq 'npm notice +[0-9.]+ ?[kMG]?B +npm-shrinkwrap\.json$'; then
-            echo "$out"
-            echo "::error::The tarball has no npm-shrinkwrap.json, so every run would install whatever versions its dependency ranges allow that day. Check that package.json's files lists it and that prepack runs dist/scripts/shrinkwrap.js."
-            exit 1
-          fi
-          if [ -e npm-shrinkwrap.json ]; then
-            echo "::error::npm-shrinkwrap.json is still at the package root after the pack. npm prefers it over package-lock.json, so every later npm install here would read it. Check that postpack removes it."
-            exit 1
-          fi
-          echo "The tarball carries npm-shrinkwrap.json, and the pack removed it after."

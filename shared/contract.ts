@@ -20,9 +20,19 @@
  * `shared/env.ts`, which take a declaration from here.
  */
 
+/**
+ * The values an input accepts, where it accepts only some: a value outside
+ * them fails the run through `fail()` in `readInputs`, naming the input, the
+ * value and these, rather than quietly reading as whatever the reader's
+ * comparison makes of it. Unset is not a value, and reads as an optional
+ * input's default, which has to be one of these.
+ */
+export type Accepts = readonly [string, ...string[]];
+
 /** An input the subcommand cannot run without. Empty counts as missing. */
 export interface RequiredInput {
   readonly required: true;
+  readonly accepts?: Accepts;
 }
 
 /**
@@ -33,6 +43,7 @@ export interface RequiredInput {
 export interface OptionalInput {
   readonly required: false;
   readonly default: string;
+  readonly accepts?: Accepts;
 }
 
 /** Whether a producer writes a file every time it ends, or only on some outcomes. */
@@ -202,7 +213,8 @@ export interface CommandContract {
  * - `ROUND` is `final` on a PRD PR's final review, and anything else is a
  *   slice round or an ordinary pull request.
  * - `AUTO_FIX` is `true` where the workflow will start a fix round itself, and
- *   anything else is off.
+ *   `false` or unset where it will not. Anything else fails the run (#378): a
+ *   run that could not say must not claim a fix round started.
  * - `FIX_ROUNDS_SPENT` and `FIX_ROUND_BUDGET` are counted by the same step,
  *   and a stop on a spent budget is recorded only where both are numbers.
  * - `PRD_PR` is empty on a PRD's first slice, which opens it.
@@ -270,7 +282,7 @@ export const RUNNERS = {
       ROUND: EMPTY,
       CI_STATUS_FILE: EMPTY,
       CI_RESULT_FILE: EMPTY,
-      AUTO_FIX: EMPTY,
+      AUTO_FIX: { required: false, default: "false", accepts: ["true", "false"] },
       FIX_ROUNDS_SPENT: EMPTY,
       FIX_ROUND_BUDGET: EMPTY,
       RED_CHECK_CONFIGURED: EMPTY,

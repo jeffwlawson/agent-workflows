@@ -559,7 +559,7 @@ so the diff matches GitHub's.
 | `ROUND` | optional | `""` | `final` on a PRD PR's final review; anything else is a slice round or an ordinary pull request. |
 | `CI_STATUS_FILE` | optional | `""` | A file of the other checks' results, as evidence for the agent. Empty is "not collected". |
 | `CI_RESULT_FILE` | optional | `""` | A file holding `green` or `red`. Empty, unreadable or anything else is unknown, which no approval is given on. |
-| `AUTO_FIX` | optional | `""` | `true` where the orchestrator will start a fix round itself on a verdict asking for one. |
+| `AUTO_FIX` | optional | `false` | Accepts `true` or `false`: `true` where the orchestrator will start a fix round itself on a verdict asking for one, `false` where it will not. Unset or empty is `false`, and any other value fails the run, naming it. |
 | `FIX_ROUNDS_SPENT` | optional | `""` | The fix rounds this pull request has spent, for the verdict's line. |
 | `FIX_ROUND_BUDGET` | optional | `""` | The budget, for the same line. Both have to be numbers for it to be written. |
 | `RED_CHECK_CONFIGURED` | optional | `""` | `true` where the red check is configured. |

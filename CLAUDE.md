@@ -311,6 +311,10 @@ so a `setup/setup.ts` would quietly enrol these two in every rule written for th
 - Prefer `execFileSync` argv over shell strings for anything holding a variable. A git ref may
   legally contain `` ` ``, `$()`, `;`, `|` and `&`.
 - Test files live in `tests/`, mirroring the source.
+- **A test runs a subcommand through `tests/cli-inputs.ts`** (#428), which sets the inputs the test
+  gives and unsets the subcommand's other declared inputs for the run, so a forgotten input fails
+  on the build agent's runner as it does on CI's clean one. A test file that runs the CLI writes
+  `process.env` nowhere else; `tests/agent-cli.test.ts` fails on one that does.
 - **A test that spawns synchronously bounds the spawn itself**, at `SUBPROCESS_TIMEOUT` from
   `vitest.config.ts` — the same figure that file gives the suite as `testTimeout`. vitest's timeout
   cannot interrupt a synchronous spawn, so the setting is a flake guard for cold starts and the

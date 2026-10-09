@@ -315,7 +315,7 @@ const writeStatusLine = async (workflow: Writer, pr: number, verdict: VerdictHan
  * verdict's row: publish's own, chosen by the key and the cause the runner
  * handed over. So is the `agent-fix-round` status posted beside it where the
  * review asked for an automatic fix round (#297): `FIX_ROUND_STATUS`, the
- * record `review:gate` counts rounds by, linking the same
+ * record `review:budget` counts rounds by, linking the same
  * review. A claimed round still has to pass the hand-off's live guard, which
  * looks for this status on the head, and the budget, which counts it.
  *

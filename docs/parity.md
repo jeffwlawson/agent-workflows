@@ -226,11 +226,15 @@ its findings anchored across work built at different times. So:
   it looks only for what spans slices — contracts between them, duplication, scaffolding one slice
   left dead for a later one — and never re-raises a slice's leftover findings. A one-slice PRD
   skips it, because its PRD PR diff is the lines its slice PR's review already read.
-- **The automatic-fix bound is per pull request.** It was once per pull request (§10), which made
-  it once per slice PR plus once on the PRD PR. Since PRD #200 it is the fix-round budget, with the
-  early stop under it (#201, #202), and it applies to a slice PR as to any other: more rounds per
-  slice are the lever for fewer leftover 🟡 findings, and the early stop is what keeps them from
-  being spent on a round that changes nothing.
+- **The automatic-fix bound is per round.** It was once per pull request (§10), which made it once
+  per slice PR plus once on the PRD PR. Since PRD #200 it is the fix-round budget, with the early
+  stop under it (#201, #202): more rounds per slice are the lever for fewer leftover 🟡 findings,
+  and the early stop is what keeps them from being spent on a round that changes nothing. Since
+  PRD #222 every slice is a round of one PRD PR, so a budget counted per pull request was shared by
+  every slice, and a PRD whose slices needed more fixes than the budget parked a healthy slice with
+  none of its own spent (PRD PRs #330 and #424). Since #331 the budget is each **round's** on a PRD
+  PR: every slice round has its own, and so does the final review, each round's statuses told
+  apart by the round header of the review they link to. Off a PRD PR it is the pull request's.
 
 **The cost now is wall-clock**: each slice's review and fix time adds up, plus a no-model finishing
 run per PRD. Two gaps are accepted rather than closed. A slice's CI ran against the PRD branch as it
@@ -382,7 +386,7 @@ PRD.
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
-| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297); the `auto-fix` input it replaced was a deprecated alias from v0.7.5 and has been removed (#366). The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
+| **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, or on a PRD PR per slice round and for the final review (#331), default 3, counted from the `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297); the `auto-fix` input it replaced was a deprecated alias from v0.7.5 and has been removed (#366). The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
 | **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance**, a step of the review's posting job and a job in `fix`, both running the composite action `.github/actions/advance-prd` (#257): re-adds `agent:implement` to the slice PR's **parent** on 🟢 and on 🟡 with no fix round starting, and, in `fix`, when the fix run pushed nothing and posted no out-of-scope note, and so ended the round itself. The same shape as the fix round: no checkout, no model, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
@@ -629,7 +633,8 @@ write access sits below everything that does not, regardless of how useful it lo
 Rules that must hold as features are added, each recording a decision that is cheap now and
 expensive to rediscover.
 
-- **Auto-cascade review → fix only within a fix-round budget per pull request, and never after a
+- **Auto-cascade review → fix only within a fix-round budget per pull request (per round on a PRD
+  PR, #331), and never after a
   fix round that made no progress** (once, and only where an adopter asked for it, until #201 made
   it a budget; the early stop is #202's). This bullet read **never** until #102, and the amendment is below rather than in place
   of it, because the reasoning is what makes the new rule safe: `agent:fix` → `agent:review` was
@@ -715,7 +720,9 @@ expensive to rediscover.
   - **The fix-round budget** (#201, which replaced the `agent:auto-fixed` marker that held it to
     one). `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, default 3, counted from the
     `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297), so nothing
-    but the pull request records them. Until #201 this was one automatic fix per pull request, recorded by a marker label on the
+    but the pull request records them. On a PRD PR the budget is each round's (#331): a slice round
+    counts only the statuses linking its own slice's reviews, and the final review only those
+    linking final reviews, so slices do not share one budget. Until #201 this was one automatic fix per pull request, recorded by a marker label on the
     pull request itself. A human's own commits start no count again, so a later review that
     recommends changes once the budget is spent asks the maintainer for the label. Without this, a
     pull request a human kept pushing to could be fixed automatically over and over, each round
@@ -878,7 +885,8 @@ expensive to rediscover.
   review workflow**, and a pull request is still reviewed as a whole — nothing reviews a slice while
   code is still being added under it, so the stale-anchor problem #102/#105 spent two rounds fixing
   does not return. The automatic fix stays **bounded per pull request** (above), so a slice PR and
-  the PRD PR each get the budget, and nothing gets more. The reasoning, and the cost this
+  the PRD PR each get the budget, and nothing gets more. (Since PRD #222 there are no slice PRs, and
+  since #331 a PRD PR's budget is each round's: every slice round, and the final review.) The reasoning, and the cost this
   replaced, are in
   [§2a's trade](#the-trade-the-slice-pr-is-the-unit-of-review-the-prd-pr-the-unit-of-merge).
 - **Two workflows may share a trigger label only if exactly one of them speaks.** `agent-implement`

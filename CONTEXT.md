@@ -46,7 +46,9 @@ Each slice is reviewed as a **slice round** on the PRD PR: an ordinary review ro
 *k* of *n*: #sub", handed the slice range's commits and the sub-issue's acceptance criteria, and
 allowed to raise only what those commits cause. The diff is still the whole PRD PR's, and a
 problem this slice causes in earlier code is anchored at this slice's change. Fix rounds run on
-the PRD PR under the same budget and early stop as anywhere else. The PRD PR stays a draft through
+the PRD PR under the same early stop as anywhere else, and under a budget that is the **round's**
+(#331): each slice round has the whole fix-round budget, and so does the final review, so a slice
+never parks on rounds earlier slices spent. The PRD PR stays a draft through
 every slice round. **The next slice starts only on an approval**: the build run's preflight reads
 the `agent-review` verdict on the PRD PR's head, live, and refuses on anything else, so a human
 re-adding the label to a parked chain cannot skip the gate. Before building, the run merges the
@@ -163,12 +165,18 @@ automatic fix rounds left in its **fix-round budget** (#201): the repository var
 itself: the `agent-fix-round` statuses the loop posted there, one beside each verdict that asked
 for a round (#297; the verdict's own line is fixed, so it cannot be the record). There is no marker
 label, so the count survives re-runs and hand edits, only automatic rounds count, and a push resets
-nothing. The budget is settled before the review runs, so a review asks for a round only where one
+nothing. On a PRD PR the rounds counted are this round's alone (#331): each status counts toward
+the round its linked review's header names, a slice by its sub-issue or the final review, never by
+the commit it stands on, since the final review's first round stands on the last slice's tip; and a
+status whose round cannot be told leaves the count unreadable, which starts no round. The budget is
+settled before the review runs, by `review:budget` after the checkout, since which slice is
+current is read off the branch's history; so a review asks for a round only where one
 will start, and the step decides from live state rather than the event payload: it adds nothing where
 `agent:fix` is already on the pull request or a newer verdict stands, and says on the pull request
 when a round it should have started did not. It is the return leg `docs/parity.md` §10 used to
 forbid outright, and what makes it an arrow rather than a cycle is two bounds, both ruled on before
-the key it selects on is derived. The budget bounds it per pull request, and the **early stop**
+the key it selects on is derived. The budget bounds it per pull request, or per round of a PRD
+PR, and the **early stop**
 (#202) ends it sooner: after a fix round that closed none of the findings it was given, matched by
 the ids the workflow wrote into them, no further automatic round starts, whatever budget is left.
 New findings the re-review raised neither count as progress nor reset anything. The verdict then
@@ -190,7 +198,8 @@ request (#176). It is one job, `advance` in `review`, and it fires only on a PRD
 `agent:implement` to the PRD's **parent**, parsed from the head name, and the `implement-prd` run
 that starts passes the approval gate and builds the next slice, or finishes. When a slice round or
 the final review ends any other way, the same job **parks** the chain: it comments on the parent
-naming the slice (or "final review"), why the round stopped (the fix-round budget spent, no
+naming the slice (or "final review"), why the round stopped (the slice's or the final review's
+fix-round budget spent, no
 progress, a review that needs a closer look, a run that did not finish), the open findings with
 links, and the three ways on: `agent:fix` for another round; decline a finding by replying to it,
 then `agent:review`; or push a commit, then `agent:review`. A verdict that started a fix round is
@@ -435,14 +444,15 @@ an argument is refused rather than ignored. Its boundary with whatever invokes i
 that reads or changes the PR or issue, or decides anything, and starts no agent. It is invoked the
 way a runner is, as one subcommand with no arguments and its whole input in the environment, and
 fails the way a runner does. It is named `<workflow>:<step>`, such as `review:publish`, so a bare
-name is always a runner. `follow-ups:file`, `review:gate`, `review:collect-checks`,
+name is always a runner. `follow-ups:file`, `review:gate`, `review:budget`, `review:collect-checks`,
 `review:red-check-place`, `review:red-check-classify`, `review:publish`, `review:conclude` and
 `review:advance` are the commands today; every other step a command will be still runs as YAML
 shell, in the five reusables that have not moved. A command that
-only decides or reads, as `review:gate` does before the review job's checkout (#420) and
-`review:collect-checks` does for the CI wait (#421), is handed the GitHub
-reader and no writer, and what it settles leaves it as a declared file: the gate's the YAML copies
-into step outputs, and the CI wait's the runner reads. A command that runs beside the pull
+only decides or reads, as `review:gate` does before the review job's checkout (#420),
+`review:budget` does for the fix-round budget after it (#331) and `review:collect-checks` does
+for the CI wait (#421), is handed the GitHub reader and no writer, and what it settles leaves it
+as a declared file: the gate's and the budget's the YAML copies into step outputs, and the CI
+wait's the runner reads. A command that runs beside the pull
 request's own code, as the red check's two do around the adopter's test command (#422), is handed
 no token at all: it reads no repository, and the package it runs from was installed before that
 code ran, by the one step that held the registry token. The kind is declared, not inferred: `shared/contract.ts` holds

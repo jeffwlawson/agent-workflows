@@ -192,8 +192,8 @@ const REF_COUNT = 2 * Object.values(CALLERS_PER_FILE).reduce((sum, n) => sum + n
  * resolves the loop's token names `loop-token` (#319, #320): implement's
  * publish job, implement-prd's catch-up and publish jobs, fix's and
  * update-branch's publish jobs, and review's `time-limit`, `post-review` and
- * `advance` jobs. Eight, beside the thirteen `npm exec` pins, the one `npm
- * install` and the twelve callers, so the release rewrites thirty-four pins in
+ * `advance` jobs. Eight, beside the fourteen `npm exec` pins, the one `npm
+ * install` and the twelve callers, so the release rewrites thirty-five pins in
  * ten files. Review's advance named `advance-prd` too, until it became
  * `review:advance` (#423).
  */
@@ -209,17 +209,17 @@ const ACTION_COUNT = Object.values(ACTION_SITES).reduce((sum, actions) => sum + 
 /**
  * The steps that run the package, `npm exec … --package=…@<version>`, by
  * file: one per reusable workflow, the runner's or the filing command's,
- * and in `review.yml` `review:gate` (#420), `review:collect-checks` (#421),
- * `review:red-check-place` and `review:red-check-classify` (#422),
- * `review:publish` (#417), `review:conclude` (#419) and `review:advance`
- * (#423) beside the runner.
+ * and in `review.yml` `review:gate` (#420), `review:budget` (#331),
+ * `review:collect-checks` (#421), `review:red-check-place` and
+ * `review:red-check-classify` (#422), `review:publish` (#417),
+ * `review:conclude` (#419) and `review:advance` (#423) beside the runner.
  */
 const PACKAGE_SITES: Readonly<Record<string, number>> = {
   ".github/workflows/fix.yml": 1,
   ".github/workflows/follow-ups.yml": 1,
   ".github/workflows/implement-prd.yml": 1,
   ".github/workflows/implement.yml": 1,
-  ".github/workflows/review.yml": 8,
+  ".github/workflows/review.yml": 9,
   ".github/workflows/update-branch.yml": 1,
 };
 const PACKAGE_COUNT = Object.values(PACKAGE_SITES).reduce((sum, n) => sum + n, 0);
@@ -283,7 +283,7 @@ describe("the version propagator rewrites every pin", () => {
     );
 
     expect(() => syncVersion(TARGET, root)).toThrow(
-      /review\.yml: expected 12 version pins \[package, package, package, package, package, package, package, package, install, action, action, action\], found 11 \[package, package, package, package, package, package, package, package, install, action, action\]/,
+      /review\.yml: expected 13 version pins \[package, package, package, package, package, package, package, package, package, install, action, action, action\], found 12 \[package, package, package, package, package, package, package, package, package, install, action, action\]/,
     );
   });
 
@@ -389,11 +389,11 @@ describe("the version propagator rewrites every pin", () => {
 
     const sites = syncVersion(TARGET, root);
 
-    // Fourteen pins, one file more: the copy of `review.yml` runs the package
-    // eight times, installs it once, and names the token resolver three times
+    // Fifteen pins, one file more: the copy of `review.yml` runs the package
+    // nine times, installs it once, and names the token resolver three times
     // too, and the two callers of it join the files already there.
-    expect(sites).toHaveLength(PIN_COUNT + 14);
-    expect(sites.filter((s) => s.form === "package")).toHaveLength(PACKAGE_COUNT + 8);
+    expect(sites).toHaveLength(PIN_COUNT + 15);
+    expect(sites.filter((s) => s.form === "package")).toHaveLength(PACKAGE_COUNT + 9);
     expect(sites.filter((s) => s.form === "install")).toHaveLength(INSTALL_COUNT + 1);
     expect(sites.filter((s) => s.form === "ref")).toHaveLength(REF_COUNT + 2);
     expect([...new Set(sites.map((s) => s.file))].sort()).toEqual(
@@ -478,7 +478,7 @@ describe("the version propagator refuses an unexpected set of pins", () => {
       `${read(root, ".github/workflows/review.yml")}\n# jeffwlawson/agent-workflows/.github/workflows/review.yml@v0.1.7\n`,
     );
 
-    expect(() => syncVersion(TARGET, root)).toThrow(/found 13 \[package, package, package, package, package, package, package, package, install, ref, action, action, action\]/);
+    expect(() => syncVersion(TARGET, root)).toThrow(/found 14 \[package, package, package, package, package, package, package, package, package, install, ref, action, action, action\]/);
   });
 
   /**

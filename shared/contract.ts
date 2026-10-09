@@ -469,13 +469,22 @@ const REVIEW_RED_CHECK_PLACE = {
  * - `follow-ups:file` writes issues with its `GH_TOKEN` itself, outside the
  *   engine's writer, until its own workflow moves (ADR 0005).
  * - `review:gate` decides, before checkout, whether the review runs, which
- *   commit it reviews, the fix-round budget and, on a PRD branch, which round
- *   it is, and writes nothing to the record: the posting job says what it
- *   decided. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the pull request as
+ *   commit it reviews, the fix-round budget's value and, on a PRD branch,
+ *   which round it is, and writes nothing to the record: the posting job says
+ *   what it decided. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the pull request as
  *   the event that asked for the review saw it; the branch's tip and the rest
  *   of the live state it reads itself. `gate.json` is its decisions, every
  *   value a string, under the names an orchestrator hands on, and
  *   `refusal_reason.txt` is a variable it refused, written before it fails.
+ * - `review:budget` counts, after the checkout, the automatic fix rounds
+ *   spent against `FIX_ROUND_BUDGET`, the budget `review:gate` settled, and
+ *   decides whether a review that recommends changes starts one, with
+ *   `LOOP_TOKEN_SOURCE` the token the loop writes with. On a PRD branch the
+ *   rounds are this round's alone (#331): `ROUND` is `review:gate`'s, and a
+ *   slice round's slice is read off the checkout's history against
+ *   `BASE_REF`. `budget.json` is the budget, the rounds spent and the
+ *   decision, every value a string, which the runner reads as
+ *   `FIX_ROUND_BUDGET`, `FIX_ROUNDS_SPENT` and `AUTO_FIX`.
  * - `review:collect-checks` waits for the pull request's other checks on
  *   `REVIEWED_SHA`, the commit `review:gate` settled, and writes nothing to
  *   the record. `SELF_CHECK` is the name of the check run of the job it runs
@@ -534,7 +543,6 @@ export const COMMANDS = {
   "review:gate": {
     inputs: {
       ...EVERY_SUBCOMMAND,
-      ...LOOP_ACCOUNTS,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       HEAD_SHA: REQUIRED,
@@ -544,9 +552,21 @@ export const COMMANDS = {
       HEAD_POLL_SECONDS: { required: false, default: "5" },
       REVIEW_TIMEOUT_MINUTES: EMPTY,
       MAX_FIX_ROUNDS: EMPTY,
-      LOOP_TOKEN_SOURCE: EMPTY,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", "refusal_reason.txt"],
+  },
+  "review:budget": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ...LOOP_ACCOUNTS,
+      PR_NUMBER: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+      ROUND,
+      FIX_ROUND_BUDGET: REQUIRED,
+      LOOP_TOKEN_SOURCE: EMPTY,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "budget.json"],
   },
   "review:collect-checks": {
     inputs: {

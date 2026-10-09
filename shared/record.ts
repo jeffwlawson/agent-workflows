@@ -14,6 +14,22 @@
  * and makes the runs on either side of the release unable to read each other.
  */
 
+// The loop's identity.
+
+/**
+ * The account the loop always recognises as its own (§4.1), in its REST
+ * spelling: the one every Actions workflow posts as with its job's
+ * `GITHUB_TOKEN`. Recognised beside whatever accounts an orchestrator passes
+ * in, since older pull requests carry it and the Actions reusables still post
+ * as it. Read through `loopAccounts` (`shared/loop-accounts.ts`), which adds
+ * its GraphQL spelling.
+ *
+ * The one place shipped TypeScript writes this login, and
+ * `tests/loop-accounts.test.ts` holds it there, so no runner or command can
+ * hard-code the loop's account again.
+ */
+export const DEFAULT_LOOP_ACCOUNT = "github-actions[bot]";
+
 // Headings and markers in posts.
 
 /**

@@ -53,6 +53,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   OUTPUT_DIR: "/out",
   GH_REPO: "o/r",
   GH_TOKEN: "workflow-token",
+  AGENT_LOOP_LOGINS: "",
   PR_NUMBER: String(PR),
   BRANCH,
   HEAD_SHA: BEFORE,
@@ -318,6 +319,28 @@ describe("review:gate settles the fix-round budget", () => {
     await run();
 
     expect(decided()).toMatchObject({ spent: "1", start: "true" });
+  });
+
+  /**
+   * An orchestrator posting as its own App (#376): its rounds count once its
+   * account is passed in, beside the default, and not before.
+   */
+  it("counts a round posted by an account the orchestrator passes in", async () => {
+    github.statuses.set(C1, [round(review(1), "my-loop[bot]")]);
+    github.statuses.set(C2, [round(review(2))]);
+
+    await run(INPUTS({ AGENT_LOOP_LOGINS: "other-loop, my-loop[bot]," }));
+    expect(decided()).toMatchObject({ spent: "2", start: "true" });
+
+    await run(INPUTS());
+    expect(decided()).toMatchObject({ spent: "1", start: "true" });
+  });
+
+  it("fails, naming the entry, on an account that is not a login", async () => {
+    await expect(run(INPUTS({ AGENT_LOOP_LOGINS: "my-loop[bot], not a login" }))).rejects.toThrow(
+      "`AGENT_LOOP_LOGINS` holds `not a login`, which is not a GitHub login.",
+    );
+    expect(decided()).toEqual({});
   });
 
   it("counts a round with no link on its own", async () => {

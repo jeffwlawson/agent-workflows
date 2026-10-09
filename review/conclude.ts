@@ -5,6 +5,7 @@ import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
 import { json, matching, object, readDirectory, text } from "../shared/hand-over.js";
+import { isWorkflowBot, loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
 import {
   BLOCKED_LABEL,
   FIX_LABEL,
@@ -47,8 +48,9 @@ export const conclude = async (
   io: CommandIo<(typeof COMMANDS)["review:conclude"]["outputs"]>,
 ): Promise<void> => {
   const pr = pullRequestNumber(inputs.PR_NUMBER);
-  // What publish left, read and checked before the first write: its URL where
-  // it posted, and its reason where it stopped.
+  // The loop's accounts (#376), read and checked before the first write, like
+  // what publish left: its URL where it posted, and its reason where it stopped.
+  const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
   const published = readDirectory(COMMANDS["review:conclude"].inputs.PUBLISH_DIR, inputs.PUBLISH_DIR, {
     "published.json": json(object({ reviewUrl: LINK })),
     "failure_reason.txt": text,
@@ -106,7 +108,7 @@ export const conclude = async (
   if (moved) return;
 
   if (inputs.VERDICT === "changes recommended" && inputs.FIX_ROUND === "true") {
-    await startFixRound(inputs, io, { pr, loop, live, reviewUrl });
+    await startFixRound(inputs, io, { pr, loop, live, reviewUrl, accounts });
   }
 };
 
@@ -315,9 +317,6 @@ const askAgainIfMoved = async (
   return true;
 };
 
-/** The account the loop's statuses are posted as (`docs/platform-spec.md` §4.1). */
-const LOOP_ACCOUNT = "github-actions[bot]";
-
 /**
  * The automatic fix round (#102, #201, #297): `agent:fix`, added with the
  * loop's token, since one added with the workflow token fires nothing.
@@ -342,7 +341,13 @@ const LOOP_ACCOUNT = "github-actions[bot]";
 const startFixRound = async (
   inputs: Inputs,
   io: CommandIo<(typeof COMMANDS)["review:conclude"]["outputs"]>,
-  { pr, loop, live, reviewUrl }: { pr: number; loop: Writer; live: PullRequest | undefined; reviewUrl: string },
+  {
+    pr,
+    loop,
+    live,
+    reviewUrl,
+    accounts,
+  }: { pr: number; loop: Writer; live: PullRequest | undefined; reviewUrl: string; accounts: LoopAccounts },
 ): Promise<void> => {
   const noRound = async (why: string): Promise<never> => {
     await tolerated("…and that could not be said on the pull request either.", () =>
@@ -363,10 +368,11 @@ const startFixRound = async (
   const head = live.headSha;
   const where = `the head commit \`${head}\`${head === inputs.REVIEWED_SHA ? "" : `, which moved on from the reviewed \`${inputs.REVIEWED_SHA}\``}`;
   // Read with the workflow token (#345): the App `init` registers holds no
-  // `statuses` scope, and the loop's token is kept for the label.
+  // `statuses` scope, and the loop's token is kept for the label. The loop's
+  // are those posted by one of its accounts, in a creator's REST spelling.
   let statuses;
   try {
-    statuses = (await io.github.commitStatuses(head)).filter((status) => status.creator === LOOP_ACCOUNT);
+    statuses = (await io.github.commitStatuses(head)).filter((status) => isWorkflowBot(status.creator, accounts));
   } catch {
     return noRound("the verdicts on its head could not be read, so whether a newer one stands could not be told");
   }

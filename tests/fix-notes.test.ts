@@ -20,6 +20,10 @@ import {
   type ReviewOutput,
 } from "../shared/review-output.js";
 import { renderDecided } from "./review/decided.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
+
+/** The loop's accounts with `AGENT_LOOP_LOGINS` unset: the default alone. */
+const ACCOUNTS = loopAccounts("");
 
 /**
  * The fix agent's out-of-scope notes (#213). They used to be free prose in a
@@ -284,7 +288,7 @@ describe("a note's end, in the review body and on merge", () => {
         },
       ],
       stubs: [],
-    });
+    }, ACCOUNTS);
 
   /** jeffwlawson/mealie-mcp-server#82, replayed: both notes are filed when the PR merges. */
   it("files both of jeffwlawson/mealie-mcp-server#82's notes as issues", () => {

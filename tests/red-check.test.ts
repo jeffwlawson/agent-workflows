@@ -820,7 +820,7 @@ describe("a slice round's red check, and its record for the final review (#235)"
     expect(runner).toMatch(/const redTests = round\?\.kind === "slice" \? redTestsRecord\(redCheck\) : undefined;/);
     expect(runner).toMatch(/\.\.\.\(redTests === undefined \? \{\} : \{ redTests \}\)/);
     expect(publish).toMatch(/redTestsBlock: renderRedTestsBlock\(redTests\)/);
-    expect(runner).toMatch(/slicesRedTests = sliceRedTests\(reviews, prdBranch\.ranges\)/);
+    expect(runner).toMatch(/slicesRedTests = sliceRedTests\(reviews, prdBranch\.ranges, LOOP_ACCOUNTS\)/);
     expect(runner).toMatch(/redTests: slicesRedTests === undefined \? \{\} : \{ slices: slicesRedTests \}/);
     expect(publish).toMatch(/redTests: \{ slices: summary\.prd\.redTests\.slices \}/);
     expect(runner).toMatch(/final && redCheck\.kind !== "not-configured"\s*\? renderRedCheckForFinal\(slicesRedTests\)/);

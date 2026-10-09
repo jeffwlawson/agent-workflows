@@ -265,41 +265,52 @@ pull request as one the loop has never touched: the prototype posted a real revi
 
 ### 4.1 The loop's identity
 
-The runner recognises one account as the loop's own, in both the spellings GitHub reports it:
+The runner recognises as the loop's own every account on a list: `github-actions[bot]`, always, and
+each account the orchestrator passes in `AGENT_LOOP_LOGINS`, a comma-separated list of logins. It
+is a list rather than one name because, at a migration, pull requests in flight carry both
+accounts. Each account is matched in both the spellings GitHub reports it, from one entry given in
+either:
 
 | Login | Where GitHub reports it so |
 |---|---|
-| `github-actions[bot]` | The REST API. |
-| `github-actions` | GraphQL. |
+| `<slug>[bot]`, so `github-actions[bot]` | The REST API, and a commit status's creator. |
+| `<slug>`, so `github-actions` | GraphQL. |
+
+Logins are matched without regard to case. An empty entry, as a trailing comma leaves, is ignored,
+so with the input unset or empty the list is `github-actions[bot]` alone. An entry that is not a
+login fails the run (§2.4), naming it.
 
 This list is **trust**. It feeds `isTrustedAuthor` in `shared/common.ts`, the gate over every
 world-writable surface a runner reads: a comment, review or thread by one of these logins passes
 it whatever its author association, beside the `OWNER`, `MEMBER` and `COLLABORATOR` the gate
 trusts by association. Whatever posts as one of these logins therefore becomes text `fix` acts on
-and commits code from. An orchestrator ***must*** post the loop's findings, notes and statuses as
-one of these logins for a runner to read them back, and ***must not*** let anything it does not
-control post as one.
+and commits code from. Passing an account in is safe only because the orchestrator that passes it
+already holds the write token. An orchestrator ***must*** post the loop's findings, notes and
+statuses as one of these logins for a runner to read them back, and ***must not*** list, or let
+anything it does not control post as, an account it does not control.
 
-The same list, without the association half (`isWorkflowBot`), is what a runner asks where the
-question is *did the loop post this* rather than *is this trusted*: the verdict status it counts
-rounds by (§4.3), and the review bodies `follow-ups:file` files from.
-
-The list is fixed in this release, and an orchestrator cannot pass in its own; #376 will let it.
+The same list, without the association half (`isWorkflowBot`), is what a runner or a command asks
+where the question is *did the loop post this* rather than *is this trusted*: the reviews it
+numbers rounds by, the verdict and fix-round statuses it counts (§4.3), the earlier findings it
+carries forward, and the review bodies `follow-ups:file` files from. `review:gate` and
+`review:conclude` match a status's creator against it in the REST spelling. Every runner and
+command that asks declares `AGENT_LOOP_LOGINS`; `update-branch`, which asks neither question, does
+not.
 
 **`doctor` cannot check this.** The login is whichever account the orchestrator posts as, and the
 Actions reusable will work out its own App's login at run time (#305); nothing in a repository
 names it beforehand.
 
 > **Actions orchestrator:** reviews, comments and statuses are posted with the job's
-> `GITHUB_TOKEN`, so as `github-actions[bot]`. Only a workflow in the repository can post as it,
-> and adding or editing a workflow takes write access, which is why trusting the login is sound
-> there. The loop's App carries pushes, pull requests, ready-marks and trigger labels, which no
-> runner reads as text.
+> `GITHUB_TOKEN`, so as `github-actions[bot]`, and the reusables leave `AGENT_LOOP_LOGINS` unset.
+> Only a workflow in the repository can post as it, and adding or editing a workflow takes write
+> access, which is why trusting the login is sound there. The loop's App carries pushes, pull
+> requests, ready-marks and trigger labels, which no runner reads as text.
 
-> **Service orchestrator:** a service that posts as its own App is not on the list, so its reviews
-> are read as untrusted text, its verdicts are not counted, and every round reads as the first.
-> Until the list can be passed in, a service can only be read back by posting through a workflow's
-> `github-actions[bot]`.
+> **Service orchestrator:** a service that posts as its own App passes that App's login in
+> `AGENT_LOOP_LOGINS` to every runner and command that declares it, and its reviews, verdicts and
+> rounds are then read back as the loop's. Left unset, its posts are read as untrusted text, its
+> verdicts are not counted, and every round reads as the first.
 
 ### 4.2 Labels
 
@@ -438,6 +449,7 @@ branch checked out, at `BASE_REF`, and a new branch named `BRANCH` created from 
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. Empty is the baked default. |
 | `AGENT_MODEL_IMPLEMENT` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `ISSUE_NUMBER` | required | | The issue to build. |
 | `ISSUE_TITLE` | required | | Its title. |
 | `BRANCH` | required | | The branch checked out for the work. |
@@ -479,6 +491,7 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_IMPLEMENT_PRD` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `ISSUE_NUMBER` | required | | The PRD parent. |
 | `ISSUE_TITLE` | required | | Its title. |
 | `SUB_NUMBER` | required | | The sub-issue to build. |
@@ -539,6 +552,7 @@ so the diff matches GitHub's.
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_REVIEW` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
 | `BASE_REF` | required | | Its base branch, which the diff is taken against. |
@@ -644,6 +658,7 @@ written to `refusal_reason.txt` and the command fails, so the run ends as one th
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch, whose tip is read, and which tells a PRD PR. |
 | `HEAD_SHA` | required | | The head the request to review named. |
@@ -955,6 +970,7 @@ that cannot comment still takes its label off. The labels a run fires on (`agent
 |---|---|---|---|
 | `LOOP_TOKEN` | optional | `""` | The token whose writes start the loop's next workflow. Empty where it was not minted, which is one of the endings this reports. |
 | `LOOP_TOKEN_SOURCE` | optional | `""` | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch, which tells a PRD PR. |
 | `REVIEW_RESULT` | required | | How the review ended: `success`, `failure` or `cancelled`. |
@@ -1086,6 +1102,7 @@ diffing, and `RESCUE_BRANCH` fetched to `refs/rescue/<RESCUE_BRANCH>` where it e
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_FIX` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
 | `BASE_REF` | required | | Its base branch. |
@@ -1178,6 +1195,7 @@ it needs no `claude` and no checkout.
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The merged pull request. |
 
 #### Outputs

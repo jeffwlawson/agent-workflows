@@ -6,6 +6,7 @@ import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   fail,
   readInputs,
+  readLoopAccounts,
   scrubGitHubTokens,
   sh,
   writers,
@@ -96,6 +97,7 @@ import type {
 } from "./hand-over.js";
 
 const INPUTS = readInputs(RUNNERS["review"].inputs);
+const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson, writeText } = writers(RUNNERS["review"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
@@ -227,7 +229,7 @@ try {
         : readSliceRound(INPUTS.GH_REPO, prdParent, BASE_REF);
   console.log(`Round: ${round === undefined ? "an ordinary pull request" : roundName(round)}.`);
   const subIssue = round?.kind === "slice" ? round.slice?.subIssue : undefined;
-  const context = fetchPullRequestContext(INPUTS.GH_REPO, PR_NUMBER, BASE_REF, subIssue === undefined ? undefined : String(subIssue));
+  const context = fetchPullRequestContext(INPUTS.GH_REPO, PR_NUMBER, BASE_REF, LOOP_ACCOUNTS, subIssue === undefined ? undefined : String(subIssue));
 
   // The linked issue's acceptance criteria, which this review rules on one by
   // one (#214): on a slice round, its sub-issue's. Not on the final review,
@@ -244,7 +246,7 @@ try {
   // stop judges that round, which is the half that is not the agent's.
   // A fix round that pushed nothing but left a note asked for this review as
   // well (#213), and is one the early stop judges like any other.
-  const history = readReviewHistory(INPUTS.GH_REPO, PR_NUMBER, context.fixNotes.length > 0);
+  const history = readReviewHistory(INPUTS.GH_REPO, PR_NUMBER, LOOP_ACCOUNTS, context.fixNotes.length > 0);
   console.log(
     `Follows a fix round: ${history.afterFixRound ? "yes" : "no"}${history.unreadable === undefined ? "" : `, assumed because ${history.unreadable}`}.`,
   );
@@ -318,7 +320,7 @@ try {
   // header and the counts are left out rather than guessed.
   let counts: RoundCounts | undefined;
   try {
-    counts = roundCounts(readRoundRecord(INPUTS.GH_REPO, PR_NUMBER), prdBranch?.ranges, round !== undefined);
+    counts = roundCounts(readRoundRecord(INPUTS.GH_REPO, PR_NUMBER), LOOP_ACCOUNTS, prdBranch?.ranges, round !== undefined);
   } catch (error) {
     console.log(`::warning::This pull request's earlier rounds could not be read, so the review is not numbered: ${firstLine(error)}`);
   }
@@ -377,7 +379,7 @@ try {
   let slicesRedTests: SliceRedTests[] | undefined;
   if (round !== undefined) {
     const reviews = fetchReviews(INPUTS.GH_REPO, PR_NUMBER);
-    const earlier = earlierFollowUps(reviews);
+    const earlier = earlierFollowUps(reviews, LOOP_ACCOUNTS);
     carried = earlier.carried;
     for (const skipped of earlier.skipped) {
       console.log(`::warning::Follow-ups not carried forward from ${skipped}.`);
@@ -388,8 +390,8 @@ try {
       const landed = prdBranch.ranges.slices.filter((slice) => slice.range !== null).length;
       cap = followUpsCap(landed);
       if (round.kind === "final") {
-        slicesCriteria = sliceCriteria(reviews, prdBranch.ranges);
-        slicesRedTests = sliceRedTests(reviews, prdBranch.ranges);
+        slicesCriteria = sliceCriteria(reviews, prdBranch.ranges, LOOP_ACCOUNTS);
+        slicesRedTests = sliceRedTests(reviews, prdBranch.ranges, LOOP_ACCOUNTS);
       }
     }
     console.log(

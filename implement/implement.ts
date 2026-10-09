@@ -7,12 +7,14 @@ import {
   fetchTrustedIssue,
   git,
   readInputs,
+  readLoopAccounts,
   scrubGitHubTokens,
 } from "../shared/common.js";
 import { claudeAgent } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 
 const INPUTS = readInputs(RUNNERS["implement"].inputs);
+const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 
 const ISSUE_NUMBER = INPUTS.ISSUE_NUMBER;
 const ISSUE_TITLE = INPUTS.ISSUE_TITLE;
@@ -37,8 +39,8 @@ try {
   // the agent with a comment; a non-collaborator's text is dropped. Collaborator
   // comments are included even when the issue body is withheld, so a maintainer
   // can annotate a community-reported issue.
-  const issue = fetchTrustedIssue(INPUTS.GH_REPO, ISSUE_NUMBER);
-  const comments = fetchTrustedComments(INPUTS.GH_REPO, ISSUE_NUMBER);
+  const issue = fetchTrustedIssue(INPUTS.GH_REPO, ISSUE_NUMBER, LOOP_ACCOUNTS);
+  const comments = fetchTrustedComments(INPUTS.GH_REPO, ISSUE_NUMBER, LOOP_ACCOUNTS);
   const parts = [
     issue.trusted
       ? `# ${issue.title || ISSUE_TITLE}\n\n${issue.body || "(no description)"}`

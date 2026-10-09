@@ -58,11 +58,12 @@ const publishedReview = (url = REVIEW_URL): void => fs.writeFileSync(path.join(d
 const publishFailed = (reason: string): void => fs.writeFileSync(path.join(dir, "failure_reason.txt"), reason);
 
 /** The statuses publish posted on the reviewed commit, as the loop's account, newest first. */
-const verdictPosted = (over: { fixRound?: boolean; url?: string; sha?: string } = {}): void => {
+const verdictPosted = (over: { fixRound?: boolean; url?: string; sha?: string; creator?: string } = {}): void => {
   const url = over.url ?? REVIEW_URL;
+  const creator = over.creator ?? LOOP;
   github.statuses.set(over.sha ?? SHA, [
-    ...(over.fixRound === false ? [] : [{ context: FIX_ROUND_STATUS.context, state: "success", targetUrl: url, description: "", creator: LOOP }]),
-    { context: VERDICT_CONTEXT, state: "failure", targetUrl: url, description: "", creator: LOOP },
+    ...(over.fixRound === false ? [] : [{ context: FIX_ROUND_STATUS.context, state: "success", targetUrl: url, description: "", creator }]),
+    { context: VERDICT_CONTEXT, state: "failure", targetUrl: url, description: "", creator },
   ]);
 };
 
@@ -73,6 +74,7 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   OUTPUT_DIR: path.join(dir, "out"),
   GH_REPO: "o/r",
   GH_TOKEN: "workflow-token",
+  AGENT_LOOP_LOGINS: "",
   LOOP_TOKEN: "loop-token",
   LOOP_TOKEN_SOURCE: "app",
   PR_NUMBER: String(PR),
@@ -565,6 +567,34 @@ describe("review:conclude starts the automatic fix round", () => {
     await run(INPUTS(FIX_ROUND));
 
     expect(labels()).toEqual(["agent:fix"]);
+  });
+
+  /**
+   * An orchestrator posting as its own App (#376): the statuses its publish
+   * posted are the loop's once its account is passed in, and not before.
+   */
+  it("reads the statuses an account the orchestrator passes in posted", async () => {
+    verdictPosted({ creator: "my-loop[bot]" });
+
+    await run(INPUTS({ ...FIX_ROUND, AGENT_LOOP_LOGINS: "my-loop" }));
+
+    expect(labels()).toEqual(["agent:fix"]);
+    expect(github.comments).toEqual([]);
+  });
+
+  it("does not read another account's statuses as the loop's with the list unset", async () => {
+    verdictPosted({ creator: "my-loop[bot]" });
+
+    await expect(run(INPUTS(FIX_ROUND))).rejects.toThrow("the verdict that asked for it is not on the head commit");
+  });
+
+  it("fails, naming the entry, before its first write, on an account that is not a login", async () => {
+    verdictPosted();
+
+    await expect(run(INPUTS({ ...FIX_ROUND, AGENT_LOOP_LOGINS: "my-loop/bot" }))).rejects.toThrow(
+      "`AGENT_LOOP_LOGINS` holds `my-loop/bot`, which is not a GitHub login.",
+    );
+    expect(made).toBeUndefined();
   });
 
   /**

@@ -2,6 +2,7 @@ import type { GitHubReader } from "../engine/read.js";
 import type { ReadingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
+import { isWorkflowBot, loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
 import { FINAL_REVIEW_MARK, FIX_ROUND_STATUS, PRD_BRANCH_PREFIX, REVIEW_LABEL, VERDICT_CONTEXT } from "../shared/record.js";
 import { LEGACY_FIX_ROUND_STARTED } from "../shared/review-output.js";
 
@@ -47,6 +48,9 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
   const pr = pullRequestNumber(inputs.PR_NUMBER);
   const decided: Partial<Record<Decision, string>> = {};
   try {
+    // The loop's accounts, read first, so a malformed list fails the run
+    // before it decides anything (#376).
+    const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
     const settled = await settleCommit(inputs, io.github, pr);
     if (settled.refusal !== undefined) {
       Object.assign(decided, { proceed: "false", refusal: settled.refusal, blocked: String(settled.blocked) });
@@ -55,7 +59,7 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
     Object.assign(decided, { proceed: "true", sha: settled.sha });
 
     refuseTimeLimit(inputs, io);
-    Object.assign(decided, await settleBudget(inputs, io, pr));
+    Object.assign(decided, await settleBudget(inputs, io, pr, accounts));
     const round = await settleRound(inputs, io.github, pr);
     if (round !== undefined) decided.round = round;
   } finally {
@@ -191,9 +195,6 @@ const refuseTimeLimit = (inputs: Inputs, io: Io): void => {
   );
 };
 
-/** The account the loop's statuses are posted as (`docs/platform-spec.md` §4.1). */
-const LOOP_ACCOUNT = "github-actions[bot]";
-
 /**
  * **The fix-round budget** (#201, PRD #200): whether this review, if it
  * recommends changes, starts a fix round itself. Settled **before** the
@@ -230,13 +231,18 @@ const LOOP_ACCOUNT = "github-actions[bot]";
  * loop writes with is `LOOP_TOKEN_SOURCE`, chosen where no agent runs, so the
  * review job never names a secret that writes (#316).
  */
-const settleBudget = async (inputs: Inputs, io: Io, pr: number): Promise<Record<"budget" | "spent" | "start", string>> => {
+const settleBudget = async (
+  inputs: Inputs,
+  io: Io,
+  pr: number,
+  accounts: LoopAccounts,
+): Promise<Record<"budget" | "spent" | "start", string>> => {
   const budget = budgetOf(inputs, io);
 
   let spent: number | undefined = 0;
   if (budget > 0) {
     try {
-      spent = await roundsSpent(io.github, pr);
+      spent = await roundsSpent(io.github, pr, accounts);
     } catch (error) {
       console.log(`Counting the fix rounds failed: ${error instanceof Error ? error.message : String(error)}`);
       spent = undefined;
@@ -288,15 +294,16 @@ const budgetOf = (inputs: Inputs, io: Io): number => {
  * The automatic fix rounds the pull request has spent: one per distinct link
  * among the loop's `agent-fix-round` statuses, and 0.7.6's round-starting
  * verdicts, over every commit of the pull request. A status with no link
- * counts on its own. Throws where any of it could not be read, which is not
- * the same answer as none.
+ * counts on its own. The loop's are those posted by one of `accounts`, in the
+ * REST spelling a status's creator has (§4.1). Throws where any of it could
+ * not be read, which is not the same answer as none.
  */
-const roundsSpent = async (github: GitHubReader, pr: number): Promise<number> => {
+const roundsSpent = async (github: GitHubReader, pr: number, accounts: LoopAccounts): Promise<number> => {
   const links = new Set<string>();
   let unlinked = 0;
   for (const sha of await github.pullRequestCommits(pr)) {
     for (const status of await github.commitStatuses(sha)) {
-      if (status.creator !== LOOP_ACCOUNT) continue;
+      if (!isWorkflowBot(status.creator, accounts)) continue;
       const round =
         status.context === FIX_ROUND_STATUS.context ||
         (status.context === VERDICT_CONTEXT && status.description === LEGACY_FIX_ROUND_STARTED);

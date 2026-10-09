@@ -6,6 +6,7 @@ import {
   fail,
   git,
   readInputs,
+  readLoopAccounts,
   scrubGitHubTokens,
   sh,
   writers,
@@ -33,6 +34,7 @@ import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.j
 import type { SliceRanges } from "../shared/slice-ranges.js";
 
 const INPUTS = readInputs(RUNNERS["fix"].inputs);
+const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeJson, writeText } = writers(RUNNERS["fix"].outputs);
 
 const PR_NUMBER = INPUTS.PR_NUMBER;
@@ -65,7 +67,7 @@ const readFixHeader = (): string | undefined => {
       }
     }
     const prd = parent !== undefined;
-    return fixHeader(fixScope(record, ranges, prd), roundCounts(record, ranges, prd));
+    return fixHeader(fixScope(record, LOOP_ACCOUNTS, ranges, prd), roundCounts(record, LOOP_ACCOUNTS, ranges, prd));
   } catch (error) {
     console.log(`::warning::This pull request's rounds could not be read, so this run's comments are not numbered: ${firstLine(error)}`);
     return undefined;
@@ -77,7 +79,7 @@ const headed = (header: string | undefined, body: string): string =>
   header === undefined || body === "" ? body : withHeader(header, body);
 
 try {
-  const feedback = fetchPullRequestFeedback(INPUTS.GH_REPO, PR_NUMBER, INPUTS.BASE_REF);
+  const feedback = fetchPullRequestFeedback(INPUTS.GH_REPO, PR_NUMBER, INPUTS.BASE_REF, LOOP_ACCOUNTS);
 
   // Said in the log whether or not it is a reason to stop, because a run that
   // proceeded on a partial answer is one someone will later ask about.

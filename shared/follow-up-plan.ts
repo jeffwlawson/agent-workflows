@@ -1,4 +1,4 @@
-import { isWorkflowBot } from "./common.js";
+import { isWorkflowBot, type LoopAccounts } from "./loop-accounts.js";
 import { severityTextBadge } from "./review-findings.js";
 import {
   capFollowUps,
@@ -456,7 +456,7 @@ const stubBody = (
  * absorbed in silence, and someone who edited a review to fix a typo has to
  * learn that the edit cost them the filing.
  */
-export const planFollowUps = (input: FilingInput): FilingPlan => {
+export const planFollowUps = (input: FilingInput, accounts: LoopAccounts): FilingPlan => {
   // The latest bot review carrying a block wins, and earlier ones are ignored
   // rather than merged. That is the restatement rule seen from the reading end:
   // because each run restates the whole set, the newest block is the complete
@@ -474,7 +474,7 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
   // review is world-writable on a public repository, so refusing because
   // somebody else posted a block last would hand anyone a way to stop a filing.
   const carrying = input.reviews.filter(
-    (review) => isWorkflowBot(review.author) && hasFollowUpsBlock(review.body),
+    (review) => isWorkflowBot(review.author, accounts) && hasFollowUpsBlock(review.body),
   );
   const review = carrying[carrying.length - 1];
   if (!review) return silent();
@@ -629,11 +629,12 @@ export const planFollowUps = (input: FilingInput): FilingPlan => {
  */
 export const earlierFollowUps = (
   reviews: readonly FilingReview[],
+  accounts: LoopAccounts,
 ): { readonly carried: EarlierFollowUps[]; readonly skipped: string[] } => {
   const carried: EarlierFollowUps[] = [];
   const skipped: string[] = [];
   for (const review of reviews) {
-    if (!isWorkflowBot(review.author) || !hasFollowUpsBlock(review.body)) continue;
+    if (!isWorkflowBot(review.author, accounts) || !hasFollowUpsBlock(review.body)) continue;
     if (review.lastEditedAt !== null) {
       skipped.push(`${review.url} (edited since it was submitted)`);
       continue;

@@ -12,6 +12,10 @@ import {
   type RoundReview,
 } from "../shared/round-header.js";
 import { sliceRanges, type BranchCommit } from "../shared/slice-ranges.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
+
+/** The loop's accounts with `AGENT_LOOP_LOGINS` unset: the default alone. */
+const ACCOUNTS = loopAccounts("");
 
 /**
  * The header on every top-level review and fix comment (#298), and the numbers
@@ -75,7 +79,7 @@ describe("numbering across rounds", () => {
       reviews: [review("a1", 1), review("a2", 3), review("a2", 5), review("b1", 10)],
       fixes: [at(2), at(4)],
     };
-    const counts = roundCounts(record, RANGES);
+    const counts = roundCounts(record, ACCOUNTS, RANGES);
 
     expect(counts.slices[231]).toEqual({ reviews: 3, latestReview: record.reviews[2]?.url, fixes: 2 });
     expect(counts.slices[232]).toEqual({ reviews: 1, latestReview: record.reviews[3]?.url, fixes: 0 });
@@ -89,12 +93,12 @@ describe("numbering across rounds", () => {
       reviews: [review("b1", 10), review("b2", 12), review("b2", 14), review("b2", 18)],
       fixes: [at(11), at(13), at(16)],
     };
-    const counts = roundCounts(record, RANGES);
+    const counts = roundCounts(record, ACCOUNTS, RANGES);
     const slice2 = { kind: "slice", k: 2, n: 3, subIssue: 232 } as const;
 
     expect(counts.slices[232]?.fixes).toBe(3);
     expect(reviewHeader(slice2, counts)).toBe("**Slice 2 of 3 · #232 · review 5**");
-    expect(fixHeader(fixScope(record, RANGES), counts)).toBe("**Slice 2 of 3 · #232 · fix 3**");
+    expect(fixHeader(fixScope(record, ACCOUNTS, RANGES), counts)).toBe("**Slice 2 of 3 · #232 · fix 3**");
   });
 
   it("numbers the final review apart from every slice, by its header", () => {
@@ -107,12 +111,12 @@ describe("numbering across rounds", () => {
       ],
       fixes: [at(5), at(25)],
     };
-    const counts = roundCounts(record, RANGES);
+    const counts = roundCounts(record, ACCOUNTS, RANGES);
 
     expect(counts.slices[232]).toEqual({ reviews: 1, latestReview: record.reviews[1]?.url, fixes: 0 });
     expect(counts.final).toEqual({ reviews: 2, latestReview: record.reviews[3]?.url, fixes: 1 });
     expect(reviewHeader({ kind: "final" }, counts)).toBe("**Final review · review 3**");
-    expect(fixScope(record, RANGES)).toEqual({ kind: "final" });
+    expect(fixScope(record, ACCOUNTS, RANGES)).toEqual({ kind: "final" });
     expect(fixHeader({ kind: "final" }, counts)).toBe("**Final review · fix 1**");
   });
 
@@ -122,15 +126,26 @@ describe("numbering across rounds", () => {
       fixes: [],
     };
 
-    expect(roundCounts(record, RANGES).slices[231]?.reviews).toBe(1);
+    expect(roundCounts(record, ACCOUNTS, RANGES).slices[231]?.reviews).toBe(1);
+  });
+
+  /** An orchestrator posting as its own App (#376): its reviews are rounds once its account is passed in. */
+  it("counts a review an account the orchestrator passes in posted, in either spelling", () => {
+    const record: RoundRecord = {
+      reviews: [review("x", 1), review("y", 3, "", "my-loop[bot]"), review("z", 5, "", "my-loop")],
+      fixes: [],
+    };
+
+    expect(reviewHeader({ kind: "regular" }, roundCounts(record, loopAccounts("my-loop[bot]")))).toBe("**Review 4**");
+    expect(reviewHeader({ kind: "regular" }, roundCounts(record, ACCOUNTS))).toBe("**Review 2**");
   });
 
   it("counts the whole pull request off a PRD PR", () => {
     const record: RoundRecord = { reviews: [review("x", 1), review("y", 3)], fixes: [at(2), at(4)] };
-    const counts = roundCounts(record);
+    const counts = roundCounts(record, ACCOUNTS);
 
     expect(reviewHeader({ kind: "regular" }, counts)).toBe("**Review 3**");
-    expect(fixScope(record)).toEqual({ kind: "regular" });
+    expect(fixScope(record, ACCOUNTS)).toEqual({ kind: "regular" });
     expect(fixHeader({ kind: "regular" }, counts)).toBe("**Fix 2**");
   });
 
@@ -144,20 +159,20 @@ describe("numbering across rounds", () => {
       ],
       fixes: [at(4), at(6)],
     };
-    const counts = roundCounts(record, undefined, true);
+    const counts = roundCounts(record, ACCOUNTS, undefined, true);
 
     expect(counts.slices[231]?.reviews).toBe(1);
     expect(counts.slices[232]).toEqual({ reviews: 2, latestReview: record.reviews[2]?.url, fixes: 2 });
-    expect(fixScope(record, undefined, true)).toEqual({ kind: "slice", k: 2, n: 3, subIssue: 232 });
-    expect(fixHeader(fixScope(record, undefined, true), counts)).toBe("**Slice 2 of 3 · #232 · fix 2**");
+    expect(fixScope(record, ACCOUNTS, undefined, true)).toEqual({ kind: "slice", k: 2, n: 3, subIssue: 232 });
+    expect(fixHeader(fixScope(record, ACCOUNTS, undefined, true), counts)).toBe("**Slice 2 of 3 · #232 · fix 2**");
   });
 
   it("calls a fix run the first where its own label is not on the record", () => {
-    expect(fixHeader({ kind: "regular" }, roundCounts({ reviews: [], fixes: [] }))).toBe("**Fix 1**");
+    expect(fixHeader({ kind: "regular" }, roundCounts({ reviews: [], fixes: [] }, ACCOUNTS))).toBe("**Fix 1**");
   });
 
   it("puts a fix run in the current slice where no review of it can be told", () => {
-    expect(fixScope({ reviews: [], fixes: [] }, RANGES)).toEqual({ kind: "slice", k: 2, n: 3, subIssue: 232 });
+    expect(fixScope({ reviews: [], fixes: [] }, ACCOUNTS, RANGES)).toEqual({ kind: "slice", k: 2, n: 3, subIssue: 232 });
   });
 });
 

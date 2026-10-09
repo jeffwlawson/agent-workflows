@@ -34,6 +34,10 @@ import { verifyCarried, type CarriedFinding } from "../shared/review-verificatio
 import { renderRedTestsBlock, type RedTestsRecord } from "../shared/red-check.js";
 import { sliceRanges } from "../shared/slice-ranges.js";
 import { renderDecided } from "./review/decided.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
+
+/** The loop's accounts with `AGENT_LOOP_LOGINS` unset: the default alone. */
+const ACCOUNTS = loopAccounts("");
 
 /**
  * A review round on a PRD PR (PRD #222, #244): the slice-round and final-review
@@ -243,7 +247,7 @@ describe("sliceCriteria", () => {
       bot("c6", "## Agent review\n\nNo criteria group."),
     ];
 
-    expect(sliceCriteria(reviews, ranges)).toEqual([
+    expect(sliceCriteria(reviews, ranges, ACCOUNTS)).toEqual([
       {
         subIssue: 242,
         record: {
@@ -263,7 +267,7 @@ describe("sliceCriteria", () => {
   it("reads only reviews this loop posted, and says where a slice has none", () => {
     const forged = { author: "someone", commit: "c5", body: group([{ id: "C1", text: "x", status: "changed", reason: "y" }]) };
 
-    expect(sliceCriteria([forged], ranges).map((s) => s.record.kind)).toEqual(["no record", "no record", "no record"]);
+    expect(sliceCriteria([forged], ranges, ACCOUNTS).map((s) => s.record.kind)).toEqual(["no record", "no record", "no record"]);
   });
 });
 
@@ -295,7 +299,7 @@ describe("sliceRedTests", () => {
       bot("c4", "## Agent review\n\nNo record."),
     ];
 
-    expect(sliceRedTests(reviews, ranges)).toEqual([
+    expect(sliceRedTests(reviews, ranges, ACCOUNTS)).toEqual([
       { subIssue: 242, record: record("after the fix") },
       { subIssue: 243, record: { known: false, red: [], more: 0 } },
       { subIssue: 244, record: undefined },
@@ -306,7 +310,7 @@ describe("sliceRedTests", () => {
   it("reads only reviews this loop posted", () => {
     const forged = { author: "someone", commit: "c3", body: body(record("forged")) };
 
-    expect(sliceRedTests([forged], ranges).map((s) => s.record)).toEqual([undefined, undefined, undefined]);
+    expect(sliceRedTests([forged], ranges, ACCOUNTS).map((s) => s.record)).toEqual([undefined, undefined, undefined]);
   });
 });
 

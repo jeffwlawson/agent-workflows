@@ -1,5 +1,7 @@
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
+import { fail } from "./env.js";
+import { isWorkflowBot, loopAccounts, type LoopAccounts } from "./loop-accounts.js";
 
 export {
   commonWriters,
@@ -197,7 +199,8 @@ export const git = (args: readonly string[], options: { readonly maxBuffer?: num
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 /**
- * Our own workflows post as `github-actions[bot]`, and its
+ * The loop's own accounts (`LoopAccounts`) are trusted on the login alone. The
+ * Actions workflows post as `github-actions[bot]`, and its
  * `author_association` is never one this gate trusts — the value is
  * repository-dependent, `NONE` where the bot has never committed and
  * `CONTRIBUTOR` where it has (nodejs/node#66163 and nodejs/node#65881, checked
@@ -205,39 +208,38 @@ const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
  * gate would discard the review agent's own findings and break the review
  * → fix handoff, on this repository and on an adopter's alike.
  *
- * Trusting this one login is sound because the identity is *transitively
+ * Trusting that login is sound because the identity is *transitively
  * write-gated*: only a workflow in this repository can post as it, and adding
  * or editing a workflow requires write access. That is a property of the
  * login. The association half above establishes rather less (#68), so this is
  * the stronger of the two halves rather than a convenience on top of it.
  *
+ * An account an orchestrator passes in (`AGENT_LOOP_LOGINS`) is trusted the
+ * same way, and on the same ground: the orchestrator already holds the write
+ * token, so the list it passes is no wider a door than the one it holds.
+ *
  * Deliberately NOT `user.type === "Bot"` in general — that would also trust
  * Dependabot and any GitHub App an admin installs, which is a far wider
  * surface for a workflow that commits code.
  */
-// Both spellings on purpose: the REST API reports this account as
-// `github-actions[bot]`, GraphQL reports the same account as `github-actions`.
-// Listing only one silently drops our own review's comments on whichever path
-// uses the other.
-const WORKFLOW_BOT_LOGINS = new Set(["github-actions[bot]", "github-actions"]);
+export const isTrustedAuthor = (
+  association: string | undefined,
+  login: string | undefined,
+  accounts: LoopAccounts,
+): boolean => TRUSTED_ASSOCIATIONS.has(association ?? "") || isWorkflowBot(login, accounts);
 
 /**
- * The login half of the gate on its own, for the one caller that must **not**
- * take the association half: filing issues from a review body asks "is this the
- * review runner's own output", not "is this from someone trusted", and the
- * wider question would admit a human collaborator's hand-written review.
- *
- * Named rather than re-listed there, so the two spellings above stay one fact.
- *
- * What this does not establish, stated so it is not mistaken for an oversight:
- * the workflow bot is the identity of *every* workflow in a repository, so this
- * says a workflow posted it and never *which* workflow did.
+ * The loop's accounts, for a runner, which reads them at start beside its
+ * other inputs: `loopAccounts` over its `AGENT_LOOP_LOGINS`, with a malformed
+ * entry ending the run through `fail()`, naming it, before any of its own work.
  */
-export const isWorkflowBot = (login: string | undefined): boolean =>
-  WORKFLOW_BOT_LOGINS.has(login ?? "");
-
-export const isTrustedAuthor = (association: string | undefined, login: string | undefined): boolean =>
-  TRUSTED_ASSOCIATIONS.has(association ?? "") || isWorkflowBot(login);
+export const readLoopAccounts = (list: string): LoopAccounts => {
+  try {
+    return loopAccounts(list);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+};
 
 export interface TrustedIssue {
   readonly title: string;
@@ -275,7 +277,7 @@ const warnUnreadable = (what: string): void =>
  * rest of the loop assumes. Comments are never fetched at all — they are
  * world-writable regardless of who opened the issue.
  */
-export const fetchTrustedIssue = (ghRepo: string, issueNumber: string): TrustedIssue => {
+export const fetchTrustedIssue = (ghRepo: string, issueNumber: string, accounts: LoopAccounts): TrustedIssue => {
   let parsed: {
     title?: string;
     body?: string | null;
@@ -289,7 +291,7 @@ export const fetchTrustedIssue = (ghRepo: string, issueNumber: string): TrustedI
   } catch {
     parsed = {};
   }
-  if (!isTrustedAuthor(parsed.author_association, parsed.user?.login)) {
+  if (!isTrustedAuthor(parsed.author_association, parsed.user?.login, accounts)) {
     return { title: "", body: "", trusted: false };
   }
   return { title: parsed.title ?? "", body: (parsed.body ?? "").trim(), trusted: true };
@@ -307,8 +309,8 @@ export const fetchTrustedIssue = (ghRepo: string, issueNumber: string): TrustedI
  * need the same author gate. Only the first page (~30, oldest-first) is read;
  * that is plenty for steering and avoids pulling a huge thread into the prompt.
  */
-export const fetchTrustedComments = (ghRepo: string, number: string): string =>
-  renderTrustedComments(fetchTrustedCommentList(ghRepo, number));
+export const fetchTrustedComments = (ghRepo: string, number: string, accounts: LoopAccounts): string =>
+  renderTrustedComments(fetchTrustedCommentList(ghRepo, number, accounts));
 
 /** One trusted comment, as `fetchTrustedCommentList` returns it. */
 export interface TrustedComment {
@@ -322,7 +324,7 @@ export interface TrustedComment {
  * than handing them on as one text: the review reads a triage brief's
  * acceptance criteria out of one (#214).
  */
-export const fetchTrustedCommentList = (ghRepo: string, number: string): TrustedComment[] => {
+export const fetchTrustedCommentList = (ghRepo: string, number: string, accounts: LoopAccounts): TrustedComment[] => {
   let comments: { body?: string; author_association?: string; user?: { login?: string } }[] = [];
   const text = safeGh(["api", `repos/${ghRepo}/issues/${number}/comments`]);
   if (text === "") warnUnreadable(`The comments on #${number}`);
@@ -332,7 +334,7 @@ export const fetchTrustedCommentList = (ghRepo: string, number: string): Trusted
     comments = [];
   }
   return comments
-    .filter((c) => isTrustedAuthor(c.author_association, c.user?.login))
+    .filter((c) => isTrustedAuthor(c.author_association, c.user?.login, accounts))
     .map((c) => ({ login: c.user?.login ?? "unknown", body: (c.body ?? "").trim() }));
 };
 

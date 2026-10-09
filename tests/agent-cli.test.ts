@@ -4262,11 +4262,10 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
-   * **`auto-fix`, deprecated** (#201, PRD #200 decision 4). The review honours
-   * it for one release and wins it over the variable, and the release after
-   * stops declaring it, which GitHub answers by failing the caller that still
-   * passes it. So a warning now, naming the variable to set and the value that
-   * keeps today's behaviour.
+   * **`auto-fix`, removed** (#366, deprecated since #201). The review no
+   * longer declares it, and GitHub answers a caller that still passes it by
+   * failing every job in the file before any starts, with no log. So any
+   * value is an error, naming the variable that replaced it.
    *
    * The gesture is the one an adopter who kept the input has made: the line
    * added to the reference caller's `with:` block.
@@ -4279,74 +4278,55 @@ describe("doctor names the failures that otherwise look like something else", ()
     return root;
   };
 
-  it("warns that auto-fix is deprecated, naming the variable to set instead", async () => {
-    for (const [value, budget] of [["true", "1"], ["false", "0"]] as const) {
-      const { code, out, err } = await check(await withAutoFix(value), healthy());
+  it("errors on a caller that still passes auto-fix, whatever its value, naming the variable to set instead", async () => {
+    for (const value of ["true", "false", "yes", '"${{ vars.AUTO_FIX }}"', '"x-${{ vars.A }}"']) {
+      const { code, err } = await check(await withAutoFix(value), healthy());
 
-      expect(out, value).toContain("warn  auto-fix deprecated");
-      expect(out, value).toContain(FIX_ROUNDS_VARIABLE);
-      expect(out, value).toContain(`\`${FIX_ROUNDS_VARIABLE}\` to \`${budget}\``);
-      expect(err, value).toBe("");
-      expect(code, value).toBe(0);
+      expect(err, value).toContain("FAIL  auto-fix removed");
+      expect(err, value).toContain("on this release and every one after");
+      expect(err, value).toContain(`\`${FIX_ROUNDS_VARIABLE}\``);
+      expect(code, value).toBe(1);
     }
-  });
-
-  /** …and an error where its value is one the review refuses outright. */
-  it("errors on an auto-fix value the review refuses", async () => {
-    const { code, err } = await check(await withAutoFix("yes"), healthy());
-
-    expect(err).toContain("FAIL  auto-fix deprecated");
-    expect(code).toBe(1);
   });
 
   /**
    * **YAML's null is not passed.** `auto-fix:` with nothing after it, `~` and
-   * `null` all parse to null, which GitHub hands the review as the empty
-   * string, and the review reads empty as "not passed". Read through `String`
-   * it was the word `null`, and a refused value.
+   * `null` all parse to null, which GitHub hands the workflow as the empty
+   * string. Read through `String` it was the word `null`, and a finding.
    */
   it("reads an auto-fix left empty or null as not passed", async () => {
     for (const value of ["", "~", "null"]) {
       const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"], maxFixRounds: "5" };
       const { out, err } = await check(await withAutoFix(value), noPat);
 
-      expect(`${out}${err}`, value).not.toContain("auto-fix deprecated");
-      // The variable is what the review reads, so it is the budget named.
+      expect(`${out}${err}`, value).not.toContain("auto-fix removed");
       expect(out, value).toMatch(/budget of 5 \(`AGENT_MAX_FIX_ROUNDS`\)/);
     }
   });
 
   /**
-   * **An expression is settled at run time**, and may come to `true`, `false`
-   * or empty, none of which the review refuses. So still the deprecation, as a
-   * warning, and no budget: a round count out of `${{ vars.X }}` is a guess.
+   * **The budget is the variable alone**, in `doctor` as in the review: a
+   * caller passing `auto-fix: false` no longer stands for a budget of 0, so a
+   * missing PAT is still named against the default.
    */
-  it("warns on an auto-fix expression without ruling on what it comes to", async () => {
-    for (const value of ["${{ vars.AUTO_FIX }}", "${{ github.event_name == 'push' }}", "x-${{ vars.A }}"]) {
-      const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] };
-      const { out, err } = await check(await withAutoFix(`"${value}"`), noPat);
-
-      expect(out, value).toContain("warn  auto-fix deprecated");
-      expect(out, value).not.toContain("refuses it today");
-      expect(out, value).not.toContain("fix rounds without a PAT");
-      expect(err, value).not.toContain("auto-fix");
-    }
-  });
-
-  /**
-   * The alias wins over the variable, in `doctor` as in the review: `false`
-   * is a budget of 0 however the variable reads, so there is no round for a
-   * missing PAT to stop; `true` is a budget of 1 even where the variable says
-   * 0.
-   */
-  it("reads the budget from auto-fix where a caller still passes it", async () => {
+  it("reads the budget from the variable even where a caller passes auto-fix", async () => {
     const noPat = { ...healthy(), secrets: ["CLAUDE_CODE_OAUTH_TOKEN"] };
 
-    const off = await check(await withAutoFix("false"), { ...noPat, maxFixRounds: "3" });
-    expect(off.out).not.toContain("fix rounds without a PAT");
+    const unset = await check(await withAutoFix("false"), noPat);
+    expect(unset.out).toContain("fix rounds without a PAT");
+    expect(unset.out).toMatch(/budget of 3 \(the default\)/);
 
-    const on = await check(await withAutoFix("true"), { ...noPat, maxFixRounds: "0" });
-    expect(on.out).toMatch(/budget of 1 \(`auto-fix: true`\)/);
+    const zero = await check(await withAutoFix("true"), { ...noPat, maxFixRounds: "0" });
+    expect(zero.out).not.toContain("fix rounds without a PAT");
+  });
+
+  /** …and a variable the review refuses is an error even where every review caller passes `auto-fix`. */
+  it("errors on an invalid budget variable where the review caller passes auto-fix", async () => {
+    const { code, err } = await check(await withAutoFix("false"), { ...healthy(), maxFixRounds: "three" });
+
+    expect(err).toContain("FAIL  fix-round budget");
+    expect(err).toContain("every review fails before it starts");
+    expect(code).toBe(1);
   });
 
   /**

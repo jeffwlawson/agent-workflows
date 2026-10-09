@@ -24,26 +24,6 @@ name: Agent Review (reusable)
 on:
   workflow_call:
     inputs:
-      # **Deprecated** (#201, PRD #200 decision 4), and removed in the release
-      # after the one that deprecated it. The fix-round budget replaced it: the
-      # repository variable `AGENT_MAX_FIX_ROUNDS`, read by *Settle the
-      # fix-round budget* below. Kept one release because GitHub fails a caller
-      # that passes an input the reusable no longer declares.
-      #
-      # A **string** now, where it was a boolean, and that is what lets it be an
-      # alias at all: a boolean input reads `false` whether the caller wrote
-      # `false` or nothing, and the two mean opposite things here (a budget of
-      # 0, and the variable's budget). An unquoted `true` or `false` in a
-      # caller's `with:` still reaches a string input, as `"true"` or `"false"`;
-      # the reverse, a string into a boolean input, is what GitHub refuses.
-      auto-fix:
-        description: >-
-          Deprecated: set the repository variable `AGENT_MAX_FIX_ROUNDS`
-          instead. When set, it wins over the variable: `true` is a fix-round
-          budget of 1 and `false` a budget of 0, and the run warns that it is
-          going away. Empty, the default, leaves the budget to the variable.
-        type: string
-        default: ""
       default-branch:
         description: >-
           Branch to diff against when the pull-request event carries no base
@@ -589,7 +569,6 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REVIEW_TIMEOUT_MINUTES: ${{ vars.AGENT_REVIEW_TIMEOUT_MINUTES }}
           MAX_FIX_ROUNDS: ${{ vars.AGENT_MAX_FIX_ROUNDS }}
-          DEPRECATED_AUTO_FIX: ${{ inputs.auto-fix }}
           LOOP_TOKEN_SOURCE: ${{ needs.time-limit.outputs.token-source }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on the
         # runner step below.

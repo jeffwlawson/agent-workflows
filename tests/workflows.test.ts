@@ -1823,18 +1823,15 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * **The deprecated alias** (decision 4). `auto-fix` stays one release, a
-   * string so that unset can be told from `false`, and where a caller sets it
-   * it wins (`tests/review/gate.test.ts`).
+   * **The deprecated alias is gone** (#366). `auto-fix` was kept past its one
+   * release for six; the budget is the variable alone, and a caller still
+   * passing the input is `doctor`'s to name, since GitHub refuses it before
+   * any job starts.
    */
-  it("keeps auto-fix one release as an alias, handed to the gate", () => {
-    const input = workflowOf(REVIEW).on?.workflow_call?.inputs?.["auto-fix"];
-
-    expect(input?.type).toBe("string");
-    expect(input?.default).toBe("");
-    expect(input?.required).toBeUndefined();
-    expect(input?.description ?? "").toContain("Deprecated");
-    expect(budgetStep()?.env?.["DEPRECATED_AUTO_FIX"]).toBe("${{ inputs.auto-fix }}");
+  it("declares no auto-fix input, and hands the gate no DEPRECATED_AUTO_FIX", () => {
+    expect(workflowOf(REVIEW).on?.workflow_call?.inputs?.["auto-fix"]).toBeUndefined();
+    expect(budgetStep()?.env?.["DEPRECATED_AUTO_FIX"]).toBeUndefined();
+    expect(budgetStep()?.env?.["MAX_FIX_ROUNDS"]).toBe("${{ vars.AGENT_MAX_FIX_ROUNDS }}");
   });
 
   /**

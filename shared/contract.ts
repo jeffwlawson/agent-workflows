@@ -544,7 +544,6 @@ export const COMMANDS = {
       HEAD_POLL_SECONDS: { required: false, default: "5" },
       REVIEW_TIMEOUT_MINUTES: EMPTY,
       MAX_FIX_ROUNDS: EMPTY,
-      DEPRECATED_AUTO_FIX: EMPTY,
       LOOP_TOKEN_SOURCE: EMPTY,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", "refusal_reason.txt"],

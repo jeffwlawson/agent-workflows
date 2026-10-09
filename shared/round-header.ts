@@ -1,6 +1,7 @@
-import { gh, isWorkflowBot } from "./common.js";
+import { gh } from "./common.js";
 import { fetchReviews } from "./follow-up-filing.js";
 import type { FilingReview } from "./follow-up-plan.js";
+import { isWorkflowBot, type LoopAccounts } from "./loop-accounts.js";
 import type { SliceRanges } from "./slice-ranges.js";
 import { BODY_HEADING, FIX_LABEL } from "./record.js";
 
@@ -74,9 +75,9 @@ export interface RoundCounts {
   readonly all: RoundCount;
 }
 
-/** A review this loop posted: by the workflow's bot, under the review's heading. */
-const isLoopReview = (review: RoundReview): boolean =>
-  isWorkflowBot(review.author) && withoutHeader(review.body).trimStart().startsWith(BODY_HEADING);
+/** A review this loop posted: by one of its accounts, under the review's heading. */
+const isLoopReview = (review: RoundReview, accounts: LoopAccounts): boolean =>
+  isWorkflowBot(review.author, accounts) && withoutHeader(review.body).trimStart().startsWith(BODY_HEADING);
 
 /** A review the final review posted, told by its header. */
 const isFinalReview = (review: RoundReview): boolean => review.body.startsWith("**Final review · review ");
@@ -110,8 +111,13 @@ const counted = (reviews: readonly RoundReview[], fixes: number): RoundCount => 
  * branch could not be read, `ranges` undefined, the headers alone place the
  * reviews.
  */
-export const roundCounts = (record: RoundRecord, ranges?: SliceRanges, prd = ranges !== undefined): RoundCounts => {
-  const loop = record.reviews.filter(isLoopReview);
+export const roundCounts = (
+  record: RoundRecord,
+  accounts: LoopAccounts,
+  ranges?: SliceRanges,
+  prd = ranges !== undefined,
+): RoundCounts => {
+  const loop = record.reviews.filter((review) => isLoopReview(review, accounts));
   const all = counted(loop, record.fixes.length);
   if (!prd) return { slices: {}, final: counted([], 0), all };
 
@@ -179,9 +185,14 @@ export const fixHeader = (scope: RoundScope, counts: RoundCounts): string =>
  * where neither can be told. Off a PRD PR, `prd` false, the whole pull
  * request.
  */
-export const fixScope = (record: RoundRecord, ranges?: SliceRanges, prd = ranges !== undefined): RoundScope => {
+export const fixScope = (
+  record: RoundRecord,
+  accounts: LoopAccounts,
+  ranges?: SliceRanges,
+  prd = ranges !== undefined,
+): RoundScope => {
   if (!prd) return { kind: "regular" };
-  const latest = record.reviews.filter(isLoopReview).at(-1);
+  const latest = record.reviews.filter((review) => isLoopReview(review, accounts)).at(-1);
   if (latest !== undefined && isFinalReview(latest)) return { kind: "final" };
   const named = latest === undefined ? undefined : headerSlice(latest);
   if (named !== undefined) return { kind: "slice", ...named };

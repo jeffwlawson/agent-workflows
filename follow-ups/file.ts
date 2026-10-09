@@ -6,6 +6,7 @@ import {
   hasFollowUpsMarker,
 } from "../shared/follow-up-filing.js";
 import { planFollowUps } from "../shared/follow-up-plan.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
 import { FOLLOW_UPS_LABEL } from "../shared/record.js";
 
 /**
@@ -42,6 +43,9 @@ import { FOLLOW_UPS_LABEL } from "../shared/record.js";
 
 export const file = (inputs: InputValues<(typeof COMMANDS)["follow-ups:file"]["inputs"]>): void => {
   const PR_NUMBER = inputs.PR_NUMBER;
+  // Read before anything else, so a malformed list fails the run before it
+  // reads the pull request.
+  const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
 
   // One unconditional call, and the only branch in this file. The label is the
   // opt-out, so it is re-read here rather than taken from the event payload —
@@ -56,7 +60,7 @@ export const file = (inputs: InputValues<(typeof COMMANDS)["follow-ups:file"]["i
     return;
   }
 
-  const plan = planFollowUps(fetchFilingInput(inputs.GH_REPO, PR_NUMBER));
+  const plan = planFollowUps(fetchFilingInput(inputs.GH_REPO, PR_NUMBER), accounts);
   const outcome = executeFilingPlan(inputs.GH_REPO, PR_NUMBER, plan);
 
   console.log(

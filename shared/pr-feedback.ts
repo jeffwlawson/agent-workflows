@@ -1,4 +1,5 @@
-import { fail, ghOutcome, git, isTrustedAuthor, isWorkflowBot, type GhOutcome } from "./common.js";
+import { fail, ghOutcome, git, isTrustedAuthor, type GhOutcome } from "./common.js";
+import { isWorkflowBot, type LoopAccounts } from "./loop-accounts.js";
 import { parseNameStatus } from "./diff-lines.js";
 import { isOutOfScopeNote, readOutOfScopeNote, type PostedNote } from "./fix-notes.js";
 import {
@@ -967,6 +968,7 @@ const findingOn = (
     readonly subjectType?: string | null | undefined;
     readonly comments: readonly GqlThreadComment[];
   },
+  accounts: LoopAccounts,
 ): {
   readonly findingId: string;
   readonly severity?: Severity;
@@ -976,7 +978,7 @@ const findingOn = (
   readonly url?: string;
 } | undefined => {
   const marked = thread.comments.find(
-    (c) => isWorkflowBot(c.author?.login ?? undefined) && findingIdIn(c.body ?? "") !== undefined,
+    (c) => isWorkflowBot(c.author?.login ?? undefined, accounts) && findingIdIn(c.body ?? "") !== undefined,
   );
   const findingId = marked === undefined ? undefined : findingIdIn(marked.body ?? "");
   if (marked === undefined || findingId === undefined) return undefined;
@@ -1037,8 +1039,9 @@ const findingOn = (
  */
 const maintainerReplyOn = (
   comments: readonly GqlThreadComment[],
+  accounts: LoopAccounts,
 ): MaintainerReply | undefined => {
-  const reply = comments.filter((c) => !isWorkflowBot(c.author?.login ?? undefined)).pop();
+  const reply = comments.filter((c) => !isWorkflowBot(c.author?.login ?? undefined, accounts)).pop();
   const login = reply?.author?.login;
 
   // An anonymous reply is nobody's decision. A login is what the closing reply
@@ -1074,10 +1077,10 @@ const maintainerReplyOn = (
  * anyone can type, so a copy from anybody else is not a record — and is a
  * comment from somebody who is not us, which ends the walk.
  */
-const closedAsOn = (comments: readonly GqlThreadComment[]): ResolutionReason | undefined => {
+const closedAsOn = (comments: readonly GqlThreadComment[], accounts: LoopAccounts): ResolutionReason | undefined => {
   for (let i = comments.length - 1; i >= 0; i -= 1) {
     const comment = comments[i]!;
-    if (!isWorkflowBot(comment.author?.login ?? undefined)) return undefined;
+    if (!isWorkflowBot(comment.author?.login ?? undefined, accounts)) return undefined;
 
     const reason = closingReplyReason(comment.body ?? "");
     if (reason !== undefined) return reason;
@@ -1161,9 +1164,10 @@ const present = <T>(nodes: readonly (T | null | undefined)[] | null | undefined)
  */
 const renderable = <T extends GqlAuthored>(
   nodes: readonly (T | null | undefined)[] | null | undefined,
+  accounts: LoopAccounts,
 ): T[] =>
   present(nodes)
-    .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined))
+    .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined, accounts))
     .filter((n) => (n.body ?? "").trim().length > 0);
 
 /**
@@ -1176,8 +1180,9 @@ const renderable = <T extends GqlAuthored>(
 const render = <T extends GqlAuthored>(
   nodes: readonly (T | null | undefined)[] | null | undefined,
   format: (node: T, login: string) => string,
+  accounts: LoopAccounts,
 ): string =>
-  renderable(nodes)
+  renderable(nodes, accounts)
     .map((n) => withSeverityBadgesAsText(format(n, n.author?.login ?? "unknown")))
     .join("\n\n---\n\n");
 
@@ -1200,7 +1205,12 @@ const render = <T extends GqlAuthored>(
  * pushes takes `refusalReason`. The one thing neither may do is read a refusal
  * as an absence.
  */
-export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseRef: string): PullRequestFeedback => {
+export const fetchPullRequestFeedback = (
+  ghRepo: string,
+  prNumber: string,
+  baseRef: string,
+  accounts: LoopAccounts,
+): PullRequestFeedback => {
   const [owner = "", repo = ""] = ghRepo.split("/");
 
   // Read through `ghOutcome`, not `gh`: a partial-error response exits non-zero
@@ -1232,14 +1242,14 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
   // docs/parity.md §10 closed by a different door.
   const commentNodes = present(pr?.comments?.nodes);
   const priorTopLevelComments = commentNodes
-    .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined))
+    .filter((n) => isTrustedAuthor(n.authorAssociation, n.author?.login ?? undefined, accounts))
     .filter((n) => isAgentTopLevelComment(n.body))
     .map((n) => n.body ?? "");
 
   // The out-of-scope notes (#213), by marker **and** by author: the marker is
   // a selector anyone can type, and a note is something a review may file.
   const notesByBot = commentNodes.filter(
-    (n) => isWorkflowBot(n.author?.login ?? undefined) && isOutOfScopeNote(n.body),
+    (n) => isWorkflowBot(n.author?.login ?? undefined, accounts) && isOutOfScopeNote(n.body),
   );
   const priorOutOfScopeNotes = notesByBot.map((n) => n.body ?? "");
 
@@ -1256,6 +1266,7 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
         !isAgentConversationOutcome(n.body) &&
         !notesByBot.includes(n),
     ),
+    accounts,
   );
 
   // Which of them an outcome is owed on — the conversation half of
@@ -1276,7 +1287,7 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
   // reading to get right — and of the two readings available, dropping feedback
   // a run might be steered by is the worse one.
   const owedAnOutcome = (n: GqlComment): n is GqlComment & { id: string } =>
-    typeof n.id === "string" && !isWorkflowBot(n.author?.login ?? undefined);
+    typeof n.id === "string" && !isWorkflowBot(n.author?.login ?? undefined, accounts);
 
   // The id is rendered for the same reason a thread's is: the agent has to name
   // a comment to report an outcome on it, so identity must survive into the
@@ -1288,8 +1299,9 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
       ? `**@${login}** · comment \`${n.id}\`\n${(n.body ?? "").trim()}`
       : [
           `**@${login}:**\n${(n.body ?? "").trim()}`,
-          ...(isWorkflowBot(login) ? [LOOP_NOTE] : []),
+          ...(isWorkflowBot(login, accounts) ? [LOOP_NOTE] : []),
         ].join("\n\n"),
+    accounts,
   );
 
   const conversationComments = conversationNodes
@@ -1303,6 +1315,7 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
   const summaries = render(
     pr?.reviews?.nodes,
     (n, login) => `**@${login}** (${n.state ?? "COMMENTED"}):\n${(n.body ?? "").trim()}`,
+    accounts,
   );
 
   // Grouped by thread, not flattened: the fix agent has to name a thread to
@@ -1318,7 +1331,7 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
     .map((thread) => {
       const trusted = present(thread.comments?.nodes).filter(
         (c) =>
-          isTrustedAuthor(c.authorAssociation, c.author?.login ?? undefined) &&
+          isTrustedAuthor(c.authorAssociation, c.author?.login ?? undefined, accounts) &&
           (c.body ?? "").trim().length > 0,
       );
       return {
@@ -1333,7 +1346,7 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
 
   const threads = allThreads
     .filter((thread) => !thread.isResolved)
-    .map((thread) => ({ ...thread, closedAs: closedAsOn(thread.comments) }));
+    .map((thread) => ({ ...thread, closedAs: closedAsOn(thread.comments, accounts) }));
 
   // A thread already carrying this workflow's closing reply is rendered like
   // any other, and `AWAITING_CLOSE` is what is added rather than what is taken
@@ -1381,10 +1394,10 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
   // a review may rule the finding declined and only that reply lets the
   // workflow act on the ruling (#112).
   const agentThreads = threads.flatMap((thread): AgentThread[] => {
-    const found = findingOn(thread);
+    const found = findingOn(thread, accounts);
     if (found === undefined) return [];
 
-    const reply = maintainerReplyOn(thread.comments);
+    const reply = maintainerReplyOn(thread.comments, accounts);
     return [
       {
         threadId: thread.id,
@@ -1412,9 +1425,9 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
   // finding on the strength of a field that did not answer.
   const settledFindings = allThreads.flatMap((thread): SettledFinding[] => {
     const resolvedBy = thread.resolvedBy;
-    if (!thread.isResolved || resolvedBy === undefined || isWorkflowBot(resolvedBy)) return [];
+    if (!thread.isResolved || resolvedBy === undefined || isWorkflowBot(resolvedBy, accounts)) return [];
 
-    const found = findingOn(thread);
+    const found = findingOn(thread, accounts);
     // The severity is deliberately dropped here rather than carried: a settled
     // finding is shown to the reviewer as an instruction not to raise it again,
     // and a rating on something nobody may act on is an invitation to weigh it.
@@ -1434,7 +1447,7 @@ export const fetchPullRequestFeedback = (ghRepo: string, prNumber: string, baseR
   // of the fifty oldest, which is only the newest review while a pull request
   // has had fewer than fifty (#125).
   const latestAgentReview = present(pr?.reviews?.nodes)
-    .filter((review) => isWorkflowBot(review.author?.login ?? undefined))
+    .filter((review) => isWorkflowBot(review.author?.login ?? undefined, accounts))
     .filter((review) => (review.body ?? "").trim() !== "")
     .pop();
   const latestAgentReviewBody = (latestAgentReview?.body ?? "").trim();

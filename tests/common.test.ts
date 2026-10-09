@@ -30,6 +30,7 @@ import {
   input,
   isTrustedAuthor,
   readInputs,
+  readLoopAccounts,
   safeGh,
   workflowRunUrl,
   writers,
@@ -38,6 +39,10 @@ import { agentModel, overrideVar } from "../shared/agent.js";
 import { scrubGitHubTokens } from "../shared/env.js";
 import { COMMANDS, EVERY_SUBCOMMAND, RUNNERS, TOKENLESS, type Input, type Inputs, type Outputs, type Runner, type RunnerInputs } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
+
+/** The loop's accounts with `AGENT_LOOP_LOGINS` unset: the default alone. */
+const ACCOUNTS = loopAccounts("");
 
 const spawned = vi.mocked(execFileSync);
 const shelled = vi.mocked(execSync);
@@ -105,7 +110,7 @@ describe("isTrustedAuthor — author_association gate", () => {
   it.each(ASSOCIATIONS)(
     "%s with a non-bot login is trusted=%s",
     (association, trusted) => {
-      expect(isTrustedAuthor(association, NON_BOT_LOGIN)).toBe(trusted);
+      expect(isTrustedAuthor(association, NON_BOT_LOGIN, ACCOUNTS)).toBe(trusted);
     },
   );
 });
@@ -123,19 +128,39 @@ describe("isTrustedAuthor — trusted bot logins", () => {
   // so both values are a row here rather than only the one this repository
   // happens to report.
   it("trusts github-actions[bot] (the REST spelling) even with NONE", () => {
-    expect(isTrustedAuthor("NONE", "github-actions[bot]")).toBe(true);
+    expect(isTrustedAuthor("NONE", "github-actions[bot]", ACCOUNTS)).toBe(true);
   });
 
   it("trusts github-actions (the GraphQL spelling) even with NONE", () => {
-    expect(isTrustedAuthor("NONE", "github-actions")).toBe(true);
+    expect(isTrustedAuthor("NONE", "github-actions", ACCOUNTS)).toBe(true);
   });
 
   it("trusts github-actions[bot] with CONTRIBUTOR, the adopter's value", () => {
-    expect(isTrustedAuthor("CONTRIBUTOR", "github-actions[bot]")).toBe(true);
+    expect(isTrustedAuthor("CONTRIBUTOR", "github-actions[bot]", ACCOUNTS)).toBe(true);
   });
 
   it("trusts github-actions with CONTRIBUTOR, the adopter's value", () => {
-    expect(isTrustedAuthor("CONTRIBUTOR", "github-actions")).toBe(true);
+    expect(isTrustedAuthor("CONTRIBUTOR", "github-actions", ACCOUNTS)).toBe(true);
+  });
+});
+
+/**
+ * The accounts an orchestrator passes in (#376) are trusted as the default
+ * one is, in both spellings, and only once they are passed.
+ */
+describe("isTrustedAuthor: the loop's accounts passed in", () => {
+  const PASSED = loopAccounts("my-loop[bot]");
+
+  it.each(["my-loop[bot]", "my-loop"])("trusts %s, a listed account, even with NONE", (login) => {
+    expect(isTrustedAuthor("NONE", login, PASSED)).toBe(true);
+  });
+
+  it("still trusts the default beside it", () => {
+    expect(isTrustedAuthor("NONE", "github-actions", PASSED)).toBe(true);
+  });
+
+  it("does not trust it with the list unset", () => {
+    expect(isTrustedAuthor("NONE", "my-loop[bot]", ACCOUNTS)).toBe(false);
   });
 });
 
@@ -143,7 +168,7 @@ describe("isTrustedAuthor — optional fields and non-bot identities", () => {
   // Both arguments are optional in the GraphQL response types, so an undefined
   // pair is a reachable state, not a defensive case. It must not be trusted.
   it("returns false when both association and login are undefined", () => {
-    expect(isTrustedAuthor(undefined, undefined)).toBe(false);
+    expect(isTrustedAuthor(undefined, undefined, ACCOUNTS)).toBe(false);
   });
 
   // The gate deliberately trusts one specific login rather than
@@ -151,7 +176,7 @@ describe("isTrustedAuthor — optional fields and non-bot identities", () => {
   // GitHub App an admin installs, a far wider surface for a job that commits
   // code. This pins that decision (common.ts around line 79).
   it("does not trust dependabot[bot], another bot, with NONE", () => {
-    expect(isTrustedAuthor("NONE", "dependabot[bot]")).toBe(false);
+    expect(isTrustedAuthor("NONE", "dependabot[bot]", ACCOUNTS)).toBe(false);
   });
 });
 
@@ -161,11 +186,11 @@ describe("isTrustedAuthor — the two conditions are an OR, not an AND", () => {
   // BOTH a trusted association AND a trusted bot login — dropping every human
   // maintainer and every review-agent comment at once.
   it("trusts a trusted association even with an untrusted login", () => {
-    expect(isTrustedAuthor("OWNER", "some-drive-by-account")).toBe(true);
+    expect(isTrustedAuthor("OWNER", "some-drive-by-account", ACCOUNTS)).toBe(true);
   });
 
   it("trusts a trusted bot login even with an untrusted association", () => {
-    expect(isTrustedAuthor("NONE", "github-actions")).toBe(true);
+    expect(isTrustedAuthor("NONE", "github-actions", ACCOUNTS)).toBe(true);
   });
 });
 
@@ -474,7 +499,7 @@ describe("the trusted fetches reach gh through argv", () => {
       JSON.stringify({ title: "t", body: "b", author_association: "OWNER" }),
     );
 
-    fetchTrustedIssue("o/r", "1;id");
+    fetchTrustedIssue("o/r", "1;id", ACCOUNTS);
 
     expect(spawned.mock.calls.at(-1)![1]).toEqual(["api", "repos/o/r/issues/1;id"]);
     expect(shelled).not.toHaveBeenCalled();
@@ -497,7 +522,7 @@ describe("the trusted fetches reach gh through argv", () => {
       }),
     );
 
-    expect(fetchTrustedIssue("o/r", "42")).toEqual({
+    expect(fetchTrustedIssue("o/r", "42", ACCOUNTS)).toEqual({
       title: "Fix the merge",
       body: "A body with surrounding whitespace.",
       trusted: true,
@@ -518,13 +543,13 @@ describe("the trusted fetches reach gh through argv", () => {
       }),
     );
 
-    expect(fetchTrustedIssue("o/r", "42")).toEqual({ title: "", body: "", trusted: false });
+    expect(fetchTrustedIssue("o/r", "42", ACCOUNTS)).toEqual({ title: "", body: "", trusted: false });
   });
 
   it("keeps a metacharacter number as one argument to fetchTrustedComments", () => {
     spawned.mockReturnValue("[]");
 
-    fetchTrustedComments("o/r", "$(id)");
+    fetchTrustedComments("o/r", "$(id)", ACCOUNTS);
 
     expect(spawned.mock.calls.at(-1)![1]).toEqual([
       "api",
@@ -540,8 +565,8 @@ describe("the trusted fetches reach gh through argv", () => {
       throw new Error("gh: Not Found (HTTP 404)");
     });
 
-    expect(fetchTrustedIssue("o/r", "42")).toEqual({ title: "", body: "", trusted: false });
-    expect(fetchTrustedComments("o/r", "42")).toBe("");
+    expect(fetchTrustedIssue("o/r", "42", ACCOUNTS)).toEqual({ title: "", body: "", trusted: false });
+    expect(fetchTrustedComments("o/r", "42", ACCOUNTS)).toBe("");
   });
 
   // An absence, but not a silent one (#348): on a private repository a token
@@ -553,8 +578,8 @@ describe("the trusted fetches reach gh through argv", () => {
     });
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
-      fetchTrustedIssue("o/r", "42");
-      fetchTrustedComments("o/r", "42");
+      fetchTrustedIssue("o/r", "42", ACCOUNTS);
+      fetchTrustedComments("o/r", "42", ACCOUNTS);
       const warnings = log.mock.calls.map(([line]) => String(line)).filter((line) => line.startsWith("::warning::"));
       expect(warnings).toHaveLength(2);
       expect(warnings[0]).toContain("Issue #42 could not be read");
@@ -569,7 +594,7 @@ describe("the trusted fetches reach gh through argv", () => {
     spawned.mockReturnValue(JSON.stringify({ title: "t", body: "b", author_association: "OWNER" }));
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
-      fetchTrustedIssue("o/r", "42");
+      fetchTrustedIssue("o/r", "42", ACCOUNTS);
       expect(log).not.toHaveBeenCalled();
     } finally {
       log.mockRestore();
@@ -781,6 +806,16 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
   it("returns every declared input, and writes nothing, when all are set", () => {
     expect(readInputs(EVERY_SUBCOMMAND)).toEqual({ OUTPUT_DIR: scratch, GH_REPO: "o/r", GH_TOKEN: "a-token" });
     expect(fs.existsSync(reasonFile())).toBe(false);
+  });
+
+  /** A runner's malformed list of the loop's accounts (#376) ends it at start, through `fail()`, naming the entry. */
+  it("ends a runner through fail(), naming the entry, on a malformed AGENT_LOOP_LOGINS", () => {
+    expect(() => readLoopAccounts("my-loop[bot], my loop")).toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(fs.readFileSync(reasonFile(), "utf8")).toBe(
+      "`AGENT_LOOP_LOGINS` holds `my loop`, which is not a GitHub login. Give the loop's accounts as a comma-separated list of logins, each like `my-app[bot]` or `my-app`.",
+    );
   });
 
   it("refuses, at typecheck, a read of an input the subcommand has not declared", () => {

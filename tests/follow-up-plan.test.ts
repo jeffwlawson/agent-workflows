@@ -14,6 +14,10 @@ import {
   type FollowUp,
 } from "../shared/review-output.js";
 import { FOLLOW_UP_STUB_LABEL, FOLLOW_UPS_MARKER, TRIAGE_LABEL } from "../shared/record.js";
+import { loopAccounts } from "../shared/loop-accounts.js";
+
+/** The loop's accounts with `AGENT_LOOP_LOGINS` unset: the default alone. */
+const ACCOUNTS = loopAccounts("");
 
 /**
  * The one seam in the filing half (#48). Everything worth arguing about — who
@@ -77,7 +81,7 @@ const plan = (
     prNumber: over.prNumber ?? 32,
     reviews: over.reviews ?? [review(findings)],
     stubs,
-  });
+  }, ACCOUNTS);
 
 const NOTHING = { issues: [] };
 
@@ -164,6 +168,15 @@ describe("planFollowUps: the authenticity gate", () => {
   it("accepts both spellings of the bot login, since the two APIs disagree", () => {
     for (const author of ["github-actions", "github-actions[bot]"]) {
       expect(plan([], [], { reviews: [review([followUp()], { author })] }).issues).toHaveLength(1);
+    }
+  });
+
+  /** An orchestrator posting as its own App (#376): its review is the runner's own once its account is passed in. */
+  it("reads a block out of a review an account the orchestrator passes in posted, in either spelling", () => {
+    for (const author of ["my-loop", "my-loop[bot]"]) {
+      const reviews = [review([followUp()], { author })];
+      expect(planFollowUps({ prNumber: 32, reviews, stubs: [] }, loopAccounts("my-loop[bot]")).issues).toHaveLength(1);
+      expect(planFollowUps({ prNumber: 32, reviews, stubs: [] }, ACCOUNTS).issues).toEqual([]);
     }
   });
 
@@ -470,7 +483,7 @@ describe("planFollowUps: identity, and the retry it makes exact", () => {
         stub({ number: 71, location: "src/a.ts:12", pr: 32, seq: 0 }),
         stub({ number: 72, location: "src/a.ts:88", pr: 32, seq: 1 }),
       ],
-    });
+    }, ACCOUNTS);
 
     expect(result.issues.map((i) => i.title)).toEqual(["third"]);
     const lines = reportLines(result.report);
@@ -500,7 +513,7 @@ describe("planFollowUps: identity, and the retry it makes exact", () => {
         stub({ number: 71, location: "src/a.ts:12", pr: 32, seq: 0 }),
         stub({ number: 72, location: "src/a.ts:88", pr: 32, seq: 1 }),
       ],
-    });
+    }, ACCOUNTS);
 
     expect(result.issues[0]?.body).toContain(`"seq":2`);
   });
@@ -582,7 +595,7 @@ describe("planFollowUps: what relatedness is worth", () => {
         stub({ number: 71, location: "src/a.ts:12", pr: 32, seq: 0 }),
         stub({ number: 50, location: "src/a.ts", pr: 10, seq: 0 }),
       ],
-    });
+    }, ACCOUNTS);
 
     expect(result.issues.map((i) => i.title)).toEqual(["second"]);
     expect(relationOf(result.issues[0]?.body)).toContain("#50");
@@ -751,7 +764,7 @@ describe("planFollowUps: the stub it plans", () => {
     const location = "src/a.ts";
     const findings = [followUp({ location, body: "the guard is <!-- gone --> entirely" })];
 
-    const first = planFollowUps({ prNumber: 32, reviews: [review(findings)], stubs: [] });
+    const first = planFollowUps({ prNumber: 32, reviews: [review(findings)], stubs: [] }, ACCOUNTS);
     const asStub: FilingStub = {
       number: 71,
       state: "OPEN",
@@ -759,7 +772,7 @@ describe("planFollowUps: the stub it plans", () => {
       body: first.issues[0]?.body ?? "",
     };
 
-    const second = planFollowUps({ prNumber: 33, reviews: [review(findings)], stubs: [asStub] });
+    const second = planFollowUps({ prNumber: 33, reviews: [review(findings)], stubs: [asStub] }, ACCOUNTS);
 
     expect(relationOf(second.issues[0]?.body)).toContain("#71");
   });
@@ -818,7 +831,7 @@ describe("planFollowUps: what the merged pull request is told", () => {
         stub({ number: 71, location: "src/done.ts:4", pr: 32, seq: 1 }),
         stub({ number: 72, location: "src/wontfix.ts", state: "CLOSED", stateReason: "not_planned" }),
       ],
-    });
+    }, ACCOUNTS);
 
     const lines = reportLines(result.report);
     expect(lines).toHaveLength(3);
@@ -1034,7 +1047,7 @@ describe("the stub key and the review block version independently", () => {
   it("writes the stub key at its own version when the block's has moved", async () => {
     const { planFollowUps: planAgainst } = await filingHalfAgainstBlockVersion(99);
 
-    const result = planAgainst({ prNumber: 32, reviews: [review([followUp()])], stubs: [] });
+    const result = planAgainst({ prNumber: 32, reviews: [review([followUp()])], stubs: [] }, ACCOUNTS);
 
     expect(result.issues[0]?.body).toContain(
       `<!--{"version":2,"location":"src/a.ts:12","pr":32,"seq":0}-->`,
@@ -1044,7 +1057,7 @@ describe("the stub key and the review block version independently", () => {
   it("reads a stub at its own version when the block's has moved", async () => {
     const { planFollowUps: planAgainst } = await filingHalfAgainstBlockVersion(99);
 
-    const result = planAgainst({ prNumber: 32, reviews: [review([followUp()])], stubs: [stub()] });
+    const result = planAgainst({ prNumber: 32, reviews: [review([followUp()])], stubs: [stub()] }, ACCOUNTS);
 
     expect(relationOf(result.issues[0]?.body)).toContain("#71");
   });
@@ -1091,7 +1104,7 @@ describe("earlierFollowUps", () => {
       review([], { author: "a-maintainer", body: block([followUp({ title: "typed by a person" })]) }),
       review([], { body: "A review with no block." }),
       review([], { body: block([later]) }),
-    ]);
+    ], ACCOUNTS);
 
     expect(carried).toEqual([
       { moved: [moved], rest: [rest] },
@@ -1104,7 +1117,7 @@ describe("earlierFollowUps", () => {
     const { carried, skipped } = earlierFollowUps([
       review([followUp()], { lastEditedAt: "2026-09-20T10:00:00Z", url: "https://example.test/edited" }),
       review([], { body: `<!-- agent-follow-ups {"version":99} -->`, url: "https://example.test/future" }),
-    ]);
+    ], ACCOUNTS);
 
     expect(carried).toEqual([]);
     expect(skipped).toHaveLength(2);
@@ -1122,7 +1135,7 @@ describe("earlierFollowUps", () => {
     const post = (findings: FollowUp[], earlier: readonly FilingReview[], landed: number): FilingReview => {
       const recorded = recordFollowUps([], findings, [], {
         cap: followUpsCap(landed),
-        carried: earlierFollowUps(earlier).carried,
+        carried: earlierFollowUps(earlier, ACCOUNTS).carried,
       });
       return review([], {
         body: `A summary.\n\n${renderFollowUpsBlock(recorded.followUps, recorded.dropped, recorded.moved, recorded.cap)}`,

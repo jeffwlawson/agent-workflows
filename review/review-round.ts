@@ -1,4 +1,5 @@
-import { isWorkflowBot, safeGh } from "../shared/common.js";
+import { safeGh } from "../shared/common.js";
+import { isWorkflowBot, type LoopAccounts } from "../shared/loop-accounts.js";
 import { LEGACY_FIX_ROUND_STARTED, type FixRoundProgress } from "../shared/review-output.js";
 import type { CarriedFinding } from "../shared/review-verification.js";
 import { FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../shared/record.js";
@@ -132,7 +133,7 @@ const readCommits = (repo: string, prNumber: string): readonly string[] | undefi
  * is 0.7.6's *fix round started* one (`LEGACY_FIX_ROUND_STARTED`), which is all
  * a round in flight at the upgrade carries.
  */
-const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | undefined => {
+const verdictOn = (repo: string, sha: string, accounts: LoopAccounts): { fixRound: boolean } | null | undefined => {
   const pages = readJson(
     safeGh(["api", `repos/${repo}/commits/${sha}/statuses`, "--paginate", "--slurp"]),
   );
@@ -148,7 +149,7 @@ const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | un
     }[]
   ).filter((status) => {
     const login = status.creator?.login;
-    return isWorkflowBot(typeof login === "string" ? login : undefined);
+    return isWorkflowBot(typeof login === "string" ? login : undefined, accounts);
   });
   const verdict = statuses.find(
     (status) => status.context === VERDICT_CONTEXT && status.state !== "error",
@@ -177,7 +178,12 @@ const verdictOn = (repo: string, sha: string): { fixRound: boolean } | null | un
  * round did run, and pushed nothing (#213). The note is read off the
  * conversation, which this file does not fetch, so the caller says.
  */
-export const readReviewHistory = (repo: string, prNumber: string, noted = false): ReviewHistory => {
+export const readReviewHistory = (
+  repo: string,
+  prNumber: string,
+  accounts: LoopAccounts,
+  noted = false,
+): ReviewHistory => {
   const commits = readCommits(repo, prNumber);
   if (commits === undefined) {
     return {
@@ -191,7 +197,7 @@ export const readReviewHistory = (repo: string, prNumber: string, noted = false)
     const sha = commits[i];
     if (sha === undefined) continue;
 
-    const verdict = verdictOn(repo, sha);
+    const verdict = verdictOn(repo, sha, accounts);
     if (verdict === undefined) {
       return {
         afterFixRound: true,

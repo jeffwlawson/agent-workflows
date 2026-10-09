@@ -1,4 +1,5 @@
-import { gh, git, isWorkflowBot } from "./common.js";
+import { gh, git } from "./common.js";
+import { isWorkflowBot, type LoopAccounts } from "./loop-accounts.js";
 import { renderMergeDanger, type MergeDanger } from "./merge-danger.js";
 import type { ProgressSubIssue } from "./progress-list.js";
 import {
@@ -217,10 +218,10 @@ export interface PostedReview {
  * this loop posted: anyone may post a review, and this text goes into the PRD
  * PR's body.
  */
-export const sliceCriteria = (reviews: readonly PostedReview[], ranges: SliceRanges): SliceCriteria[] =>
+export const sliceCriteria = (reviews: readonly PostedReview[], ranges: SliceRanges, accounts: LoopAccounts): SliceCriteria[] =>
   ranges.slices.flatMap(({ subIssue, range }): SliceCriteria[] => {
     if (range === null) return [];
-    const ofSlice = reviewsOf(reviews, range.commits);
+    const ofSlice = reviewsOf(reviews, range.commits, accounts);
     const recorded = ofSlice
       .map((review) => readCriteriaChanges(review.body))
       .filter((changes): changes is CriterionChange[] => changes !== undefined)
@@ -230,10 +231,10 @@ export const sliceCriteria = (reviews: readonly PostedReview[], ranges: SliceRan
   });
 
 /** The reviews this loop posted of one slice: those whose reviewed commit is in its range, oldest first. */
-const reviewsOf = (reviews: readonly PostedReview[], range: readonly string[]): PostedReview[] => {
+const reviewsOf = (reviews: readonly PostedReview[], range: readonly string[], accounts: LoopAccounts): PostedReview[] => {
   const commits = new Set(range);
   return reviews.filter(
-    (review) => isWorkflowBot(review.author) && review.commit !== undefined && commits.has(review.commit),
+    (review) => isWorkflowBot(review.author, accounts) && review.commit !== undefined && commits.has(review.commit),
   );
 };
 
@@ -242,10 +243,10 @@ const reviewsOf = (reviews: readonly PostedReview[], range: readonly string[]): 
  * way `sliceCriteria` reads its criteria: the newest review of the slice that
  * carries the red check's record, which is the round that approved it.
  */
-export const sliceRedTests = (reviews: readonly PostedReview[], ranges: SliceRanges): SliceRedTests[] =>
+export const sliceRedTests = (reviews: readonly PostedReview[], ranges: SliceRanges, accounts: LoopAccounts): SliceRedTests[] =>
   ranges.slices.flatMap(({ subIssue, range }): SliceRedTests[] => {
     if (range === null) return [];
-    const record = reviewsOf(reviews, range.commits)
+    const record = reviewsOf(reviews, range.commits, accounts)
       .map((review) => readRedTestsBlock(review.body))
       .filter((found): found is RedTestsRecord => found !== undefined)
       .pop();

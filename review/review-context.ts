@@ -11,6 +11,7 @@ import {
   type UnreadableSelection,
 } from "../shared/pr-feedback.js";
 import { keyedByChangedFiles, parseDiffLines } from "../shared/diff-lines.js";
+import type { LoopAccounts } from "../shared/loop-accounts.js";
 import type { PostedNote } from "../shared/fix-notes.js";
 import {
   carriedFindings,
@@ -91,6 +92,7 @@ export const fetchPullRequestContext = (
   ghRepo: string,
   prNumber: string,
   baseRef: string,
+  accounts: LoopAccounts,
   issue?: string,
 ): PullRequestContext => {
   const prView = JSON.parse(gh(["pr", "view", prNumber, "--json", "id,title,body"])) as {
@@ -121,9 +123,9 @@ export const fetchPullRequestContext = (
   // Read once, for both the discussion below and the criteria: triage posts
   // its brief, and with it the criteria the work was scoped to, as a comment
   // on the issue rather than into its body (#214).
-  const trustedIssueComments = issueNumber ? fetchTrustedCommentList(ghRepo, issueNumber) : [];
+  const trustedIssueComments = issueNumber ? fetchTrustedCommentList(ghRepo, issueNumber, accounts) : [];
   if (issueNumber) {
-    const issue = fetchTrustedIssue(ghRepo, issueNumber);
+    const issue = fetchTrustedIssue(ghRepo, issueNumber, accounts);
     if (issue.trusted) {
       issueTitle = issue.title;
       linkedIssue = issue.body || "(linked issue has no description)";
@@ -140,7 +142,7 @@ export const fetchPullRequestContext = (
   // `agent:fix` uses: review summaries, unresolved inline threads (replies
   // included), and conversation comments. A re-review therefore sees the notes
   // a human left on the previous one instead of repeating itself.
-  const feedback = fetchPullRequestFeedback(ghRepo, prNumber, baseRef);
+  const feedback = fetchPullRequestFeedback(ghRepo, prNumber, baseRef, accounts);
   const issueComments = renderTrustedComments(trustedIssueComments);
   // A review **degrades** where the fix runner refuses: it holds `contents:
   // read` and produces text, so proceeding on what survived is right. What it

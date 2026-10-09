@@ -466,7 +466,11 @@ describe("the CLI runs a command", () => {
 
     expect(code).toBe(0);
     expect(command).toHaveBeenCalledTimes(1);
-    expect(command).toHaveBeenCalledWith({ OUTPUT_DIR: scratch, ...INPUTS }, expect.objectContaining({ writeJson: expect.any(Function) }));
+    // An optional input it was not given arrives as its default.
+    expect(command).toHaveBeenCalledWith(
+      { OUTPUT_DIR: scratch, ...INPUTS, AGENT_LOOP_LOGINS: "" },
+      expect.objectContaining({ writeJson: expect.any(Function) }),
+    );
   });
 
   it("turns a throw into fail(): the reason in failure_reason.txt, exit 1", async () => {

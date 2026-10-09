@@ -101,6 +101,28 @@ const REQUIRED = { required: true } as const satisfies Input;
 const EMPTY = { required: false, default: "" } as const satisfies Input;
 
 /**
+ * **The loop's accounts** (#376, `docs/platform-spec.md` §4.1): a
+ * comma-separated list of the logins the orchestrator posts the loop's
+ * reviews, comments and statuses as, each in either spelling, `<slug>[bot]`
+ * or `<slug>`. Read by every runner and command that asks whether something
+ * was posted by the loop, through `loopAccounts` (`shared/loop-accounts.ts`),
+ * which always adds `github-actions[bot]` and reads an empty entry as none. A
+ * list, not one name: at a migration, pull requests in flight carry both
+ * accounts. Empty is that default alone, which is the loop before this input.
+ * A malformed entry fails the run, naming it.
+ *
+ * **This is trust.** The list feeds `isTrustedAuthor`, so whatever posts as
+ * an account on it becomes text `fix` acts on and commits code from, whatever
+ * its author association. That is safe only because the orchestrator that
+ * sets it already holds the write token: it can name no account it could not
+ * already write as. An orchestrator ***must not*** list an account anything
+ * it does not control can post as.
+ */
+const LOOP_ACCOUNTS = {
+  AGENT_LOOP_LOGINS: EMPTY,
+} as const satisfies Inputs;
+
+/**
  * What a runner that drives the agent reads to start it: the model token, and
  * the model, resolved in `shared/agent.ts`'s `agentModel` from the runner's
  * own override, then `AGENT_MODEL`, then the baked default. The override's
@@ -199,6 +221,7 @@ export const RUNNERS = {
     inputs: {
       ...EVERY_SUBCOMMAND,
       ...AGENT,
+      ...LOOP_ACCOUNTS,
       AGENT_MODEL_IMPLEMENT: EMPTY,
       ISSUE_NUMBER: REQUIRED,
       ISSUE_TITLE: REQUIRED,
@@ -211,6 +234,7 @@ export const RUNNERS = {
     inputs: {
       ...EVERY_SUBCOMMAND,
       ...AGENT,
+      ...LOOP_ACCOUNTS,
       AGENT_MODEL_IMPLEMENT_PRD: EMPTY,
       ISSUE_NUMBER: REQUIRED,
       ISSUE_TITLE: REQUIRED,
@@ -238,6 +262,7 @@ export const RUNNERS = {
     inputs: {
       ...EVERY_SUBCOMMAND,
       ...AGENT,
+      ...LOOP_ACCOUNTS,
       AGENT_MODEL_REVIEW: EMPTY,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
@@ -266,6 +291,7 @@ export const RUNNERS = {
     inputs: {
       ...EVERY_SUBCOMMAND,
       ...AGENT,
+      ...LOOP_ACCOUNTS,
       AGENT_MODEL_FIX: EMPTY,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
@@ -477,6 +503,7 @@ export const COMMANDS = {
   "follow-ups:file": {
     inputs: {
       ...EVERY_SUBCOMMAND,
+      ...LOOP_ACCOUNTS,
       PR_NUMBER: REQUIRED,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
@@ -484,6 +511,7 @@ export const COMMANDS = {
   "review:gate": {
     inputs: {
       ...EVERY_SUBCOMMAND,
+      ...LOOP_ACCOUNTS,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       HEAD_SHA: REQUIRED,
@@ -525,6 +553,7 @@ export const COMMANDS = {
     inputs: {
       ...EVERY_SUBCOMMAND,
       ...LOOP_IF_MINTED,
+      ...LOOP_ACCOUNTS,
       PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
       REVIEW_RESULT: REQUIRED,

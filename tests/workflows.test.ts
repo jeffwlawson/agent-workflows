@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { APP_PERMISSIONS } from "../setup/app.js";
-import { isWorkflowBot } from "../shared/common.js";
+import { isWorkflowBot, loopAccounts } from "../shared/loop-accounts.js";
 import { COMMANDS, type DirectoryInput, readsFrom, RUNNERS } from "../shared/contract.js";
 import {
   FIX_BEFORE_MERGE_LABEL,
@@ -1530,7 +1530,7 @@ describe("agent-review tells a slice round from the final review on a PRD PR", (
    */
   it("hands a slice round its sub-issue as the linked issue", () => {
     expect(runner()).toMatch(
-      /fetchPullRequestContext\(INPUTS\.GH_REPO, PR_NUMBER, BASE_REF, subIssue === undefined \? undefined : String\(subIssue\)\)/,
+      /fetchPullRequestContext\(INPUTS\.GH_REPO, PR_NUMBER, BASE_REF, LOOP_ACCOUNTS, subIssue === undefined \? undefined : String\(subIssue\)\)/,
     );
     expect(runner()).toContain('const criteria = round?.kind === "final" ? [] : context.criteria;');
   });
@@ -2788,9 +2788,12 @@ describe("the review posts last, from one job", () => {
     expect(steps.map((s) => s.id)).toContain("fetch");
     expect(steps.map((s) => s.id)).toContain("publish");
     // Actions sets the three run-link variables itself, and Node's own
-    // `NODE_AUTH_TOKEN` is the install's.
+    // `NODE_AUTH_TOKEN` is the install's. `AGENT_LOOP_LOGINS` is left unset:
+    // Actions posts as the default account, which the list always holds (#376).
     const set = Object.keys(conclude?.env ?? {}).filter((name) => name !== "NODE_AUTH_TOKEN");
-    const declared = Object.keys(COMMANDS["review:conclude"].inputs).filter((name) => !name.startsWith("GITHUB_") && name !== "GH_REPO" && name !== "PR_NUMBER");
+    const declared = Object.keys(COMMANDS["review:conclude"].inputs).filter(
+      (name) => !name.startsWith("GITHUB_") && name !== "GH_REPO" && name !== "PR_NUMBER" && name !== "AGENT_LOOP_LOGINS",
+    );
     expect(set.sort()).toEqual(declared.sort());
     expect(posting().env).toMatchObject({ PR_NUMBER: "${{ github.event.pull_request.number }}", GH_REPO: "${{ github.repository }}" });
   });
@@ -2908,7 +2911,7 @@ describe("agent-update-branch carries the verdict, or asks for the round it made
    */
   it("copies only a verdict this loop posted, under the context it posts under", () => {
     expect(copy()?.env?.["VERDICT_CONTEXT"]).toBe(VERDICT_CONTEXT);
-    expect(isWorkflowBot(copy()?.env?.["LOOP_ACCOUNT"])).toBe(true);
+    expect(isWorkflowBot(copy()?.env?.["LOOP_ACCOUNT"], loopAccounts(""))).toBe(true);
     expect(copy()?.run ?? "").toContain("env.VERDICT_CONTEXT");
     expect(copy()?.run ?? "").toContain("env.LOOP_ACCOUNT");
   });

@@ -7,6 +7,7 @@ import {
   fetchTrustedIssue,
   git,
   readInputs,
+  readLoopAccounts,
   scrubGitHubTokens,
   writers,
 } from "../shared/common.js";
@@ -19,6 +20,7 @@ import { readRoundRecord, roundCounts, type RoundCounts } from "../shared/round-
 import { sliceRanges } from "../shared/slice-ranges.js";
 
 const INPUTS = readInputs(RUNNERS["implement-prd"].inputs);
+const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
 const { writeText } = writers(RUNNERS["implement-prd"].outputs);
 
 /** The parent PRD. Context only — the work is the sub-issue below. */
@@ -94,7 +96,7 @@ const writeProgress = (): void => {
     let rounds: RoundCounts | undefined;
     if (PRD_PR !== "") {
       try {
-        rounds = roundCounts(readRoundRecord(INPUTS.GH_REPO, PRD_PR), ranges);
+        rounds = roundCounts(readRoundRecord(INPUTS.GH_REPO, PRD_PR), LOOP_ACCOUNTS, ranges);
       } catch (error) {
         console.log(`::warning::The PRD PR's rounds could not be read, so the progress table does not count them: ${firstLine(error)}`);
       }
@@ -125,8 +127,8 @@ const writeProgress = (): void => {
  * issue.
  */
 const issueSection = (number: string, fallbackTitle: string): string => {
-  const issue = fetchTrustedIssue(INPUTS.GH_REPO, number);
-  const comments = fetchTrustedComments(INPUTS.GH_REPO, number);
+  const issue = fetchTrustedIssue(INPUTS.GH_REPO, number, LOOP_ACCOUNTS);
+  const comments = fetchTrustedComments(INPUTS.GH_REPO, number, LOOP_ACCOUNTS);
   const parts = [
     issue.trusted
       ? `# ${issue.title || fallbackTitle}\n\n${issue.body || "(no description)"}`

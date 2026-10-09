@@ -195,13 +195,18 @@ The commit's message is `.npmrc`'s `message=v%s`, the `v` matching the tag `publ
 That is the whole file: the registry and the token live in the `.npmrc` `actions/setup-node` writes
 under `RUNNER_TEMP`, and a second copy of the scope here is a second place for it to be wrong.
 
-The release also ships the dependency tree it was tested with (#414). `prepack` writes
-`npm-shrinkwrap.json` from `package-lock.json`, runtime entries only, and `postpack` removes it
-(`scripts/shrinkwrap.ts`). It is gitignored and never committed: the lockfile is the one copy, so a
-dependency change cannot ship beside a stale shrinkwrap. A leftover one at the root takes over every
-`npm install` here, since npm prefers it to the lockfile; delete it. `ci.yml` checks the tarball
-carries it, and `publish.yml` checks the registry marks the version as carrying it, without which
-npm ignores the file.
+The release also ships the dependency tree it was tested with, inside the package (#430): every
+runtime dependency is listed in `bundleDependencies`, so `npm pack` puts the tree `npm ci` built
+from `package-lock.json` under the tarball's own `node_modules`, and npm installs it from there as
+it is. Not a shrinkwrap, which #414 tried: npm reads a dependency's `npm-shrinkwrap.json` only when
+the registry's metadata sets `_hasShrinkwrap`, and GitHub Packages never sets it, so the file shipped
+and was never read. The lockfile stays the one copy. `scripts/bundled-tree.ts`, run from source and
+excluded from the build like `sync-version.ts`, holds a package's bundled tree to the lockfile's
+runtime entries, version for version, with no dev package: `tests/bundled-tree.test.ts` runs it on a
+pack and an install of that pack, and `publish.yml` runs it on the pack before publishing and on the
+release installed through `npm exec` after. The same test fails, naming the package, on a runtime
+dependency with an install script or an `os` or `cpu` field: bundling builds the tree once, on the
+publishing runner, so adding one is a decision to make on purpose.
 
 The checks that made this a chore rather than a hazard are still the backstop, and are what a
 rewrite gone wrong lands on: `PIN` in `tests/workflows.test.ts` is derived from `package.json` and

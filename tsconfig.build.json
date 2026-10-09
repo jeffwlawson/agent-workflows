@@ -33,5 +33,5 @@
     // Back on: this is the half that emits, and `tsconfig.json` turns it off.
     "noEmit": false
   },
-  "exclude": ["dist", "tests", "vitest.config.ts", "scripts/sync-version.ts"]
+  "exclude": ["dist", "tests", "vitest.config.ts", "scripts/sync-version.ts", "scripts/bundled-tree.ts"]
 }

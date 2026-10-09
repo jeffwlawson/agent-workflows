@@ -12,16 +12,14 @@
     "agent-workflows": "dist/cli.js"
   },
   "files": [
-    "dist",
-    "npm-shrinkwrap.json"
+    "dist"
   ],
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node dist/scripts/copy-assets.js",
-    "prepack": "npm run build && node dist/scripts/shrinkwrap.js",
-    "postpack": "node dist/scripts/shrinkwrap.js --remove",
+    "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "version": "node scripts/sync-version.ts",
@@ -36,5 +34,9 @@
     "@types/node": "24.10.1",
     "typescript": "5.9.3",
     "vitest": "^3.2.4"
-  }
+  },
+  "bundleDependencies": [
+    "@ai-hero/sandcastle",
+    "yaml"
+  ]
 }

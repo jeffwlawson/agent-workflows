@@ -125,6 +125,23 @@ jobs:
             echo "already-published=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The release ships its runtime dependencies inside it (#430), as
+      # `bundleDependencies`, and npm installs those from the tarball whatever the
+      # registry's metadata says. (#414 shipped a shrinkwrap instead, and npm reads
+      # one only where the registry sets `_hasShrinkwrap`, which GitHub Packages
+      # never does.) `npm pack` bundles whatever `node_modules` holds, so this
+      # packs from the tree `npm ci` built and holds it to the lockfile before
+      # anything is published: red here means nothing shipped.
+      - name: Check the bundled dependencies match the lockfile
+        if: steps.preflight.outputs.already-published == 'false'
+        run: |
+          set -euo pipefail
+          pack="${RUNNER_TEMP}/pack"
+          mkdir -p "$pack"
+          npm pack --ignore-scripts --pack-destination "$pack" >/dev/null
+          tar -xzf "$pack"/*.tgz -C "$pack"
+          node scripts/bundled-tree.ts "$pack/package"
+
       # `prepack` runs the build, so this cannot ship a stale `dist/`.
       - name: Publish
         if: steps.preflight.outputs.already-published == 'false'
@@ -132,28 +149,24 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm publish
 
-      # The shrinkwrap is only half of fixing a run's dependency tree (#414). npm
-      # reads a dependency's `npm-shrinkwrap.json` only when the registry's
-      # metadata for that version says `_hasShrinkwrap: true`, a flag the registry
-      # sets from the tarball, not one the publish sends. Installed without it,
-      # every range resolves to whatever is newest that day, exactly as if the
-      # file were not there, and nothing else would show it. The version is
-      # already published when this runs, so red here means "this release does not
-      # pin its tree", not "this release did not ship".
-      - name: Check the registry honours the shrinkwrap
+      # The same comparison against what a run installs: the release, from the
+      # registry, through `npm exec` in the pin form the reusable workflows use.
+      # The package root is two levels above the `agent-workflows` binary's
+      # target, `dist/cli.js`. The version is already published when this runs,
+      # so red here means "installs of this release do not run its tested
+      # tree", not "this release did not ship".
+      - name: Check an install of the release runs its bundled dependencies
         if: steps.preflight.outputs.already-published == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
+          checker="${GITHUB_WORKSPACE}/scripts/bundled-tree.ts"
+          cd "$RUNNER_TEMP"
           for attempt in 1 2 3; do
-            flag=$(npm view "@jeffwlawson/agent-workflows@${VERSION}" _hasShrinkwrap 2>/dev/null)
-            if [ "$flag" = "true" ]; then
-              echo "The registry marks ${VERSION} as carrying a shrinkwrap, so installs of it use the pinned tree."
-              exit 0
-            fi
+            npm view "@jeffwlawson/agent-workflows@${VERSION}" version >/dev/null 2>&1 && break
             sleep 10
           done
-          echo "::error::The registry does not mark @jeffwlawson/agent-workflows@${VERSION} as carrying npm-shrinkwrap.json (_hasShrinkwrap is '${flag}'). npm will ignore the shipped file and resolve each dependency range afresh on every run."
-          exit 1
+          npm exec --yes --package="@jeffwlawson/agent-workflows@${VERSION}" -- \
+            sh -c 'node "$1" "$(dirname "$(dirname "$(realpath "$(command -v agent-workflows)")")")"' sh "$checker"

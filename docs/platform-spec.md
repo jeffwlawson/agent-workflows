@@ -399,8 +399,11 @@ read back at run time; nothing in a repository holds them before a run.
 The contract holds within one release. An orchestrator ***must*** pin one exact runner version,
 and read this spec at that version's tag.
 
-A release fixes its dependency tree too: the package ships an `npm-shrinkwrap.json` derived from its
-lockfile when it is packed, so the version pinned selects every package that runs with it.
+A release fixes its dependency tree too: the package bundles its runtime dependencies
+(`bundleDependencies`), at the versions its lockfile resolves, and npm installs them from the
+tarball whatever the registry's metadata says. So the version pinned selects every package that
+runs with it. Not a shrinkwrap: npm reads one inside a dependency only when the registry sets
+`_hasShrinkwrap`, and GitHub Packages, where the package is published, does not.
 
 There is no promise across releases, and no changelog of contract changes beside this file's own
 history: `git diff v<a>..v<b> -- docs/platform-spec.md` is what changed between two releases. Read

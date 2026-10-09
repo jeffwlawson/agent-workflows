@@ -46,8 +46,8 @@ dropped.
 - `landed`: the current code resolves it. The workflow closes its thread, quoting your `note` as
   the reason it closed.
 - `open`: it does not. It counts against this pull request exactly as one of your own findings
-  does, so do **not** write it up again anywhere: not in `fixBeforeMerge`, and not as one of your
-  own `findings`. Ruling it `open` is the whole of reporting it. A second write-up mints a second
+  does, so do **not** write it up again as one of your own `findings`. Ruling it `open` is the
+  whole of reporting it. A second write-up mints a second
   identifier on the same problem (nothing matches them, by design), so it is counted twice, gets
   a second thread, and is carried separately every round after.
 - `declined`: a maintainer replied on the thread refusing it ("won't fix", "this is intended").
@@ -63,26 +63,23 @@ dropped.
 it closes. An identifier you omit stays open, which is the safe direction and not a way to skip the
 list.
 
-## Findings that must be fixed: `fixBeforeMerge`
+## Findings that must be fixed
 
 Every finding is one of two kinds, and this is the first: the change is wrong, unsafe, or does not
 do what the linked issue asked, and must not merge as it stands. Open its `findings` entry's body
-with **fix before merge**, *and* restate it as one line in `fixBeforeMerge`.
+with **fix before merge**.
 
-Those two places and nowhere else. A finding is never restated in `summary`, in `title`, in
+That place and nowhere else. A finding is never restated in `summary`, in `title`, in
 `howChecked` or in `assessment`. Those describe the change and the pass, and the record above them is where a
 finding is read and answered.
 
-Both, not either. **Every finding counts**: the outcome posted to the pull request is derived
-from how many there are, and the list is counted too where it is the longer of the two, so either
-can be the one you left something out of without the count dropping. The label is for whoever
-reads the thread and decides nothing: a finding you forget to label still counts, still blocks the
-merge, and is still listed in the record. The list is one line each; the evidence stays in the
-finding.
+**Every finding counts**: the outcome posted to the pull request is derived from how many there
+are. The label is for whoever reads the thread and decides nothing: a finding you forget to label
+still counts, still blocks the merge, and is still listed in the record.
 
 A real problem in code an earlier review of this pull request already read is **previously
-missed**: open its body with `**Previously missed.**` rather than `**Fix before merge.**`, and
-restate it in `fixBeforeMerge` like any other. It counts the same way. Do not send it to
+missed**: open its body with `**Previously missed.**` rather than `**Fix before merge.**`. It
+counts the same way. Do not send it to
 `followUps`; it is this pull request's to fix, and the record having missed it is the reason to
 say so rather than a reason to defer it.
 
@@ -104,7 +101,7 @@ saying it again here is the same problem read twice.
   that has to be fixed first."*
   The subjects, not the count; the count is on its own line below it. Where nothing is
   unresolved, one sentence on why the change holds up. No verdict: one is derived from
-  `fixBeforeMerge`, `needsYou` and the check results, and it opens the body for you.
+  `findings`, `needsYou` and the check results, and it opens the body for you.
 - **`howChecked`**: under 100 words, and **truncated** past that rather than refused. What you
   actually verified: which checks you ran or read, which behaviour you traced, which files you
   read past the diff. It is what tells a reader how much weight this review carries. It is posted
@@ -153,7 +150,7 @@ the one signal that says a human is needed.
 A third channel, beside the findings, for a real problem this pull request does not own: a defect in a function the diff only calls, a missing test for behaviour it did not change, a
 value read twice. These are recorded on the pull request and filed as issues once it merges. The
 other channel does not survive that: nobody reads a merged pull request's review, and a
-`fixBeforeMerge` finding is a claim about *this* change, which an out-of-scope one is not.
+finding is a claim about *this* change, which an out-of-scope one is not.
 
 Every part of the bar is required, and a finding missing any of it is **left out**: there is no
 lesser channel to move it to, and a would-be follow-up you cannot evidence is one you have not
@@ -209,7 +206,7 @@ given (`C1`, `C2`, …). An id you were not given is dropped. Empty where you we
 - `unmet`: it does not, and nothing says why. Carries a one-line `reason` saying what is missing, a
   `severity`, and the `path` and `line` it is anchored at, by the same rule as a finding's. The
   workflow raises it as a fix-before-merge finding there, so do **not** also write it into
-  `findings` or `fixBeforeMerge`.
+  `findings`.
 
 A criterion you omit is listed as not checked.
 
@@ -228,9 +225,6 @@ A criterion you omit is listed as not checked.
   ],
   "testSketches": [
     { "test": "test_scales_servings", "sketch": "recipe = Recipe(servings=2, flour=100)\nscaled = recipe.scale(4)\nexpect scaled.flour == 200" }
-  ],
-  "fixBeforeMerge": [
-    "One line per finding that must be fixed before this merges: the same findings the `findings` list carries."
   ],
   "verified": [
     { "id": "f-1a2b3c4d", "status": "landed", "note": "The guard now runs before `apply()`, and a test covers the malformed input." },

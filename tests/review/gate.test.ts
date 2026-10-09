@@ -4,7 +4,6 @@ import { gate } from "../../review/gate.js";
 import type { ReadingIo } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
 import { FINAL_REVIEW_MARK, FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../../shared/record.js";
-import { LEGACY_FIX_ROUND_STARTED } from "../../shared/review-output.js";
 import { fakeGitHub, fakeReader, type FakeGitHub, type ReceivedRead } from "../engine/fakes.js";
 
 /**
@@ -26,6 +25,9 @@ const BEFORE = "3".repeat(40);
 const AFTER = "c".repeat(40);
 const STALE = "0123456789abcdef0123456789abcdef01234567";
 const LOOP = "github-actions[bot]";
+/** 0.7.6's *fix round started* verdict line, from before `FIX_ROUND_STATUS` (#297). */
+const OLD_FIX_ROUND_STARTED =
+  "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically.";
 
 let github: FakeGitHub;
 let reads: ReceivedRead[];
@@ -309,16 +311,20 @@ describe("review:gate settles the fix-round budget", () => {
     expect(decided()).toMatchObject({ budget: "2", spent: "2", start: "false" });
   });
 
-  it("counts only the loop's own statuses, and a 0.7.6 verdict that started a round", async () => {
+  /**
+   * 0.7.6's *fix round started* verdict line was counted as a round for one
+   * release after #297, and is not any more (#224): only the round record is.
+   */
+  it("counts only the loop's own round statuses, and not a 0.7.6 verdict that started a round", async () => {
     github.statuses.set(C1, [
       round(review(1), "someone"),
-      { context: VERDICT_CONTEXT, state: "failure", targetUrl: review(2), description: LEGACY_FIX_ROUND_STARTED, creator: LOOP },
+      { context: VERDICT_CONTEXT, state: "failure", targetUrl: review(2), description: OLD_FIX_ROUND_STARTED, creator: LOOP },
       { context: VERDICT_CONTEXT, state: "failure", targetUrl: review(3), description: "Changes recommended.", creator: LOOP },
     ]);
 
     await run();
 
-    expect(decided()).toMatchObject({ spent: "1", start: "true" });
+    expect(decided()).toMatchObject({ spent: "0", start: "true" });
   });
 
   /**

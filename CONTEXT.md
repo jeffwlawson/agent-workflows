@@ -293,11 +293,10 @@ in the diff*: a file the change deleted, renamed, rewrote in binary or only chmo
 side, and each is a file-level thread rather than a demotion. A problem in a file the change never
 touched is anchored at *the change that causes it*, with the untouched `path:line` named in the
 thread; a problem nothing in the change causes was never this pull request's to fix, so the
-workflow records it in `followUps` and the body says under the count that it did. Two thread-less
-entries survive and neither is a finding this version raised: a `fixBeforeMerge` line the model
-restated with no finding behind it, which the record counts as an entry of its own (#105), and the
-body entries v0.4.0 already wrote — carried and verified until they close, because that entry is
-the only record such a finding exists.
+workflow records it in `followUps` and the body says under the count that it did. So every entry
+in the record has a thread, and a finding is carried from its thread alone (#224): the review no
+longer reads one out of an earlier review body, and the model no longer restates its findings in a
+second list that could hold a line with no finding behind it.
 
 The prose beside the record is capped by the schema rather than asked for in the brief, and
 **restates no finding**: the findings are above it with their severities, and the one 250-word

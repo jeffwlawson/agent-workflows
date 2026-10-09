@@ -684,7 +684,7 @@ describe("a slice round's red check, and its record for the final review (#235)"
     const record: RedTestsRecord = { known: true, red: [{ name: "test_a", classname: "c" }], more: 0 };
     const parts = {
       verdict: VERDICTS["approval recommended"],
-      output: { findings: [], followUps: [], fixBeforeMerge: [], verified: [] },
+      output: { findings: [], followUps: [], verified: [] },
       placed: [],
       movedToFollowUps: 0,
       stillOpen: [],

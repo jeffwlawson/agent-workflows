@@ -41,10 +41,9 @@ export const POLL_SECONDS = 20;
  * `fixtures`, `CI / fix-lint` and `build / fixtures` are repo checks, not
  * agents, and none of them match.
  *
- * - `follow-ups` is dead at runtime: this wait runs on an open pull request
- *   and that workflow fires on a closed one (#50). Joining costs one word;
- *   carving it out would cost a comment justifying a timing argument that
- *   could stop being true.
+ * - `follow-ups` is **not** named (#224): that workflow fires only on a closed
+ *   pull request (#50), and this wait runs on an open one, so its check run
+ *   can never be here to exclude.
  * - `post-review` (#257) and `advance` (PRD #222) run after the review job, so
  *   a review never waits on its own, but a later round on the same head would
  *   read them as CI, as it would under a renamed caller job. `post-review`
@@ -58,7 +57,7 @@ export const POLL_SECONDS = 20;
  *   red on every PR it found a red test on. Its report reaches the review
  *   instead.
  */
-export const AGENT_CHECKS = /(^|\/ )(review|time-limit|red-check|post-review|advance|fix|follow-ups|update-branch|implement-prd|implement)( \/ |$)/;
+export const AGENT_CHECKS = /(^|\/ )(review|time-limit|red-check|post-review|advance|fix|update-branch|implement-prd|implement)( \/ |$)/;
 
 /** A caller of one of the loop's reusable workflows, by the path it calls. */
 const LOOP_WORKFLOW = /^[^/]+\/agent-workflows\/\.github\/workflows\//;

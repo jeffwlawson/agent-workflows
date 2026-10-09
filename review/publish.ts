@@ -148,7 +148,7 @@ export const publish = async (
   // last review* naming only the threads step 1 resolved (#257). The
   // mutation is the engine's; this hands it values.
   const post = renderReviewPost({ ...parts, closed });
-  const unclosed = body.resolved.filter((entry) => entry.threadId !== undefined && !closed.has(entry.threadId)).length;
+  const unclosed = body.resolved.filter((entry) => !closed.has(entry.threadId)).length;
   if (unclosed > 0) {
     console.log(`::warning::${unclosed} thread(s) this review closed could not be resolved, so the review lists them as still open.`);
   }

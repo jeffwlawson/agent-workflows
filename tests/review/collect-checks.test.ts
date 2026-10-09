@@ -610,11 +610,26 @@ describe("review:collect-checks leaves the loop's own jobs out", () => {
    * produces; these are the names it must not swallow.
    */
   it("matches either half of a name, and nothing that merely starts or ends near one", () => {
-    for (const name of ["review / review", "agent-review / post-review", "agent-review / advance", "fix", "follow-ups"]) {
+    for (const name of ["review / review", "agent-review / post-review", "agent-review / advance", "fix"]) {
       expect(name).toMatch(AGENT_CHECKS);
     }
     for (const name of ["fixtures", "CI", "CI / verify", "CI / fix-lint", "build / fixtures", "CI / post", "advanced"]) {
       expect(name).not.toMatch(AGENT_CHECKS);
+    }
+  });
+
+  /**
+   * `follow-ups` runs only on a closed pull request, so its check run never
+   * meets this wait, and the pattern stopped naming it (#224). Every other
+   * job of the loop's, bare or under a caller job, is still matched.
+   */
+  it("does not name follow-ups, and still names every other job of the loop's", () => {
+    expect("follow-ups / follow-ups").not.toMatch(AGENT_CHECKS);
+    expect("follow-ups").not.toMatch(AGENT_CHECKS);
+    for (const job of ["review", "time-limit", "red-check", "post-review", "advance", "fix", "update-branch", "implement-prd", "implement"]) {
+      expect(job).toMatch(AGENT_CHECKS);
+      expect(`${job} / ${job}`).toMatch(AGENT_CHECKS);
+      expect(`agent-caller / ${job}`).toMatch(AGENT_CHECKS);
     }
   });
 

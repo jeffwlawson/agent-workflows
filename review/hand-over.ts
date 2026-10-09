@@ -223,7 +223,6 @@ const entry = {
   title: text,
   severity: optional(SEVERITY),
   anchor: optional(text),
-  id: optional(ID),
   url: optional(LINK),
   isNew: YES_NO,
 };
@@ -402,7 +401,7 @@ export const handOverParsers = (known: Known) => {
         howChecked: optional(text),
         open: list(object(entry), { max: MAX_ENTRIES }),
         missed: list(object(entry), { max: MAX_ENTRIES }),
-        resolved: list(object({ ...entry, threadId: optional(thread) }), { max: MAX_ENTRIES }),
+        resolved: list(object({ ...entry, threadId: thread }), { max: MAX_ENTRIES }),
         movedToFollowUps: NUMBER,
         followUps: list(followUp, { max: MAX_FOLLOW_UPS }),
         droppedFollowUps: NUMBER,

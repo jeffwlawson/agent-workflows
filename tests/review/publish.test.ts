@@ -61,32 +61,30 @@ const RUN_URL = "https://github.com/o/r/actions/runs/42";
 const output = (over: Partial<ReviewOutput> = {}): ReviewOutput => ({
   findings: [],
   followUps: [],
-  fixBeforeMerge: [],
   verified: [],
   assessment: "Two earlier findings are fixed, and one new one is open.",
   ...over,
 });
 
-/** Two threaded findings an earlier review raised, one a maintainer declined, and one legacy body entry. */
+/** Three findings an earlier review raised, one of them a maintainer declined. */
 const CARRIED: readonly CarriedFinding[] = [
-  { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "The guard runs after the return", severity: "high" },
-  { id: "f-2", threadId: "PRRT_two", text: "the cache key omits the tenant", title: "The cache key omits the tenant", severity: "low" },
+  { id: "f-1", threadId: "PRRT_one", text: "the guard runs after the return", title: "The guard runs after the return", anchor: "src/a.ts:1", severity: "high" },
+  { id: "f-2", threadId: "PRRT_two", text: "the cache key omits the tenant", title: "The cache key omits the tenant", anchor: "src/b.ts:2", severity: "low" },
   {
     id: "f-3",
     threadId: "PRRT_three",
     text: "the retry doubles the write",
     title: "The retry doubles the write",
+    anchor: "src/c.ts:3",
     severity: "medium",
     maintainerReply: { login: "maintainer", body: "Won't fix: the duplicate write is intended." },
   },
-  { id: "f-4", text: "a legacy body entry", severity: "medium" },
 ];
 
 const VERIFIED = [
   { id: "f-1", status: "landed" as const, note: "The guard now runs before `apply()`." },
   { id: "f-2", status: "landed" as const },
   { id: "f-3", status: "declined" as const },
-  { id: "f-4", status: "landed" as const },
 ];
 
 const PLACED: readonly PlacedFinding[] = [
@@ -276,7 +274,7 @@ describe("review:publish resolves first, then posts what resolved", () => {
     await run();
 
     expect(posted()?.body).toBe(renderDecided({ ...decided.decisions, runUrl: RUN_URL }));
-    expect(group(posted()?.body ?? "", "Resolved since last review")).toHaveLength(4);
+    expect(group(posted()?.body ?? "", "Resolved since last review")).toHaveLength(3);
     expect(posted()?.body).not.toContain("<summary><b>Still open</b>");
   });
 
@@ -298,7 +296,6 @@ describe("review:publish resolves first, then posts what resolved", () => {
     const body = posted()?.body ?? "";
     expect(group(body, "Still open")).toEqual([expect.stringContaining("The guard runs after the return")]);
     expect(group(body, "Resolved since last review").join("\n")).not.toContain("The guard runs after the return");
-    expect(group(body, "Resolved since last review").join("\n")).toContain("a legacy body entry");
     expect(body).toContain("their threads could not be resolved");
     expect(body.indexOf("Still open")).toBeLessThan(body.indexOf("Resolved since last review"));
     // Its reply is on the thread, and the log says so rather than claiming it failed.
@@ -320,7 +317,7 @@ describe("review:publish resolves first, then posts what resolved", () => {
     expect(logLines()[1]).toMatchObject({ type: "replyAndResolve", outcome: "failed" });
   });
 
-  it("drops the resolved group's threads to still open where none resolved, and keeps the legacy entry", async () => {
+  it("drops the resolved group's threads to still open where none resolved", async () => {
     github.fails = (_write, call) => call === "resolve";
     handOver();
 
@@ -328,7 +325,7 @@ describe("review:publish resolves first, then posts what resolved", () => {
 
     const body = posted()?.body ?? "";
     expect(group(body, "Still open")).toHaveLength(3);
-    expect(group(body, "Resolved since last review")).toEqual([expect.stringContaining("a legacy body entry")]);
+    expect(group(body, "Resolved since last review")).toEqual([]);
   });
 
   /** #133: a thread already carrying its closing reply has only the resolve retried. */

@@ -377,7 +377,7 @@ PRD.
 | Posts inline comments | ✅ | ✅ | as GraphQL `addPullRequestReview` threads since #110 — REST review-create cannot open a file-level thread (422) and its `comments` field is deprecated in favour of `threads` |
 | **Every finding carries an id the workflow wrote** | ❌ | ➕ | #110. A hidden marker in each thread, so a later round recognises a finding it has seen without matching its text. The model is told to write none: one it invented would be matched against a thread it never opened |
 | Reads review summaries + unresolved threads + conversation | ✅ | ✅ | one GraphQL query. Resolved threads are out of the rendered feedback, but no longer simply dropped: since #112 the query reads `resolvedBy`, and the ones a human closed come back as the *settled* list (below) |
-| **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review, after a fix round or not, is handed the open threads this loop opened (and, until they close, the body entries v0.4.0 left on PRs open at the #127 upgrade), each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
+| **Verifies the findings an earlier review left open, and resolves the ones that landed** | ❌ | ➕ | #111. Every review, after a fix round or not, is handed the open threads this loop opened (a v0.4.0 body entry was carried too, until #224), each with its id, and rules `landed` / `open` on each. Landed closes the thread with `resolutionReason: ADDRESSED` and a reply saying why; still open counts toward this review's verdict. A finding a review says nothing about stays open |
 | **A maintainer's decisions stick** | ❌ | ➕ | #112 (#109, decision 10). A thread a *human* resolved is handed to every later review as **settled — never raise again**, in any wording; a thread a maintainer replied to declining the finding is closed as `WONT_FIX` quoting them, and stops counting toward the verdict. The review never overrules a maintainer: a reply it cannot read as a decline leaves the thread open, only a reply the **author gate** passed can close one at all, and only a maintainer's **latest** reply on the thread — the one the closing reply quotes — may be ruled on |
 | **Agent self-improves: commits fixes and pushes** | ✅ | ❌ | biggest single gap. Would need `contents: write`; `agent:fix` covers it with a human deciding |
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
@@ -1004,7 +1004,7 @@ expensive to rediscover.
   refusal — a finding retired on a reply asking for it to be fixed.
 - **A finding an earlier review missed counts against the merge, in every round.** A real problem a
   later review finds in code an earlier review already read is labelled *previously missed*, and is a
-  `fixBeforeMerge` finding like any other (#109, decision 4; `shared/review-findings.ts`).
+  fix-before-merge finding like any other (#109, decision 4; `shared/review-findings.ts`).
 
   **This changes #96's round-2 rule**, which sent everything a verification pass newly noticed to
   `followUps` — filed as an issue *after* the merge it should have stopped. The reasoning then was

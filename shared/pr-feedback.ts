@@ -92,6 +92,15 @@ export interface PullRequestFeedback {
   /** All of the above rendered as one block, or "" when there is none. */
   readonly all: string;
   /**
+   * `all` as the **review** is handed it (#224): the same block with the
+   * review bodies this loop posted left out of its summaries, a trusted
+   * human's kept. An earlier round's body is the record of what it found, and
+   * the review is already given that record as the open findings and the
+   * unresolved threads; handing it the bodies too was up to fifty copies of
+   * what it already had. The fix agent reads `all`, unchanged.
+   */
+  readonly allForReview: string;
+  /**
    * Node ids of the unresolved threads a fix run is **asked to answer**. What
    * `filterOutcomes` keeps an outcome for, and so the whole of what can receive
    * a reply.
@@ -365,11 +374,12 @@ interface GqlThread {
  * stays: this reads a payload it did not type, and a reader that trusts a
  * non-null marking throws where it meant to report (#76).
  */
+/** A submitted review: its body is a summary, and `submittedAt` places a note after it (#213). */
+type GqlReview = GqlAuthored & { state?: string; submittedAt?: string | null };
+
 interface GqlPullRequest {
   comments?: { nodes?: (GqlComment | null)[] | null } | null;
-  reviews?: {
-    nodes?: ((GqlAuthored & { state?: string; submittedAt?: string | null }) | null)[] | null;
-  } | null;
+  reviews?: { nodes?: (GqlReview | null)[] | null } | null;
   reviewThreads?: { nodes?: (GqlThread | null)[] | null } | null;
 }
 
@@ -1312,9 +1322,13 @@ export const fetchPullRequestFeedback = (
       ...(typeof n.url === "string" ? { url: n.url } : {}),
     }));
 
-  const summaries = render(
-    pr?.reviews?.nodes,
-    (n, login) => `**@${login}** (${n.state ?? "COMMENTED"}):\n${(n.body ?? "").trim()}`,
+  const summaryOf = (n: GqlReview, login: string): string =>
+    `**@${login}** (${n.state ?? "COMMENTED"}):\n${(n.body ?? "").trim()}`;
+  const summaries = render(pr?.reviews?.nodes, summaryOf, accounts);
+  // By the loop's account list, the set `latestAgentReview` below picks from.
+  const humanSummaries = render(
+    present(pr?.reviews?.nodes).filter((review) => !isWorkflowBot(review.author?.login ?? undefined, accounts)),
+    summaryOf,
     accounts,
   );
 
@@ -1464,19 +1478,22 @@ export const fetchPullRequestFeedback = (
     return [{ noteId: n.id, ...note, ...(typeof n.url === "string" ? { url: n.url } : {}) }];
   });
 
-  const all = [
-    summaries && `### Review summaries\n\n${summaries}`,
-    inline && `### Inline comments (unresolved threads)\n\n${inline}`,
-    conversation && `### Conversation\n\n${conversation}`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const block = (reviews: string): string =>
+    [
+      reviews && `### Review summaries\n\n${reviews}`,
+      inline && `### Inline comments (unresolved threads)\n\n${inline}`,
+      conversation && `### Conversation\n\n${conversation}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  const all = block(summaries);
 
   return {
     summaries,
     inline,
     conversation,
     all,
+    allForReview: block(humanSummaries),
     threadIds: answerable,
     conversationComments,
     agentThreads,

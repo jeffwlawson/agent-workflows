@@ -163,10 +163,7 @@ const altOf = (tag: string): string | undefined => /\balt="([^"]*)"/i.exec(tag)?
  * model is reading. The alt is the word, so this is lossless.
  *
  * Applied where text is rendered *for an agent* rather than where it is read
- * off GitHub, because the same text has a second reader that needs the tag
- * intact: `carriedClaim` strips this file's own badge off a carried entry, and
- * a badge already reduced to a bare `Medium` is one it could only strip by
- * eating a claim that opens with the word.
+ * off GitHub: a human reader of the same text sees the chip.
  */
 export const withSeverityBadgesAsText = (text: string): string =>
   text.replace(SEVERITY_IMAGE, (tag: string, severity: string) =>
@@ -174,38 +171,10 @@ export const withSeverityBadgesAsText = (text: string): string =>
   );
 
 /**
- * A badge this loop wrote for **this** severity, taken off the head of a line —
- * in every form a release of it has written one: the image, the bold code span
- * of the decision the image superseded, and the plain code span v0.4.0 and
- * v0.5.0 bodies carry.
- *
- * Three forms because a body entry is read back out of the last review that
- * wrote it, which may be any earlier release (#127, decision 5): a form this
- * does not recognise is an entry that collects a second badge every round it
- * stays open.
- *
- * **This severity's badge and not any badge.** The caller knows what the entry
- * is rated, and a looser rule would eat the opening of a claim that
- * legitimately quotes another rating — `` `Low` is not a place for
- * preferences`` is a claim somebody reviewing this codebase will eventually
- * make.
- */
-export const withoutSeverityBadge = (text: string, severity: Severity): string => {
-  const word = severityWord(severity);
-  const forms = [
-    `(?:<picture>\\s*)?<img\\b[^>]*assets\\/severity-${severity}\\.svg[^>]*>(?:\\s*<\\/picture>)?`,
-    `(?:<picture>\\s*)?<img\\b[^>]*\\balt="${word}"[^>]*>(?:\\s*<\\/picture>)?`,
-    `\\*\\*\`${word}\`\\*\\*`,
-    `\`${word}\``,
-  ];
-  return text.replace(new RegExp(`^(?:${forms.join("|")})\\s*`, "i"), "");
-};
-
-/**
  * Worst first, and **stable** within a severity: the order the review produced
  * its findings in is the order it thought about them, and nothing here knows
- * better. An entry with no severity at all sorts last — those are the
- * restatement lines the record falls back to, which carry no finding to rate.
+ * better. An entry with no severity at all sorts last: a finding a release
+ * before ratings raised, which carries none.
  */
 export const severityRank = (severity: Severity | undefined): number =>
   severity === undefined ? SEVERITIES.length : SEVERITIES.indexOf(severity);

@@ -763,8 +763,8 @@ function toParkRound(round: PrdRound): ParkRound {
 /** An earlier finding still open, as a park comment lists it: linked to its thread. */
 function carriedForPark(finding: CarriedFinding): ParkFinding {
   return {
-    title: finding.title ?? finding.text,
-    ...(finding.anchor === undefined ? {} : { anchor: finding.anchor }),
+    title: finding.title,
+    anchor: finding.anchor,
     ...(finding.url === undefined ? {} : { url: finding.url }),
   };
 }

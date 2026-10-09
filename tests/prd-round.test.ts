@@ -536,8 +536,11 @@ describe("the park comment", () => {
  * comment and the verdict line come from one decision.
  */
 describe("parkReasonOf", () => {
-  const output = (fixBeforeMerge: readonly string[]): ReviewOutput =>
-    ({ findings: [], followUps: [], fixBeforeMerge, verified: [] }) as unknown as ReviewOutput;
+  const output = (titles: readonly string[]): ReviewOutput => ({
+    findings: titles.map((title) => ({ title, path: "src/a.ts", line: 1, body: `**Fix before merge.** ${title}`, severity: "medium" })),
+    followUps: [],
+    verified: [],
+  });
   const inputs: VerdictInputs = {
     ci: "green",
     fixRoundProgress: undefined,

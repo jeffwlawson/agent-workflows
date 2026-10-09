@@ -818,6 +818,48 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
     );
   });
 
+  /**
+   * An input declared with the values it accepts (#378): `AUTO_FIX` is `true`
+   * or `false`, and unset is off, as it always was. Anything else used to read
+   * as off while the workflow started a fix round, so it fails the run.
+   */
+  describe("AUTO_FIX: the values the review runner accepts", () => {
+    const review = (): string => readInputs(RUNNERS.review.inputs).AUTO_FIX;
+
+    it.each(["TRUE", "1", "yes", "False"])("ends the run through fail(), naming AUTO_FIX, %s and the accepted values", (value) => {
+      process.env["AUTO_FIX"] = value;
+
+      expect(review).toThrow(Exited);
+
+      expect(exitCode).toBe(1);
+      expect(fs.readFileSync(reasonFile(), "utf8")).toBe(
+        `\`AUTO_FIX\` holds \`${value}\`, which is not a value it accepts. Give one of \`true\`, \`false\`.`,
+      );
+    });
+
+    it("reads one read alone the same way", () => {
+      process.env["AUTO_FIX"] = "TRUE";
+
+      expect(() => input(RUNNERS.review.inputs, "AUTO_FIX")).toThrow(Exited);
+      expect(fs.readFileSync(reasonFile(), "utf8")).toContain("`TRUE`");
+    });
+
+    it.each(["true", "false"])("reads %s as itself, and writes nothing", (value) => {
+      process.env["AUTO_FIX"] = value;
+
+      expect(review()).toBe(value);
+      expect(fs.existsSync(reasonFile())).toBe(false);
+    });
+
+    it.each([["unset", undefined], ["empty", ""]])("reads %s as false, which is off", (_, value) => {
+      if (value === undefined) delete process.env["AUTO_FIX"];
+      else process.env["AUTO_FIX"] = value;
+
+      expect(review()).toBe("false");
+      expect(fs.existsSync(reasonFile())).toBe(false);
+    });
+  });
+
   it("refuses, at typecheck, a read of an input the subcommand has not declared", () => {
     delete process.env["BASE_REF"];
     const inputs = readInputs(COMMANDS["follow-ups:file"].inputs);
@@ -890,6 +932,13 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
         if (!declaration.required) expect(values[name], name).toBe(declaration.default);
       }
     });
+  });
+
+  /** Unset reads as the default, so a default outside the accepted values would fail no run and mean nothing. */
+  it.each(SUBCOMMANDS)("%s declares no default outside the values an input accepts", (subcommand) => {
+    for (const [name, declaration] of declared(subcommand)) {
+      if (!declaration.required && declaration.accepts !== undefined) expect(declaration.accepts, name).toContain(declaration.default);
+    }
   });
 
   /**

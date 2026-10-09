@@ -18,8 +18,13 @@ import { EVERY_SUBCOMMAND, EVERY_SUBCOMMAND_OUTPUTS, type Input, type Inputs, ty
  * rather than reads.
  */
 
-/** Every input `D` declares, read: its value, or an optional input's default. */
-export type InputValues<D extends Inputs> = { readonly [K in keyof D & string]: string };
+/**
+ * Every input `D` declares, read: its value, or an optional input's default.
+ * An input declared with the values it accepts reads as one of them.
+ */
+export type InputValues<D extends Inputs> = {
+  readonly [K in keyof D & string]: D[K] extends { readonly accepts: readonly (infer V extends string)[] } ? V : string;
+};
 
 /**
  * The environment's value for `name`, or `undefined` where it is unset **or
@@ -98,10 +103,17 @@ export const fail = (message: string): never => {
 const missingMessage = (names: readonly string[]): string =>
   `Missing required env var${names.length === 1 ? "" : "s"}: ${names.join(", ")}`;
 
+const unacceptedMessage = (name: string, value: string, accepts: readonly string[]): string =>
+  `\`${name}\` holds \`${value}\`, which is not a value it accepts. Give one of ${accepts.map((v) => `\`${v}\``).join(", ")}.`;
+
 /**
  * One input, read as `declared` says it is to be read: a required one that is
  * unset or empty fails the run through `fail()`, naming it, and an optional
- * one falls back to the default its declaration states. `declared` is a
+ * one falls back to the default its declaration states. A value outside the
+ * ones an input accepts, where it declares them, fails the run the same way,
+ * naming the input, the value and the accepted values: a value no reader
+ * expected otherwise reads as whatever its comparison makes of it, which for
+ * `AUTO_FIX` was off while the workflow started a fix round (#378). `declared` is a
  * runner's inputs in `shared/contract.ts`, so `name` has to be an input the
  * declaration has, and an undeclared one fails typechecking.
  *
@@ -116,10 +128,14 @@ const missingMessage = (names: readonly string[]): string =>
  */
 export const input = <D extends Inputs>(declared: D, name: keyof D & string): string => {
   const value = present(name);
-  if (value !== undefined) return value;
   const declaration: Input | undefined = declared[name];
-  if (declaration?.required === false) return declaration.default;
-  return fail(missingMessage([name]));
+  if (value === undefined) {
+    if (declaration?.required === false) return declaration.default;
+    return fail(missingMessage([name]));
+  }
+  const accepts = declaration?.accepts;
+  if (accepts !== undefined && !accepts.includes(value)) return fail(unacceptedMessage(name, value, accepts));
+  return value;
 };
 
 /**

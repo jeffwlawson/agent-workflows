@@ -263,11 +263,6 @@ describe("readReviewHistory", () => {
   });
 
   /**
-   * A round in flight at the upgrade (#297): its verdict is 0.7.6's *fix round
-   * started* line, and no `agent-fix-round` record was ever posted beside it.
-   * Counted for one release, so the early stop can still judge that round.
-   */
-  /**
    * An orchestrator posting as its own App (#376): its verdict and record are
    * the loop's once its account is passed in, and nothing it posted is read
    * with the list unset.
@@ -283,6 +278,11 @@ describe("readReviewHistory", () => {
     expect(readReviewHistory("o/r", "12", ACCOUNTS)).toEqual({ afterFixRound: false, unreviewedCommits: true });
   });
 
+  /**
+   * A round in flight at the upgrade (#297): its verdict is 0.7.6's *fix round
+   * started* line, and no `agent-fix-round` record was ever posted beside it.
+   * Counted for one release, so the early stop can still judge that round.
+   */
   it("follows a fix round a 0.7.6 verdict started, which carries no record", () => {
     ghAnswers({
       commits: [[commit(FIRST), commit(MIDDLE), commit(HEAD)]],

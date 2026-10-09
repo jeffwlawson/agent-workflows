@@ -209,7 +209,7 @@ jobs:
       # secrets, so the two cannot disagree; but no token.
       - name: Say which token the loop writes with
         id: token
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.12
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.13
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -298,7 +298,7 @@ jobs:
           # Reads the `.npmrc` the step above wrote. `GITHUB_TOKEN`, carrying
           # the `packages: read` above: there is no anonymous install.
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.7.12
+        run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.7.13
 
       # The tree the tests run on (#231, #235). It runs from `RUNNER_TEMP`,
       # where `npm exec` finds the install's binary, and works in the checkout,
@@ -314,7 +314,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           REPORT_PATH: ${{ inputs.red-check-report }}
           TEST_GLOBS: ${{ inputs.red-check-test-globs }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows review:red-check-place
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows review:red-check-place
 
       # Glue only Actions can do (ADR 0003): whether there is anything to run,
       # copied from `place.json` into the step output the steps below are
@@ -382,7 +382,7 @@ jobs:
           SETUP_OUTCOME: ${{ steps.setup.outcome }}
           EXIT_CODE: ${{ steps.run.outputs.exit-code }}
           PLACE_DIR: ${{ runner.temp }}/red-check-place
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows review:red-check-classify
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows review:red-check-classify
 
       # The report, for the review job to pick up. `always()`, because a run
       # that could not place, install or run anything is still a report.
@@ -593,7 +593,7 @@ jobs:
           LOOP_TOKEN_SOURCE: ${{ needs.time-limit.outputs.token-source }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on the
         # runner step below.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows review:gate
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows review:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decisions, copied into
       # step outputs under the names every later `if:`, the runner and the
@@ -714,7 +714,7 @@ jobs:
           REVIEWED_SHA: ${{ steps.state.outputs.sha }}
           SELF_CHECK: ${{ inputs.self-check }}
           SELF_RUN_ID: ${{ github.run_id }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows review:collect-checks
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows review:collect-checks
 
       # The red check's report (#232), the `red-check` job's artifact, read as
       # evidence the way the CI results above are. Into a directory of its own,
@@ -841,7 +841,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows review
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows review
 
       # The agent's own record of the session (#269), so a run can be profiled
       # and debugged from what it did and not only from the log, which shows
@@ -1215,7 +1215,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: needs.review.outputs.proceed == 'true' && needs.review.result == 'success'
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.12
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.13
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -1289,7 +1289,7 @@ jobs:
           BRANCH: ${{ github.event.pull_request.head.ref }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on the
         # runner step in the review job.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows review:publish
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows review:publish
 
       # Steps 5 to 7, and every other ending (#419): the refusal's note, or
       # the error verdict and the failure comment, or the block off and the
@@ -1335,7 +1335,7 @@ jobs:
           MINT_OUTCOME: ${{ steps.token.outcome }}
           DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows review:conclude
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows review:conclude
 
       # Glue only Actions can do (ADR 0003): what conclude reports, copied into
       # the job's outputs, which the advance job reads. `always()`, so a run
@@ -1430,7 +1430,7 @@ jobs:
       # workflow token writes, is written anyway (#330 review).
       - name: Resolve the loop's token
         id: token
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.12
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.13
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -1482,4 +1482,4 @@ jobs:
           MINT_OUTCOME: ${{ steps.token.outcome }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on the
         # runner step in the review job.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows review:advance
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows review:advance

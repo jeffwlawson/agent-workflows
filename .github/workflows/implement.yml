@@ -509,7 +509,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.12 -- agent-workflows implement
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.13 -- agent-workflows implement
 
       # The agent's own record of the session (#269), so a run can be profiled
       # and debugged from what it did and not only from the log, which shows
@@ -659,7 +659,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.12
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.7.13
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}

@@ -208,9 +208,8 @@ const refuseTimeLimit = (inputs: Inputs, io: Io): void => {
  * `AGENT_MAX_FIX_ROUNDS`: automatic fix rounds per pull request, default 3 and
  * `0` for none. A value that is not a non-negative integer is refused, naming
  * the variable and the value: guessing a budget out of `three` or `-1` is a
- * loop running a number of rounds nobody wrote down. The deprecated `auto-fix`
- * input wins where a caller still passes it, for one release (decision 4):
- * `true` is a budget of 1, `false` of 0.
+ * loop running a number of rounds nobody wrote down. The `auto-fix` input that
+ * once overrode it is gone (#366).
  *
  * **Rounds spent are counted from the pull request**, not from a marker label:
  * the `agent-fix-round` statuses the loop posted on its commits, one beside
@@ -261,20 +260,6 @@ const settleBudget = async (
 };
 
 const budgetOf = (inputs: Inputs, io: Io): number => {
-  const autoFix = inputs.DEPRECATED_AUTO_FIX;
-  if (autoFix !== "") {
-    if (autoFix !== "true" && autoFix !== "false") {
-      refuse(
-        io,
-        `The review workflow still sets \`auto-fix\`, which has been replaced. Remove it and set the repository variable \`AGENT_MAX_FIX_ROUNDS\` instead, then add \`${REVIEW_LABEL}\` again.`,
-      );
-    }
-    const budget = autoFix === "true" ? 1 : 0;
-    console.log(
-      `::warning::The \`auto-fix\` input is deprecated and goes away in the next release. It sets this run's fix-round budget to ${budget}, over the repository variable \`AGENT_MAX_FIX_ROUNDS\`. Remove \`auto-fix\` from the review caller's \`with:\` block and set \`AGENT_MAX_FIX_ROUNDS\` instead: \`1\` is what \`auto-fix: true\` did, and \`0\` what \`false\` did.`,
-    );
-    return budget;
-  }
   const value = inputs.MAX_FIX_ROUNDS === "" ? "3" : inputs.MAX_FIX_ROUNDS;
   if (!/^[0-9]+$/.test(value)) {
     refuse(

@@ -73,14 +73,12 @@ export interface InstalledCaller {
   readonly selfCheck: string | undefined;
   /**
    * What this caller passes as `auto-fix` (#102), the input the fix-round
-   * budget deprecated (#201): the value as written, and `undefined` where it
-   * passes nothing, the empty string or YAML's null, which is the input's own
-   * default and leaves the budget to the repository variable. A `${{`
-   * expression is kept as written: it is settled at run time, and nothing here
-   * can say what it comes to. A value rather than a
-   * boolean, because `false` is a budget of 0 that wins over the variable, and
-   * reading it as "not passed" would hand the budget back to a variable the
-   * review never consults.
+   * budget deprecated (#201) and the review no longer declares (#366): the
+   * value as written, and `undefined` where it passes nothing, the empty
+   * string or YAML's null. Still read because GitHub refuses a caller passing
+   * an input the called workflow does not declare, before any job starts and
+   * with no log, so `diagnose` names any value here as an error. A `${{`
+   * expression is kept as written: it is passed whatever it comes to.
    *
    * A field rather than the whole `with:` map, because `diagnose` rules on a
    * fixed list: an input it was not taught about is one nothing here can say

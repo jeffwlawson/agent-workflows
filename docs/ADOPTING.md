@@ -105,7 +105,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | `self-check` is the check run its job produces, byte for byte — **both** halves, and the calling half is that job's `name:` where it has one | §4 — a job that waits for itself for the whole of its 15-minute CI wait |
 | the labels exist | §3 — a transition that is a silent no-op |
 | no retired label is still here, as a warning with the `gh label delete` that removes it | §3, *Retired labels*: nothing reads it, and it reads as a run in progress that is not |
-| the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; and, as warnings, that a budget above 0 (the default of 3 included) has the App or `AGENT_PAT` behind it, and that no review caller still passes the deprecated `auto-fix` | §3b — a variable the review refuses fails every review; without the App or the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand; and the release after this one fails a caller that passes `auto-fix` before any job starts |
+| the fix-round budget, `AGENT_MAX_FIX_ROUNDS`, is a whole number where it is set; that no review caller still passes the removed `auto-fix`; and, as a warning, that a budget above 0 (the default of 3 included) has the App or `AGENT_PAT` behind it | §3b — a variable the review refuses fails every review; GitHub fails every job in a caller that passes `auto-fix` before any starts, with no log; and without the App or the PAT no automatic round ever starts, and every verdict asks for `agent:fix` by hand |
 | whether the review caller configures the red check, as a note either way; and, as a warning, one that is half configured: a `red-check-command` with no `red-check-report` or no `red-check-test-globs`, named, or either of those with no command | §4, *The red check*: half configured, the check reports itself misconfigured on every review and the review reads what is red as unknown; with no command, the other two are read by nothing |
 | the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | [On a public repository, `pull_request_target` stops running](#on-a-public-repository-pull_request_target-stops-running): from 2026-11-02 a label is added and no run starts |
@@ -714,9 +714,10 @@ closed two findings and uncovered a third carries on while budget is left. Once 
 verdict is the same 🟡 line, which asks you for the label; on a PRD PR the park comment on the
 parent says why it stopped (the budget is spent, or the last round made no progress).
 
-The `auto-fix` input this replaced is **deprecated** and goes in the next release. Where a caller
-still sets it, it wins over the variable (`true` is a budget of 1, `false` a budget of 0), and the
-run warns. Remove it and set the variable instead.
+The `auto-fix` input this replaced has been **removed** (#366), after a deprecation that ran from
+v0.7.5. A caller that still passes it is refused by GitHub before any job starts, every job in that
+file, with no log. Remove it from the job's `with:` block and set the variable instead: `1` is what
+`auto-fix: true` did, and `0` what `auto-fix: false` did.
 
 **Upgrading turns it on.** Before the budget, automatic fixing was the `auto-fix` input and off by
 default. A repository that sets nothing now gets **3 automatic rounds** on every regular pull
@@ -727,8 +728,8 @@ request is still never merged automatically, whatever the budget.
 
 It needs the loop's App or `AGENT_PAT` (a label added with `GITHUB_TOKEN` fires no event, so nothing
 would start). `doctor` warns where the budget is above 0, the default included, and neither is set; it
-fails a variable that is not a whole number, and warns on a caller still passing `auto-fix`, naming
-the value to set instead.
+fails a variable that is not a whole number, and fails a caller still passing `auto-fix`, naming
+the variable to set instead.
 
 Everywhere else, `agent:fix` is the human hand in the loop, and the table above is where you are
 asked for it.
@@ -1378,7 +1379,7 @@ itself — the whole 15-minute CI wait, then a review with degraded evidence and
 
 How many fix rounds a review may start by itself is the repository variable
 `AGENT_MAX_FIX_ROUNDS`, not an input: §3b is where you decide about it. The `auto-fix` input it
-replaced is deprecated and not in the reference caller.
+replaced has been removed, and a caller that still passes it fails before any job starts.
 
 The `implement-prd` caller is optional but **not independent**: it shares the `agent:implement`
 label with `implement`, and the two partition every label event by issue shape. Keep both jobs in

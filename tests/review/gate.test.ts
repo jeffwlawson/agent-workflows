@@ -65,7 +65,6 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   HEAD_POLL_SECONDS: "0",
   REVIEW_TIMEOUT_MINUTES: "",
   MAX_FIX_ROUNDS: "",
-  DEPRECATED_AUTO_FIX: "",
   LOOP_TOKEN_SOURCE: "app",
   ...over,
 });
@@ -271,12 +270,6 @@ describe("review:gate refuses a variable nobody can have meant", () => {
       `The repository variable \`AGENT_MAX_FIX_ROUNDS\` is \`${value}\`. It must be a whole number (0 or more), or delete it to use the default of 3. Then add \`agent:review\` again.`,
     );
   });
-
-  it("refuses an auto-fix that is neither true nor false", async () => {
-    const reason = await refused(INPUTS({ DEPRECATED_AUTO_FIX: "yes" }));
-
-    expect(reason).toContain("still sets `auto-fix`, which has been replaced");
-  });
 });
 
 /**
@@ -383,17 +376,6 @@ describe("review:gate settles the fix-round budget", () => {
     await run(INPUTS({ MAX_FIX_ROUNDS: "0012345678901" }));
 
     expect(decided()["budget"]).toBe("999999999");
-  });
-
-  /** The deprecated alias wins over the variable for one release (decision 4), and warns. */
-  it.each([
-    ["true", "1"],
-    ["false", "0"],
-  ])("reads auto-fix %s as a budget of %s, over the variable, and warns", async (autoFix, budget) => {
-    await run(INPUTS({ DEPRECATED_AUTO_FIX: autoFix, MAX_FIX_ROUNDS: "nope" }));
-
-    expect(decided()["budget"]).toBe(budget);
-    expect(logged.some((line) => /^::warning::The `auto-fix` input is deprecated.*AGENT_MAX_FIX_ROUNDS/.test(line))).toBe(true);
   });
 });
 

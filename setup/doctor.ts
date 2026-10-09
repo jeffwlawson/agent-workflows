@@ -174,14 +174,6 @@ export const TIMEOUT_VARIABLES = [
 const MINUTES = /^[1-9][0-9]*$/;
 
 /**
- * An input value GitHub works out at run time: any `${{`, anywhere in the
- * string, makes the whole of it an expression. What it comes to is not in the
- * caller, so `doctor` can say neither the budget it sets nor that the review
- * refuses it.
- */
-const isExpression = (value: string): boolean => value.includes("${{");
-
-/**
  * The reusable halves that declare **no secrets at all**, and so have no wire
  * for a caller to get wrong.
  *
@@ -846,10 +838,10 @@ export const diagnose = (
   // instead, so no automatic round ever starts. The default counts, which makes
   // this true of every repository that set nothing and has no PAT.
   //
-  // The budget is settled the way the review settles it: the deprecated
-  // `auto-fix` input wins where a caller still passes it (`true` is 1, `false`
-  // is 0), and otherwise the variable, 3 where it is unset. A value neither
-  // would accept is no budget, and has its own finding below.
+  // The budget is settled the way the review settles it: the variable, 3 where
+  // it is unset. `auto-fix` no longer counts (#366): a caller still passing it
+  // is refused outright, below. A value the review would not accept is no
+  // budget, and has its own finding below.
   //
   // A warning, because the loop itself is unharmed and the identity row is
   // already the error for the same missing secrets. It rules only where
@@ -857,23 +849,15 @@ export const diagnose = (
   // not rule on, and `!hasWriter` would collapse it into the failing one. So is
   // an unreadable variable, which is not an unset one. The loop's App fires
   // events as the PAT does, so either one is a writer (#321).
-  const budgetOf = (caller: InstalledCaller): { rounds: number; from: string } | undefined => {
-    if (caller.autoFix !== undefined) {
-      if (isExpression(caller.autoFix)) return undefined;
-      if (caller.autoFix === "true") return { rounds: 1, from: "`auto-fix: true`" };
-      if (caller.autoFix === "false") return { rounds: 0, from: "`auto-fix: false`" };
-      return undefined;
-    }
+  const budget = ((): { rounds: number; from: string } | undefined => {
     if (facts.maxFixRounds === undefined) return undefined;
     if (facts.maxFixRounds === null) return { rounds: DEFAULT_FIX_ROUNDS, from: "the default" };
     if (!COUNT.test(facts.maxFixRounds)) return undefined;
     return { rounds: Number(facts.maxFixRounds), from: `\`${FIX_ROUNDS_VARIABLE}\`` };
-  };
+  })();
   const reviews = callers.filter((caller) => caller.workflow === "review");
-  if (hasWriter === false) {
+  if (hasWriter === false && budget !== undefined && budget.rounds > 0) {
     for (const caller of reviews) {
-      const budget = budgetOf(caller);
-      if (budget === undefined || budget.rounds === 0) continue;
       add({
         severity: "warning",
         check: "fix rounds without a PAT",
@@ -892,24 +876,20 @@ export const diagnose = (
 
   // A variable the review refuses (#201): not a non-negative integer, so every
   // review ends red before it starts, naming it. An error wherever a review
-  // caller reads it, and a warning where every one still passes `auto-fix`,
-  // which wins over it for one release and leaves it unread until the next.
+  // caller is installed: every one reads it, since `auto-fix` no longer
+  // overrides it (#366).
   if (
     reviews.length > 0 &&
     typeof facts.maxFixRounds === "string" &&
     !COUNT.test(facts.maxFixRounds)
   ) {
-    const read = reviews.some((caller) => caller.autoFix === undefined);
     add({
-      severity: read ? "error" : "warning",
+      severity: "error",
       check: "fix-round budget",
       problem:
         `The repository variable \`${FIX_ROUNDS_VARIABLE}\` is \`${facts.maxFixRounds}\`, which is ` +
         `not a non-negative integer. The review refuses it rather than guess a number of fix ` +
-        `rounds, so ` +
-        (read
-          ? `every review fails before it starts.`
-          : `every review will fail once \`auto-fix\`, which overrides it today, is gone.`),
+        `rounds, so every review fails before it starts.`,
       fix:
         `Set it to the number of automatic fix rounds a pull request may have (\`0\` for none), ` +
         `or delete it for the default of ${DEFAULT_FIX_ROUNDS}.`,
@@ -936,37 +916,29 @@ export const diagnose = (
     });
   }
 
-  // `auto-fix`, deprecated (#201, PRD #200 decision 4). The review honours it
-  // for one release, and the release after stops declaring it, which GitHub
-  // answers by failing the whole caller at startup. A warning while it still
-  // works, and an error where its value is one the review refuses already. A
-  // `${{` expression is neither: what it comes to is settled at run time, so
-  // it is only the deprecation this can speak to.
+  // `auto-fix`, removed (#366) after a deprecation that ran from v0.7.5. The
+  // review no longer declares it, and GitHub answers a caller that passes an
+  // input the called workflow does not declare by failing every job in that
+  // file before any starts, with no log. So any value is an error, an
+  // expression included: what it comes to at run time does not matter, only
+  // that it is passed. `doctor` runs at its own version, not the caller's pin,
+  // so the message says "this release and every one after"; an older pin is
+  // the pin check's to report.
   for (const caller of reviews) {
     if (caller.autoFix === undefined) continue;
-    const expression = isExpression(caller.autoFix);
-    const rounds = caller.autoFix === "true" ? "1" : caller.autoFix === "false" ? "0" : undefined;
-    const refused = rounds === undefined && !expression;
     add({
-      severity: refused ? "error" : "warning",
-      check: "auto-fix deprecated",
+      severity: "error",
+      check: "auto-fix removed",
       problem:
         `${caller.file} passes \`auto-fix: ${caller.autoFix}\` on the \`${caller.jobId}\` job. ` +
-        `The input is deprecated and goes in the next release, and a caller that passes an input ` +
-        `the called workflow no longer declares fails before any job starts. ` +
-        (refused
-          ? `This value is neither \`true\` nor \`false\`, so the review refuses it today.`
-          : expression
-            ? `Until then, whatever it comes to at run time other than empty wins over ` +
-              `\`${FIX_ROUNDS_VARIABLE}\`, and the review refuses anything but \`true\` or \`false\`.`
-            : `Until then it wins over \`${FIX_ROUNDS_VARIABLE}\`.`),
+        `The review workflow no longer declares that input, and GitHub refuses a caller that ` +
+        `passes an input the called workflow does not declare: on this release and every one ` +
+        `after, every job in ${caller.file} fails before it starts, with no log.`,
       fix:
-        `Remove \`auto-fix\` from that job's \`with:\` block and set the repository variable ` +
-        (rounds === undefined
-          ? `\`${FIX_ROUNDS_VARIABLE}\` to the number of automatic fix rounds a pull request may ` +
-            `have (\`0\` for none, unset for ${DEFAULT_FIX_ROUNDS}).`
-          : `\`${FIX_ROUNDS_VARIABLE}\` to \`${rounds}\`, which is what \`auto-fix: ` +
-            `${caller.autoFix}\` does today; unset, it is ${DEFAULT_FIX_ROUNDS}.`),
+        `Remove \`auto-fix\` from that job's \`with:\` block. To change the number of automatic ` +
+        `fix rounds from the default of ${DEFAULT_FIX_ROUNDS}, set the repository variable ` +
+        `\`${FIX_ROUNDS_VARIABLE}\`: \`1\` is what \`auto-fix: true\` did, and \`0\` what ` +
+        `\`auto-fix: false\` did.`,
     });
   }
 

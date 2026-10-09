@@ -641,9 +641,8 @@ what it decided is handed on, and the posting step says it. In order:
   cannot be read proceeds on `HEAD_SHA`, with a warning.
 - **The time limit.** A `REVIEW_TIMEOUT_MINUTES` that is set and is not a positive integer is
   refused, naming the variable.
-- **The fix-round budget.** `DEPRECATED_AUTO_FIX`, where set, is a budget of 1 (`true`) or 0
-  (`false`), and anything else is refused; otherwise `MAX_FIX_ROUNDS`, 3 where unset, and a value
-  that is not a whole number is refused, naming it. The rounds spent are the loop's own
+- **The fix-round budget.** `MAX_FIX_ROUNDS`, 3 where unset, and a value that is not a whole
+  number is refused, naming it. The rounds spent are the loop's own
   `agent-fix-round` statuses on the pull request's commits, counted once per link. A round starts where fewer are spent than the
   budget and `LOOP_TOKEN_SOURCE` is `app` or `pat`; a count that cannot be read starts none.
 - **The round.** On a PRD branch only: `final` where the pull request's body carries the final
@@ -667,7 +666,6 @@ written to `refusal_reason.txt` and the command fails, so the run ends as one th
 | `HEAD_POLL_SECONDS` | optional | `"5"` | How often it is asked meanwhile. |
 | `REVIEW_TIMEOUT_MINUTES` | optional | `""` | The review's own time limit, as configured; empty is the default. |
 | `MAX_FIX_ROUNDS` | optional | `""` | The fix-round budget, as configured; empty is 3. |
-| `DEPRECATED_AUTO_FIX` | optional | `""` | The deprecated `auto-fix` setting, which wins over `MAX_FIX_ROUNDS` where set. |
 | `LOOP_TOKEN_SOURCE` | optional | `""` | Where the loop's token will come from: `app`, `pat` or `workflow`. No round starts on anything but the first two. |
 
 #### Outputs

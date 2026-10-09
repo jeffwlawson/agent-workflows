@@ -2479,6 +2479,15 @@ inside `^2.8.1`.
 
 #430 bundles the runtime dependencies instead, which npm installs from the tarball whatever the
 registry says, and the shrinkwrap went rather than staying beside it: a file npm ignores is not
-protection. The release grew from about 0.3 MB to 3.1 MB, nearly all of it `sandcastle`. The habit:
+protection. The release grew from about 0.3 MB to 3.1 MB, nearly all of it `sandcastle`.
+
+The cost a run pays is the first `npm exec` in each command step, which installs the package into
+an empty cache. Measured before the release, from local packs only, since nothing can be on the
+registry first: a pack of v0.7.12 and a pack of this change, built, each run five times as
+`npm exec --yes --cache <empty> --package=<tarball> -- node -e 0` on a Linux runner (Node 24, npm
+11). v0.7.12 took 1.18 to 1.35 s, resolving its two dependency ranges against npmjs.org; this took
+2.01 to 2.11 s, about 0.8 s more per step, unpacking the bundled tree instead. #408 measured the
+registry-backed install at about 1.5 to 2.2 s. The same timing against GitHub Packages waits for
+the release that ships this, and is worth taking on its first run. The habit:
 the check that read the registry, not the tarball, is the one that found it. A guard that relies on
 another system's behaviour wants a check of that system, run on the first release.

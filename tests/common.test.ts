@@ -860,6 +860,46 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
     });
   });
 
+  /**
+   * `ROUND` (#377): `slice` or `final` on a PRD PR, and unset on an ordinary
+   * pull request. Anything else used to read as a slice round in the runner,
+   * as not the final review in `review:conclude`, and as not a round to
+   * advance from in `review:advance`, so it fails each of the three, from the
+   * one declaration they share, before any of their work.
+   */
+  describe.each([
+    ["review", () => readInputs(RUNNERS.review.inputs).ROUND],
+    ["review:conclude", () => readInputs(COMMANDS["review:conclude"].inputs).ROUND],
+    ["review:advance", () => readInputs(COMMANDS["review:advance"].inputs).ROUND],
+  ] as const)("ROUND: the values %s accepts", (_, read) => {
+    it.each(["Final", "SLICE", "first", "final "])("ends the run through fail(), naming ROUND, %j and the accepted values", (value) => {
+      process.env["ROUND"] = value;
+
+      expect(read).toThrow(Exited);
+
+      expect(exitCode).toBe(1);
+      expect(fs.readFileSync(reasonFile(), "utf8")).toBe(
+        `\`ROUND\` holds \`${value}\`, which is not a value it accepts. Give one of \`slice\`, \`final\`, or leave it unset.`,
+      );
+      expect(written.mock.calls.map(([file]) => file)).toEqual([reasonFile()]);
+    });
+
+    it.each(["slice", "final"])("reads %s as itself, and writes nothing", (value) => {
+      process.env["ROUND"] = value;
+
+      expect(read()).toBe(value);
+      expect(fs.existsSync(reasonFile())).toBe(false);
+    });
+
+    it.each([["unset", undefined], ["empty", ""]])("reads %s as empty, an ordinary pull request", (_, value) => {
+      if (value === undefined) delete process.env["ROUND"];
+      else process.env["ROUND"] = value;
+
+      expect(read()).toBe("");
+      expect(fs.existsSync(reasonFile())).toBe(false);
+    });
+  });
+
   it("refuses, at typecheck, a read of an input the subcommand has not declared", () => {
     delete process.env["BASE_REF"];
     const inputs = readInputs(COMMANDS["follow-ups:file"].inputs);
@@ -934,10 +974,16 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
     });
   });
 
-  /** Unset reads as the default, so a default outside the accepted values would fail no run and mean nothing. */
-  it.each(SUBCOMMANDS)("%s declares no default outside the values an input accepts", (subcommand) => {
+  /**
+   * Unset reads as the default, so a default outside the accepted values would
+   * fail no run and mean nothing. Empty is the exception: it is "not given",
+   * which `ROUND` keeps for an ordinary pull request (#377).
+   */
+  it.each(SUBCOMMANDS)("%s declares no default outside the values an input accepts, other than empty", (subcommand) => {
     for (const [name, declaration] of declared(subcommand)) {
-      if (!declaration.required && declaration.accepts !== undefined) expect(declaration.accepts, name).toContain(declaration.default);
+      if (!declaration.required && declaration.accepts !== undefined && declaration.default !== "") {
+        expect(declaration.accepts, name).toContain(declaration.default);
+      }
     }
   });
 

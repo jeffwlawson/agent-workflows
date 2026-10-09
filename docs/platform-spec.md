@@ -556,7 +556,7 @@ so the diff matches GitHub's.
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
 | `BASE_REF` | required | | Its base branch, which the diff is taken against. |
-| `ROUND` | optional | `""` | `final` on a PRD PR's final review; anything else is a slice round or an ordinary pull request. |
+| `ROUND` | optional | `""` | Accepts `slice` or `final`: `slice` on a PRD PR's slice round, `final` on its final review. Unset or empty is an ordinary pull request, and any other value fails the run, naming it (#377). |
 | `CI_STATUS_FILE` | optional | `""` | A file of the other checks' results, as evidence for the agent. Empty is "not collected". |
 | `CI_RESULT_FILE` | optional | `""` | A file holding `green` or `red`. Empty, unreadable or anything else is unknown, which no approval is given on. |
 | `AUTO_FIX` | optional | `false` | Accepts `true` or `false`: `true` where the orchestrator will start a fix round itself on a verdict asking for one, `false` where it will not. Unset or empty is `false`, and any other value fails the run, naming it. |
@@ -979,7 +979,7 @@ that cannot comment still takes its label off. The labels a run fires on (`agent
 | `REVIEWED_SHA` | optional | `""` | The commit the review read; the error verdict goes on it, and a head that is not it has moved. |
 | `VERDICT` | optional | `""` | The verdict's key. |
 | `FIX_ROUND` | optional | `""` | `true` where the review asked for an automatic fix round. |
-| `ROUND` | optional | `""` | `final` on a PRD PR's final review. |
+| `ROUND` | optional | `""` | Accepts `slice` or `final`: `final` on a PRD PR's final review, `slice` on a slice round. Unset or empty is an ordinary pull request, and any other value fails the run, naming it (#377). |
 | `FAILURE_REASON` | optional | `""` | The reason a failed review gave. |
 | `REFUSAL_REASON` | optional | `""` | A variable the review refused before reviewing anything. |
 | `TIMED_OUT` | optional | `""` | `true` where a cancelled review ran its whole limit. |
@@ -1058,7 +1058,7 @@ A head that is not `agent/prd-<parent>-<slug>`, where the parent is needed, fail
 | `REVIEW_URL` | optional | `""` | The posted review, where one was posted. |
 | `VERDICT` | optional | `""` | The verdict's key. |
 | `FIX_ROUND` | optional | `""` | `true` where the review asked for an automatic fix round. |
-| `ROUND` | optional | `""` | `slice` on a slice round, `final` on the final review. Only a slice round's approval moves the chain on. |
+| `ROUND` | optional | `""` | Accepts `slice` or `final`: `slice` on a slice round, `final` on the final review. Only a slice round's approval moves the chain on. Unset or empty is an ordinary pull request, and any other value fails the run, naming it (#377). |
 | `MINT_OUTCOME` | optional | `""` | The outcome of minting `LOOP_TOKEN`: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
 | `PARK_DIR` | directory | | The `review` runner's `OUTPUT_DIR`. Reads `park.json` (where written) and `progress.json` (where written). |
 | `GITHUB_SERVER_URL` | optional | `""` | With the next two, the links to the pull request and the run. Empty renders none. |

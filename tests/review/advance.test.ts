@@ -207,6 +207,16 @@ describe("review:advance moves the chain on after a slice round's approval", () 
     expect(github.issueLabels.get(PARENT)).toEqual([]);
   });
 
+  /** Only a slice round moves the chain on: `ROUND` unset (#377) is no round to advance from, as it always was. */
+  it("writes only the table where no round is given", async () => {
+    handOver();
+
+    await run(INPUTS({ ROUND: "" }));
+
+    expect(writes()).toEqual([`workflow editPullRequest #${PR}`]);
+    expect(github.issueLabels.get(PARENT)).toEqual([]);
+  });
+
   /** A verdict that was never posted approves nothing: the chain parks. */
   it("parks rather than advancing where the posting job failed", async () => {
     handOver();

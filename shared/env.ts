@@ -20,10 +20,13 @@ import { EVERY_SUBCOMMAND, EVERY_SUBCOMMAND_OUTPUTS, type Input, type Inputs, ty
 
 /**
  * Every input `D` declares, read: its value, or an optional input's default.
- * An input declared with the values it accepts reads as one of them.
+ * An input declared with the values it accepts reads as one of them, or as its
+ * default where unset.
  */
 export type InputValues<D extends Inputs> = {
-  readonly [K in keyof D & string]: D[K] extends { readonly accepts: readonly (infer V extends string)[] } ? V : string;
+  readonly [K in keyof D & string]: D[K] extends { readonly accepts: readonly (infer V extends string)[] }
+    ? V | (D[K] extends { readonly default: infer F extends string } ? F : never)
+    : string;
 };
 
 /**
@@ -103,8 +106,9 @@ export const fail = (message: string): never => {
 const missingMessage = (names: readonly string[]): string =>
   `Missing required env var${names.length === 1 ? "" : "s"}: ${names.join(", ")}`;
 
-const unacceptedMessage = (name: string, value: string, accepts: readonly string[]): string =>
-  `\`${name}\` holds \`${value}\`, which is not a value it accepts. Give one of ${accepts.map((v) => `\`${v}\``).join(", ")}.`;
+/** An input whose default is empty may also be left unset, which the message says, so the fix it offers is not only a value. */
+const unacceptedMessage = (name: string, value: string, accepts: readonly string[], unsettable: boolean): string =>
+  `\`${name}\` holds \`${value}\`, which is not a value it accepts. Give one of ${accepts.map((v) => `\`${v}\``).join(", ")}${unsettable ? ", or leave it unset" : ""}.`;
 
 /**
  * One input, read as `declared` says it is to be read: a required one that is
@@ -134,7 +138,9 @@ export const input = <D extends Inputs>(declared: D, name: keyof D & string): st
     return fail(missingMessage([name]));
   }
   const accepts = declaration?.accepts;
-  if (accepts !== undefined && !accepts.includes(value)) return fail(unacceptedMessage(name, value, accepts));
+  if (accepts !== undefined && !accepts.includes(value)) {
+    return fail(unacceptedMessage(name, value, accepts, declaration?.required === false && declaration.default === ""));
+  }
   return value;
 };
 

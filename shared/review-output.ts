@@ -2334,7 +2334,8 @@ export const renderCriteriaGroup = (
  *
  * Never opening `<summary><b>Acceptance criteria</b>`, which `readCriteriaChanges`
  * reads back as a recorded group. The untrusted case suggests nothing to the
- * issue's author: nothing they could write would be read.
+ * issue's author, since nothing they could write would be read; it tells a
+ * maintainer instead, whose comment is read for criteria (#444).
  */
 const criteriaNote = (found: CriteriaCase | undefined): string | undefined => {
   switch (found?.kind) {
@@ -2343,7 +2344,7 @@ const criteriaNote = (found: CriteriaCase | undefined): string | undefined => {
     case "no linked issue":
       return "_No linked issue, so there are no acceptance criteria to check._";
     case "untrusted issue":
-      return `_The text of #${found.issue} was not read, because of who opened it, so no acceptance criteria were checked._`;
+      return `_The text of #${found.issue} was not read, because of who opened it, so no acceptance criteria were checked. A maintainer can restate them in a comment on the issue, under a heading containing "Acceptance criteria"._`;
     default:
       return undefined;
   }

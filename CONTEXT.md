@@ -315,13 +315,17 @@ long enough to bury the record in it.
 **Every review checks the linked issue's acceptance criteria one by one** (#214). The workflow
 reads them off the issue (its acceptance section, or where triage posted a brief as a trusted
 comment the latest such section, which supersedes the body's; or its body's checklist where there
-is none) and hands them over by id; the review rules on each as *met*,
-*changed* on purpose with the reason, or *unmet*. An unmet one is a fix-before-merge finding,
+is none) and hands them over by id; the review rules on each as *met*, *changed* on purpose with
+the reason, or *unmet*. On an issue opened by an outsider it reads **trusted comments only**
+(#444): their acceptance section, by the same rule, and never the issue's body or title, so never
+a checklist either. That is how a maintainer adopts an outsider's report: by restating what done
+means in a comment. An unmet criterion is a fix-before-merge finding,
 anchored at the change nearest to it like any other; a changed one is not a finding, and is listed
 with its reason in the body's *Acceptance criteria* section. A review handed none says why in one
 line in that section's place (#435): the linked issue was read and yields none (naming both ways to
 write criteria the loop reads), there is no linked issue, or its text was not read because of who
-opened it. The runner hands over which case it was, and `review:publish` writes the line. On a PRD
+opened it (saying a maintainer can restate the criteria in a comment). The runner hands over which
+case it was, and `review:publish` writes the line. On a PRD
 PR a slice round is handed its own sub-issue's criteria, and the final review is handed none and
 says nothing: each slice was held to its own in its round, and the final review reads what each
 round recorded.

@@ -354,6 +354,8 @@ never regenerated.
 GitHub Issues in this repo, via the `gh` CLI, with **native** sub-issue and blocking relations —
 prose in an issue body is invisible to every workflow here. See
 [`docs/agents/issue-tracker.md`](./docs/agents/issue-tracker.md).
+Before writing a brief, `/triage` checks other issues, open PRs and work in flight for overlap: see
+[*Before a brief*](./docs/agents/issue-tracker.md#before-a-brief-overlap-with-other-work).
 
 ### Triage labels
 

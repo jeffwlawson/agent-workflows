@@ -113,6 +113,112 @@ Since that list *is* the execution order, reordering it rewrites the order of a 
 run yet — silently, with no other effect visible anywhere. Do it before `agent:implement` reaches
 the parent, and re-read the list afterwards, because that is the only place the change shows up.
 
+## Before a brief: overlap with other work
+
+`/triage` checks two things before it briefs an issue: whether the code already does what is asked,
+and whether a similar request was rejected before (`.out-of-scope/`). This section adds a third,
+run before the brief is written: whether the issue collides with other issues, open PRs, or work in
+flight. A collision nobody checks for surfaces later, when it costs something: a duplicate built
+twice, a brief staled by a merge it was written before, an order worked out by hand in
+conversation.
+
+**The upstream skill is not edited.** It is installed, not vendored, so a local edit is lost on the
+next update without telling anyone. This section is how this repo extends it, the same way
+[`ticket-shape.md`](./ticket-shape.md#what-is-kept-and-what-is-overridden) extends `/to-tickets`.
+
+### Checked at every triage
+
+| Surface | What can collide | What triage does |
+|---|---|---|
+| Open `needs-triage` issues | A duplicate or near-duplicate. | Search by **concept**, not wording. Close one into the other, carrying over anything the closed one adds, and say which in the recommendation. |
+| `ready-for-agent` issues | **Same scope:** two briefs for one change. **Same files:** running both at once means conflicts or stale pointers. **This brief moves what theirs points at:** theirs goes stale when this one merges. | Same scope: merge them. Same files: block one on the other with a native blocked-by link (`implement` refuses while a blocker is open) when running both at once would really conflict; where the overlap is only wording in a shared file, note it in the brief instead ([*When to block*](#when-to-block-and-which-issue-goes-first)). Stale-in-waiting: block theirs on this issue, and comment on theirs that its pointers need re-checking after this one merges. |
+| Issues being built now (`agent:implement`, no PR yet) | Code about to change that no PR shows yet. | Treat it as an open PR: run this issue after that one merges. |
+| Open PRs (the loop's `agent/*` branches and human ones) | Changes to the files this brief points at. | Read the PR's diff (`gh pr diff <n>`). Either order this issue after it, or write the brief against the code as it will be. |
+| Open PRDs and their sub-issues | A long chain changes many files over days. | Check what the PRD **will** change, from its spec and its slices, not only what it has changed so far. Order anything overlapping after it. |
+| The code since the issue was written | File, function and step names that have since moved. | Compare the issue's date with recent commits to the files it names (`git log --since`), and correct the pointers in the brief. |
+
+### Checked for duplicates only
+
+| Surface | Why |
+|---|---|
+| `parked` issues | Not running, so file overlap does not matter yet. A duplicate revives or merges with the parked one rather than starting fresh. |
+| Open maps and question issues (`wayfinder:*`, and open questions filed as plain issues, such as #410) | They hold decisions not yet made, and a brief should not make one by accident. Link to the open question instead. |
+
+Not checked: closed issues (closed as done is the "already built" check, and closed as rejected is
+`.out-of-scope/`), and ADRs (the skill already respects them).
+
+### Recording the outcome
+
+**An order between issues is a native blocked-by link, never prose**
+([*Native relations*](#native-relations-sub-issues-and-blocking)): `implement` reads the link and
+refuses while a blocker is open, and nothing reads a sentence. Where this issue will stale another
+brief's pointers, the other issue is blocked on this one and gets a comment saying its pointers
+need re-checking once this merges.
+
+#### When to block, and which issue goes first
+
+**Block** when running both at once would really conflict, or when one would make the other's brief
+stale. **Only note it in the brief** when the overlap is just wording in a shared file, such as two
+issues editing different lines of the same prompt: the second one's `update-branch` resolves that,
+and a needless block only delays it.
+
+Where a block is owed, decide its direction with these, in order, stopping at the first that
+decides it:
+
+1. **A real dependency decides it.** If one issue builds on what the other produces, it waits for
+   the other.
+2. **Never block a ready issue on an unscheduled one.** An issue that is `ready-for-agent` or being
+   built does not wait for one that is `needs-triage` or `parked`: block the unscheduled one
+   instead, or the ready one may wait indefinitely. #447 blocked on #272 and #338 would have parked
+   a safety fix behind two unscheduled prompt tidy-ups.
+3. **Otherwise the more valuable one goes first:** a bug fix, a safety net, or something blocking a
+   larger piece of work, ahead of a tidy-up. The other one rebases onto it.
+4. **Still tied, the smaller one goes first.** It merges quickly, and the larger one rebases once.
+
+**The brief says in one line what was checked and what was found**, including "no overlap found",
+so a reader can tell the check ran rather than guess that it was skipped.
+
+### When the overlap means "not yet"
+
+Two states, both made of existing labels plus native blocked-by links. No new label.
+
+| Situation | What triage does | Labels |
+|---|---|---|
+| **The decision does not depend on in-flight work**; only the code around it will move | Triage now, with criteria written as behaviour and pointers as hints (below). Block it on the work that will move the code. | `ready-for-agent` + blocked by #N. Ready, but it waits, because `implement` refuses while a blocker is open. |
+| **The decision itself depends on how in-flight work turns out** | Do not brief it. Add a blocked-by link and a one-line comment, "triage after #N merges", saying why. | `needs-triage` + blocked by #N. No effort is spent early, and the reason is written down. |
+
+**An issue is never briefed and left `needs-triage`.** The label would then mean both "not looked
+at" and "briefed but not trusted", and whoever triages next cannot tell which.
+
+### Criteria as behaviour, pointers as hints
+
+Briefs go stale through their *pointers*, not their decisions: #224's decisions all survived #409,
+and what broke were criteria naming *where* (such as "`tests/workflows.test.ts` asserts both"). So:
+
+- **Acceptance criteria describe behaviour** that holds wherever the code lives ("a test asserts the
+  pattern does not match `follow-ups`"), never a location.
+- **File, function and step names go in a separate *Where things are* part** of the brief, dated
+  (and naming the commit on `main` they were read at), as hints for the implementer. #447's check
+  resolves them at build time.
+
+Two placement rules follow from how the review reads criteria. The review takes acceptance criteria
+from a heading (or a bold label on its own line) containing "Acceptance criteria", and when a
+comment carries one, **it replaces the issue body's list for review rather than adding to it**:
+
+- ***Where things are* sits outside the acceptance-criteria heading**, after it under its own
+  heading, or a bold label alone on its line, or the review grades file locations as if they were
+  criteria. The date goes on the next line, not beside a bold label: a label with anything after
+  it is not read as one, so it does not end the criteria section.
+- **A brief restates every criterion it keeps from the issue body.** One it leaves out is silently
+  dropped from review.
+
+### What this overrides upstream
+
+| Upstream default | Here |
+|---|---|
+| The brief guide (`AGENT-BRIEF.md`, *Durability over precision*) says not to reference file paths at all | File, function and step names are allowed, but only in the separate, dated *Where things are* part, as hints. Acceptance criteria still name no location, which is the durability that rule protects. |
+| Before briefing, check that the code does not already do it, and `.out-of-scope/` | Kept, and the overlap check above runs as well. |
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.

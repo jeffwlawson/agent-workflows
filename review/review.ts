@@ -175,8 +175,9 @@ const readCiResult = (): CiResult => {
 
 /**
  * Whether the workflow will start a fix round itself if this review recommends
- * changes (#201): what `review:gate` decided from the
- * repository's budget, the rounds this pull request has spent and the PAT.
+ * changes (#201): what `review:budget` decided from the
+ * repository's budget, the rounds spent against it and the PAT. The rounds
+ * are this pull request's, or on a PRD PR this round's (#331).
  * None of those is readable here once the token is gone, and the job that adds
  * `agent:fix` selects on the field this decides, so the step's one answer is
  * taken rather than a second one worked out.

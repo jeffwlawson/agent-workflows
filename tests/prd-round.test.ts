@@ -466,7 +466,7 @@ describe("the park comment", () => {
 
   it.each([
     ["changes recommended", "the review recommended changes, and no automatic fix round starts"],
-    ["budget spent", "the automatic fix rounds are spent"],
+    ["budget spent", "this slice's automatic fix rounds are spent"],
     ["no progress", "no progress: the last fix round closed none of the findings it was given"],
     ["needs a closer look", "the review needs a closer look"],
     ["failed", "the review didn't finish"],
@@ -482,6 +482,15 @@ describe("the park comment", () => {
     expect(text).toContain("- decline a finding by replying to it, then add `agent:review` there;");
     expect(text).toContain("- push a commit, then add `agent:review` there.");
     expect(text).toContain("The chain moves on once a review of the PRD PR's latest commit recommends approval.");
+  });
+
+  /**
+   * The budget is the round's on a PRD PR (#331), so a spent one is the
+   * slice's or the final review's, never the pull request's.
+   */
+  it("says whose automatic fix rounds are spent: the slice's, or the final review's", () => {
+    expect(park("budget spent")).toContain("**Why:** this slice's automatic fix rounds are spent.");
+    expect(park("budget spent", { kind: "final", parent: "222" })).toContain("**Why:** the final review's automatic fix rounds are spent.");
   });
 
   it("links the run a failed review ran in, and offers running the review again", () => {

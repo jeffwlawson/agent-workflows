@@ -476,7 +476,8 @@ jobs:
       contents: read
       # Reading the linked issue, its trusted comments and a PRD's sub-issues:
       # the spec and acceptance criteria the review is handed, and the PRD
-      # branch the progress table and the slice round are read off. A
+      # branch the progress table, the slice round and its fix-round budget
+      # (#331) are read off. A
       # **public** repository serves all three without the scope, so its
       # absence showed only on a private one, and only as warnings: every
       # review there was handed no criteria, and the progress table was never
@@ -487,11 +488,12 @@ jobs:
       # so this is needed even though the package is public — and, being a
       # bound, it grants nothing without the caller's own `packages: read`.
       packages: read
-      # The gate's read of the head and the body, and the runner's of the
-      # threads, reviews and comments it hands the agent.
+      # The gate's read of the head and the body, the budget's of the commits
+      # and reviews its count attributes, and the runner's of the threads,
+      # reviews and comments it hands the agent.
       pull-requests: read
-      # The gate's count of the fix rounds already started, which are commit
-      # statuses, and the CI wait's read of the statuses CI posts.
+      # The budget's count of the fix rounds already started, which are
+      # commit statuses, and the CI wait's read of the statuses CI posts.
       statuses: read
 
     env:
@@ -537,8 +539,10 @@ jobs:
       # Everything this job settles before its checkout, as one command
       # (#420): the pre-flight, which refuses a closed, merged or moved pull
       # request and settles **which commit this run reviews**; a time limit
-      # that is not a positive integer; the fix-round budget; and, on a PRD
-      # PR, a slice round or the final review. `review/gate.ts` says why each
+      # that is not a positive integer; the fix-round budget's value; and, on
+      # a PRD PR, a slice round or the final review. The rounds spent against
+      # the budget are *Count the fix rounds this round has spent*, after the
+      # checkout (#331). `review/gate.ts` says why each
       # is as it is, the reasons #228 and #229 gave the pre-flight included.
       #
       # It writes nothing to the record: this job holds no write (#257), so a
@@ -549,16 +553,14 @@ jobs:
       # reads, so the comment says this run didn't run and names it (#253).
       #
       # `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the pull request as the
-      # label's event saw it; the branch tip, the pull request's head and body,
-      # and the statuses the budget counts, the command reads itself, with this
-      # job's read-only token. The budget and the time limit are the caller's
+      # label's event saw it; the branch tip and the pull request's head and
+      # body the command reads itself, with this job's read-only token. The
+      # budget and the time limit are the caller's
       # repository variables, since a `vars.*` read in a reusable workflow
       # resolves against the **caller's** repository ("the variables from the
       # caller workflow's repository are used", *Reusing workflow
       # configurations*), so an adopter sets each once and neither caller set
-      # carries a `with:` line for it. Which token the loop writes with comes
-      # from `time-limit`, so this job never names a secret that writes
-      # (#316).
+      # carries a `with:` line for it.
       - name: Settle what this run reviews
         id: gate
         env:
@@ -569,15 +571,14 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REVIEW_TIMEOUT_MINUTES: ${{ vars.AGENT_REVIEW_TIMEOUT_MINUTES }}
           MAX_FIX_ROUNDS: ${{ vars.AGENT_MAX_FIX_ROUNDS }}
-          LOOP_TOKEN_SOURCE: ${{ needs.time-limit.outputs.token-source }}
         # `npm exec --prefix` rather than a bare `npx`: see the long note on the
         # runner step below.
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.14 -- agent-workflows review:gate
 
       # Glue only Actions can do (ADR 0003): the gate's decisions, copied into
-      # step outputs under the names every later `if:`, the runner and the
-      # posting job read: `proceed`, `refusal`, `blocked`, `sha`, `budget`,
-      # `spent`, `start` and `round`. `always()`, so a gate that refused a
+      # step outputs under the names every later `if:`, the budget count, the
+      # runner and the posting job read: `proceed`, `refusal`, `blocked`,
+      # `sha`, `budget` and `round`. `always()`, so a gate that refused a
       # variable after settling the commit still hands over the commit the
       # error verdict goes on; nothing where it wrote no `gate.json`.
       - name: Hand the gate's decisions to the job
@@ -640,6 +641,50 @@ jobs:
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           echo "::add-mask::${auth}"
           git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" fetch origin "+refs/heads/${BASE_REF}:refs/heads/${BASE_REF}"
+
+      # **The fix-round budget** (#201, PRD #200): the automatic fix rounds
+      # already spent against the budget the gate settled, and whether a
+      # review that recommends changes starts another. `review/budget.ts`
+      # says why each part is as it is.
+      #
+      # After the checkout, because on a PRD PR the budget is the **round's**
+      # (#331): each slice round, and the final review, has its own, and
+      # which slice is current is read off the checkout's history against the
+      # base fetched above, by the same reading the review's header scope
+      # comes from. A status counts toward the round its linked review's
+      # header names, never by the commit it stands on. Off a PRD PR the
+      # rounds are the pull request's, as they always were.
+      #
+      # Before the adopter's toolchain and the agent, with this job's
+      # read-only token: it decides what the runner may ask for, so it runs
+      # where neither has run yet. The statuses and reviews it counts, and a
+      # PRD's sub-issues, it reads itself. Which token the loop writes with
+      # comes from `time-limit`, so this job never names a secret that writes
+      # (#316). What it decided is its `budget.json`, copied into step outputs
+      # below, for the runner. A count it cannot read is no round started and
+      # a warning, never zero spent.
+      - name: Count the fix rounds this round has spent
+        if: steps.state.outputs.proceed == 'true'
+        env:
+          # Reads the `.npmrc` *Set up Node for the gate* wrote. `GITHUB_TOKEN`,
+          # carrying the `packages: read` the caller granted.
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}
+          FIX_ROUND_BUDGET: ${{ steps.state.outputs.budget }}
+          ROUND: ${{ steps.state.outputs.round }}
+          LOOP_TOKEN_SOURCE: ${{ needs.time-limit.outputs.token-source }}
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.7.14 -- agent-workflows review:budget
+
+      # Glue only Actions can do (ADR 0003): the count's decisions, copied
+      # into step outputs under the names the runner reads, `budget`, `spent`
+      # and `start`.
+      - name: Hand the budget to the runner
+        id: budget
+        if: steps.state.outputs.proceed == 'true'
+        run: |
+          file="${RUNNER_TEMP}/budget.json"
+          [ -f "$file" ] || { echo "review:budget wrote no budget.json; no fix round starts."; exit 0; }
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' "$file" >> "$GITHUB_OUTPUT"
 
       # Both setup steps are the adopter's toolchain, so both are skippable.
       # `npm install -g @anthropic-ai/claude-code` below is not: that is the
@@ -793,8 +838,8 @@ jobs:
           # the CI evidence, it is never a fact the verdict is derived from.
           RED_CHECK_CONFIGURED: ${{ inputs.red-check-command != '' }}
           RED_CHECK_FILE: ${{ runner.temp }}/red-check/red_check.json
-          # What *Settle what this run reviews* decided of the fix-round budget
-          # (#201): whether an automatic fix round starts if this review
+          # What *Count the fix rounds this round has spent* decided of the
+          # fix-round budget (#201): whether an automatic fix round starts if this review
           # recommends changes, and the budget and rounds spent it decided from. The derivation adds
           # whether the fix round this review follows made progress (#202),
           # judged from the verdict history and the findings' ids, and picks the
@@ -802,9 +847,9 @@ jobs:
           # line a maintainer reads and the step that makes it true come from
           # one decision. The two numbers are for the line alone:
           # where the budget is spent, the verdict says how much of it was used.
-          AUTO_FIX: ${{ steps.state.outputs.start }}
-          FIX_ROUNDS_SPENT: ${{ steps.state.outputs.spent }}
-          FIX_ROUND_BUDGET: ${{ steps.state.outputs.budget }}
+          AUTO_FIX: ${{ steps.budget.outputs.start }}
+          FIX_ROUNDS_SPENT: ${{ steps.budget.outputs.spent }}
+          FIX_ROUND_BUDGET: ${{ steps.budget.outputs.budget }}
           # Which round of a PRD PR this is, from *Settle what this run
           # reviews*: `final`, `slice`, or empty off a PRD PR.
           ROUND: ${{ steps.state.outputs.round }}

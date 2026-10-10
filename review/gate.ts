@@ -2,8 +2,7 @@ import type { GitHubReader } from "../engine/read.js";
 import type { ReadingIo } from "../shared/command-io.js";
 import type { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
-import { isWorkflowBot, loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
-import { FINAL_REVIEW_MARK, FIX_ROUND_STATUS, PRD_BRANCH_PREFIX, REVIEW_LABEL } from "../shared/record.js";
+import { FINAL_REVIEW_MARK, PRD_BRANCH_PREFIX, REVIEW_LABEL } from "../shared/record.js";
 
 type Inputs = InputValues<(typeof COMMANDS)["review:gate"]["inputs"]>;
 type Io = ReadingIo<(typeof COMMANDS)["review:gate"]["outputs"]>;
@@ -12,23 +11,22 @@ type Io = ReadingIo<(typeof COMMANDS)["review:gate"]["outputs"]>;
  * What `gate.json` holds: the review job's decisions, under the names its
  * outputs have always had, every value a string, so the adapter copies them
  * across as they are. A name is absent where it was not decided: `sha` on a
- * refusal, the budget's three past a refused time limit, `round` off a PRD PR.
+ * refusal, `budget` past a refused time limit, `round` off a PRD PR.
  *
  * - `proceed`, `refusal` and `blocked`: whether the review runs, and if not,
  *   the sentence the posting job says and whether `agent:blocked` follows it.
  * - `sha`: the commit this run reviews.
- * - `budget`, `spent` and `start`: the fix-round budget, the rounds spent
- *   (empty where they could not be counted), and whether a review that
- *   recommends changes starts a round.
+ * - `budget`: the fix-round budget, which `review:budget` counts the rounds
+ *   spent against after the checkout (#331).
  * - `round`: on a PRD PR, `slice` or `final`.
  */
-type Decision = "proceed" | "refusal" | "blocked" | "sha" | "budget" | "spent" | "start" | "round";
+type Decision = "proceed" | "refusal" | "blocked" | "sha" | "budget" | "round";
 
 /**
  * `review:gate` (#420): everything the review job settles between its start
  * and its checkout, in the order it settles them. Whether this run reviews,
  * and which commit; a time limit that is not a positive integer; the
- * fix-round budget; and, on a PRD PR, a slice round or the final review.
+ * fix-round budget's value; and, on a PRD PR, a slice round or the final review.
  *
  * It writes nothing to the record. The review job holds no write (#257), so a
  * refusal is decided here and said by the posting job, as it always was.
@@ -47,9 +45,6 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
   const pr = pullRequestNumber(inputs.PR_NUMBER);
   const decided: Partial<Record<Decision, string>> = {};
   try {
-    // The loop's accounts, read first, so a malformed list fails the run
-    // before it decides anything (#376).
-    const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
     const settled = await settleCommit(inputs, io.github, pr);
     if (settled.refusal !== undefined) {
       Object.assign(decided, { proceed: "false", refusal: settled.refusal, blocked: String(settled.blocked) });
@@ -58,7 +53,7 @@ export const gate = async (inputs: Inputs, io: Io): Promise<void> => {
     Object.assign(decided, { proceed: "true", sha: settled.sha });
 
     refuseTimeLimit(inputs, io);
-    Object.assign(decided, await settleBudget(inputs, io, pr, accounts));
+    Object.assign(decided, settleBudget(inputs, io));
     const round = await settleRound(inputs, io.github, pr);
     if (round !== undefined) decided.round = round;
   } finally {
@@ -195,68 +190,23 @@ const refuseTimeLimit = (inputs: Inputs, io: Io): void => {
 };
 
 /**
- * **The fix-round budget** (#201, PRD #200): whether this review, if it
- * recommends changes, starts a fix round itself. Settled **before** the
- * review, so the runner asks for a round only where one will start, and the
- * posting job's hand-off starts exactly the rounds asked for (the `fix-round`
- * output the runner derives from `start` is what it selects on). `start` is a
- * ceiling, not a promise: the runner still stops the loop where the fix round
- * this review follows closed none of its findings (#202), and then asks for
- * nothing. The verdict's line is the same either way (#297).
+ * **The fix-round budget's value** (#201, PRD #200): `MAX_FIX_ROUNDS`, the
+ * repository variable `AGENT_MAX_FIX_ROUNDS`, automatic fix rounds per round,
+ * default 3 and `0` for none. A value that is not a non-negative integer is
+ * refused, naming the variable and the value: guessing a budget out of
+ * `three` or `-1` is a loop running a number of rounds nobody wrote down. The
+ * `auto-fix` input that once overrode it is gone (#366).
  *
- * The budget is `MAX_FIX_ROUNDS`, the repository variable
- * `AGENT_MAX_FIX_ROUNDS`: automatic fix rounds per pull request, default 3 and
- * `0` for none. A value that is not a non-negative integer is refused, naming
- * the variable and the value: guessing a budget out of `three` or `-1` is a
- * loop running a number of rounds nobody wrote down. The `auto-fix` input that
- * once overrode it is gone (#366).
- *
- * **Rounds spent are counted from the pull request**, not from a marker label:
- * the `agent-fix-round` statuses the loop posted on its commits, one beside
- * each verdict that asked for a round (#297). So the count survives a re-run
- * and a hand edit. Counted once per posted review, by the review URL the
- * status links to, because `update-branch` copies the statuses standing on a
- * commit, links and all, on to the merge commit it makes, and a copy is not a
- * second round. A human adding `agent:fix` posts no such status, so only
- * automatic rounds count (decision 7), and a push resets nothing. A 0.7.6
- * verdict that started a round has no such status, and counts by its line.
- *
- * **And no App or PAT, no round.** A label added with the workflow token
- * starts nothing, so with neither the loop's App nor `AGENT_PAT` the verdict
- * asks for the label instead of asking for a round that would never run. The
- * same holds for a count that could not be read: a run that cannot say how
- * many rounds are spent does not start another, and warns. Which token the
- * loop writes with is `LOOP_TOKEN_SOURCE`, chosen where no agent runs, so the
- * review job never names a secret that writes (#316).
+ * Settled here, before the checkout, so a bad variable is refused before
+ * anything else runs. The rounds spent against it, and whether a review that
+ * recommends changes starts one, are `review:budget`'s, after the checkout:
+ * on a PRD PR they are the round's, and which slice is current is read off
+ * the branch's history (#331).
  */
-const settleBudget = async (
-  inputs: Inputs,
-  io: Io,
-  pr: number,
-  accounts: LoopAccounts,
-): Promise<Record<"budget" | "spent" | "start", string>> => {
+const settleBudget = (inputs: Inputs, io: Io): Record<"budget", string> => {
   const budget = budgetOf(inputs, io);
-
-  let spent: number | undefined = 0;
-  if (budget > 0) {
-    try {
-      spent = await roundsSpent(io.github, pr, accounts);
-    } catch (error) {
-      console.log(`Counting the fix rounds failed: ${error instanceof Error ? error.message : String(error)}`);
-      spent = undefined;
-    }
-  }
-
-  let start = false;
-  if (spent === undefined) {
-    console.log(
-      `::warning::Could not count the automatic fix rounds already spent on PR #${pr}, so this review will not start one. GitHub's reply is printed above. Add \`agent:fix\` by hand if the review recommends changes.`,
-    );
-  } else if (spent < budget && (inputs.LOOP_TOKEN_SOURCE === "app" || inputs.LOOP_TOKEN_SOURCE === "pat")) {
-    start = true;
-  }
-  console.log(`Fix-round budget ${budget}, spent ${spent ?? "unknown"}; an automatic fix round starts on changes recommended: ${start}.`);
-  return { budget: String(budget), spent: spent === undefined ? "" : String(spent), start: String(start) };
+  console.log(`Fix-round budget ${budget}.`);
+  return { budget: String(budget) };
 };
 
 const budgetOf = (inputs: Inputs, io: Io): number => {
@@ -272,28 +222,6 @@ const budgetOf = (inputs: Inputs, io: Io): number => {
   // somewhere an arbitrary digit string does not.
   const digits = value.replace(/^0*/, "");
   return digits.length > 9 ? 999_999_999 : Number(digits);
-};
-
-/**
- * The automatic fix rounds the pull request has spent: one per distinct link
- * among the loop's `agent-fix-round` statuses, over every commit of the pull
- * request. A status with no link
- * counts on its own. The loop's are those posted by one of `accounts`, in the
- * REST spelling a status's creator has (§4.1). Throws where any of it could
- * not be read, which is not the same answer as none.
- */
-const roundsSpent = async (github: GitHubReader, pr: number, accounts: LoopAccounts): Promise<number> => {
-  const links = new Set<string>();
-  let unlinked = 0;
-  for (const sha of await github.pullRequestCommits(pr)) {
-    for (const status of await github.commitStatuses(sha)) {
-      if (!isWorkflowBot(status.creator, accounts)) continue;
-      if (status.context !== FIX_ROUND_STATUS.context) continue;
-      if (status.targetUrl === null || status.targetUrl === "") unlinked += 1;
-      else links.add(status.targetUrl);
-    }
-  }
-  return links.size + unlinked;
 };
 
 /**

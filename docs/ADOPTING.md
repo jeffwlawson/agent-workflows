@@ -697,6 +697,14 @@ rounds count: your own `agent:fix` always starts a round, and your own push rese
 the loop's App or `AGENT_PAT` (§2); without either no round starts, and the 🟡 line asks you for the
 label.
 
+**On a PRD PR the budget is each round's**, not the pull request's (#331): every slice round gets
+the whole `AGENT_MAX_FIX_ROUNDS`, and so does the final review, so a slice never parks because
+earlier slices used the rounds up. Each `agent-fix-round` status counts toward the round of the
+review it links to, as that review's header names it (*Slice k of n · #sub* or *Final review*),
+not toward the slice whose commit it stands on. A status whose round cannot be told, such as one
+linking a review with no round header, leaves the count unreadable: no automatic round starts, the
+run warns, and the 🟡 line asks you for the label.
+
 The verdict's line is the same 🟡 line either way, and says "if the agent isn't already working on
 them" for that reason. The job that adds the label decides from the pull request as it is then, not
 as it was: it adds nothing where `agent:fix` is already there or a newer verdict stands, and where
@@ -705,14 +713,15 @@ automatic fix round started. The pull
 request also stays a draft, because the loop is still working and it is not your turn yet. It is
 marked ready at the end of that round either way: by the re-review where the fix pushed, and by the
 fix run itself where it declined everything and so asked for no re-review. It cannot cycle: the
-budget bounds it per pull request, and the **early stop** ends it sooner. After a fix round that
+budget bounds it per pull request (per round, on a PRD PR), and the **early stop** ends it sooner. After a fix round that
 closed none of the findings it was given, no further automatic round starts, whatever budget is
 left; findings are matched by the ids the workflow wrote into them, so a finding that comes back
 reworded is not progress, and new findings the re-review raised neither count as progress nor reset
 anything. A later review may otherwise recommend changes and start another round, so a round that
 closed two findings and uncovered a third carries on while budget is left. Once the loop stops, the
 verdict is the same 🟡 line, which asks you for the label; on a PRD PR the park comment on the
-parent says why it stopped (the budget is spent, or the last round made no progress).
+parent says why it stopped (the slice's or the final review's budget is spent, or the last round
+made no progress).
 
 The `auto-fix` input this replaced has been **removed** (#366), after a deprecation that ran from
 v0.7.5. A caller that still passes it is refused by GitHub before any job starts, every job in that

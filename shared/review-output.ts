@@ -533,8 +533,8 @@ export interface VerdictInputs {
   readonly movedToFollowUps: number;
   /**
    * Whether the workflow will add `agent:fix` itself if this review recommends
-   * changes: the pull request's automatic fix rounds are fewer than its
-   * fix-round budget, and `AGENT_PAT` is there to start one (#201, PRD #200).
+   * changes: the pull request's automatic fix rounds, or on a PRD PR this
+   * round's (#331), are fewer than its fix-round budget, and `AGENT_PAT` is there to start one (#201, PRD #200).
    *
    * Facts only the workflow holds, and none is about the review: a repository
    * variable, the verdicts already posted on the pull request, and a secret.
@@ -549,8 +549,8 @@ export interface VerdictInputs {
    */
   readonly autoFix: boolean;
   /**
-   * The fix-round budget and how much of it this pull request has spent, where
-   * the workflow could count it (#201). Read only where no round is starting:
+   * The fix-round budget and how much of it this pull request has spent, or
+   * on a PRD PR this round (#331), where the workflow could count it (#201). Read only where no round is starting:
    * a spent budget is a reason the loop has stopped, which the PRD chain's
    * park comment names (`stop`). The line does not: it is the same either way.
    *
@@ -560,7 +560,7 @@ export interface VerdictInputs {
   readonly fixRounds?: FixRounds;
 }
 
-/** A pull request's fix-round budget, and the automatic rounds spent against it. */
+/** A pull request's fix-round budget, or a PRD PR round's (#331), and the automatic rounds spent against it. */
 export interface FixRounds {
   readonly spent: number;
   readonly budget: number;

@@ -3,7 +3,7 @@ import type { GitHubReader } from "../../engine/read.js";
 import { gate } from "../../review/gate.js";
 import type { ReadingIo } from "../../shared/command-io.js";
 import type { COMMANDS } from "../../shared/contract.js";
-import { FINAL_REVIEW_MARK, FIX_ROUND_STATUS, VERDICT_CONTEXT } from "../../shared/record.js";
+import { FINAL_REVIEW_MARK } from "../../shared/record.js";
 import { fakeGitHub, fakeReader, type FakeGitHub, type ReceivedRead } from "../engine/fakes.js";
 
 /**
@@ -24,10 +24,6 @@ const BRANCH = "agent/issue-228-fix";
 const BEFORE = "3".repeat(40);
 const AFTER = "c".repeat(40);
 const STALE = "0123456789abcdef0123456789abcdef01234567";
-const LOOP = "github-actions[bot]";
-/** 0.7.6's *fix round started* verdict line, from before `FIX_ROUND_STATUS` (#297). */
-const OLD_FIX_ROUND_STARTED =
-  "Changes recommended. The fixes are clear. A fix round has already started; a re-review follows automatically.";
 
 let github: FakeGitHub;
 let reads: ReceivedRead[];
@@ -55,7 +51,6 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   OUTPUT_DIR: "/out",
   GH_REPO: "o/r",
   GH_TOKEN: "workflow-token",
-  AGENT_LOOP_LOGINS: "",
   PR_NUMBER: String(PR),
   BRANCH,
   HEAD_SHA: BEFORE,
@@ -65,7 +60,6 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   HEAD_POLL_SECONDS: "0",
   REVIEW_TIMEOUT_MINUTES: "",
   MAX_FIX_ROUNDS: "",
-  LOOP_TOKEN_SOURCE: "app",
   ...over,
 });
 
@@ -273,103 +267,24 @@ describe("review:gate refuses a variable nobody can have meant", () => {
 });
 
 /**
- * The fix-round budget (#201, PRD #200): whether a review that recommends
- * changes starts a round itself. Rounds spent are the `agent-fix-round`
- * statuses the loop posted beside the verdicts that asked for one (#297),
- * counted once per review, since `update-branch` copies a commit's statuses
- * on to its merge commit.
+ * The fix-round budget's value (#201, PRD #200). The rounds spent against it
+ * are `review:budget`'s, after the checkout (#331), in
+ * `tests/review/budget.test.ts`.
  */
-describe("review:gate settles the fix-round budget", () => {
-  const C1 = "1".repeat(40);
-  const C2 = "2".repeat(40);
-  const review = (n: number): string => `https://github.com/o/r/pull/${PR}#pullrequestreview-${n}`;
-  const round = (url: string | null, creator = LOOP) => ({ context: FIX_ROUND_STATUS.context, state: "success", targetUrl: url, description: "", creator });
-
-  beforeEach(() => {
-    github.commits.set(PR, [C1, C2]);
-  });
-
-  it("reads a budget of 3 where the variable is unset, and starts a round", async () => {
+describe("review:gate settles the fix-round budget's value", () => {
+  it("reads a budget of 3 where the variable is unset, and counts nothing", async () => {
     await run();
 
-    expect(decided()).toMatchObject({ budget: "3", spent: "0", start: "true" });
+    expect(decided()).toMatchObject({ budget: "3" });
+    expect(decided()["spent"]).toBeUndefined();
+    expect(decided()["start"]).toBeUndefined();
+    expect(reads.map((r) => r.method)).not.toContain("commitStatuses");
   });
 
-  it("counts each review's round once, across the commits it was copied on to", async () => {
-    github.statuses.set(C1, [round(review(1))]);
-    github.statuses.set(C2, [round(review(1)), round(review(2))]);
-
-    await run(INPUTS({ MAX_FIX_ROUNDS: "2" }));
-
-    expect(decided()).toMatchObject({ budget: "2", spent: "2", start: "false" });
-  });
-
-  /**
-   * 0.7.6's *fix round started* verdict line was counted as a round for one
-   * release after #297, and is not any more (#224): only the round record is.
-   */
-  it("counts only the loop's own round statuses, and not a 0.7.6 verdict that started a round", async () => {
-    github.statuses.set(C1, [
-      round(review(1), "someone"),
-      { context: VERDICT_CONTEXT, state: "failure", targetUrl: review(2), description: OLD_FIX_ROUND_STARTED, creator: LOOP },
-      { context: VERDICT_CONTEXT, state: "failure", targetUrl: review(3), description: "Changes recommended.", creator: LOOP },
-    ]);
-
-    await run();
-
-    expect(decided()).toMatchObject({ spent: "0", start: "true" });
-  });
-
-  /**
-   * An orchestrator posting as its own App (#376): its rounds count once its
-   * account is passed in, beside the default, and not before.
-   */
-  it("counts a round posted by an account the orchestrator passes in", async () => {
-    github.statuses.set(C1, [round(review(1), "my-loop[bot]")]);
-    github.statuses.set(C2, [round(review(2))]);
-
-    await run(INPUTS({ AGENT_LOOP_LOGINS: "other-loop, my-loop[bot]," }));
-    expect(decided()).toMatchObject({ spent: "2", start: "true" });
-
-    await run(INPUTS());
-    expect(decided()).toMatchObject({ spent: "1", start: "true" });
-  });
-
-  it("fails, naming the entry, on an account that is not a login", async () => {
-    await expect(run(INPUTS({ AGENT_LOOP_LOGINS: "my-loop[bot], not a login" }))).rejects.toThrow(
-      "`AGENT_LOOP_LOGINS` holds `not a login`, which is not a GitHub login.",
-    );
-    expect(decided()).toEqual({});
-  });
-
-  it("counts a round with no link on its own", async () => {
-    github.statuses.set(C1, [round(null), round(null)]);
-
-    await run(INPUTS({ MAX_FIX_ROUNDS: "3" }));
-
-    expect(decided()).toMatchObject({ spent: "2", start: "true" });
-  });
-
-  /** A label added with the workflow token starts nothing (#316). */
-  it.each(["workflow", ""])("starts no round where the loop's token is %j", async (source) => {
-    await run(INPUTS({ LOOP_TOKEN_SOURCE: source }));
-
-    expect(decided()).toMatchObject({ budget: "3", spent: "0", start: "false" });
-  });
-
-  it("starts no round, and warns, where the rounds spent cannot be counted", async () => {
-    await run(INPUTS(), { reader: (reader) => ({ ...reader, commitStatuses: () => Promise.reject(new Error("403 statuses")) }) });
-
-    expect(decided()).toMatchObject({ budget: "3", spent: "", start: "false" });
-    expect(logged.join("\n")).toContain("403 statuses");
-    expect(logged.some((line) => line.startsWith("::warning::Could not count the automatic fix rounds already spent on PR #228"))).toBe(true);
-  });
-
-  it("counts nothing for a budget of 0", async () => {
+  it("reads a budget of 0", async () => {
     await run(INPUTS({ MAX_FIX_ROUNDS: "000" }));
 
-    expect(decided()).toMatchObject({ budget: "0", spent: "0", start: "false" });
-    expect(reads.map((r) => r.method)).not.toContain("pullRequestCommits");
+    expect(decided()).toMatchObject({ budget: "0" });
   });
 
   it("holds a budget past nine digits at nine", async () => {

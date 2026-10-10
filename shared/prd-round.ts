@@ -353,7 +353,9 @@ export const renderPrdSummary = (inputs: PrdSummaryInputs): string => {
  *
  * - `changes recommended`: changes were recommended and no automatic fix round
  *   starts, because the fix-round budget is 0 or `AGENT_PAT` is not set.
- * - `budget spent`: the automatic fix rounds are used up.
+ * - `budget spent`: the round's automatic fix rounds are used up: the
+ *   slice's, or the final review's, since each has a budget of its own
+ *   (#331).
  * - `no progress`: the fix round before this review closed none of the
  *   findings it was given.
  * - `needs a closer look`: the review asks for a human.
@@ -410,10 +412,9 @@ export const parkReasonOf = (verdict: {
   return undefined;
 };
 
-const REASONS: Readonly<Record<ParkReason, string>> = {
+const REASONS: Readonly<Record<Exclude<ParkReason, "budget spent">, string>> = {
   "changes recommended":
     "the review recommended changes, and no automatic fix round starts (the fix-round budget is 0, or `AGENT_PAT` is not set)",
-  "budget spent": "the automatic fix rounds are spent",
   "no progress": "no progress: the last fix round closed none of the findings it was given",
   "needs a closer look": "the review needs a closer look",
   failed: "the review didn't finish, or its verdict was never posted, so there is no verdict",
@@ -433,7 +434,13 @@ export const renderParkComment = (inputs: ParkInputs): string => {
     round.kind === "final"
       ? `at the final review of PRD PR #${prNumber}`
       : `at ${round.slice === undefined ? "a slice round" : `slice ${round.slice.k} of ${round.slice.n}, #${round.slice.subIssue}`}, on PRD PR #${prNumber}`;
-  const why = `**Why:** ${REASONS[reason]}.${inputs.detail === undefined ? "" : ` ${inputs.detail}`}${
+  // The budget is the round's (#331), so a spent one is named as the slice's
+  // or the final review's, never the pull request's.
+  const reasonText =
+    reason === "budget spent"
+      ? `${round.kind === "final" ? "the final review's" : "this slice's"} automatic fix rounds are spent`
+      : REASONS[reason];
+  const why = `**Why:** ${reasonText}.${inputs.detail === undefined ? "" : ` ${inputs.detail}`}${
     inputs.runUrl === undefined ? "" : ` [Workflow run](${inputs.runUrl})`
   }`;
   const listed = inputs.findings.map((f) => {

@@ -56,7 +56,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `follow-ups:file`, `review:gate`, `review:collect-checks`,
+  named `<workflow>:<step>`: `follow-ups:file`, `review:gate`, `review:budget`, `review:collect-checks`,
   `review:red-check-place`, `review:red-check-classify`, `review:publish`, `review:conclude` and
   `review:advance`. §2 says where it differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
@@ -292,7 +292,7 @@ anything it does not control post as, an account it does not control.
 The same list, without the association half (`isWorkflowBot`), is what a runner or a command asks
 where the question is *did the loop post this* rather than *is this trusted*: the reviews it
 numbers rounds by, the verdict and fix-round statuses it counts (§4.3), the earlier findings it
-carries forward, and the review bodies `follow-ups:file` files from. `review:gate` and
+carries forward, and the review bodies `follow-ups:file` files from. `review:budget` and
 `review:conclude` match a status's creator against it in the REST spelling. Every runner and
 command that asks declares `AGENT_LOOP_LOGINS`; `update-branch`, which asks neither question, does
 not.
@@ -348,7 +348,7 @@ string the agent wrote, so the agent cannot forge one of those through a review.
 | String | Where it sits | Written by | Read by |
 |---|---|---|---|
 | `## Agent review` | The opening of a review's body, after its round header. A review by the loop with this heading is one round. | `review:publish`, from `review`'s `review_body.json` | `review`, `fix`, `implement-prd`, to count rounds |
-| `**Review <r>**`, `**Slice <k> of <n> · #<sub> · review <r>**`, `**Final review · review <r>**` | The round header, the first line of a review or fix comment. | `review:publish`, from `review`'s `review_body.json`, and `fix`, in its outputs | the same three, to tell a PRD PR's rounds apart by slice |
+| `**Review <r>**`, `**Slice <k> of <n> · #<sub> · review <r>**`, `**Final review · review <r>**` | The round header, the first line of a review or fix comment. | `review:publish`, from `review`'s `review_body.json`, and `fix`, in its outputs | the same three, to tell a PRD PR's rounds apart by slice; `review:budget`, to tell which round a fix-round status was spent in |
 | `<!-- agent-finding <id> … -->` | Each finding's inline comment. A review body carries none since #224. | `review:publish`, from `review`'s `findings.json` and `review_body.json` | `review`, `fix`, as the findings still open |
 | `<!-- agent-resolution ADDRESSED -->`, `<!-- agent-resolution WONT_FIX -->` | The reply that closes a finding's thread. | `review:publish`, from `review`'s `thread_resolutions.json` | `review`, `fix`, as the findings settled |
 | `<!-- agent-fix:out-of-scope {…} -->` | A note on a finding the fix judged out of scope. | `fix`'s `out_of_scope_notes.json` | `review`, which rules on it; `fix`, to not repeat it |
@@ -378,7 +378,7 @@ only a status whose creator is the loop's identity (§4.1).
 | Context | What it records | Written by | Read by |
 |---|---|---|---|
 | `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude` | `review`, to know what changed since the last verdict |
-| `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict; `review:gate`, to count the rounds the budget has spent |
+| `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict; `review:budget`, to count the rounds the budget has spent, on a PRD PR by the round its linked review's header names |
 
 **Commit trailers.** Read from the PRD branch's first-parent log.
 
@@ -560,7 +560,7 @@ so the diff matches GitHub's.
 | `CI_STATUS_FILE` | optional | `""` | A file of the other checks' results, as evidence for the agent. Empty is "not collected". |
 | `CI_RESULT_FILE` | optional | `""` | A file holding `green` or `red`. Empty, unreadable or anything else is unknown, which no approval is given on. |
 | `AUTO_FIX` | optional | `false` | Accepts `true` or `false`: `true` where the orchestrator will start a fix round itself on a verdict asking for one, `false` where it will not. Unset or empty is `false`, and any other value fails the run, naming it. |
-| `FIX_ROUNDS_SPENT` | optional | `""` | The fix rounds this pull request has spent, for the verdict's line. |
+| `FIX_ROUNDS_SPENT` | optional | `""` | The fix rounds this pull request has spent, or on a PRD PR this round, for the verdict's line. |
 | `FIX_ROUND_BUDGET` | optional | `""` | The budget, for the same line. Both have to be numbers for it to be written. |
 | `RED_CHECK_CONFIGURED` | optional | `""` | `true` where the red check is configured. |
 | `RED_CHECK_FILE` | optional | `""` | The red check's report. |
@@ -601,8 +601,9 @@ text, and `review:publish` and `review:advance` write every final string from th
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the review job starts with `review:gate`, before its checkout, and runs
-> the rest only where it went ahead, on the commit it settled on, handing the runner its budget and
-> its round. Before the runner, `review:collect-checks` waits up to 15 minutes for the pull
+> the rest only where it went ahead, on the commit it settled on, handing the runner its round.
+> Right after the checkout and the base fetch, `review:budget` counts the fix rounds this round has
+> spent and hands the runner the budget, the rounds spent and whether a round starts. Before the runner, `review:collect-checks` waits up to 15 minutes for the pull
 > request's other checks and writes the files the runner reads as `CI_STATUS_FILE` and
 > `CI_RESULT_FILE`. Where the red check is configured, a separate job runs
 > `review:red-check-place`, the adopter's install and test command, and `review:red-check-classify`,
@@ -627,8 +628,8 @@ text, and `review:publish` and `review:advance` write every final string from th
 
 ### `review:gate`
 
-Decides, before anything is checked out, whether the review runs, which commit it reviews, and what
-kind of round it is. It runs no model and needs no checkout, and it writes nothing to the record:
+Decides, before anything is checked out, whether the review runs, which commit it reviews, the
+fix-round budget, and what kind of round it is. It runs no model and needs no checkout, and it writes nothing to the record:
 what it decided is handed on, and the posting step says it. In order:
 
 - **The pre-flight.** A pull request whose `PR_STATE` is not `open`, or that is `PR_MERGED`, is
@@ -642,9 +643,8 @@ what it decided is handed on, and the posting step says it. In order:
 - **The time limit.** A `REVIEW_TIMEOUT_MINUTES` that is set and is not a positive integer is
   refused, naming the variable.
 - **The fix-round budget.** `MAX_FIX_ROUNDS`, 3 where unset, and a value that is not a whole
-  number is refused, naming it. The rounds spent are the loop's own
-  `agent-fix-round` statuses on the pull request's commits, counted once per link. A round starts where fewer are spent than the
-  budget and `LOOP_TOKEN_SOURCE` is `app` or `pat`; a count that cannot be read starts none.
+  number is refused, naming it. The rounds spent against it are `review:budget`'s, after the
+  checkout.
 - **The round.** On a PRD branch only: `final` where the pull request's body carries the final
   review's mark, else `slice`. A body that cannot be read fails the command.
 
@@ -656,7 +656,6 @@ written to `refusal_reason.txt` and the command fails, so the run ends as one th
 
 | Input | Kind | Default | What it is |
 |---|---|---|---|
-| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch, whose tip is read, and which tells a PRD PR. |
 | `HEAD_SHA` | required | | The head the request to review named. |
@@ -666,13 +665,12 @@ written to `refusal_reason.txt` and the command fails, so the run ends as one th
 | `HEAD_POLL_SECONDS` | optional | `"5"` | How often it is asked meanwhile. |
 | `REVIEW_TIMEOUT_MINUTES` | optional | `""` | The review's own time limit, as configured; empty is the default. |
 | `MAX_FIX_ROUNDS` | optional | `""` | The fix-round budget, as configured; empty is 3. |
-| `LOOP_TOKEN_SOURCE` | optional | `""` | Where the loop's token will come from: `app`, `pat` or `workflow`. No round starts on anything but the first two. |
 
 #### Outputs
 
 | Output | When it is written |
 |---|---|
-| `gate.json` | Always. Its decisions, every value a string: `proceed`, and `refusal` and `blocked` where it refused; `sha`, the commit to review; `budget`, `spent` (empty where it could not be counted) and `start`; and `round` on a PRD PR. A name not yet decided when it ended is absent. |
+| `gate.json` | Always. Its decisions, every value a string: `proceed`, and `refusal` and `blocked` where it refused; `sha`, the commit to review; `budget`; and `round` on a PRD PR. A name not yet decided when it ended is absent. |
 | `refusal_reason.txt` | Where it refuses a variable: the sentence, before it fails. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
@@ -682,18 +680,77 @@ written to `refusal_reason.txt` and the command fails, so the run ends as one th
 - `BRANCH`'s tip, and how it relates to `HEAD_SHA`.
 - The pull request `PR_NUMBER` names, for its head while it waits and, on a PRD branch, for the
   final review's mark in its body.
-- The statuses on the pull request's commits, for the loop's own `agent-fix-round`, counting only
-  the loop's own (§4.1).
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
 > **Actions orchestrator:** the review job's first work, after its clock and a Node set up for it,
 > since nothing is checked out yet. `HEAD_SHA`, `PR_STATE` and `PR_MERGED` are the label's event's;
-> the budget and the time limit are the caller's repository variables, and `LOOP_TOKEN_SOURCE` is
-> the `time-limit` job's choice, made where no agent runs. `OUTPUT_DIR` is `runner.temp`, where the
-> job's outcome step reads `refusal_reason.txt`. A glue step copies `gate.json` into step outputs
-> under its own names, `always()`, which the later steps' `if:`s, the runner and the posting job
-> read; `review:conclude` says the refusal.
+> the budget and the time limit are the caller's repository variables. `OUTPUT_DIR` is
+> `runner.temp`, where the job's outcome step reads `refusal_reason.txt`. A glue step copies
+> `gate.json` into step outputs under its own names, `always()`, which the later steps' `if:`s,
+> `review:budget`, the runner and the posting job read; `review:conclude` says the refusal.
+
+### `review:budget`
+
+Counts the automatic fix rounds already spent against `FIX_ROUND_BUDGET`, and decides whether a
+review that recommends changes starts another. It runs no model and writes nothing to the record.
+It needs the checkout on a PRD branch, with `BASE_REF` a local ref, since which slice is current is
+read off the branch's history.
+
+- **The rounds spent** are the loop's own `agent-fix-round` statuses on the pull request's commits
+  (§4.1), counted once per link, since a status copied on to a merge commit is not a second round.
+- **Off a PRD PR** every one counts, the pull request's whole budget, and a status with no link
+  counts on its own.
+- **On a PRD PR** the budget is the round's (#331): each slice round has its own, and the final
+  review has its own. A status counts toward the round its linked review's header names (§4.3),
+  never by the commit it stands on: in a slice round, a review headed with the current slice's
+  sub-issue, the last slice with an `Agent-Slice` trailer; in the final review (`ROUND` `final`), a
+  review headed as the final review. A status with no link, a link to no review on the pull request,
+  or a linked review with no round header makes the count unreadable, as does a branch whose
+  current slice cannot be told.
+- **The decision.** A round starts where fewer are spent than the budget and `LOOP_TOKEN_SOURCE` is
+  `app` or `pat`. A count that cannot be read starts none and warns, and is never read as none spent.
+  A budget of 0 counts nothing.
+
+A `FIX_ROUND_BUDGET` that is not a whole number fails the command. `budget.json` is written however
+the command ends, with what was decided by then.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch, which tells a PRD PR and names its parent. |
+| `BASE_REF` | required | | Its base branch, a local ref, which the PRD branch's history is read against. |
+| `ROUND` | optional | `""` | Accepts `slice` or `final`, as `review:gate` decided it. Unset or empty off a PRD PR. |
+| `FIX_ROUND_BUDGET` | required | | The fix-round budget `review:gate` settled, a whole number. |
+| `LOOP_TOKEN_SOURCE` | optional | `""` | Where the loop's token will come from: `app`, `pat` or `workflow`. No round starts on anything but the first two. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `budget.json` | Always. Its decisions, every value a string: `budget`, `spent` (empty where it could not be counted) and `start`. A name not yet decided when it ended is absent. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The statuses on the pull request's commits, for the loop's own `agent-fix-round`, counting only
+  the loop's own (§4.1).
+- On a PRD PR, the reviews those statuses link to, for their round headers, and the PRD branch's
+  `Agent-Slice` and `Agent-Catch-Up` trailers and its parent's sub-issues, for the current slice.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** a step of the review job right after the checkout and the base fetch,
+> where the gate went ahead, and before the adopter's toolchain, the CI wait and the runner, with
+> the job's read-only token. `FIX_ROUND_BUDGET` and `ROUND` are the gate's, and
+> `LOOP_TOKEN_SOURCE` is the `time-limit` job's choice, made where no agent runs. `OUTPUT_DIR` is
+> `runner.temp`, where the job's outcome step reads a reason it fails with. A glue step copies
+> `budget.json` into step outputs, which the runner reads as `FIX_ROUND_BUDGET`,
+> `FIX_ROUNDS_SPENT` and `AUTO_FIX`.
 
 ### `review:collect-checks`
 

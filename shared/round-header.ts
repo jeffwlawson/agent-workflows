@@ -80,12 +80,26 @@ const isLoopReview = (review: RoundReview, accounts: LoopAccounts): boolean =>
   isWorkflowBot(review.author, accounts) && withoutHeader(review.body).trimStart().startsWith(BODY_HEADING);
 
 /** A review the final review posted, told by its header. */
-const isFinalReview = (review: RoundReview): boolean => review.body.startsWith("**Final review · review ");
+const isFinalReview = (review: Pick<RoundReview, "body">): boolean => review.body.startsWith("**Final review · review ");
 
 /** The slice a review's header names, where it has a slice round's header. */
-const headerSlice = (review: RoundReview): { readonly k: number; readonly n: number; readonly subIssue: number } | undefined => {
+const headerSlice = (review: Pick<RoundReview, "body">): { readonly k: number; readonly n: number; readonly subIssue: number } | undefined => {
   const match = /^\*\*Slice (\d+) of (\d+) · #(\d+) · review \d+\*\*/.exec(review.body);
   return match === null ? undefined : { k: Number(match[1]), n: Number(match[2]), subIssue: Number(match[3]) };
+};
+
+/**
+ * The round a review belongs to, as its header names it: the final review, or
+ * a slice by its sub-issue. Undefined where the body opens with neither, a
+ * regular pull request's header or none. The one reading of "which round"
+ * that the fix-round budget (#331) attributes its statuses by.
+ */
+export const headerRound = (
+  body: string,
+): { readonly kind: "final" } | { readonly kind: "slice"; readonly k: number; readonly n: number; readonly subIssue: number } | undefined => {
+  if (isFinalReview({ body })) return { kind: "final" };
+  const slice = headerSlice({ body });
+  return slice === undefined ? undefined : { kind: "slice", ...slice };
 };
 
 const time = (at: string | undefined): number => (at === undefined ? Number.NaN : Date.parse(at));

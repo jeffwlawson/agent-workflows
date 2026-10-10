@@ -1748,8 +1748,12 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   /** The posting job (#257), whose `review:conclude` starts the round (#419). */
   const job = (): Job => jobNamed(REVIEW, "post-review");
   const startStep = (): Step | undefined => (job().steps ?? []).find((s) => s.name === "Conclude the run");
-  /** `review:gate`, which settles the budget (#420). */
+  /** `review:gate`, which settles the budget's value (#420). */
   const budgetStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "gate");
+  /** `review:budget`, which counts the rounds spent against it (#331). */
+  const countStep = (): Step | undefined =>
+    stepsOf(REVIEW).find((s) => /-- agent-workflows review:budget$/.test(s.run ?? ""));
+  const handStep = (): Step | undefined => stepsOf(REVIEW).find((s) => s.id === "budget");
   const runnerStep = (): Step | undefined =>
     stepsOf(REVIEW).find((s) => (s.name ?? "") === "Run review agent");
 
@@ -1803,23 +1807,58 @@ describe("agent-review starts fix rounds itself, within the fix-round budget", (
   });
 
   /**
-   * **The comparison** is `review:gate`'s, counted from the loop's
+   * **The comparison** is `review:budget`'s, counted from the loop's
    * `agent-fix-round` statuses (#297) and executed in
-   * `tests/review/gate.test.ts`. What is held here is what it is handed and
-   * what it hands on: which token the loop writes with, from a job that never
-   * runs the agent (#316, #320), since naming a secret here, even to compare
-   * it, puts it on the agent's runner; and the answer, not the facts, to the
-   * runner, so the line it writes and the job that makes it true come from
-   * one decision.
+   * `tests/review/budget.test.ts`. What is held here is what it is handed and
+   * what it hands on: the budget the gate settled, and which token the loop
+   * writes with, from a job that never runs the agent (#316, #320), since
+   * naming a secret here, even to compare it, puts it on the agent's runner;
+   * and the answer, not the facts, to the runner, so the line it writes and
+   * the job that makes it true come from one decision.
    */
-  it("hands the gate the loop token's source, and the runner the gate's answer", () => {
-    expect(budgetStep()?.env?.["LOOP_TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
+  it("hands the count the gate's budget and the loop token's source, and the runner the count's answer", () => {
+    expect(countStep()?.env?.["FIX_ROUND_BUDGET"]).toBe("${{ steps.state.outputs.budget }}");
+    expect(countStep()?.env?.["ROUND"]).toBe("${{ steps.state.outputs.round }}");
+    expect(countStep()?.env?.["LOOP_TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
+    expect(countStep()?.env?.["OUTPUT_DIR"]).toBe("${{ runner.temp }}");
+    expect(countStep()?.if).toBe("steps.state.outputs.proceed == 'true'");
+    expect(budgetStep()?.env?.["LOOP_TOKEN_SOURCE"]).toBeUndefined();
     expect(jobNamed(REVIEW, "time-limit").outputs?.["token-source"]).toBe("${{ steps.token.outputs.source }}");
     expect(JSON.stringify(jobNamed(REVIEW, "review"))).not.toMatch(/secrets\.(AGENT_PAT|AGENT_APP_)/);
 
-    expect(runnerStep()?.env?.["AUTO_FIX"]).toBe("${{ steps.state.outputs.start }}");
-    expect(runnerStep()?.env?.["FIX_ROUNDS_SPENT"]).toBe("${{ steps.state.outputs.spent }}");
-    expect(runnerStep()?.env?.["FIX_ROUND_BUDGET"]).toBe("${{ steps.state.outputs.budget }}");
+    // `budget.json`, the count's one decision, copied into step outputs.
+    expect(COMMANDS["review:budget"].outputs).toContain("budget.json");
+    expect(handStep()?.run ?? "").toContain('"${RUNNER_TEMP}/budget.json"');
+    expect(runnerStep()?.env?.["AUTO_FIX"]).toBe("${{ steps.budget.outputs.start }}");
+    expect(runnerStep()?.env?.["FIX_ROUNDS_SPENT"]).toBe("${{ steps.budget.outputs.spent }}");
+    expect(runnerStep()?.env?.["FIX_ROUND_BUDGET"]).toBe("${{ steps.budget.outputs.budget }}");
+  });
+
+  /**
+   * **On a PRD PR the budget is the round's** (#331): which slice is current
+   * is read off the checkout's history against the base, so the count runs
+   * after the checkout and the base fetch, by the same reading the review's
+   * header scope comes from. And before the adopter's toolchain, the CI wait
+   * and the agent, so nothing of the pull request's own code has run when it
+   * decides what the runner may ask for, in a job holding no write.
+   */
+  it("counts after the checkout and the base fetch, and before the adopter's toolchain and the runner", () => {
+    const names = stepsOf(REVIEW).map((s) => s.name ?? "");
+    const at = names.indexOf(countStep()?.name ?? "");
+
+    expect(at).toBeGreaterThan(names.indexOf("Hand the gate's decisions to the job"));
+    expect(at).toBeGreaterThan(names.indexOf("Checkout PR head"));
+    expect(at).toBeGreaterThan(names.indexOf("Make the PR base available for diffing"));
+    expect(names.indexOf(handStep()?.name ?? "")).toBe(at + 1);
+    expect(at).toBeLessThan(names.indexOf("Setup Node.js"));
+    expect(at).toBeLessThan(names.indexOf("Install dependencies"));
+    expect(at).toBeLessThan(names.indexOf("Wait for other checks, collect results"));
+    expect(at).toBeLessThan(names.indexOf("Run review agent"));
+    // The job holds no write, so neither does the count.
+    for (const [scope, grant] of Object.entries(jobNamed(REVIEW, "review").permissions ?? {})) {
+      expect(grant, scope).toBe("read");
+    }
+    expect(fs.readFileSync(path.join("review", "budget.ts"), "utf8")).toContain("readPrdBranch(");
   });
 
   /**
@@ -5548,7 +5587,10 @@ describe("the one-PR-per-PRD rule is amended where it is written, not only where
     expect(trade).toMatch(/^### The trade: the slice PR is the unit of review, the PRD PR the unit of merge$/m);
     expect(trade).toMatch(/no per-slice review\s+workflow/);
     expect(trade).toMatch(/integration review/);
-    expect(trade).toMatch(/automatic-fix bound is per pull request/);
+    // Per round since #331: every slice of a PRD is a round of one PRD PR,
+    // so a per-PR budget was one every slice shared.
+    expect(trade).toMatch(/automatic-fix bound is per round/);
+    expect(trade).toMatch(/every slice round has its own, and so does the final review/);
     expect(section).toContain("Adds `agent:review` to **every** slice PR");
     expect(section).toMatch(/resumes the handover/);
   });
@@ -8881,14 +8923,14 @@ describe("the loop resolves its token in the jobs that write", () => {
 
   /**
    * `time-limit` hands the source across, and the review job reads it where
-   * the budget decides whether a round can start: `review:gate` (#420),
+   * the budget decides whether a round can start: `review:budget` (#331),
    * whose tests hold that a label the workflow token adds starts none.
    */
   it("tells the review job which token the loop writes with, and nothing else", () => {
-    const gate = (jobNamed(REVIEW, "review").steps ?? []).find((s) => s.id === "gate");
+    const count = (jobNamed(REVIEW, "review").steps ?? []).find((s) => /-- agent-workflows review:budget$/.test(s.run ?? ""));
 
     expect(jobNamed(REVIEW, "time-limit").outputs?.["token-source"]).toBe(SOURCE);
-    expect(gate?.env?.["LOOP_TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
+    expect(count?.env?.["LOOP_TOKEN_SOURCE"]).toBe("${{ needs.time-limit.outputs.token-source }}");
     expect(JSON.stringify(jobNamed(REVIEW, "time-limit"))).not.toContain("steps.token.outputs.token");
   });
 

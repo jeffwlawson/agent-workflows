@@ -946,7 +946,7 @@ jobs:
       # first write, and handed to no other.
       - name: Resolve the loop's token
         id: token
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.8.1
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.8.2
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
@@ -1300,7 +1300,7 @@ jobs:
         # collide with — verified against npm 10 and 11, both of which ignore
         # `--ignore-existing` here. `--prefix` moves the *install*, not the
         # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.1 -- agent-workflows implement-prd
+        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.2 -- agent-workflows implement-prd
 
       # The agent's own record of the session (#269), so a run can be profiled
       # and debugged from what it did and not only from the log, which shows
@@ -1546,7 +1546,7 @@ jobs:
       - name: Resolve the loop's token
         id: token
         if: always()
-        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.8.1
+        uses: jeffwlawson/agent-workflows/.github/actions/loop-token@v0.8.2
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}

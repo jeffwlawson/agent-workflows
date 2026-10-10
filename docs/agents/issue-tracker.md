@@ -186,7 +186,9 @@ from a heading (or a bold label on its own line) containing "Acceptance criteria
 comment carries one, **it replaces the issue body's list for review rather than adding to it**:
 
 - ***Where things are* sits outside the acceptance-criteria heading**, after it under its own
-  label, or the review grades file locations as if they were criteria.
+  heading, or a bold label alone on its line, or the review grades file locations as if they were
+  criteria. The date goes on the next line, not beside a bold label: a label with anything after
+  it is not read as one, so it does not end the criteria section.
 - **A brief restates every criterion it keeps from the issue body.** One it leaves out is silently
   dropped from review.
 

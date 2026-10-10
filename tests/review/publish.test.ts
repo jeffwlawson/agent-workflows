@@ -28,6 +28,7 @@ import {
 import { findingsHandOver, severityBadge, type PlacedFinding } from "../../shared/review-findings.js";
 import {
   CLOSER_LOOK,
+  readCriteriaChanges,
   REVIEW_BODY_BUDGET,
   reviewBodyHandOver,
   VERDICTS,
@@ -498,6 +499,72 @@ describe("review:publish adds agent:follow-ups only for follow-ups left after sh
     handOver(decide({ output: output({ assessment: "y".repeat(REVIEW_BODY_BUDGET) }) }));
 
     await expect(run()).rejects.toThrow(/after shedding everything it can.*so nothing was posted/);
+    expect(writes()).toEqual([]);
+  });
+});
+
+/**
+ * Where the review was handed no criteria, the runner hands over why as a
+ * choice, and publish writes the line that says it (#435): no hand-over file
+ * carries the sentence.
+ */
+describe("review:publish says why a review checked no acceptance criteria", () => {
+  const CRITERION = { id: "C1", text: "Tests cover it.", status: "met" as const };
+
+  it.each([
+    ["a linked issue with none it reads", { kind: "read", number: 376 }, "_No acceptance criteria found in #376. To have each one checked"],
+    ["no linked issue", { kind: "none" }, "_No linked issue, so there are no acceptance criteria to check._"],
+    ["a linked issue it did not read", { kind: "untrusted", number: 9 }, "_The text of #9 was not read, because of who opened it"],
+  ] as const)("posts the line for %s", async (_case, linkedIssue, line) => {
+    handOver(decide({ criteria: [], linkedIssue }));
+    expect(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")).not.toContain("acceptance criteria");
+
+    await run();
+
+    const body = posted()?.body ?? "";
+    expect(body).toContain(line);
+    expect(body).not.toContain("<summary><b>Acceptance criteria</b>");
+    expect(readCriteriaChanges(body)).toBeUndefined();
+    // The line and nothing else: the verdict and the findings are the body's without it.
+    const without = body
+      .split("\n\n")
+      .filter((part) => !part.startsWith(line))
+      .join("\n\n");
+    expect(without).toBe(renderDecided({ ...decide({ criteria: [] }).decisions, runUrl: RUN_URL }));
+  });
+
+  it("posts the criteria group, and no line, where criteria were found", async () => {
+    handOver(decide({ criteria: [CRITERION], linkedIssue: { kind: "read", number: 5 } }));
+
+    await run();
+
+    expect(posted()?.body).toContain("<summary><b>Acceptance criteria</b> (1) · 1 met</summary>");
+    expect(posted()?.body).toBe(renderDecided({ ...decide({ criteria: [CRITERION] }).decisions, runUrl: RUN_URL }));
+  });
+
+  it("posts neither on a PRD's final review, which hands over no case", async () => {
+    handOver(decide({ criteria: [] }), { header: { scope: { kind: "final" }, number: 2 } });
+    put("pr_summary.json", prSummary());
+
+    await run();
+
+    expect(posted()?.body).not.toContain("cceptance criteria");
+  });
+
+  it.each([
+    ["an unknown case", { criteriaCase: { kind: "criteria elsewhere" } }],
+    ["a case that names no issue where its line does", { criteriaCase: { kind: "none in the issue" } }],
+    ["an issue on a case whose line names none", { criteriaCase: { kind: "no linked issue", issue: 5 } }],
+    ["a sentence in place of the case", { criteriaCase: "No acceptance criteria found in #5." }],
+    ["criteria found, with none listed", { criteriaCase: { kind: "criteria found" } }],
+    ["criteria listed under a case that says there are none", { criteriaCase: { kind: "no linked issue" }, criteria: [CRITERION] }],
+    ["criteria listed with no case", { criteria: [CRITERION] }],
+  ])("refuses %s", async (_case, change) => {
+    handOver(decide({ criteria: [] }));
+    const body = JSON.parse(fs.readFileSync(path.join(dir, "review_body.json"), "utf8")) as Record<string, unknown>;
+    put("review_body.json", { ...body, ...change });
+
+    await expect(run()).rejects.toThrow(/^review's review_body\.json /);
     expect(writes()).toEqual([]);
   });
 });

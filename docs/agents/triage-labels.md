@@ -62,6 +62,10 @@ after next.) Not because automating it is hard, but because the two labels autho
 things:
 
 - `ready-for-agent` says *this issue is specified well enough that an agent could build it.*
+  That includes acceptance criteria the loop can read: under a heading (or a bold label on its
+  own line) containing "Acceptance criteria", or as `- [ ]` items in the issue body. The review
+  checks each one it finds, and criteria anywhere else, under `## Done when` say, are never
+  checked: the review only says it found none (#435).
 - `agent:implement` says *build it, now, on this repo, and open a PR.*
 
 The gap between those is a decision about when and whether, which the triage judgement does not

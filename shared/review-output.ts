@@ -1165,7 +1165,40 @@ export interface ReviewBodyHandOver {
   readonly droppedNotes: readonly DroppedNote[];
   /** The linked issue's acceptance criteria and what this review said about each (#214), from `applyCriteriaRulings`. */
   readonly criteria: readonly CriterionResult[];
+  /**
+   * Whether this review was handed criteria, and why not where it was not
+   * (#435), from `criteriaCase`: the body says so in a line where the group
+   * would be. Absent on a PRD PR's final review, which skips criteria on
+   * purpose and says nothing.
+   */
+  readonly criteriaCase?: CriteriaCase | undefined;
 }
+
+/**
+ * The linked issue as the runner read it (#435): none, its text read, or its
+ * text not read because of who opened it.
+ */
+export type LinkedIssue =
+  | { readonly kind: "none" }
+  | { readonly kind: "read"; readonly number: number }
+  | { readonly kind: "untrusted"; readonly number: number };
+
+/**
+ * Why a review was or was not handed criteria (#435): a choice, with the issue
+ * it names where it names one, so the sentence is publish's to write.
+ */
+export type CriteriaCase =
+  | { readonly kind: "criteria found" }
+  | { readonly kind: "none in the issue"; readonly issue: number }
+  | { readonly kind: "no linked issue" }
+  | { readonly kind: "untrusted issue"; readonly issue: number };
+
+/** The case the runner hands over, from the linked issue and how many criteria came out of it. */
+export const criteriaCase = (issue: LinkedIssue, criteria: number): CriteriaCase => {
+  if (criteria > 0) return { kind: "criteria found" };
+  if (issue.kind === "none") return { kind: "no linked issue" };
+  return issue.kind === "read" ? { kind: "none in the issue", issue: issue.number } : { kind: "untrusted issue", issue: issue.number };
+};
 
 /** What the runner decided, which `reviewBodyHandOver` turns into what it hands over. */
 export interface ReviewDecisions {
@@ -1211,6 +1244,12 @@ export interface ReviewDecisions {
   readonly followUpsCarried?: boolean | undefined;
   readonly droppedNotes?: readonly DroppedNote[] | undefined;
   readonly criteria?: readonly CriterionResult[] | undefined;
+  /**
+   * The linked issue as the runner read it, which with `criteria` decides the
+   * hand-over's `criteriaCase`. Absent on a PRD PR's final review, which is
+   * handed no criteria on purpose.
+   */
+  readonly linkedIssue?: LinkedIssue | undefined;
 }
 
 /**
@@ -1245,6 +1284,9 @@ export const reviewBodyHandOver = (decisions: ReviewDecisions): ReviewBodyHandOv
     followUpsCarried: decisions.followUpsCarried ?? false,
     droppedNotes: decisions.droppedNotes ?? [],
     criteria: decisions.criteria ?? [],
+    ...(decisions.linkedIssue === undefined
+      ? {}
+      : { criteriaCase: criteriaCase(decisions.linkedIssue, decisions.criteria?.length ?? 0) }),
   };
 };
 
@@ -1354,7 +1396,7 @@ const renderBody = (
       // ones it made, in the place the resolved group has (#257).
       renderGroup(UNCLOSED_GROUP.title, cut(resolved.unclosed), UNCLOSED_GROUP.open, UNCLOSED_GROUP.subtitle),
       renderGroup(RESOLVED_GROUP.title, cut(resolved.closed), RESOLVED_GROUP.open),
-      renderCriteriaGroup(parts.criteria, shed.titles),
+      renderCriteriaGroup(parts.criteria, shed.titles) ?? criteriaNote(parts.criteriaCase),
       renderFollowUpsGroup(followUps, parts.droppedFollowUps, !shed.followUpTitles, parts.followUpsCap, parts.followUpsCarried),
       renderDroppedNotesGroup(parts.droppedNotes),
       renderHowChecked(parts.howChecked),
@@ -2243,8 +2285,8 @@ const CRITERION_STATUS: readonly [CriterionResult["status"], string, string][] =
 
 /**
  * The linked issue's acceptance criteria, one line each with what the review
- * said (#214), or `undefined` where there are none, so a pull request with no
- * linked issue or no criteria gets no section.
+ * said (#214), or `undefined` where there are none, where the body says why
+ * in a line instead (#435).
  *
  * In the issue's order rather than by status, because that is the order a
  * reader holding the issue checks them in. Expanded where any is not met: a
@@ -2283,6 +2325,28 @@ export const renderCriteriaGroup = (
     "",
     "</details>",
   ].join("\n");
+};
+
+/**
+ * Where a review was handed no criteria, the line that says why (#435), in the
+ * group's place: a silent gap reads the same for an issue with none, a pull
+ * request with no issue, and criteria under a heading the loop does not read.
+ *
+ * Never opening `<summary><b>Acceptance criteria</b>`, which `readCriteriaChanges`
+ * reads back as a recorded group. The untrusted case suggests nothing to the
+ * issue's author: nothing they could write would be read.
+ */
+const criteriaNote = (found: CriteriaCase | undefined): string | undefined => {
+  switch (found?.kind) {
+    case "none in the issue":
+      return `_No acceptance criteria found in #${found.issue}. To have each one checked, put them under a heading containing "Acceptance criteria", or write them as \`- [ ]\` items in the issue body._`;
+    case "no linked issue":
+      return "_No linked issue, so there are no acceptance criteria to check._";
+    case "untrusted issue":
+      return `_The text of #${found.issue} was not read, because of who opened it, so no acceptance criteria were checked._`;
+    default:
+      return undefined;
+  }
 };
 
 /** A criterion a round's record says was not met as written: changed on purpose, or unmet. */

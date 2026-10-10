@@ -1374,6 +1374,36 @@ describe("the review context surfaces what it could not read", () => {
     expect(context.discussion).toContain("## Agent Brief");
     expect(context.discussion).not.toContain("Injected by a stranger.");
   });
+
+  /**
+   * Which of three cases the linked issue is (#435): the runner hands it over
+   * beside the criteria, so a review handed none can say why.
+   */
+  it.each([
+    ["no linked issue", "No closing line.", "OWNER", { kind: "none" }],
+    ["a linked issue it read", "Closes #5", "OWNER", { kind: "read", number: 5 }],
+    ["a linked issue an outsider opened, unread", "Closes #5", "NONE", { kind: "untrusted", number: 5 }],
+  ] as const)("says there is %s", (_case, body, association, expected) => {
+    spawned.mockImplementation(((file: string, args: readonly string[]) => {
+      if (file === "git") return "diff --git a/x b/x\n";
+      if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ title: "A PR", body });
+      if (args[0] === "api" && args[1] === "graphql") return response(pullRequest());
+      if (args[1] === "repos/o/r/issues/5")
+        return JSON.stringify({
+          title: "The issue",
+          body: "## Done when\n\n- Nothing the loop reads.",
+          author_association: association,
+          user: { login: "someone" },
+        });
+      if (args[1] === "repos/o/r/issues/5/comments") return JSON.stringify([]);
+      throw new Error(`unrecorded gh call: ${args.join(" ")}`);
+    }) as never);
+
+    const context = fetchPullRequestContext("o/r", "12", "main", ACCOUNTS);
+
+    expect(context.issueRead).toEqual(expected);
+    expect(context.criteria).toEqual([]);
+  });
 });
 
 /**

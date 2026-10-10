@@ -394,6 +394,21 @@ describe("review:publish writes every string it posts", () => {
     expect(body).toContain("_Reviewed as following a fix round, the stricter reading, because the commit statuses could not be read._");
     expect(body).toContain("<!-- agent-red-tests ");
     expect(body).toContain(`[Workflow run](${RUN_URL})`);
+    // The header's data, for `review:conclude`'s stop comment (#425).
+    expect(files.get("published.json")).toEqual({
+      reviewUrl: github.reviews[0]?.url,
+      header: { scope: { kind: "slice", k: 2, n: 3, subIssue: 41 }, number: 1 },
+    });
+  });
+
+  /** A stop is how a changes-recommended review says why it asked for no round (#425), and posts as one. */
+  it("reads a verdict.json naming the stop that kept it from asking for a round", async () => {
+    handOver(decide({ verdict: { ...VERDICTS["changes recommended"], stop: "budget spent" } }));
+    put("verdict.json", { ...(JSON.parse(fs.readFileSync(path.join(dir, "verdict.json"), "utf8")) as object), stop: "budget spent" });
+
+    await run();
+
+    expect(github.statuses.get(SHA)?.map((status) => status.context)).toEqual(["agent-review"]);
   });
 
   /**
@@ -1165,6 +1180,9 @@ describe("review:publish posts the verdict", () => {
     ["a fix round on approval", (v: Record<string, unknown>) => ({ ...v, verdict: "approval recommended" })],
     ["a fix round claimed as a string", (v: Record<string, unknown>) => ({ ...v, fixRound: "true" })],
     ["a negative open count", (v: Record<string, unknown>) => ({ ...v, open: -1 })],
+    ["an unknown stop", (v: Record<string, unknown>) => ({ ...v, fixRound: false, stop: "tired" })],
+    ["a stop beside a fix round", (v: Record<string, unknown>) => ({ ...v, stop: "budget spent" })],
+    ["a stop on approval", (v: Record<string, unknown>) => ({ ...v, verdict: "approval recommended", fixRound: false, stop: "no progress" })],
   ])("refuses a verdict.json carrying %s", async (_case, change) => {
     handOver(decide({ verdict: { ...VERDICTS["changes recommended"], startsFixRound: true } }));
     put("verdict.json", change(JSON.parse(fs.readFileSync(path.join(dir, "verdict.json"), "utf8")) as Record<string, unknown>));

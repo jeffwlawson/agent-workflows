@@ -572,7 +572,7 @@ so the diff matches GitHub's.
 | `findings.json` | The findings to open a thread for: where each goes, its severity and title, the agent's text, and whether an earlier review had read its code. |
 | `review_body.json` | What the body is written from: the verdict, the agent's assessment, the record's entries, the criteria, the follow-ups, and the data behind the header, the round note and the red tests. |
 | `thread_resolutions.json` | The earlier findings this review verified: each thread, why it closes, and the agent's note or the maintainer's reply to quote. Written on every run. |
-| `verdict.json` | The verdict's key, whether it starts a fix round, and how many findings it leaves open. |
+| `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and, on *changes recommended* with no round, which of #200's stops kept it from asking for one (`budget spent` or `no progress`), where one did. |
 | `pr_summary.json` | Signals by existing: the title, the agent's summary, whether the round is final, and the data behind the Evidence and the Merge Danger. |
 | `park.json` | On a PRD PR: the round, the findings open before this review and, once it has ruled, its verdict, why its round parks where it does, and the findings it leaves open. Written before the work, and again once the review has ruled. |
 | `progress.json` | On a PRD PR whose branch could be read: the sub-issues, the slice ranges, whether the final review is requested, the rounds so far and the findings left open, which the progress list and status line are rendered from. Written with `park.json`. |
@@ -611,8 +611,10 @@ text, and `review:publish` and `review:advance` write every final string from th
 > sets up Node, downloads the hand-over, and runs `review:publish`, which answers and resolves the verified threads, posts the
 > review, marks the pull request with `agent:follow-ups`, writes the title, the summary and the
 > status line, and posts the verdict. `review:conclude` then ends the run however it ended: the
-> refusal's note, or the error verdict and the failure comment, or the ready mark; `agent:review`
-> off; and the hand-off, `agent:review` again where the head moved, else `agent:fix` where the
+> refusal's note, or the error verdict and the failure comment, or the ready mark and, where a
+> review recommending changes asked for no round because of a stop or a count that could not be
+> read, a top-level comment saying no automatic fix round is starting, why, and the ways on;
+> `agent:review` off; and the hand-off, `agent:review` again where the head moved, else `agent:fix` where the
 > review asked for a fix round. A glue step copies its `ended.json` into the job's outputs, and the
 > job keeps both commands' write logs as one artifact. On a PRD PR an advance job follows, which
 > sets up Node, mints the loop's token, downloads the runner's park hand-over and runs
@@ -961,7 +963,7 @@ run's, and the command goes on with its URL.
 
 | Output | When it is written |
 |---|---|
-| `published.json` | The posted review's URL, `reviewUrl`, written the moment the review is posted. |
+| `published.json` | The posted review's URL, `reviewUrl`, written the moment the review is posted, and `header`, its round header's scope and number, where the review has one. |
 | `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. Not written where it wrote nothing. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
@@ -1005,7 +1007,7 @@ the ending from them. Each is one of:
   the mint, the download and publish that did not succeed: a fixed sentence for the mint and the
   download, publish's `failure_reason.txt`, or a cancel where that step was cancelled or skipped.
 - **A posted review**: `agent:blocked` off; the ready mark, unless a fix round is about to start,
-  and on a PRD PR only on the final review's approval; `agent:review` off; then, where the pull
+  and on a PRD PR only on the final review's approval; the stop comment, below; `agent:review` off; then, where the pull
   request is open and its head has moved on from `REVIEWED_SHA`, `agent:review` again with the
   loop's token, or a comment saying it was not asked for where `LOOP_TOKEN_SOURCE` is neither `app`
   nor `pat`, or nothing where another trigger label is on. Otherwise, on *changes recommended*
@@ -1013,6 +1015,19 @@ the ending from them. Each is one of:
   already on, a newer `agent-review` verdict than this review's stands on the head, or the head
   lacks this review's `agent-fix-round` status. A round that does not start where it should is said
   on the pull request, which is marked ready off a PRD PR, and the command fails.
+
+**The stop comment** (#425): on *changes recommended* with `FIX_ROUND` not `true`, a top-level
+comment saying no automatic fix round is starting, opening with the review's round header from
+`published.json` where there is one. Its reason is `STOP` where set: `no progress`, the last fix
+round closed none of the findings it was given; or `budget spent`, the automatic fix rounds are
+spent, the pull request's, or on a PRD PR the slice's or the final review's, with
+`FIX_ROUNDS_SPENT` of `FIX_ROUND_BUDGET`. With no `STOP`, a budget above 0, an empty
+`FIX_ROUNDS_SPENT` and `LOOP_TOKEN_SOURCE` `app` or `pat`, it says the rounds already spent could
+not be counted. Then the ways on: `agent:fix` for another round; reply to a finding to decline it,
+then `agent:review`; and for a spent budget, raise `AGENT_MAX_FIX_ROUNDS`. Nothing on a budget of
+0, and nothing with neither the App nor `AGENT_PAT` and no `STOP`: no automatic round was possible.
+It carries no marker. It is posted whether or not the head moved, and on a PRD PR it adds to the
+park comment `review:advance` posts on the parent.
 
 Every write but the last case's fix round is tolerated: one GitHub refuses is a warning, so a run
 that cannot comment still takes its label off. The labels a run fires on (`agent:review` again,
@@ -1042,6 +1057,9 @@ that cannot comment still takes its label off. The labels a run fires on (`agent
 | `MINT_OUTCOME` | optional | `""` | The outcome of minting `LOOP_TOKEN`: `success`, `failure`, `cancelled` or `skipped`. Empty is not run. |
 | `DOWNLOAD_OUTCOME` | optional | `""` | The same, for fetching the review's hand-over. |
 | `PUBLISH_OUTCOME` | optional | `""` | The same, for `review:publish`. |
+| `STOP` | optional | `""` | Accepts `budget spent` or `no progress`: the stop the review's verdict row records, where a review recommending changes asked for no round because of one. Empty is none. |
+| `FIX_ROUND_BUDGET` | optional | `""` | The fix-round budget `review:budget` decided from, for the stop comment. |
+| `FIX_ROUNDS_SPENT` | optional | `""` | The rounds `review:budget` counted as spent, empty where it could not count them. |
 | `PUBLISH_DIR` | directory | | `review:publish`'s `OUTPUT_DIR`. Reads `published.json` (where written) and `failure_reason.txt` (where written). |
 | `GITHUB_SERVER_URL` | optional | `""` | With the next two, the link to the run the failure comment and the error verdict name. |
 | `GITHUB_REPOSITORY` | optional | `""` | See `GITHUB_SERVER_URL`. |
@@ -1067,7 +1085,9 @@ that cannot comment still takes its label off. The labels a run fires on (`agent
 
 > **Actions orchestrator:** the posting job's step after publish, run `always()`. It is told the
 > review job's result and outputs, and the outcomes of the mint, the download and publish, and
-> reads publish's directory. `ended.json` is copied by a glue step into the job's two outputs,
+> reads publish's directory. `STOP` is the review job's `stop` output, read from `verdict.json`, and
+> `FIX_ROUND_BUDGET` and `FIX_ROUNDS_SPENT` its `fix-round-budget` and `fix-rounds-spent`, the
+> budget step's `budget` and `spent`. `ended.json` is copied by a glue step into the job's two outputs,
 > `moved` and `review-url`, which the advance job reads with the job's result. It fails only on a
 > fix round that did not start, so the job's result still means "everything posted".
 

@@ -513,15 +513,19 @@ const REVIEW_RED_CHECK_PLACE = {
  *   verdict. `BRANCH` is the pull request's head branch, which says whether
  *   it is a PRD PR, whose status line is the advance job's.
  *   `published.json` is the posted review's URL, written the moment it is
- *   posted.
+ *   posted, and its round header's data where it has one.
  * - `review:conclude` ends every run, success included: the refusal's note,
  *   the error verdict and the failure comment, the ready mark, `agent:review`
  *   off, and the hand-off after it. It is told how the review job and the
  *   posting job's steps ended (`REVIEW_RESULT`, and `MINT_OUTCOME`,
  *   `DOWNLOAD_OUTCOME` and `PUBLISH_OUTCOME`, each a step's outcome, empty
  *   where it did not run), and the review job's outputs, and reads what
- *   publish wrote through `PUBLISH_DIR`. `ended.json` is whether the head
- *   moved while the review ran, and the posted review's URL.
+ *   publish wrote through `PUBLISH_DIR`. `STOP` is which of #200's stops the
+ *   runner's verdict row records, and `FIX_ROUND_BUDGET` and
+ *   `FIX_ROUNDS_SPENT` are `review:budget`'s, the rounds spent empty where
+ *   they could not be counted: what it says no round is starting with
+ *   (#425). `ended.json` is whether the head moved while the review ran, and
+ *   the posted review's URL.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -613,6 +617,9 @@ export const COMMANDS = {
       MINT_OUTCOME: EMPTY,
       DOWNLOAD_OUTCOME: EMPTY,
       PUBLISH_OUTCOME: EMPTY,
+      STOP: { required: false, default: "", accepts: ["budget spent", "no progress"] },
+      FIX_ROUND_BUDGET: EMPTY,
+      FIX_ROUNDS_SPENT: EMPTY,
       PUBLISH_DIR: readsFromCommand("review:publish", REVIEW_PUBLISH, {
         "published.json": "sometimes",
         "failure_reason.txt": "sometimes",

@@ -159,8 +159,9 @@ export const publish = async (
     threads,
   });
   // What `review:conclude` reads after this, written the moment the review
-  // is posted, so a later failure here still leaves it.
-  io.outputs.writeJson("published.json", { reviewUrl: url });
+  // is posted, so a later failure here still leaves it: the URL, and the
+  // header's data, which its stop comment opens with (#425).
+  io.outputs.writeJson("published.json", { reviewUrl: url, ...(header === undefined ? {} : { header }) });
   console.log(`Posted the review on ${reviewed}: ${url}`);
 
   // The marker for the filing half (#47): this review recorded out-of-scope

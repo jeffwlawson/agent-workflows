@@ -4,7 +4,7 @@ import type { CommandIo } from "../shared/command-io.js";
 import { workflowRunUrl } from "../shared/common.js";
 import { COMMANDS } from "../shared/contract.js";
 import type { InputValues } from "../shared/env.js";
-import { json, matching, object, readDirectory, text } from "../shared/hand-over.js";
+import { json, matching, object, optional, readDirectory, text } from "../shared/hand-over.js";
 import { isWorkflowBot, loopAccounts, type LoopAccounts } from "../shared/loop-accounts.js";
 import {
   BLOCKED_LABEL,
@@ -15,6 +15,8 @@ import {
   UPDATE_BRANCH_LABEL,
   VERDICT_CONTEXT,
 } from "../shared/record.js";
+import { roundHeader, withHeader } from "../shared/round-header.js";
+import { roundHeaderData } from "./hand-over.js";
 
 /**
  * `review:conclude`: how every review run ends, success included (#408,
@@ -26,9 +28,11 @@ import {
  *   `agent:review` off, then `agent:blocked` where a maintainer has to act.
  * - **A run that did not finish**, the review job's or this job's: the error
  *   verdict, the failure comment, `agent:review` off, `agent:blocked`.
- * - **A review that was posted**: `agent:blocked` off, the ready mark, then
- *   `agent:review` off, and the hand-off: `agent:review` again where the head
- *   moved while the review ran, else `agent:fix` where it asked for a round.
+ * - **A review that was posted**: `agent:blocked` off, the ready mark, the
+ *   note that no automatic fix round is starting where one of #200's stops
+ *   kept it from asking (#425), then `agent:review` off, and the hand-off:
+ *   `agent:review` again where the head moved while the review ran, else
+ *   `agent:fix` where it asked for a round.
  *
  * "A failed hand-off is not a failed review" used to be step order: the error
  * verdict sat above the hand-off, so a hand-off that failed after the review
@@ -52,7 +56,7 @@ export const conclude = async (
   // what publish left: its URL where it posted, and its reason where it stopped.
   const accounts = loopAccounts(inputs.AGENT_LOOP_LOGINS);
   const published = readDirectory(COMMANDS["review:conclude"].inputs.PUBLISH_DIR, inputs.PUBLISH_DIR, {
-    "published.json": json(object({ reviewUrl: LINK })),
+    "published.json": json(object({ reviewUrl: LINK, header: optional(roundHeaderData) })),
     "failure_reason.txt": text,
   });
   const ending = endingOf(inputs, published["failure_reason.txt"]);
@@ -98,6 +102,8 @@ export const conclude = async (
   // and one that failed adds it straight back.
   await tolerated(undefined, () => workflow.removeLabel(pr, BLOCKED_LABEL));
   await markReady(inputs, pr, loop);
+  const header = published["published.json"]?.header;
+  await sayStopped(inputs, say, header === undefined ? undefined : roundHeader(header.scope, "review", header.number));
   await removeTrigger(say);
 
   const live = await readLive(io, pr);
@@ -252,6 +258,59 @@ const markReady = async (inputs: Inputs, pr: number, loop: Writer): Promise<void
   await tolerated(
     `Could not mark PR #${pr} ready for review. If neither the loop's App nor AGENT_PAT is set this is expected: GITHUB_TOKEN cannot do it. Mark it ready by hand.`,
     () => loop.markReadyForReview(pr),
+  );
+};
+
+/**
+ * **A review that stops the loop says so** (#425). The verdict line is the
+ * same whether or not a round starts (#297), so it never says that none is
+ * coming, or why; and the absence of an `agent-fix-round` status is a sign
+ * nobody reads. So where a *changes recommended* review asked for no round
+ * because of one of #200's stops, a note says which, and the ways on. On a
+ * PRD PR it adds to the park comment on the parent, which stays as it is.
+ *
+ * - **The stop the runner's row records**, taken as given: `no progress`
+ *   where both apply, since `deriveVerdict` checks it first.
+ * - **A count that could not be read**, with budget to spend and a token
+ *   that could start a round, which `review:budget` turned into no round and
+ *   a warning. Said as uncounted, never as spent.
+ *
+ * Not on a budget of 0, nor with neither the App nor `AGENT_PAT` set and no
+ * stop: neither is a stop, since no automatic round was ever possible, and
+ * the verdict line already asks for the label. Written before `agent:review`
+ * comes off, as a result, so it is said whether or not the head moved: this
+ * review started no round either way.
+ */
+const sayStopped = async (inputs: Inputs, { pr, workflow }: Say, header: string | undefined): Promise<void> => {
+  if (inputs.VERDICT !== "changes recommended" || inputs.FIX_ROUND === "true") return;
+  const budget = /^[0-9]+$/.test(inputs.FIX_ROUND_BUDGET) ? Number(inputs.FIX_ROUND_BUDGET) : undefined;
+  if (budget === 0) return;
+  const loopCanStart = inputs.LOOP_TOKEN_SOURCE === "app" || inputs.LOOP_TOKEN_SOURCE === "pat";
+
+  let why: string;
+  if (inputs.STOP === "no progress") {
+    why = "the last fix round closed none of the findings it was given";
+  } else if (inputs.STOP === "budget spent") {
+    const prd = inputs.BRANCH.startsWith(PRD_BRANCH_PREFIX);
+    // The budget is the round's on a PRD PR (#331), as the park comment says.
+    const whose = !prd ? "this pull request's" : inputs.ROUND === "final" ? "the final review's" : "this slice's";
+    const used = budget === undefined || inputs.FIX_ROUNDS_SPENT === "" ? "" : ` (${inputs.FIX_ROUNDS_SPENT} of ${budget})`;
+    why = `${whose} automatic fix rounds are spent${used}`;
+  } else if (budget !== undefined && inputs.FIX_ROUNDS_SPENT === "" && loopCanStart) {
+    why =
+      "the automatic fix rounds already spent could not be counted, so whether the budget allows another could not be told. The workflow run's log says why";
+  } else {
+    return;
+  }
+
+  const ways = [
+    `- To start another fix round anyway, add \`${FIX_LABEL}\`.`,
+    `- To decline a finding, reply to it saying why, then add \`${REVIEW_LABEL}\`.`,
+    ...(inputs.STOP === "budget spent" ? ["- To allow more automatic fix rounds, raise the repository variable `AGENT_MAX_FIX_ROUNDS`."] : []),
+  ].join("\n");
+  const note = `No automatic fix round is starting: ${why}.\n\n${ways}\n`;
+  await tolerated(`Could not say on PR #${pr} that no automatic fix round is starting.`, () =>
+    workflow.comment(pr, header === undefined ? note : withHeader(header, note)),
   );
 };
 
@@ -419,9 +478,11 @@ const tolerated = async (warning: string | undefined, write: () => Promise<unkno
  * What conclude may write, and how many of each (ADR 0005): three removals
  * (`agent:blocked`, `agent:review` and `agent:fix` before it is added), one
  * label added (`agent:blocked`, `agent:review` or `agent:fix`, never two),
- * one comment, one ready mark and one status, the error verdict.
+ * two comments (the note that a stop started no round, and the one that the
+ * head moved with no token to ask again; every other comment ends the run
+ * alone), one ready mark and one status, the error verdict.
  */
-const LIMITS: Limits = { removeLabel: 3, addLabel: 1, comment: 1, markReadyForReview: 1, setCommitStatus: 1 };
+const LIMITS: Limits = { removeLabel: 3, addLabel: 1, comment: 2, markReadyForReview: 1, setCommitStatus: 1 };
 
 const LINK = matching(/https?:\/\/[^\s<>()]+/, "a link");
 

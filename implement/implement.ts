@@ -12,6 +12,7 @@ import {
 } from "../shared/common.js";
 import { claudeAgent } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
+import { staleFailure, staleReason } from "../shared/stale.js";
 
 const INPUTS = readInputs(RUNNERS["implement"].inputs);
 const LOOP_ACCOUNTS = readLoopAccounts(INPUTS.AGENT_LOOP_LOGINS);
@@ -70,6 +71,11 @@ try {
     },
     maxIterations: 1,
   });
+
+  // Before the commit count, and whatever it finds: an agent that says the
+  // issue no longer matches the code has said no pull request should open.
+  const stale = staleReason(result.stdout);
+  if (stale !== undefined) fail(staleFailure(`issue #${ISSUE_NUMBER}`, stale));
 
   // argv, not a command string: a ref may legally contain `` ` ``, `$()`, `;`,
   // `|` and `&`, and `git()` runs `execFileSync` so this one arrives unparsed.

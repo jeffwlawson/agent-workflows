@@ -66,6 +66,9 @@ things:
   own line) containing "Acceptance criteria", or as `- [ ]` items in the issue body. The review
   checks each one it finds, and criteria anywhere else, under `## Done when` say, are never
   checked: the review only says it found none (#435).
+  A brief writes those criteria as behaviour, keeps file names in a dated *Where things are* part
+  outside that heading, and says what overlap it checked for
+  ([`issue-tracker.md`](./issue-tracker.md#before-a-brief-overlap-with-other-work)).
 - `agent:implement` says *build it, now, on this repo, and open a PR.*
 
 The gap between those is a decision about when and whether, which the triage judgement does not

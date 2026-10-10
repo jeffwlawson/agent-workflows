@@ -13,6 +13,7 @@ import {
 } from "../shared/common.js";
 import { claudeAgent } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
+import { staleFailure, staleReason } from "../shared/stale.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
 import { ignoredNote, resumeFromRescue, resumeSection } from "../shared/rescue.js";
 import { renderPrdStatus, renderProgressList, statusBlock, type ProgressInputs } from "../shared/progress-list.js";
@@ -193,6 +194,10 @@ try {
     },
     maxIterations: 1,
   });
+
+  // Before the commit count, and whatever it finds; see implement.ts.
+  const stale = staleReason(result.stdout);
+  if (stale !== undefined) fail(staleFailure(`sub-issue #${SUB_NUMBER}`, stale));
 
   const commitsAhead = Number(git(["rev-list", "--count", `${before}..HEAD`]).trim());
   if (!Number.isFinite(commitsAhead) || commitsAhead === 0) {

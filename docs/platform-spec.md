@@ -439,7 +439,8 @@ Trigger label: `agent:implement`, on an issue with no sub-issues. `doctor` check
 exists.
 
 Builds one issue as commits on a new branch from the default branch, and fails where the agent
-made none. Preconditions: the default
+made none. It fails with the agent's reason, whether or not it made commits, where the agent
+reports that the issue no longer matches the code. Preconditions: the default
 branch checked out, at `BASE_REF`, and a new branch named `BRANCH` created from it and checked out.
 
 ### Inputs
@@ -479,7 +480,9 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 Trigger label: `agent:implement`, on an issue with sub-issues: a PRD parent. `doctor` checks that
 the label exists.
 
-Builds the next sub-issue as commits on the PRD branch. Preconditions: the PRD branch checked out
+Builds the next sub-issue as commits on the PRD branch, and fails where the agent made none. It
+fails with the agent's reason, whether or not it made commits, where the agent reports that the
+sub-issue no longer matches the code. Preconditions: the PRD branch checked out
 as `BRANCH`, at the remote's tip, or created from `BASE_REF` on the first slice; and, where an
 earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 `refs/rescue/<RESCUE_BRANCH>` for the runner to resume from.

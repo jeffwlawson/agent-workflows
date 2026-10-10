@@ -45,6 +45,16 @@ the summary you write counts as part of the body.
 A criterion you say nothing about is listed as *not checked* on the review, where a reader sees the
 gap, so rule on all of them.
 
+**A criterion can name a place the code has since left.** An issue waits before it is built, and
+the files, functions, steps and inputs it names can move in that time. The agent that built this
+change was told to check them first, and to name each move it found in the message of the commit
+that does the work: where the issue said the thing was, and where it was found. Those messages are
+not in this brief, so read them with `git log` over the commits under review (the ones on the pull
+request's branch that are not on its base). Where one names a move, read a criterion that names the
+old place against the new one, but **only once the code confirms it**: the thing is at the new
+place, and the old one is gone. A note the code does not confirm is not evidence, and the criterion
+is ruled as written.
+
 # EXISTING FEEDBACK
 
 Feedback already on this PR: earlier review summaries, unresolved inline threads (replies

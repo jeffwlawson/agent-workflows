@@ -468,7 +468,7 @@ body against the live body, post a review, reply to a thread and resolve it), ne
 loop means. The loop passes in its own strings, and splices its markers with the engine's helper.
 The writer enforces a count limit per type set by each command, throws on the first failure
 without latching, and keeps a **write log**: one line per write as it lands, and a last line for
-how the command ended, appended to one of the command's declared outputs. A command is handed two
+how the command ended, appended to one of the command's declared outputs. It reads cleanly on the normal path: a refusal a write accepts, such as a label not there to remove, is an expected result, and GitHub's raw answer is kept only on a write that failed. A command is handed two
 writers, one per token, sharing the log and the limits. The agent's text reaches a command already cleaned, and the loop adds its markers after
 that. A job's package code is one command per stretch between steps only Actions can take, plus an
 `always()` command where the job has a failure path.

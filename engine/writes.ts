@@ -5,7 +5,13 @@
  */
 import { GitHubError, type Transport } from "./github.js";
 import { toPullRequest, type RawPullRequest } from "./read.js";
-import type { Backend, Call } from "./writer.js";
+import type { Backend, Call, Tolerated } from "./writer.js";
+
+/** A label that is not there to remove: the write is already done. */
+const LABEL_ABSENT: Tolerated = {
+  when: (error) => error instanceof GitHubError && error.status === 404,
+  reason: "label not present",
+};
 
 export const ADD_REVIEW = `mutation($input:AddPullRequestReviewInput!){
   addPullRequestReview(input:$input){pullRequestReview{url}}
@@ -37,10 +43,15 @@ export const githubWrites = (repo: string, transport: Transport): Backend => {
     },
     removeLabel: async (call, number, label) => {
       try {
-        await call("DELETE label", () => transport.rest({ method: "DELETE", path: `${issue(number)}/labels/${encodeURIComponent(label)}` }));
+        await call(
+          "DELETE label",
+          () => transport.rest({ method: "DELETE", path: `${issue(number)}/labels/${encodeURIComponent(label)}` }),
+          "write",
+          LABEL_ABSENT,
+        );
         return { outcome: "applied" };
       } catch (error) {
-        if (error instanceof GitHubError && error.status === 404) return { outcome: "unchanged" };
+        if (LABEL_ABSENT.when(error)) return { outcome: "unchanged" };
         throw error;
       }
     },

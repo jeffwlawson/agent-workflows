@@ -210,11 +210,14 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
   const attempt = <T>(type: WriteType, call: string, apply: () => T): T => {
     const failure = github.fails({ token, type }, call);
     if (failure === false) return apply();
-    if (failure === true) throw new GitHubError(`${call}: 422 refused by the fake`, 422);
+    const raw = (message: string): string => JSON.stringify({ message, documentation_url: "https://docs.github.com/rest" });
+    if (failure === true) {
+      throw new GitHubError(`${call}: 422 ${raw("refused by the fake")}`, 422, { reason: "refused by the fake", raw: raw("refused by the fake") });
+    }
     if (failure.landed) apply();
     throw failure.status === undefined
-      ? new GitHubError(`${call}: An internal error occurred, by the fake`)
-      : new GitHubError(`${call}: ${failure.status} by the fake`, failure.status);
+      ? new GitHubError(`${call}: An internal error occurred, by the fake`, undefined, { reason: "An internal error occurred, by the fake" })
+      : new GitHubError(`${call}: ${failure.status} ${raw("by the fake")}`, failure.status, { reason: "by the fake", raw: raw("by the fake") });
   };
   const check = (type: WriteType, call: string): void => attempt(type, call, () => undefined);
   const threadOf = (threadId: string) => {

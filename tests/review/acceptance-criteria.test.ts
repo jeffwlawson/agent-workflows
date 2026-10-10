@@ -10,6 +10,8 @@ import { placeFindings } from "../../shared/review-findings.js";
 import {
   countFixBeforeMerge,
   deriveVerdict,
+  readCriteriaChanges,
+  reviewBodyHandOver,
   reviewOutputSchema,
   VERDICTS,
   type ReviewOutput,
@@ -340,9 +342,90 @@ describe("the body's acceptance criteria section", () => {
     expect(body).toContain("<details>\n<summary><b>Acceptance criteria</b> (1) · 1 met</summary>");
   });
 
-  it("is omitted where the linked issue has no criteria", () => {
+  it("is omitted where the runner says nothing about the linked issue", () => {
     expect(renderDecided({ ...parts, criteria: [] })).not.toContain("Acceptance criteria");
     expect(renderDecided(parts)).not.toContain("Acceptance criteria");
+  });
+});
+
+/**
+ * Where a review was handed no criteria, the body says why in one line, in the
+ * group's place (#435). #376 had its criteria under `## Done when`, and its PR
+ * was approved twice with none checked and nothing saying so: from the body,
+ * an issue with none, a PR with no issue and an issue the loop did not read
+ * all looked the same.
+ */
+describe("the line a review handed no criteria carries", () => {
+  const parts = {
+    verdict: VERDICTS["approval recommended"],
+    output: { findings: [], followUps: [], verified: [] },
+    placed: [],
+    movedToFollowUps: 0,
+    stillOpen: [],
+    resolved: [],
+    followUps: [],
+    droppedFollowUps: 0,
+    runUrl: "https://example.test/run",
+  };
+  const NONE_IN_THE_ISSUE =
+    '_No acceptance criteria found in #376. To have each one checked, put them under a heading containing "Acceptance criteria", or write them as `- [ ]` items in the issue body._';
+  const NO_LINKED_ISSUE = "_No linked issue, so there are no acceptance criteria to check._";
+  const UNTRUSTED = "_The text of #9 was not read, because of who opened it, so no acceptance criteria were checked._";
+
+  it.each([
+    ["the linked issue was read and yields none", { kind: "read", number: 376 }, { kind: "none in the issue", issue: 376 }],
+    ["there is no linked issue", { kind: "none" }, { kind: "no linked issue" }],
+    ["the linked issue was not read for who opened it", { kind: "untrusted", number: 9 }, { kind: "untrusted issue", issue: 9 }],
+  ] as const)("is handed over as its case where %s", (_case, linkedIssue, expected) => {
+    expect(reviewBodyHandOver({ ...parts, criteria: [], linkedIssue }).criteriaCase).toEqual(expected);
+  });
+
+  it("is handed over as criteria found wherever criteria were, whatever the issue", () => {
+    const criteria = [{ id: "C1", text: "Tests cover it.", status: "met" as const }];
+    expect(reviewBodyHandOver({ ...parts, criteria, linkedIssue: { kind: "read", number: 5 } }).criteriaCase).toEqual({
+      kind: "criteria found",
+    });
+  });
+
+  it("is handed over as no case at all on a PRD's final review, which is handed no linked issue", () => {
+    expect(reviewBodyHandOver({ ...parts, criteria: [] })).not.toHaveProperty("criteriaCase");
+  });
+
+  it.each([
+    ["names the issue and both ways to make its criteria checkable", { kind: "read", number: 376 }, NONE_IN_THE_ISSUE],
+    ["says there was no linked issue", { kind: "none" }, NO_LINKED_ISSUE],
+    ["says only that the issue was not read for who opened it", { kind: "untrusted", number: 9 }, UNTRUSTED],
+  ] as const)("%s, where the group would be", (_case, linkedIssue, line) => {
+    const body = renderDecided({ ...parts, criteria: [], linkedIssue });
+
+    expect(body.split("\n\n")).toContain(line);
+    expect(body).not.toContain("<summary><b>Acceptance criteria</b>");
+    expect(body.indexOf(line)).toBeLessThan(body.indexOf("Workflow run"));
+    // A note is not a recorded group: the final review reads none back from it.
+    expect(readCriteriaChanges(body)).toBeUndefined();
+    // Nor a finding, nor a change to the verdict.
+    expect(body).toContain("Approval recommended");
+    expect(body).not.toContain("<summary><b>Open</b>");
+  });
+
+  it("suggests nothing an untrusted issue's author could do to be read", () => {
+    expect(UNTRUSTED).not.toMatch(/heading|- \[ \]|put them/);
+  });
+
+  it("is not there where criteria were found, which render as they did", () => {
+    const criteria = [{ id: "C1", text: "Tests cover it.", status: "met" as const }];
+    const body = renderDecided({ ...parts, criteria, linkedIssue: { kind: "read", number: 5 } });
+
+    expect(body).toBe(renderDecided({ ...parts, criteria }));
+    expect(body).toContain("<summary><b>Acceptance criteria</b> (1) · 1 met</summary>");
+    expect(body).not.toContain("No acceptance criteria");
+  });
+
+  it("is not there on a PRD's final review", () => {
+    const body = renderDecided({ ...parts, criteria: [] });
+
+    expect(body).not.toContain("acceptance criteria");
+    expect(body).not.toContain("Acceptance criteria");
   });
 });
 

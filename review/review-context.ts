@@ -13,6 +13,7 @@ import {
 import { keyedByChangedFiles, parseDiffLines } from "../shared/diff-lines.js";
 import type { LoopAccounts } from "../shared/loop-accounts.js";
 import type { PostedNote } from "../shared/fix-notes.js";
+import type { LinkedIssue } from "../shared/review-output.js";
 import {
   carriedFindings,
   type CarriedFinding,
@@ -32,6 +33,8 @@ export interface PullRequestContext {
   readonly issueNumber: string;
   readonly issueTitle: string;
   readonly linkedIssue: string;
+  /** Whether there is a linked issue, and whether its text was read (#435): the case its criteria's absence is. */
+  readonly issueRead: LinkedIssue;
   /**
    * The linked issue's acceptance criteria, as `extractCriteria` reads them
    * off its body and its trusted comments, where triage posts its brief (#214). Empty where there is no linked issue, where its
@@ -120,20 +123,23 @@ export const fetchPullRequestContext = (
   let issueTitle = "";
   let linkedIssue = "(no linked issue found)";
   let criteria: string[] = [];
+  let issueRead: LinkedIssue = { kind: "none" };
   // Read once, for both the discussion below and the criteria: triage posts
   // its brief, and with it the criteria the work was scoped to, as a comment
   // on the issue rather than into its body (#214).
   const trustedIssueComments = issueNumber ? fetchTrustedCommentList(ghRepo, issueNumber, accounts) : [];
   if (issueNumber) {
-    const issue = fetchTrustedIssue(ghRepo, issueNumber, accounts);
-    if (issue.trusted) {
-      issueTitle = issue.title;
-      linkedIssue = issue.body || "(linked issue has no description)";
+    const fetched = fetchTrustedIssue(ghRepo, issueNumber, accounts);
+    if (fetched.trusted) {
+      issueRead = { kind: "read", number: Number(issueNumber) };
+      issueTitle = fetched.title;
+      linkedIssue = fetched.body || "(linked issue has no description)";
       criteria = extractCriteria(
-        issue.body,
+        fetched.body,
         trustedIssueComments.map((comment) => comment.body),
       );
     } else {
+      issueRead = { kind: "untrusted", number: Number(issueNumber) };
       linkedIssue = `(linked issue #${issueNumber} was opened by a non-collaborator; its text is omitted so world-writable input never reaches the agent)`;
     }
   }
@@ -180,6 +186,7 @@ export const fetchPullRequestContext = (
     issueNumber,
     issueTitle,
     linkedIssue,
+    issueRead,
     criteria,
     discussion,
     unreadableFeedback: feedback.unreadable,

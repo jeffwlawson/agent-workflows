@@ -7,7 +7,7 @@
  * | File | Holds |
  * |---|---|
  * | `findings.json` | One entry per finding to post: id, placement, severity, title, the agent's text, path, line, and whether it was previously missed |
- * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results, follow-ups and their cap, red-test results, and the data behind the header and the round note |
+ * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results and why there are none, follow-ups and their cap, red-test results, and the data behind the header and the round note |
  * | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note or the maintainer's reply to quote |
  * | `pr_summary.json` | The title, the agent's summary, whether the round is final, and the data behind Evidence and merge danger. Written only where this review rewrites them |
  * | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and which stop kept it from starting one |
@@ -39,7 +39,7 @@ import type { ProgressInputs } from "../shared/progress-list.js";
 import type { SliceRanges } from "../shared/slice-ranges.js";
 import type { EvidenceCheck, RedTestsRecord, SliceRedTests } from "../shared/red-check.js";
 import type { HandedFinding } from "../shared/review-findings.js";
-import type { CiResult, CloserLookCause, ReviewBodyHandOver, TestSketch, Verdict } from "../shared/review-output.js";
+import type { CiResult, CloserLookCause, CriteriaCase, ReviewBodyHandOver, TestSketch, Verdict } from "../shared/review-output.js";
 import type { ThreadResolution } from "../shared/review-verification.js";
 import type { RoundCount, RoundCounts, RoundScope } from "../shared/round-header.js";
 
@@ -233,6 +233,20 @@ const entry = {
 const followUp = object({ title: text, location: text, body: text, severity: SEVERITY, id: optional(ID) });
 
 /**
+ * Why the review was or was not handed criteria (#435): a choice, and the
+ * issue the note names where it names one. Never a sentence: publish writes it.
+ */
+const criteriaCase = refine(
+  object({ kind: choice(["criteria found", "none in the issue", "no linked issue", "untrusted issue"]), issue: optional(ISSUE) }),
+  ({ kind, issue }, wrong): CriteriaCase => {
+    if (kind === "none in the issue" || kind === "untrusted issue") {
+      return issue === undefined ? wrong(`is ${kind}, and names no issue`) : { kind, issue };
+    }
+    return issue === undefined ? { kind } : wrong(`is ${kind}, and names an issue`);
+  },
+);
+
+/**
  * A round header's data, the scope and the number: read from `review_body.json`
  * by publish, and from publish's `published.json` by `review:conclude`, which
  * opens its stop comment with the same header the review opened with (#425).
@@ -413,29 +427,42 @@ export const handOverParsers = (known: Known) => {
   return {
     "findings.json": json(list(finding, { max: MAX_FINDINGS })),
     "review_body.json": json(
-      object({
-        verdict: VERDICT,
-        cause: optional(choice(["needs you", "red", "unknown"])),
-        assessment: optional(text),
-        needsYou: optional(text),
-        howChecked: optional(text),
-        open: list(object(entry), { max: MAX_ENTRIES }),
-        missed: list(object(entry), { max: MAX_ENTRIES }),
-        resolved: list(object({ ...entry, threadId: thread }), { max: MAX_ENTRIES }),
-        movedToFollowUps: NUMBER,
-        followUps: list(followUp, { max: MAX_FOLLOW_UPS }),
-        droppedFollowUps: NUMBER,
-        followUpsCap: NUMBER,
-        followUpsCarried: YES_NO,
-        droppedNotes: list(object({ title: text, reason: text, url: optional(LINK) }), { max: MAX_ENTRIES }),
-        criteria: list(
-          object({ id: CRITERION_ID, text, status: choice(["met", "changed", "unmet", "unchecked"]), reason: optional(text) }),
-          { max: MAX_ENTRIES },
-        ),
-        header: optional(roundHeaderData),
-        historyUnreadable: optional(text),
-        redTests: optional(redTestsRecord),
-      }),
+      refine(
+        object({
+          verdict: VERDICT,
+          cause: optional(choice(["needs you", "red", "unknown"])),
+          assessment: optional(text),
+          needsYou: optional(text),
+          howChecked: optional(text),
+          open: list(object(entry), { max: MAX_ENTRIES }),
+          missed: list(object(entry), { max: MAX_ENTRIES }),
+          resolved: list(object({ ...entry, threadId: thread }), { max: MAX_ENTRIES }),
+          movedToFollowUps: NUMBER,
+          followUps: list(followUp, { max: MAX_FOLLOW_UPS }),
+          droppedFollowUps: NUMBER,
+          followUpsCap: NUMBER,
+          followUpsCarried: YES_NO,
+          droppedNotes: list(object({ title: text, reason: text, url: optional(LINK) }), { max: MAX_ENTRIES }),
+          criteria: list(
+            object({ id: CRITERION_ID, text, status: choice(["met", "changed", "unmet", "unchecked"]), reason: optional(text) }),
+            { max: MAX_ENTRIES },
+          ),
+          header: optional(roundHeaderData),
+          historyUnreadable: optional(text),
+          redTests: optional(redTestsRecord),
+          criteriaCase: optional(criteriaCase),
+        }),
+        ({ criteriaCase, ...body }, wrong): ReviewBody => {
+          if ((criteriaCase?.kind === "criteria found") !== body.criteria.length > 0) {
+            return wrong(
+              body.criteria.length > 0
+                ? `lists criteria, and says ${criteriaCase === undefined ? "nothing" : JSON.stringify(criteriaCase.kind)} about them`
+                : "says criteria were found, and lists none",
+            );
+          }
+          return { ...body, ...(criteriaCase === undefined ? {} : { criteriaCase }) };
+        },
+      ),
     ),
     "thread_resolutions.json": json(list(resolution, { max: MAX_RESOLUTIONS })),
     "pr_summary.json": json(prSummary),

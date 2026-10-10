@@ -598,6 +598,8 @@ try {
       followUpsCarried,
       droppedNotes: notes.dropped,
       criteria: criteriaRulings.results,
+      // The final review skips criteria on purpose, and says nothing about it.
+      ...(round?.kind === "final" ? {} : { linkedIssue: context.issueRead }),
     }),
     ...(header === undefined ? {} : { header }),
     ...(history.unreadable === undefined ? {} : { historyUnreadable: history.unreadable }),

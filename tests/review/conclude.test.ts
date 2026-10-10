@@ -54,7 +54,8 @@ afterEach(() => {
 });
 
 /** What publish wrote, as it writes it: `published.json` the moment the review is posted. */
-const publishedReview = (url = REVIEW_URL): void => fs.writeFileSync(path.join(dir, "published.json"), JSON.stringify({ reviewUrl: url }));
+const publishedReview = (url = REVIEW_URL, header?: unknown): void =>
+  fs.writeFileSync(path.join(dir, "published.json"), JSON.stringify({ reviewUrl: url, ...(header === undefined ? {} : { header }) }));
 const publishFailed = (reason: string): void => fs.writeFileSync(path.join(dir, "failure_reason.txt"), reason);
 
 /** The statuses publish posted on the reviewed commit, as the loop's account, newest first. */
@@ -94,6 +95,9 @@ const INPUTS = (over: Partial<Inputs> = {}): Inputs => ({
   MINT_OUTCOME: "success",
   DOWNLOAD_OUTCOME: "success",
   PUBLISH_OUTCOME: "success",
+  STOP: "",
+  FIX_ROUND_BUDGET: "3",
+  FIX_ROUNDS_SPENT: "0",
   PUBLISH_DIR: dir,
   GITHUB_SERVER_URL: "https://github.com",
   GITHUB_REPOSITORY: "o/r",
@@ -693,6 +697,134 @@ describe("review:conclude starts the automatic fix round", () => {
   });
 });
 
+describe("review:conclude says on the pull request when a review stops without a fix round", () => {
+  /** The ways on every stop gives, and the one a spent budget adds. */
+  const WAYS_ON = [
+    "- To start another fix round anyway, add `agent:fix`.",
+    "- To decline a finding, reply to it saying why, then add `agent:review`.",
+  ].join("\n");
+  const RAISE = "- To allow more automatic fix rounds, raise the repository variable `AGENT_MAX_FIX_ROUNDS`.";
+  const CHANGES = { VERDICT: "changes recommended", FIX_ROUND: "false" } as const satisfies Partial<Inputs>;
+
+  beforeEach(() => publishedReview(REVIEW_URL, { scope: { kind: "regular" }, number: 4 }));
+
+  /**
+   * #200's two stops (#425): the verdict line is the same whether or not a
+   * round starts (#297), so the stop is said beside it, opening with the
+   * round header, and before `agent:review` comes off: it is a result.
+   */
+  it("names a spent budget, the rounds spent and the budget, and the ways on, before its label comes off", async () => {
+    await run(INPUTS({ ...CHANGES, STOP: "budget spent", FIX_ROUNDS_SPENT: "3", FIX_ROUND_BUDGET: "3" }));
+
+    expect(comments()).toEqual([
+      `**Review 4**\n\nNo automatic fix round is starting: this pull request's automatic fix rounds are spent (3 of 3).\n\n${WAYS_ON}\n${RAISE}\n`,
+    ]);
+    expect(writes()).toEqual([
+      "workflow removeLabel agent:blocked",
+      "loop markReadyForReview",
+      "workflow comment",
+      "workflow removeLabel agent:review",
+    ]);
+  });
+
+  it("names a fix round that made no progress, and the ways on, with no word of the budget", async () => {
+    await run(INPUTS({ ...CHANGES, STOP: "no progress", FIX_ROUNDS_SPENT: "1" }));
+
+    expect(comments()).toEqual([
+      `**Review 4**\n\nNo automatic fix round is starting: the last fix round closed none of the findings it was given.\n\n${WAYS_ON}\n`,
+    ]);
+  });
+
+  /** `deriveVerdict` checks no progress first, and conclude takes the row's stop as given. */
+  it("names no progress where both stops apply", async () => {
+    await run(INPUTS({ ...CHANGES, STOP: "no progress", FIX_ROUNDS_SPENT: "3", FIX_ROUND_BUDGET: "3" }));
+
+    expect(comments()).toHaveLength(1);
+    expect(comments()[0]).toContain("the last fix round closed none of the findings it was given");
+    expect(comments()[0]).not.toContain("3 of 3");
+  });
+
+  /** A count that could not be read is no round started (`review:budget`), never a spent budget. */
+  it("says the rounds could not be counted, rather than that the budget is spent", async () => {
+    await run(INPUTS({ ...CHANGES, FIX_ROUNDS_SPENT: "" }));
+
+    expect(comments()).toEqual([
+      `**Review 4**\n\nNo automatic fix round is starting: the automatic fix rounds already spent could not be counted, so whether the budget allows another could not be told. The workflow run's log says why.\n\n${WAYS_ON}\n`,
+    ]);
+  });
+
+  /** On a PRD PR the budget is the round's (#331), as the park comment words it, which this adds to. */
+  it.each([
+    ["slice", { kind: "slice", k: 2, n: 3, subIssue: 12 }, "**Slice 2 of 3 · #12 · review 1**", "this slice's"],
+    ["final", { kind: "final" }, "**Final review · review 1**", "the final review's"],
+  ] as const)("names a PRD PR's %s round's budget, under its header", async (ROUND, scope, header, whose) => {
+    publishedReview(REVIEW_URL, { scope, number: 1 });
+
+    await run(INPUTS({ ...CHANGES, BRANCH: "agent/prd-14-a-prd", ROUND, STOP: "budget spent", FIX_ROUNDS_SPENT: "2", FIX_ROUND_BUDGET: "2" }));
+
+    expect(comments()[0]).toMatch(new RegExp(`^${header.replace(/[*.]/g, "\\$&")}\n\nNo automatic fix round is starting: ${whose} automatic fix rounds are spent \\(2 of 2\\)\\.`));
+  });
+
+  it("still says it where no header was handed over", async () => {
+    publishedReview();
+
+    await run(INPUTS({ ...CHANGES, STOP: "no progress" }));
+
+    expect(comments()).toEqual([`No automatic fix round is starting: the last fix round closed none of the findings it was given.\n\n${WAYS_ON}\n`]);
+  });
+
+  it("says it whether or not the head moved, beside the moved comment", async () => {
+    Object.assign(github.pullRequests.get(PR) ?? {}, { headSha: PUSHED });
+
+    await run(INPUTS({ ...CHANGES, STOP: "budget spent", FIX_ROUNDS_SPENT: "3", LOOP_TOKEN_SOURCE: "workflow" }));
+
+    expect(comments()).toHaveLength(2);
+    expect(comments()[0]).toContain("automatic fix rounds are spent (3 of 3)");
+    expect(comments()[1]).toContain(PUSHED);
+  });
+
+  /** Neither is a stop: no automatic round was ever possible, and the verdict line asks for the label. */
+  it.each([
+    ["an automatic fix round starts", { ...FIX_ROUND }],
+    ["the review approves", { VERDICT: "approval recommended" }],
+    ["the review needs a closer look", { VERDICT: "needs a closer look", FIX_ROUNDS_SPENT: "" }],
+    ["changes are recommended with budget to spare", { ...CHANGES }],
+    ["the budget is 0", { ...CHANGES, FIX_ROUND_BUDGET: "0", FIX_ROUNDS_SPENT: "0" }],
+    ["the budget is 0 and nothing was counted", { ...CHANGES, FIX_ROUND_BUDGET: "0", FIX_ROUNDS_SPENT: "" }],
+    ["neither the App nor the PAT is set", { ...CHANGES, LOOP_TOKEN_SOURCE: "workflow" }],
+    ["neither is set and nothing was counted", { ...CHANGES, LOOP_TOKEN_SOURCE: "workflow", FIX_ROUNDS_SPENT: "" }],
+  ] as const)("says nothing where %s", async (_case, over) => {
+    verdictPosted();
+
+    await run(INPUTS(over));
+
+    expect(github.comments).toEqual([]);
+  });
+
+  it("says nothing on a review that did not finish", async () => {
+    await run(INPUTS(reviewEnded("failure", { STOP: "budget spent", FIX_ROUNDS_SPENT: "3" })));
+
+    expect(comments().filter((body) => body.includes("No automatic fix round"))).toEqual([]);
+  });
+
+  it("warns, and still takes its label off, where the comment cannot be posted", async () => {
+    github.fails = (write) => write.type === "comment";
+
+    await run(INPUTS({ ...CHANGES, STOP: "no progress" }));
+
+    expect(logged).toContain("::warning::Could not say on PR #7 that no automatic fix round is starting.");
+    expect(labels()).toEqual([]);
+    expect(logLines().at(-1)).toMatchObject({ ended: "finished" });
+  });
+
+  it("refuses a header it cannot read, before its first write", async () => {
+    publishedReview(REVIEW_URL, { scope: { kind: "slice" }, number: 1 });
+
+    await expect(run(INPUTS({ ...CHANGES, STOP: "no progress" }))).rejects.toThrow(/published\.json `header`/);
+    expect(writes()).toEqual([]);
+  });
+});
+
 describe("review:conclude's writes are its own", () => {
   it("asks for its writers once, limited to the writes it makes", async () => {
     let asked = 0;
@@ -712,7 +844,7 @@ describe("review:conclude's writes are its own", () => {
     await conclude(INPUTS(), io);
 
     expect(asked).toBe(1);
-    expect(limits).toEqual({ removeLabel: 3, addLabel: 1, comment: 1, markReadyForReview: 1, setCommitStatus: 1 });
+    expect(limits).toEqual({ removeLabel: 3, addLabel: 1, comment: 2, markReadyForReview: 1, setCommitStatus: 1 });
   });
 
   it("keeps a log line per write, and a last line for how it ended", async () => {

@@ -425,6 +425,14 @@ jobs:
       # hand-off selects on. See *Hand the verdict to what reads it*.
       verdict: ${{ steps.verdict.outputs.verdict }}
       fix-round: ${{ steps.verdict.outputs.fix-round }}
+      # Where a review that recommends changes asked for no round, which of
+      # #200's stops kept it from asking, empty where none did; and the budget
+      # and the rounds spent the count decided from, the rounds empty where
+      # they could not be counted. What `review:conclude` says no round is
+      # starting with (#425).
+      stop: ${{ steps.verdict.outputs.stop }}
+      fix-round-budget: ${{ steps.budget.outputs.budget }}
+      fix-rounds-spent: ${{ steps.budget.outputs.spent }}
       # On a PRD PR, `slice` or `final`, which the ready mark and the advance
       # job select on. See *Settle what this run reviews*.
       round: ${{ steps.state.outputs.round }}
@@ -943,7 +951,9 @@ jobs:
       # **key**, not the heading or the line, so no rewording moves a selector.
       # And `fix-round`, whether the review asked for an automatic fix round:
       # the row's line is the same whether or not one starts (#297), so the
-      # file says it separately, and the automatic fix selects on this.
+      # file says it separately, and the automatic fix selects on this. And
+      # `stop`, the stop that kept it from asking for one, where one did,
+      # which `review:conclude` says on the pull request (#425).
       #
       # An output as well as a file in the artifact, because the posting job's
       # step `if:`s read it, and a step `if:` can read `needs` but not a file.
@@ -955,7 +965,7 @@ jobs:
         run: |
           file="${RUNNER_TEMP}/verdict.json"
           [ -f "$file" ] || { echo "No verdict file; nothing to hand over."; exit 0; }
-          jq -r '"verdict=\(.verdict)", "fix-round=\(.fixRound)"' "$file" >> "$GITHUB_OUTPUT"
+          jq -r '"verdict=\(.verdict)", "fix-round=\(.fixRound)", "stop=\(.stop // "")"' "$file" >> "$GITHUB_OUTPUT"
 
       # Everything the runner wrote for posting, handed to the posting job
       # (#257): what `review:publish` reads, exactly the files its `REVIEW_DIR`
@@ -1317,7 +1327,9 @@ jobs:
 
       # Steps 5 to 7, and every other ending (#419): the refusal's note, or
       # the error verdict and the failure comment, or the block off and the
-      # ready mark; then `agent:review` off, however the run ended (#236), so
+      # ready mark, and the note that no automatic fix round is starting where
+      # one of #200's stops kept the review from asking for one (#425); then
+      # `agent:review` off, however the run ended (#236), so
       # it never outlives the run; then the hand-off, `agent:review` again
       # where the head moved while the review ran, else `agent:fix` where the
       # review asked for a round. `review/conclude.ts` says why each is as it
@@ -1359,6 +1371,9 @@ jobs:
           MINT_OUTCOME: ${{ steps.token.outcome }}
           DOWNLOAD_OUTCOME: ${{ steps.fetch.outcome }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          STOP: ${{ needs.review.outputs.stop }}
+          FIX_ROUND_BUDGET: ${{ needs.review.outputs.fix-round-budget }}
+          FIX_ROUNDS_SPENT: ${{ needs.review.outputs.fix-rounds-spent }}
         run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.0 -- agent-workflows review:conclude
 
       # Glue only Actions can do (ADR 0003): what conclude reports, copied into

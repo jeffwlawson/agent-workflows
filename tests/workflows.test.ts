@@ -2822,7 +2822,18 @@ describe("the review posts last, from one job", () => {
       REFUSAL_REASON: "${{ needs.review.outputs.refusal-reason }}",
       TIMED_OUT: "${{ needs.review.outputs.timed-out }}",
       TIMEOUT_MINUTES: "${{ needs.time-limit.outputs.minutes }}",
+      STOP: "${{ needs.review.outputs.stop }}",
+      FIX_ROUND_BUDGET: "${{ needs.review.outputs.fix-round-budget }}",
+      FIX_ROUNDS_SPENT: "${{ needs.review.outputs.fix-rounds-spent }}",
     });
+    // What the stop comment is said with (#425): the runner's stop, out of
+    // `verdict.json`, and the budget step's own count, never the runner's.
+    expect(jobNamed(REVIEW, "review").outputs).toMatchObject({
+      stop: "${{ steps.verdict.outputs.stop }}",
+      "fix-round-budget": "${{ steps.budget.outputs.budget }}",
+      "fix-rounds-spent": "${{ steps.budget.outputs.spent }}",
+    });
+    expect(stepsOf(REVIEW).find((s) => s.name === "Hand the verdict to what reads it")?.run ?? "").toContain('"stop=\\(.stop // "")"');
     expect(steps.map((s) => s.id)).toContain("token");
     expect(steps.map((s) => s.id)).toContain("fetch");
     expect(steps.map((s) => s.id)).toContain("publish");

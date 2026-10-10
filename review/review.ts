@@ -660,12 +660,15 @@ try {
   // (#297). Publish takes the context, the state and the line from its own
   // table, keyed by this and by the cause in `review_body.json`, so nothing
   // here names a status. Beside them, how many findings this review leaves
-  // open, for the status line publish writes into the note (#298).
+  // open, for the status line publish writes into the note (#298), and the
+  // stop that kept it from asking for a round, which `review:conclude` says
+  // on the pull request (#425).
   const open = stillOpen.length + placed.length;
   writeJson("verdict.json", {
     verdict: verdict.verdict,
     fixRound: verdict.startsFixRound === true,
     open,
+    ...(verdict.stop === undefined ? {} : { stop: verdict.stop }),
   } satisfies VerdictHandOver);
 
   // And on a PRD PR, what `review:advance` parks the chain with, now with

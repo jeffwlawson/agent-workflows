@@ -10,7 +10,7 @@
  * | `review_body.json` | The verdict and its cause, the agent's assessment, the open, resolved and missed entries, criteria results, follow-ups and their cap, red-test results, and the data behind the header and the round note |
  * | `thread_resolutions.json` | Per thread: id, reason, whether it was already replied to, and the agent's note or the maintainer's reply to quote |
  * | `pr_summary.json` | The title, the agent's summary, whether the round is final, and the data behind Evidence and merge danger. Written only where this review rewrites them |
- * | `verdict.json` | The verdict's key, whether it starts a fix round, and how many findings it leaves open |
+ * | `verdict.json` | The verdict's key, whether it starts a fix round, how many findings it leaves open, and which stop kept it from starting one |
  *
  * None of them holds a marker, a status context or a commit. Every marker is
  * publish's to write, every free-text field comes out of these parsers
@@ -103,8 +103,9 @@ export interface PrdRecords {
 
 /**
  * `verdict.json`: the verdict's key, whether the review asked for an
- * automatic fix round (#297), and how many findings it leaves open, for the
- * status line (#298). Never a context, a state or a description: those are
+ * automatic fix round (#297), how many findings it leaves open, for the
+ * status line (#298), and which stop kept it from asking, where one did, for
+ * `review:conclude` to say on the pull request (#425). Never a context, a state or a description: those are
  * publish's own (`VERDICT_CONTEXT`, `FIX_ROUND_STATUS` and the verdict table),
  * so the agent's runner can claim a verdict but not name a status.
  */
@@ -112,6 +113,8 @@ export interface VerdictHandOver {
   readonly verdict: Verdict;
   readonly fixRound: boolean;
   readonly open: number;
+  /** Which of #200's stops kept a *changes recommended* review from starting a round, where one did (#425). */
+  readonly stop?: "budget spent" | "no progress" | undefined;
 }
 
 /**
@@ -229,7 +232,12 @@ const entry = {
 
 const followUp = object({ title: text, location: text, body: text, severity: SEVERITY, id: optional(ID) });
 
-const header = refine(
+/**
+ * A round header's data, the scope and the number: read from `review_body.json`
+ * by publish, and from publish's `published.json` by `review:conclude`, which
+ * opens its stop comment with the same header the review opened with (#425).
+ */
+export const roundHeaderData = refine(
   object({
     scope: object({
       kind: choice(["slice", "final", "regular"]),
@@ -356,11 +364,23 @@ const prSummary = refine(
 /**
  * A fix round is claimed only on *changes recommended*, the one verdict that
  * can start one (#201): a claim on any other is refused rather than posted.
+ * So is a stop, which says why that verdict started none (#425), and a stop
+ * beside a round, which contradicts it.
  * Whether one starts is still the live guard's and the budget's, after publish.
  */
 const verdict = refine(
-  object({ verdict: VERDICT, fixRound: YES_NO, open: count({ min: 0, max: MAX_ENTRIES * 2 }) }),
-  (v, wrong): VerdictHandOver => (v.fixRound && v.verdict !== "changes recommended" ? wrong(`claims a fix round on ${v.verdict}`) : v),
+  object({
+    verdict: VERDICT,
+    fixRound: YES_NO,
+    open: count({ min: 0, max: MAX_ENTRIES * 2 }),
+    stop: optional(choice(["budget spent", "no progress"])),
+  }),
+  (v, wrong): VerdictHandOver => {
+    if (v.fixRound && v.verdict !== "changes recommended") return wrong(`claims a fix round on ${v.verdict}`);
+    if (v.stop !== undefined && v.verdict !== "changes recommended") return wrong(`claims a stop on ${v.verdict}`);
+    if (v.stop !== undefined && v.fixRound) return wrong("claims a stop and a fix round together");
+    return v;
+  },
 );
 
 /**
@@ -412,7 +432,7 @@ export const handOverParsers = (known: Known) => {
           object({ id: CRITERION_ID, text, status: choice(["met", "changed", "unmet", "unchecked"]), reason: optional(text) }),
           { max: MAX_ENTRIES },
         ),
-        header: optional(header),
+        header: optional(roundHeaderData),
         historyUnreadable: optional(text),
         redTests: optional(redTestsRecord),
       }),

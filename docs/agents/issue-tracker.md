@@ -131,7 +131,7 @@ next update without telling anyone. This section is how this repo extends it, th
 | Surface | What can collide | What triage does |
 |---|---|---|
 | Open `needs-triage` issues | A duplicate or near-duplicate. | Search by **concept**, not wording. Close one into the other, carrying over anything the closed one adds, and say which in the recommendation. |
-| `ready-for-agent` issues | **Same scope:** two briefs for one change. **Same files:** running both at once means conflicts or stale pointers. **This brief moves what theirs points at:** theirs goes stale when this one merges. | Same scope: merge them. Same files: order them with a native blocked-by link (`implement` refuses while a blocker is open). Stale-in-waiting: block theirs on this issue, and comment on theirs that its pointers need re-checking after this one merges. |
+| `ready-for-agent` issues | **Same scope:** two briefs for one change. **Same files:** running both at once means conflicts or stale pointers. **This brief moves what theirs points at:** theirs goes stale when this one merges. | Same scope: merge them. Same files: block one on the other with a native blocked-by link (`implement` refuses while a blocker is open) when running both at once would really conflict; where the overlap is only wording in a shared file, note it in the brief instead ([*When to block*](#when-to-block-and-which-issue-goes-first)). Stale-in-waiting: block theirs on this issue, and comment on theirs that its pointers need re-checking after this one merges. |
 | Issues being built now (`agent:implement`, no PR yet) | Code about to change that no PR shows yet. | Treat it as an open PR: run this issue after that one merges. |
 | Open PRs (the loop's `agent/*` branches and human ones) | Changes to the files this brief points at. | Read the PR's diff (`gh pr diff <n>`). Either order this issue after it, or write the brief against the code as it will be. |
 | Open PRDs and their sub-issues | A long chain changes many files over days. | Check what the PRD **will** change, from its spec and its slices, not only what it has changed so far. Order anything overlapping after it. |
@@ -154,6 +154,26 @@ Not checked: closed issues (closed as done is the "already built" check, and clo
 refuses while a blocker is open, and nothing reads a sentence. Where this issue will stale another
 brief's pointers, the other issue is blocked on this one and gets a comment saying its pointers
 need re-checking once this merges.
+
+#### When to block, and which issue goes first
+
+**Block** when running both at once would really conflict, or when one would make the other's brief
+stale. **Only note it in the brief** when the overlap is just wording in a shared file, such as two
+issues editing different lines of the same prompt: the second one's `update-branch` resolves that,
+and a needless block only delays it.
+
+Where a block is owed, decide its direction with these, in order, stopping at the first that
+decides it:
+
+1. **A real dependency decides it.** If one issue builds on what the other produces, it waits for
+   the other.
+2. **Never block a ready issue on an unscheduled one.** An issue that is `ready-for-agent` or being
+   built does not wait for one that is `needs-triage` or `parked`: block the unscheduled one
+   instead, or the ready one may wait indefinitely. #447 blocked on #272 and #338 would have parked
+   a safety fix behind two unscheduled prompt tidy-ups.
+3. **Otherwise the more valuable one goes first:** a bug fix, a safety net, or something blocking a
+   larger piece of work, ahead of a tidy-up. The other one rebases onto it.
+4. **Still tied, the smaller one goes first.** It merges quickly, and the larger one rebases once.
 
 **The brief says in one line what was checked and what was found**, including "no overlap found",
 so a reader can tell the check ran rather than guess that it was skipped.

@@ -37,9 +37,10 @@ export interface PullRequestContext {
   readonly issueRead: LinkedIssue;
   /**
    * The linked issue's acceptance criteria, as `extractCriteria` reads them
-   * off its body and its trusted comments, where triage posts its brief (#214). Empty where there is no linked issue, where its
-   * author is untrusted (its text never reaches the agent), or where it names
-   * none.
+   * off its body and its trusted comments, where triage posts its brief (#214). Where
+   * its author is untrusted, off its trusted comments alone (#444): its own text
+   * never reaches the agent. Empty where there is no linked issue, or where it
+   * names none.
    */
   readonly criteria: readonly string[];
   /** Collaborator-authored conversation comments on the PR and linked issue. */
@@ -120,6 +121,13 @@ export const fetchPullRequestContext = (
   // exfiltration source. Gating on author association (not on field type)
   // keeps this input behind the same boundary the rest of the loop assumes,
   // and holds even once community-authored issues enter the backlog.
+  //
+  // On an untrusted issue, only its trusted comments are read (#444): as the
+  // discussion, as on any issue, and for criteria, by the acceptance-section
+  // rule alone. Never its title or body, so the checklist fallback, which reads
+  // only the body, does not apply. A maintainer restating the criteria is how
+  // an outsider's report is adopted; quoting the outsider in that comment
+  // carries the quote in, as it already does on a trusted issue.
   let issueTitle = "";
   let linkedIssue = "(no linked issue found)";
   let criteria: string[] = [];
@@ -140,6 +148,10 @@ export const fetchPullRequestContext = (
       );
     } else {
       issueRead = { kind: "untrusted", number: Number(issueNumber) };
+      criteria = extractCriteria(
+        "",
+        trustedIssueComments.map((comment) => comment.body),
+      );
       linkedIssue = `(linked issue #${issueNumber} was opened by a non-collaborator; its text is omitted so world-writable input never reaches the agent)`;
     }
   }

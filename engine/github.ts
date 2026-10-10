@@ -21,16 +21,46 @@ export interface Transport {
   graphql(query: string, variables: Readonly<Record<string, unknown>>): Promise<unknown>;
 }
 
-/** A call GitHub refused, with its HTTP status where it gave one. */
+/** How much of GitHub's answer an error keeps: `raw` in full, `reason` where it stands in for a `message`. */
+const RAW_CAP = 300;
+const EXCERPT_CAP = 100;
+
+/**
+ * A call GitHub refused, with its HTTP status where it gave one. `message` is
+ * the sentence reading code puts in front of a person, and is kept as it was;
+ * the write log builds its line from the rest: GitHub's own short `reason` for
+ * the refusal, and its `raw` answer, capped, kept as evidence on a write that
+ * failed.
+ */
 export class GitHubError extends Error {
+  readonly reason: string;
+  readonly raw: string | undefined;
+
   constructor(
     message: string,
     readonly status?: number,
+    detail: { readonly reason?: string; readonly raw?: string } = {},
   ) {
     super(message);
     this.name = "GitHubError";
+    this.reason = detail.reason ?? message;
+    this.raw = detail.raw;
   }
 }
+
+/** GitHub's `message` from a JSON body, or a short excerpt of the body where it has none. */
+const reasonIn = (body: string): string => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed === "object" && parsed !== null && "message" in parsed && typeof parsed.message === "string" && parsed.message !== "") {
+      return parsed.message;
+    }
+  } catch {
+    // Not JSON: the excerpt below stands in.
+  }
+  const excerpt = body.replace(/\s+/g, " ").trim();
+  return excerpt.length > EXCERPT_CAP ? `${excerpt.slice(0, EXCERPT_CAP)}…` : excerpt;
+};
 
 /**
  * Whether `error` is GitHub failing rather than refusing: a 5xx, or GraphQL's
@@ -56,7 +86,12 @@ export const fetchTransport = (token: string, apiUrl = "https://api.github.com")
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();
-    if (!response.ok) throw new GitHubError(`${method} ${path}: ${response.status} ${text.slice(0, 300)}`, response.status);
+    if (!response.ok) {
+      throw new GitHubError(`${method} ${path}: ${response.status} ${text.slice(0, RAW_CAP)}`, response.status, {
+        reason: reasonIn(text),
+        raw: text.slice(0, RAW_CAP),
+      });
+    }
     if (plain === true) return text;
     return text === "" ? undefined : JSON.parse(text);
   };
@@ -70,7 +105,8 @@ export const fetchTransport = (token: string, apiUrl = "https://api.github.com")
         readonly errors?: readonly { readonly message: string }[];
       };
       if (answer.errors !== undefined && answer.errors.length > 0) {
-        throw new GitHubError(`graphql: ${answer.errors.map((error) => error.message).join("; ")}`);
+        const reason = answer.errors.map((error) => error.message).join("; ");
+        throw new GitHubError(`graphql: ${reason}`, undefined, { reason, raw: JSON.stringify(answer.errors).slice(0, RAW_CAP) });
       }
       return answer.data;
     },

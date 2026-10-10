@@ -13,9 +13,21 @@
  * `engine/writes.ts` for a run, a fake for a test. Limits, the log and the
  * throw are this module's, so a test exercises the same ones a run does.
  */
+import { GitHubError } from "./github.js";
+
+/**
+ * A refusal a write type accepts, declared where it makes the call: `when`
+ * picks it out of what the call threw, and `reason` is what the log says of it,
+ * an expected result rather than an error. The call still throws it, for the
+ * write type to turn into its outcome.
+ */
+export interface Tolerated {
+  readonly when: (error: unknown) => boolean;
+  readonly reason: string;
+}
 
 /** One GitHub call a write makes: a read only looks, a write changes something. */
-export type Call = <C>(label: string, request: () => Promise<C>, kind?: "read" | "write") => Promise<C>;
+export type Call = <C>(label: string, request: () => Promise<C>, kind?: "read" | "write", tolerated?: Tolerated) => Promise<C>;
 
 /** A write that landed, or found the record already as asked. */
 export interface Done {
@@ -122,10 +134,16 @@ export interface LogEntry {
   /** What it was aimed at: `#12 agent:fix`, a thread id, a commit and a context. */
   readonly target: string;
   readonly outcome: Outcome;
-  /** The GitHub calls it made, in order, each `<label> ok` or `<label> <error>`. */
+  /**
+   * The GitHub calls it made, in order: `<label> ok`; `<label> expected: <reason>`
+   * for a refusal the write type accepts; or, refused, `<label> <status> <reason>`
+   * with GitHub's own short reason, and the status where it gave one.
+   */
   readonly calls: readonly string[];
   /** What it made, where it made something with a URL. */
   readonly url?: string;
+  /** GitHub's answer to the call that failed, capped: only on a `failed` or `partial` write, as evidence. */
+  readonly response?: string;
 }
 
 /**
@@ -164,6 +182,12 @@ export class LimitReached extends Error {
 }
 
 const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** A refused call's line: its label, GitHub's status and short reason, and none of the raw answer. */
+const refusal = (label: string, error: unknown): string =>
+  error instanceof GitHubError
+    ? [label, error.status, error.reason].filter((part) => part !== undefined && part !== "").join(" ")
+    : `${label} ${describe(error)}`;
 
 /**
  * The write whose throw stopped a command, where one did: `error` itself, or
@@ -236,14 +260,14 @@ export const createWriters = <T extends string>(options: {
     const calls: string[] = [];
     let wrote = false;
     let thrown: unknown;
-    const call: Call = async (label, request, kind = "write") => {
+    const call: Call = async (label, request, kind = "write", tolerated) => {
       try {
         const value = await request();
         calls.push(`${label} ok`);
         if (kind === "write") wrote = true;
         return value;
       } catch (error) {
-        calls.push(`${label} ${describe(error)}`);
+        calls.push(tolerated?.when(error) === true ? `${label} expected: ${tolerated.reason}` : refusal(label, error));
         thrown = error;
         throw error;
       }
@@ -255,7 +279,11 @@ export const createWriters = <T extends string>(options: {
     } catch (error) {
       // A throw outside any call, such as from an edit's `body`, still says what it was.
       if (error !== thrown) calls.push(describe(error));
-      throw new WriteFailed(record({ token, type, target, outcome: wrote ? "partial" : "failed", calls }), error);
+      const response = error instanceof GitHubError ? error.raw : undefined;
+      throw new WriteFailed(
+        record({ token, type, target, outcome: wrote ? "partial" : "failed", calls, ...(response === undefined ? {} : { response }) }),
+        error,
+      );
     }
     const result = done as Done | Posted;
     record({ token, type, target, outcome: result.outcome, calls, ...("url" in result ? { url: result.url } : {}) });

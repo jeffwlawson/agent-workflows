@@ -370,7 +370,8 @@ describe("the line a review handed no criteria carries", () => {
   const NONE_IN_THE_ISSUE =
     '_No acceptance criteria found in #376. To have each one checked, put them under a heading containing "Acceptance criteria", or write them as `- [ ]` items in the issue body._';
   const NO_LINKED_ISSUE = "_No linked issue, so there are no acceptance criteria to check._";
-  const UNTRUSTED = "_The text of #9 was not read, because of who opened it, so no acceptance criteria were checked._";
+  const UNTRUSTED =
+    '_The text of #9 was not read, because of who opened it, so no acceptance criteria were checked. A maintainer can restate them in a comment on the issue, under a heading containing "Acceptance criteria"._';
 
   it.each([
     ["the linked issue was read and yields none", { kind: "read", number: 376 }, { kind: "none in the issue", issue: 376 }],
@@ -394,7 +395,7 @@ describe("the line a review handed no criteria carries", () => {
   it.each([
     ["names the issue and both ways to make its criteria checkable", { kind: "read", number: 376 }, NONE_IN_THE_ISSUE],
     ["says there was no linked issue", { kind: "none" }, NO_LINKED_ISSUE],
-    ["says only that the issue was not read for who opened it", { kind: "untrusted", number: 9 }, UNTRUSTED],
+    ["says the issue was not read for who opened it, and how a maintainer supplies criteria", { kind: "untrusted", number: 9 }, UNTRUSTED],
   ] as const)("%s, where the group would be", (_case, linkedIssue, line) => {
     const body = renderDecided({ ...parts, criteria: [], linkedIssue });
 
@@ -408,8 +409,11 @@ describe("the line a review handed no criteria carries", () => {
     expect(body).not.toContain("<summary><b>Open</b>");
   });
 
+  // Only a maintainer's comment is read on that issue (#444), so the note
+  // speaks to a maintainer, and never suggests the body's checklist.
   it("suggests nothing an untrusted issue's author could do to be read", () => {
-    expect(UNTRUSTED).not.toMatch(/heading|- \[ \]|put them/);
+    expect(UNTRUSTED).toContain("A maintainer can restate them in a comment");
+    expect(UNTRUSTED).not.toMatch(/- \[ \]|issue body|put them/);
   });
 
   it("is not there where criteria were found, which render as they did", () => {

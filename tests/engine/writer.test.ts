@@ -60,9 +60,41 @@ describe("the writer", () => {
     await writers.workflow.addLabel(7, "after");
 
     expect(failed).toBeInstanceOf(WriteFailed);
-    expect((failed as WriteFailed).entry).toMatchObject({ seq: 1, outcome: "failed", calls: ["POST comment POST comment: 422 refused by the fake"] });
+    expect((failed as WriteFailed).entry).toMatchObject({ seq: 1, outcome: "failed", calls: ["POST comment 422 refused by the fake"] });
     expect(parsed(lines).map((l) => (l as { outcome: string }).outcome)).toEqual(["failed", "applied"]);
     expect(github.pullRequests.get(7)?.labels).toEqual(["after"]);
+  });
+
+  it("logs a refused call as its label, GitHub's status and its reason, and keeps the raw answer apart, on the failed write only", async () => {
+    const github = fakeGitHub();
+    github.fails = (write) => write.type === "comment";
+    const { writers, entries } = fakeWriters(github, ["workflow"], { comment: 1, addLabel: 1 });
+
+    const failed = (await writers.workflow.comment(7, "x").catch((error: unknown) => error)) as WriteFailed;
+    await writers.workflow.addLabel(7, "after");
+
+    expect(entries[0]?.calls).toEqual(["POST comment 422 refused by the fake"]);
+    expect(entries[0]?.response).toBe(JSON.stringify({ message: "refused by the fake", documentation_url: "https://docs.github.com/rest" }));
+    expect(entries[1]).toEqual({ seq: 2, token: "workflow", type: "addLabel", target: "#7 after", outcome: "applied", calls: ["POST labels ok"] });
+    // The sentence a failure comment is built from still names the call and GitHub's reason.
+    expect(failed.message).toBe("comment #7 failed: POST comment 422 refused by the fake");
+  });
+
+  it("logs a GitHub failure with no status as its label and reason", async () => {
+    const github = fakeGitHub();
+    github.fails = () => ({ landed: false });
+    const { writers, entries } = fakeWriters(github, ["workflow"], { addLabel: 1 });
+
+    await expect(writers.workflow.addLabel(7, "a")).rejects.toBeInstanceOf(WriteFailed);
+
+    expect(entries[0]).toEqual({
+      seq: 1,
+      token: "workflow",
+      type: "addLabel",
+      target: "#7 a",
+      outcome: "failed",
+      calls: ["POST labels An internal error occurred, by the fake"],
+    });
   });
 
   it("logs reply-then-resolve partial where the reply landed and the resolve did not", async () => {
@@ -73,7 +105,8 @@ describe("the writer", () => {
 
     await expect(writers.workflow.replyAndResolve({ threadId: "T1", reply: "done", reason: "ADDRESSED" })).rejects.toBeInstanceOf(WriteFailed);
 
-    expect(entries[0]).toMatchObject({ target: "T1 ADDRESSED", outcome: "partial", calls: ["reply ok", "resolve resolve: 422 refused by the fake"] });
+    expect(entries[0]?.response).toContain("refused by the fake");
+    expect(entries[0]).toMatchObject({ target: "T1 ADDRESSED", outcome: "partial", calls: ["reply ok", "resolve 422 refused by the fake"] });
     expect(github.threads.get(7)?.get("T1")).toEqual({ replies: ["done"] });
   });
 
@@ -85,7 +118,7 @@ describe("the writer", () => {
 
     await expect(writers.workflow.replyAndResolve({ threadId: "T1", reply: "done", reason: "WONT_FIX" })).rejects.toBeInstanceOf(WriteFailed);
 
-    expect(entries[0]).toMatchObject({ outcome: "failed", calls: ["reply reply: 422 refused by the fake"] });
+    expect(entries[0]).toMatchObject({ outcome: "failed", calls: ["reply 422 refused by the fake"] });
     expect(github.threads.get(7)?.get("T1")).toEqual({ replies: [] });
   });
 

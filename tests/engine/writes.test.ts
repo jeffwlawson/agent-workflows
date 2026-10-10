@@ -103,6 +103,16 @@ describe("githubWrites", () => {
     expect(await writers.workflow.removeLabel(7, "absent")).toEqual({ outcome: "unchanged" });
     await expect(writers.workflow.removeLabel(7, "locked")).rejects.toBeInstanceOf(WriteFailed);
     expect(log.entries.map((e) => e.outcome)).toEqual(["unchanged", "failed"]);
+    // The tolerated 404 is an expected result, with no error text and no raw answer kept.
+    expect(log.entries[0]).toEqual({
+      seq: 1,
+      token: "workflow",
+      type: "removeLabel",
+      target: "#7 absent",
+      outcome: "unchanged",
+      calls: ["DELETE label expected: label not present"],
+    });
+    expect(log.entries[1]?.calls).toEqual(["DELETE label 403 Forbidden"]);
   });
 
   it("sends a label, a status and a comment to their REST endpoints", async () => {

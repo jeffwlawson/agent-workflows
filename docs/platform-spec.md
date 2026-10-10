@@ -964,7 +964,7 @@ run's, and the command goes on with its URL.
 | Output | When it is written |
 |---|---|
 | `published.json` | The posted review's URL, `reviewUrl`, written the moment the review is posted, and `header`, its round header's scope and number, where the review has one. |
-| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. Not written where it wrote nothing. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. A write's line lists its GitHub calls, each `<call> ok`, `<call> expected: <reason>` for a refusal the write accepts (`label not present`), or `<call> <status> <reason>` with GitHub's own `message`; a `failed` or `partial` write also keeps GitHub's answer, capped, as `response`. Not written where it wrote nothing. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
 
@@ -1070,7 +1070,7 @@ that cannot comment still takes its label off. The labels a run fires on (`agent
 | Output | When it is written |
 |---|---|
 | `ended.json` | `moved`, whether the head moved while the review ran, and `reviewUrl`, the posted review's, where there is one. Written before the fix round's hand-off, so a round that does not start still has it. |
-| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. A write's line lists its GitHub calls, each `<call> ok`, `<call> expected: <reason>` for a refusal the write accepts (`label not present`), or `<call> <status> <reason>` with GitHub's own `message`; a `failed` or `partial` write also keeps GitHub's answer, capped, as `response`. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
 
@@ -1144,7 +1144,7 @@ A head that is not `agent/prd-<parent>-<slug>`, where the parent is needed, fail
 
 | Output | When it is written |
 |---|---|
-| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended. A write's line lists its GitHub calls, each `<call> ok`, `<call> expected: <reason>` for a refusal the write accepts (`label not present`), or `<call> <status> <reason>` with GitHub's own `message`; a `failed` or `partial` write also keeps GitHub's answer, capped, as `response`. |
 
 **`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
 

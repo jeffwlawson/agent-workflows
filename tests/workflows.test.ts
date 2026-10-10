@@ -1206,21 +1206,23 @@ describe("PR workflows refuse a closed or merged PR", () => {
   /**
    * Review's guard is `review:gate` (#420), which refuses a closed or merged
    * pull request from the state the job hands it (`tests/review/gate.test.ts`).
-   * Its first work is the Node the command runs on, ungated, then the gate,
-   * ungated, then the step that hands its decisions on as `state`'s outputs,
-   * which every later step reads.
+   * Its first work is the Node the command runs on, ungated, then the step
+   * that keeps that Node's registry to the package's steps (#429), then the
+   * gate, ungated, then the step that hands its decisions on as `state`'s
+   * outputs, which every later step reads.
    */
   it("review.yml: the gate is the first work after its Node, ungated, and hands on its decisions as `state`", () => {
     const steps = stepsOf(REVIEW);
     expect(firstWorkStep(REVIEW)?.name).toBe(steps[1]?.name);
     const at = 1;
 
-    expect(steps.slice(at, at + 3).map((s) => [s.name, s.id, s.if])).toEqual([
+    expect(steps.slice(at, at + 4).map((s) => [s.name, s.id, s.if])).toEqual([
       ["Set up Node for the gate", undefined, undefined],
+      ["Keep the package's registry to the package's steps", "npmrc", undefined],
       ["Settle what this run reviews", "gate", undefined],
       ["Hand the gate's decisions to the job", "state", "always()"],
     ]);
-    expect(steps[at + 1]?.run ?? "").toMatch(/-- agent-workflows review:gate$/);
+    expect(steps[at + 2]?.run ?? "").toMatch(/-- agent-workflows review:gate$/);
   });
 
   const PROCEED = "steps.state.outputs.proceed == 'true'";
@@ -6808,12 +6810,15 @@ describe("the runner package is installed from GitHub Packages", () => {
    * toolchain and the runner's auth step: its own `setup-node` comes first,
    * naming the registry and a Node the package's engines accept, and the gate
    * is handed the token the install reads. Ungated, as the gate is: it is the
-   * guard.
+   * guard. Between them only the step that keeps that registry to the
+   * package's steps (#429).
    */
   it("review.yml: sets up Node and the registry for the gate, before it", () => {
     const steps = stepsOf(REVIEW);
     const gate = steps.findIndex((s) => s.id === "gate");
-    const node = steps[gate - 1];
+    const node = steps[gate - 2];
+
+    expect(steps[gate - 1]?.id).toBe("npmrc");
     const floor = Number(/^>=(\d+)$/.exec(manifest.engines.node)?.[1]);
 
     expect(node?.uses ?? "").toMatch(/^actions\/setup-node@/);
@@ -6824,6 +6829,56 @@ describe("the runner package is installed from GitHub Packages", () => {
     expect(Number(node?.with?.["node-version"])).toBeGreaterThanOrEqual(floor);
     expect(steps[gate]?.env?.["NODE_AUTH_TOKEN"]).toBe("${{ secrets.GITHUB_TOKEN }}");
     expect(gate).toBeLessThan(steps.findIndex((s) => (s.uses ?? "").startsWith("actions/checkout@")));
+  });
+
+  /**
+   * **The package's registry reaches the package's steps alone** (#429). In
+   * the two jobs that set it up ahead of the adopter's toolchain, `setup-node`
+   * exports `NPM_CONFIG_USERCONFIG`, pointing at the `.npmrc` it wrote, to
+   * every later step, so the adopter's *Install dependencies* would read that
+   * file instead of `~/.npmrc`, and a login it keeps there would go unread.
+   * So the step straight after takes it back out of the job's env, to npm's
+   * default, and hands the path on as an output; each step that installs or
+   * runs the package, until a later registry step sets it up again, is handed
+   * that path and nothing written by hand.
+   */
+  it.each([
+    ["review", "Set up Node for the gate"],
+    ["red-check", "Set up Node for the package"],
+  ] as const)("review.yml: %s keeps the package's registry from the adopter's install", (id, setup) => {
+    const steps = jobNamed(REVIEW, id).steps ?? [];
+    const names = steps.map((s) => s.name ?? "");
+    const node = names.indexOf(setup);
+    const keep = steps[node + 1];
+    const install = names.indexOf("Install dependencies");
+    const reauth = steps.findIndex((s, i) => i > node && s.with?.["registry-url"] !== undefined);
+    const until = reauth === -1 ? steps.length : reauth;
+
+    expect(steps[node]?.with?.["registry-url"]).toBe(REGISTRY);
+    expect(keep?.id).toBe("npmrc");
+    expect(keep?.if).toBeUndefined();
+    expect(keep?.run ?? "").toContain('echo "userconfig=${NPM_CONFIG_USERCONFIG}" >> "$GITHUB_OUTPUT"');
+    expect(keep?.run ?? "").toContain('echo "NPM_CONFIG_USERCONFIG=${HOME}/.npmrc" >> "$GITHUB_ENV"');
+
+    expect(install).toBeGreaterThan(node + 1);
+    expect(install).toBeLessThan(until);
+    expect(steps[install]?.env ?? {}).not.toHaveProperty("NPM_CONFIG_USERCONFIG");
+    expect(jobNamed(REVIEW, id).env ?? {}).not.toHaveProperty("NPM_CONFIG_USERCONFIG");
+
+    const runsPackage = steps
+      .slice(node + 2, until)
+      .filter((s) => /^npm (exec|install) .*@jeffwlawson\/agent-workflows@/.test((s.run ?? "").trim()));
+    expect(runsPackage.length).toBeGreaterThan(0);
+    for (const step of runsPackage) {
+      expect(step.env?.["NPM_CONFIG_USERCONFIG"], step.name).toBe("${{ steps.npmrc.outputs.userconfig }}");
+    }
+    // The red check hands the token to its install alone, and runs both
+    // commands from that install, after which the PR's code has run.
+    const asking = id === "red-check" ? runsPackage.filter((s) => (s.run ?? "").startsWith("npm install")) : runsPackage;
+    expect(asking.length).toBeGreaterThan(0);
+    for (const step of asking) {
+      expect(step.env?.["NODE_AUTH_TOKEN"], step.name).toBe("${{ secrets.GITHUB_TOKEN }}");
+    }
   });
 
   /**
@@ -8383,7 +8438,10 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
     const naming = steps.filter((s) => /secrets\.|github\.token|GITHUB_TOKEN|GH_TOKEN|LOOP_TOKEN/.test(JSON.stringify(s)));
 
     expect(naming.map((s) => s.name)).toEqual(["Install the package"]);
-    expect(naming[0]?.env).toEqual({ NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" });
+    expect(naming[0]?.env).toEqual({
+      NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+    });
     expect(JSON.stringify(redCheck())).not.toMatch(/secrets\.(?!GITHUB_TOKEN\b)/);
   });
 
@@ -8402,6 +8460,7 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
     expect(names).toEqual([
       "Checkout PR head",
       "Set up Node for the package",
+      "Keep the package's registry to the package's steps",
       "Install the package",
       "Put the PR's test files over the merge-base",
       "Hand the placement to the job",
@@ -8427,8 +8486,8 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
       expect(step?.["working-directory"], name).toBe("${{ runner.temp }}");
       expect(step?.env?.["CHECKOUT"], name).toBe("${{ github.workspace }}");
       // Each input it declares, from its step or its job, and nothing else
-      // from its step.
-      const declared = Object.keys(COMMANDS[command].inputs);
+      // from its step but the package's registry (#429).
+      const declared = [...Object.keys(COMMANDS[command].inputs), "NPM_CONFIG_USERCONFIG"];
       expect(declared.filter((input) => !(input in { ...redCheck().env, ...step?.env })), name).toEqual([]);
       expect(Object.keys(step?.env ?? {}).filter((input) => !declared.includes(input)), name).toEqual([]);
     }

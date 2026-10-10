@@ -266,6 +266,18 @@ jobs:
           scope: "@jeffwlawson"
           package-manager-cache: false
 
+      # That step points `NPM_CONFIG_USERCONFIG` at the `.npmrc` it wrote, for
+      # every later step in the job (#429), the adopter's *Install dependencies*
+      # included, whose own `~/.npmrc` and any login in it would go unread. So
+      # the job's setting goes back to npm's default here, and the path comes
+      # out as `userconfig`, handed in `env:` to each step that installs or
+      # runs the package. The file `setup-node` wrote, never a second copy.
+      - name: Keep the package's registry to the package's steps
+        id: npmrc
+        run: |
+          echo "userconfig=${NPM_CONFIG_USERCONFIG}" >> "$GITHUB_OUTPUT"
+          echo "NPM_CONFIG_USERCONFIG=${HOME}/.npmrc" >> "$GITHUB_ENV"
+
       # The package, installed into `RUNNER_TEMP` while nothing of the PR's has
       # run, so the two commands below find it there and never ask the
       # registry: `npm exec` takes a package already installed under its
@@ -275,8 +287,10 @@ jobs:
       - name: Install the package
         working-directory: ${{ runner.temp }}
         env:
-          # Reads the `.npmrc` the step above wrote. `GITHUB_TOKEN`, carrying
-          # the `packages: read` above: there is no anonymous install.
+          # Reads the `.npmrc` *Set up Node for the package* wrote.
+          # `GITHUB_TOKEN`, carrying the `packages: read` above: there is no
+          # anonymous install.
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@0.8.0
 
@@ -288,6 +302,7 @@ jobs:
         id: place
         working-directory: ${{ runner.temp }}
         env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           OUTPUT_DIR: ${{ runner.temp }}/red-check-place
           CHECKOUT: ${{ github.workspace }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -356,6 +371,7 @@ jobs:
         if: always()
         working-directory: ${{ runner.temp }}
         env:
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           OUTPUT_DIR: ${{ runner.temp }}
           CHECKOUT: ${{ github.workspace }}
           REPORT_PATH: ${{ inputs.red-check-report }}
@@ -544,6 +560,19 @@ jobs:
           scope: "@jeffwlawson"
           package-manager-cache: false
 
+      # That step points `NPM_CONFIG_USERCONFIG` at the `.npmrc` it wrote, for
+      # every later step in the job (#429), the adopter's *Install dependencies*
+      # included, whose own `~/.npmrc` and any login in it would go unread. So
+      # the job's setting goes back to npm's default here, and the path comes
+      # out as `userconfig`, handed in `env:` to each step that runs the
+      # package before *Authenticate to GitHub Packages* sets it up again. The
+      # file `setup-node` wrote, never a second copy.
+      - name: Keep the package's registry to the package's steps
+        id: npmrc
+        run: |
+          echo "userconfig=${NPM_CONFIG_USERCONFIG}" >> "$GITHUB_OUTPUT"
+          echo "NPM_CONFIG_USERCONFIG=${HOME}/.npmrc" >> "$GITHUB_ENV"
+
       # Everything this job settles before its checkout, as one command
       # (#420): the pre-flight, which refuses a closed, merged or moved pull
       # request and settles **which commit this run reviews**; a time limit
@@ -572,8 +601,10 @@ jobs:
       - name: Settle what this run reviews
         id: gate
         env:
-          # Reads the `.npmrc` the step above wrote. `GITHUB_TOKEN`, carrying the
-          # `packages: read` the caller granted — there is no anonymous install.
+          # Reads the `.npmrc` *Set up Node for the gate* wrote. `GITHUB_TOKEN`,
+          # carrying the `packages: read` the caller granted: there is no
+          # anonymous install.
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_DIR: ${{ runner.temp }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -676,6 +707,7 @@ jobs:
         env:
           # Reads the `.npmrc` *Set up Node for the gate* wrote. `GITHUB_TOKEN`,
           # carrying the `packages: read` the caller granted.
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_DIR: ${{ runner.temp }}
           FIX_ROUND_BUDGET: ${{ steps.state.outputs.budget }}
@@ -741,6 +773,7 @@ jobs:
         env:
           # Reads the `.npmrc` *Set up Node for the gate* wrote. `GITHUB_TOKEN`,
           # carrying the `packages: read` the caller granted.
+          NPM_CONFIG_USERCONFIG: ${{ steps.npmrc.outputs.userconfig }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_DIR: ${{ runner.temp }}/collect-checks
           REVIEWED_SHA: ${{ steps.state.outputs.sha }}

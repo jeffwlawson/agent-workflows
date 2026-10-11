@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   fail,
   git,
@@ -11,7 +10,7 @@ import {
   sh,
   writers,
 } from "../shared/common.js";
-import { claudeAgent, runWithExtraction } from "../shared/agent.js";
+import { agentSandbox, claudeAgent, runWithExtraction } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { filterOutOfScopeNotes } from "../shared/fix-notes.js";
 import {
@@ -129,7 +128,7 @@ try {
   const result = await runWithExtraction({
     name: `fix-${PR_NUMBER}`,
     agent: claudeAgent("fix", INPUTS),
-    sandbox: noSandbox(),
+    sandbox: agentSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

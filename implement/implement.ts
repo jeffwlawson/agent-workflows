@@ -1,6 +1,5 @@
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   fail,
   fetchTrustedComments,
@@ -10,7 +9,7 @@ import {
   readLoopAccounts,
   scrubGitHubTokens,
 } from "../shared/common.js";
-import { claudeAgent } from "../shared/agent.js";
+import { agentSandbox, claudeAgent } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { staleFailure, staleReason } from "../shared/stale.js";
 
@@ -56,10 +55,7 @@ try {
   const result = await sandcastle.run({
     name: `implement-#${ISSUE_NUMBER}`,
     agent: claudeAgent("implement", INPUTS),
-    // The ephemeral Actions runner IS the isolation. Running the agent directly
-    // on it means the agent's environment and CI's environment are identical by
-    // construction — no image drift, no "works in the sandbox, fails in CI".
-    sandbox: noSandbox(),
+    sandbox: agentSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

@@ -1,5 +1,6 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { OutputObjectDefinition, RunOptions, RunResult } from "@ai-hero/sandcastle";
+import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 
 /**
  * The agent driver: everything that loads the agent SDK, and the one module
@@ -114,6 +115,15 @@ export const claudeAgent = (
     },
   });
 };
+
+/**
+ * The sandbox every runner starts the agent in, chosen here and nowhere else:
+ * a runner names no provider. `none`, so the agent runs on the runner's own
+ * machine. On Actions the ephemeral runner IS the isolation, and running the
+ * agent directly on it means the agent's environment and CI's are identical by
+ * construction: no image drift, no "works in the sandbox, fails in CI".
+ */
+export const agentSandbox = () => noSandbox();
 
 export interface RunWithExtractionOptions<T> extends Omit<RunOptions, "output"> {
   readonly output: OutputObjectDefinition<T>;

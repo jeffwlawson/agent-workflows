@@ -1,6 +1,5 @@
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import {
   fail,
   fetchTrustedComments,
@@ -11,7 +10,7 @@ import {
   scrubGitHubTokens,
   writers,
 } from "../shared/common.js";
-import { claudeAgent } from "../shared/agent.js";
+import { agentSandbox, claudeAgent } from "../shared/agent.js";
 import { RUNNERS } from "../shared/contract.js";
 import { staleFailure, staleReason } from "../shared/stale.js";
 import { firstLine, readPrdBranch } from "../shared/prd-round.js";
@@ -176,9 +175,7 @@ try {
   const result = await sandcastle.run({
     name: `implement-prd-#${ISSUE_NUMBER}-sub-#${SUB_NUMBER}`,
     agent: claudeAgent("implement-prd", INPUTS),
-    // The ephemeral Actions runner IS the isolation — same reasoning as the
-    // other runners; see implement.ts.
-    sandbox: noSandbox(),
+    sandbox: agentSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

@@ -7,7 +7,7 @@ import { createDispatcher, type DoorRequest, type DoorResponse } from "./dispatc
 import { liveAppGitHub } from "./github-app.js";
 import type { ReviewJob } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
-import { jobDoor, oneAtATime, runJob } from "./worker.js";
+import { jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
 import { installCli, liveGit, liveLauncher, liveTokens } from "./worker-live.js";
 
 /**
@@ -127,7 +127,7 @@ export const serveDispatcher = async (
  * The worker: the agent's CLI installed at the version its settings require,
  * then the job door, whose jobs run one at a time, each in a directory of its
  * own under `WORK_DIR/runs`, kept afterwards with each subcommand's output
- * directory and log. Each phase's outcome is logged as the job ends.
+ * directory and log and the run's summary. Each phase's outcome is logged as the job ends.
  */
 export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: (text: string) => void): Promise<void> => {
   const log = (line: string): void => stdout(`${new Date().toISOString()} ${line}\n`);
@@ -161,7 +161,7 @@ export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: 
       cliBin,
       runDir,
     });
-    log(`job ${job.id}: ended. ${phases.map(({ name, outcome }) => `${name}: ${outcome}`).join("; ")}`);
+    log(`job ${job.id}: ended. ${phases.map(({ name, outcome }) => `${name}: ${outcome}`).join("; ")}. Its summary: ${path.join(runDir, SUMMARY_FILE)}`);
   };
   const queue = oneAtATime(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`));
   const accept = jobDoor({ secret: settings.WORKER_SECRET, version: VERSION, accept: queue });

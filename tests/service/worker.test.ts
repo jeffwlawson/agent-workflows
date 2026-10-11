@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { DEFAULT_REVIEW_MINUTES, sign, SIGNATURE_HEADER, type ReviewJob, type TokenKind } from "../../service/job.js";
-import { jobDoor, runJob, type Launch, type Subcommand } from "../../service/worker.js";
+import { jobDoor, REDACTED, runJob, SUMMARY_FILE, type Launch, type Subcommand } from "../../service/worker.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../../shared/contract.js";
 
 /**
@@ -76,7 +76,12 @@ afterEach(() => {
 
 const setup = (
   canned: Readonly<Partial<Record<Subcommand, Canned>>> = ORDINARY,
-  options: { readonly minuteMs?: number; readonly checkoutHangs?: boolean } = {},
+  options: {
+    readonly minuteMs?: number;
+    readonly checkoutHangs?: boolean;
+    /** The token requests the dispatcher refuses, counted from 1. */
+    readonly refused?: readonly number[];
+  } = {},
 ) => {
   /** Every edge the job touched, in the order it touched them. */
   const events: string[] = [];
@@ -88,6 +93,7 @@ const setup = (
     token: async (kind: TokenKind) => {
       asked.push(kind);
       events.push(`${kind} token`);
+      if (options.refused?.includes(asked.length)) throw new Error("the dispatcher answered 403: the job is past its deadline");
       return `${kind}-token-${asked.length}`;
     },
     launch: async (launch: Launch) => {
@@ -378,6 +384,216 @@ describe("the worker's job, where a phase runs past its time limit", () => {
     await runJob(JOB, s.edges);
 
     expect(s.launched.filter(({ signal }) => signal.aborted).map(({ subcommand }) => subcommand)).toEqual([]);
+  });
+});
+
+describe("the worker's job, where a phase fails", () => {
+  it("tells conclude the runner failed, with the reason it wrote, and posts no review", async () => {
+    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": "The agent's model refused the token.\n" }, exit: 1 } });
+    const phases = await runJob(JOB, s.edges);
+
+    expect(s.events).not.toContain("review:publish");
+    expect(s.events.at(-1)).toBe("review:conclude");
+    expect(s.env("review:conclude")).toMatchObject({
+      REVIEW_RESULT: "failure",
+      PROCEED: "true",
+      FAILURE_REASON: "The agent's model refused the token.",
+      TIMED_OUT: "false",
+    });
+    expect(s.env("review:conclude")).not.toHaveProperty("VERDICT");
+    expect(s.env("review:conclude")).not.toHaveProperty("MINT_OUTCOME");
+    expect(phases).toContainEqual({ name: "review", outcome: "failure (exit 1): The agent's model refused the token." });
+  });
+
+  it("tells conclude the review did not start where no token to read with was granted", async () => {
+    const s = setup(ORDINARY, { refused: [1] });
+    await runJob(JOB, s.edges);
+
+    expect(s.events).toEqual(["read token", "write token", "review:conclude"]);
+    expect(s.env("review:conclude")).toMatchObject({ REVIEW_RESULT: "failure", GH_TOKEN: "write-token-2" });
+    expect(s.env("review:conclude")["FAILURE_REASON"]).toContain("granted no token");
+    expect(s.env("review:conclude")).not.toHaveProperty("PROCEED");
+  });
+
+  it("tells conclude the review failed where the runner's own token was not granted, and starts no runner", async () => {
+    const s = setup(ORDINARY, { refused: [2] });
+    await runJob(JOB, s.edges);
+
+    expect(s.events).not.toContain("review");
+    expect(s.env("review:conclude")).toMatchObject({ REVIEW_RESULT: "failure", PROCEED: "true" });
+    expect(s.env("review:conclude")["FAILURE_REASON"]).toContain("granted no token");
+  });
+
+  it("tells conclude the posting token's mint failed, and publishes nothing", async () => {
+    const s = setup(ORDINARY, { refused: [3] });
+    await runJob(JOB, s.edges);
+
+    expect(s.events).not.toContain("review:publish");
+    expect(s.env("review:conclude")).toMatchObject({
+      REVIEW_RESULT: "success",
+      VERDICT: "approve",
+      MINT_OUTCOME: "failure",
+      GH_TOKEN: "write-token-4",
+    });
+    expect(s.env("review:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
+  });
+
+  it("tells conclude publish failed", async () => {
+    const s = setup({ ...ORDINARY, "review:publish": { files: { "failure_reason.txt": "GitHub answered 502." }, exit: 1 } });
+    await runJob(JOB, s.edges);
+
+    expect(s.env("review:conclude")).toMatchObject({ REVIEW_RESULT: "success", MINT_OUTCOME: "success", PUBLISH_OUTCOME: "failure" });
+  });
+
+  it("puts the reason in the worker's log where nothing can write the ending to the pull request", async () => {
+    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": "The agent stopped." }, exit: 1 } }, { refused: [3] });
+    const phases = await runJob(JOB, s.edges);
+
+    expect(s.events).not.toContain("review:conclude");
+    expect(phases.at(-2)).toEqual({ name: "write token", outcome: "failure: the dispatcher answered 403: the job is past its deadline" });
+    expect(phases.at(-1)?.name).toBe("review:conclude");
+    expect(phases.at(-1)?.outcome).toContain("not run");
+    expect(phases.at(-1)?.outcome).toContain("The agent stopped.");
+  });
+});
+
+describe("the worker's job, on a PRD pull request", () => {
+  const PRD: ReviewJob = { ...JOB, branch: "agent/prd-453-the-service" };
+  const reviewed = {
+    ...ORDINARY,
+    "review:conclude": { files: { "ended.json": { moved: false, reviewUrl: "https://github.com/owner/repo/pull/7#pullrequestreview-1" } } },
+  };
+
+  it("advances the chain after conclude, where the head did not move, with a write token of its own", async () => {
+    const s = setup(reviewed);
+    await runJob(PRD, s.edges);
+
+    expect(s.events.slice(-4)).toEqual(["review:publish", "review:conclude", "write token", "review:advance"]);
+    expect(s.env("review:advance")).toMatchObject({
+      GH_TOKEN: "write-token-4",
+      LOOP_TOKEN: "write-token-4",
+      LOOP_TOKEN_SOURCE: "app",
+      PR_NUMBER: "7",
+      BRANCH: "agent/prd-453-the-service",
+      REVIEW_RESULT: "success",
+      POSTING_RESULT: "success",
+      MOVED: "false",
+      REVIEW_URL: "https://github.com/owner/repo/pull/7#pullrequestreview-1",
+      VERDICT: "approve",
+      FIX_ROUND: "false",
+      MINT_OUTCOME: "success",
+      PARK_DIR: s.env("review")["OUTPUT_DIR"],
+    });
+    const inputs = declared("review:advance");
+    const allowed = new Set([...Object.keys(inputs), "PATH", "HOME", "LANG"]);
+    expect(Object.keys(s.env("review:advance")).filter((name) => !allowed.has(name))).toEqual([]);
+  });
+
+  it("does not advance where the head moved while the review ran", async () => {
+    const s = setup({ ...ORDINARY, "review:conclude": { files: { "ended.json": { moved: true } } } });
+    await runJob(PRD, s.edges);
+
+    expect(s.events.at(-1)).toBe("review:conclude");
+    expect(s.events).not.toContain("review:advance");
+  });
+
+  it("does not advance where the gate refused", async () => {
+    const s = setup({ ...reviewed, "review:gate": { files: { "gate.json": { proceed: "false", refusal: "The PR changed.", blocked: "false" } } } });
+    await runJob(PRD, s.edges);
+
+    expect(s.events).not.toContain("review:advance");
+  });
+
+  it("does not advance an ordinary pull request", async () => {
+    const s = setup(reviewed);
+    await runJob(JOB, s.edges);
+
+    expect(s.events).not.toContain("review:advance");
+  });
+
+  it("tells advance how the review and the posting ended where the runner failed and publish never ran", async () => {
+    const s = setup({ ...reviewed, review: { files: { "park.json": { round: "slice" } }, exit: 1 } });
+    await runJob(PRD, s.edges);
+
+    expect(s.env("review:advance")).toMatchObject({ REVIEW_RESULT: "failure", POSTING_RESULT: "success", PARK_DIR: s.env("review")["OUTPUT_DIR"] });
+    expect(s.env("review:advance")).not.toHaveProperty("VERDICT");
+  });
+
+  it("tells advance the posting failed where publish did", async () => {
+    const s = setup({ ...reviewed, "review:publish": { exit: 1 } });
+    await runJob(PRD, s.edges);
+
+    expect(s.env("review:advance")).toMatchObject({ REVIEW_RESULT: "success", POSTING_RESULT: "failure" });
+  });
+
+  it("tells advance a review that timed out was cancelled", async () => {
+    const s = setup({ ...reviewed, review: { hangs: true } }, { minuteMs: 5 });
+    await runJob(PRD, s.edges);
+
+    expect(s.env("review:advance")).toMatchObject({ REVIEW_RESULT: "cancelled", POSTING_RESULT: "success" });
+  });
+
+  it("logs that the chain was not advanced where no token to advance it with was granted", async () => {
+    const s = setup(reviewed, { refused: [4] });
+    const phases = await runJob(PRD, s.edges);
+
+    expect(s.events).not.toContain("review:advance");
+    expect(phases.at(-1)?.name).toBe("review:advance");
+    expect(phases.at(-1)?.outcome).toContain("not run");
+  });
+});
+
+describe("the run's directory", () => {
+  const read = (runDir: string): string => fs.readFileSync(path.join(runDir, SUMMARY_FILE), "utf8");
+
+  it("keeps a summary of the job and each phase's outcome, with every token redacted", async () => {
+    const s = setup({ ...ORDINARY, "review:conclude": { files: { "ended.json": { moved: false } } } });
+    await runJob({ ...JOB, branch: "agent/prd-453-the-service" }, s.edges);
+
+    const text = read(s.runDir);
+    const summary = JSON.parse(text) as { job: ReviewJob; phases: { name: string; outcome: string }[]; subcommands: { subcommand: string }[] };
+    expect(summary.job.id).toBe("job-1");
+    expect(summary.phases.map(({ name }) => name)).toContain("review:advance");
+    expect(summary.subcommands.map(({ subcommand }) => subcommand)).toEqual([
+      "review:gate",
+      "review:budget",
+      "review:collect-checks",
+      "review",
+      "review:publish",
+      "review:conclude",
+      "review:advance",
+    ]);
+    expect(s.asked).toHaveLength(4);
+    for (const token of [...s.asked.map((kind, at) => `${kind}-token-${at + 1}`), AGENT.CLAUDE_CODE_OAUTH_TOKEN]) {
+      expect(text).not.toContain(token);
+    }
+    expect(text).toContain(REDACTED);
+  });
+
+  it("redacts a token wherever a phase's outcome quotes it, in the summary and in what the worker logs", async () => {
+    const s = setup({ ...ORDINARY, review: { files: { "failure_reason.txt": "GH_TOKEN read-token-2 was refused." }, exit: 1 } });
+    const phases = await runJob(JOB, s.edges);
+
+    expect(read(s.runDir)).not.toContain("read-token-2");
+    expect(JSON.stringify(phases)).not.toContain("read-token-2");
+    expect(phases).toContainEqual({ name: "review", outcome: `failure (exit 1): GH_TOKEN ${REDACTED} was refused.` });
+  });
+
+  it("keeps a summary where nothing could write the ending", async () => {
+    const s = setup(ORDINARY, { refused: [1, 2] });
+    await runJob(JOB, s.edges);
+
+    expect(JSON.parse(read(s.runDir))).toMatchObject({ phases: [{ name: "read token" }, { name: "write token" }, { name: "review:conclude" }] });
+  });
+
+  it("keeps each subcommand's output directory and log under it", async () => {
+    const s = setup();
+    await runJob(JOB, s.edges);
+
+    for (const { env, log } of s.launched) {
+      expect(env["OUTPUT_DIR"]?.startsWith(s.runDir)).toBe(true);
+      expect(log.startsWith(s.runDir)).toBe(true);
+    }
   });
 });
 

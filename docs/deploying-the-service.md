@@ -16,7 +16,26 @@ repository opts in with the repository variable `AGENT_ORCHESTRATOR=service`
 ([ADOPTING §2e](./ADOPTING.md#2e-choosing-the-orchestrator)); the service refuses every other
 repository, and answers `agent:review` only.
 
-This guide grows with the service.
+## What a host needs
+
+Whatever the machine, the service needs:
+
+- **Linux** for the worker, since the sandbox is Linux's: bubblewrap runs on user namespaces.
+  Where the distribution restricts unprivileged user namespaces (Ubuntu 24.04's AppArmor does),
+  allow them for `bwrap`. The dispatcher runs anywhere Node does.
+- **bubblewrap** (`bwrap`) on the worker's host, for `AGENT_SANDBOX=bwrap`, the default.
+- **A webhook endpoint GitHub can reach**: the dispatcher's webhook door, published through a
+  reverse proxy or a tunnel. Nothing else of either process is published.
+- **A proxy** the agent's traffic leaves through (`AGENT_SANDBOX_PROXY`), allowing what a review
+  needs (GitHub, the model's API, the package registries) and nothing else. bubblewrap shares the
+  host's network with the sandbox, so the proxy, and a firewall around the worker's host, are
+  where its egress is controlled.
+- **Node 24 or later** for both processes, with `git` and `npm` beside the worker, and read access
+  to the registry the package is published to.
+- **The GitHub App**, below.
+
+The two processes may share a machine. Keeping the App's key off the machine that runs agents is
+the point of the split, so put the worker on a machine, or a VM, of its own where you can.
 
 ## The GitHub App
 
@@ -142,18 +161,30 @@ Jobs run one at a time, in the order they arrived. Each runs the subcommands `re
 its order (spec §8), each a child process of the worker's own install, with an environment built
 from its declaration in the contract and the host's `PATH`, `HOME` and `LANG`, and nothing else
 of the worker's. Not run, at this release: the red check, the repository's own install and setup
-commands, and `review:advance`. The fix-round budget is 0 whatever `AGENT_MAX_FIX_ROUNDS` says,
-while the service answers no `agent:fix`, so a review asking for changes leaves the round to a
-human.
+commands. The fix-round budget is 0 whatever `AGENT_MAX_FIX_ROUNDS` says, while the service
+answers no `agent:fix`, so a review asking for changes leaves the round to a human.
+
+On a PRD pull request (head `agent/prd-…`), where the review went ahead and the head did not move
+while it ran, the worker asks for one more `write` token and runs `review:advance` after
+`review:conclude`, as the reusable's advance job does. Advance may put `agent:implement` back on
+the PRD's parent. The service does not answer that label, so on a repository it serves the label
+waits there for an orchestrator that does, or for you: that is expected.
+
+`review:conclude` runs however the phases before it ended, and is told each one's real outcome: a
+runner that failed, with the reason it wrote; a token the dispatcher would not grant; a publish
+that failed; a phase ended at its time limit. A run that ends before anything can write to the
+pull request, because no token to write with was granted, says why in the worker's log instead.
 
 Each run leaves a directory under `WORK_DIR/runs`, named for when it started and its job: the
-checkout, each subcommand's output directory under `out/` and its log under `logs/`. The worker's
-own log says how each phase ended.
+checkout, each subcommand's output directory under `out/` and its log under `logs/`, and
+`summary.json`, the job, each phase's outcome, and each subcommand's environment, with every token
+redacted. The worker's own log says how each phase ended, redacted the same way. Nothing removes
+old runs: prune `WORK_DIR/runs` as you see fit.
 
 Every phase has a time limit, as every job on Actions does, so a hung agent cannot hold the queue.
 The gate, the checkout, the budget, the CI wait and the runner share the review's: 15 minutes of CI
 wait plus `AGENT_REVIEW_TIMEOUT_MINUTES` (5 where unset). `review:publish` and `review:conclude`
-get 10 minutes each. A phase still running at its limit is ended, with every process it started,
+get 10 minutes each, and `review:advance` 5. A phase still running at its limit is ended, with every process it started,
 and the pull request's ending says the review timed out. A job that waits in the queue for longer
 than the dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks to
 post, and ends with nothing posted, so set the margin above the longest wait you expect.
@@ -178,3 +209,107 @@ Read from the environment. A missing required one stops the worker at start, nam
 | `AGENT_SANDBOX_PROXY` | optional | `""` | the proxy every request from the sandbox leaves through |
 
 The job door also answers `GET /health` with `200`.
+
+## Restarts and outages
+
+- **A delivery that arrives while the dispatcher is down is lost**, since GitHub does not
+  redeliver on its own (*What it does not keep*, above): after an outage, redeliver from the App's
+  *Recent Deliveries*, or remove the label and add it again. The worker's queue is in memory too: a worker restarted mid-job loses that job and
+  the ones waiting behind it, and the pull request keeps its `agent:review` until you re-add it.
+- **Each piece restarts itself, in order.** Run both processes under something that restarts them
+  at boot and after a crash (a container's restart policy, a systemd unit), with the worker
+  started after its proxy, and the firewall around the worker's host in place before the worker's
+  host starts. The worker installs the agent's CLI again at each start, so give it a moment, and
+  the network, before its door answers.
+
+## A worked example: the maintainer's Unraid server
+
+One deployment, recorded so it can be rebuilt; nothing in it is in the package's code. The
+dispatcher runs on an Unraid server; the worker runs in a VM on it, the *agent box*, which is the
+wall between the agents and the NAS (#364). GitHub reaches the dispatcher through Tailscale Funnel.
+
+```text
+GitHub ─► Funnel :10000 ─► Unraid 127.0.0.1:8790/github   dispatcher (container, host network)
+                           Unraid 192.168.250.1:8791/token ◄─ worker asks for tokens
+                           ─► 192.168.250.11:8787/jobs      worker (agent-box VM, on agentnet)
+                                                            └─ bwrap ─► tinyproxy ─► the internet
+```
+
+**The agent box** is an Ubuntu 24.04 VM: Host Passthrough CPU (the agent's CLI hangs on an
+emulated one), 4 vCPU, 8 GB, a raw disk, no Unraid shares and no passed-through devices. It sits
+on **`agentnet`**, a libvirt NAT network of its own, `192.168.250.0/24` on bridge `virbr-agent`,
+at `192.168.250.11`; the host is `192.168.250.1` on it. Inside it:
+
+- bubblewrap, with Ubuntu's AppArmor restriction on user namespaces lifted for `bwrap`;
+- Node 24 and git;
+- tinyproxy, allowing GitHub, the model's API and the package registries by hostname;
+- the worker as a systemd unit, after tinyproxy, its settings in an `EnvironmentFile` only root
+  can read:
+
+```text
+WORKER_SECRET=<shared with the dispatcher>
+DISPATCHER_TOKEN_URL=http://192.168.250.1:8791/token
+CLAUDE_CODE_VERSION=<a pinned version>
+CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`>
+WORK_DIR=/var/lib/agent-worker
+JOBS_HOST=192.168.250.11
+JOBS_PORT=8787
+AGENT_SANDBOX=bwrap
+AGENT_SANDBOX_RO_BINDS=<Node's install directory>
+AGENT_SANDBOX_PATH=<Node's bin directory>:/usr/local/bin:/usr/bin:/bin
+AGENT_SANDBOX_PROXY=http://127.0.0.1:8888
+```
+
+**The `agentnet` firewall** is the User Script `agentnet-firewall`, run *At Startup of Array*.
+It puts an `AGENT-EGRESS` chain in the `mangle` table's `PREROUTING`, which libvirt, Docker and
+Tailscale do not reorder, matching traffic from `virbr-agent`: established connections return; DNS
+to `192.168.250.1:53`, DHCP, and the dispatcher's token door at `192.168.250.1:8791` are allowed;
+everything to `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.168/16`, `224/4`
+and `240/4` is dropped, and all of the bridge's IPv6. Only then does the script start the VM, so
+the VM's own Autostart stays off. The token door is reachable from inside the agent box, the
+sandbox included, which is why it mints only for a request signed with `WORKER_SECRET`, a file the
+sandbox cannot see.
+
+**The dispatcher** lives in `/mnt/user/appdata/agent-dispatcher/`: the App's key, `app.pem`, and
+its settings, `dispatcher.env`:
+
+```text
+GITHUB_APP_ID=<the App's ID>
+GITHUB_APP_PRIVATE_KEY_FILE=/app/app.pem
+GITHUB_WEBHOOK_SECRET=<the App's webhook secret>
+WORKER_URL=http://192.168.250.11:8787/jobs
+WORKER_SECRET=<shared with the worker>
+WEBHOOK_HOST=127.0.0.1
+WEBHOOK_PORT=8790
+TOKEN_HOST=192.168.250.1
+TOKEN_PORT=8791
+```
+
+It runs as a container with host networking, since libvirt's NAT network admits new connections
+from the host and not from a container on Docker's own bridge, and restarts unless stopped:
+
+```bash
+docker run -d --name agent-dispatcher --restart unless-stopped --network host \
+  --env-file /mnt/user/appdata/agent-dispatcher/dispatcher.env \
+  -v /mnt/user/appdata/agent-dispatcher:/app:ro node:24-alpine \
+  npm exec --yes @jeffwlawson/agent-workflows@<version> dispatcher
+```
+
+with the registry's `.npmrc` beside it. **Tailscale Funnel** publishes the webhook door, on port
+10000 (the server's `serve` already holds 8443):
+
+```bash
+tailscale funnel --bg --https=10000 http://127.0.0.1:8790
+```
+
+The App's webhook URL is then the server's Funnel name, `https://<node>.<tailnet>.ts.net:10000/github`.
+Leave *Settings → Tailscale → Allow Tailscale Funnel* at **Yes**, or the plugin's watcher removes
+the Funnel.
+
+**After a reboot the chain comes back on its own**, as #374 showed with the prototype: the array
+starts, `agentnet-firewall` puts the rules in and starts the VM, the VM's units start in order
+(its egress rules, tinyproxy, the worker), the dispatcher's container comes back, and the Funnel
+stays public. About 11 minutes from *Reboot* to a review. Restarting the VM service alone does
+**not** bring it back (Unraid cannot remount `libvirt.img` until a reboot), so reboot the server
+instead of turning VM Manager off and on. Deliveries made while it was down are lost, as above:
+re-add the label.

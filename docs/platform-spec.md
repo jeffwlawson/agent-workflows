@@ -605,7 +605,9 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 
 > **Service orchestrator:** the chain moves on only when a review ends on an approval and
 > `review:advance` puts `agent:implement` back on the parent. An orchestrator that does not run it
-> leaves the chain waiting on a human to add the label.
+> leaves the chain waiting on a human to add the label. The service runs it (§8), but answers
+> `agent:review` only: on a repository it serves, the `agent:implement` advance re-adds waits for an
+> orchestrator that answers it, which is expected while `implement-prd` has not joined the service.
 
 ## 8. `review`
 
@@ -706,7 +708,14 @@ text, and `review:publish` and `review:advance` write every final string from th
 > and the runner, in the sandbox its settings name, with a fresh `read` token as `GH_TOKEN`. Where the
 > review finished it asks for a `write` token and runs `review:publish`, pointed at the runner's
 > directory; then `review:conclude`, however the run ended, pointed at publish's directory, with a
-> `write` token and `LOOP_TOKEN_SOURCE` `app`. Each command gets its token as both `GH_TOKEN` and,
+> `write` token and `LOOP_TOKEN_SOURCE` `app`. On a PRD pull request, where the gate went ahead
+> and conclude's `ended.json` says the head did not move, it then asks for a `write` token of
+> advance's own and runs `review:advance`, pointed at the runner's directory for `park.json` and
+> `progress.json`, and told how the review ended (`REVIEW_RESULT`), how the posting ended
+> (`POSTING_RESULT`: `failure` where the posting token's mint, publish or conclude failed,
+> `cancelled` where publish or conclude was ended at its limit, else `success`), and
+> conclude's `moved` and review URL. The dispatcher refuses a fork, so every job is from the
+> repository itself. Each command gets its token as both `GH_TOKEN` and,
 > where it declares one, `LOOP_TOKEN`. Where `review.yml` passes something the service does not
 > have, it passes the nearest equivalent:
 >
@@ -723,14 +732,22 @@ text, and `review:publish` and `review:advance` write every final string from th
 > - **The time limits are the jobs'.** The gate, the checkout, the budget, the CI wait and the
 >   runner share the review's time limit, the CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`, as the
 >   review job's `timeout-minutes` does, and `review:publish` and `review:conclude` get the posting
->   job's 10 minutes each. A phase still running at its limit is ended with every process it
->   started. One of the review's is then `REVIEW_RESULT` `cancelled` with `TIMED_OUT` `true` and
->   `TIMEOUT_MINUTES` the limit, which conclude says as a timeout; a publish ended so is
->   `PUBLISH_OUTCOME` `cancelled`.
+>   job's 10 minutes each, and `review:advance` the advance job's 5. A phase still running at its
+>   limit is ended with every process it started. One of the review's is then `REVIEW_RESULT`
+>   `cancelled` with `TIMED_OUT` `true` and `TIMEOUT_MINUTES` the limit, which conclude says as a
+>   timeout; a publish ended so is `PUBLISH_OUTCOME` `cancelled`.
+> - **The failures are the reusable's.** Conclude runs however the phases before it ended and is
+>   told each one's real outcome: a runner that failed is `REVIEW_RESULT` `failure` with the
+>   `FAILURE_REASON` its `failure_reason.txt` gave; a `read` token not granted is a review that
+>   failed, saying so; a `write` token not granted for publish is `MINT_OUTCOME` `failure`; a
+>   publish that failed is `PUBLISH_OUTCOME` `failure`. Where no token is granted to conclude
+>   either, nothing can write to the pull request, and the worker's log says why the run ended.
+> - **Each run leaves a directory**: the checkout, each subcommand's output directory and log, and
+>   a summary of the job, each phase's outcome and each subcommand's environment, with every token
+>   redacted.
 >
 > Not run: the red check, so `RED_CHECK_CONFIGURED` is unset; the repository's own install and
-> setup commands, so the agent reviews a checkout without its dependencies; and, at this release,
-> `review:advance`.
+> setup commands, so the agent reviews a checkout without its dependencies.
 
 ### `review:gate`
 

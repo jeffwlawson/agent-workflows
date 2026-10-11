@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
+import { PRD_BRANCH_PREFIX } from "../shared/record.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
 import { parseJob, reviewTimeLimit, SIGNATURE_HEADER, verifySignature, type ReviewJob, type TokenKind } from "./job.js";
 
@@ -11,8 +12,8 @@ import { parseJob, reviewTimeLimit, SIGNATURE_HEADER, verifySignature, type Revi
  * the same subcommands in the same order, each told what the reusable tells
  * it. It writes nothing to the record and spells no record string: every
  * write is a command's. What it reads between them is the hand-over the
- * reusable's glue steps read, `gate.json`, `budget.json` and `verdict.json`,
- * copied across as they are.
+ * reusable's glue steps read, `gate.json`, `budget.json`, `verdict.json` and
+ * `ended.json`, copied across as they are.
  *
  * Its decisions are here, over edges it is handed: the dispatcher's token
  * door, the launcher that starts a subcommand, git, and the host. `serve.ts`
@@ -89,6 +90,15 @@ export interface JobEdges {
  * publish that hangs still leaves conclude its time to say so.
  */
 export const POSTING_MINUTES = 10;
+
+/** `review:advance`'s time limit, in minutes: the advance job's `timeout-minutes` in `review.yml`. */
+export const ADVANCE_MINUTES = 5;
+
+/** The run summary's name in the run's directory. */
+export const SUMMARY_FILE = "summary.json";
+
+/** What stands in for a token in the run summary and the worker's log. */
+export const REDACTED = "[redacted]";
 
 /**
  * The fix-round budget the worker hands `review:budget`, whatever the
@@ -178,21 +188,50 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
  * 6. A `write` token, then `review:publish`, where the review finished.
  * 7. `review:conclude`, however the phases before it ended, told how each did.
+ * 8. On a PRD pull request, where the gate went ahead and the head did not
+ *    move, a `write` token and `review:advance`, told how the review and the
+ *    posting ended.
  *
  * Each subcommand gets a fresh output directory of its own, and a command
  * that reads another's files is pointed at that one's. Never throws: a phase
  * that fails is an ending conclude is told, and one conclude cannot be run for
- * is the last phase in what this returns, for the worker's log.
+ * is the last phase in what this returns, with the reason the run ended, for
+ * the worker's log, since nothing on the pull request will say it.
+ *
+ * **The run leaves a summary**, `SUMMARY_FILE` in the run's directory: the
+ * job, each phase's outcome, and each subcommand's directory, log and
+ * environment, with every token it was handed redacted, as is what this
+ * returns.
  *
  * **Every phase has a time limit**, as every job on Actions does. Phases 1 to
  * 5 share the review's, its CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`
  * (`reviewTimeLimit`), and one still running at it is ended and told to
- * conclude as a timeout. Publish and conclude get `POSTING_MINUTES` each.
+ * conclude as a timeout. Publish and conclude get `POSTING_MINUTES` each, and
+ * advance `ADVANCE_MINUTES`.
  */
 export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phase[]> => {
   const phases: Phase[] = [];
   const note = (name: string, outcome: string): void => {
     phases.push({ name, outcome });
+  };
+  /** What each subcommand was started with, for the run summary. */
+  const started: { readonly subcommand: Subcommand; readonly env: Readonly<Record<string, string>>; readonly cwd: string; readonly log: string }[] =
+    [];
+  /**
+   * Every token this run holds, the dispatcher's and the agent's, each
+   * replaced wherever it appears in what the run leaves for a person to read.
+   */
+  const secrets = new Set(Object.entries(edges.agent).flatMap(([name, value]) => (name.endsWith("TOKEN") && value !== "" ? [value] : [])));
+  const redact = (text: string): string => [...secrets].reduce((done, secret) => done.split(secret).join(REDACTED), text);
+  /** The summary written, and the phases answered, redacted: the end of every path through the job. */
+  const done = (): readonly Phase[] => {
+    const summary = {
+      job,
+      phases,
+      subcommands: started.map((launch) => ({ ...launch, outputDir: launch.env["OUTPUT_DIR"] })),
+    };
+    fs.writeFileSync(path.join(edges.runDir, SUMMARY_FILE), `${redact(JSON.stringify(summary, null, 2))}\n`);
+    return phases.map(({ name, outcome }) => ({ name, outcome: redact(outcome) }));
   };
   const checkout = path.join(edges.runDir, "checkout");
   const outputDir = (name: Subcommand): string => path.join(edges.runDir, "out", name.replace(":", "-"));
@@ -227,6 +266,7 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
     const env = environmentFor(subcommand, { ...values, OUTPUT_DIR: dir }, host);
+    started.push({ subcommand, env, cwd, log: logFile(subcommand) });
     let code: number;
     try {
       code = await edges.launch({ subcommand, env, cwd, log: logFile(subcommand), signal });
@@ -240,13 +280,15 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
       note(subcommand, "timed out");
       return { ok: false, timedOut: true, dir };
     }
-    note(subcommand, code === 0 ? "success" : `failure (exit ${code})`);
+    const why = code === 0 ? undefined : reason(dir, "failure_reason.txt");
+    note(subcommand, code === 0 ? "success" : `failure (exit ${code})${why === undefined ? "" : `: ${why}`}`);
     return { ok: code === 0, timedOut: false, dir };
   };
 
   const ask = async (kind: TokenKind): Promise<string | undefined> => {
     try {
       const token = await edges.token(kind);
+      if (token !== "") secrets.add(token);
       note(`${kind} token`, "success");
       return token;
     } catch (error) {
@@ -432,11 +474,14 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
   // writes even where publish never asked for one.
   const concluding = write ?? (await ask("write"));
   if (concluding === undefined) {
-    note("review:conclude", "not run: the dispatcher granted no token to write the ending with");
-    return phases;
+    // Nothing can say so on the pull request, so the worker's log says why
+    // the run ended as well.
+    const ended = review.failureReason ?? (review.timedOut ? `the review timed out after ${minutes} minutes` : `the review's result was ${review.result}`);
+    note("review:conclude", `not run: the dispatcher granted no token to write the ending with, and the run had ended so: ${ended}`);
+    return done();
   }
   const concludeLimit = limit(POSTING_MINUTES);
-  await run(
+  const concluded = await run(
     "review:conclude",
     {
       ...common,
@@ -467,7 +512,51 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
     concludeLimit.signal,
   );
   concludeLimit.clear();
-  return phases;
+  const ended = decisions(concluded.dir, "ended.json");
+
+  // 8. The PRD chain's advance, on a PRD pull request only, where the gate
+  // went ahead, since a refusal ended no round, and where the head did not
+  // move, since the review of the new head decides. Every job is from this
+  // repository: the dispatcher refuses a fork.
+  if (!job.branch.startsWith(PRD_BRANCH_PREFIX) || gate["proceed"] !== "true" || ended["moved"] === "true") return done();
+  // The posting job's result: failed where a step of it did, cancelled where
+  // one was ended at its limit, as `needs.post-review.result` says it.
+  const postingResult =
+    mintOutcome === "failure" || publishOutcome === "failure" || (!concluded.ok && !concluded.timedOut)
+      ? "failure"
+      : publishOutcome === "cancelled" || concluded.timedOut
+        ? "cancelled"
+        : "success";
+  // A token of its own, as the advance job mints its own. Where none is
+  // granted nothing can write the chain's progress, and the log says so.
+  const advancing = await ask("write");
+  if (advancing === undefined) {
+    note("review:advance", "not run: the dispatcher granted no token to advance the PRD chain with");
+    return done();
+  }
+  const advanceLimit = limit(ADVANCE_MINUTES);
+  await run(
+    "review:advance",
+    {
+      ...common,
+      GH_TOKEN: advancing,
+      LOOP_TOKEN: advancing,
+      LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
+      PARK_DIR: reviewDir,
+      REVIEW_RESULT: review.result,
+      POSTING_RESULT: postingResult,
+      MOVED: ended["moved"],
+      REVIEW_URL: ended["reviewUrl"],
+      VERDICT: verdict["verdict"],
+      FIX_ROUND: verdict["fixRound"],
+      ROUND: gate["round"],
+      MINT_OUTCOME: "success",
+    },
+    edges.runDir,
+    advanceLimit.signal,
+  );
+  advanceLimit.clear();
+  return done();
 };
 
 /** What the job door needs: the shared secret, the worker's own release, and where an accepted job goes. */

@@ -13,21 +13,27 @@
  * was unset before is unset again. Variables the subcommand does not declare
  * (`PATH`, the `gh` replay's `GH_REPLAY_*`) pass through, and are set here too
  * where a test gives them. `init` and `doctor` are in neither map, so they
- * declare nothing to unset.
+ * declare nothing to unset. A service process's settings, in `SERVICE`, are
+ * treated as its inputs.
  *
  * The one place a test that runs the CLI writes `process.env`:
  * `tests/agent-cli.test.ts` fails on any other.
  */
 import { run, type CliIo } from "../cli.js";
+import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
 
 /** Variable to its value for the run, or `undefined` to have it unset. */
 export type Given = Readonly<Record<string, string | undefined>>;
 
-/** The input names `subcommand` declares, or none for a name in neither map. */
+/** The input names `subcommand` declares, or a service process's settings, or none for the install path. */
 export const declaredInputs = (subcommand: string | undefined): readonly string[] => {
-  const declared = [...Object.entries(RUNNERS), ...Object.entries(COMMANDS)].find(([name]) => name === subcommand);
-  return declared === undefined ? [] : Object.keys(declared[1].inputs);
+  const declared = [
+    ...Object.entries(RUNNERS).map(([name, { inputs }]) => [name, inputs] as const),
+    ...Object.entries(COMMANDS).map(([name, { inputs }]) => [name, inputs] as const),
+    ...Object.entries(SERVICE).map(([name, { settings }]) => [name, settings] as const),
+  ].find(([name]) => name === subcommand);
+  return declared === undefined ? [] : Object.keys(declared[1]);
 };
 
 const put = (name: string, value: string | undefined): void => {

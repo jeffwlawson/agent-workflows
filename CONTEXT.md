@@ -564,6 +564,29 @@ They ship in the same package as the runners on purpose. The version that writes
 version that pin names, and the version that diagnoses a loop has to be the one whose guards it
 knows about; a separate installer is a second thing to keep in step with the release.
 
+### And the service orchestrator, which is an orchestrator, not a part
+
+The three parts are the Actions orchestrator's insides. The **service orchestrator** (PRD #453) is
+a second orchestrator beside it, so it is not a fourth part: it does the job the caller and the
+reusable do, for the repositories that opt in with `AGENT_ORCHESTRATOR=service` (spec §4.2). Its
+processes are more subcommands of the same binary, in neither `RUNNERS` nor `COMMANDS`, and its code
+is `service/`: not a workflow's folder, not `shared/`, and not `engine/`, since it imports the
+contract and the record, which makes it loop code.
+
+The **dispatcher** (#456) is the only holder of the GitHub App's key. GitHub's webhooks arrive at
+one of its doors, and an `agent:review` delivery on a repository that opted in becomes a **job**
+for the worker: what the label's event carried, the variables review reads, the App's login read
+off the App's own record, an id, a deadline and the release. A job carries no token. The worker
+asks for one at the other door at the start of each phase, `read` or `write`, and the dispatcher
+mints one for that job's repository alone, before its deadline, after reading the opt-in again, so
+deleting the variable stops a job in flight at its next phase. The job's format is one module,
+`service/job.ts`, which both processes import, so it only has to hold within one release.
+
+Its settings are declared in `service/settings.ts` in the contract's style and read through
+`readInputs`, like a runner's inputs, but they are no runner's inputs and have no row in the spec:
+[`docs/deploying-the-service.md`](./docs/deploying-the-service.md) lists them, held equal to the
+declaration by a test, and says how to deploy the service.
+
 ### Why reusable workflows and not a composite action
 
 A composite action cannot declare `on:`, `permissions:`, `concurrency:` or a job-level `if:` —

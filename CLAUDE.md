@@ -89,7 +89,11 @@ repo loses the instruction the prompts depend on.
 A **runner** starts the agent; a **command** does an orchestrator's work on the record and starts
 none (ADR 0004). Both are subcommands, and the kind is declared: runners in `RUNNERS` and commands
 in `COMMANDS`, in `shared/contract.ts`. `tests/agent-cli.test.ts` holds the CLI's `SUBCOMMANDS`
-equal to the two maps, kind for kind, with `init` and `doctor` the only subcommands in neither.
+equal to the two maps, kind for kind, with the install path (`init` and `doctor`) and the service
+orchestrator's processes (`dispatcher`) the only subcommands in neither. A service process takes no
+arguments either: its settings are declared in `service/settings.ts`, read through `readInputs`,
+and listed in `docs/deploying-the-service.md`, which `tests/service/settings.test.ts` holds equal to
+the declaration.
 
 1. A runner is `<name>/<name>.ts` for the logic, `<name>/prompt.md` for what the agent is told.
    It does its work when imported.
@@ -115,7 +119,7 @@ equal to the two maps, kind for kind, with `init` and `doctor` the only subcomma
 5. **Every input a runner or command reads is declared** in `shared/contract.ts`, required or
    optional with a default, and read through `readInputs`: at the top of a runner, and by `cli.ts`
    for a command. A helper is handed the values it needs as arguments and reads no environment.
-   `shared/env.ts` is the one module in a runner, a command or `shared/` that names
+   `shared/env.ts` is the one module in a runner, a command, `shared/` or `service/` that names
    `process.env`, and `tests/agent-cli.test.ts` fails on any other.
    **Every file it writes into `OUTPUT_DIR` is declared there too**, as its outputs, and written
    through the `writers` that declaration gives it, so an undeclared name fails typechecking. A

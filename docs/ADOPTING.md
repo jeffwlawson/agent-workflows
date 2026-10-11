@@ -498,7 +498,8 @@ wins. `0` turns the upload off:
 Everything above is the **Actions orchestrator**: the callers in `.github/workflows/` and the
 reusables they call. The loop also has a **service orchestrator**, a dispatcher and a worker you run
 on a machine of your own, so the agent spends none of your Actions minutes. How to run one is the
-service orchestrator's deployment guide, *Deploying the service orchestrator*.
+service orchestrator's deployment guide, [*Deploying the service
+orchestrator*](./deploying-the-service.md).
 
 A repository chooses with one **repository variable**, set the way the model ones are (§2b):
 

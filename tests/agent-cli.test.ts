@@ -9,6 +9,8 @@ import { SUBCOMMANDS, type CliIo } from "../cli.js";
 import { file as fileFollowUps } from "../follow-ups/file.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
+import { serveDispatcher } from "../service/serve.js";
+import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
 import * as record from "../shared/record.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -67,6 +69,8 @@ vi.mock("../follow-ups/file.js", () => ({ file: vi.fn() }));
 // And the one that writes through the engine, for the same reason.
 vi.mock("../review/publish.js", () => ({ publish: vi.fn() }));
 vi.mock("../review/gate.js", () => ({ gate: vi.fn() }));
+// And the dispatcher's start, which would listen on two ports.
+vi.mock("../service/serve.js", () => ({ serveDispatcher: vi.fn() }));
 
 /** Every write of a `failure_reason.txt` since the spy was last cleared. */
 const reasonsWritten = (): readonly unknown[] =>
@@ -396,11 +400,13 @@ describe("the runner CLI dispatches on a subcommand", () => {
  */
 describe("every subcommand is declared in the contract, as its kind", () => {
   /**
-   * The install path, which a human types and which takes flags: in neither
-   * map, and the only subcommands that are not. A third has to be added here
-   * on purpose.
+   * The install path, which a human types and which takes flags, and the
+   * service orchestrator's processes (PRD #453), which are an orchestrator
+   * rather than a step one runs: in neither map, and the only subcommands that
+   * are not. Another has to be added here on purpose.
    */
   const INSTALL_PATH = ["doctor", "init"];
+  const SERVICE_PROCESSES = ["dispatcher"];
 
   const registered = (kind: string): string[] =>
     Object.entries(SUBCOMMANDS)
@@ -416,11 +422,16 @@ describe("every subcommand is declared in the contract, as its kind", () => {
     expect(registered("command")).toEqual(Object.keys(COMMANDS).sort());
   });
 
-  it("leaves only the install path out of both maps", () => {
+  it("leaves only the install path and the service's processes out of both maps", () => {
     expect(registered("install")).toEqual(INSTALL_PATH);
+    expect(registered("service")).toEqual(SERVICE_PROCESSES);
     expect(Object.keys(SUBCOMMANDS).filter((name) => !(name in RUNNERS) && !(name in COMMANDS)).sort()).toEqual(
-      INSTALL_PATH,
+      [...INSTALL_PATH, ...SERVICE_PROCESSES].sort(),
     );
+  });
+
+  it("declares the settings of each of the service's processes, and of no other subcommand", () => {
+    expect(Object.keys(SERVICE).sort()).toEqual(SERVICE_PROCESSES);
   });
 
   it.each(Object.keys(COMMANDS))("%s: is named <workflow>:<step>", (name) => {
@@ -564,6 +575,86 @@ describe("the CLI runs a command that reads", () => {
 
     expect(command).not.toHaveBeenCalled();
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: HEAD_SHA");
+  });
+});
+
+/**
+ * A process of the service orchestrator (PRD #453) takes no arguments and
+ * reads its settings from the environment, as declared in
+ * `service/settings.ts`, so a missing one stops it at start, naming each. The
+ * start itself is a stand-in, mocked at the top of this file.
+ */
+describe("the CLI starts the dispatcher", () => {
+  class Exited extends Error {}
+  const SETTINGS = {
+    GITHUB_APP_ID: "12345",
+    GITHUB_APP_PRIVATE_KEY_FILE: "/app/app.pem",
+    GITHUB_WEBHOOK_SECRET: "a-webhook-secret",
+    WORKER_URL: "http://worker:8787/jobs",
+    WORKER_SECRET: "a-worker-secret",
+  } as const;
+  const start = vi.mocked(serveDispatcher);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    start.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+  });
+
+  it("starts with its declared settings, an optional one unset read as its default", async () => {
+    const { code } = await invoke(["dispatcher"], { ...SETTINGS, TOKEN_PORT: "9001" });
+
+    expect(code).toBe(0);
+    expect(start).toHaveBeenCalledWith(
+      {
+        ...SETTINGS,
+        WEBHOOK_HOST: "127.0.0.1",
+        WEBHOOK_PORT: "8790",
+        TOKEN_HOST: "127.0.0.1",
+        TOKEN_PORT: "9001",
+        JOB_DEADLINE_MARGIN_MINUTES: "60",
+      },
+      expect.any(Function),
+    );
+  });
+
+  it("refuses to start without its required settings, naming each one", async () => {
+    await expect(invoke(["dispatcher"], {})).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith(
+      "\nFAILED: Missing required env vars: GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_FILE, GITHUB_WEBHOOK_SECRET, WORKER_URL, WORKER_SECRET",
+    );
+  });
+
+  it("refuses an argument", async () => {
+    const { code, err } = await invoke(["dispatcher", "--port", "1"], SETTINGS);
+
+    expect(code).toBe(2);
+    expect(err).toContain("`dispatcher` takes no arguments, but got: --port 1");
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("turns a failure to start into fail(), with the reason", async () => {
+    start.mockRejectedValue(new Error("`WEBHOOK_PORT` is `http`, which is not a whole number."));
+
+    await expect(invoke(["dispatcher"], SETTINGS)).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(logged).toHaveBeenCalledWith("\nFAILED: `WEBHOOK_PORT` is `http`, which is not a whole number.");
   });
 });
 
@@ -764,9 +855,10 @@ describe("a test runs a subcommand with exactly the inputs it gives", () => {
     expect(command).toHaveBeenCalledTimes(1);
   });
 
-  it("unsets nothing for the install path, which declares nothing", () => {
+  it("unsets nothing for the install path, which declares nothing, and a service process's settings", () => {
     expect(declaredInputs("init")).toEqual([]);
     expect(declaredInputs("doctor")).toEqual([]);
+    expect(declaredInputs("dispatcher")).toEqual(Object.keys(SERVICE.dispatcher.settings));
     expect(declaredInputs("review:publish")).toEqual(Object.keys(COMMANDS["review:publish"].inputs));
     expect(declaredInputs("implement")).toEqual(Object.keys(RUNNERS.implement.inputs));
   });
@@ -904,7 +996,8 @@ describe("a test that runs the CLI writes process.env only through the helper", 
  *
  * Read off the syntax tree rather than the text, because the rule is about
  * code: a doc comment saying what `process.env` holds is not a read. `setup/`
- * and `scripts/` are not runners, and are not walked.
+ * and `scripts/` are not runners, and are not walked. `service/` is, since the
+ * service's settings are declared and read through the same accessor.
  */
 describe("every input a runner reads goes through its declaration", () => {
   const ACCESSOR = "shared/env.ts";
@@ -921,7 +1014,7 @@ describe("every input a runner reads goes through its declaration", () => {
     return lines;
   };
 
-  const surface = [...new Set([...runnerDirs, ...commandModules.map((module) => path.posix.dirname(module)), "shared"])].flatMap((dir) =>
+  const surface = [...new Set([...runnerDirs, ...commandModules.map((module) => path.posix.dirname(module)), "shared", "service"])].flatMap((dir) =>
     fs
       .readdirSync(path.join(PACKAGE_DIR, dir), { recursive: true, encoding: "utf8" })
       .filter((name) => name.endsWith(".ts"))
@@ -929,8 +1022,9 @@ describe("every input a runner reads goes through its declaration", () => {
   );
   const source = (rel: string): string => fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8");
 
-  it("walks every runner, every command and shared/, the accessor's module among them", () => {
+  it("walks every runner, every command, shared/ and service/, the accessor's module among them", () => {
     expect(surface).toContain(ACCESSOR);
+    expect(surface).toContain("service/dispatcher.ts");
     expect(surface).toContain("shared/common.ts");
     for (const dir of runnerDirs) expect(surface).toContain(`${dir}/${dir}.ts`);
     for (const module of commandModules) expect(surface).toContain(module);

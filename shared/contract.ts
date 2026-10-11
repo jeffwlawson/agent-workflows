@@ -145,9 +145,37 @@ const LOOP_ACCOUNTS = {
 } as const satisfies Inputs;
 
 /**
- * What a runner that drives the agent reads to start it: the model token, and
- * the model, resolved in `shared/agent.ts`'s `agentModel` from the runner's
- * own override, then `AGENT_MODEL`, then the baked default. The override's
+ * **The sandbox the agent runs in** (`docs/platform-spec.md` §3), chosen by the
+ * agent driver, `agentSandbox` in `shared/agent.ts`, from these. Every runner
+ * starts the agent, so every runner reads them, and an orchestrator that sets
+ * none of them gets `none`, which is the Actions orchestrator's.
+ *
+ * - `AGENT_SANDBOX`: `none` or `bwrap`. Unset or empty is `none`, and any
+ *   other value fails the run, naming it, so a typo never runs the agent
+ *   unsandboxed. No `docker` or `podman`: in Sandcastle 0.12.0 they are
+ *   isolated providers that resume no session, and a runner that extracts a
+ *   structured result resumes one.
+ * - `AGENT_SANDBOX_RO_BINDS`: host directories, `:`-separated, that `bwrap`
+ *   binds read-only at the same path, for the toolchain. Empty is none.
+ * - `AGENT_SANDBOX_PATH`: `PATH` inside `bwrap`.
+ * - `AGENT_SANDBOX_PROXY`: the proxy every `bwrap` request leaves through.
+ *   Empty is none.
+ *
+ * The last three mean nothing under `none`, where the agent has the runner's
+ * own environment and filesystem.
+ */
+export const SANDBOX = {
+  AGENT_SANDBOX: { required: false, default: "none", accepts: ["none", "bwrap"] },
+  AGENT_SANDBOX_RO_BINDS: EMPTY,
+  AGENT_SANDBOX_PATH: { required: false, default: "/usr/local/bin:/usr/bin:/bin" },
+  AGENT_SANDBOX_PROXY: EMPTY,
+} as const satisfies Inputs;
+
+/**
+ * What a runner that drives the agent reads to start it: the model token, the
+ * sandbox it runs in, and the model, resolved in `shared/agent.ts`'s
+ * `agentModel` from the runner's own override, then `AGENT_MODEL`, then the
+ * baked default. The override's
  * name is computed from the runner's (`update-branch` reads
  * `AGENT_MODEL_UPDATE_BRANCH`), so each runner below names its own, and a test
  * holds the name to the one `agentModel` computes.
@@ -155,6 +183,7 @@ const LOOP_ACCOUNTS = {
 const AGENT = {
   CLAUDE_CODE_OAUTH_TOKEN: REQUIRED,
   AGENT_MODEL: EMPTY,
+  ...SANDBOX,
 } as const satisfies Inputs;
 
 /**

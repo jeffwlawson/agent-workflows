@@ -1,6 +1,10 @@
+import { homedir } from "node:os";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { OutputObjectDefinition, RunOptions, RunResult } from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
+import { bwrap } from "../engine/bwrap.js";
+import type { SANDBOX } from "./contract.js";
+import type { InputValues } from "./env.js";
 
 /**
  * The agent driver: everything that loads the agent SDK, and the one module
@@ -117,13 +121,42 @@ export const claudeAgent = (
 };
 
 /**
- * The sandbox every runner starts the agent in, chosen here and nowhere else:
- * a runner names no provider. `none`, so the agent runs on the runner's own
- * machine. On Actions the ephemeral runner IS the isolation, and running the
- * agent directly on it means the agent's environment and CI's are identical by
- * construction: no image drift, no "works in the sandbox, fails in CI".
+ * The sandbox inputs every runner declares (`SANDBOX` in `shared/contract.ts`),
+ * as `readInputs` read them: `AGENT_SANDBOX` is already one of the values it
+ * accepts, since any other fails the run there, naming it.
  */
-export const agentSandbox = () => noSandbox();
+export type SandboxInputs = InputValues<typeof SANDBOX>;
+
+/**
+ * The sandbox every runner starts the agent in, chosen here and nowhere else:
+ * a runner names no provider, and this is the one module that loads Sandcastle,
+ * so no command can reach the choice.
+ *
+ * - `none`: the agent runs on the runner's own machine. On Actions the
+ *   ephemeral runner IS the isolation, and running the agent directly on it
+ *   means the agent's environment and CI's are identical by construction: no
+ *   image drift, no "works in the sandbox, fails in CI".
+ * - `bwrap`: the agent runs in bubblewrap on the host (`engine/bwrap.ts`),
+ *   with the toolchain, `PATH` and proxy its inputs name. The run starts in
+ *   the checkout, which is where Sandcastle writes its patches.
+ *
+ * Call it once per runner and hand both of `runWithExtraction`'s passes the
+ * one provider: `bwrap` carries the session between them itself.
+ */
+export const agentSandbox = (inputs: SandboxInputs) => {
+  switch (inputs.AGENT_SANDBOX) {
+    case "none":
+      return noSandbox();
+    case "bwrap":
+      return bwrap({
+        roBinds: inputs.AGENT_SANDBOX_RO_BINDS.split(":").filter((dir) => dir !== ""),
+        path: inputs.AGENT_SANDBOX_PATH,
+        ...(inputs.AGENT_SANDBOX_PROXY === "" ? {} : { proxy: inputs.AGENT_SANDBOX_PROXY }),
+        repoDir: process.cwd(),
+        homeDir: homedir(),
+      });
+  }
+};
 
 export interface RunWithExtractionOptions<T> extends Omit<RunOptions, "output"> {
   readonly output: OutputObjectDefinition<T>;

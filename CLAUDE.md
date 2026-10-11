@@ -107,8 +107,9 @@ equal to the two maps, kind for kind, with `init` and `doctor` the only subcomma
 3. **Folders follow the workflow** (ADR 0004). A workflow's folder, named after its reusable,
    holds its runner where it has one and every command that runs in its jobs. `shared/` holds
    only loop code two or more workflows use. The one folder drawn by layer is `engine/`, which
-   ADR 0005 adds: the writer, the GitHub reader and marker splicing. It imports nothing from the
-   loop, reads no environment and spells no record string, and `tests/engine/boundary.test.ts`
+   ADR 0005 adds: the writer, the GitHub reader and marker splicing, and the `bwrap` sandbox
+   provider, which only the agent driver imports, since it loads the agent SDK. It imports nothing
+   from the loop, reads no environment and spells no record string, and `tests/engine/boundary.test.ts`
    fails on each. A command's tests use the fakes in `tests/engine/fakes.ts`.
 4. Add tests under `tests/`, mirroring the source.
 5. **Every input a runner or command reads is declared** in `shared/contract.ts`, required or

@@ -59,7 +59,7 @@ try {
   const result = await runWithExtraction({
     name: `update-branch-pr-${PR_NUMBER}`,
     agent: claudeAgent("update-branch", INPUTS),
-    sandbox: agentSandbox(),
+    sandbox: agentSandbox(INPUTS),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

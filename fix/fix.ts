@@ -128,7 +128,7 @@ try {
   const result = await runWithExtraction({
     name: `fix-${PR_NUMBER}`,
     agent: claudeAgent("fix", INPUTS),
-    sandbox: agentSandbox(),
+    sandbox: agentSandbox(INPUTS),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

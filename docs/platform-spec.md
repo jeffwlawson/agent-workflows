@@ -137,6 +137,19 @@ A command that runs where no token is held, as the red check's two do beside the
 code, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
 nor `GH_TOKEN`, and an orchestrator hands it neither.
 
+Every runner starts the agent, so every runner reads the inputs that choose its sandbox (§3). An
+orchestrator that sets none of them gets `none`. Each is a row in each runner's own table too:
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the sandbox the agent runs in (§3). Unset or empty is `none`, and any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Host directories, `:`-separated, that `bwrap` binds read-only at the same path: the toolchain, `claude` and `node`. Empty is none. |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap`. |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy every `bwrap` request leaves through, set as every proxy variable. Empty is none. |
+
+The last three mean nothing under `none`, where the agent has the runner's own environment and
+filesystem.
+
 Each runner's and command's own inputs are in its workflow's section, §6 to §11.
 
 ### 2.3 Outputs
@@ -240,11 +253,22 @@ holds the reusables to several of the mechanisms below (`tests/workflows.test.ts
 > [parity §6](./parity.md#6-security-controls).
 
 **The sandbox.** Which provider, and what it ***must*** support, is a runner concern the
-orchestrator selects. Unset means `none`: the agent runs in the runner's own process environment
-and filesystem, and the orchestrator's isolation of the whole run is all there is. In this release
-no input selects a provider, so every run is `none`. Whatever provider a runner gains ***must***
-support resuming a session, since a runner that extracts a structured result runs the agent twice,
-the second time resuming the first session.
+orchestrator selects, through the runner's `AGENT_SANDBOX` input (§2.2). Unset means `none`: the
+agent runs in the runner's own process environment and filesystem, and the orchestrator's isolation
+of the whole run is all there is. `bwrap` runs the agent in bubblewrap on the host, with no access to
+the host's home, credentials or other runs:
+
+- every command the agent runs gets a fresh namespace, with the network shared, every capability
+  dropped and the environment cleared but for what the runner hands the agent;
+- `/usr` and the directories `AGENT_SANDBOX_RO_BINDS` names are read-only, and the run gets a
+  writable home and temporary directory of its own;
+- `AGENT_SANDBOX_PROXY` is set as every proxy variable;
+- the agent's work comes back only as Sandcastle's patches and session files: a write under `.git`,
+  or of a symlink that leaves the sandbox, is refused.
+
+Whatever provider a runner offers ***must*** support resuming a session, since a runner that
+extracts a structured result runs the agent twice, the second time resuming the first session.
+That is why `docker` and `podman` are not offered.
 
 **`doctor` cannot check this.** The provider is chosen where the runner runs, not in the
 repository.
@@ -252,9 +276,13 @@ repository.
 > **Actions orchestrator:** relies on the quiet default. The runner VM is the isolation, and
 > outcomes 1 to 3 are met around the whole job rather than around the agent.
 
-> **Service orchestrator:** the prototype found that Sandcastle 0.12.0, the version this package
-> pins, resumes a session only for bind-mount providers. A provider that copies the checkout in
-> rather than mounting it loses the session between the two passes, and the extraction fails.
+> **Service orchestrator:** sets `AGENT_SANDBOX=bwrap`. The `bwrap` provider is isolated, not
+> bind-mount, on purpose: a bind-mount provider hands the agent the checkout's `.git` read-write
+> (sandcastle#1010), so `bwrap` copies the checkout in and the patches out instead. Sandcastle
+> 0.12.0, the version this package pins, resumes a session only for bind-mount providers; its
+> `docker` and `podman` are isolated, so they resume none. So `bwrap` carries the session between
+> the two passes itself: it keeps the agent's sessions when a pass ends and seeds the next pass's
+> sandbox with them.
 
 ## 4. The record
 
@@ -450,6 +478,10 @@ branch checked out, at `BASE_REF`, and a new branch named `BRANCH` created from 
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. Empty is the baked default. |
 | `AGENT_MODEL_IMPLEMENT` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `ISSUE_NUMBER` | required | | The issue to build. |
 | `ISSUE_TITLE` | required | | Its title. |
@@ -494,6 +526,10 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_IMPLEMENT_PRD` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `ISSUE_NUMBER` | required | | The PRD parent. |
 | `ISSUE_TITLE` | required | | Its title. |
@@ -555,6 +591,10 @@ so the diff matches GitHub's.
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_REVIEW` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
@@ -1179,6 +1219,10 @@ diffing, and `RESCUE_BRANCH` fetched to `refs/rescue/<RESCUE_BRANCH>` where it e
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_FIX` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
@@ -1235,6 +1279,10 @@ conflicts. A merge that does not conflict needs no runner.
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_UPDATE_BRANCH` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
 | `BASE_REF` | required | | The branch being merged in. |

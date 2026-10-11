@@ -175,7 +175,7 @@ try {
   const result = await sandcastle.run({
     name: `implement-prd-#${ISSUE_NUMBER}-sub-#${SUB_NUMBER}`,
     agent: claudeAgent("implement-prd", INPUTS),
-    sandbox: agentSandbox(),
+    sandbox: agentSandbox(INPUTS),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

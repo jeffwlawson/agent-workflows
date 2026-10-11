@@ -407,7 +407,7 @@ try {
   const result = await runWithExtraction({
     name: `review-pr-${PR_NUMBER}`,
     agent: claudeAgent("review", INPUTS),
-    sandbox: agentSandbox(),
+    sandbox: agentSandbox(INPUTS),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {

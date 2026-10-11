@@ -10,6 +10,7 @@ import {
   isDirectoryInput,
   readsFrom,
   RUNNERS,
+  SANDBOX,
   type Command,
   type DirectoryInput,
   type Inputs,
@@ -85,6 +86,9 @@ const PROCESS = sectionsOf(sectionStarting(sectionsOf(SPEC, 2), "2. "), 3);
 
 /** §2.2's "every subcommand" table, name to `required` or `optional`. */
 const everyRunnerInputs = (): ReadonlyMap<string, string> => rowsOf(tablesIn(sectionStarting(PROCESS, "2.2 "))[0]);
+
+/** §2.2's second table, the sandbox inputs every runner reads, since every runner starts the agent. */
+const sandboxInputs = (): ReadonlyMap<string, string> => rowsOf(tablesIn(sectionStarting(PROCESS, "2.2 "))[1]);
 
 /** §2.4's common outputs table: its first, ahead of the exit codes. */
 const everyRunnerOutputs = (): readonly string[] => [...rowsOf(tablesIn(sectionStarting(PROCESS, "2.4 "))[0]).keys()];
@@ -220,6 +224,19 @@ describe("the spec's structure", () => {
 describe("the spec's tables equal the declarations", () => {
   it("§2.2's table is the inputs every subcommand reads", () => {
     expect(sorted(everyRunnerInputs())).toEqual(sorted(kindOf(EVERY_SUBCOMMAND)));
+  });
+
+  /**
+   * The sandbox inputs (#454) are each runner's own, so they are rows in each
+   * runner's table too, which the check below holds. This one holds §2.2's
+   * listing of them, read by an orchestrator's author as the set to choose a
+   * sandbox with, to the one declaration every runner spreads.
+   */
+  it("§2.2's second table is the sandbox inputs, and every runner declares them", () => {
+    expect(sorted(sandboxInputs())).toEqual(sorted(kindOf(SANDBOX)));
+    for (const runner of RUNNER_NAMES) {
+      expect(Object.keys(RUNNERS[runner].inputs), runner).toEqual(expect.arrayContaining(Object.keys(SANDBOX)));
+    }
   });
 
   it("§2.4's table carries failure_reason.txt, the file every subcommand writes", () => {

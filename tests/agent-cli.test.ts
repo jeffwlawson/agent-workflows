@@ -1057,6 +1057,14 @@ describe("a command's imports never reach the agent driver", () => {
     expect(driverIn(graph("review/review.ts"))).toContain(DRIVER);
   });
 
+  /**
+   * The sandbox selector is the driver's, and the `bwrap` provider loads the
+   * SDK itself, so a command reaching either is refused above (#454).
+   */
+  it("finds the bwrap provider from the driver, as a module that loads the SDK", () => {
+    expect(driverIn(graph(DRIVER))).toEqual(expect.arrayContaining([DRIVER, "engine/bwrap.ts"]));
+  });
+
   it("finds the SDK in the driver, and in no other module under shared/", () => {
     const loaders = fs
       .readdirSync(path.join(PACKAGE_DIR, "shared"))

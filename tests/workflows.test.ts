@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { APP_PERMISSIONS } from "../setup/app.js";
 import { isWorkflowBot, loopAccounts } from "../shared/loop-accounts.js";
-import { COMMANDS, type DirectoryInput, readsFrom, RUNNERS } from "../shared/contract.js";
+import { COMMANDS, type DirectoryInput, readsFrom, RUNNERS, SANDBOX } from "../shared/contract.js";
 import {
   FIX_BEFORE_MERGE_LABEL,
   type Finding,
@@ -9834,5 +9834,18 @@ describe("an artifact step hands over exactly the files a command declares", () 
       "${{ runner.temp }}/sub/b.json",
       "c.json",
     ]);
+  });
+});
+
+/**
+ * The Actions orchestrator runs every agent with no sandbox but its runner VM
+ * (`docs/platform-spec.md` §3), so no workflow file names an input that
+ * selects one (#454): unset is `none`, and that is the choice.
+ */
+describe("no workflow selects a sandbox", () => {
+  it.each(workflowFiles)("%s: names none of the sandbox inputs", (file) => {
+    const text = fs.readFileSync(file, "utf8");
+
+    expect(Object.keys(SANDBOX).filter((name) => text.includes(name))).toEqual([]);
   });
 });

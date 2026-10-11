@@ -705,6 +705,7 @@ describe("the CLI starts the dispatcher", () => {
         TOKEN_HOST: "127.0.0.1",
         TOKEN_PORT: "9001",
         JOB_DEADLINE_MARGIN_MINUTES: "60",
+        EXTRA_OWNERS: "",
       },
       expect.any(Function),
     );

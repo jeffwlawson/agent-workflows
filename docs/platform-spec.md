@@ -380,7 +380,12 @@ is the service's and not the loop's.
 > every job. The skip is in the reusable, so a caller needs no change to carry it.
 
 > **Service orchestrator:** answers a repository whose `AGENT_ORCHESTRATOR` is `service`, and
-> refuses one where it is unset or holds anything else.
+> refuses one where it is unset or holds anything else. Opting in is not enough on its own: the
+> dispatcher serves an installation of its App only on the App's owner's account, read off the
+> App's own record at start, or on an account its `EXTRA_OWNERS` setting lists, and refuses any
+> other's, at delivery and again at each token, so a stranger who installs a public App and sets the
+> variable is still refused. The App being installable on its owner's account only is the first
+> line of defence, and this check the second.
 
 What an orchestrator does after a runner returns, including adding the next label, is chaining.
 Chaining is each orchestrator's own and is described in each runner's section: review adding

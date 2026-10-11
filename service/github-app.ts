@@ -1,5 +1,5 @@
 import { createSign } from "node:crypto";
-import type { AppGitHub } from "./dispatcher.js";
+import type { AppGitHub, AppRecord } from "./dispatcher.js";
 import type { TokenGrant } from "./job.js";
 
 /**
@@ -53,17 +53,24 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
   const field = (reply: Reply, name: string): unknown =>
     typeof reply.json === "object" && reply.json !== null ? (reply.json as Record<string, unknown>)[name] : undefined;
 
-  /** The installation on `repo`, or `undefined` where the App is not installed there. */
-  const installation = async (repo: string): Promise<number | undefined> => {
+  /**
+   * The installation on `repo`, its id and the login of the account it is on,
+   * or `undefined` where the App is not installed there.
+   */
+  const installation = async (repo: string): Promise<{ readonly id: number; readonly account: string } | undefined> => {
     const reply = await api(`/repos/${repo}/installation`, jwt());
     if (reply.status === 404) return undefined;
     const id = field(reply, "id");
-    if (reply.status !== 200 || typeof id !== "number") throw new Error(`reading the App's installation on ${repo} answered ${reply.status}`);
-    return id;
+    const account = field(reply, "account");
+    const login = typeof account === "object" && account !== null ? (account as Record<string, unknown>)["login"] : undefined;
+    if (reply.status !== 200 || typeof id !== "number" || typeof login !== "string") {
+      throw new Error(`reading the App's installation on ${repo} answered ${reply.status}`);
+    }
+    return { id, account: login };
   };
 
   const mint = async (repo: string, permissions: Readonly<Record<string, string>>): Promise<TokenGrant> => {
-    const id = await installation(repo);
+    const id = (await installation(repo))?.id;
     if (id === undefined) throw new Error(`the App is not installed on ${repo}`);
     const name = repo.slice(repo.indexOf("/") + 1);
     const reply = await api(`/app/installations/${id}/access_tokens`, jwt(), {
@@ -118,18 +125,22 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
     }
   };
 
-  let slug: string | undefined;
+  let app: AppRecord | undefined;
 
   return {
-    slug: async () => {
-      if (slug !== undefined) return slug;
+    app: async () => {
+      if (app !== undefined) return app;
       const reply = await api("/app", jwt());
-      const read = field(reply, "slug");
-      if (reply.status !== 200 || typeof read !== "string") throw new Error(`reading the App's own record answered ${reply.status}`);
-      slug = read;
-      return slug;
+      const slug = field(reply, "slug");
+      const owner = field(reply, "owner");
+      const login = typeof owner === "object" && owner !== null ? (owner as Record<string, unknown>)["login"] : undefined;
+      if (reply.status !== 200 || typeof slug !== "string" || typeof login !== "string") {
+        throw new Error(`reading the App's own record answered ${reply.status}`);
+      }
+      app = { slug, owner: login };
+      return app;
     },
-    installed: async (repo) => (await installation(repo)) !== undefined,
+    installation: async (repo) => (await installation(repo))?.account,
     variable: async (repo, name) => {
       const token = await reader(repo);
       const reply = await api(`/repos/${repo}/actions/variables/${name}`, token);

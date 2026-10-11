@@ -26,12 +26,23 @@ import {
  * the worker, the clock and the job ids. `serve.ts` puts them behind HTTP.
  */
 
+/** What the App's own record says of it. */
+export interface AppRecord {
+  /** The App's slug, which its login is made from. */
+  readonly slug: string;
+  /** The login of the account that owns the App. */
+  readonly owner: string;
+}
+
 /** What the dispatcher asks of GitHub, as its App. */
 export interface AppGitHub {
-  /** The App's slug, from the App's own record. */
-  slug(): Promise<string>;
-  /** Whether the App is installed on `repo`. */
-  installed(repo: string): Promise<boolean>;
+  /** The App's own record. */
+  app(): Promise<AppRecord>;
+  /**
+   * The login of the account the App's installation on `repo` is on, or
+   * `undefined` where the App is not installed on `repo`.
+   */
+  installation(repo: string): Promise<string | undefined>;
   /**
    * A variable's value as `vars` resolves it for `repo`: the repository's own,
    * else its organization's shared with it, or `undefined` where neither is
@@ -54,6 +65,13 @@ export interface DispatcherEdges {
   readonly webhookSecret: string;
   /** The secret shared with the worker. */
   readonly workerSecret: string;
+  /**
+   * The accounts whose installations the dispatcher serves: the App's owner,
+   * read off the App's own record at start, and the extra owners its settings
+   * list. Any other account's is refused, even where the App is installed
+   * there and the repository opts in.
+   */
+  readonly owners: readonly string[];
   /** Added to review's time limit for a job's deadline. */
   readonly deadlineMarginMinutes: number;
   /** The release this dispatcher is, which each job carries. */
@@ -135,8 +153,28 @@ interface Dispatched {
   readonly deadline: Date;
 }
 
+/**
+ * The extra owners a setting lists, comma-separated, each trimmed, an empty
+ * entry dropped: `""` is none.
+ */
+export const parseOwners = (setting: string): readonly string[] =>
+  setting
+    .split(",")
+    .map((owner) => owner.trim())
+    .filter((owner) => owner !== "");
+
 export const createDispatcher = (edges: DispatcherEdges) => {
   const now = edges.now ?? (() => new Date());
+  // GitHub's logins are case-insensitive, so the comparison is too.
+  const owners = new Set(edges.owners.map((owner) => owner.toLowerCase()));
+  /**
+   * Why an installation on `account` is not served, or `undefined` where it
+   * is: on the App's owner's account, or one the settings list.
+   */
+  const foreign = (account: string): string | undefined =>
+    owners.has(account.toLowerCase())
+      ? undefined
+      : `the App's installation is on ${account}, which is neither the App's owner nor an account EXTRA_OWNERS lists`;
   const newId = edges.newId ?? randomUUID;
   const jobs = new Map<string, Dispatched>();
 
@@ -184,7 +222,11 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     // `SERVICE_LABELS` is the one list of what the service answers, and
     // review is the one job it runs at this release.
     if (!SERVICE_LABELS.includes(label)) return `ignored on ${where}: \`${label}\` is not a label this release's service answers`;
-    if (!(await edges.github.installed(repo))) return `refused on ${where}: the App is not installed on ${repo}`;
+    const account = await edges.github.installation(repo);
+    if (account === undefined) return `refused on ${where}: the App is not installed on ${repo}`;
+    // Ahead of the opt-in, so a stranger's repository is never read further.
+    const stranger = foreign(account);
+    if (stranger !== undefined) return `refused on ${where}: ${stranger}`;
     const orchestrator = await edges.github.variable(repo, ORCHESTRATOR_VARIABLE);
     if (orchestrator !== SERVICE_ORCHESTRATOR) {
       return `refused on ${where}: ${ORCHESTRATOR_VARIABLE} is ${orchestrator === undefined ? "unset" : `\`${orchestrator}\``}, not \`${SERVICE_ORCHESTRATOR}\``;
@@ -212,7 +254,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       baseRef,
       state,
       merged: p.pull_request?.merged === true,
-      appLogin: appLogin(await edges.github.slug()),
+      appLogin: appLogin((await edges.github.app()).slug),
       variables,
     };
 
@@ -278,7 +320,10 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     // A GitHub that cannot be read is refused like a repository that has
     // opted out: the dispatcher mints for nothing it cannot confirm.
     try {
-      if (!(await edges.github.installed(job.repo))) return answer(403, { refusal: `the App is no longer installed on ${job.repo}` });
+      const account = await edges.github.installation(job.repo);
+      if (account === undefined) return answer(403, { refusal: `the App is no longer installed on ${job.repo}` });
+      const stranger = foreign(account);
+      if (stranger !== undefined) return answer(403, { refusal: stranger });
       if ((await edges.github.variable(job.repo, ORCHESTRATOR_VARIABLE)) !== SERVICE_ORCHESTRATOR) {
         return answer(403, { refusal: `${job.repo} no longer has ${ORCHESTRATOR_VARIABLE} set to \`${SERVICE_ORCHESTRATOR}\`` });
       }

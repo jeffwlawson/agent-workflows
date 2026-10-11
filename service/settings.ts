@@ -36,7 +36,10 @@ const REQUIRED = { required: true } as const;
  *   its own, so the one exposed to the internet mints nothing.
  * - `JOB_DEADLINE_MARGIN_MINUTES`: added to review's time limit for a job's
  *   deadline, past which no token is minted for it. It covers the phases
- *   around the runner's, and the time a job waits in the worker's queue.
+ *   around the runner's, and the time a job waits in the worker's queue. * - `EXTRA_OWNERS`: the accounts, comma-separated, whose installations the
+ *   dispatcher serves besides the App owner's own. Empty is none, so an App
+ *   installed on a stranger's account serves nothing there, even where the
+ *   stranger's repository opts in.
  */
 export const DISPATCHER = {
   GITHUB_APP_ID: REQUIRED,
@@ -49,6 +52,7 @@ export const DISPATCHER = {
   TOKEN_HOST: { required: false, default: "127.0.0.1" },
   TOKEN_PORT: { required: false, default: "8791" },
   JOB_DEADLINE_MARGIN_MINUTES: { required: false, default: "60" },
+  EXTRA_OWNERS: { required: false, default: "" },
 } as const satisfies Inputs;
 
 /**

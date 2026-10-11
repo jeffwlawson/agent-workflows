@@ -30,7 +30,8 @@ const answer = (url: string): Response => {
   const { pathname, searchParams } = new URL(url);
   asked.push(pathname);
   if (world.failing?.path.test(pathname)) return reply(world.failing.status, { message: "no" });
-  if (pathname === `/repos/${REPO}/installation`) return reply(200, { id: 1 });
+  if (pathname === `/repos/${REPO}/installation`) return reply(200, { id: 1, account: { login: "owner", type: "User" } });
+  if (pathname === "/app") return reply(200, { id: 1, slug: "loop-app", owner: { login: "Owner", type: "User" } });
   if (pathname === "/app/installations/1/access_tokens") return reply(201, { token: "ghs_reader", expires_at: "2099-01-01T00:00:00Z" });
   if (pathname === `/repos/${REPO}`) return reply(200, { owner: { type: world.organization === undefined ? "User" : "Organization" } });
   const own = /^\/repos\/owner\/repo\/actions\/variables\/(.+)$/.exec(pathname);
@@ -104,5 +105,27 @@ describe("liveAppGitHub: a variable, as `vars` resolves it", () => {
     world.failing = { path, status };
 
     await expect(read("AGENT_ORCHESTRATOR")).rejects.toThrow(new RegExp(`answered ${status}`));
+  });
+});
+
+describe("liveAppGitHub: the App and its installation, as GitHub records them", () => {
+  it("reads the App's slug and its owner's login off the App's own record", async () => {
+    expect(await liveAppGitHub("1", KEY).app()).toEqual({ slug: "loop-app", owner: "Owner" });
+  });
+
+  it("reads the account the App's installation on a repository is on", async () => {
+    expect(await liveAppGitHub("1", KEY).installation(REPO)).toBe("owner");
+  });
+
+  it("is no installation where the App is not installed", async () => {
+    world.failing = { path: /\/installation$/, status: 404 };
+
+    expect(await liveAppGitHub("1", KEY).installation(REPO)).toBeUndefined();
+  });
+
+  it("throws where the App's own record could not be read", async () => {
+    world.failing = { path: /^\/app$/, status: 401 };
+
+    await expect(liveAppGitHub("1", KEY).app()).rejects.toThrow(/answered 401/);
   });
 });

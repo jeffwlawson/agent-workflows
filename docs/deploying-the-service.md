@@ -61,6 +61,13 @@ Repository permissions:
 A permission the App lacks fails the mint of the token that asks for it, so it is named in the
 dispatcher's log as the job's phase starts, rather than surfacing as a failed write mid-run.
 
+Under *Where can this GitHub App be installed?*, choose **Only on this account**. A public App
+can be installed by anyone, on their own repositories, and every one of those would otherwise be a
+repository the dispatcher might run agents for on your machine. The dispatcher's own check is the
+second line of defence: it serves an installation only on the App's owner's account, which it reads
+off the App's own record at start, or on an account its `EXTRA_OWNERS` setting lists, and refuses
+every other, with the reason in its log.
+
 Install the App on each repository the service is to serve. Installing it on all your
 repositories enrols none of them: the dispatcher acts only where `AGENT_ORCHESTRATOR` is `service`.
 
@@ -96,6 +103,7 @@ when all of these hold:
 - it is a pull request labelled with a label the service answers (`SERVICE_LABELS` in
   `shared/record.ts`: `agent:review`);
 - the App is installed on the repository;
+- the installation is on the App's owner's account, or on one `EXTRA_OWNERS` lists;
 - the repository's `AGENT_ORCHESTRATOR` is `service`;
 - the head is in the same repository, not a fork;
 - the pull request is open;
@@ -104,13 +112,14 @@ when all of these hold:
 Every other delivery is logged with its reason. A job carries what the label's event carried, the
 repository variables review reads, the App's login, a job id, a deadline and the package's version.
 It carries no token: the worker asks for one per phase, `read` or `write`, and the dispatcher mints
-one only for a job it dispatched, before that job's deadline, for that job's repository alone, and
-after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
+one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
+the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
 phase.
 
 ### Settings
 
-Read from the environment. A missing required one stops the dispatcher at start, naming each.
+Read from the environment. A missing required one stops the dispatcher at start, naming each, and
+so does an App whose own record cannot be read, since that is where the App's owner comes from.
 `tests/service/settings.test.ts` holds this table equal to `DISPATCHER` in `service/settings.ts`.
 
 | Setting | Kind | Default | Meaning |
@@ -125,6 +134,7 @@ Read from the environment. A missing required one stops the dispatcher at start,
 | `TOKEN_HOST` | optional | `127.0.0.1` | the address the token door listens on: one the worker reaches |
 | `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token` |
 | `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to review's time limit (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) for a job's deadline, covering the phases around the runner's and the time a job waits in the worker's queue |
+| `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
 
 Each door also answers `GET /health` with `200`.
 

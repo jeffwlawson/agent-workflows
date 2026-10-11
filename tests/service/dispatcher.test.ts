@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
-import { createDispatcher, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
+import { createDispatcher, parseOwners, TOKEN_PERMISSIONS, type AppGitHub } from "../../service/dispatcher.js";
 import { DEFAULT_REVIEW_MINUTES, parseJob, sign, SIGNATURE_HEADER, verifySignature, type ReviewJob } from "../../service/job.js";
 import { ORCHESTRATOR_VARIABLE, REVIEW_LABEL, SERVICE_ORCHESTRATOR } from "../../shared/record.js";
 
@@ -23,15 +23,21 @@ const START = new Date("2026-10-11T12:00:00.000Z");
 /** The repository's state as the fake GitHub holds it, which a test changes between requests. */
 interface Repository {
   installed: boolean;
+  /** The account the App's installation on the repository is on. */
+  account: string;
   variables: Record<string, string>;
   permissions: Record<string, string>;
   /** Whether reading a variable fails, as a GitHub outage does. */
   unreadable?: boolean;
 }
 
-const setup = (options: { workerStatus?: number } = {}) => {
+/** The App's owner, which is the repository's owner too, unless a test says otherwise. */
+const APP_OWNER = "owner";
+
+const setup = (options: { workerStatus?: number; owners?: readonly string[] } = {}) => {
   const repository: Repository = {
     installed: true,
+    account: APP_OWNER,
     variables: { [ORCHESTRATOR_VARIABLE]: SERVICE_ORCHESTRATOR, AGENT_MODEL: "a-model", AGENT_MAX_FIX_ROUNDS: "2" },
     permissions: { maintainer: "write", triager: "triage" },
   };
@@ -40,8 +46,8 @@ const setup = (options: { workerStatus?: number } = {}) => {
   let clock = START;
   let ids = 0;
   const github: AppGitHub = {
-    slug: async () => "loop-app",
-    installed: async (repo) => repo === REPO && repository.installed,
+    app: async () => ({ slug: "loop-app", owner: APP_OWNER }),
+    installation: async (repo) => (repo === REPO && repository.installed ? repository.account : undefined),
     variable: async (repo, name) => {
       if (repository.unreadable === true) throw new Error("GitHub answered 503");
       return repo === REPO ? repository.variables[name] : undefined;
@@ -60,6 +66,7 @@ const setup = (options: { workerStatus?: number } = {}) => {
     },
     webhookSecret: WEBHOOK_SECRET,
     workerSecret: WORKER_SECRET,
+    owners: options.owners ?? [APP_OWNER],
     deadlineMarginMinutes: MARGIN,
     version: "9.9.9",
     now: () => clock,
@@ -237,6 +244,56 @@ describe("the webhook door", () => {
     expect(result.outcome).toMatch(/the worker answered 503/);
     const response = await s.dispatcher.token(tokenRequest({ jobId: "job-1", kind: "read" }));
     expect(response.status).toBe(404);
+    expect(s.minted).toEqual([]);
+  });
+});
+
+/**
+ * The App's owner is the account whose installations are served, with any the
+ * dispatcher's `EXTRA_OWNERS` lists: an App installed on a stranger's account
+ * serves nothing there, though the stranger's repository opts in and the
+ * stranger can write to it.
+ */
+describe("the accounts the dispatcher serves", () => {
+  it("refuses a delivery from an installation on another account, with the reason, and reads nothing more", async () => {
+    const s = setup();
+    s.repository.account = "stranger";
+    s.repository.unreadable = true;
+    const result = await deliver(s, labelled());
+
+    expect(result.status).toBe(202);
+    expect(result.outcome).toBe(
+      "refused on owner/repo#7: the App's installation is on stranger, which is neither the App's owner nor an account EXTRA_OWNERS lists",
+    );
+    expect(s.posted).toEqual([]);
+  });
+
+  it("serves an installation on the App's owner's account, whatever the case of its login", async () => {
+    const s = setup({ owners: ["Owner"] });
+
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched owner\/repo#7/);
+  });
+
+  it("serves an installation on an account the setting lists", async () => {
+    const s = setup({ owners: [APP_OWNER, ...parseOwners(" partner , ,another ")] });
+    s.repository.account = "another";
+
+    expect((await deliver(s, labelled())).outcome).toMatch(/^dispatched owner\/repo#7/);
+  });
+
+  it("reads an empty setting as no extra owner", () => {
+    expect(parseOwners("")).toEqual([]);
+    expect(parseOwners(" a,b ,, c ")).toEqual(["a", "b", "c"]);
+  });
+
+  it("mints nothing for a job whose installation has moved to another account", async () => {
+    const s = setup();
+    const job = await dispatched(s);
+    s.repository.account = "stranger";
+    const response = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "read" }));
+
+    expect(response.status).toBe(403);
+    expect(response.body).toContain("stranger");
     expect(s.minted).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import * as path from "node:path";
 import { hostEnvironment, type InputValues } from "../shared/env.js";
 import { VERSION } from "../shared/manifest.js";
-import { createDispatcher, type DoorRequest, type DoorResponse } from "./dispatcher.js";
+import { createDispatcher, parseOwners, type DoorRequest, type DoorResponse } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
 import type { ReviewJob } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
@@ -85,8 +85,21 @@ export const serveDispatcher = async (
     );
   }
 
+  const github = liveAppGitHub(settings.GITHUB_APP_ID, privateKey);
+  // The App's owner, read once, here: the account whose installations are
+  // served, beside the ones `EXTRA_OWNERS` lists. A dispatcher that cannot
+  // read it does not start, rather than serving every account or none.
+  let owner: string;
+  try {
+    owner = (await github.app()).owner;
+  } catch (error) {
+    throw new Error(`The App's owner could not be read off the App's own record: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const owners = [owner, ...parseOwners(settings.EXTRA_OWNERS)];
+
   const dispatcher = createDispatcher({
-    github: liveAppGitHub(settings.GITHUB_APP_ID, privateKey),
+    github,
+    owners,
     postJob: async (body, headers) => (await fetch(settings.WORKER_URL, { method: "POST", headers, body })).status,
     webhookSecret: settings.GITHUB_WEBHOOK_SECRET,
     workerSecret: settings.WORKER_SECRET,
@@ -119,7 +132,8 @@ export const serveDispatcher = async (
   await listen(tokens, settings.TOKEN_HOST, tokenPort);
   log(
     `dispatcher ${VERSION} listening: webhooks at http://${settings.WEBHOOK_HOST}:${webhookPort}/github, ` +
-      `tokens at http://${settings.TOKEN_HOST}:${tokenPort}/token; jobs to ${settings.WORKER_URL}`,
+      `tokens at http://${settings.TOKEN_HOST}:${tokenPort}/token; jobs to ${settings.WORKER_URL}; ` +
+      `serving installations on ${owners.join(", ")}`,
   );
 };
 

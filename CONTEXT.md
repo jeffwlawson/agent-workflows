@@ -574,7 +574,8 @@ is `service/`: not a workflow's folder, not `shared/`, and not `engine/`, since 
 contract and the record, which makes it loop code.
 
 The **dispatcher** (#456) is the only holder of the GitHub App's key. GitHub's webhooks arrive at
-one of its doors, and an `agent:review` delivery on a repository that opted in becomes a **job**
+one of its doors, and an `agent:review` delivery on a repository that opted in, with the App
+installed on its owner's account or one its `EXTRA_OWNERS` lists, becomes a **job**
 for the worker: what the label's event carried, the variables review reads, the App's login read
 off the App's own record, an id, a deadline and the release. A job carries no token. The worker
 asks for one at the other door at the start of each phase, `read` or `write`, and the dispatcher

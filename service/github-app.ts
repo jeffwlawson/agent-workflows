@@ -15,6 +15,9 @@ const API = "https://api.github.com";
 /** How long before a reader token's expiry it is minted again. */
 const REUSE_MARGIN_MS = 5 * 60_000;
 
+/** The most variables GitHub lists on one page. */
+const VARIABLES_PAGE = 30;
+
 interface Reply {
   readonly status: number;
   readonly json: unknown;
@@ -85,6 +88,36 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
     return grant.token;
   };
 
+  /**
+   * An organization variable shared with `repo`, or `undefined` where there is
+   * none of that name, or no organization: what `vars` falls back to where the
+   * repository has no variable of its own, and what `doctor`'s `gatherFacts`
+   * reads too, so the three agree on what a repository asks for. GitHub has no
+   * endpoint for one by name here, so the list is read a page at a time.
+   */
+  const organizationVariable = async (repo: string, name: string, token: string): Promise<string | undefined> => {
+    const owner = await api(`/repos/${repo}`, token);
+    const type = field(owner, "owner");
+    const ownerType = typeof type === "object" && type !== null ? (type as Record<string, unknown>)["type"] : undefined;
+    if (owner.status !== 200 || typeof ownerType !== "string") throw new Error(`reading ${repo}'s owner answered ${owner.status}`);
+    if (ownerType !== "Organization") return undefined;
+    for (let page = 1, seen = 0; ; page += 1) {
+      const reply = await api(`/repos/${repo}/actions/organization-variables?per_page=${VARIABLES_PAGE}&page=${page}`, token);
+      const total = field(reply, "total_count");
+      const listed = field(reply, "variables");
+      if (reply.status !== 200 || typeof total !== "number" || !Array.isArray(listed)) {
+        throw new Error(`reading ${repo}'s organization variables answered ${reply.status}`);
+      }
+      for (const entry of listed as unknown[]) {
+        if (typeof entry !== "object" || entry === null) continue;
+        const { name: listedName, value } = entry as Record<string, unknown>;
+        if (listedName === name && typeof value === "string") return value;
+      }
+      seen += listed.length;
+      if (listed.length === 0 || seen >= total) return undefined;
+    }
+  };
+
   let slug: string | undefined;
 
   return {
@@ -98,11 +131,14 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
     },
     installed: async (repo) => (await installation(repo)) !== undefined,
     variable: async (repo, name) => {
-      const reply = await api(`/repos/${repo}/actions/variables/${name}`, await reader(repo));
-      if (reply.status === 404) return undefined;
-      const value = field(reply, "value");
-      if (reply.status !== 200 || typeof value !== "string") throw new Error(`reading ${name} on ${repo} answered ${reply.status}`);
-      return value;
+      const token = await reader(repo);
+      const reply = await api(`/repos/${repo}/actions/variables/${name}`, token);
+      if (reply.status !== 404) {
+        const value = field(reply, "value");
+        if (reply.status !== 200 || typeof value !== "string") throw new Error(`reading ${name} on ${repo} answered ${reply.status}`);
+        return value;
+      }
+      return organizationVariable(repo, name, token);
     },
     permission: async (repo, login) => {
       const reply = await api(`/repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`, await reader(repo));

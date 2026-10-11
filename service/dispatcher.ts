@@ -33,7 +33,11 @@ export interface AppGitHub {
   slug(): Promise<string>;
   /** Whether the App is installed on `repo`. */
   installed(repo: string): Promise<boolean>;
-  /** A repository variable's value, or `undefined` where it is unset. Throws where it could not be read. */
+  /**
+   * A variable's value as `vars` resolves it for `repo`: the repository's own,
+   * else its organization's shared with it, or `undefined` where neither is
+   * set. Throws where it could not be read.
+   */
   variable(repo: string, name: string): Promise<string | undefined>;
   /** `login`'s permission on `repo`, `admin`, `maintain`, `write`, `triage` or `read`, or `undefined` for none. */
   permission(repo: string, login: string): Promise<string | undefined>;

@@ -25,6 +25,8 @@ interface Repository {
   installed: boolean;
   variables: Record<string, string>;
   permissions: Record<string, string>;
+  /** Whether reading a variable fails, as a GitHub outage does. */
+  unreadable?: boolean;
 }
 
 const setup = (options: { workerStatus?: number } = {}) => {
@@ -40,7 +42,10 @@ const setup = (options: { workerStatus?: number } = {}) => {
   const github: AppGitHub = {
     slug: async () => "loop-app",
     installed: async (repo) => repo === REPO && repository.installed,
-    variable: async (repo, name) => (repo === REPO ? repository.variables[name] : undefined),
+    variable: async (repo, name) => {
+      if (repository.unreadable === true) throw new Error("GitHub answered 503");
+      return repo === REPO ? repository.variables[name] : undefined;
+    },
     permission: async (repo, login) => (repo === REPO ? repository.permissions[login] : undefined),
     mint: async (repo, permissions) => {
       minted.push({ repo, permissions });
@@ -323,6 +328,16 @@ describe("the token door", () => {
     expect(response.status).toBe(403);
     expect(JSON.parse(response.body)).toEqual({ refusal: "owner/repo no longer has AGENT_ORCHESTRATOR set to `service`" });
     expect(s.minted).toHaveLength(1);
+  });
+
+  it("refuses, rather than mints, where the opt-in cannot be read", async () => {
+    const s = setup();
+    const job = await dispatched(s);
+    s.repository.unreadable = true;
+    const response = await s.dispatcher.token(tokenRequest({ jobId: job.id, kind: "write" }));
+
+    expect(response.status).toBe(502);
+    expect(s.minted).toEqual([]);
   });
 
   it("refuses a job on a repository the App was removed from", async () => {

@@ -145,10 +145,6 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     for (const [id, job] of jobs) if (job.deadline.getTime() <= now().getTime()) jobs.delete(id);
   };
 
-  /** Whether `repo` asks for the service, read live. Unreadable is no: the service refuses what it cannot confirm. */
-  const optedIn = async (repo: string): Promise<boolean> =>
-    (await edges.github.variable(repo, ORCHESTRATOR_VARIABLE)) === SERVICE_ORCHESTRATOR;
-
   /**
    * Whether a delivery is a job, and the job where it is; otherwise the
    * reason it is not, which is logged. The cheap refusals, read off the
@@ -272,18 +268,16 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       jobs.delete(asked.jobId);
       return answer(403, { refusal: `job ${asked.jobId} is past its deadline, ${job.deadline.toISOString()}` });
     }
-    if (!(await edges.github.installed(job.repo))) return answer(403, { refusal: `the App is no longer installed on ${job.repo}` });
-    let opted: boolean;
+    // A GitHub that cannot be read is refused like a repository that has
+    // opted out: the dispatcher mints for nothing it cannot confirm.
     try {
-      opted = await optedIn(job.repo);
-    } catch (error) {
-      return answer(502, { refusal: `${ORCHESTRATOR_VARIABLE} on ${job.repo} could not be read: ${error instanceof Error ? error.message : String(error)}` });
-    }
-    if (!opted) return answer(403, { refusal: `${job.repo} no longer has ${ORCHESTRATOR_VARIABLE} set to \`${SERVICE_ORCHESTRATOR}\`` });
-    try {
+      if (!(await edges.github.installed(job.repo))) return answer(403, { refusal: `the App is no longer installed on ${job.repo}` });
+      if ((await edges.github.variable(job.repo, ORCHESTRATOR_VARIABLE)) !== SERVICE_ORCHESTRATOR) {
+        return answer(403, { refusal: `${job.repo} no longer has ${ORCHESTRATOR_VARIABLE} set to \`${SERVICE_ORCHESTRATOR}\`` });
+      }
       return answer(200, await edges.github.mint(job.repo, TOKEN_PERMISSIONS[asked.kind]));
     } catch (error) {
-      return answer(502, { refusal: `the token could not be minted: ${error instanceof Error ? error.message : String(error)}` });
+      return answer(502, { refusal: `GitHub could not be read or could not mint: ${error instanceof Error ? error.message : String(error)}` });
     }
   };
 

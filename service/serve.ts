@@ -44,13 +44,14 @@ const door = (path: string, handle: (request: DoorRequest) => Promise<DoorRespon
     };
     if (request.method === "GET" && request.url === "/health") return reply({ status: 200, body: '"ok"' });
     if (request.method !== "POST" || request.url !== path) return reply({ status: 404, body: '"not found"' });
-    read(request).then(
-      async (body) => reply(body === undefined ? { status: 413, body: '"too large"' } : await handle({ headers: headersOf(request), body })),
-      (error: unknown) => {
-        log(`${path}: reading the request failed: ${error instanceof Error ? error.message : String(error)}`);
-        reply({ status: 400, body: '"unreadable"' });
-      },
-    );
+    read(request)
+      .then(async (body) => reply(body === undefined ? { status: 413, body: '"too large"' } : await handle({ headers: headersOf(request), body })))
+      .catch((error: unknown) => {
+        // Never left to reject: an unhandled rejection ends the process, and
+        // with it every job in flight.
+        log(`${path}: the request failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (!response.headersSent) reply({ status: 500, body: '"failed"' });
+      });
   });
 
 const listen = (server: Server, host: string, port: number): Promise<void> =>

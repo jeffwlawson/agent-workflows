@@ -87,6 +87,7 @@ const labelled = (change: { label?: string; state?: string; headRepo?: string | 
     state: change.state ?? "open",
     merged: change.merged ?? false,
     head: { ref: "agent/issue-7-a-thing", sha: HEAD, repo: change.headRepo === null ? null : { full_name: change.headRepo ?? REPO } },
+    base: { ref: "main" },
   },
 });
 
@@ -193,6 +194,7 @@ describe("the webhook door", () => {
       pr: 7,
       branch: "agent/issue-7-a-thing",
       headSha: HEAD,
+      baseRef: "main",
       state: "open",
       merged: false,
       appLogin: "loop-app[bot]",

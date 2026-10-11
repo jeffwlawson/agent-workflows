@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DISPATCHER } from "../../service/settings.js";
+import { DISPATCHER, WORKER } from "../../service/settings.js";
 import type { Inputs } from "../../shared/contract.js";
 
 /**
@@ -52,5 +52,17 @@ describe("the deployment guide's dispatcher settings", () => {
 
   it("lists every setting the dispatcher declares, and no other, each as required or optional as declared", () => {
     expect(new Map([...table].sort())).toEqual(new Map([...kindOf(DISPATCHER)].sort()));
+  });
+});
+
+describe("the deployment guide's worker settings", () => {
+  const table = rowsOf(sectionsOf(sectionsOf(GUIDE, 2).get("The worker") ?? "", 3).get("Settings") ?? "");
+
+  it("finds the table", () => {
+    expect(table.size).toBeGreaterThan(0);
+  });
+
+  it("lists every setting the worker declares, and no other, each as required or optional as declared", () => {
+    expect(new Map([...table].sort())).toEqual(new Map([...kindOf(WORKER)].sort()));
   });
 });

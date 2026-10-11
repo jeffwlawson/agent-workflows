@@ -90,7 +90,7 @@ A **runner** starts the agent; a **command** does an orchestrator's work on the 
 none (ADR 0004). Both are subcommands, and the kind is declared: runners in `RUNNERS` and commands
 in `COMMANDS`, in `shared/contract.ts`. `tests/agent-cli.test.ts` holds the CLI's `SUBCOMMANDS`
 equal to the two maps, kind for kind, with the install path (`init` and `doctor`) and the service
-orchestrator's processes (`dispatcher`) the only subcommands in neither. A service process takes no
+orchestrator's processes (`dispatcher` and `worker`) the only subcommands in neither. A service process takes no
 arguments either: its settings are declared in `service/settings.ts`, read through `readInputs`,
 and listed in `docs/deploying-the-service.md`, which `tests/service/settings.test.ts` holds equal to
 the declaration.

@@ -16,8 +16,7 @@ repository opts in with the repository variable `AGENT_ORCHESTRATOR=service`
 ([ADOPTING §2e](./ADOPTING.md#2e-choosing-the-orchestrator)); the service refuses every other
 repository, and answers `agent:review` only.
 
-This guide grows with the service. It covers the dispatcher so far: the worker is not in the
-package yet.
+This guide grows with the service.
 
 ## The GitHub App
 
@@ -116,3 +115,57 @@ Each door also answers `GET /health` with `200`.
   its own; redeliver it from the App's *Recent Deliveries*, or remove the label and add it again.
 - **The jobs it dispatched are held in memory.** A dispatcher restarted mid-job refuses that job's
   next token request as unknown, and the job ends there. Remove the label and add it again.
+
+## The worker
+
+The process that runs review. It holds no key: it asks the dispatcher for a token at the start of
+each phase, `read` for the gate, the checkout, the budget, the CI wait and the runner, and `write`
+for `review:publish` and `review:conclude`. It needs:
+
+- Linux, Node 24 or later, `git`, `npm`, and the package (`npm exec
+  @jeffwlawson/agent-workflows@<version> worker`, or an install of it) at the **same version as the
+  dispatcher**: a job from a dispatcher of another release is refused, `409`, and the dispatcher
+  logs that the worker answered it;
+- `bwrap` (bubblewrap), unless `AGENT_SANDBOX` says `none`, and a proxy for the agent's traffic
+  (`AGENT_SANDBOX_PROXY`);
+- its **job door** reachable from the dispatcher, and from nothing else;
+- the dispatcher's token door reachable from it.
+
+At start it installs the agent's CLI, `@anthropic-ai/claude-code` at `CLAUDE_CODE_VERSION`, into
+`WORK_DIR/claude-code/<version>`, and refuses to start where the install fails. The host's own
+`claude` is never used: the worker's goes first on the runner's `PATH`, first on
+`AGENT_SANDBOX_PATH`, and into `AGENT_SANDBOX_RO_BINDS`. Bind the Node the agent's CLI runs on
+read-only too, through `AGENT_SANDBOX_RO_BINDS`, and put it on `AGENT_SANDBOX_PATH`.
+
+Jobs run one at a time, in the order they arrived. Each runs the subcommands `review.yml` runs, in
+its order (spec §8), each a child process of the worker's own install, with an environment built
+from its declaration in the contract and the host's `PATH`, `HOME` and `LANG`, and nothing else
+of the worker's. Not run, at this release: the red check, the repository's own install and setup
+commands, and `review:advance`. The fix-round budget is 0 whatever `AGENT_MAX_FIX_ROUNDS` says,
+while the service answers no `agent:fix`, so a review asking for changes leaves the round to a
+human.
+
+Each run leaves a directory under `WORK_DIR/runs`, named for when it started and its job: the
+checkout, each subcommand's output directory under `out/` and its log under `logs/`. The worker's
+own log says how each phase ended.
+
+### Settings
+
+Read from the environment. A missing required one stops the worker at start, naming each.
+`tests/service/settings.test.ts` holds this table equal to `WORKER` in `service/settings.ts`.
+
+| Setting | Kind | Default | Meaning |
+|---|---|---|---|
+| `WORKER_SECRET` | required | | the secret the dispatcher and the worker share, the dispatcher's own `WORKER_SECRET` |
+| `DISPATCHER_TOKEN_URL` | required | | the dispatcher's token door, ending `/token` |
+| `CLAUDE_CODE_VERSION` | required | | the version of `@anthropic-ai/claude-code` the worker installs at start, so "latest" is never chosen by accident |
+| `CLAUDE_CODE_OAUTH_TOKEN` | required | | the agent's model token, handed to the runner alone |
+| `WORK_DIR` | required | | where the agent's CLI is installed and each run's directory is kept |
+| `JOBS_HOST` | optional | `127.0.0.1` | the address the job door listens on: one the dispatcher reaches |
+| `JOBS_PORT` | optional | `8787` | the job door's port; jobs arrive at `POST /jobs`, which the dispatcher's `WORKER_URL` names |
+| `AGENT_SANDBOX` | optional | `bwrap` | the sandbox the agent runs in, `bwrap` or `none` (spec §3); `none` runs the agent with the worker's own filesystem |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | host directories, `:`-separated, bound read-only into the sandbox for the toolchain; the CLI's prefix is added |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside the sandbox; the CLI's directory is put first |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | the proxy every request from the sandbox leaves through |
+
+The job door also answers `GET /health` with `200`.

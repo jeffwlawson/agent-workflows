@@ -9,7 +9,7 @@ import { SUBCOMMANDS, type CliIo } from "../cli.js";
 import { file as fileFollowUps } from "../follow-ups/file.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
-import { serveDispatcher } from "../service/serve.js";
+import { serveDispatcher, serveWorker } from "../service/serve.js";
 import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
 import * as record from "../shared/record.js";
@@ -69,8 +69,9 @@ vi.mock("../follow-ups/file.js", () => ({ file: vi.fn() }));
 // And the one that writes through the engine, for the same reason.
 vi.mock("../review/publish.js", () => ({ publish: vi.fn() }));
 vi.mock("../review/gate.js", () => ({ gate: vi.fn() }));
-// And the dispatcher's start, which would listen on two ports.
-vi.mock("../service/serve.js", () => ({ serveDispatcher: vi.fn() }));
+// And the service's two starts: the dispatcher's would listen on two ports,
+// and the worker's would install the agent's CLI and listen on one.
+vi.mock("../service/serve.js", () => ({ serveDispatcher: vi.fn(), serveWorker: vi.fn() }));
 
 /** Every write of a `failure_reason.txt` since the spy was last cleared. */
 const reasonsWritten = (): readonly unknown[] =>
@@ -406,7 +407,7 @@ describe("every subcommand is declared in the contract, as its kind", () => {
    * are not. Another has to be added here on purpose.
    */
   const INSTALL_PATH = ["doctor", "init"];
-  const SERVICE_PROCESSES = ["dispatcher"];
+  const SERVICE_PROCESSES = ["dispatcher", "worker"];
 
   const registered = (kind: string): string[] =>
     Object.entries(SUBCOMMANDS)
@@ -584,6 +585,85 @@ describe("the CLI runs a command that reads", () => {
  * `service/settings.ts`, so a missing one stops it at start, naming each. The
  * start itself is a stand-in, mocked at the top of this file.
  */
+/**
+ * The worker's start (#457), the same way, and the one setting it cannot
+ * guess: the version of the agent's CLI it installs, so "latest" is never
+ * chosen by accident.
+ */
+describe("the CLI starts the worker", () => {
+  class Exited extends Error {}
+  const SETTINGS = {
+    WORKER_SECRET: "a-worker-secret",
+    DISPATCHER_TOKEN_URL: "http://dispatcher:8791/token",
+    CLAUDE_CODE_VERSION: "2.1.0",
+    CLAUDE_CODE_OAUTH_TOKEN: "a-model-token",
+    WORK_DIR: "/srv/worker",
+  } as const;
+  const start = vi.mocked(serveWorker);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    start.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+  });
+
+  it("starts with its declared settings, the sandbox `bwrap` where unset", async () => {
+    const { code } = await invoke(["worker"], SETTINGS);
+
+    expect(code).toBe(0);
+    expect(start).toHaveBeenCalledWith(
+      {
+        ...SETTINGS,
+        JOBS_HOST: "127.0.0.1",
+        JOBS_PORT: "8787",
+        AGENT_SANDBOX: "bwrap",
+        AGENT_SANDBOX_RO_BINDS: "",
+        AGENT_SANDBOX_PATH: "/usr/local/bin:/usr/bin:/bin",
+        AGENT_SANDBOX_PROXY: "",
+      },
+      expect.any(Function),
+    );
+  });
+
+  it("refuses to start without the version of the agent's CLI", async () => {
+    const { CLAUDE_CODE_VERSION: _, ...without } = SETTINGS;
+
+    await expect(invoke(["worker"], without)).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith("\nFAILED: Missing required env var: CLAUDE_CODE_VERSION");
+  });
+
+  it("refuses a sandbox it does not know, naming it", async () => {
+    await expect(invoke(["worker"], { ...SETTINGS, AGENT_SANDBOX: "docker" })).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(String(logged.mock.calls[0]?.[0])).toContain("`AGENT_SANDBOX` holds `docker`");
+  });
+
+  it("refuses an argument", async () => {
+    const { code, err } = await invoke(["worker", "--port", "1"], SETTINGS);
+
+    expect(code).toBe(2);
+    expect(err).toContain("`worker` takes no arguments, but got: --port 1");
+    expect(start).not.toHaveBeenCalled();
+  });
+});
+
 describe("the CLI starts the dispatcher", () => {
   class Exited extends Error {}
   const SETTINGS = {
@@ -859,6 +939,7 @@ describe("a test runs a subcommand with exactly the inputs it gives", () => {
     expect(declaredInputs("init")).toEqual([]);
     expect(declaredInputs("doctor")).toEqual([]);
     expect(declaredInputs("dispatcher")).toEqual(Object.keys(SERVICE.dispatcher.settings));
+    expect(declaredInputs("worker")).toEqual(Object.keys(SERVICE.worker.settings));
     expect(declaredInputs("review:publish")).toEqual(Object.keys(COMMANDS["review:publish"].inputs));
     expect(declaredInputs("implement")).toEqual(Object.keys(RUNNERS.implement.inputs));
   });

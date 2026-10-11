@@ -53,6 +53,8 @@ export interface ReviewJob {
   readonly branch: string;
   /** The head commit, as the event carried it. */
   readonly headSha: string;
+  /** The base branch, as the event carried it, which the worker fetches for the diff. */
+  readonly baseRef: string;
   /** The pull request's state, as the event carried it. */
   readonly state: string;
   readonly merged: boolean;
@@ -109,7 +111,7 @@ const SHA = /^[0-9a-f]{40}$/;
  */
 export const parseJob = (value: unknown): ReviewJob | string => {
   if (!isObject(value)) return "the job is not an object";
-  const { id, version, deadline, repo, pr, branch, headSha, state, merged, appLogin, variables } = value;
+  const { id, version, deadline, repo, pr, branch, headSha, baseRef, state, merged, appLogin, variables } = value;
   if (typeof id !== "string" || id === "") return "`id` is not a non-empty string";
   if (typeof version !== "string" || version === "") return "`version` is not a non-empty string";
   if (typeof deadline !== "string" || Number.isNaN(Date.parse(deadline))) return "`deadline` is not a time";
@@ -117,6 +119,7 @@ export const parseJob = (value: unknown): ReviewJob | string => {
   if (typeof pr !== "number" || !Number.isInteger(pr) || pr <= 0) return "`pr` is not a positive integer";
   if (typeof branch !== "string" || branch === "") return "`branch` is not a non-empty string";
   if (typeof headSha !== "string" || !SHA.test(headSha)) return "`headSha` is not a 40-character commit";
+  if (typeof baseRef !== "string" || baseRef === "") return "`baseRef` is not a non-empty string";
   if (typeof state !== "string" || state === "") return "`state` is not a non-empty string";
   if (typeof merged !== "boolean") return "`merged` is not a boolean";
   if (typeof appLogin !== "string" || appLogin === "") return "`appLogin` is not a non-empty string";
@@ -135,6 +138,7 @@ export const parseJob = (value: unknown): ReviewJob | string => {
     pr,
     branch,
     headSha,
+    baseRef,
     state,
     merged,
     appLogin,

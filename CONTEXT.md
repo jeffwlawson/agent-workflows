@@ -582,7 +582,16 @@ mints one for that job's repository alone, before its deadline, after reading th
 deleting the variable stops a job in flight at its next phase. The job's format is one module,
 `service/job.ts`, which both processes import, so it only has to hold within one release.
 
-Its settings are declared in `service/settings.ts` in the contract's style and read through
+The **worker** (#457) runs each job the way `review.yml` runs review, as a **thin adapter**: the
+same subcommands in the same order (`service/worker.ts`), each a child process of its own
+installed package, so the service and every subcommand it runs are one release. It writes nothing
+to the record and spells no record string; what it reads between phases is the hand-over the
+reusable's glue steps read, copied across as it is. Each subcommand's environment is built by one
+function from its declaration in the contract, and holds nothing else of the worker's but `PATH`,
+`HOME` and `LANG`, so a token reaches a subcommand only where its phase was handed it: the runner
+gets the `read` token, never the `write` one.
+
+Their settings are declared in `service/settings.ts` in the contract's style and read through
 `readInputs`, like a runner's inputs, but they are no runner's inputs and have no row in the spec:
 [`docs/deploying-the-service.md`](./docs/deploying-the-service.md) lists them, held equal to the
 declaration by a test, and says how to deploy the service.

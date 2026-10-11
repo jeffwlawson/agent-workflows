@@ -362,6 +362,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "Move a PRD PR's chain on after a review, or park it, and write its progress list (no model).",
   ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
+  worker: serviceProcess(
+    "worker",
+    async () => (await import("./service/serve.js")).serveWorker,
+    "Run the service orchestrator's worker: jobs in from the dispatcher, each run as review.yml runs it.",
+  ),
 };
 
 /**
@@ -379,7 +384,8 @@ const usage = (): string => {
 
 Runners and commands for a GitHub Actions agent loop, invoked one per workflow
 step, plus the install path \`init\` and \`doctor\`, which you run by hand,
-and the service orchestrator's \`dispatcher\`, which you deploy.
+and the service orchestrator's \`dispatcher\` and \`worker\`, which you
+deploy.
 
 Subcommands:
 ${commands}

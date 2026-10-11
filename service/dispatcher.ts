@@ -113,6 +113,7 @@ interface LabelEvent {
     readonly state?: unknown;
     readonly merged?: unknown;
     readonly head?: { readonly ref?: unknown; readonly sha?: unknown; readonly repo?: { readonly full_name?: unknown } | null };
+    readonly base?: { readonly ref?: unknown };
   };
 }
 
@@ -165,6 +166,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const pr = p.pull_request?.number;
     const branch = p.pull_request?.head?.ref;
     const headSha = p.pull_request?.head?.sha;
+    const baseRef = p.pull_request?.base?.ref;
     const state = p.pull_request?.state;
     const sender = p.sender?.login;
     if (
@@ -173,6 +175,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       typeof pr !== "number" ||
       typeof branch !== "string" ||
       typeof headSha !== "string" ||
+      typeof baseRef !== "string" ||
       typeof state !== "string" ||
       typeof sender !== "string"
     ) {
@@ -207,6 +210,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
       pr,
       branch,
       headSha,
+      baseRef,
       state,
       merged: p.pull_request?.merged === true,
       appLogin: appLogin(await edges.github.slug()),

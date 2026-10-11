@@ -1,4 +1,4 @@
-import type { Inputs } from "../shared/contract.js";
+import { SANDBOX, type Inputs } from "../shared/contract.js";
 
 /**
  * What each of the service orchestrator's processes reads from its
@@ -51,9 +51,44 @@ export const DISPATCHER = {
   JOB_DEADLINE_MARGIN_MINUTES: { required: false, default: "60" },
 } as const satisfies Inputs;
 
+/**
+ * **The worker's settings** (#457). It runs review the way `review.yml` does,
+ * so beside its own door it reads what the review job is handed from outside
+ * the repository: the agent's token, its CLI and the sandbox.
+ *
+ * - `WORKER_SECRET`: the secret shared with the dispatcher, the same value
+ *   as its own.
+ * - `DISPATCHER_TOKEN_URL`: the dispatcher's token door, ending `/token`.
+ * - `CLAUDE_CODE_VERSION`: the version of the agent's CLI the worker installs
+ *   into its own prefix at start. Required, so "latest" is never chosen by
+ *   accident, and the host's own `claude` is never used.
+ * - `CLAUDE_CODE_OAUTH_TOKEN`: the agent's model token, handed to the runner
+ *   alone.
+ * - `WORK_DIR`: where the CLI is installed and each run's directory is kept.
+ * - `JOBS_HOST` and `JOBS_PORT`: where the job door listens, which the
+ *   dispatcher's `WORKER_URL` names.
+ * - The four sandbox inputs every runner declares (`SANDBOX`, spec §3),
+ *   handed to the runner as they are, except that `AGENT_SANDBOX` is `bwrap`
+ *   where unset: a worker runs agents on a box of its own, so running one
+ *   unsandboxed is a choice made by name. The CLI's prefix goes on the front
+ *   of `AGENT_SANDBOX_PATH` and into `AGENT_SANDBOX_RO_BINDS` besides.
+ */
+export const WORKER = {
+  WORKER_SECRET: REQUIRED,
+  DISPATCHER_TOKEN_URL: REQUIRED,
+  CLAUDE_CODE_VERSION: REQUIRED,
+  CLAUDE_CODE_OAUTH_TOKEN: REQUIRED,
+  WORK_DIR: REQUIRED,
+  JOBS_HOST: { required: false, default: "127.0.0.1" },
+  JOBS_PORT: { required: false, default: "8787" },
+  ...SANDBOX,
+  AGENT_SANDBOX: { ...SANDBOX.AGENT_SANDBOX, default: "bwrap" },
+} as const satisfies Inputs;
+
 /** Every process of the service orchestrator, by the subcommand that runs it, to its settings. */
 export const SERVICE = {
   dispatcher: { settings: DISPATCHER },
+  worker: { settings: WORKER },
 } as const satisfies Readonly<Record<string, { readonly settings: Inputs }>>;
 
 export type ServiceProcess = keyof typeof SERVICE;

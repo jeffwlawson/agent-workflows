@@ -1,15 +1,20 @@
 import * as fs from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { InputValues } from "../shared/env.js";
+import * as path from "node:path";
+import { hostEnvironment, type InputValues } from "../shared/env.js";
 import { VERSION } from "../shared/manifest.js";
 import { createDispatcher, type DoorRequest, type DoorResponse } from "./dispatcher.js";
 import { liveAppGitHub } from "./github-app.js";
-import type { DISPATCHER } from "./settings.js";
+import type { ReviewJob } from "./job.js";
+import type { DISPATCHER, WORKER } from "./settings.js";
+import { jobDoor, oneAtATime, runJob } from "./worker.js";
+import { installCli, liveGit, liveLauncher, liveTokens } from "./worker-live.js";
 
 /**
- * The dispatcher behind HTTP: its two doors, each on its own address, over
- * the live GitHub and the worker's address. Resolves once both listen; the
- * process then lives as long as they do.
+ * The service's two processes behind HTTP. The dispatcher's two doors, each
+ * on its own address, over the live GitHub and the worker's address; and the
+ * worker's job door, over the live edges in `worker-live.ts`. Each resolves
+ * once it listens; the process then lives as long as its doors do.
  */
 
 /** A body larger than this is refused: GitHub's deliveries and the worker's requests are far smaller. */
@@ -116,4 +121,60 @@ export const serveDispatcher = async (
     `dispatcher ${VERSION} listening: webhooks at http://${settings.WEBHOOK_HOST}:${webhookPort}/github, ` +
       `tokens at http://${settings.TOKEN_HOST}:${tokenPort}/token; jobs to ${settings.WORKER_URL}`,
   );
+};
+
+/**
+ * The worker: the agent's CLI installed at the version its settings require,
+ * then the job door, whose jobs run one at a time, each in a directory of its
+ * own under `WORK_DIR/runs`, kept afterwards with each subcommand's output
+ * directory and log. Each phase's outcome is logged as the job ends.
+ */
+export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: (text: string) => void): Promise<void> => {
+  const log = (line: string): void => stdout(`${new Date().toISOString()} ${line}\n`);
+  const port = wholeNumber("JOBS_PORT", settings.JOBS_PORT);
+  const host = hostEnvironment();
+  const prefix = path.join(settings.WORK_DIR, "claude-code", settings.CLAUDE_CODE_VERSION);
+  log(`installing the agent's CLI, @anthropic-ai/claude-code@${settings.CLAUDE_CODE_VERSION}, into ${prefix}`);
+  const cliBin = await installCli(prefix, settings.CLAUDE_CODE_VERSION, host);
+
+  // What the runner is handed from these settings. The CLI's prefix is bound
+  // read-only into the sandbox and put first on its `PATH`, so the agent runs
+  // the `claude` installed here.
+  const agent = {
+    CLAUDE_CODE_OAUTH_TOKEN: settings.CLAUDE_CODE_OAUTH_TOKEN,
+    AGENT_SANDBOX: settings.AGENT_SANDBOX,
+    AGENT_SANDBOX_RO_BINDS: [settings.AGENT_SANDBOX_RO_BINDS, prefix].filter((part) => part !== "").join(":"),
+    AGENT_SANDBOX_PATH: `${cliBin}:${settings.AGENT_SANDBOX_PATH}`,
+    AGENT_SANDBOX_PROXY: settings.AGENT_SANDBOX_PROXY,
+  };
+
+  const work = async (job: ReviewJob): Promise<void> => {
+    const runDir = path.join(settings.WORK_DIR, "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-${job.id}`);
+    fs.mkdirSync(runDir, { recursive: true });
+    log(`job ${job.id}: reviewing ${job.repo}#${job.pr} at ${job.headSha}, in ${runDir}`);
+    const phases = await runJob(job, {
+      token: liveTokens(settings.DISPATCHER_TOKEN_URL, settings.WORKER_SECRET, job.id),
+      launch: liveLauncher,
+      git: liveGit(host),
+      host,
+      agent,
+      cliBin,
+      runDir,
+    });
+    log(`job ${job.id}: ended. ${phases.map(({ name, outcome }) => `${name}: ${outcome}`).join("; ")}`);
+  };
+  const queue = oneAtATime(work, (error) => log(`a job failed: ${error instanceof Error ? error.message : String(error)}`));
+  const accept = jobDoor({ secret: settings.WORKER_SECRET, version: VERSION, accept: queue });
+
+  const jobs = door(
+    "/jobs",
+    async (request) => {
+      const response = accept(request);
+      log(`job request: ${response.status} ${response.body}`);
+      return response;
+    },
+    log,
+  );
+  await listen(jobs, settings.JOBS_HOST, port);
+  log(`worker ${VERSION} listening: jobs at http://${settings.JOBS_HOST}:${port}/jobs; tokens from ${settings.DISPATCHER_TOKEN_URL}`);
 };

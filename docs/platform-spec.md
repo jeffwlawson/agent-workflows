@@ -18,8 +18,11 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > **Actions orchestrator:** the caller and reusable workflow pair this repository ships.
 
 > **Service orchestrator:** a service that receives GitHub's webhooks and runs the runner on a box
-> it owns, as prototyped on #364. A block for it appears only where it differs from the Actions
-> orchestrator in a way a reader would trip on.
+> it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
+> [`service/`](../service/) and whose deployment is
+> [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review` alone, at this
+> release. A block for it appears only where it differs from the Actions orchestrator in a way a
+> reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
 
@@ -217,8 +220,10 @@ runner, at the time it runs, and the model is a repository variable that can cha
 > **Actions orchestrator:** `npm install -g @anthropic-ai/claude-code` in the agent job, so the
 > latest release, on every run.
 
-> **Service orchestrator:** the CLI is installed on the box or in its sandbox image, and stays at
-> whatever version that was. The prototype's first run died on an old one.
+> **Service orchestrator:** the worker installs the CLI itself at start, into its own prefix, at
+> the version its required setting `CLAUDE_CODE_VERSION` names, and refuses to start without one,
+> so "latest" is never chosen by accident. The host's own `claude` is never used: the worker's
+> goes first on the runner's `PATH` and the sandbox's, and is bound into the sandbox read-only.
 
 ## 3. Safety
 
@@ -335,10 +340,12 @@ names it beforehand.
 > access, which is why trusting the login is sound there. The loop's App carries pushes, pull
 > requests, ready-marks and trigger labels, which no runner reads as text.
 
-> **Service orchestrator:** a service that posts as its own App passes that App's login in
-> `AGENT_LOOP_LOGINS` to every runner and command that declares it, and its reviews, verdicts and
-> rounds are then read back as the loop's. Left unset, its posts are read as untrusted text, its
-> verdicts are not counted, and every round reads as the first.
+> **Service orchestrator:** posts as its own App, and passes that App's login in
+> `AGENT_LOOP_LOGINS` to every runner and command that declares it, so its reviews, verdicts and
+> rounds are read back as the loop's. The dispatcher works the login out from the App's own
+> record, `<slug>[bot]`, and the job carries it; nothing configures it, so a typo cannot make every
+> round the first. Left unset, its posts would be read as untrusted text, its verdicts not
+> counted, and every round as the first.
 
 ### 4.2 Labels
 
@@ -479,6 +486,11 @@ code, not in the repository.
 
 > **Actions orchestrator:** the caller's `uses:` ref names a release, and that release's reusable
 > names the same version in its `npm exec`, so one pin selects the YAML and the runner together.
+
+> **Service orchestrator:** one install is one release for the service and every subcommand it
+> runs. The worker starts each runner and command as a child process of its own installed package,
+> never another, and refuses a job from a dispatcher of another release, which each job names, so
+> the job's format between the two only has to hold within one.
 
 ## 6. `implement`
 
@@ -684,11 +696,34 @@ text, and `review:publish` and `review:advance` write every final string from th
 > PRD's parent on a slice round's approval, or the park comment there on any ending but an approval
 > or a fix round starting.
 
-> **Service orchestrator:** the CI wait is `review:collect-checks`, not the runner's. A service
-> that does not run it leaves both CI files unset, and the review reads the checks as unknown, so it
-> never recommends an approval. Chaining is each orchestrator's too: the runner adds
-> no label, so a service that does not add `agent:fix` or run the advance leaves the next step to a
-> human.
+> **Service orchestrator:** the worker runs the review job's and the posting job's subcommands, in
+> the order and under the conditions above, each a child process with a fresh `OUTPUT_DIR` of its
+> own and an environment built from its declaration, and writes nothing to the record itself. It
+> asks the dispatcher for a `read` token and runs `review:gate` with the head commit, state and
+> merged flag the label's event carried, and the repository's variables. Where the gate went ahead
+> it checks out the settled commit as `BRANCH`, fetches `BASE_REF`, the token passed with each
+> fetch and never stored in the checkout, then runs `review:budget`, `review:collect-checks` and
+> the runner, in the sandbox its settings name, with the `read` token as `GH_TOKEN`. Where the
+> review finished it asks for a `write` token and runs `review:publish`, pointed at the runner's
+> directory; then `review:conclude`, however the run ended, pointed at publish's directory, with a
+> `write` token and `LOOP_TOKEN_SOURCE` `app`. Each command gets its token as both `GH_TOKEN` and,
+> where it declares one, `LOOP_TOKEN`. Where `review.yml` passes something the service does not
+> have, it passes the nearest equivalent:
+>
+> - **The fix-round budget is 0.** `review:budget` is handed `FIX_ROUND_BUDGET` 0, whatever
+>   `AGENT_MAX_FIX_ROUNDS` says, while the service answers no `agent:fix`. So no review asks for a
+>   round nobody would start, and a verdict asking for changes leaves it to a human, which is what
+>   a budget of 0 means on Actions.
+> - **`SELF_CHECK` is `review`.** The service has no check of its own on the pull request to leave
+>   out, so it names the review job's id, which the command leaves out already.
+> - **No run link.** There is no Actions run, so `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and
+>   `GITHUB_RUN_ID` are unset, and so is `SELF_RUN_ID`.
+> - **The download is a success** wherever the review finished: the hand-over is on the worker's
+>   disk, and there is nothing to fetch.
+>
+> Not run: the red check, so `RED_CHECK_CONFIGURED` is unset; the repository's own install and
+> setup commands, so the agent reviews a checkout without its dependencies; and, at this release,
+> `review:advance`.
 
 ### `review:gate`
 

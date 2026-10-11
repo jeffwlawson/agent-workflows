@@ -351,10 +351,29 @@ label on the same repository would run the same step twice, on the same branch, 
 Split by label, each would run a step of a loop the other started: a label's run adds the next
 label, so one orchestrator would be continuing the other's chain, through the record.
 
-**`doctor` cannot check this.** `doctor` checks that each label exists, but which orchestrator
-listens is a matter of what is installed where, and a service listens from outside the repository.
-Nor can it see whether a service's App is installed on the repository, since that App is the
-service's and not the loop's.
+A repository says which orchestrator serves it in the repository variable `AGENT_ORCHESTRATOR`
+(`ORCHESTRATOR_VARIABLE` in `shared/record.ts`). Unset means the Actions orchestrator, and
+`service` the service orchestrator. Any other value names neither: an orchestrator ***must not***
+answer a label on such a repository unless it would answer one with the variable unset, so a typo
+falls back to the orchestrator the repository already had rather than to two. A service
+orchestrator answers only the labels `SERVICE_LABELS` in `shared/record.ts` lists, `agent:review`
+alone at this release, and on a service-served repository every other label is answered by nothing.
+
+`doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
+could not read as unknown. With `service`, it checks that the labels the service answers exist,
+and names the labels nothing answers there.
+
+**`doctor` cannot check this.** It reads which orchestrator a repository asks for, not which one
+listens: a caller left installed listens and skips, and a service listens from outside the
+repository. Nor can it see whether a service's App is installed on the repository, since that App
+is the service's and not the loop's.
+
+> **Actions orchestrator:** every job of every reusable opens its `if:` with
+> `vars.AGENT_ORCHESTRATOR != 'service'`, so on a service-served repository a caller's run skips
+> every job. The skip is in the reusable, so a caller needs no change to carry it.
+
+> **Service orchestrator:** answers a repository whose `AGENT_ORCHESTRATOR` is `service`, and
+> refuses one where it is unset or holds anything else.
 
 What an orchestrator does after a runner returns, including adding the next label, is chaining.
 Chaining is each orchestrator's own and is described in each runner's section: review adding

@@ -209,6 +209,28 @@ export const TRIAGE_LABEL = "needs-triage";
  */
 export const FOLLOW_UP_STUB_LABEL = "pr-follow-up";
 
+// The orchestrator a repository is served by.
+
+/**
+ * The repository variable a repository opts into the service orchestrator
+ * with (§4.2, #455). Unset is the Actions orchestrator, `SERVICE_ORCHESTRATOR`
+ * the service, and any other value is neither: `doctor` reports it, and the
+ * service refuses the repository. Every job of every Actions reusable skips on
+ * `SERVICE_ORCHESTRATOR`, in YAML, which `tests/workflows.test.ts` holds to
+ * these two.
+ */
+export const ORCHESTRATOR_VARIABLE = "AGENT_ORCHESTRATOR";
+
+export const SERVICE_ORCHESTRATOR = "service";
+
+/**
+ * The trigger labels the service orchestrator answers on a repository that
+ * opts in, and the one list of them: the dispatcher reads it to decide what is
+ * a job, and `doctor` to name the labels nothing answers there. Every other
+ * `agent:*` label waits for its workflow to move into commands (#410).
+ */
+export const SERVICE_LABELS: readonly string[] = [REVIEW_LABEL];
+
 // Branch patterns.
 
 /**

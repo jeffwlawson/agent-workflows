@@ -2659,6 +2659,8 @@ describe("doctor names the failures that otherwise look like something else", ()
     maxFixRounds: null,
     // Unset, which is every limit at today's value.
     timeoutMinutes: Object.fromEntries(TIMEOUT_VARIABLES.map((variable) => [variable.name, null])),
+    // Unset, which is the Actions orchestrator.
+    orchestrator: null,
   });
 
   /** The installed caller file holding a job, repo-relative as `doctor` names it. */
@@ -3956,6 +3958,133 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * **The orchestrator** (#455). `AGENT_ORCHESTRATOR` unset is Actions, ruled
+   * as it always was; `service` is the service orchestrator, with checks of its
+   * own and none of Actions'; any other value is an error; and one nobody could
+   * read is a warning, never a pass. Ruled through `diagnose`, facts in and
+   * findings out.
+   */
+  describe("the orchestrator", () => {
+    const rule = (root: string, facts: RepoFacts): readonly Finding[] =>
+      diagnose(readInstalledCallers(root, manifest.name), facts);
+    const checks = (findings: readonly Finding[]): readonly string[] => findings.map((finding) => `${finding.severity} ${finding.check}`);
+    const service = (facts: Partial<RepoFacts> = {}): RepoFacts => ({
+      ...healthy(),
+      orchestrator: record.SERVICE_ORCHESTRATOR,
+      ...facts,
+    });
+    const empty = (): string => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
+      roots.push(root);
+      fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+      return root;
+    };
+
+    it("is spelt once, in the record", () => {
+      expect(record.ORCHESTRATOR_VARIABLE).toBe("AGENT_ORCHESTRATOR");
+      expect(record.SERVICE_LABELS).toEqual([record.REVIEW_LABEL]);
+    });
+
+    it("rules on an unset variable as Actions, as before", async () => {
+      const findings = rule(await installed(), healthy());
+
+      expect(findings.filter((finding) => finding.check === "orchestrator")).toEqual([]);
+      expect(findings.some((finding) => finding.severity === "error")).toBe(false);
+      // The Actions checks still run.
+      expect(checks(rule(await installed(), { ...healthy(), secrets: [] }))).toContain("error secrets");
+      expect(checks(rule(empty(), healthy()))).toEqual(["error callers"]);
+    });
+
+    it("passes a service-served repository with no callers and its labels", () => {
+      const findings = rule(empty(), service({ labels: ["agent:review", "agent:blocked"] }));
+
+      expect(checks(findings)).toEqual(["note orchestrator", "note service App", "warning unanswered labels"]);
+    });
+
+    it("says it cannot check whether the service's App is installed", () => {
+      const app = rule(empty(), service()).find((finding) => finding.check === "service App");
+
+      expect(app?.problem).toContain("`doctor` cannot check this.");
+    });
+
+    it("names every agent:* label the service does not answer, from the one list", () => {
+      const [warning] = rule(empty(), service()).filter((finding) => finding.check === "unanswered labels");
+
+      for (const name of ["agent:implement", "agent:fix", "agent:update-branch", "agent:follow-ups"]) {
+        expect(warning?.problem).toContain(`\`${name}\``);
+      }
+      expect(warning?.problem).toMatch(/answers `agent:review` and no other label, so `agent:implement`/);
+    });
+
+    it("warns that callers left installed are skipped, and skips every Actions check", async () => {
+      const root = await installed();
+      // Each of these is an Actions error, and none of them applies here.
+      edit(root, "review", (text) => text.replace(/^ *checks: read\n/m, ""));
+      const findings = rule(
+        root,
+        service({ secrets: [], canCreatePullRequests: false, visibility: "public", actionsPolicies: [], releases: [] }),
+      );
+
+      expect(checks(findings)).toEqual([
+        "note orchestrator",
+        "note service App",
+        "warning callers",
+        "warning unanswered labels",
+      ]);
+      const [callers] = findings.filter((finding) => finding.check === "callers");
+      expect(callers?.problem).toContain("installed, and skipped");
+      expect(callers?.problem).toContain("`review` job");
+    });
+
+    it("checks the labels the service needs exist, and no others", () => {
+      const missing = rule(empty(), service({ labels: ["agent:blocked"] })).find((finding) => finding.check === "labels");
+      expect(missing?.severity).toBe("error");
+      expect(missing?.problem).toMatch(/^agent:review does not exist/);
+
+      const unread = rule(empty(), service({ labels: undefined })).find((finding) => finding.check === "labels");
+      expect(unread?.severity).toBe("warning");
+    });
+
+    it("warns where a fix-round budget above 0 is set, which the service runs as 0", () => {
+      const budget = (value: string | null | undefined): readonly Finding[] =>
+        rule(empty(), service({ maxFixRounds: value })).filter((finding) => finding.check === "fix-round budget");
+
+      const [two] = budget("2");
+      expect(two?.severity).toBe("warning");
+      expect(two?.problem).toContain(`\`${FIX_ROUNDS_VARIABLE}\` is \`2\``);
+      expect(two?.problem).toContain("budget of 0");
+      for (const value of ["0", null, undefined, "three"]) expect(budget(value), String(value)).toEqual([]);
+    });
+
+    it("errors on any other value, and checks the repository as an Actions one", async () => {
+      for (const value of ["Service", "actions", ""]) {
+        const findings = rule(await installed(), { ...healthy(), orchestrator: value });
+        const [error] = findings.filter((finding) => finding.check === "orchestrator");
+
+        expect(error?.severity, value).toBe("error");
+        expect(error?.problem, value).toContain(`\`AGENT_ORCHESTRATOR\` is \`${value}\``);
+        expect(checks(findings), value).not.toContain("note service App");
+      }
+      const { code, err } = await check(await installed(), { ...healthy(), orchestrator: "sevice" });
+      expect(err).toContain("FAIL  orchestrator");
+      expect(code).toBe(1);
+    });
+
+    it("does not pass a variable it could not read", async () => {
+      const findings = rule(await installed(), { ...healthy(), orchestrator: undefined });
+      const [warning] = findings.filter((finding) => finding.check === "orchestrator");
+
+      expect(warning?.severity).toBe("warning");
+      expect(warning?.problem).toMatch(/Could not read the repository variable `AGENT_ORCHESTRATOR`/);
+      expect(checks(findings)).not.toContain("note service App");
+      expect(checks(rule(empty(), { ...healthy(), orchestrator: undefined }))).toEqual([
+        "warning orchestrator",
+        "error callers",
+      ]);
+    });
+  });
+
+  /**
    * **The loop's identity** (#321, PRD #314): which of the App, the PAT or
    * neither the loop writes as, the App set up by halves, and a caller that
    * does not pass the App's secrets on while they are set. Ruled through
@@ -4501,6 +4630,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       actionsPolicies: undefined,
       maxFixRounds: undefined,
       timeoutMinutes: undefined,
+      orchestrator: undefined,
     });
 
     expect(code).toBe(0);
@@ -4526,6 +4656,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       actionsPolicies: undefined,
       maxFixRounds: undefined,
       timeoutMinutes: undefined,
+      orchestrator: undefined,
     });
 
     expect(code).toBe(0);

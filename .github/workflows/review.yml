@@ -133,6 +133,10 @@ on:
         description: The loop's GitHub App's private key. See `AGENT_APP_ID`.
         required: false
 
+# Every job's `if:` opens with `vars.AGENT_ORCHESTRATOR != 'service'` (#455):
+# a repository that sets that variable is served by the service orchestrator,
+# and every job here skips, so one orchestrator answers each label. Unset, or
+# any other value, leaves the rest of each condition as it was.
 jobs:
   # The review's time limit (#220): its CI wait plus its own time, so a slow CI
   # no longer eats the review. Its own time is the repository variable
@@ -161,6 +165,7 @@ jobs:
   # verdict on it across.
   time-limit:
     if: >-
+      vars.AGENT_ORCHESTRATOR != 'service' &&
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -229,6 +234,7 @@ jobs:
   # and the CI wait excludes its check run, so it never feeds the CI result.
   red-check:
     if: >-
+      vars.AGENT_ORCHESTRATOR != 'service' &&
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       inputs.red-check-command != ''
@@ -398,6 +404,7 @@ jobs:
     #  - same-repo head: a fork PR must never reach the checkout+npm ci steps,
     #    which would run untrusted code with secrets in scope.
     if: >-
+      vars.AGENT_ORCHESTRATOR != 'service' &&
       !cancelled() &&
       needs.time-limit.result == 'success' &&
       github.event.label.name == 'agent:review' &&
@@ -1198,6 +1205,7 @@ jobs:
     # "every need succeeded", and with it the guards a skipped review would
     # otherwise have carried here.
     if: >-
+      vars.AGENT_ORCHESTRATOR != 'service' &&
       always() &&
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -1471,6 +1479,7 @@ jobs:
   advance:
     needs: [review, post-review]
     if: >-
+      vars.AGENT_ORCHESTRATOR != 'service' &&
       always() &&
       github.event.label.name == 'agent:review' &&
       github.event.pull_request.head.repo.full_name == github.repository &&

@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sign, SIGNATURE_HEADER, type ReviewJob, type TokenKind } from "../../service/job.js";
+import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
+import { DEFAULT_REVIEW_MINUTES, sign, SIGNATURE_HEADER, type ReviewJob, type TokenKind } from "../../service/job.js";
 import { jobDoor, runJob, type Launch, type Subcommand } from "../../service/worker.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../../shared/contract.js";
 
@@ -39,11 +40,19 @@ const JOB: ReviewJob = {
   variables: { AGENT_MODEL: "a-model", AGENT_MODEL_REVIEW: "", AGENT_REVIEW_TIMEOUT_MINUTES: "", AGENT_MAX_FIX_ROUNDS: "3" },
 };
 
-/** What a subcommand writes into its `OUTPUT_DIR`, and how it exits. */
+/** What a subcommand writes into its `OUTPUT_DIR`, and how it exits, or that it hangs until its time limit ends it. */
 interface Canned {
   readonly files?: Readonly<Record<string, unknown>>;
   readonly exit?: number;
+  readonly hangs?: boolean;
 }
+
+/** Ends once `signal` aborts, as a hung process does once it is killed. */
+const hang = (signal: AbortSignal, code: number): Promise<number> =>
+  new Promise((resolve) => {
+    if (signal.aborted) resolve(code);
+    else signal.addEventListener("abort", () => resolve(code), { once: true });
+  });
 
 /** The files each subcommand writes on an ordinary pull request, where every phase goes ahead. */
 const ORDINARY: Readonly<Partial<Record<Subcommand, Canned>>> = {
@@ -65,7 +74,10 @@ afterEach(() => {
   fs.rmSync(scratch, { recursive: true, force: true });
 });
 
-const setup = (canned: Readonly<Partial<Record<Subcommand, Canned>>> = ORDINARY) => {
+const setup = (
+  canned: Readonly<Partial<Record<Subcommand, Canned>>> = ORDINARY,
+  options: { readonly minuteMs?: number; readonly checkoutHangs?: boolean } = {},
+) => {
   /** Every edge the job touched, in the order it touched them. */
   const events: string[] = [];
   const launched: (Launch & { readonly emptyAtStart: boolean })[] = [];
@@ -83,22 +95,27 @@ const setup = (canned: Readonly<Partial<Record<Subcommand, Canned>>> = ORDINARY)
       if (dir === undefined) throw new Error(`${launch.subcommand} was started with no OUTPUT_DIR`);
       launched.push({ ...launch, emptyAtStart: fs.readdirSync(dir).length === 0 });
       events.push(launch.subcommand);
-      const { files = {}, exit = 0 } = canned[launch.subcommand] ?? {};
+      const { files = {}, exit = 0, hangs = false } = canned[launch.subcommand] ?? {};
       for (const [name, content] of Object.entries(files)) {
         fs.writeFileSync(path.join(dir, name), typeof content === "string" ? content : JSON.stringify(content));
       }
-      return exit;
+      return hangs ? hang(launch.signal, 143) : exit;
     },
     git: {
-      checkout: async (options: { dir: string; sha: string; branch: string; baseRef: string; token: string }) => {
+      checkout: async ({ signal, ...rest }: { dir: string; sha: string; branch: string; baseRef: string; token: string; signal: AbortSignal }) => {
         events.push("checkout");
-        checkouts.push(options);
+        checkouts.push(rest);
+        if (options.checkoutHangs === true) {
+          await hang(signal, 0);
+          throw new Error("The operation was aborted");
+        }
       },
     },
     host: HOST,
     agent: AGENT,
     cliBin: "/work/claude-code/bin",
     runDir,
+    ...(options.minuteMs === undefined ? {} : { minuteMs: options.minuteMs }),
   };
   const checkouts: { dir: string; sha: string; branch: string; baseRef: string; token: string }[] = [];
   const env = (subcommand: Subcommand): Readonly<Record<string, string>> => {
@@ -172,6 +189,7 @@ describe("the worker's job, on an ordinary pull request", () => {
       "checkout",
       "review:budget",
       "review:collect-checks",
+      "read token",
       "review",
       "write token",
       "review:publish",
@@ -217,11 +235,12 @@ describe("the worker's job, on an ordinary pull request", () => {
     expect(s.env("review:gate")["PATH"]).toBe(HOST.PATH);
   });
 
-  it("hands the runner the agent's token, the sandbox's settings, and the read token as GH_TOKEN", async () => {
+  it("hands the runner the agent's token, the sandbox's settings, and a read token of its own as GH_TOKEN", async () => {
     const s = setup();
     await runJob(JOB, s.edges);
 
-    expect(s.env("review")).toMatchObject({ ...AGENT, GH_TOKEN: "read-token-1", AGENT_MODEL: "a-model", AGENT_LOOP_LOGINS: "loop-app[bot]" });
+    expect(s.env("review:collect-checks")["GH_TOKEN"]).toBe("read-token-1");
+    expect(s.env("review")).toMatchObject({ ...AGENT, GH_TOKEN: "read-token-2", AGENT_MODEL: "a-model", AGENT_LOOP_LOGINS: "loop-app[bot]" });
     expect(s.env("review")).not.toHaveProperty("AGENT_MODEL_REVIEW");
     expect(s.env("review")).not.toHaveProperty("RED_CHECK_CONFIGURED");
   });
@@ -233,9 +252,9 @@ describe("the worker's job, on an ordinary pull request", () => {
     for (const subcommand of READ_ONLY) {
       expect(Object.values(s.env(subcommand)).filter((value) => value.includes("write-token")), subcommand).toEqual([]);
     }
-    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "write-token-2", LOOP_TOKEN: "write-token-2", LOOP_TOKEN_SOURCE: "app" });
-    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-2", LOOP_TOKEN: "write-token-2", LOOP_TOKEN_SOURCE: "app" });
-    expect(s.asked).toEqual(["read", "write"]);
+    expect(s.env("review:publish")).toMatchObject({ GH_TOKEN: "write-token-3", LOOP_TOKEN: "write-token-3", LOOP_TOKEN_SOURCE: "app" });
+    expect(s.env("review:conclude")).toMatchObject({ GH_TOKEN: "write-token-3", LOOP_TOKEN: "write-token-3", LOOP_TOKEN_SOURCE: "app" });
+    expect(s.asked).toEqual(["read", "read", "write"]);
   });
 
   it("hands review:budget a fix-round budget of 0, whatever the repository's variable says", async () => {
@@ -291,11 +310,74 @@ describe("the worker's job, on an ordinary pull request", () => {
       PUBLISH_OUTCOME: "success",
       FIX_ROUND_BUDGET: "0",
       FIX_ROUNDS_SPENT: "0",
+      TIMED_OUT: "false",
+      TIMEOUT_MINUTES: String(CI_WAIT_SECONDS / 60 + DEFAULT_REVIEW_MINUTES),
     });
     // There is no Actions run to link to.
     for (const name of ["GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"]) {
       expect(s.env("review:conclude")).not.toHaveProperty(name);
     }
+  });
+});
+
+/**
+ * Every phase is bounded, as every job on Actions is: the review's phases by
+ * its time limit, the CI wait plus its own time, and each posting command by
+ * the posting job's. A minute is shortened here so a limit is reached at once.
+ */
+describe("the worker's job, where a phase runs past its time limit", () => {
+  const MINUTE_MS = 5;
+  const LIMIT = CI_WAIT_SECONDS / 60 + DEFAULT_REVIEW_MINUTES;
+
+  it.each<[string, Readonly<Partial<Record<Subcommand, Canned>>>, boolean]>([
+    ["the runner", { ...ORDINARY, review: { hangs: true } }, false],
+    ["the CI wait", { ...ORDINARY, "review:collect-checks": { hangs: true } }, false],
+    ["the budget", { ...ORDINARY, "review:budget": { hangs: true } }, false],
+    ["the checkout", ORDINARY, true],
+  ])("ends %s, posts no review, and tells conclude the review timed out", async (_name, canned, checkoutHangs) => {
+    const s = setup(canned, { minuteMs: MINUTE_MS, checkoutHangs });
+    const phases = await runJob(JOB, s.edges);
+
+    expect(s.events).not.toContain("review:publish");
+    expect(s.events.at(-1)).toBe("review:conclude");
+    expect(phases.filter(({ outcome }) => outcome === "timed out")).toHaveLength(1);
+    expect(s.env("review:conclude")).toMatchObject({
+      REVIEW_RESULT: "cancelled",
+      PROCEED: "true",
+      TIMED_OUT: "true",
+      TIMEOUT_MINUTES: String(LIMIT),
+    });
+    expect(s.env("review:conclude")).not.toHaveProperty("VERDICT");
+    expect(s.env("review:conclude")).not.toHaveProperty("PUBLISH_OUTCOME");
+  });
+
+  it("reads the limit from the repository's own review time", async () => {
+    const s = setup({ ...ORDINARY, review: { hangs: true } }, { minuteMs: MINUTE_MS });
+    await runJob({ ...JOB, variables: { ...JOB.variables, AGENT_REVIEW_TIMEOUT_MINUTES: "2" } }, s.edges);
+
+    expect(s.env("review:conclude")).toMatchObject({ TIMED_OUT: "true", TIMEOUT_MINUTES: String(CI_WAIT_SECONDS / 60 + 2) });
+  });
+
+  it("ends a publish that hangs, and still concludes, saying it was cancelled", async () => {
+    const s = setup({ ...ORDINARY, "review:publish": { hangs: true } }, { minuteMs: MINUTE_MS });
+    await runJob(JOB, s.edges);
+
+    expect(s.events.at(-1)).toBe("review:conclude");
+    expect(s.env("review:conclude")).toMatchObject({ REVIEW_RESULT: "success", TIMED_OUT: "false", PUBLISH_OUTCOME: "cancelled" });
+  });
+
+  it("ends a conclude that hangs, so the next job is not held behind it", async () => {
+    const s = setup({ ...ORDINARY, "review:conclude": { hangs: true } }, { minuteMs: MINUTE_MS });
+    const phases = await runJob(JOB, s.edges);
+
+    expect(phases.at(-1)).toEqual({ name: "review:conclude", outcome: "timed out" });
+  });
+
+  it("hands every launch the signal its limit aborts, and none is aborted where nothing hangs", async () => {
+    const s = setup();
+    await runJob(JOB, s.edges);
+
+    expect(s.launched.filter(({ signal }) => signal.aborted).map(({ subcommand }) => subcommand)).toEqual([]);
   });
 });
 

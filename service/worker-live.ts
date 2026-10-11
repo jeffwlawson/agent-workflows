@@ -39,12 +39,20 @@ export const liveTokens =
     return token;
   };
 
+/** How long a subcommand ended by its time limit is given to exit before it is killed. */
+const KILL_GRACE_MS = 10_000;
+
 /**
  * Each subcommand as `node <the package's cli.js> <subcommand>`, in its
  * working directory, with the environment it is handed and nothing else, its
  * output appended to its log.
+ *
+ * Each is the leader of a process group of its own, so where its time limit
+ * aborts `signal` the whole group is ended, the agent and every process it
+ * started with it: `SIGTERM`, then `SIGKILL` for what is still there after
+ * `KILL_GRACE_MS`.
  */
-export const liveLauncher: Launcher = ({ subcommand, env, cwd, log }) =>
+export const liveLauncher: Launcher = ({ subcommand, env, cwd, log, signal }) =>
   new Promise((resolve, reject) => {
     const out = fs.openSync(log, "a");
     // A child that fails to start can say so twice, `error` then `close`:
@@ -56,9 +64,29 @@ export const liveLauncher: Launcher = ({ subcommand, env, cwd, log }) =>
       fs.closeSync(out);
       settle();
     };
-    const child = spawn(process.execPath, [CLI, subcommand], { cwd, env, stdio: ["ignore", out, out] });
-    child.once("error", (error) => end(() => reject(error)));
-    child.once("close", (code) => end(() => resolve(code ?? 1)));
+    const child = spawn(process.execPath, [CLI, subcommand], { cwd, env, stdio: ["ignore", out, out], detached: true });
+    const group = (kill: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, kill);
+      } catch {
+        // The group has gone already.
+      }
+    };
+    let killer: NodeJS.Timeout | undefined;
+    const stop = (): void => {
+      group("SIGTERM");
+      killer = setTimeout(() => group("SIGKILL"), KILL_GRACE_MS);
+    };
+    if (signal.aborted) stop();
+    else signal.addEventListener("abort", stop, { once: true });
+    const settle = (then: () => void): void => {
+      signal.removeEventListener("abort", stop);
+      if (killer !== undefined) clearTimeout(killer);
+      end(then);
+    };
+    child.once("error", (error) => settle(() => reject(error)));
+    child.once("close", (code) => settle(() => resolve(code ?? 1)));
   });
 
 /**
@@ -68,7 +96,7 @@ export const liveLauncher: Launcher = ({ subcommand, env, cwd, log }) =>
  * listing's arguments.
  */
 export const liveGit = (host: HostEnvironment): Git => ({
-  checkout: async ({ dir, repo, branch, sha, baseRef, token }) => {
+  checkout: async ({ dir, repo, branch, sha, baseRef, token, signal }) => {
     const auth = Buffer.from(`x-access-token:${token}`).toString("base64");
     const env = { ...host, GIT_TERMINAL_PROMPT: "0" };
     const withToken = {
@@ -79,14 +107,14 @@ export const liveGit = (host: HostEnvironment): Git => ({
     };
     // An initial branch no pull request's base can be named, so the base's
     // fetch into its own local branch never meets the one checked out.
-    await run("git", ["init", "--quiet", "--initial-branch=agent-workflows-unborn", dir], { env });
-    await run("git", ["-C", dir, "remote", "add", "origin", `https://github.com/${repo}.git`], { env });
+    await run("git", ["init", "--quiet", "--initial-branch=agent-workflows-unborn", dir], { env, signal });
+    await run("git", ["-C", dir, "remote", "add", "origin", `https://github.com/${repo}.git`], { env, signal });
     await run(
       "git",
       ["-C", dir, "fetch", "--quiet", "--no-tags", "origin", `+${sha}:refs/remotes/origin/${branch}`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
-      { env: withToken },
+      { env: withToken, signal },
     );
-    await run("git", ["-C", dir, "checkout", "--quiet", "-B", branch, sha], { env });
+    await run("git", ["-C", dir, "checkout", "--quiet", "-B", branch, sha], { env, signal });
   },
 });
 

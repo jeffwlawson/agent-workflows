@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
 import { ORCHESTRATOR_VARIABLE, SERVICE_LABELS, SERVICE_ORCHESTRATOR } from "../shared/record.js";
 import {
   parseTokenRequest,
   REVIEW_VARIABLES,
-  reviewMinutes,
+  reviewTimeLimit,
   SIGNATURE_HEADER,
   sign,
   verifySignature,
@@ -200,7 +199,7 @@ export const createDispatcher = (edges: DispatcherEdges) => {
     const variables = Object.fromEntries(
       await Promise.all(REVIEW_VARIABLES.map(async (name) => [name, (await edges.github.variable(repo, name)) ?? ""] as const)),
     ) as Record<ReviewVariable, string>;
-    const minutes = CI_WAIT_SECONDS / 60 + reviewMinutes(variables.AGENT_REVIEW_TIMEOUT_MINUTES) + edges.deadlineMarginMinutes;
+    const minutes = reviewTimeLimit(variables.AGENT_REVIEW_TIMEOUT_MINUTES) + edges.deadlineMarginMinutes;
     const deadline = new Date(now().getTime() + minutes * 60_000);
     const job: ReviewJob = {
       id: newId(),

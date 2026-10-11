@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../shared/contract.js";
 import type { HostEnvironment } from "../shared/env.js";
 import type { DoorRequest, DoorResponse } from "./dispatcher.js";
-import { parseJob, SIGNATURE_HEADER, verifySignature, type ReviewJob, type TokenKind } from "./job.js";
+import { parseJob, reviewTimeLimit, SIGNATURE_HEADER, verifySignature, type ReviewJob, type TokenKind } from "./job.js";
 
 /**
  * The service orchestrator's worker (#457): it receives jobs from the
@@ -22,15 +22,23 @@ import { parseJob, SIGNATURE_HEADER, verifySignature, type ReviewJob, type Token
 /** A subcommand the worker starts. */
 export type Subcommand = Runner | Command;
 
-/** One subcommand to start: its name, its whole environment, where it runs, and the file its output goes to. */
+/**
+ * One subcommand to start: its name, its whole environment, where it runs,
+ * the file its output goes to, and the signal its time limit aborts, on which
+ * it is ended.
+ */
 export interface Launch {
   readonly subcommand: Subcommand;
   readonly env: Readonly<Record<string, string>>;
   readonly cwd: string;
   readonly log: string;
+  readonly signal: AbortSignal;
 }
 
-/** Starts a subcommand of the worker's own package, and answers with its exit code once it has ended. */
+/**
+ * Starts a subcommand of the worker's own package, and answers with its exit
+ * code once it has ended, which it is made to where `signal` aborts.
+ */
 export type Launcher = (launch: Launch) => Promise<number>;
 
 /** The checkout a review runs in. */
@@ -48,6 +56,8 @@ export interface Git {
     readonly sha: string;
     readonly baseRef: string;
     readonly token: string;
+    /** Aborted at the review's time limit, which ends the checkout. */
+    readonly signal: AbortSignal;
   }): Promise<void>;
 }
 
@@ -69,7 +79,16 @@ export interface JobEdges {
   readonly cliBin: string;
   /** The run's own directory, fresh: the checkout, and each subcommand's output directory and log, go under it. */
   readonly runDir: string;
+  /** How long a minute of a time limit is, in milliseconds: a minute, but where a test shortens it. */
+  readonly minuteMs?: number;
 }
+
+/**
+ * Each posting command's own time limit, in minutes: the posting job's
+ * `timeout-minutes` in `review.yml`. Each command gets the whole of it, so a
+ * publish that hangs still leaves conclude its time to say so.
+ */
+export const POSTING_MINUTES = 10;
 
 /**
  * The fix-round budget the worker hands `review:budget`, whatever the
@@ -156,7 +175,7 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  * 2. The checkout of the commit the gate settled, as `BRANCH`, with the base.
  * 3. `review:budget`, with a budget of 0 (`SERVICE_FIX_ROUND_BUDGET`).
  * 4. `review:collect-checks`, whose failure the review reads as checks unknown.
- * 5. The runner, with the `read` token as `GH_TOKEN`.
+ * 5. A fresh `read` token, then the runner, with it as `GH_TOKEN`.
  * 6. A `write` token, then `review:publish`, where the review finished.
  * 7. `review:conclude`, however the phases before it ended, told how each did.
  *
@@ -164,6 +183,11 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  * that reads another's files is pointed at that one's. Never throws: a phase
  * that fails is an ending conclude is told, and one conclude cannot be run for
  * is the last phase in what this returns, for the worker's log.
+ *
+ * **Every phase has a time limit**, as every job on Actions does. Phases 1 to
+ * 5 share the review's, its CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`
+ * (`reviewTimeLimit`), and one still running at it is ended and told to
+ * conclude as a timeout. Publish and conclude get `POSTING_MINUTES` each.
  */
 export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly Phase[]> => {
   const phases: Phase[] = [];
@@ -184,25 +208,40 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
     AGENT_LOOP_LOGINS: job.appLogin,
   };
 
+  const minuteMs = edges.minuteMs ?? 60_000;
+  /** A time limit of `minutes` from now: the signal it aborts, and the timer to clear once what it bounds has ended. */
+  const limit = (minutes: number): { readonly signal: AbortSignal; readonly clear: () => void } => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), minutes * minuteMs);
+    return { signal: controller.signal, clear: () => clearTimeout(timer) };
+  };
+
   const run = async (
     subcommand: Subcommand,
     values: Readonly<Record<string, string | undefined>>,
     cwd: string,
+    signal: AbortSignal,
     host: HostEnvironment = edges.host,
-  ): Promise<{ readonly ok: boolean; readonly dir: string }> => {
+  ): Promise<{ readonly ok: boolean; readonly timedOut: boolean; readonly dir: string }> => {
     const dir = outputDir(subcommand);
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
     const env = environmentFor(subcommand, { ...values, OUTPUT_DIR: dir }, host);
     let code: number;
     try {
-      code = await edges.launch({ subcommand, env, cwd, log: logFile(subcommand) });
+      code = await edges.launch({ subcommand, env, cwd, log: logFile(subcommand), signal });
     } catch (error) {
       fs.writeFileSync(path.join(dir, "failure_reason.txt"), `It could not be started: ${message(error)}`);
       code = -1;
     }
+    // Ended by its time limit, whatever it exited with, as Actions cancels a
+    // step at its job's `timeout-minutes`.
+    if (signal.aborted) {
+      note(subcommand, "timed out");
+      return { ok: false, timedOut: true, dir };
+    }
     note(subcommand, code === 0 ? "success" : `failure (exit ${code})`);
-    return { ok: code === 0, dir };
+    return { ok: code === 0, timedOut: false, dir };
   };
 
   const ask = async (kind: TokenKind): Promise<string | undefined> => {
@@ -217,11 +256,27 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
   };
 
   /** How the review job ended, as the reusable's `needs.review` outputs say it. */
-  const review: { result: "success" | "failure"; failureReason?: string; refusalReason?: string } = { result: "success" };
+  const review: { result: "success" | "failure" | "cancelled"; timedOut: boolean; failureReason?: string; refusalReason?: string } = {
+    result: "success",
+    timedOut: false,
+  };
   const failed = (why: string | undefined): void => {
     review.result = "failure";
     if (why !== undefined) review.failureReason = why;
   };
+  /** The review's phases ran past its time limit, which ends them as Actions ends a job at its `timeout-minutes`. */
+  const timedOut = (): void => {
+    review.result = "cancelled";
+    review.timedOut = true;
+  };
+
+  // The review job's time limit, `review.yml`'s `time-limit` sum, over the
+  // phases that job runs: the gate, the checkout, the budget, the CI wait and
+  // the runner. A phase still running at it is ended, and conclude is told
+  // the review timed out, so a hung agent neither holds the queue nor leaves
+  // the pull request without an ending.
+  const minutes = reviewTimeLimit(job.variables.AGENT_REVIEW_TIMEOUT_MINUTES);
+  const reviewLimit = limit(minutes);
 
   // 1. The gate, with the pull request as the label's event saw it, and the
   // repository's own variables, which it refuses the way it does on Actions.
@@ -242,9 +297,11 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
         MAX_FIX_ROUNDS: job.variables.AGENT_MAX_FIX_ROUNDS,
       },
       edges.runDir,
+      reviewLimit.signal,
     );
     gate = decisions(ran.dir, "gate.json");
-    if (!ran.ok) {
+    if (ran.timedOut) timedOut();
+    else if (!ran.ok) {
       failed(reason(ran.dir, "failure_reason.txt"));
       const refusal = reason(ran.dir, "refusal_reason.txt");
       if (refusal !== undefined) review.refusalReason = refusal;
@@ -260,11 +317,24 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
   let reviewDir = outputDir("review");
   if (proceeds && read !== undefined) {
     try {
-      await edges.git.checkout({ dir: checkout, repo: job.repo, branch: job.branch, sha, baseRef: job.baseRef, token: read });
+      await edges.git.checkout({
+        dir: checkout,
+        repo: job.repo,
+        branch: job.branch,
+        sha,
+        baseRef: job.baseRef,
+        token: read,
+        signal: reviewLimit.signal,
+      });
       note("checkout", "success");
     } catch (error) {
-      note("checkout", `failure: ${message(error)}`);
-      failed(`The pull request's head could not be checked out: ${message(error)}`);
+      if (reviewLimit.signal.aborted) {
+        note("checkout", "timed out");
+        timedOut();
+      } else {
+        note("checkout", `failure: ${message(error)}`);
+        failed(`The pull request's head could not be checked out: ${message(error)}`);
+      }
     }
   }
   if (proceeds && read !== undefined && review.result === "success") {
@@ -279,37 +349,58 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
         LOOP_TOKEN_SOURCE: TOKEN_SOURCE,
       },
       checkout,
+      reviewLimit.signal,
     );
     budget = decisions(counted.dir, "budget.json");
-    if (!counted.ok) failed(reason(counted.dir, "failure_reason.txt"));
+    if (counted.timedOut) timedOut();
+    else if (!counted.ok) failed(reason(counted.dir, "failure_reason.txt"));
   }
   if (proceeds && read !== undefined && review.result === "success") {
     // Its failure fails nothing: the runner reads checks it has no word for
     // as unknown, as on Actions, where the step continues on error.
-    const checks = await run("review:collect-checks", { ...common, GH_TOKEN: read, REVIEWED_SHA: sha, SELF_CHECK: SERVICE_SELF_CHECK }, checkout);
+    const checks = await run(
+      "review:collect-checks",
+      { ...common, GH_TOKEN: read, REVIEWED_SHA: sha, SELF_CHECK: SERVICE_SELF_CHECK },
+      checkout,
+      reviewLimit.signal,
+    );
+    if (checks.timedOut) timedOut();
+  }
+  // The runner gets a `read` token of its own, minted as it starts: one
+  // installation token lasts an hour, and the CI wait before it can take a
+  // quarter of that, so the gate's could expire while the agent still reads.
+  const runnerToken = proceeds && review.result === "success" ? await ask("read") : undefined;
+  if (proceeds && review.result === "success" && runnerToken === undefined) {
+    failed("The service's dispatcher granted no token for the review to read the pull request with.");
+  }
+  if (proceeds && runnerToken !== undefined && review.result === "success") {
+    const checks = outputDir("review:collect-checks");
     const reviewed = await run(
       "review",
       {
         ...common,
         ...edges.agent,
-        GH_TOKEN: read,
+        GH_TOKEN: runnerToken,
         AGENT_MODEL: job.variables.AGENT_MODEL,
         AGENT_MODEL_REVIEW: job.variables.AGENT_MODEL_REVIEW,
         BASE_REF: job.baseRef,
         ROUND: gate["round"],
-        CI_STATUS_FILE: path.join(checks.dir, "ci_status.md"),
-        CI_RESULT_FILE: path.join(checks.dir, "ci_result.txt"),
+        CI_STATUS_FILE: path.join(checks, "ci_status.md"),
+        CI_RESULT_FILE: path.join(checks, "ci_result.txt"),
         AUTO_FIX: budget["start"],
         FIX_ROUNDS_SPENT: budget["spent"],
         FIX_ROUND_BUDGET: budget["budget"],
       },
       checkout,
+      reviewLimit.signal,
       { ...edges.host, PATH: [edges.cliBin, edges.host.PATH].filter((part) => part !== undefined && part !== "").join(":") },
     );
     reviewDir = reviewed.dir;
-    if (reviewed.ok) verdict = decisions(reviewed.dir, "verdict.json");
+    if (reviewed.timedOut) timedOut();
+    else if (reviewed.ok) verdict = decisions(reviewed.dir, "verdict.json");
     else failed(reason(reviewed.dir, "failure_reason.txt"));
   }
+  reviewLimit.clear();
 
   // 6. The posting phase's token, then publish, only where the review
   // finished. There is nothing to download: the hand-over is on this disk,
@@ -323,12 +414,17 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
     write = await ask("write");
     mintOutcome = write === undefined ? "failure" : "success";
     if (write !== undefined) {
+      const publishLimit = limit(POSTING_MINUTES);
       const published = await run(
         "review:publish",
         { ...common, GH_TOKEN: write, LOOP_TOKEN: write, LOOP_TOKEN_SOURCE: TOKEN_SOURCE, REVIEWED_SHA: sha, REVIEW_DIR: reviewDir },
         edges.runDir,
+        publishLimit.signal,
       );
-      publishOutcome = published.ok ? "success" : "failure";
+      publishLimit.clear();
+      // A publish ended by its limit is a step a cancel ended, which conclude
+      // says as cancelled rather than as failed.
+      publishOutcome = published.timedOut ? "cancelled" : published.ok ? "success" : "failure";
     }
   }
 
@@ -339,6 +435,7 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
     note("review:conclude", "not run: the dispatcher granted no token to write the ending with");
     return phases;
   }
+  const concludeLimit = limit(POSTING_MINUTES);
   await run(
     "review:conclude",
     {
@@ -358,6 +455,8 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
       ROUND: gate["round"],
       FAILURE_REASON: review.failureReason,
       REFUSAL_REASON: review.refusalReason,
+      TIMED_OUT: String(review.timedOut),
+      TIMEOUT_MINUTES: String(minutes),
       MINT_OUTCOME: mintOutcome,
       DOWNLOAD_OUTCOME: finished ? "success" : "",
       PUBLISH_OUTCOME: publishOutcome,
@@ -365,7 +464,9 @@ export const runJob = async (job: ReviewJob, edges: JobEdges): Promise<readonly 
       FIX_ROUNDS_SPENT: budget["spent"],
     },
     edges.runDir,
+    concludeLimit.signal,
   );
+  concludeLimit.clear();
   return phases;
 };
 

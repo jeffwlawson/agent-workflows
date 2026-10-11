@@ -119,8 +119,9 @@ Each door also answers `GET /health` with `200`.
 ## The worker
 
 The process that runs review. It holds no key: it asks the dispatcher for a token at the start of
-each phase, `read` for the gate, the checkout, the budget, the CI wait and the runner, and `write`
-for `review:publish` and `review:conclude`. It needs:
+each phase: `read` for the gate, the checkout, the budget and the CI wait, a fresh `read` for the
+runner, so the token's hour starts as the agent does, and `write` for `review:publish` and
+`review:conclude`. It needs:
 
 - Linux, Node 24 or later, `git`, `npm`, and the package (`npm exec
   @jeffwlawson/agent-workflows@<version> worker`, or an install of it) at the **same version as the
@@ -148,6 +149,14 @@ human.
 Each run leaves a directory under `WORK_DIR/runs`, named for when it started and its job: the
 checkout, each subcommand's output directory under `out/` and its log under `logs/`. The worker's
 own log says how each phase ended.
+
+Every phase has a time limit, as every job on Actions does, so a hung agent cannot hold the queue.
+The gate, the checkout, the budget, the CI wait and the runner share the review's: 15 minutes of CI
+wait plus `AGENT_REVIEW_TIMEOUT_MINUTES` (5 where unset). `review:publish` and `review:conclude`
+get 10 minutes each. A phase still running at its limit is ended, with every process it started,
+and the pull request's ending says the review timed out. A job that waits in the queue for longer
+than the dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks to
+post, and ends with nothing posted, so set the margin above the longest wait you expect.
 
 ### Settings
 

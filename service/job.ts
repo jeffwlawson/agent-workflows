@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { CI_WAIT_SECONDS } from "../review/collect-checks.js";
 
 /**
  * What the service orchestrator's two processes say to each other (#456): the
@@ -33,6 +34,13 @@ export const DEFAULT_REVIEW_MINUTES = 5;
 /** Review's own time, in minutes, from the variable as the job carries it. */
 export const reviewMinutes = (variable: string): number =>
   /^[1-9][0-9]*$/.test(variable) ? Number(variable) : DEFAULT_REVIEW_MINUTES;
+
+/**
+ * Review's time limit, in minutes: its CI wait plus its own time, the sum
+ * `review.yml`'s `time-limit` job makes. The dispatcher's deadline for a job
+ * starts from it, and the worker holds the review's phases to it.
+ */
+export const reviewTimeLimit = (variable: string): number => CI_WAIT_SECONDS / 60 + reviewMinutes(variable);
 
 /**
  * One `agent:review` delivery, as a job for the worker: what the label's event

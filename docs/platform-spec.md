@@ -702,8 +702,8 @@ text, and `review:publish` and `review:advance` write every final string from th
 > asks the dispatcher for a `read` token and runs `review:gate` with the head commit, state and
 > merged flag the label's event carried, and the repository's variables. Where the gate went ahead
 > it checks out the settled commit as `BRANCH`, fetches `BASE_REF`, the token passed with each
-> fetch and never stored in the checkout, then runs `review:budget`, `review:collect-checks` and
-> the runner, in the sandbox its settings name, with the `read` token as `GH_TOKEN`. Where the
+> fetch and never stored in the checkout, then runs `review:budget` and `review:collect-checks`,
+> and the runner, in the sandbox its settings name, with a fresh `read` token as `GH_TOKEN`. Where the
 > review finished it asks for a `write` token and runs `review:publish`, pointed at the runner's
 > directory; then `review:conclude`, however the run ended, pointed at publish's directory, with a
 > `write` token and `LOOP_TOKEN_SOURCE` `app`. Each command gets its token as both `GH_TOKEN` and,
@@ -720,6 +720,13 @@ text, and `review:publish` and `review:advance` write every final string from th
 >   `GITHUB_RUN_ID` are unset, and so is `SELF_RUN_ID`.
 > - **The download is a success** wherever the review finished: the hand-over is on the worker's
 >   disk, and there is nothing to fetch.
+> - **The time limits are the jobs'.** The gate, the checkout, the budget, the CI wait and the
+>   runner share the review's time limit, the CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`, as the
+>   review job's `timeout-minutes` does, and `review:publish` and `review:conclude` get the posting
+>   job's 10 minutes each. A phase still running at its limit is ended with every process it
+>   started. One of the review's is then `REVIEW_RESULT` `cancelled` with `TIMED_OUT` `true` and
+>   `TIMEOUT_MINUTES` the limit, which conclude says as a timeout; a publish ended so is
+>   `PUBLISH_OUTCOME` `cancelled`.
 >
 > Not run: the red check, so `RED_CHECK_CONFIGURED` is unset; the repository's own install and
 > setup commands, so the agent reviews a checkout without its dependencies; and, at this release,

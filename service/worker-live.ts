@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -14,6 +15,27 @@ import type { Git, Launcher, TokenSource } from "./worker.js";
  */
 
 const run = promisify(execFile);
+
+// Node's own since v24.14.0, which `engines` requires; declared here until the
+// `@types/node` this package builds with names it.
+declare module "node:http" {
+  function setGlobalProxyFromEnv(proxyEnv?: Readonly<Record<string, string | undefined>>): () => void;
+}
+
+/**
+ * Every request of the worker's own, through `host`'s proxy where it has one
+ * (#460): the token requests, and any request added later, since it is set
+ * once, for the whole process, through Node's built-in proxy support rather
+ * than per request. Read from `host`, never from the worker's environment,
+ * and with no `NO_PROXY`, so none bypasses it. Answers what undoes it.
+ */
+export const routeThroughProxy = (host: HostEnvironment): (() => void) =>
+  http.setGlobalProxyFromEnv({
+    ...(host.HTTP_PROXY === undefined ? {} : { HTTP_PROXY: host.HTTP_PROXY }),
+    ...(host.HTTPS_PROXY === undefined ? {} : { HTTPS_PROXY: host.HTTPS_PROXY }),
+    NO_PROXY: "",
+    no_proxy: "",
+  });
 
 /** The worker's own package's CLI, so every subcommand it starts is its own release (spec §5). */
 const CLI = fileURLToPath(new URL("../cli.js", import.meta.url));

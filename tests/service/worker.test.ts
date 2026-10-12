@@ -6,6 +6,7 @@ import { CI_WAIT_SECONDS } from "../../review/collect-checks.js";
 import { DEFAULT_REVIEW_MINUTES, sign, SIGNATURE_HEADER, type ReviewJob, type TokenKind } from "../../service/job.js";
 import { jobDoor, REDACTED, runJob, SUMMARY_FILE, type Launch, type Subcommand } from "../../service/worker.js";
 import { COMMANDS, RUNNERS, type Command, type Runner } from "../../shared/contract.js";
+import type { HostEnvironment } from "../../shared/env.js";
 
 /**
  * Seam 1 of PRD #453: the worker's job, driven through `runJob` with fakes at
@@ -81,6 +82,7 @@ const setup = (
     readonly checkoutHangs?: boolean;
     /** The token requests the dispatcher refuses, counted from 1. */
     readonly refused?: readonly number[];
+    readonly host?: HostEnvironment;
   } = {},
 ) => {
   /** Every edge the job touched, in the order it touched them. */
@@ -117,7 +119,7 @@ const setup = (
         }
       },
     },
-    host: HOST,
+    host: options.host ?? HOST,
     agent: AGENT,
     cliBin: "/work/claude-code/bin",
     runDir,
@@ -230,6 +232,20 @@ describe("the worker's job, on an ordinary pull request", () => {
       expect(env["LANG"], subcommand).toBe(HOST.LANG);
       // The host's three are the ones the worker was handed, not the test's own.
       expect(env["PATH"]?.endsWith(HOST.PATH), subcommand).toBe(true);
+    }
+  });
+
+  it("tells each subcommand to use the worker's proxy, for HTTP and HTTPS, in both cases, and Node's fetch to read them, where it has one", async () => {
+    const proxy = "http://127.0.0.1:8888";
+    const PROXY = { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, NODE_USE_ENV_PROXY: "1" };
+    const s = setup(ORDINARY, { host: { ...HOST, ...PROXY } });
+    await runJob(JOB, s.edges);
+
+    expect(s.launched).toHaveLength(6);
+    for (const { subcommand, env } of s.launched) {
+      expect(env, subcommand).toMatchObject(PROXY);
+      const allowed = new Set([...Object.keys(declared(subcommand)), "PATH", "HOME", "LANG", ...Object.keys(PROXY)]);
+      expect(Object.keys(env).filter((name) => !allowed.has(name)), subcommand).toEqual([]);
     }
   });
 

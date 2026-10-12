@@ -77,6 +77,10 @@ export const DISPATCHER = {
  *   where unset: a worker runs agents on a box of its own, so running one
  *   unsandboxed is a choice made by name. The CLI's prefix goes on the front
  *   of `AGENT_SANDBOX_PATH` and into `AGENT_SANDBOX_RO_BINDS` besides.
+ * - `WORKER_PROXY`: the proxy the worker's own requests, the CLI's install
+ *   and its token requests, leave through, and every subcommand it starts is
+ *   told to use (#460). Empty is none: each connects directly. It does not
+ *   reach the sandbox, whose proxy is `AGENT_SANDBOX_PROXY`.
  */
 export const WORKER = {
   WORKER_SECRET: REQUIRED,
@@ -86,6 +90,7 @@ export const WORKER = {
   WORK_DIR: REQUIRED,
   JOBS_HOST: { required: false, default: "127.0.0.1" },
   JOBS_PORT: { required: false, default: "8787" },
+  WORKER_PROXY: { required: false, default: "" },
   ...SANDBOX,
   AGENT_SANDBOX: { ...SANDBOX.AGENT_SANDBOX, default: "bwrap" },
 } as const satisfies Inputs;

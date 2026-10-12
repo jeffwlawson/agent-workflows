@@ -6,7 +6,7 @@
   "license": "MIT",
   "author": "jeffwlawson",
   "engines": {
-    "node": ">=24"
+    "node": ">=24.14"
   },
   "bin": {
     "agent-workflows": "dist/cli.js"

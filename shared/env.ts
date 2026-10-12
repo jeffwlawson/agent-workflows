@@ -181,10 +181,29 @@ export const outputDir = (): string => input(EVERY_SUBCOMMAND, "OUTPUT_DIR");
  */
 export const HOST_VARIABLES = ["PATH", "HOME", "LANG"] as const;
 
-export type HostEnvironment = Readonly<Partial<Record<(typeof HOST_VARIABLES)[number], string>>>;
+/**
+ * The variables that send a process's requests through a proxy (#460): the
+ * four git, npm and Node read, and the one without which Node's built-in
+ * `fetch` reads none of them. Never read from the host's environment: only
+ * the worker's `WORKER_PROXY` sets them, and no `NO_PROXY` is among them, so
+ * nothing the worker starts bypasses its proxy.
+ */
+export const PROXY_VARIABLES = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NODE_USE_ENV_PROXY"] as const;
 
-export const hostEnvironment = (): HostEnvironment =>
-  Object.fromEntries(HOST_VARIABLES.flatMap((name) => (present(name) === undefined ? [] : [[name, present(name)]])));
+export type HostEnvironment = Readonly<
+  Partial<Record<(typeof HOST_VARIABLES)[number] | (typeof PROXY_VARIABLES)[number], string>>
+>;
+
+/**
+ * The host's `PATH`, `HOME` and `LANG`, and, where `proxy` is not empty, the
+ * proxy variables, each naming it.
+ */
+export const hostEnvironment = (proxy: string): HostEnvironment => ({
+  ...Object.fromEntries(HOST_VARIABLES.flatMap((name) => (present(name) === undefined ? [] : [[name, present(name)]]))),
+  ...(proxy === ""
+    ? {}
+    : { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, NODE_USE_ENV_PROXY: "1" }),
+});
 
 /**
  * Remove the GitHub tokens from this process's environment. The agent runs

@@ -628,6 +628,7 @@ describe("the CLI starts the worker", () => {
         ...SETTINGS,
         JOBS_HOST: "127.0.0.1",
         JOBS_PORT: "8787",
+        WORKER_PROXY: "",
         AGENT_SANDBOX: "bwrap",
         AGENT_SANDBOX_RO_BINDS: "",
         AGENT_SANDBOX_PATH: "/usr/local/bin:/usr/bin:/bin",

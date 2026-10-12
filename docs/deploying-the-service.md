@@ -30,7 +30,10 @@ Whatever the machine, the service needs:
   needs (GitHub, the model's API, the package registries) and nothing else. bubblewrap shares the
   host's network with the sandbox, so the proxy, and a firewall around the worker's host, are
   where its egress is controlled.
-- **Node 24 or later** for both processes, with `git` and `npm` beside the worker, and read access
+  Where the host's firewall lets the worker out only through a proxy, the worker's own traffic
+  needs it too: its install of the agent's CLI, its token requests, and every step it runs, which
+  `WORKER_PROXY` sends through it.
+- **Node 24.14 or later** for both processes, with `git` and `npm` beside the worker, and read access
   to the registry the package is published to.
 - **The GitHub App**, below.
 
@@ -213,6 +216,7 @@ Read from the environment. A missing required one stops the worker at start, nam
 | `WORK_DIR` | required | | where the agent's CLI is installed and each run's directory is kept |
 | `JOBS_HOST` | optional | `127.0.0.1` | the address the job door listens on: one the dispatcher reaches |
 | `JOBS_PORT` | optional | `8787` | the job door's port; jobs arrive at `POST /jobs`, which the dispatcher's `WORKER_URL` names |
+| `WORKER_PROXY` | optional | `""` | an `http:` or `https:` URL: the proxy the worker's own requests (the CLI's install, its token requests) and every subcommand it starts leave through, by `HTTP_PROXY`, `HTTPS_PROXY`, their lower-case forms and `NODE_USE_ENV_PROXY=1`, never with a `NO_PROXY`; empty connects directly, and the worker refuses to start on anything else. It does not reach the sandbox, whose proxy is `AGENT_SANDBOX_PROXY` |
 | `AGENT_SANDBOX` | optional | `bwrap` | the sandbox the agent runs in, `bwrap` or `none` (spec §3); `none` runs the agent with the worker's own filesystem |
 | `AGENT_SANDBOX_RO_BINDS` | optional | `""` | host directories, `:`-separated, bound read-only into the sandbox for the toolchain; the CLI's prefix is added |
 | `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside the sandbox; the CLI's directory is put first |
@@ -252,9 +256,13 @@ at `192.168.250.11`; the host is `192.168.250.1` on it. Inside it:
 
 - bubblewrap, with Ubuntu's AppArmor restriction on user namespaces lifted for `bwrap`;
 - Node 24 and git;
-- tinyproxy, allowing GitHub, the model's API and the package registries by hostname;
+- tinyproxy, allowing GitHub, the model's API and the package registries by hostname, and the
+  dispatcher's token door, `192.168.250.1`, which the worker reaches through it. Node tunnels a
+  plain `http:` request through `CONNECT` too, so `ConnectPort 8791` sits beside `ConnectPort 443`;
+- an nft rule (`meta skuid`) letting the worker's user open connections on loopback alone,
+  that is to tinyproxy, so nothing on the box leaves except through the proxy, the worker included;
 - the worker as a systemd unit, after tinyproxy, its settings in an `EnvironmentFile` only root
-  can read:
+  can read, `WORKER_PROXY` sending its own traffic and every step it runs through tinyproxy:
 
 ```text
 WORKER_SECRET=<shared with the dispatcher>
@@ -264,6 +272,7 @@ CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`>
 WORK_DIR=/var/lib/agent-worker
 JOBS_HOST=192.168.250.11
 JOBS_PORT=8787
+WORKER_PROXY=http://127.0.0.1:8888
 AGENT_SANDBOX=bwrap
 AGENT_SANDBOX_RO_BINDS=<Node's install directory>
 AGENT_SANDBOX_PATH=<Node's bin directory>:/usr/local/bin:/usr/bin:/bin

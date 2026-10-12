@@ -8,7 +8,7 @@ import { liveAppGitHub } from "./github-app.js";
 import type { ReviewJob } from "./job.js";
 import type { DISPATCHER, WORKER } from "./settings.js";
 import { jobDoor, oneAtATime, runJob, SUMMARY_FILE } from "./worker.js";
-import { installCli, liveGit, liveLauncher, liveTokens } from "./worker-live.js";
+import { installCli, liveGit, liveLauncher, liveTokens, routeThroughProxy } from "./worker-live.js";
 
 /**
  * The service's two processes behind HTTP. The dispatcher's two doors, each
@@ -19,6 +19,16 @@ import { installCli, liveGit, liveLauncher, liveTokens } from "./worker-live.js"
 
 /** A body larger than this is refused: GitHub's deliveries and the worker's requests are far smaller. */
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+/** An `http:` or `https:` URL from a setting, or a throw naming it. Empty is none, and passes. */
+const proxyUrl = (name: string, value: string): string => {
+  if (value === "") return value;
+  const url = URL.parse(value);
+  if (url === null || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    throw new Error(`\`${name}\` is \`${value}\`, which is not an \`http:\` or \`https:\` URL.`);
+  }
+  return value;
+};
 
 /** A whole number from a setting, or a throw naming it. */
 const wholeNumber = (name: string, value: string): number => {
@@ -142,11 +152,14 @@ export const serveDispatcher = async (
  * then the job door, whose jobs run one at a time, each in a directory of its
  * own under `WORK_DIR/runs`, kept afterwards with each subcommand's output
  * directory and log and the run's summary. Each phase's outcome is logged as the job ends.
+ * Where `WORKER_PROXY` names a proxy, everything the worker asks of the
+ * network, and everything it starts, goes through it.
  */
 export const serveWorker = async (settings: InputValues<typeof WORKER>, stdout: (text: string) => void): Promise<void> => {
   const log = (line: string): void => stdout(`${new Date().toISOString()} ${line}\n`);
   const port = wholeNumber("JOBS_PORT", settings.JOBS_PORT);
-  const host = hostEnvironment();
+  const host = hostEnvironment(proxyUrl("WORKER_PROXY", settings.WORKER_PROXY));
+  routeThroughProxy(host);
   const prefix = path.join(settings.WORK_DIR, "claude-code", settings.CLAUDE_CODE_VERSION);
   log(`installing the agent's CLI, @anthropic-ai/claude-code@${settings.CLAUDE_CODE_VERSION}, into ${prefix}`);
   const cliBin = await installCli(prefix, settings.CLAUDE_CODE_VERSION, host);

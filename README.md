@@ -71,7 +71,7 @@ Published to **GitHub Packages**, so `npx` needs a scoped registry and a token:
 ```yaml
 - uses: actions/setup-node@v7
   with:
-    # The package declares `engines.node` `>=24`; the image's own Node is older.
+    # The package declares `engines.node` `>=24.14`; the image's own Node is older.
     node-version: "24"
     registry-url: https://npm.pkg.github.com
     scope: "@jeffwlawson"

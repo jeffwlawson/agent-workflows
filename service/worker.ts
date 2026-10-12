@@ -69,7 +69,10 @@ export interface JobEdges {
   readonly token: TokenSource;
   readonly launch: Launcher;
   readonly git: Git;
-  /** The worker's own `PATH`, `HOME` and `LANG` (`hostEnvironment`), the only part of its environment a subcommand gets. */
+  /**
+   * The worker's own `PATH`, `HOME` and `LANG`, and its proxy where it has one
+   * (`hostEnvironment`): the only part of its environment a subcommand gets.
+   */
   readonly host: HostEnvironment;
   /**
    * What the runner is handed from the worker's settings: the agent's token
@@ -124,7 +127,8 @@ const TOKEN_SOURCE = "app";
 /**
  * A subcommand's whole environment, built from its declaration in the
  * contract: every input it declares that `values` has a value for, and the
- * host's `PATH`, `HOME` and `LANG`. Nothing else, so nothing of the worker's
+ * host's `PATH`, `HOME` and `LANG`, with the proxy variables where the worker
+ * has a proxy. Nothing else, so nothing of the worker's
  * own environment, its settings or a token another phase holds reaches it
  * unless its declaration names it. An empty value is left out, which every
  * subcommand reads as unset.

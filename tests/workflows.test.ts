@@ -6807,6 +6807,9 @@ describe("the runner package is installed from GitHub Packages", () => {
    * imported needed 24 yet. The day something did, it would die loading, before
    * it could write `failure_reason.txt`.
    *
+   * The floor's major is what a step is held to: one naming a bare major
+   * gets that line's latest release, above a minor the floor names (#460).
+   *
    * So the last `setup-node` before the run that names a Node decides it, and
    * there has to be one, **for each value of `node-version-file`**: a step
    * gated on that input naming a file only names a Node when it is set, so with
@@ -6845,7 +6848,7 @@ describe("the runner package is installed from GitHub Packages", () => {
   it.each(runnerWorkflows.flatMap((file) => ["", ".nvmrc"].map((input) => [file, input] as const)))(
     "%s: runs the runner on a Node the package's engines accept, with node-version-file %j",
     (file, input) => {
-      const floor = Number(/^>=(\d+)$/.exec(manifest.engines.node)?.[1]);
+      const floor = Number(/^>=(\d+)(?:\.\d+){0,2}$/.exec(manifest.engines.node)?.[1]);
       const naming = stepsOf(file)
         .slice(0, runnerStepIndex(file))
         .map((s) => nodeNamedBy(s, input))
@@ -6883,7 +6886,7 @@ describe("the runner package is installed from GitHub Packages", () => {
     const node = steps[gate - 2];
 
     expect(steps[gate - 1]?.id).toBe("npmrc");
-    const floor = Number(/^>=(\d+)$/.exec(manifest.engines.node)?.[1]);
+    const floor = Number(/^>=(\d+)(?:\.\d+){0,2}$/.exec(manifest.engines.node)?.[1]);
 
     expect(node?.uses ?? "").toMatch(/^actions\/setup-node@/);
     expect(node?.if).toBeUndefined();

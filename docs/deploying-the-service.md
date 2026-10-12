@@ -91,7 +91,7 @@ became of it is in the dispatcher's log.
 
 The one process that holds the App's key. It needs:
 
-- Node 24 or later, and the package (`npm exec @jeffwlawson/agent-workflows@<version> dispatcher`,
+- Node 24.14 or later, and the package (`npm exec @jeffwlawson/agent-workflows@<version> dispatcher`,
   or an install of it);
 - the App's private key in a file it can read;
 - its **webhook door** reachable from the internet, through whatever you use to publish a port
@@ -155,7 +155,7 @@ each phase: `read` for the gate, the checkout, the budget and the CI wait, a fre
 runner, so the token's hour starts as the agent does, and `write` for `review:publish` and
 `review:conclude`. It needs:
 
-- Linux, Node 24 or later, `git`, `npm`, and the package (`npm exec
+- Linux, Node 24.14 or later, `git`, `npm`, and the package (`npm exec
   @jeffwlawson/agent-workflows@<version> worker`, or an install of it) at the **same version as the
   dispatcher**: a job from a dispatcher of another release is refused, `409`, and the dispatcher
   logs that the worker answered it;
@@ -255,7 +255,7 @@ on **`agentnet`**, a libvirt NAT network of its own, `192.168.250.0/24` on bridg
 at `192.168.250.11`; the host is `192.168.250.1` on it. Inside it:
 
 - bubblewrap, with Ubuntu's AppArmor restriction on user namespaces lifted for `bwrap`;
-- Node 24 and git;
+- Node 24.14 or later, and git;
 - tinyproxy, allowing GitHub, the model's API and the package registries by hostname, and the
   dispatcher's token door, `192.168.250.1`, which the worker reaches through it. Node tunnels a
   plain `http:` request through `CONNECT` too, so `ConnectPort 8791` sits beside `ConnectPort 443`;

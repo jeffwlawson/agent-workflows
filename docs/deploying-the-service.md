@@ -54,7 +54,7 @@ Repository permissions:
 | Permission | Access | Why |
 |---|---|---|
 | Metadata | read | every API call, and a label's sender's permission |
-| Variables | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables review reads: the repository's own, else its organization's shared with it, as `vars` resolves them |
+| Variables (`actions_variables` in the API) | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables review reads: the repository's own, else its organization's shared with it, as `vars` resolves them |
 | Contents | read | the checkout, and the pull request's history |
 | Pull requests | write | the review, its threads, the title and summary, and the ready mark |
 | Issues | write | comments and labels, and a PRD's parent |

@@ -90,7 +90,9 @@ export const liveAppGitHub = (appId: string, privateKey: string): AppGitHub => {
   const reader = async (repo: string): Promise<string> => {
     const held = readers.get(repo);
     if (held !== undefined && Date.parse(held.expiresAt) - Date.now() > REUSE_MARGIN_MS) return held.token;
-    const grant = await mint(repo, { metadata: "read", variables: "read" });
+    // `actions_variables` is GitHub's name for the App's "Variables" permission;
+    // a token asking for `variables` is refused, 422.
+    const grant = await mint(repo, { metadata: "read", actions_variables: "read" });
     readers.set(repo, grant);
     return grant.token;
   };

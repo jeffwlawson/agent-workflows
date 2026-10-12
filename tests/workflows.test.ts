@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { APP_PERMISSIONS } from "../setup/app.js";
 import { isWorkflowBot, loopAccounts } from "../shared/loop-accounts.js";
-import { COMMANDS, type DirectoryInput, readsFrom, RUNNERS } from "../shared/contract.js";
+import { COMMANDS, type DirectoryInput, readsFrom, RUNNERS, SANDBOX } from "../shared/contract.js";
 import {
   FIX_BEFORE_MERGE_LABEL,
   type Finding,
@@ -30,9 +30,11 @@ import {
   FINAL_REVIEW_MARK,
   FIX_ROUND_STATUS,
   FOLLOW_UPS_LABEL,
+  ORCHESTRATOR_VARIABLE,
   PRD_BRANCH_PREFIX,
   PROGRESS_END,
   PROGRESS_START,
+  SERVICE_ORCHESTRATOR,
   STATUS_END,
   STATUS_START,
   VERDICT_CONTEXT,
@@ -293,6 +295,22 @@ interface Workflow {
 }
 
 const workflowOf = (file: string): Workflow => parse(fs.readFileSync(file, "utf8")) as Workflow;
+
+/**
+ * The skip every job of every reusable opens its `if:` with (#455): a
+ * repository that opts into the service orchestrator gets no Actions run.
+ * Built from the record's spelling, so the YAML is held to it.
+ */
+const SKIP = `vars.${ORCHESTRATOR_VARIABLE} != '${SERVICE_ORCHESTRATOR}'`;
+
+/**
+ * A job's condition with the skip taken off its front, which is the condition
+ * it had before the skip and is what every assertion about a job's own guards
+ * reads. One without the skip comes back as it is, for the test that every job
+ * carries it to fail on.
+ */
+const unskipped = (condition: string | undefined): string | undefined =>
+  condition?.startsWith(`${SKIP} && `) ? condition.slice(SKIP.length + 4) : condition;
 
 /**
  * The jobs a workflow declares **beside** the one that does its work, keyed by
@@ -906,6 +924,52 @@ describe("workflow files", () => {
  * over the whole loop — no workflow, and no runner, names a default branch of
  * its own.
  */
+/**
+ * **A repository opted into the service orchestrator gets no Actions run**
+ * (#455). Every job of every reusable either caller set calls opens its `if:`
+ * with the skip, so the service and Actions never both answer one label. Each
+ * job carries it rather than only the first, because a job whose `if:` holds
+ * `always()` runs after a skipped one.
+ *
+ * Unset, `vars` gives the empty string and the skip is true, so a condition is
+ * its old self only where the rest of it is one operand of the `&&`: a `||`
+ * outside parentheses would bind the skip to its first half alone.
+ */
+describe("every reusable job skips on a service-served repository", () => {
+  const reusables = [...new Set(callers.map(targetOf))].sort();
+  const jobs = reusables.flatMap((file) =>
+    Object.entries(workflowOf(file).jobs).map(([id, job]) => [`${file} ${id}`, job] as const),
+  );
+
+  /** Whether `||` appears outside every parenthesis. */
+  const topLevelOr = (condition: string): boolean => {
+    let depth = 0;
+    for (let i = 0; i < condition.length; i += 1) {
+      if (condition[i] === "(") depth += 1;
+      if (condition[i] === ")") depth -= 1;
+      if (depth === 0 && condition.startsWith("||", i)) return true;
+    }
+    return false;
+  };
+
+  it("finds every reusable", () => {
+    expect(reusables).toHaveLength(6);
+  });
+
+  it.each(jobs)("%s: opens its condition with the skip, as one operand of an `&&`", (_, job) => {
+    const condition = (job.if ?? "").replace(/\s+/g, " ").trim();
+
+    expect(condition.startsWith(`${SKIP} && `), condition).toBe(true);
+    expect(topLevelOr(unskipped(condition) ?? "")).toBe(false);
+  });
+
+  it("refuses a condition that does not open with it, or whose rest is a bare `||`", () => {
+    expect(unskipped("github.event.label.name == 'agent:review'")).toBe("github.event.label.name == 'agent:review'");
+    expect(topLevelOr("a && ( b || c )")).toBe(false);
+    expect(topLevelOr("a && b || c")).toBe(true);
+  });
+});
+
 describe("the loop works against a base ref it is told, never a literal", () => {
   /**
    * Where the base comes from, per event. A PR event carries the real base and
@@ -3298,7 +3362,7 @@ describe("the follow-ups workflow files a merged PR rather than refusing it", ()
    * above, which is where the rendered opt-out line and the label step meet.
    */
   it("hoists the fork guard out of the disjunction, exactly", () => {
-    const condition = (jobOf(FOLLOW_UPS).if ?? "").replace(/\s+/g, " ").trim();
+    const condition = (unskipped(jobOf(FOLLOW_UPS).if) ?? "").replace(/\s+/g, " ").trim();
 
     expect(condition).toBe(
       "github.event.pull_request.head.repo.full_name == github.repository && " +
@@ -4698,7 +4762,7 @@ describe("the two implement workflows partition issue shapes", () => {
     "%s: is triggered by agent:implement on an issue",
     (_name, caller) => {
       expect(workflowOf(caller.file).on?.issues?.types).toEqual(["labeled"]);
-      expect(guardJobOf(targetOf(caller)).if ?? "").toBe("github.event.label.name == 'agent:implement'");
+      expect(unskipped(guardJobOf(targetOf(caller)).if) ?? "").toBe("github.event.label.name == 'agent:implement'");
     },
   );
 
@@ -7422,10 +7486,10 @@ describe("a run that times out or is cancelled says so, as a failure does", () =
       expect(jobOf(REVIEW).needs).toEqual(["time-limit", "red-check"]);
       // The review's two guards, which its own `if:` now follows with the
       // checks on its needs (#231).
-      expect(limits().if).toBe(
+      expect(unskipped(limits().if)).toBe(
         "github.event.label.name == 'agent:review' && github.event.pull_request.head.repo.full_name == github.repository",
       );
-      expect(jobOf(REVIEW).if ?? "").toContain(limits().if ?? "");
+      expect(jobOf(REVIEW).if ?? "").toContain(unskipped(limits().if) ?? "");
       expect(limits().permissions).toEqual({});
       expect(limits().outputs?.["minutes"]).toBe("${{ steps.limits.outputs.minutes }}");
     });
@@ -8416,7 +8480,7 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
    * PR must never reach it.
    */
   it("runs only where it is configured, and carries the review's fork and label guards", () => {
-    expect(redCheck().if).toBe(
+    expect(unskipped(redCheck().if)).toBe(
       "github.event.label.name == 'agent:review' && " +
         "github.event.pull_request.head.repo.full_name == github.repository && " +
         "inputs.red-check-command != ''",
@@ -8576,7 +8640,7 @@ describe("the red check runs a PR's tests against the merge-base, holding nothin
     const review = jobOf(REVIEW);
 
     expect(review.needs).toContain("red-check");
-    expect(review.if ?? "").toMatch(/^!cancelled\(\) && needs\.time-limit\.result == 'success' && /);
+    expect(unskipped(review.if) ?? "").toMatch(/^!cancelled\(\) && needs\.time-limit\.result == 'success' && /);
     expect(review.if ?? "").not.toContain("red-check");
     expect(review.if ?? "").not.toMatch(/\balways\(\)/);
   });
@@ -8751,11 +8815,11 @@ describe("a split run keeps every write off the agent's runner", () => {
     expect(ids[0]).toBe(gate);
     expect(ids.at(-1)).toBe(publish);
     expect(jobs[agent]?.needs).toEqual(before.length === 1 ? gate : before);
-    expect(jobs[agent]?.if).toBe(specOf(name).agentIf);
+    expect(unskipped(jobs[agent]?.if)).toBe(specOf(name).agentIf);
     expect(jobs[publish]?.needs).toEqual(ids.slice(0, -1));
     // However the agent's job ended, but never for another label's event or
     // a run the gate refused or deferred.
-    expect(jobs[publish]?.if).toBe(
+    expect(unskipped(jobs[publish]?.if)).toBe(
       `always() && needs.${gate}.result != 'skipped' && needs.${gate}.outputs.refused != 'true'`,
     );
   });
@@ -9834,5 +9898,18 @@ describe("an artifact step hands over exactly the files a command declares", () 
       "${{ runner.temp }}/sub/b.json",
       "c.json",
     ]);
+  });
+});
+
+/**
+ * The Actions orchestrator runs every agent with no sandbox but its runner VM
+ * (`docs/platform-spec.md` §3), so no workflow file names an input that
+ * selects one (#454): unset is `none`, and that is the choice.
+ */
+describe("no workflow selects a sandbox", () => {
+  it.each(workflowFiles)("%s: names none of the sandbox inputs", (file) => {
+    const text = fs.readFileSync(file, "utf8");
+
+    expect(Object.keys(SANDBOX).filter((name) => text.includes(name))).toEqual([]);
   });
 });

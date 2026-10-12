@@ -37,7 +37,7 @@ import {
 } from "../shared/common.js";
 import { agentModel, overrideVar } from "../shared/agent.js";
 import { scrubGitHubTokens } from "../shared/env.js";
-import { COMMANDS, EVERY_SUBCOMMAND, RUNNERS, TOKENLESS, type Input, type Inputs, type Outputs, type Runner, type RunnerInputs } from "../shared/contract.js";
+import { COMMANDS, EVERY_SUBCOMMAND, RUNNERS, SANDBOX, TOKENLESS, type Input, type Inputs, type Outputs, type Runner, type RunnerInputs } from "../shared/contract.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
 import { loopAccounts } from "../shared/loop-accounts.js";
 
@@ -900,6 +900,41 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
     });
   });
 
+  /**
+   * `AGENT_SANDBOX` (#454): `none` or `bwrap`, read by every runner, since
+   * every runner starts the agent. Unset is `none`, the Actions orchestrator's,
+   * and anything else fails the run at start, naming it, so a typo never runs
+   * the agent unsandboxed.
+   */
+  describe.each(Object.keys(RUNNERS) as Runner[])("AGENT_SANDBOX: the values %s accepts", (runner) => {
+    const read = (): string => readInputs(RUNNERS[runner].inputs).AGENT_SANDBOX;
+
+    it.each(["vm", "docker", "podman", "Bwrap"])("ends the run through fail(), naming AGENT_SANDBOX, %s and the accepted values", (value) => {
+      process.env["AGENT_SANDBOX"] = value;
+
+      expect(read).toThrow(Exited);
+
+      expect(exitCode).toBe(1);
+      expect(fs.readFileSync(reasonFile(), "utf8")).toBe(
+        `\`AGENT_SANDBOX\` holds \`${value}\`, which is not a value it accepts. Give one of \`none\`, \`bwrap\`.`,
+      );
+    });
+
+    it.each(["none", "bwrap"])("reads %s as itself", (value) => {
+      process.env["AGENT_SANDBOX"] = value;
+
+      expect(read()).toBe(value);
+    });
+
+    it.each([["unset", undefined], ["empty", ""]])("reads %s as none", (_, value) => {
+      if (value === undefined) delete process.env["AGENT_SANDBOX"];
+      else process.env["AGENT_SANDBOX"] = value;
+
+      expect(read()).toBe("none");
+      expect(fs.existsSync(reasonFile())).toBe(false);
+    });
+  });
+
   it("refuses, at typecheck, a read of an input the subcommand has not declared", () => {
     delete process.env["BASE_REF"];
     const inputs = readInputs(COMMANDS["follow-ups:file"].inputs);
@@ -996,6 +1031,7 @@ describe("readInputs and input: a subcommand's declared inputs, read loudly", ()
     expect(RUNNERS[runner].inputs).toHaveProperty(overrideVar(runner), { required: false, default: "" });
     expect(RUNNERS[runner].inputs).toHaveProperty("AGENT_MODEL", { required: false, default: "" });
     expect(RUNNERS[runner].inputs).toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN", { required: true });
+    for (const [name, declaration] of Object.entries(SANDBOX)) expect(RUNNERS[runner].inputs, name).toHaveProperty(name, declaration);
   });
 
   /** As an unset `vars.X` interpolates: into `""`, and that is the same absence. */

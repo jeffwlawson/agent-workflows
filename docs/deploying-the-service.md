@@ -1,0 +1,325 @@
+# Deploying the service orchestrator
+
+The loop has two orchestrators. The **Actions orchestrator** is the callers and reusables
+[ADOPTING.md](./ADOPTING.md) installs. The **service orchestrator** is two processes you run on a
+machine of your own, so the agent spends none of your Actions minutes:
+
+- the **dispatcher**, which holds the GitHub App's key, receives GitHub's webhooks, decides which
+  delivery is a job, and mints a short-lived token, scoped to one repository, each time the worker
+  asks for one;
+- the **worker**, which receives jobs from the dispatcher and runs review the way `review.yml`
+  does, with the runner in a sandbox.
+
+Each is a subcommand of the published package, so deploying the service is configuration rather
+than a build. A
+repository opts in with the repository variable `AGENT_ORCHESTRATOR=service`
+([ADOPTING §2e](./ADOPTING.md#2e-choosing-the-orchestrator)); the service refuses every other
+repository, and answers `agent:review` only.
+
+## What a host needs
+
+Whatever the machine, the service needs:
+
+- **Linux** for the worker, since the sandbox is Linux's: bubblewrap runs on user namespaces.
+  Where the distribution restricts unprivileged user namespaces (Ubuntu 24.04's AppArmor does),
+  allow them for `bwrap`. The dispatcher runs anywhere Node does.
+- **bubblewrap** (`bwrap`) on the worker's host, for `AGENT_SANDBOX=bwrap`, the default.
+- **A webhook endpoint GitHub can reach**: the dispatcher's webhook door, published through a
+  reverse proxy or a tunnel. Nothing else of either process is published.
+- **A proxy** the agent's traffic leaves through (`AGENT_SANDBOX_PROXY`), allowing what a review
+  needs (GitHub, the model's API, the package registries) and nothing else. bubblewrap shares the
+  host's network with the sandbox, so the proxy, and a firewall around the worker's host, are
+  where its egress is controlled.
+- **Node 24 or later** for both processes, with `git` and `npm` beside the worker, and read access
+  to the registry the package is published to.
+- **The GitHub App**, below.
+
+The two processes may share a machine. Keeping the App's key off the machine that runs agents is
+the point of the split, so put the worker on a machine, or a VM, of its own where you can.
+
+## The GitHub App
+
+The service acts as a GitHub App you own, which may be the loop's own App (ADOPTING §2) or one of
+its own. Its login, `<slug>[bot]`, is what the service's reviews are posted as, and the dispatcher
+reads it off the App's own record rather than from a setting, so a typo cannot make every round
+the first.
+
+### Permissions
+
+Repository permissions:
+
+| Permission | Access | Why |
+|---|---|---|
+| Metadata | read | every API call, and a label's sender's permission |
+| Variables | read | `AGENT_ORCHESTRATOR`, re-read at every token, and the variables review reads: the repository's own, else its organization's shared with it, as `vars` resolves them |
+| Contents | read | the checkout, and the pull request's history |
+| Pull requests | write | the review, its threads, the title and summary, and the ready mark |
+| Issues | write | comments and labels, and a PRD's parent |
+| Checks | read | CI's result, which the review's verdict reads |
+| Commit statuses | write | the verdict and the fix-round statuses |
+
+A permission the App lacks fails the mint of the token that asks for it, so it is named in the
+dispatcher's log as the job's phase starts, rather than surfacing as a failed write mid-run.
+
+Under *Where can this GitHub App be installed?*, choose **Only on this account**. A public App
+can be installed by anyone, on their own repositories, and every one of those would otherwise be a
+repository the dispatcher might run agents for on your machine. The dispatcher's own check is the
+second line of defence: it serves an installation only on the App's owner's account, which it reads
+off the App's own record at start, or on an account its `EXTRA_OWNERS` setting lists, and refuses
+every other, with the reason in its log.
+
+Install the App on each repository the service is to serve. Installing it on all your
+repositories enrols none of them: the dispatcher acts only where `AGENT_ORCHESTRATOR` is `service`.
+
+### The webhook
+
+In the App's settings, under *Webhook*:
+
+- **Active**, with the **Webhook URL** the address your dispatcher's webhook door is reached at
+  from the internet, ending `/github`;
+- a **Webhook secret**, which is the dispatcher's `GITHUB_WEBHOOK_SECRET`;
+- under *Subscribe to events*, **Pull request**.
+
+GitHub's *Recent Deliveries* page shows each delivery and the dispatcher's answer: `202` for every
+delivery whose signature verified, whatever became of it, and `401` for one that did not. What
+became of it is in the dispatcher's log.
+
+## The dispatcher
+
+The one process that holds the App's key. It needs:
+
+- Node 24 or later, and the package (`npm exec @jeffwlawson/agent-workflows@<version> dispatcher`,
+  or an install of it);
+- the App's private key in a file it can read;
+- its **webhook door** reachable from the internet, through whatever you use to publish a port
+  (a reverse proxy, a tunnel);
+- its **token door** reachable from the worker, and from nothing else. The two are separate
+  listeners so the one you publish mints nothing;
+- the worker's job door reachable from it.
+
+It answers each delivery at once and does its work afterwards, and a delivery becomes a job only
+when all of these hold:
+
+- it is a pull request labelled with a label the service answers (`SERVICE_LABELS` in
+  `shared/record.ts`: `agent:review`);
+- the App is installed on the repository;
+- the installation is on the App's owner's account, or on one `EXTRA_OWNERS` lists;
+- the repository's `AGENT_ORCHESTRATOR` is `service`;
+- the head is in the same repository, not a fork;
+- the pull request is open;
+- the label's sender can write to the repository.
+
+Every other delivery is logged with its reason. A job carries what the label's event carried, the
+repository variables review reads, the App's login, a job id, a deadline and the package's version.
+It carries no token: the worker asks for one per phase, `read` or `write`, and the dispatcher mints
+one only for a job it dispatched, before that job's deadline, for that job's repository alone, while
+the installation is still on an account it serves, and after reading `AGENT_ORCHESTRATOR` again. Deleting the variable stops a job in flight at its next
+phase.
+
+### Settings
+
+Read from the environment. A missing required one stops the dispatcher at start, naming each, and
+so does an App whose own record cannot be read, since that is where the App's owner comes from.
+`tests/service/settings.test.ts` holds this table equal to `DISPATCHER` in `service/settings.ts`.
+
+| Setting | Kind | Default | Meaning |
+|---|---|---|---|
+| `GITHUB_APP_ID` | required | | the App's ID |
+| `GITHUB_APP_PRIVATE_KEY_FILE` | required | | a path to the App's private key, in PEM |
+| `GITHUB_WEBHOOK_SECRET` | required | | the App's webhook secret |
+| `WORKER_URL` | required | | the worker's job door, where a job is posted |
+| `WORKER_SECRET` | required | | the secret the dispatcher and the worker share, which signs a job and a token request |
+| `WEBHOOK_HOST` | optional | `127.0.0.1` | the address the webhook door listens on |
+| `WEBHOOK_PORT` | optional | `8790` | the webhook door's port; GitHub's deliveries arrive at `POST /github` |
+| `TOKEN_HOST` | optional | `127.0.0.1` | the address the token door listens on: one the worker reaches |
+| `TOKEN_PORT` | optional | `8791` | the token door's port; the worker asks at `POST /token` |
+| `JOB_DEADLINE_MARGIN_MINUTES` | optional | `60` | added to review's time limit (its CI wait and `AGENT_REVIEW_TIMEOUT_MINUTES`) for a job's deadline, covering the phases around the runner's and the time a job waits in the worker's queue |
+| `EXTRA_OWNERS` | optional | `""` | accounts, comma-separated, whose installations the dispatcher serves besides the App owner's; empty is none. An installation on any other account is refused |
+
+Each door also answers `GET /health` with `200`.
+
+### What it does not keep
+
+- **A delivery that arrives while the dispatcher is down is lost.** GitHub does not redeliver on
+  its own; redeliver it from the App's *Recent Deliveries*, or remove the label and add it again.
+- **The jobs it dispatched are held in memory.** A dispatcher restarted mid-job refuses that job's
+  next token request as unknown, and the job ends there. Remove the label and add it again.
+
+## The worker
+
+The process that runs review. It holds no key: it asks the dispatcher for a token at the start of
+each phase: `read` for the gate, the checkout, the budget and the CI wait, a fresh `read` for the
+runner, so the token's hour starts as the agent does, and `write` for `review:publish` and
+`review:conclude`. It needs:
+
+- Linux, Node 24 or later, `git`, `npm`, and the package (`npm exec
+  @jeffwlawson/agent-workflows@<version> worker`, or an install of it) at the **same version as the
+  dispatcher**: a job from a dispatcher of another release is refused, `409`, and the dispatcher
+  logs that the worker answered it;
+- `bwrap` (bubblewrap), unless `AGENT_SANDBOX` says `none`, and a proxy for the agent's traffic
+  (`AGENT_SANDBOX_PROXY`);
+- its **job door** reachable from the dispatcher, and from nothing else;
+- the dispatcher's token door reachable from it.
+
+At start it installs the agent's CLI, `@anthropic-ai/claude-code` at `CLAUDE_CODE_VERSION`, into
+`WORK_DIR/claude-code/<version>`, and refuses to start where the install fails. The host's own
+`claude` is never used: the worker's goes first on the runner's `PATH`, first on
+`AGENT_SANDBOX_PATH`, and into `AGENT_SANDBOX_RO_BINDS`. Bind the Node the agent's CLI runs on
+read-only too, through `AGENT_SANDBOX_RO_BINDS`, and put it on `AGENT_SANDBOX_PATH`.
+
+Jobs run one at a time, in the order they arrived. Each runs the subcommands `review.yml` runs, in
+its order (spec §8), each a child process of the worker's own install, with an environment built
+from its declaration in the contract and the host's `PATH`, `HOME` and `LANG`, and nothing else
+of the worker's. Not run, at this release: the red check, the repository's own install and setup
+commands. The fix-round budget is 0 whatever `AGENT_MAX_FIX_ROUNDS` says, while the service
+answers no `agent:fix`, so a review asking for changes leaves the round to a human.
+
+On a PRD pull request (head `agent/prd-…`), where the review went ahead and the head did not move
+while it ran, the worker asks for one more `write` token and runs `review:advance` after
+`review:conclude`, as the reusable's advance job does. Advance may put `agent:implement` back on
+the PRD's parent. The service does not answer that label, so on a repository it serves the label
+waits there for an orchestrator that does, or for you: that is expected.
+
+`review:conclude` runs however the phases before it ended, and is told each one's real outcome: a
+runner that failed, with the reason it wrote; a token the dispatcher would not grant; a publish
+that failed; a phase ended at its time limit. A run that ends before anything can write to the
+pull request, because no token to write with was granted, says why in the worker's log instead.
+
+Each run leaves a directory under `WORK_DIR/runs`, named for when it started and its job: the
+checkout, each subcommand's output directory under `out/` and its log under `logs/`, and
+`summary.json`, the job, each phase's outcome, and each subcommand's environment, with every token
+redacted. The worker's own log says how each phase ended, redacted the same way. Nothing removes
+old runs: prune `WORK_DIR/runs` as you see fit.
+
+Every phase has a time limit, as every job on Actions does, so a hung agent cannot hold the queue.
+The gate, the checkout, the budget, the CI wait and the runner share the review's: 15 minutes of CI
+wait plus `AGENT_REVIEW_TIMEOUT_MINUTES` (5 where unset). `review:publish` and `review:conclude`
+get 10 minutes each, and `review:advance` 5. A phase still running at its limit is ended, with every process it started,
+and the pull request's ending says the review timed out. A job that waits in the queue for longer
+than the dispatcher's `JOB_DEADLINE_MARGIN_MINUTES` is past its deadline by the time it asks to
+post, and ends with nothing posted, so set the margin above the longest wait you expect.
+
+### Settings
+
+Read from the environment. A missing required one stops the worker at start, naming each.
+`tests/service/settings.test.ts` holds this table equal to `WORKER` in `service/settings.ts`.
+
+| Setting | Kind | Default | Meaning |
+|---|---|---|---|
+| `WORKER_SECRET` | required | | the secret the dispatcher and the worker share, the dispatcher's own `WORKER_SECRET` |
+| `DISPATCHER_TOKEN_URL` | required | | the dispatcher's token door, ending `/token` |
+| `CLAUDE_CODE_VERSION` | required | | the version of `@anthropic-ai/claude-code` the worker installs at start, so "latest" is never chosen by accident |
+| `CLAUDE_CODE_OAUTH_TOKEN` | required | | the agent's model token, handed to the runner alone |
+| `WORK_DIR` | required | | where the agent's CLI is installed and each run's directory is kept |
+| `JOBS_HOST` | optional | `127.0.0.1` | the address the job door listens on: one the dispatcher reaches |
+| `JOBS_PORT` | optional | `8787` | the job door's port; jobs arrive at `POST /jobs`, which the dispatcher's `WORKER_URL` names |
+| `AGENT_SANDBOX` | optional | `bwrap` | the sandbox the agent runs in, `bwrap` or `none` (spec §3); `none` runs the agent with the worker's own filesystem |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | host directories, `:`-separated, bound read-only into the sandbox for the toolchain; the CLI's prefix is added |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside the sandbox; the CLI's directory is put first |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | the proxy every request from the sandbox leaves through |
+
+The job door also answers `GET /health` with `200`.
+
+## Restarts and outages
+
+- **A delivery that arrives while the dispatcher is down is lost**, since GitHub does not
+  redeliver on its own (*What it does not keep*, above): after an outage, redeliver from the App's
+  *Recent Deliveries*, or remove the label and add it again. The worker's queue is in memory too: a worker restarted mid-job loses that job and
+  the ones waiting behind it, and the pull request keeps its `agent:review` until you re-add it.
+- **Each piece restarts itself, in order.** Run both processes under something that restarts them
+  at boot and after a crash (a container's restart policy, a systemd unit), with the worker
+  started after its proxy, and the firewall around the worker's host in place before the worker's
+  host starts. The worker installs the agent's CLI again at each start, so give it a moment, and
+  the network, before its door answers.
+
+## A worked example: the maintainer's Unraid server
+
+One deployment, recorded so it can be rebuilt; nothing in it is in the package's code. The
+dispatcher runs on an Unraid server; the worker runs in a VM on it, the *agent box*, which is the
+wall between the agents and the NAS (#364). GitHub reaches the dispatcher through Tailscale Funnel.
+
+```text
+GitHub ─► Funnel :10000 ─► Unraid 127.0.0.1:8790/github   dispatcher (container, host network)
+                           Unraid 192.168.250.1:8791/token ◄─ worker asks for tokens
+                           ─► 192.168.250.11:8787/jobs      worker (agent-box VM, on agentnet)
+                                                            └─ bwrap ─► tinyproxy ─► the internet
+```
+
+**The agent box** is an Ubuntu 24.04 VM: Host Passthrough CPU (the agent's CLI hangs on an
+emulated one), 4 vCPU, 8 GB, a raw disk, no Unraid shares and no passed-through devices. It sits
+on **`agentnet`**, a libvirt NAT network of its own, `192.168.250.0/24` on bridge `virbr-agent`,
+at `192.168.250.11`; the host is `192.168.250.1` on it. Inside it:
+
+- bubblewrap, with Ubuntu's AppArmor restriction on user namespaces lifted for `bwrap`;
+- Node 24 and git;
+- tinyproxy, allowing GitHub, the model's API and the package registries by hostname;
+- the worker as a systemd unit, after tinyproxy, its settings in an `EnvironmentFile` only root
+  can read:
+
+```text
+WORKER_SECRET=<shared with the dispatcher>
+DISPATCHER_TOKEN_URL=http://192.168.250.1:8791/token
+CLAUDE_CODE_VERSION=<a pinned version>
+CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`>
+WORK_DIR=/var/lib/agent-worker
+JOBS_HOST=192.168.250.11
+JOBS_PORT=8787
+AGENT_SANDBOX=bwrap
+AGENT_SANDBOX_RO_BINDS=<Node's install directory>
+AGENT_SANDBOX_PATH=<Node's bin directory>:/usr/local/bin:/usr/bin:/bin
+AGENT_SANDBOX_PROXY=http://127.0.0.1:8888
+```
+
+**The `agentnet` firewall** is the User Script `agentnet-firewall`, run *At Startup of Array*.
+It puts an `AGENT-EGRESS` chain in the `mangle` table's `PREROUTING`, which libvirt, Docker and
+Tailscale do not reorder, matching traffic from `virbr-agent`: established connections return; DNS
+to `192.168.250.1:53`, DHCP, and the dispatcher's token door at `192.168.250.1:8791` are allowed;
+everything to `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.168/16`, `224/4`
+and `240/4` is dropped, and all of the bridge's IPv6. Only then does the script start the VM, so
+the VM's own Autostart stays off. The token door is reachable from inside the agent box, the
+sandbox included, which is why it mints only for a request signed with `WORKER_SECRET`, a file the
+sandbox cannot see.
+
+**The dispatcher** lives in `/mnt/user/appdata/agent-dispatcher/`: the App's key, `app.pem`, and
+its settings, `dispatcher.env`:
+
+```text
+GITHUB_APP_ID=<the App's ID>
+GITHUB_APP_PRIVATE_KEY_FILE=/app/app.pem
+GITHUB_WEBHOOK_SECRET=<the App's webhook secret>
+WORKER_URL=http://192.168.250.11:8787/jobs
+WORKER_SECRET=<shared with the worker>
+WEBHOOK_HOST=127.0.0.1
+WEBHOOK_PORT=8790
+TOKEN_HOST=192.168.250.1
+TOKEN_PORT=8791
+```
+
+It runs as a container with host networking, since libvirt's NAT network admits new connections
+from the host and not from a container on Docker's own bridge, and restarts unless stopped:
+
+```bash
+docker run -d --name agent-dispatcher --restart unless-stopped --network host \
+  --env-file /mnt/user/appdata/agent-dispatcher/dispatcher.env \
+  -v /mnt/user/appdata/agent-dispatcher:/app:ro node:24-alpine \
+  npm exec --yes @jeffwlawson/agent-workflows@<version> dispatcher
+```
+
+with the registry's `.npmrc` beside it. **Tailscale Funnel** publishes the webhook door, on port
+10000 (the server's `serve` already holds 8443):
+
+```bash
+tailscale funnel --bg --https=10000 http://127.0.0.1:8790
+```
+
+The App's webhook URL is then the server's Funnel name, `https://<node>.<tailnet>.ts.net:10000/github`.
+Leave *Settings → Tailscale → Allow Tailscale Funnel* at **Yes**, or the plugin's watcher removes
+the Funnel.
+
+**After a reboot the chain comes back on its own**, as #374 showed with the prototype: the array
+starts, `agentnet-firewall` puts the rules in and starts the VM, the VM's units start in order
+(its egress rules, tinyproxy, the worker), the dispatcher's container comes back, and the Funnel
+stays public. About 11 minutes from *Reboot* to a review. Restarting the VM service alone does
+**not** bring it back (Unraid cannot remount `libvirt.img` until a reboot), so reboot the server
+instead of turning VM Manager off and on. Deliveries made while it was down are lost, as above:
+re-add the label.

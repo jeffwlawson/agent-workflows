@@ -191,13 +191,18 @@ concurrency:
 #
 # The permissions differ per job, and the caller grants the union: what
 # `publish` and `gate` spend. The caller is unchanged.
+#
+# Every job's `if:` opens with `vars.AGENT_ORCHESTRATOR != 'service'` (#455):
+# a repository that sets that variable is served by the service orchestrator,
+# and every job here skips, so one orchestrator answers each label. Unset, or
+# any other value, leaves the rest of each condition as it was.
 jobs:
   gate:
     # Job-level, for the same reason as agent-implement-reusable.yml — a
     # job-level `if:` skips without provisioning a runner. On this side of the
     # seam, where a caller can skip it but cannot loosen it. The jobs after it
     # follow from its outputs, so this is the one guard.
-    if: github.event.label.name == 'agent:implement'
+    if: vars.AGENT_ORCHESTRATOR != 'service' && github.event.label.name == 'agent:implement'
     runs-on: ubuntu-latest
     # API calls and nothing else; the agent's own limit is on its job.
     timeout-minutes: 10
@@ -920,7 +925,7 @@ jobs:
     # run that builds one does any of it. The finishing run, and the run
     # that only opens a missing PRD PR, check nothing out, install no
     # toolchain and run no model.
-    if: needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true'
+    if: vars.AGENT_ORCHESTRATOR != 'service' && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true'
     runs-on: ubuntu-latest
     # A clone, a merge and a push.
     timeout-minutes: 10
@@ -1125,7 +1130,7 @@ jobs:
 
   implement-prd:
     needs: [gate, catch_up]
-    if: needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && needs.catch_up.outputs.parked != 'true'
+    if: vars.AGENT_ORCHESTRATOR != 'service' && needs.gate.outputs.refused == 'false' && needs.gate.outputs.build == 'true' && needs.catch_up.outputs.parked != 'true'
     runs-on: ubuntu-latest
     # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
     # shared by the four jobs that run an agent to write code, and 30 where it
@@ -1491,7 +1496,7 @@ jobs:
     # two jobs before this one are skipped, does its work at all. Not where
     # the gate was skipped (another label's event) or refused or deferred:
     # that run said what it had to, or must say nothing.
-    if: always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
+    if: vars.AGENT_ORCHESTRATOR != 'service' && always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
     runs-on: ubuntu-latest
     # A clone, a push and some API calls, and a bounded wait for the PR's head.
     timeout-minutes: 15

@@ -1,6 +1,13 @@
 import { commonWriters, safeGh } from "../shared/common.js";
 import { PACKAGE_NAME } from "../shared/manifest.js";
 import {
+  FIX_LABEL,
+  FOLLOW_UPS_LABEL,
+  ORCHESTRATOR_VARIABLE,
+  SERVICE_LABELS,
+  SERVICE_ORCHESTRATOR,
+} from "../shared/record.js";
+import {
   passesSecret,
   readInstalledCallers,
   REFERENCE_CALLER_FILES,
@@ -9,7 +16,15 @@ import {
   selfCheckMatches,
   type InstalledCaller,
 } from "./callers.js";
-import { labelCommand, labelDeleteCommand, labelSpecsFor, RETIRED_LABELS } from "./init.js";
+import {
+  type LabelSpec,
+  labelCommand,
+  labelDeleteCommand,
+  labelSpecsFor,
+  RETIRED_LABELS,
+  STATE_LABELS,
+  TRIGGER_LABELS,
+} from "./init.js";
 import {
   asVisibility,
   policyBody,
@@ -36,7 +51,7 @@ import type { CliIo } from "../cli.js";
  * - **`gatherFacts`** asks GitHub the questions a checkout cannot answer — which
  *   secrets are set, whether Actions may open pull requests, what the default
  *   `GITHUB_TOKEN` grants a job that asks for nothing, which labels exist, which Actions policies apply,
- *   what the fix-round budget and time limit variables hold, and what this package's latest release is. Every one of them can come back
+ *   what the fix-round budget, time limit and orchestrator variables hold, and what this package's latest release is. Every one of them can come back
  *   unreadable (no `gh`, no auth, no admin), and an unreadable answer is
  *   reported as unknown rather than folded into a pass.
  * - **`diagnose`** rules on the callers and those facts and nothing else. It is
@@ -126,6 +141,12 @@ export interface RepoFacts {
    * unknown together.
    */
   readonly timeoutMinutes: Readonly<Record<string, string | null | undefined>> | undefined;
+  /**
+   * The orchestrator variable, `AGENT_ORCHESTRATOR` (#455): its value, `null`
+   * where it is set nowhere, which is the Actions orchestrator, and `undefined`
+   * where that could not be known, which is neither orchestrator.
+   */
+  readonly orchestrator: string | null | undefined;
 }
 
 /** The repository variable the review reads its fix-round budget from (#201). */
@@ -483,18 +504,57 @@ export const diagnose = (
   facts: RepoFacts,
   packageName: string = PACKAGE_NAME,
 ): readonly Finding[] => {
+  // The service orchestrator (#455) is ruled on by checks of its own, and
+  // none of what follows applies to it: every job of every reusable skips.
+  if (facts.orchestrator === SERVICE_ORCHESTRATOR) return diagnoseService(callers, facts, packageName);
+
   const findings: Finding[] = [];
   const add = (finding: Finding): void => {
     findings.push(finding);
   };
 
+  // Any other value is Actions in effect, since the reusables skip only on
+  // `service`, and the service refuses the repository: the typo an adopter
+  // meant as an opt-in, falling back to the orchestrator they already had.
+  if (typeof facts.orchestrator === "string") {
+    add({
+      severity: "error",
+      check: "orchestrator",
+      problem:
+        `The repository variable \`${ORCHESTRATOR_VARIABLE}\` is \`${facts.orchestrator}\`, which names ` +
+        `no orchestrator: unset is GitHub Actions, and \`${SERVICE_ORCHESTRATOR}\` the service ` +
+        `orchestrator. The Actions reusables run on any value but \`${SERVICE_ORCHESTRATOR}\` and the ` +
+        `service refuses the repository, so Actions serves it, and this report checks it as an ` +
+        `Actions one.`,
+      fix:
+        `Set it to \`${SERVICE_ORCHESTRATOR}\` to have the service orchestrator serve this repository, ` +
+        `or delete it for GitHub Actions.`,
+    });
+  } else if (facts.orchestrator === undefined) {
+    add({
+      severity: "warning",
+      check: "orchestrator",
+      problem:
+        `Could not read the repository variable \`${ORCHESTRATOR_VARIABLE}\`, so nothing here knows ` +
+        `which orchestrator serves this repository. This report checks it as a GitHub Actions one; ` +
+        `where the variable is \`${SERVICE_ORCHESTRATOR}\`, every Actions job skips and the service ` +
+        `orchestrator's checks are the ones that apply.`,
+      fix: `Check the variable by hand, under Settings → Secrets and variables → Actions → Variables; reading it needs admin.`,
+    });
+  }
+
   if (callers.length === 0) {
     return [
+      ...findings,
       {
         severity: "error",
         check: "callers",
         problem: `No workflow under .github/workflows calls ${repoSlug(packageName)}.`,
-        fix: `Run \`init\` to copy the reference callers in, then re-run this.`,
+        fix:
+          `Run \`init\` to copy the reference callers in, then re-run this.` +
+          (facts.orchestrator === undefined
+            ? ` Where the service orchestrator serves this repository, there is nothing to install.`
+            : ``),
       },
     ];
   }
@@ -1175,42 +1235,8 @@ export const diagnose = (
   // labels with random colours and no descriptions leaves a repository that
   // followed the advice looking different from one that ran `init`, over a
   // difference nobody chose.
-  const needed = labelSpecsFor(callers.map((caller) => caller.workflow));
-  if (facts.labels === undefined) {
-    add({
-      severity: "warning",
-      check: "labels",
-      problem: `Could not list this repository's labels.`,
-      fix: `Create them by hand:\n       ${needed.map(labelCommand).join("\n       ")}`,
-    });
-  } else {
-    const absent = needed.filter((label) => !facts.labels?.includes(label.name));
-    if (absent.length > 0) {
-      add({
-        severity: "error",
-        check: "labels",
-        problem:
-          `${absent.map((label) => label.name).join(", ")} ${absent.length === 1 ? "does" : "do"} ` +
-          `not exist. A missing label makes its transition a no-op, so the state machine drifts ` +
-          `without erroring.`,
-        fix: absent.map(labelCommand).join("\n       "),
-      });
-    }
-
-    // A label the loop retired (#236) breaks nothing by being there, so this
-    // is a thing to know rather than a failure. `init` deletes one nothing
-    // open carries; one still here is either in use or from before `init` ran.
-    const retired = RETIRED_LABELS.filter((name) => facts.labels?.includes(name));
-    if (retired.length > 0) {
-      add({
-        severity: "warning",
-        check: "retired labels",
-        problem:
-          `${retired.join(", ")} ${retired.length === 1 ? "is" : "are"} no longer written or read by ` +
-          `any workflow. Deleting a label takes it off every issue and pull request carrying it.`,
-        fix: retired.map(labelDeleteCommand).join("\n       "),
-      });
-    }
+  for (const finding of labelFindings(labelSpecsFor(callers.map((caller) => caller.workflow)), facts.labels)) {
+    add(finding);
   }
 
   // Pin *freshness*, which is the one that has actually rotted: the repository
@@ -1256,6 +1282,162 @@ export const diagnose = (
       }
     }
   }
+
+  return findings;
+};
+
+/**
+ * Whether the labels an installation needs exist, and whether any the loop
+ * retired is still here: ruled the same way for either orchestrator, each
+ * handing in the labels it answers.
+ */
+const labelFindings = (needed: readonly LabelSpec[], labels: readonly string[] | undefined): readonly Finding[] => {
+  const findings: Finding[] = [];
+  if (labels === undefined) {
+    findings.push({
+      severity: "warning",
+      check: "labels",
+      problem: `Could not list this repository's labels.`,
+      fix: `Create them by hand:\n       ${needed.map(labelCommand).join("\n       ")}`,
+    });
+  } else {
+    const absent = needed.filter((label) => !labels.includes(label.name));
+    if (absent.length > 0) {
+      findings.push({
+        severity: "error",
+        check: "labels",
+        problem:
+          `${absent.map((label) => label.name).join(", ")} ${absent.length === 1 ? "does" : "do"} ` +
+          `not exist. A missing label makes its transition a no-op, so the state machine drifts ` +
+          `without erroring.`,
+        fix: absent.map(labelCommand).join("\n       "),
+      });
+    }
+
+    // A label the loop retired (#236) breaks nothing by being there, so this
+    // is a thing to know rather than a failure. `init` deletes one nothing
+    // open carries; one still here is either in use or from before `init` ran.
+    const retired = RETIRED_LABELS.filter((name) => labels.includes(name));
+    if (retired.length > 0) {
+      findings.push({
+        severity: "warning",
+        check: "retired labels",
+        problem:
+          `${retired.join(", ")} ${retired.length === 1 ? "is" : "are"} no longer written or read by ` +
+          `any workflow. Deleting a label takes it off every issue and pull request carrying it.`,
+        fix: retired.map(labelDeleteCommand).join("\n       "),
+      });
+    }
+  }
+  return findings;
+};
+
+/**
+ * Rule on a repository served by the service orchestrator (#455). Every job
+ * of every Actions reusable skips there, so the Actions-only checks (secrets,
+ * permissions, the `pull_request_target` policy, Actions opening pull
+ * requests) would rule on nothing that runs, and a caller is something left
+ * over rather than something missing.
+ */
+const diagnoseService = (
+  callers: readonly InstalledCaller[],
+  facts: RepoFacts,
+  packageName: string,
+): readonly Finding[] => {
+  const findings: Finding[] = [];
+  const add = (finding: Finding): void => {
+    findings.push(finding);
+  };
+
+  add({
+    severity: "note",
+    check: "orchestrator",
+    problem:
+      `The repository variable \`${ORCHESTRATOR_VARIABLE}\` is \`${SERVICE_ORCHESTRATOR}\`, so the service ` +
+      `orchestrator serves this repository and every job of every Actions reusable skips. The ` +
+      `checks that are Actions' alone are not run: the secrets, the callers' permissions, the ` +
+      `\`pull_request_target\` policy, and whether Actions may open pull requests.`,
+    fix: `Nothing to fix. To switch back to GitHub Actions, delete the variable (docs/ADOPTING.md §2e).`,
+  });
+
+  // Recognised by what it is, never by its install: the App is the service's,
+  // and nothing in a repository names it (spec §4.2).
+  add({
+    severity: "note",
+    check: "service App",
+    problem:
+      `Whether the service orchestrator's GitHub App is installed on this repository: \`doctor\` ` +
+      `cannot check this. The App is the service's rather than the loop's, and nothing in this ` +
+      `repository names it. Without it, the service never hears a label added here.`,
+    fix: `Check by hand that the service's App lists this repository under Settings → Integrations → GitHub Apps.`,
+  });
+
+  if (callers.length > 0) {
+    add({
+      severity: "warning",
+      check: "callers",
+      problem:
+        `${callers.map((caller) => `${caller.file}'s \`${caller.jobId}\` job`).join(", ")} ` +
+        `${callers.length === 1 ? "calls" : "call"} ${repoSlug(packageName)}: installed, and ` +
+        `skipped. Every job of the reusables they call skips while the variable says ` +
+        `\`${SERVICE_ORCHESTRATOR}\`, so each event they listen for starts a run that does nothing, ` +
+        `and their own checks are not run here.`,
+      fix:
+        `Delete them, or keep them for switching back to GitHub Actions, which deleting the ` +
+        `variable does. Re-run this after switching back to check them.`,
+    });
+  }
+
+  // The one list the dispatcher reads too, so the two cannot disagree. The
+  // follow-ups marker is named with the trigger labels: a review here still
+  // adds it, and on merge nothing files.
+  const unanswered = [...TRIGGER_LABELS.map((label) => label.name), FOLLOW_UPS_LABEL].filter(
+    (name) => !SERVICE_LABELS.includes(name),
+  );
+  if (unanswered.length > 0) {
+    add({
+      severity: "warning",
+      check: "unanswered labels",
+      problem:
+        `This release's service orchestrator answers ${SERVICE_LABELS.map((name) => `\`${name}\``).join(", ")} ` +
+        `and no other label, so ${unanswered.map((name) => `\`${name}\``).join(", ")} ` +
+        `${unanswered.length === 1 ? "is" : "are"} answered by nothing here: added, ` +
+        `${unanswered.length === 1 ? "it does" : "they do"} nothing, and nothing on the issue or pull ` +
+        `request says so.`,
+      fix:
+        `Do those steps by hand while the service serves this repository, or delete ` +
+        `\`${ORCHESTRATOR_VARIABLE}\` to have GitHub Actions answer every label again.`,
+    });
+  }
+
+  // The service runs every review with a budget of 0 while it answers no
+  // `agent:fix`, whatever the variable says. Unset is no setting, so says
+  // nothing; a value that is not a count is ignored here as any other is.
+  if (
+    !SERVICE_LABELS.includes(FIX_LABEL) &&
+    typeof facts.maxFixRounds === "string" &&
+    COUNT.test(facts.maxFixRounds) &&
+    Number(facts.maxFixRounds) > 0
+  ) {
+    add({
+      severity: "warning",
+      check: "fix-round budget",
+      problem:
+        `The repository variable \`${FIX_ROUNDS_VARIABLE}\` is \`${facts.maxFixRounds}\`, but the service ` +
+        `orchestrator answers no \`${FIX_LABEL}\`, so it runs every review with a fix-round budget of ` +
+        `0: no review here adds \`${FIX_LABEL}\`, and every verdict asking for changes leaves the round ` +
+        `to you.`,
+      fix:
+        `Set it to \`0\` so it says what happens here. It counts again if you switch back to GitHub ` +
+        `Actions.`,
+    });
+  }
+
+  const needed = [
+    ...TRIGGER_LABELS.filter((label) => SERVICE_LABELS.includes(label.name)),
+    ...STATE_LABELS,
+  ];
+  for (const finding of labelFindings(needed, facts.labels)) add(finding);
 
   return findings;
 };
@@ -1430,7 +1612,11 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
   //
   // Each variable comes back as its name and then its value, flat, which is the
   // list `parseList` reads.
-  const wanted: readonly string[] = [FIX_ROUNDS_VARIABLE, ...TIMEOUT_VARIABLES.map((v) => v.name)];
+  const wanted: readonly string[] = [
+    FIX_ROUNDS_VARIABLE,
+    ...TIMEOUT_VARIABLES.map((v) => v.name),
+    ORCHESTRATOR_VARIABLE,
+  ];
   const variables = (endpoint: string): readonly string[] | undefined =>
     list(
       ["api", `repos/{owner}/{repo}/actions/${endpoint}?per_page=30`],
@@ -1472,6 +1658,7 @@ export const gatherFacts = (dir: string, packageName: string = PACKAGE_NAME): Re
       repositoryVariables === undefined
         ? undefined
         : Object.fromEntries(TIMEOUT_VARIABLES.map(({ name }) => [name, variable(name)])),
+    orchestrator: variable(ORCHESTRATOR_VARIABLE),
   };
 };
 

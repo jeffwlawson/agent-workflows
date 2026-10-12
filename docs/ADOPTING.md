@@ -110,6 +110,7 @@ each. A row that is a **warning** instead — printed, exit 0 — says so where 
 | the time limits, `AGENT_TIMEOUT_MINUTES` and `AGENT_REVIEW_TIMEOUT_MINUTES`, are positive integers where they are set | §2c: the agent jobs fail before their first step, with no comment and the label left on; the review refuses to start |
 | on a **public** repository, an active Actions policy allows `pull_request_target` for every caller that runs on it; silent on a private or internal one, and a warning where the policies or the visibility could not be read | [On a public repository, `pull_request_target` stops running](#on-a-public-repository-pull_request_target-stops-running): from 2026-11-02 a label is added and no run starts |
 | how many releases each pin is behind | *Keeping the pins fresh* — a report, not a failure |
+| `AGENT_ORCHESTRATOR` is unset or `service`: any other value is an error, and a variable it could not read a warning, never a pass. With `service`, the checks in §2e replace every other row | §2e: a typo in the opt-in leaves Actions serving the repository and the service refusing it, with nothing saying why |
 
 The rows it cannot have are
 [A label set when the issue is *created* fires no `labeled` event](#a-label-set-when-the-issue-is-created-fires-no-labeled-event)
@@ -491,6 +492,43 @@ wins. `0` turns the upload off:
     with:
       transcript-retention-days: 0
 ```
+
+## 2e. Choosing the orchestrator
+
+Everything above is the **Actions orchestrator**: the callers in `.github/workflows/` and the
+reusables they call. The loop also has a **service orchestrator**, a dispatcher and a worker you run
+on a machine of your own, so the agent spends none of your Actions minutes. How to run one is the
+service orchestrator's deployment guide, [*Deploying the service
+orchestrator*](./deploying-the-service.md).
+
+A repository chooses with one **repository variable**, set the way the model ones are (§2b):
+
+| `AGENT_ORCHESTRATOR` | Who serves the repository |
+|---|---|
+| unset | GitHub Actions, as everything above describes |
+| `service` | the service orchestrator. Every job of every Actions reusable skips |
+| anything else | GitHub Actions still, since the reusables skip only on `service`, and the service refuses the repository. `doctor` reports it as an error |
+
+The skip is in the reusables, so it reaches you through your pin, with no change to a caller. One
+orchestrator serves a repository, for every label (spec §4.2).
+
+**Switching to the service.** Set the variable to `service` once the service is running and its
+GitHub App is installed on the repository. The callers can stay: each label still starts a caller
+run, and every job in it skips. `doctor` then checks what the service needs instead of what Actions
+needs, and warns about what this release's service does not do:
+
+- it answers `agent:review` **only**. `agent:implement`, `agent:fix` and `agent:update-branch` do
+  nothing on a service-served repository, and the `agent:follow-ups` a review adds files nothing on
+  merge. `doctor` names them;
+- it runs every review with a fix-round budget of 0, since nothing would answer the `agent:fix` a
+  review added, so a verdict asking for changes leaves the round to you. `doctor` warns where
+  `AGENT_MAX_FIX_ROUNDS` is set above 0;
+- whether the service's App is installed on the repository: **`doctor` cannot check this.** The App
+  is the service's, not the loop's, and nothing in the repository names it.
+
+**Switching back.** Delete the variable. The next label is answered by Actions, through the callers
+you kept, or the ones `init` installs again if you removed them. Nothing else changes, so a bad
+service release costs you one setting.
 
 ---
 

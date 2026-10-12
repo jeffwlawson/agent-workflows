@@ -18,8 +18,11 @@ sentence. How one orchestrator does a thing is description, and sits in a quoted
 > **Actions orchestrator:** the caller and reusable workflow pair this repository ships.
 
 > **Service orchestrator:** a service that receives GitHub's webhooks and runs the runner on a box
-> it owns, as prototyped on #364. A block for it appears only where it differs from the Actions
-> orchestrator in a way a reader would trip on.
+> it owns: the `dispatcher` and `worker` subcommands of this package, whose code is
+> [`service/`](../service/) and whose deployment is
+> [deploying-the-service.md](./deploying-the-service.md). It answers `agent:review` alone, at this
+> release. A block for it appears only where it differs from the Actions orchestrator in a way a
+> reader would trip on.
 
 Neither block binds anyone. Where they disagree with a bold sentence, the bold sentence is right.
 
@@ -137,6 +140,19 @@ A command that runs where no token is held, as the red check's two do beside the
 code, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
 nor `GH_TOKEN`, and an orchestrator hands it neither.
 
+Every runner starts the agent, so every runner reads the inputs that choose its sandbox (§3). An
+orchestrator that sets none of them gets `none`. Each is a row in each runner's own table too:
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the sandbox the agent runs in (§3). Unset or empty is `none`, and any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Host directories, `:`-separated, that `bwrap` binds read-only at the same path: the toolchain, `claude` and `node`. Empty is none. |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap`. |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy every `bwrap` request leaves through, set as every proxy variable. Empty is none. |
+
+The last three mean nothing under `none`, where the agent has the runner's own environment and
+filesystem.
+
 Each runner's and command's own inputs are in its workflow's section, §6 to §11.
 
 ### 2.3 Outputs
@@ -204,8 +220,10 @@ runner, at the time it runs, and the model is a repository variable that can cha
 > **Actions orchestrator:** `npm install -g @anthropic-ai/claude-code` in the agent job, so the
 > latest release, on every run.
 
-> **Service orchestrator:** the CLI is installed on the box or in its sandbox image, and stays at
-> whatever version that was. The prototype's first run died on an old one.
+> **Service orchestrator:** the worker installs the CLI itself at start, into its own prefix, at
+> the version its required setting `CLAUDE_CODE_VERSION` names, and refuses to start without one,
+> so "latest" is never chosen by accident. The host's own `claude` is never used: the worker's
+> goes first on the runner's `PATH` and the sandbox's, and is bound into the sandbox read-only.
 
 ## 3. Safety
 
@@ -240,11 +258,22 @@ holds the reusables to several of the mechanisms below (`tests/workflows.test.ts
 > [parity §6](./parity.md#6-security-controls).
 
 **The sandbox.** Which provider, and what it ***must*** support, is a runner concern the
-orchestrator selects. Unset means `none`: the agent runs in the runner's own process environment
-and filesystem, and the orchestrator's isolation of the whole run is all there is. In this release
-no input selects a provider, so every run is `none`. Whatever provider a runner gains ***must***
-support resuming a session, since a runner that extracts a structured result runs the agent twice,
-the second time resuming the first session.
+orchestrator selects, through the runner's `AGENT_SANDBOX` input (§2.2). Unset means `none`: the
+agent runs in the runner's own process environment and filesystem, and the orchestrator's isolation
+of the whole run is all there is. `bwrap` runs the agent in bubblewrap on the host, with no access to
+the host's home, credentials or other runs:
+
+- every command the agent runs gets a fresh namespace, with the network shared, every capability
+  dropped and the environment cleared but for what the runner hands the agent;
+- `/usr` and the directories `AGENT_SANDBOX_RO_BINDS` names are read-only, and the run gets a
+  writable home and temporary directory of its own;
+- `AGENT_SANDBOX_PROXY` is set as every proxy variable;
+- the agent's work comes back only as Sandcastle's patches and session files: a write under `.git`,
+  or of a symlink that leaves the sandbox, is refused.
+
+Whatever provider a runner offers ***must*** support resuming a session, since a runner that
+extracts a structured result runs the agent twice, the second time resuming the first session.
+That is why `docker` and `podman` are not offered.
 
 **`doctor` cannot check this.** The provider is chosen where the runner runs, not in the
 repository.
@@ -252,9 +281,13 @@ repository.
 > **Actions orchestrator:** relies on the quiet default. The runner VM is the isolation, and
 > outcomes 1 to 3 are met around the whole job rather than around the agent.
 
-> **Service orchestrator:** the prototype found that Sandcastle 0.12.0, the version this package
-> pins, resumes a session only for bind-mount providers. A provider that copies the checkout in
-> rather than mounting it loses the session between the two passes, and the extraction fails.
+> **Service orchestrator:** sets `AGENT_SANDBOX=bwrap`. The `bwrap` provider is isolated, not
+> bind-mount, on purpose: a bind-mount provider hands the agent the checkout's `.git` read-write
+> (sandcastle#1010), so `bwrap` copies the checkout in and the patches out instead. Sandcastle
+> 0.12.0, the version this package pins, resumes a session only for bind-mount providers; its
+> `docker` and `podman` are isolated, so they resume none. So `bwrap` carries the session between
+> the two passes itself: it keeps the agent's sessions when a pass ends and seeds the next pass's
+> sandbox with them.
 
 ## 4. The record
 
@@ -307,10 +340,12 @@ names it beforehand.
 > access, which is why trusting the login is sound there. The loop's App carries pushes, pull
 > requests, ready-marks and trigger labels, which no runner reads as text.
 
-> **Service orchestrator:** a service that posts as its own App passes that App's login in
-> `AGENT_LOOP_LOGINS` to every runner and command that declares it, and its reviews, verdicts and
-> rounds are then read back as the loop's. Left unset, its posts are read as untrusted text, its
-> verdicts are not counted, and every round reads as the first.
+> **Service orchestrator:** posts as its own App, and passes that App's login in
+> `AGENT_LOOP_LOGINS` to every runner and command that declares it, so its reviews, verdicts and
+> rounds are read back as the loop's. The dispatcher works the login out from the App's own
+> record, `<slug>[bot]`, and the job carries it; nothing configures it, so a typo cannot make every
+> round the first. Left unset, its posts would be read as untrusted text, its verdicts not
+> counted, and every round as the first.
 
 ### 4.2 Labels
 
@@ -323,10 +358,34 @@ label on the same repository would run the same step twice, on the same branch, 
 Split by label, each would run a step of a loop the other started: a label's run adds the next
 label, so one orchestrator would be continuing the other's chain, through the record.
 
-**`doctor` cannot check this.** `doctor` checks that each label exists, but which orchestrator
-listens is a matter of what is installed where, and a service listens from outside the repository.
-Nor can it see whether a service's App is installed on the repository, since that App is the
-service's and not the loop's.
+A repository says which orchestrator serves it in the repository variable `AGENT_ORCHESTRATOR`
+(`ORCHESTRATOR_VARIABLE` in `shared/record.ts`). Unset means the Actions orchestrator, and
+`service` the service orchestrator. Any other value names neither: an orchestrator ***must not***
+answer a label on such a repository unless it would answer one with the variable unset, so a typo
+falls back to the orchestrator the repository already had rather than to two. A service
+orchestrator answers only the labels `SERVICE_LABELS` in `shared/record.ts` lists, `agent:review`
+alone at this release, and on a service-served repository every other label is answered by nothing.
+
+`doctor` reads the variable. It reports any value but unset or `service` as an error, and one it
+could not read as unknown. With `service`, it checks that the labels the service answers exist,
+and names the labels nothing answers there.
+
+**`doctor` cannot check this.** It reads which orchestrator a repository asks for, not which one
+listens: a caller left installed listens and skips, and a service listens from outside the
+repository. Nor can it see whether a service's App is installed on the repository, since that App
+is the service's and not the loop's.
+
+> **Actions orchestrator:** every job of every reusable opens its `if:` with
+> `vars.AGENT_ORCHESTRATOR != 'service'`, so on a service-served repository a caller's run skips
+> every job. The skip is in the reusable, so a caller needs no change to carry it.
+
+> **Service orchestrator:** answers a repository whose `AGENT_ORCHESTRATOR` is `service`, and
+> refuses one where it is unset or holds anything else. Opting in is not enough on its own: the
+> dispatcher serves an installation of its App only on the App's owner's account, read off the
+> App's own record at start, or on an account its `EXTRA_OWNERS` setting lists, and refuses any
+> other's, at delivery and again at each token, so a stranger who installs a public App and sets the
+> variable is still refused. The App being installable on its owner's account only is the first
+> line of defence, and this check the second.
 
 What an orchestrator does after a runner returns, including adding the next label, is chaining.
 Chaining is each orchestrator's own and is described in each runner's section: review adding
@@ -433,6 +492,11 @@ code, not in the repository.
 > **Actions orchestrator:** the caller's `uses:` ref names a release, and that release's reusable
 > names the same version in its `npm exec`, so one pin selects the YAML and the runner together.
 
+> **Service orchestrator:** one install is one release for the service and every subcommand it
+> runs. The worker starts each runner and command as a child process of its own installed package,
+> never another, and refuses a job from a dispatcher of another release, which each job names, so
+> the job's format between the two only has to hold within one.
+
 ## 6. `implement`
 
 Trigger label: `agent:implement`, on an issue with no sub-issues. `doctor` checks that the label
@@ -450,6 +514,10 @@ branch checked out, at `BASE_REF`, and a new branch named `BRANCH` created from 
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. Empty is the baked default. |
 | `AGENT_MODEL_IMPLEMENT` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `ISSUE_NUMBER` | required | | The issue to build. |
 | `ISSUE_TITLE` | required | | Its title. |
@@ -494,6 +562,10 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_IMPLEMENT_PRD` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `ISSUE_NUMBER` | required | | The PRD parent. |
 | `ISSUE_TITLE` | required | | Its title. |
@@ -538,7 +610,9 @@ earlier run of this PRD left commits on `RESCUE_BRANCH`, that branch fetched to
 
 > **Service orchestrator:** the chain moves on only when a review ends on an approval and
 > `review:advance` puts `agent:implement` back on the parent. An orchestrator that does not run it
-> leaves the chain waiting on a human to add the label.
+> leaves the chain waiting on a human to add the label. The service runs it (§8), but answers
+> `agent:review` only: on a repository it serves, the `agent:implement` advance re-adds waits for an
+> orchestrator that answers it, which is expected while `implement-prd` has not joined the service.
 
 ## 8. `review`
 
@@ -555,6 +629,10 @@ so the diff matches GitHub's.
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_REVIEW` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
@@ -625,11 +703,56 @@ text, and `review:publish` and `review:advance` write every final string from th
 > PRD's parent on a slice round's approval, or the park comment there on any ending but an approval
 > or a fix round starting.
 
-> **Service orchestrator:** the CI wait is `review:collect-checks`, not the runner's. A service
-> that does not run it leaves both CI files unset, and the review reads the checks as unknown, so it
-> never recommends an approval. Chaining is each orchestrator's too: the runner adds
-> no label, so a service that does not add `agent:fix` or run the advance leaves the next step to a
-> human.
+> **Service orchestrator:** the worker runs the review job's and the posting job's subcommands, in
+> the order and under the conditions above, each a child process with a fresh `OUTPUT_DIR` of its
+> own and an environment built from its declaration, and writes nothing to the record itself. It
+> asks the dispatcher for a `read` token and runs `review:gate` with the head commit, state and
+> merged flag the label's event carried, and the repository's variables. Where the gate went ahead
+> it checks out the settled commit as `BRANCH`, fetches `BASE_REF`, the token passed with each
+> fetch and never stored in the checkout, then runs `review:budget` and `review:collect-checks`,
+> and the runner, in the sandbox its settings name, with a fresh `read` token as `GH_TOKEN`. Where the
+> review finished it asks for a `write` token and runs `review:publish`, pointed at the runner's
+> directory; then `review:conclude`, however the run ended, pointed at publish's directory, with a
+> `write` token and `LOOP_TOKEN_SOURCE` `app`. On a PRD pull request, where the gate went ahead
+> and conclude's `ended.json` says the head did not move, it then asks for a `write` token of
+> advance's own and runs `review:advance`, pointed at the runner's directory for `park.json` and
+> `progress.json`, and told how the review ended (`REVIEW_RESULT`), how the posting ended
+> (`POSTING_RESULT`: `failure` where the posting token's mint, publish or conclude failed,
+> `cancelled` where publish or conclude was ended at its limit, else `success`), and
+> conclude's `moved` and review URL. The dispatcher refuses a fork, so every job is from the
+> repository itself. Each command gets its token as both `GH_TOKEN` and,
+> where it declares one, `LOOP_TOKEN`. Where `review.yml` passes something the service does not
+> have, it passes the nearest equivalent:
+>
+> - **The fix-round budget is 0.** `review:budget` is handed `FIX_ROUND_BUDGET` 0, whatever
+>   `AGENT_MAX_FIX_ROUNDS` says, while the service answers no `agent:fix`. So no review asks for a
+>   round nobody would start, and a verdict asking for changes leaves it to a human, which is what
+>   a budget of 0 means on Actions.
+> - **`SELF_CHECK` is `review`.** The service has no check of its own on the pull request to leave
+>   out, so it names the review job's id, which the command leaves out already.
+> - **No run link.** There is no Actions run, so `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and
+>   `GITHUB_RUN_ID` are unset, and so is `SELF_RUN_ID`.
+> - **The download is a success** wherever the review finished: the hand-over is on the worker's
+>   disk, and there is nothing to fetch.
+> - **The time limits are the jobs'.** The gate, the checkout, the budget, the CI wait and the
+>   runner share the review's time limit, the CI wait plus `AGENT_REVIEW_TIMEOUT_MINUTES`, as the
+>   review job's `timeout-minutes` does, and `review:publish` and `review:conclude` get the posting
+>   job's 10 minutes each, and `review:advance` the advance job's 5. A phase still running at its
+>   limit is ended with every process it started. One of the review's is then `REVIEW_RESULT`
+>   `cancelled` with `TIMED_OUT` `true` and `TIMEOUT_MINUTES` the limit, which conclude says as a
+>   timeout; a publish ended so is `PUBLISH_OUTCOME` `cancelled`.
+> - **The failures are the reusable's.** Conclude runs however the phases before it ended and is
+>   told each one's real outcome: a runner that failed is `REVIEW_RESULT` `failure` with the
+>   `FAILURE_REASON` its `failure_reason.txt` gave; a `read` token not granted is a review that
+>   failed, saying so; a `write` token not granted for publish is `MINT_OUTCOME` `failure`; a
+>   publish that failed is `PUBLISH_OUTCOME` `failure`. Where no token is granted to conclude
+>   either, nothing can write to the pull request, and the worker's log says why the run ended.
+> - **Each run leaves a directory**: the checkout, each subcommand's output directory and log, and
+>   a summary of the job, each phase's outcome and each subcommand's environment, with every token
+>   redacted.
+>
+> Not run: the red check, so `RED_CHECK_CONFIGURED` is unset; the repository's own install and
+> setup commands, so the agent reviews a checkout without its dependencies.
 
 ### `review:gate`
 
@@ -1179,6 +1302,10 @@ diffing, and `RESCUE_BRANCH` fetched to `refs/rescue/<RESCUE_BRANCH>` where it e
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_FIX` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
@@ -1235,6 +1362,10 @@ conflicts. A merge that does not conflict needs no runner.
 | `CLAUDE_CODE_OAUTH_TOKEN` | required | | The agent's model token. |
 | `AGENT_MODEL` | optional | `""` | The model for every runner, where set. |
 | `AGENT_MODEL_UPDATE_BRANCH` | optional | `""` | This runner's model, where set, over `AGENT_MODEL`. |
+| `AGENT_SANDBOX` | optional | `none` | Accepts `none` or `bwrap`: the agent's sandbox (§2.2, §3). Any other value fails the run, naming it. |
+| `AGENT_SANDBOX_RO_BINDS` | optional | `""` | Read-only binds for `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PATH` | optional | `/usr/local/bin:/usr/bin:/bin` | `PATH` inside `bwrap` (§2.2). |
+| `AGENT_SANDBOX_PROXY` | optional | `""` | The proxy for `bwrap` (§2.2). |
 | `PR_NUMBER` | required | | The pull request. |
 | `BRANCH` | required | | Its head branch. |
 | `BASE_REF` | required | | The branch being merged in. |

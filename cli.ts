@@ -7,6 +7,7 @@ import type { CommandIo, OutputWriters, ReadingIo } from "./shared/command-io.js
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
+import { SERVICE, type ServiceProcess } from "./service/settings.js";
 
 /**
  * One binary for the whole loop. A workflow invokes it as
@@ -30,14 +31,16 @@ export { VERSION };
 class UsageError extends Error {}
 
 /**
- * Every subcommand the binary dispatches on, of one of three kinds. A runner
+ * Every subcommand the binary dispatches on, of one of four kinds. A runner
  * and a command are declared in `shared/contract.ts`, in `RUNNERS` and
  * `COMMANDS`, and the kind here is held to the map it is declared in by
  * `tests/agent-cli.test.ts`. The install path is declared in neither: a human
- * types it, and it takes flags.
+ * types it, and it takes flags. Nor is a process of the service orchestrator,
+ * which is an orchestrator rather than a step one runs: its settings are
+ * declared in `service/settings.ts`.
  */
 export interface Subcommand {
-  readonly kind: "runner" | "command" | "install";
+  readonly kind: "runner" | "command" | "install" | "service";
   /** One line, shown in `help`. */
   readonly summary: string;
   /**
@@ -242,7 +245,38 @@ const installArgs = (
   return { dir: path.resolve(dir), switches };
 };
 
+/**
+ * A process of the service orchestrator (PRD #453). It takes no arguments,
+ * like a runner, and reads its settings from the environment, declared in
+ * `service/settings.ts` and read here, so a missing one stops it at start,
+ * naming every one missing. It starts, and the process then lives as long as
+ * what it serves; a failure to start is reported through `fail()`.
+ */
+const serviceProcess = <P extends ServiceProcess>(
+  name: P,
+  load: () => Promise<(settings: InputValues<(typeof SERVICE)[P]["settings"]>, stdout: (text: string) => void) => Promise<void>>,
+  summary: string,
+): Subcommand => ({
+  kind: "service",
+  summary,
+  run: async (args, io) => {
+    refuseArguments(name, args);
+    const start = await load();
+    const settings = readInputs(SERVICE[name].settings);
+    try {
+      await start(settings, io.stdout);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
 export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
+  dispatcher: serviceProcess(
+    "dispatcher",
+    async () => (await import("./service/serve.js")).serveDispatcher,
+    "Run the service orchestrator's dispatcher: GitHub's webhooks in, jobs out to the worker, a token per phase.",
+  ),
   doctor: {
     kind: "install",
     summary: "Check an adopting repo for the setup failures that fail silently.",
@@ -328,6 +362,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "Move a PRD PR's chain on after a review, or park it, and write its progress list (no model).",
   ),
   "update-branch": runner("update-branch", () => import("./update-branch/update-branch.js")),
+  worker: serviceProcess(
+    "worker",
+    async () => (await import("./service/serve.js")).serveWorker,
+    "Run the service orchestrator's worker: jobs in from the dispatcher, each run as review.yml runs it.",
+  ),
 };
 
 /**
@@ -344,7 +383,9 @@ const usage = (): string => {
   return `Usage: agent-workflows <subcommand>
 
 Runners and commands for a GitHub Actions agent loop, invoked one per workflow
-step, plus the install path \`init\` and \`doctor\`, which you run by hand.
+step, plus the install path \`init\` and \`doctor\`, which you run by hand,
+and the service orchestrator's \`dispatcher\` and \`worker\`, which you
+deploy.
 
 Subcommands:
 ${commands}

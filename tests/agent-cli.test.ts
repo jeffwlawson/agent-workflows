@@ -9,6 +9,8 @@ import { SUBCOMMANDS, type CliIo } from "../cli.js";
 import { file as fileFollowUps } from "../follow-ups/file.js";
 import { gate } from "../review/gate.js";
 import { publish } from "../review/publish.js";
+import { serveDispatcher, serveWorker } from "../service/serve.js";
+import { SERVICE } from "../service/settings.js";
 import { COMMANDS, RUNNERS } from "../shared/contract.js";
 import * as record from "../shared/record.js";
 import { SUBPROCESS_TIMEOUT } from "../vitest.config.js";
@@ -67,6 +69,9 @@ vi.mock("../follow-ups/file.js", () => ({ file: vi.fn() }));
 // And the one that writes through the engine, for the same reason.
 vi.mock("../review/publish.js", () => ({ publish: vi.fn() }));
 vi.mock("../review/gate.js", () => ({ gate: vi.fn() }));
+// And the service's two starts: the dispatcher's would listen on two ports,
+// and the worker's would install the agent's CLI and listen on one.
+vi.mock("../service/serve.js", () => ({ serveDispatcher: vi.fn(), serveWorker: vi.fn() }));
 
 /** Every write of a `failure_reason.txt` since the spy was last cleared. */
 const reasonsWritten = (): readonly unknown[] =>
@@ -396,11 +401,13 @@ describe("the runner CLI dispatches on a subcommand", () => {
  */
 describe("every subcommand is declared in the contract, as its kind", () => {
   /**
-   * The install path, which a human types and which takes flags: in neither
-   * map, and the only subcommands that are not. A third has to be added here
-   * on purpose.
+   * The install path, which a human types and which takes flags, and the
+   * service orchestrator's processes (PRD #453), which are an orchestrator
+   * rather than a step one runs: in neither map, and the only subcommands that
+   * are not. Another has to be added here on purpose.
    */
   const INSTALL_PATH = ["doctor", "init"];
+  const SERVICE_PROCESSES = ["dispatcher", "worker"];
 
   const registered = (kind: string): string[] =>
     Object.entries(SUBCOMMANDS)
@@ -416,11 +423,16 @@ describe("every subcommand is declared in the contract, as its kind", () => {
     expect(registered("command")).toEqual(Object.keys(COMMANDS).sort());
   });
 
-  it("leaves only the install path out of both maps", () => {
+  it("leaves only the install path and the service's processes out of both maps", () => {
     expect(registered("install")).toEqual(INSTALL_PATH);
+    expect(registered("service")).toEqual(SERVICE_PROCESSES);
     expect(Object.keys(SUBCOMMANDS).filter((name) => !(name in RUNNERS) && !(name in COMMANDS)).sort()).toEqual(
-      INSTALL_PATH,
+      [...INSTALL_PATH, ...SERVICE_PROCESSES].sort(),
     );
+  });
+
+  it("declares the settings of each of the service's processes, and of no other subcommand", () => {
+    expect(Object.keys(SERVICE).sort()).toEqual(SERVICE_PROCESSES);
   });
 
   it.each(Object.keys(COMMANDS))("%s: is named <workflow>:<step>", (name) => {
@@ -564,6 +576,166 @@ describe("the CLI runs a command that reads", () => {
 
     expect(command).not.toHaveBeenCalled();
     expect(fs.readFileSync(path.join(scratch, "failure_reason.txt"), "utf8")).toBe("Missing required env var: HEAD_SHA");
+  });
+});
+
+/**
+ * A process of the service orchestrator (PRD #453) takes no arguments and
+ * reads its settings from the environment, as declared in
+ * `service/settings.ts`, so a missing one stops it at start, naming each. The
+ * start itself is a stand-in, mocked at the top of this file.
+ */
+/**
+ * The worker's start (#457), the same way, and the one setting it cannot
+ * guess: the version of the agent's CLI it installs, so "latest" is never
+ * chosen by accident.
+ */
+describe("the CLI starts the worker", () => {
+  class Exited extends Error {}
+  const SETTINGS = {
+    WORKER_SECRET: "a-worker-secret",
+    DISPATCHER_TOKEN_URL: "http://dispatcher:8791/token",
+    CLAUDE_CODE_VERSION: "2.1.0",
+    CLAUDE_CODE_OAUTH_TOKEN: "a-model-token",
+    WORK_DIR: "/srv/worker",
+  } as const;
+  const start = vi.mocked(serveWorker);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    start.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+  });
+
+  it("starts with its declared settings, the sandbox `bwrap` where unset", async () => {
+    const { code } = await invoke(["worker"], SETTINGS);
+
+    expect(code).toBe(0);
+    expect(start).toHaveBeenCalledWith(
+      {
+        ...SETTINGS,
+        JOBS_HOST: "127.0.0.1",
+        JOBS_PORT: "8787",
+        AGENT_SANDBOX: "bwrap",
+        AGENT_SANDBOX_RO_BINDS: "",
+        AGENT_SANDBOX_PATH: "/usr/local/bin:/usr/bin:/bin",
+        AGENT_SANDBOX_PROXY: "",
+      },
+      expect.any(Function),
+    );
+  });
+
+  it("refuses to start without the version of the agent's CLI", async () => {
+    const { CLAUDE_CODE_VERSION: _, ...without } = SETTINGS;
+
+    await expect(invoke(["worker"], without)).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith("\nFAILED: Missing required env var: CLAUDE_CODE_VERSION");
+  });
+
+  it("refuses a sandbox it does not know, naming it", async () => {
+    await expect(invoke(["worker"], { ...SETTINGS, AGENT_SANDBOX: "docker" })).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(String(logged.mock.calls[0]?.[0])).toContain("`AGENT_SANDBOX` holds `docker`");
+  });
+
+  it("refuses an argument", async () => {
+    const { code, err } = await invoke(["worker", "--port", "1"], SETTINGS);
+
+    expect(code).toBe(2);
+    expect(err).toContain("`worker` takes no arguments, but got: --port 1");
+    expect(start).not.toHaveBeenCalled();
+  });
+});
+
+describe("the CLI starts the dispatcher", () => {
+  class Exited extends Error {}
+  const SETTINGS = {
+    GITHUB_APP_ID: "12345",
+    GITHUB_APP_PRIVATE_KEY_FILE: "/app/app.pem",
+    GITHUB_WEBHOOK_SECRET: "a-webhook-secret",
+    WORKER_URL: "http://worker:8787/jobs",
+    WORKER_SECRET: "a-worker-secret",
+  } as const;
+  const start = vi.mocked(serveDispatcher);
+  let exitCode: number | undefined;
+  let exit: MockInstance<typeof process.exit>;
+  let logged: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    start.mockReset();
+    exitCode = undefined;
+    exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Exited();
+    }) as never);
+    logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+    logged.mockRestore();
+  });
+
+  it("starts with its declared settings, an optional one unset read as its default", async () => {
+    const { code } = await invoke(["dispatcher"], { ...SETTINGS, TOKEN_PORT: "9001" });
+
+    expect(code).toBe(0);
+    expect(start).toHaveBeenCalledWith(
+      {
+        ...SETTINGS,
+        WEBHOOK_HOST: "127.0.0.1",
+        WEBHOOK_PORT: "8790",
+        TOKEN_HOST: "127.0.0.1",
+        TOKEN_PORT: "9001",
+        JOB_DEADLINE_MARGIN_MINUTES: "60",
+        EXTRA_OWNERS: "",
+      },
+      expect.any(Function),
+    );
+  });
+
+  it("refuses to start without its required settings, naming each one", async () => {
+    await expect(invoke(["dispatcher"], {})).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith(
+      "\nFAILED: Missing required env vars: GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_FILE, GITHUB_WEBHOOK_SECRET, WORKER_URL, WORKER_SECRET",
+    );
+  });
+
+  it("refuses an argument", async () => {
+    const { code, err } = await invoke(["dispatcher", "--port", "1"], SETTINGS);
+
+    expect(code).toBe(2);
+    expect(err).toContain("`dispatcher` takes no arguments, but got: --port 1");
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("turns a failure to start into fail(), with the reason", async () => {
+    start.mockRejectedValue(new Error("`WEBHOOK_PORT` is `http`, which is not a whole number."));
+
+    await expect(invoke(["dispatcher"], SETTINGS)).rejects.toThrow(Exited);
+
+    expect(exitCode).toBe(1);
+    expect(logged).toHaveBeenCalledWith("\nFAILED: `WEBHOOK_PORT` is `http`, which is not a whole number.");
   });
 });
 
@@ -764,9 +936,11 @@ describe("a test runs a subcommand with exactly the inputs it gives", () => {
     expect(command).toHaveBeenCalledTimes(1);
   });
 
-  it("unsets nothing for the install path, which declares nothing", () => {
+  it("unsets nothing for the install path, which declares nothing, and a service process's settings", () => {
     expect(declaredInputs("init")).toEqual([]);
     expect(declaredInputs("doctor")).toEqual([]);
+    expect(declaredInputs("dispatcher")).toEqual(Object.keys(SERVICE.dispatcher.settings));
+    expect(declaredInputs("worker")).toEqual(Object.keys(SERVICE.worker.settings));
     expect(declaredInputs("review:publish")).toEqual(Object.keys(COMMANDS["review:publish"].inputs));
     expect(declaredInputs("implement")).toEqual(Object.keys(RUNNERS.implement.inputs));
   });
@@ -904,7 +1078,8 @@ describe("a test that runs the CLI writes process.env only through the helper", 
  *
  * Read off the syntax tree rather than the text, because the rule is about
  * code: a doc comment saying what `process.env` holds is not a read. `setup/`
- * and `scripts/` are not runners, and are not walked.
+ * and `scripts/` are not runners, and are not walked. `service/` is, since the
+ * service's settings are declared and read through the same accessor.
  */
 describe("every input a runner reads goes through its declaration", () => {
   const ACCESSOR = "shared/env.ts";
@@ -921,7 +1096,7 @@ describe("every input a runner reads goes through its declaration", () => {
     return lines;
   };
 
-  const surface = [...new Set([...runnerDirs, ...commandModules.map((module) => path.posix.dirname(module)), "shared"])].flatMap((dir) =>
+  const surface = [...new Set([...runnerDirs, ...commandModules.map((module) => path.posix.dirname(module)), "shared", "service"])].flatMap((dir) =>
     fs
       .readdirSync(path.join(PACKAGE_DIR, dir), { recursive: true, encoding: "utf8" })
       .filter((name) => name.endsWith(".ts"))
@@ -929,8 +1104,9 @@ describe("every input a runner reads goes through its declaration", () => {
   );
   const source = (rel: string): string => fs.readFileSync(path.join(PACKAGE_DIR, rel), "utf8");
 
-  it("walks every runner, every command and shared/, the accessor's module among them", () => {
+  it("walks every runner, every command, shared/ and service/, the accessor's module among them", () => {
     expect(surface).toContain(ACCESSOR);
+    expect(surface).toContain("service/dispatcher.ts");
     expect(surface).toContain("shared/common.ts");
     for (const dir of runnerDirs) expect(surface).toContain(`${dir}/${dir}.ts`);
     for (const module of commandModules) expect(surface).toContain(module);
@@ -1055,6 +1231,14 @@ describe("a command's imports never reach the agent driver", () => {
   /** The walk can fail: a runner's graph reaches the driver, through the module that is it. */
   it("finds the driver from a runner that starts the agent", () => {
     expect(driverIn(graph("review/review.ts"))).toContain(DRIVER);
+  });
+
+  /**
+   * The sandbox selector is the driver's, and the `bwrap` provider loads the
+   * SDK itself, so a command reaching either is refused above (#454).
+   */
+  it("finds the bwrap provider from the driver, as a module that loads the SDK", () => {
+    expect(driverIn(graph(DRIVER))).toEqual(expect.arrayContaining([DRIVER, "engine/bwrap.ts"]));
   });
 
   it("finds the SDK in the driver, and in no other module under shared/", () => {
@@ -2651,6 +2835,8 @@ describe("doctor names the failures that otherwise look like something else", ()
     maxFixRounds: null,
     // Unset, which is every limit at today's value.
     timeoutMinutes: Object.fromEntries(TIMEOUT_VARIABLES.map((variable) => [variable.name, null])),
+    // Unset, which is the Actions orchestrator.
+    orchestrator: null,
   });
 
   /** The installed caller file holding a job, repo-relative as `doctor` names it. */
@@ -3948,6 +4134,133 @@ describe("doctor names the failures that otherwise look like something else", ()
   });
 
   /**
+   * **The orchestrator** (#455). `AGENT_ORCHESTRATOR` unset is Actions, ruled
+   * as it always was; `service` is the service orchestrator, with checks of its
+   * own and none of Actions'; any other value is an error; and one nobody could
+   * read is a warning, never a pass. Ruled through `diagnose`, facts in and
+   * findings out.
+   */
+  describe("the orchestrator", () => {
+    const rule = (root: string, facts: RepoFacts): readonly Finding[] =>
+      diagnose(readInstalledCallers(root, manifest.name), facts);
+    const checks = (findings: readonly Finding[]): readonly string[] => findings.map((finding) => `${finding.severity} ${finding.check}`);
+    const service = (facts: Partial<RepoFacts> = {}): RepoFacts => ({
+      ...healthy(),
+      orchestrator: record.SERVICE_ORCHESTRATOR,
+      ...facts,
+    });
+    const empty = (): string => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-doctor-"));
+      roots.push(root);
+      fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+      return root;
+    };
+
+    it("is spelt once, in the record", () => {
+      expect(record.ORCHESTRATOR_VARIABLE).toBe("AGENT_ORCHESTRATOR");
+      expect(record.SERVICE_LABELS).toEqual([record.REVIEW_LABEL]);
+    });
+
+    it("rules on an unset variable as Actions, as before", async () => {
+      const findings = rule(await installed(), healthy());
+
+      expect(findings.filter((finding) => finding.check === "orchestrator")).toEqual([]);
+      expect(findings.some((finding) => finding.severity === "error")).toBe(false);
+      // The Actions checks still run.
+      expect(checks(rule(await installed(), { ...healthy(), secrets: [] }))).toContain("error secrets");
+      expect(checks(rule(empty(), healthy()))).toEqual(["error callers"]);
+    });
+
+    it("passes a service-served repository with no callers and its labels", () => {
+      const findings = rule(empty(), service({ labels: ["agent:review", "agent:blocked"] }));
+
+      expect(checks(findings)).toEqual(["note orchestrator", "note service App", "warning unanswered labels"]);
+    });
+
+    it("says it cannot check whether the service's App is installed", () => {
+      const app = rule(empty(), service()).find((finding) => finding.check === "service App");
+
+      expect(app?.problem).toContain("`doctor` cannot check this.");
+    });
+
+    it("names every agent:* label the service does not answer, from the one list", () => {
+      const [warning] = rule(empty(), service()).filter((finding) => finding.check === "unanswered labels");
+
+      for (const name of ["agent:implement", "agent:fix", "agent:update-branch", "agent:follow-ups"]) {
+        expect(warning?.problem).toContain(`\`${name}\``);
+      }
+      expect(warning?.problem).toMatch(/answers `agent:review` and no other label, so `agent:implement`/);
+    });
+
+    it("warns that callers left installed are skipped, and skips every Actions check", async () => {
+      const root = await installed();
+      // Each of these is an Actions error, and none of them applies here.
+      edit(root, "review", (text) => text.replace(/^ *checks: read\n/m, ""));
+      const findings = rule(
+        root,
+        service({ secrets: [], canCreatePullRequests: false, visibility: "public", actionsPolicies: [], releases: [] }),
+      );
+
+      expect(checks(findings)).toEqual([
+        "note orchestrator",
+        "note service App",
+        "warning callers",
+        "warning unanswered labels",
+      ]);
+      const [callers] = findings.filter((finding) => finding.check === "callers");
+      expect(callers?.problem).toContain("installed, and skipped");
+      expect(callers?.problem).toContain("`review` job");
+    });
+
+    it("checks the labels the service needs exist, and no others", () => {
+      const missing = rule(empty(), service({ labels: ["agent:blocked"] })).find((finding) => finding.check === "labels");
+      expect(missing?.severity).toBe("error");
+      expect(missing?.problem).toMatch(/^agent:review does not exist/);
+
+      const unread = rule(empty(), service({ labels: undefined })).find((finding) => finding.check === "labels");
+      expect(unread?.severity).toBe("warning");
+    });
+
+    it("warns where a fix-round budget above 0 is set, which the service runs as 0", () => {
+      const budget = (value: string | null | undefined): readonly Finding[] =>
+        rule(empty(), service({ maxFixRounds: value })).filter((finding) => finding.check === "fix-round budget");
+
+      const [two] = budget("2");
+      expect(two?.severity).toBe("warning");
+      expect(two?.problem).toContain(`\`${FIX_ROUNDS_VARIABLE}\` is \`2\``);
+      expect(two?.problem).toContain("budget of 0");
+      for (const value of ["0", null, undefined, "three"]) expect(budget(value), String(value)).toEqual([]);
+    });
+
+    it("errors on any other value, and checks the repository as an Actions one", async () => {
+      for (const value of ["Service", "actions", ""]) {
+        const findings = rule(await installed(), { ...healthy(), orchestrator: value });
+        const [error] = findings.filter((finding) => finding.check === "orchestrator");
+
+        expect(error?.severity, value).toBe("error");
+        expect(error?.problem, value).toContain(`\`AGENT_ORCHESTRATOR\` is \`${value}\``);
+        expect(checks(findings), value).not.toContain("note service App");
+      }
+      const { code, err } = await check(await installed(), { ...healthy(), orchestrator: "sevice" });
+      expect(err).toContain("FAIL  orchestrator");
+      expect(code).toBe(1);
+    });
+
+    it("does not pass a variable it could not read", async () => {
+      const findings = rule(await installed(), { ...healthy(), orchestrator: undefined });
+      const [warning] = findings.filter((finding) => finding.check === "orchestrator");
+
+      expect(warning?.severity).toBe("warning");
+      expect(warning?.problem).toMatch(/Could not read the repository variable `AGENT_ORCHESTRATOR`/);
+      expect(checks(findings)).not.toContain("note service App");
+      expect(checks(rule(empty(), { ...healthy(), orchestrator: undefined }))).toEqual([
+        "warning orchestrator",
+        "error callers",
+      ]);
+    });
+  });
+
+  /**
    * **The loop's identity** (#321, PRD #314): which of the App, the PAT or
    * neither the loop writes as, the App set up by halves, and a caller that
    * does not pass the App's secrets on while they are set. Ruled through
@@ -4493,6 +4806,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       actionsPolicies: undefined,
       maxFixRounds: undefined,
       timeoutMinutes: undefined,
+      orchestrator: undefined,
     });
 
     expect(code).toBe(0);
@@ -4518,6 +4832,7 @@ describe("doctor names the failures that otherwise look like something else", ()
       actionsPolicies: undefined,
       maxFixRounds: undefined,
       timeoutMinutes: undefined,
+      orchestrator: undefined,
     });
 
     expect(code).toBe(0);

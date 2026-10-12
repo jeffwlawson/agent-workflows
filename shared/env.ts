@@ -11,11 +11,12 @@ import { EVERY_SUBCOMMAND, EVERY_SUBCOMMAND_OUTPUTS, type Input, type Inputs, ty
  * CLI, which reads them here. A read anywhere else would be an input the declaration does
  * not have, which is the quiet default the declarations exist to end.
  *
- * Three things here touch the environment besides the accessor, and each is
+ * Four things here touch the environment besides the accessor, and each is
  * here rather than exempted somewhere else: the writer, which finds
  * `OUTPUT_DIR` without the accessor so a missing one can still be reported;
- * `fail()`, which writes through it; and `scrubGitHubTokens`, which deletes
- * rather than reads.
+ * `fail()`, which writes through it; `scrubGitHubTokens`, which deletes
+ * rather than reads; and `hostEnvironment`, which the service's worker hands
+ * on to its subcommands and reads nothing from itself.
  */
 
 /**
@@ -170,6 +171,20 @@ export const readInputs = <D extends Inputs>(declared: D): InputValues<D> => {
  * here is a runner that never made it.
  */
 export const outputDir = (): string => input(EVERY_SUBCOMMAND, "OUTPUT_DIR");
+
+/**
+ * The few variables of the host's own environment the service's worker hands
+ * each subcommand it starts, `PATH`, `HOME` and `LANG`, where set: what a
+ * process needs to find its programs, a home and a locale, and nothing an
+ * orchestrator decides. Everything else a subcommand reads is declared in
+ * `shared/contract.ts`, and the worker hands on nothing else of its own.
+ */
+export const HOST_VARIABLES = ["PATH", "HOME", "LANG"] as const;
+
+export type HostEnvironment = Readonly<Partial<Record<(typeof HOST_VARIABLES)[number], string>>>;
+
+export const hostEnvironment = (): HostEnvironment =>
+  Object.fromEntries(HOST_VARIABLES.flatMap((name) => (present(name) === undefined ? [] : [[name, present(name)]])));
 
 /**
  * Remove the GitHub tokens from this process's environment. The agent runs

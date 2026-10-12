@@ -119,12 +119,18 @@ concurrency:
 #
 # The permissions differ per job, and the caller grants the union: what
 # `publish` spends. The caller is unchanged.
+#
+# Every job's `if:` opens with `vars.AGENT_ORCHESTRATOR != 'service'` (#455):
+# a repository that sets that variable is served by the service orchestrator,
+# and every job here skips, so one orchestrator answers each label. Unset, or
+# any other value, leaves the rest of each condition as it was.
 jobs:
   gate:
     # Same two guards as the other PR workflows: the trigger label, and
     # same-repo only so a fork PR never reaches checkout with secrets in scope.
     # The two jobs after it follow from its outputs, so this is the one guard.
     if: >-
+      vars.AGENT_ORCHESTRATOR != 'service' &&
       github.event.label.name == 'agent:update-branch' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -319,7 +325,7 @@ jobs:
     needs: gate
     # Only on the conflicts path: a clean merge needs no agent, and the
     # publish job makes it itself.
-    if: needs.gate.outputs.refused == 'false' && needs.gate.outputs.status == 'conflicts'
+    if: vars.AGENT_ORCHESTRATOR != 'service' && needs.gate.outputs.refused == 'false' && needs.gate.outputs.status == 'conflicts'
     runs-on: ubuntu-latest
     # The repository variable `AGENT_TIMEOUT_MINUTES` where it is set (#220),
     # shared by the four jobs that run an agent to write code, and 30 where it
@@ -568,7 +574,7 @@ jobs:
     # (another label's event, or a fork) or refused: that run said what it
     # had to. A pre-flight that died before deciding leaves `refused` empty
     # and comes through, so the label still comes off, as it always has.
-    if: always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
+    if: vars.AGENT_ORCHESTRATOR != 'service' && always() && needs.gate.result != 'skipped' && needs.gate.outputs.refused != 'true'
     runs-on: ubuntu-latest
     # A clone, a merge, a push and some API calls, and a bounded wait for the
     # PR's head.

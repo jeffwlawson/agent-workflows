@@ -250,12 +250,20 @@ GitHub ─► Funnel :10000 ─► Unraid 127.0.0.1:8790/github   dispatcher (co
 ```
 
 **The agent box** is an Ubuntu 24.04 VM: Host Passthrough CPU (the agent's CLI hangs on an
-emulated one), 4 vCPU, 8 GB, a raw disk, no Unraid shares and no passed-through devices. It sits
-on **`agentnet`**, a libvirt NAT network of its own, `192.168.250.0/24` on bridge `virbr-agent`,
-at `192.168.250.11`; the host is `192.168.250.1` on it. Inside it:
+emulated one), 4 vCPU, 8 GB, a raw disk, no Unraid shares and no passed-through devices, its own
+Autostart off, and a VNC password, since Unraid's console otherwise listens on the LAN without one.
+It sits on **`agentnet`**, a libvirt NAT network of its own, `192.168.250.0/24` on bridge
+`virbr-agent`, at `192.168.250.11`; the host is `192.168.250.1` on it. That address is a DHCP
+**reservation** for the VM's network card (`<host mac='…' ip='192.168.250.11'/>` in the network's
+`<dhcp>`), not the first lease the range happened to give: `WORKER_URL` names it, and a rebuilt VM
+or a second one on `agentnet` would otherwise take another, and every job would go unanswered.
+Inside it:
 
 - bubblewrap, with Ubuntu's AppArmor restriction on user namespaces lifted for `bwrap`;
-- Node 24.14 or later, and git;
+- Node 24.14 or later, owned by root, and git. Node's tarball stores its files as uid 1001, which
+  is the worker's user on a box whose first user is the admin, so unpacking it as is (`tar` as root
+  keeps owners) makes the worker's user own `/usr/local/bin`, ahead of `/usr/bin` on root's `PATH`.
+  Unpack with `--no-same-owner`;
 - tinyproxy, allowing GitHub, the model's API and the package registries by hostname, and the
   dispatcher's token door, `192.168.250.1`, which the worker reaches through it. Node tunnels a
   plain `http:` request through `CONNECT` too, so `ConnectPort 8791` sits beside `ConnectPort 443`;

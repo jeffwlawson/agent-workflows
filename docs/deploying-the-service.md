@@ -260,9 +260,11 @@ or a second one on `agentnet` would otherwise take another, and every job would 
 Inside it:
 
 - bubblewrap, with Ubuntu's AppArmor restriction on user namespaces lifted for `bwrap`;
-- Node 24.14 or later, owned by root, and git. Node's tarball stores its files as uid 1001, which
-  is the worker's user on a box whose first user is the admin, so unpacking it as is (`tar` as root
-  keeps owners) makes the worker's user own `/usr/local/bin`, ahead of `/usr/bin` on root's `PATH`.
+- Node 24.14 or later, owned by root, and git. Node's tarball stores its files under a build
+  account's uid, 1000 or 1001 depending on the release, which on a box whose first user is the
+  admin is the admin or the worker's user. Unpacking it as is (`tar` as root keeps owners) hands
+  `/usr/local/bin`, ahead of `/usr/bin` on root's `PATH`, to one of them; a release that happens to
+  give the admin's uid is no reason to skip the flag, since the next may give the worker's.
   Unpack with `--no-same-owner`;
 - tinyproxy, allowing GitHub, the model's API and the package registries by hostname, and the
   dispatcher's token door, `192.168.250.1`, which the worker reaches through it. Node tunnels a

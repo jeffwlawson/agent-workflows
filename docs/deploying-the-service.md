@@ -250,19 +250,35 @@ GitHub ─► Funnel :10000 ─► Unraid 127.0.0.1:8790/github   dispatcher (co
 ```
 
 **The agent box** is an Ubuntu 24.04 VM: Host Passthrough CPU (the agent's CLI hangs on an
-emulated one), 4 vCPU, 8 GB, a raw disk, no Unraid shares and no passed-through devices. It sits
-on **`agentnet`**, a libvirt NAT network of its own, `192.168.250.0/24` on bridge `virbr-agent`,
-at `192.168.250.11`; the host is `192.168.250.1` on it. Inside it:
+emulated one), 4 vCPU, 8 GB, a raw disk, no Unraid shares and no passed-through devices, its own
+Autostart off, and a VNC password, since Unraid's console otherwise listens on the LAN without one.
+It sits on **`agentnet`**, a libvirt NAT network of its own, `192.168.250.0/24` on bridge
+`virbr-agent`, at `192.168.250.11`; the host is `192.168.250.1` on it. That address is a DHCP
+**reservation** for the VM's network card (`<host mac='…' ip='192.168.250.11'/>` in the network's
+`<dhcp>`), not the first lease the range happened to give: `WORKER_URL` names it, and a rebuilt VM
+or a second one on `agentnet` would otherwise take another, and every job would go unanswered.
+Inside it:
 
 - bubblewrap, with Ubuntu's AppArmor restriction on user namespaces lifted for `bwrap`;
-- Node 24.14 or later, and git;
+- Node 24.14 or later, owned by root, and git. Node's tarball stores its files under a build
+  account's uid, 1000 or 1001 depending on the release, which on a box whose first user is the
+  admin is the admin or the worker's user. Unpacking it as is (`tar` as root keeps owners) hands
+  `/usr/local/bin`, ahead of `/usr/bin` on root's `PATH`, to one of them; a release that happens to
+  give the admin's uid is no reason to skip the flag, since the next may give the worker's.
+  Unpack with `--no-same-owner`;
 - tinyproxy, allowing GitHub, the model's API and the package registries by hostname, and the
   dispatcher's token door, `192.168.250.1`, which the worker reaches through it. Node tunnels a
   plain `http:` request through `CONNECT` too, so `ConnectPort 8791` sits beside `ConnectPort 443`;
 - an nft rule (`meta skuid`) letting the worker's user open connections on loopback alone,
   that is to tinyproxy, so nothing on the box leaves except through the proxy, the worker included;
-- the worker as a systemd unit, after tinyproxy, its settings in an `EnvironmentFile` only root
-  can read, `WORKER_PROXY` sending its own traffic and every step it runs through tinyproxy:
+- the package installed once, as root, into `/opt/agent-workflows` (`npm install --prefix`), so
+  the worker never reaches the registry itself and the box holds no registry token: an upgrade is
+  the same install at a new version, then a restart;
+- the worker as a systemd unit running that install (`node
+  /opt/agent-workflows/node_modules/@jeffwlawson/agent-workflows/dist/cli.js worker`) as the
+  worker's user, after tinyproxy, its settings in an `EnvironmentFile` only root can read,
+  `WORKER_PROXY` sending its own traffic and every step it runs through tinyproxy, on
+  `127.0.0.1:3128`:
 
 ```text
 WORKER_SECRET=<shared with the dispatcher>
@@ -272,12 +288,13 @@ CLAUDE_CODE_OAUTH_TOKEN=<from `claude setup-token`>
 WORK_DIR=/var/lib/agent-worker
 JOBS_HOST=192.168.250.11
 JOBS_PORT=8787
-WORKER_PROXY=http://127.0.0.1:8888
+WORKER_PROXY=http://127.0.0.1:3128
 AGENT_SANDBOX=bwrap
-AGENT_SANDBOX_RO_BINDS=<Node's install directory>
-AGENT_SANDBOX_PATH=<Node's bin directory>:/usr/local/bin:/usr/bin:/bin
-AGENT_SANDBOX_PROXY=http://127.0.0.1:8888
+AGENT_SANDBOX_PROXY=http://127.0.0.1:3128
 ```
+
+`AGENT_SANDBOX_RO_BINDS` and `AGENT_SANDBOX_PATH` keep their defaults: Node is under `/usr/local`,
+which the sandbox's read-only `/usr` already holds, and `/usr/local/bin` is on the default path.
 
 **The `agentnet` firewall** is the User Script `agentnet-firewall`, run *At Startup of Array*.
 It puts an `AGENT-EGRESS` chain in the `mangle` table's `PREROUTING`, which libvirt, Docker and
@@ -289,8 +306,11 @@ the VM's own Autostart stays off. The token door is reachable from inside the ag
 sandbox included, which is why it mints only for a request signed with `WORKER_SECRET`, a file the
 sandbox cannot see.
 
-**The dispatcher** lives in `/mnt/user/appdata/agent-dispatcher/`: the App's key, `app.pem`, and
-its settings, `dispatcher.env`:
+**The dispatcher** lives in `/mnt/user/appdata/agent-dispatcher/`: the App's key, `app.pem`, its
+settings, `service.env`, and the package, installed once into `pkg/` by a throwaway container
+(`docker run --rm … node:24-alpine npm install --prefix /pkg …`), so the server holds no registry
+token either. `service.env` is root's alone; `app.pem` belongs to the user the container runs as,
+uid 99, mode 600:
 
 ```text
 GITHUB_APP_ID=<the App's ID>
@@ -305,17 +325,24 @@ TOKEN_PORT=8791
 ```
 
 It runs as a container with host networking, since libvirt's NAT network admits new connections
-from the host and not from a container on Docker's own bridge, and restarts unless stopped:
+from the host and not from a container on Docker's own bridge, and restarts unless stopped. It runs
+as `99:100` (Unraid's nobody:users), not root: it is the process the internet reaches, through the
+Funnel, and it holds the App's key. That user has no home in the image and `/app` is read-only, so
+it starts in `/tmp` with `HOME` there:
 
 ```bash
 docker run -d --name agent-dispatcher --restart unless-stopped --network host \
-  --env-file /mnt/user/appdata/agent-dispatcher/dispatcher.env \
+  --user 99:100 -w /tmp -e HOME=/tmp \
+  --env-file /mnt/user/appdata/agent-dispatcher/service.env \
   -v /mnt/user/appdata/agent-dispatcher:/app:ro node:24-alpine \
-  npm exec --yes @jeffwlawson/agent-workflows@<version> dispatcher
+  node /app/pkg/node_modules/@jeffwlawson/agent-workflows/dist/cli.js dispatcher
 ```
 
-with the registry's `.npmrc` beside it. **Tailscale Funnel** publishes the webhook door, on port
-10000 (the server's `serve` already holds 8443):
+Docker reads `--env-file` when it creates a container, not when it restarts one, so a change to
+`service.env` means a new container. An upgrade is an install at the new version into `pkg/` and a
+`docker restart`, with the worker moved to the same version alongside, since a worker refuses jobs
+from a dispatcher of another release. **Tailscale Funnel** publishes the webhook door, on port 10000 (the server's `serve` already
+holds 8443):
 
 ```bash
 tailscale funnel --bg --https=10000 http://127.0.0.1:8790
@@ -325,7 +352,8 @@ The App's webhook URL is then the server's Funnel name, `https://<node>.<tailnet
 Leave *Settings → Tailscale → Allow Tailscale Funnel* at **Yes**, or the plugin's watcher removes
 the Funnel.
 
-**After a reboot the chain comes back on its own**, as #374 showed with the prototype: the array
+**After a reboot the chain comes back on its own**, as #374 showed with the prototype, the same
+chain of units and scripts: the array
 starts, `agentnet-firewall` puts the rules in and starts the VM, the VM's units start in order
 (its egress rules, tinyproxy, the worker), the dispatcher's container comes back, and the Funnel
 stays public. About 11 minutes from *Reboot* to a review. Restarting the VM service alone does

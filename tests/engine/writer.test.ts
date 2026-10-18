@@ -170,6 +170,18 @@ describe("the writer", () => {
     expect([...github.branches]).toEqual([["feature", next]]);
   });
 
+  it("is unchanged in the fake where the ref is already at the commit, whatever the lease says, as git reports it", async () => {
+    const github = fakeGitHub();
+    github.branches.set("feature", SHA);
+    const { writers, entries } = fakeWriters(github, ["loop"], { pushRef: 2 });
+
+    expect(await writers.loop.pushRef({ ref: "refs/heads/feature", commit: SHA, lease: { tip: "b".repeat(40) } })).toEqual({ outcome: "unchanged" });
+    expect(await writers.loop.pushRef({ ref: "refs/heads/feature", commit: SHA, lease: { absent: true } })).toEqual({ outcome: "unchanged" });
+
+    expect(entries.map((e) => e.outcome)).toEqual(["unchanged", "unchanged"]);
+    expect([...github.branches]).toEqual([["feature", SHA]]);
+  });
+
   it("resolves alone a thread that already carries its reply", async () => {
     const github = fakeGitHub();
     github.threads.set(7, new Map([["T1", { replies: ["earlier"] }]]));

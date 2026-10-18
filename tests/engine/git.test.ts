@@ -150,6 +150,14 @@ describe("pushRef", () => {
     expect(await writer.pushRef({ ref: REF, commit: base, lease: { tip: base } })).toEqual({ outcome: "unchanged" });
   });
 
+  it("is unchanged where the ref is already at the commit, whatever the lease says", async () => {
+    const { writer } = writersFor();
+
+    expect(await writer.pushRef({ ref: REF, commit: base, lease: { tip: next } })).toEqual({ outcome: "unchanged" });
+    expect(await writer.pushRef({ ref: REF, commit: base, lease: { absent: true } })).toEqual({ outcome: "unchanged" });
+    expect(remoteTip(REF)).toBe(base);
+  });
+
   it("refuses a bare branch name before any push", async () => {
     const { writer, entries } = writersFor();
 

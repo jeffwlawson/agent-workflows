@@ -233,9 +233,11 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
     }
     throw new GitHubError(`thread ${threadId}: not found`);
   };
-  /** `push`'s ref as `branches` keys it, once its lease is checked against it, as git's `--force-with-lease` would. */
+  /** `ref` as `branches` keys it: a `refs/heads/` ref by its branch name, any other by its full name. */
+  const branchOf = (ref: string): string => ref.replace(/^refs\/heads\//, "");
+  /** `ref`'s lease checked against it, as git's `--force-with-lease` would. */
   const leased = (ref: string, lease: Lease): string => {
-    const name = ref.replace(/^refs\/heads\//, "");
+    const name = branchOf(ref);
     const tip = github.branches.get(name);
     if ("tip" in lease ? tip !== lease.tip : tip !== undefined) throw new GitError("rejected: [rejected] (stale info)", true);
     return name;
@@ -332,8 +334,11 @@ const fakeBackend = (github: FakeGitHub, token: string): Backend => {
     },
     pushRef: async (call, push) =>
       call("git push", async () => {
-        const name = leased(push.ref, push.lease);
+        // Git reports a ref already at the commit as up to date whatever the
+        // lease says, so the lease is checked only where there is a push to make.
+        const name = branchOf(push.ref);
         if (github.branches.get(name) === push.commit) return { outcome: "unchanged" as const };
+        leased(push.ref, push.lease);
         check("pushRef", "git push");
         github.branches.set(name, push.commit);
         return { outcome: "applied" as const };

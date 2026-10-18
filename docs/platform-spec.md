@@ -62,7 +62,8 @@ cannot check is one only an orchestrator's author will catch.
   named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
-  `update-branch:prepare` and `update-branch:bundle`. §2 says where it differs from a runner.
+  `update-branch:prepare`, `update-branch:bundle` and `update-branch:publish`. §2 says where it
+  differs from a runner.
 - **Orchestrator.** Whatever invokes a runner and acts on its result: it decides when a runner runs,
   prepares the checkout, sets the inputs, and posts, pushes and labels with what comes back. The
   Actions orchestrator is a caller plus its reusable workflow, and `CONTEXT.md`'s *three parts*
@@ -138,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge` and `update-branch:prepare` fetch the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, and `update-branch:gate` its refusal and its label transitions. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, and `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code and `fix:bundle` and `update-branch:bundle` do after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
@@ -329,10 +330,11 @@ anything it does not control post as, an account it does not control.
 The same list, without the association half (`isWorkflowBot`), is what a runner or a command asks
 where the question is *did the loop post this* rather than *is this trusted*: the reviews it
 numbers rounds by, the verdict and fix-round statuses it counts (§4.3), the earlier findings it
-carries forward, and the review bodies `follow-ups:file` files from. `review:budget` and
-`review:conclude` match a status's creator against it in the REST spelling. Every runner and
-command that asks declares `AGENT_LOOP_LOGINS`; `update-branch`, which asks neither question, does
-not.
+carries forward, and the review bodies `follow-ups:file` files from. `review:budget`,
+`review:conclude` and `update-branch:publish`, which carries the newest verdict of these accounts
+over to a clean merge, match a status's creator against it in the REST spelling. Every runner and
+command that asks declares `AGENT_LOOP_LOGINS`; the `update-branch` runner, which asks neither
+question, does not.
 
 **`doctor` cannot check this.** The login is whichever account the orchestrator posts as, and the
 Actions reusable will work out its own App's login at run time (#305); nothing in a repository
@@ -444,7 +446,7 @@ only a status whose creator is the loop's identity (§4.1).
 
 | Context | What it records | Written by | Read by |
 |---|---|---|---|
-| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude` | `review`, to know what changed since the last verdict |
+| `agent-review` | The review's verdict on the commit. A state of `error` is no verdict. | `review:publish`, from `review`'s `verdict.json`; `error` by `review:conclude`; copied unparsed from the old head on to a clean merge by `update-branch:publish` | `review`, to know what changed since the last verdict |
 | `agent-fix-round` | Beside a verdict, with the same target URL: that verdict started a fix round. | `review:publish`, from `review`'s `verdict.json` | `review`, to count fix rounds since the last verdict; `review:budget`, to count the rounds the budget has spent, on a PRD PR by the round its linked review's header names |
 
 **Commit trailers.** Read from the PRD branch's first-parent log.
@@ -1734,8 +1736,9 @@ neither.
 > the agent's job installs the package under `RUNNER_TEMP` after its checkout, the one step of the
 > job handed the registry token, runs `update-branch:prepare` from it before the adopter's toolchain
 > and `setup`, runs the runner as that install's binary, by its path, from the checkout, and
-> `update-branch:bundle` from it after the runner; and a publish job pushes the resolution, posts
-> `update_comment.md`, carries the earlier verdict over to the merge commit or adds `agent:review`.
+> `update-branch:bundle` from it after the runner; and a publish job runs `update-branch:publish`,
+> which pushes the clean merge or the resolution, carries the earlier verdict over to a clean merge,
+> posts the comment, `update_comment.md` on a resolution, and asks for the resolution's review.
 
 ### `update-branch:gate`
 
@@ -1938,9 +1941,104 @@ Nothing. Its inputs are the checkout, the head the event named and the base comm
 > `RUNNER_TEMP`, and is handed no token: the job's `GH_TOKEN` is set empty for it. `CHECKOUT` is
 > the workspace, `BRANCH` and `HEAD_SHA` the label's event's, and `BASE_SHA` the gate job's `base`
 > output. `OUTPUT_DIR` is a directory of its own under `runner.temp`, which the job's upload
-> carries under `bundle/`; the publish job's shell push reads the bundle there and checks it before
-> it pushes, and its failure comment reads the reason there, after prepare's and ahead of the
-> runner's.
+> carries under `bundle/`; `update-branch:publish` reads the bundle there as its `BUNDLE_DIR` and
+> checks it before it pushes, and the publish job's failure comment reads the reason there, after
+> prepare's and ahead of the runner's.
+
+### `update-branch:publish`
+
+Publishes the refresh: pushes what the gate's merge came to, carries the verdict over to a clean
+merge, says on the pull request what it did, and asks for a review of a resolution. It runs no
+model. Each path does one of the two hand-offs, never both: a clean merge changed nothing a review
+read, so the verdict on the old head still stands; a resolution is code an agent wrote that no
+review has read, so it asks for one. What is pushed is settled, and checked, before its first
+write:
+
+- **`uptodate`.** Nothing to push.
+- **`clean`.** The merge is made again in `CHECKOUT`, as the loop's committer, of `BASE_SHA` under
+  `BASE_REF`'s name: `update-branch:merge`'s merge, by construction. It fails the command with ``
+  `<BASE_REF>` no longer holds the commit this run set out to merge, so the branch was left
+  untouched. `` where the base fetched no longer holds `BASE_SHA`, and with `` Merging `<BASE_REF>`
+  again didn't go cleanly, though it did a moment before, so the branch was left untouched. ``
+  where the merge does not.
+- **`conflicts`.** `branch.bundle`, which has to be there, is checked as `fix:publish` checks its
+  own: it verifies in `CHECKOUT`, holds exactly `refs/heads/<BRANCH>`, and builds on `HEAD_SHA`.
+  `BASE_REF` is fetched first, the bundle's other prerequisite, and has to hold `BASE_SHA`, which
+  the bundle's tip has to hold too: a resolution is a merge of the two. On any ending of the agent's
+  job but `success` it does nothing.
+
+A check that fails fails the command, naming it, and nothing is written. A fetch that fails fails it
+too, with git's reason.
+
+The order: the push to `refs/heads/<BRANCH>`, leased on `HEAD_SHA`, with the loop's token. Then, on
+a clean merge, the verdict carried over (below). Then the comment, with the workflow token:
+`` `agent:update-branch`: already up to date with `<BASE_REF>`, so no merge was needed. ``, `` `agent:update-branch`: merged `<BASE_REF>` (`<BASE_SHA>`'s first seven) cleanly, with no conflicts. ``,
+or, on a resolution, the runner's `update_comment.md`, cleaned (§4.3: no HTML comment the agent
+wrote survives), or `` `agent:update-branch`: resolved conflicts merging `<BASE_REF>`. `` where it
+is missing or nothing is left of it. Last, on a resolution, its review: a bounded wait for the pull
+request to show the pushed head, then `agent:update-branch` off, `agent:review` off and on again
+with the loop's token, and, where `LOOP_TOKEN_SOURCE` is neither `app` nor `pat`, a comment saying
+no review will start. A failed push, comment or `agent:review` add stops the command; the label
+removals and the no-review comment are tolerated, a warning where GitHub refuses them.
+
+**The verdict carried over** is the newest `agent-review` status on `HEAD_SHA` posted by one of the
+loop's accounts (§4.1), never one another account posted under the same context. It is copied
+unparsed on to the pushed merge: its state, description and target URL, an `error` included, with
+the **workflow** token, since a status from any other account is not one a later round reads as
+the loop's. A read of the statuses that fails and a commit with no verdict of ours are two
+results: the first warns that whether a verdict stood could not be told, the second says there is
+nothing to carry over. Neither fails the command, and nor does a copy GitHub refuses, which warns:
+the merge is pushed by then.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `LOOP_TOKEN` | required | | The token whose writes start the loop's next workflow: the push and the labels. |
+| `LOOP_TOKEN_SOURCE` | required | | Where `LOOP_TOKEN` came from: `app`, `pat` or `workflow`. |
+| `AGENT_LOOP_LOGINS` | optional | `""` | The loop's accounts, a comma-separated list, recognised beside `github-actions[bot]` (§4.1). Empty is that one alone. This is trust. |
+| `PR_NUMBER` | required | | The pull request. |
+| `BRANCH` | required | | Its head branch, which the push moves and the bundle has to hold. |
+| `BASE_REF` | required | | The branch merged in. |
+| `HEAD_SHA` | required | | The head the run started from, as the event that asked for it saw it: what a resolution has to build on, the verdict is copied from, and the push's lease. |
+| `STATUS` | required | | Accepts `uptodate`, `clean` or `conflicts`: what `update-branch:merge` came to, its `merge.json`'s `status`. A gate fact. |
+| `BASE_SHA` | required | | The base commit `update-branch:merge` merged, its `merge.json`'s `base`: a gate fact. |
+| `AGENT_RESULT` | required | | How the agent's job ended: `success`, `failure`, `cancelled` or `skipped`. On `conflicts`, only `success` publishes. |
+| `CHECKOUT` | required | | A checkout of the repository, at `HEAD_SHA`, the merge is made in, the bundle checked in, and both pushed from. |
+| `HEAD_WAIT_SECONDS` | optional | `60` | How long to wait for the pull request to show the pushed head before the review is asked for anyway. |
+| `HEAD_POLL_SECONDS` | optional | `5` | How often to look while waiting. |
+| `UPDATE_BRANCH_DIR` | directory | | The `update-branch` runner's `OUTPUT_DIR`. Reads `update_comment.md` (where written). |
+| `BUNDLE_DIR` | directory | | `update-branch:bundle`'s `OUTPUT_DIR`. Reads `branch.bundle` (where written). |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `published.json` | At its start: `pushed`, whether it pushed, `head`, the pushed commit, where it did, and `requested`, whether it asked for the resolution's review, each written as it becomes true. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:publish`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The statuses on `HEAD_SHA`, every page, for the newest `agent-review` of the loop's accounts.
+- The pull request `PR_NUMBER` names, after a resolution's push, for whether it shows the pushed
+  head yet.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the publish job mints the loop's token at its start, checks the head
+> out once, with no credential left in it, wherever the gate claimed the run, sets up Node, and
+> downloads the agent's artifact into `runner.temp` on a conflict. `update-branch:publish` runs
+> from `RUNNER_TEMP`, working in the checkout, where the gate claimed the run and, on a conflict,
+> the agent's job succeeded, on a mint that succeeded. It is handed the workflow's token as
+> `GH_TOKEN` and the loop's; the job sets none. `HEAD_SHA` is the label's event's, `STATUS` and
+> `BASE_SHA` the gate job's `status` and `base` outputs, `AGENT_RESULT` the agent's job's result,
+> `UPDATE_BRANCH_DIR` `runner.temp` and `BUNDLE_DIR` its `bundle/`, where the download puts them,
+> and `OUTPUT_DIR` a directory of its own under `runner.temp`. A glue step copies
+> `published.json`'s `pushed`, `head` and `requested` into step outputs, which the job's shell
+> failure and trigger-label steps read, and the failure comment reads its reason first. The write
+> log is uploaded `always()`.
 
 ## 11. `follow-ups`
 

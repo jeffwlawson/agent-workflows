@@ -535,6 +535,22 @@ const FIX_PUBLISH = {
 } as const satisfies CommandContract;
 
 /**
+ * `update-branch:bundle`, declared ahead of `COMMANDS` so that
+ * `update-branch:publish` can read its outputs (`readsFromCommand`). See
+ * `COMMANDS`.
+ */
+const UPDATE_BRANCH_BUNDLE = {
+  inputs: {
+    ...TOKENLESS,
+    CHECKOUT: REQUIRED,
+    BRANCH: REQUIRED,
+    HEAD_SHA: REQUIRED,
+    BASE_SHA: REQUIRED,
+  },
+  outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+} as const satisfies CommandContract;
+
+/**
  * What the red check's two commands read beside their own: `TOKENLESS`, and
  * the pull request's checkout, which they work in.
  */
@@ -704,6 +720,22 @@ const REVIEW_RED_CHECK_PLACE = {
  *   `fix:bundle` bundles. Where there is nothing to bundle it refuses: a run
  *   that resolved the conflicts committed a merge. It reads no repository and
  *   is handed no token.
+ * - `update-branch:publish` pushes what the merge came to, `STATUS`, the
+ *   gate's: nothing where the branch was `uptodate`; on `clean`, the merge of
+ *   `BASE_SHA`, the base commit the gate merged, made again in `CHECKOUT` as
+ *   the loop's committer, and the verdict standing on `HEAD_SHA` copied on to
+ *   it; on `conflicts`, the resolution `update-branch:bundle` wrote, read
+ *   through `BUNDLE_DIR` and checked in `CHECKOUT` against `HEAD_SHA` and
+ *   `BASE_SHA`. Each push is leased on `HEAD_SHA`, the head the run started
+ *   from as the label's event saw it. Then the comment, the runner's
+ *   `update_comment.md` on a resolution, read through `UPDATE_BRANCH_DIR`,
+ *   and on a resolution the review of it, asked for once the pull request
+ *   shows the pushed head, bounded by `HEAD_WAIT_SECONDS` and polled every
+ *   `HEAD_POLL_SECONDS`. `AGENT_RESULT` is how the agent's job ended: on a
+ *   conflict it does nothing on any ending but `success`, since the rest is
+ *   the failure step's. `AGENT_LOOP_LOGINS` is whose verdicts it copies.
+ *   `published.json` is whether it pushed, the pushed head and whether it
+ *   asked for the review, written as each becomes true.
  */
 export const COMMANDS = {
   "fix:gate": {
@@ -904,15 +936,30 @@ export const COMMANDS = {
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
   },
-  "update-branch:bundle": {
+  "update-branch:bundle": UPDATE_BRANCH_BUNDLE,
+  "update-branch:publish": {
     inputs: {
-      ...TOKENLESS,
-      CHECKOUT: REQUIRED,
+      ...EVERY_SUBCOMMAND,
+      ...LOOP,
+      ...LOOP_ACCOUNTS,
+      PR_NUMBER: REQUIRED,
       BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
       HEAD_SHA: REQUIRED,
+      STATUS: { required: true, accepts: ["uptodate", "clean", "conflicts"] },
       BASE_SHA: REQUIRED,
+      AGENT_RESULT: { required: true, accepts: RESULTS },
+      CHECKOUT: REQUIRED,
+      HEAD_WAIT_SECONDS: { required: false, default: "60" },
+      HEAD_POLL_SECONDS: { required: false, default: "5" },
+      UPDATE_BRANCH_DIR: readsFrom("update-branch", {
+        "update_comment.md": "sometimes",
+      }),
+      BUNDLE_DIR: readsFromCommand("update-branch:bundle", UPDATE_BRANCH_BUNDLE, {
+        "branch.bundle": "sometimes",
+      }),
     },
-    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "published.json", WRITE_LOG],
   },
 } as const satisfies Readonly<Record<string, CommandContract>>;
 

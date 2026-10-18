@@ -179,66 +179,9 @@ describe.skipIf(!CAN_RUN)("the issue side's review request, by the resolver's so
   });
 });
 
-/** A step's `run:` block, by name, from any job of a reusable workflow. */
-const jobStep = (command: string, job: string, name: string): string => {
-  const workflow = parse(fs.readFileSync(path.join(".github", "workflows", `${command}.yml`), "utf8")) as Workflow;
-  const step = (workflow.jobs[job]?.steps ?? []).find((s) => s.name === name);
-
-  expect(step?.run, `${command} has no \`${name}\` step in ${job}`).toBeDefined();
-  return step?.run ?? "";
-};
-
-/**
- * The PR side's writes (#320), by the source the resolver reported: the
- * re-review fix and update-branch ask for, and the ready-mark. Each is made with the token the resolver produced,
- * whatever it is, and only the workflow token, which fires nothing on a label
- * and cannot write to the parent issue, draws the warning and the comment
- * that say what to do by hand instead.
- */
-describe.skipIf(!CAN_RUN)("the PR side's writes, by the resolver's source", () => {
-  const PUSHED = "2222222222222222222222222222222222222222";
-  const SOURCES = [
-    ["app", false],
-    ["pat", false],
-    ["workflow", true],
-    ["", true],
-  ] as const;
-  const tokenOf = (source: string): string => `${source || "unknown"}-token`;
-  const fallback = /::warning::.*[Nn]either the loop's App nor AGENT_PAT is set/;
-
-  // Fix's re-review and ready-mark are `fix:publish`'s (#468), held in
-  // `tests/fix/publish.test.ts`.
-  describe.each([["update-branch", "Request a review of the resolution"]] as const)("%s's %s", (command, name) => {
-    const request = (source: string): Outcome =>
-      execute(jobStep(command, "publish", name), {
-        GH_TOKEN: tokenOf(source),
-        TOKEN_SOURCE: source,
-        PR_NUMBER: "152",
-        PUSHED: "true",
-        PUSHED_SHA: PUSHED,
-        HEAD_WAIT_SECONDS: "0",
-        RUNNER_TEMP: os.tmpdir(),
-      });
-
-    it.each(SOURCES)("adds agent:review with the resolved token, and falls back only where it fires nothing (source %j)", (source, warns) => {
-      const outcome = request(source);
-
-      expect(outcome.status, outcome.stdout).toBe(0);
-      expect(outcome.gh).toContain(`${tokenOf(source)} pr edit 152 --add-label agent:review`);
-      for (const call of outcome.gh) expect(call.startsWith(`${tokenOf(source)} `), call).toBe(true);
-      const comments = outcome.gh.filter((call) => call.includes("pr comment 152"));
-      if (warns) {
-        expect(outcome.stdout).toMatch(fallback);
-        expect(comments).toHaveLength(1);
-      } else {
-        expect(outcome.stdout).not.toMatch(fallback);
-        expect(comments).toEqual([]);
-      }
-    });
-  });
-
-  // Review's advance and park of the PRD chain are `review:advance`'s
-  // (#423), held in `tests/review/advance.test.ts`. The ready-mark is
-  // `review:conclude`'s (#419) and `fix:publish`'s (#468), held in
-  // `tests/review/conclude.test.ts` and `tests/fix/publish.test.ts`.
-});
+// The PR side's writes (#320), by the source the resolver reported, are each
+// a command's now: fix's re-review and ready-mark `fix:publish`'s (#468),
+// update-branch's review of a resolution `update-branch:publish`'s (#484),
+// review's advance and park `review:advance`'s (#423), and the ready-mark
+// `review:conclude`'s (#419). Each is held in that command's tests, under
+// `tests/fix/`, `tests/update-branch/` and `tests/review/`.

@@ -16,6 +16,7 @@ import {
   VERDICT_CONTEXT,
 } from "../shared/record.js";
 import { roundHeader, withHeader } from "../shared/round-header.js";
+import { newestVerdict } from "../shared/verdict-status.js";
 import { roundHeaderData } from "./hand-over.js";
 
 /**
@@ -435,8 +436,7 @@ const startFixRound = async (
   } catch {
     return noRound("the verdicts on its head could not be read, so whether a newer one stands could not be told");
   }
-  // Newest first, which is the order the endpoint documents.
-  const newest = statuses.find((status) => status.context === VERDICT_CONTEXT);
+  const newest = newestVerdict(statuses, accounts);
   if (newest === undefined) return noRound(`the verdict that asked for it is not on ${where}`);
   if ((newest.targetUrl ?? "") !== reviewUrl) {
     console.log(`A newer verdict stands on ${head} than the review that asked for this round. Adding nothing.`);

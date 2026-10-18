@@ -9,6 +9,7 @@ import type { InputValues } from "../shared/env.js";
 import { MAX_OUT_OF_SCOPE_NOTES, renderOutOfScopeNote } from "../shared/fix-notes.js";
 import { MAX_TOP_LEVEL_COMMENTS, renderConversationOutcomes, renderTopLevelComment } from "../shared/fix-output.js";
 import { choice, json, list, matching, object, optional, readDirectory, target, text, type Parser } from "../shared/hand-over.js";
+import { waitForHead } from "../shared/head-wait.js";
 import { FIX_LABEL, PRD_BRANCH_PREFIX, REVIEW_LABEL } from "../shared/record.js";
 import { headed, ROUND_HEADER } from "../shared/round-header.js";
 import { present, rescueIgnored, setAsideNote } from "./hand-over.js";
@@ -319,7 +320,12 @@ const requestReview = async (
   workflow: Writer,
   pushed: string | undefined,
 ): Promise<void> => {
-  if (pushed !== undefined) await waitForHead(inputs, io, pr, pushed);
+  if (pushed !== undefined) {
+    await waitForHead(io.github, pr, pushed, {
+      waitSeconds: seconds(inputs.HEAD_WAIT_SECONDS, "HEAD_WAIT_SECONDS"),
+      pollSeconds: seconds(inputs.HEAD_POLL_SECONDS, "HEAD_POLL_SECONDS"),
+    });
+  }
   await tolerated(() => loop.removeLabel(pr, FIX_LABEL), `Could not take \`${FIX_LABEL}\` off PR #${pr}.`);
   await tolerated(() => loop.removeLabel(pr, REVIEW_LABEL), `Could not take \`${REVIEW_LABEL}\` off PR #${pr} before adding it.`);
   try {
@@ -333,28 +339,6 @@ const requestReview = async (
     `::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add ${REVIEW_LABEL} by hand on PR #${pr}.`,
   );
   await tolerated(() => workflow.comment(pr, NO_REVIEW_STARTS), "…and that could not be said on the pull request either.");
-};
-
-const waitForHead = async (inputs: Inputs, io: Io, pr: number, pushed: string): Promise<void> => {
-  const waitSeconds = seconds(inputs.HEAD_WAIT_SECONDS, "HEAD_WAIT_SECONDS");
-  const pollMs = seconds(inputs.HEAD_POLL_SECONDS, "HEAD_POLL_SECONDS") * 1000;
-  const deadline = Date.now() + waitSeconds * 1000;
-  for (;;) {
-    let head: string | undefined;
-    try {
-      head = (await io.github.pullRequest(pr)).headSha;
-    } catch {
-      head = undefined;
-    }
-    if (head === pushed) return;
-    if (Date.now() >= deadline) {
-      console.log(
-        `::warning::PR #${pr} still shows ${head ?? "an unreadable head"} as its head ${waitSeconds}s after ${pushed} was pushed. Asking for the review anyway: it reads the branch tip itself, and refuses by name if it cannot settle on ${pushed}.`,
-      );
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-  }
 };
 
 /**

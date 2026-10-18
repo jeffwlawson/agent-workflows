@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { commonWriters } from "./shared/common.js";
-import type { CheckoutIo, MergingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
+import type { MergingCheckoutIo, MergingIo, OutputWriters, ReadingIo } from "./shared/command-io.js";
 import { COMMANDS, type Command, type Runner } from "./shared/contract.js";
 import { fail, gitEnvironment, readInputs, writers, type InputValues } from "./shared/env.js";
 import { VERSION } from "./shared/manifest.js";
@@ -185,8 +185,9 @@ const fetchingCommand = <C extends FetchingCommand>(
  * its `loop` writer holds no token, as one whose optional loop token is
  * empty does. Every write it makes is appended to `write_log.jsonl` as it
  * lands, and the log's last line says how the command ended, whether it
- * returned or threw. Its git writes and reads are made in `CHECKOUT` where it
- * declares one, and in the directory it runs in otherwise.
+ * returned or threw. Its git writes and reads, and its fetches and merges, are
+ * made in `CHECKOUT` where it declares one, and in the directory it runs in
+ * otherwise.
  */
 type WritingCommand = {
   [C in Command]: "write_log.jsonl" extends (typeof COMMANDS)[C]["outputs"][number] ? C : never;
@@ -195,7 +196,7 @@ type WritingCommand = {
 const writingCommand = <C extends WritingCommand>(
   name: C,
   load: () => Promise<
-    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: CheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
+    (inputs: InputValues<(typeof COMMANDS)[C]["inputs"]>, io: MergingCheckoutIo<(typeof COMMANDS)[C]["outputs"]>) => Promise<unknown>
   >,
   summary: string,
 ): Subcommand => ({
@@ -444,6 +445,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "update-branch:bundle",
     async () => (await import("./update-branch/bundle.js")).bundle,
     "Bundle the agent's resolution of a pull request's conflicts for the publish job (no model).",
+  ),
+  "update-branch:publish": writingCommand(
+    "update-branch:publish",
+    async () => (await import("./update-branch/publish.js")).publish,
+    "Push a refreshed pull request's branch, carry its verdict over or ask for a review, and say so (no model).",
   ),
   worker: serviceProcess(
     "worker",

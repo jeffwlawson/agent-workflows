@@ -466,8 +466,9 @@ const REVIEW_PUBLISH = {
  * What a command that runs where no token is held reads of
  * `EVERY_SUBCOMMAND`: `OUTPUT_DIR`, and neither the repository nor the token,
  * since it reads no repository and is handed none. The red check's two
- * (#422), whose job runs the pull request's own code, and `fix:bundle`
- * (#472) and `update-branch:bundle` (#483), which run after the agent.
+ * (#422), whose job runs the pull request's own code, `fix:bundle`
+ * (#472), `update-branch:bundle` (#483) and `implement:bundle` (#491), which
+ * run after the agent, and `implement:prepare` (#491), which needs none.
  */
 export const TOKENLESS = {
   OUTPUT_DIR: EVERY_SUBCOMMAND.OUTPUT_DIR,
@@ -745,6 +746,16 @@ const REVIEW_RED_CHECK_PLACE = {
  *   the branch's current tip, empty where it does not exist. It declares no
  *   loop token. `gate.json` is its decision, `proceed`, written as soon as it
  *   decides and however it ends, with `branch`, `base` and `tip` once read.
+ * - `implement:prepare` creates the agent's `BRANCH` in `CHECKOUT` at
+ *   `BASE_SHA`, the commit the gate read `BASE_REF` at, and checks it out,
+ *   with the loop's committer as the checkout's identity. A checkout that
+ *   does not hold `BASE_SHA` is refused. It reads no repository and is
+ *   handed no token.
+ * - `implement:bundle` bundles the agent's commits on `BRANCH`, in
+ *   `CHECKOUT`, ahead of `BASE_SHA`, the gate's base commit, into
+ *   `branch.bundle`. Where there is nothing to bundle it refuses: it runs
+ *   only where the agent succeeded. It reads no repository and is handed no
+ *   token.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -883,6 +894,25 @@ export const COMMANDS = {
       RUN_URL: REQUIRED,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
+  },
+  "implement:prepare": {
+    inputs: {
+      ...TOKENLESS,
+      CHECKOUT: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_REF: REQUIRED,
+      BASE_SHA: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+  },
+  "implement:bundle": {
+    inputs: {
+      ...TOKENLESS,
+      CHECKOUT: REQUIRED,
+      BRANCH: REQUIRED,
+      BASE_SHA: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "branch.bundle"],
   },
   "review:gate": {
     inputs: {

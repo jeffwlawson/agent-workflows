@@ -366,6 +366,16 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     async () => (await import("./implement/gate.js")).gate,
     "Refuse or defer an implement run on an issue of the wrong shape, or claim it and name its branch (no model).",
   ),
+  "implement:prepare": command(
+    "implement:prepare",
+    async () => (await import("./implement/prepare.js")).prepare,
+    "Create the agent's branch at the base commit the gate read, as the loop's committer (no model).",
+  ),
+  "implement:bundle": command(
+    "implement:bundle",
+    async () => (await import("./implement/bundle.js")).bundle,
+    "Bundle the agent's commits on an issue's branch for the publish job (no model).",
+  ),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
   init: {
     kind: "install",

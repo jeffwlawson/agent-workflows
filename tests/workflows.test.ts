@@ -4515,6 +4515,190 @@ describe("agent-implement's gate is `implement:gate`, before any checkout", () =
 });
 
 /**
+ * Implement's agent job (#491): one early install, before *Install
+ * dependencies*, and its two shell steps around the agent become
+ * `implement:prepare` and `implement:bundle`, run from it with no token, and
+ * the runner runs the install's binary by its path. What each command does
+ * is held in `tests/implement/prepare.test.ts` and
+ * `tests/implement/bundle.test.ts`; what is held here is what the YAML owns:
+ * the job's steps, where the token is, what each command is handed, and the
+ * hand-over.
+ */
+describe("implement's agent job runs implement:prepare and implement:bundle from one early install", () => {
+  const job = (): Job => jobNamed(IMPLEMENT, "implement");
+  const steps = (): readonly Step[] => job().steps ?? [];
+  const index = (name: string): number => {
+    const at = steps().findIndex((s) => s.name === name);
+    expect(at, `implement's agent job has no \`${name}\` step`).toBeGreaterThan(-1);
+    return at;
+  };
+  const step = (name: string): Step | undefined => steps()[index(name)];
+  const VERSION = PIN.slice(1);
+  const COMMAND = (name: string): string =>
+    `npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@${VERSION} -- agent-workflows ${name}`;
+
+  /** Each step, by name, and what its `run:` is, where it has one. */
+  it("is exactly these steps, each a command, the install, the runner, glue or Actions' own", () => {
+    const want: readonly (readonly [string, string | undefined])[] = [
+      ["Checkout the base branch", undefined],
+      ["Set up Node for the package", undefined],
+      ["Keep the package's registry to the package's steps", "glue"],
+      ["Install the package", `npm install --prefix "$RUNNER_TEMP" --no-save @jeffwlawson/agent-workflows@${VERSION}`],
+      ["Create branch", COMMAND("implement:prepare")],
+      ["Setup Node.js", undefined],
+      ["Install dependencies", "adopter"],
+      ["Install Claude Code", "adopter"],
+      ["Authenticate to GitHub Packages", undefined],
+      ["Run implementation agent", '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" implement'],
+      ["Redact the session transcript", "glue"],
+      ["Upload the session transcript", undefined],
+      ["Bundle the branch", COMMAND("implement:bundle")],
+      ["Hand the branch to the publish job", undefined],
+      ["Measure how the agent's job ended", "glue"],
+    ];
+
+    expect(steps().map((s) => s.name)).toEqual(want.map(([name]) => name));
+    for (const [i, [name, run]] of want.entries()) {
+      const got = steps()[i]?.run;
+      if (run === undefined) expect(got, name).toBeUndefined();
+      else if (run === "glue" || run === "adopter") expect(got, name).toBeDefined();
+      else expect(got, name).toBe(run);
+    }
+    const shell = steps().map((s) => s.run ?? "").join("\n");
+    expect(shell).not.toMatch(/\bgit (checkout|config|bundle)/);
+  });
+
+  /**
+   * **No step after *Install dependencies* holds a registry token**: the
+   * install is the job's one step handed it, the runner included, which runs
+   * the install's binary by its path.
+   */
+  it("hands the registry token to the install alone, before Install dependencies", () => {
+    const install = index("Install the package");
+
+    expect(step("Install the package")?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(step("Install the package")?.env).toEqual({
+      NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
+      NODE_AUTH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+    });
+    expect(index("Keep the package's registry to the package's steps")).toBe(install - 1);
+    expect(index("Set up Node for the package")).toBe(install - 2);
+    expect(step("Set up Node for the package")?.with).toEqual({
+      "node-version": "24",
+      "registry-url": "https://npm.pkg.github.com",
+      scope: "@jeffwlawson",
+      "package-manager-cache": false,
+    });
+    expect(install).toBeLessThan(index("Install dependencies"));
+    expect(job().env ?? {}).not.toHaveProperty("NODE_AUTH_TOKEN");
+    expect(steps().filter((s) => s.env?.["NODE_AUTH_TOKEN"] !== undefined).map((s) => s.name)).toEqual(["Install the package"]);
+    expect(JSON.stringify(job())).not.toMatch(/AGENT_PAT|AGENT_APP_|loop-token/);
+  });
+
+  /**
+   * After the base checkout, from the install, before anything of the
+   * adopter's runs, and handed the gate's base commit, never the base
+   * branch's tip: the agent builds on the base the publish job checks
+   * against.
+   */
+  it("creates the branch with implement:prepare at the gate's base commit, before the adopter's code, with no token", () => {
+    const prepare = step("Create branch");
+    const env = { ...job().env, ...prepare?.env };
+
+    expect(index("Create branch")).toBe(index("Install the package") + 1);
+    expect(index("Create branch")).toBeLessThan(index("Setup Node.js"));
+    expect(prepare?.if).toBeUndefined();
+    expect(prepare?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(prepare?.env).toMatchObject({
+      NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
+      GH_TOKEN: "",
+      OUTPUT_DIR: "${{ runner.temp }}/prepare",
+      CHECKOUT: "${{ github.workspace }}",
+      BRANCH: "${{ needs.gate.outputs.branch }}",
+      BASE_SHA: "${{ needs.gate.outputs.base }}",
+    });
+    expect(env["BASE_REF"]).toBe("${{ inputs.default-branch }}");
+    for (const name of Object.keys(COMMANDS["implement:prepare"].inputs)) expect(env, name).toHaveProperty(name);
+    const set = Object.keys(prepare?.env ?? {}).filter((name) => name !== "NPM_CONFIG_USERCONFIG" && name !== "GH_TOKEN");
+    for (const name of set) expect(COMMANDS["implement:prepare"].inputs, name).toHaveProperty(name);
+    expect(COMMANDS["implement:prepare"].inputs).not.toHaveProperty("GH_TOKEN");
+    expect(JSON.stringify(prepare)).not.toMatch(/secrets\.|NODE_AUTH_TOKEN|LOOP_TOKEN/);
+  });
+
+  /** Where the runner succeeded, after it and the transcript, with the gate's base commit its prerequisite, and no token. */
+  it("bundles the branch with implement:bundle on success, ahead of the gate's base commit, with no token", () => {
+    const bundle = step("Bundle the branch");
+    const env = { ...job().env, ...bundle?.env };
+    const runner = steps().findIndex((s) => subcommandRun(s) === "implement");
+
+    expect(bundle?.if).toBe("success()");
+    expect(index("Bundle the branch")).toBeGreaterThan(runner);
+    expect(index("Bundle the branch")).toBeGreaterThan(index("Upload the session transcript"));
+    expect(index("Bundle the branch")).toBe(index("Hand the branch to the publish job") - 1);
+    expect(bundle?.["working-directory"]).toBe("${{ runner.temp }}");
+    expect(bundle?.env).toMatchObject({
+      NPM_CONFIG_USERCONFIG: "${{ steps.npmrc.outputs.userconfig }}",
+      GH_TOKEN: "",
+      OUTPUT_DIR: "${{ runner.temp }}/bundle",
+      CHECKOUT: "${{ github.workspace }}",
+      BRANCH: "${{ needs.gate.outputs.branch }}",
+      BASE_SHA: "${{ needs.gate.outputs.base }}",
+    });
+    for (const name of Object.keys(COMMANDS["implement:bundle"].inputs)) expect(env, name).toHaveProperty(name);
+    const set = Object.keys(bundle?.env ?? {}).filter((name) => name !== "NPM_CONFIG_USERCONFIG" && name !== "GH_TOKEN");
+    for (const name of set) expect(COMMANDS["implement:bundle"].inputs, name).toHaveProperty(name);
+    expect(COMMANDS["implement:bundle"].inputs).not.toHaveProperty("GH_TOKEN");
+    expect(JSON.stringify(bundle)).not.toMatch(/secrets\.|NODE_AUTH_TOKEN|LOOP_TOKEN/);
+  });
+
+  /**
+   * The artifact carries the runner's declared files at `runner.temp`,
+   * `implement:prepare`'s under `prepare/` and `implement:bundle`'s under
+   * `bundle/`, each set read off its declaration.
+   */
+  it("hands over exactly the runner's, implement:prepare's and implement:bundle's declared files", () => {
+    const declared = (producer: string, outputs: readonly string[]): DirectoryInput => ({
+      required: true,
+      producer,
+      files: Object.fromEntries(outputs.map((file) => [file, "sometimes" as const])),
+    });
+
+    expectHandsOver(step("Hand the branch to the publish job"), declared("implement", RUNNERS["implement"].outputs), {
+      prepare: declared("implement:prepare", COMMANDS["implement:prepare"].outputs),
+      bundle: declared("implement:bundle", COMMANDS["implement:bundle"].outputs),
+    });
+    expect(step("Hand the branch to the publish job")?.if).toBe("always()");
+  });
+
+  /** The publish job reads the bundle where the download puts it. */
+  it("has the publish job push the bundle from where the download puts it", () => {
+    const publish = jobNamed(IMPLEMENT, "publish").steps ?? [];
+
+    expect(publish.find((s) => s.name === "Fetch what the agent handed over")?.with?.["path"]).toBe("${{ runner.temp }}");
+    expect(publish.find((s) => s.id === "push")?.run ?? "").toContain('bundle="${RUNNER_TEMP}/bundle/branch.bundle"');
+  });
+
+  /**
+   * Its last step measures whether the job ran out of time, as fix's and
+   * update-branch's do, for `implement:conclude`, which is not written yet.
+   */
+  it("measures how the job ended in its last step, however it ended", () => {
+    const outcome = steps().at(-1);
+
+    expect(outcome?.id).toBe("outcome");
+    expect(outcome?.if).toBe("always()");
+    expect(outcome?.env).toEqual({
+      GH_TOKEN: "",
+      JOB_STATUS: "${{ job.status }}",
+      JOB_STARTED: "${{ needs.gate.outputs.started }}",
+      TIMEOUT_MINUTES: "${{ vars.AGENT_TIMEOUT_MINUTES || '30' }}",
+    });
+    expect(outcome?.run).toBe(jobNamed(path.join(WORKFLOW_DIR, "fix.yml"), "fix").steps?.at(-1)?.run);
+    expect(job().outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
+  });
+});
+
+/**
  * `gh pr list` returns 30 PRs unless told otherwise, and says nothing when it
  * stops there (#275). implement's duplicate-PR guard read only those 30, so in a
  * repo with more open PRs it could miss the one already closing the issue and
@@ -8361,7 +8545,13 @@ describe("a job that installs the package early runs it from that install", () =
    * installing early is added here in the same change, which is the point.
    */
   it("finds the jobs that install the package early", () => {
-    expect(withInstall.map(([label]) => label).sort()).toEqual(["fix.yml fix", "review.yml red-check", "update-branch.yml gate", "update-branch.yml update-branch"]);
+    expect(withInstall.map(([label]) => label).sort()).toEqual([
+      "fix.yml fix",
+      "implement.yml implement",
+      "review.yml red-check",
+      "update-branch.yml gate",
+      "update-branch.yml update-branch",
+    ]);
   });
 
   it.each(withInstall)("%s: installs once, from RUNNER_TEMP, before the PR's code, the one step handed the token", (_, job) => {
@@ -8687,8 +8877,9 @@ describe("a split run keeps every write off the agent's runner", () => {
         readonly group: string;
         /**
          * The agent's job's `git bundle create`, where a shell step bundles:
-         * fix's is `fix:bundle` (#472), and update-branch's
-         * `update-branch:bundle` (#483).
+         * fix's is `fix:bundle` (#472), update-branch's
+         * `update-branch:bundle` (#483), and implement's `implement:bundle`
+         * (#491).
          */
         readonly bundle?: string;
         readonly bundleIf: string;
@@ -8708,7 +8899,6 @@ describe("a split run keeps every write off the agent's runner", () => {
       agentPermissions: { contents: "read", issues: "read", packages: "read" },
       gateWrites: ["issues"],
       group: `agent-implement-issue-\${{ github.event.issue.number }}${otherLabel("agent:implement")}`,
-      bundle: 'git bundle create "${RUNNER_TEMP}/branch.bundle" "refs/heads/${BRANCH}" "^refs/heads/${BASE_REF}"',
       bundleIf: "success()",
       branch: "BRANCH",
       push: { ancestors: ["$BASE_SHA"], pushed: 'push --force origin "$BRANCH"', blocks: 5 },
@@ -8819,10 +9009,17 @@ describe("a split run keeps every write off the agent's runner", () => {
   it.each(splits)("%s: takes nothing from the agent's job but its artifact", (_, file) => {
     const { agent } = rolesOf(file);
     const text = fs.readFileSync(file, "utf8");
-    // Fix's one exception (#469), and update-branch's (#485): whether its
-    // job ran out of time, which only that job can measure, as review's job
-    // does, and which picks between two sentences of a stopped run's comment
-    // and decides nothing else.
+    // Fix's one exception (#469), update-branch's (#485) and implement's
+    // (#491): whether its job ran out of time, which only that job can
+    // measure, as review's job does, and which picks between two sentences of
+    // a stopped run's comment and decides nothing else. Implement's is
+    // measured ahead of `implement:conclude`, its one reader, and read by
+    // nothing yet.
+    if (file.endsWith("implement.yml")) {
+      expect(jobNamed(file, agent).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
+      expect(text).not.toContain(`needs.${agent}.outputs`);
+      return;
+    }
     if (file.endsWith("fix.yml") || file.endsWith("update-branch.yml")) {
       expect(jobNamed(file, agent).outputs).toEqual({ "timed-out": "${{ steps.outcome.outputs.timed-out }}" });
       expect(text.match(new RegExp(`needs\\.${agent}\\.outputs\\.[\\w-]+`, "g"))).toEqual([`needs.${agent}.outputs.timed-out`]);

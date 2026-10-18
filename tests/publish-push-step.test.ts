@@ -94,8 +94,21 @@ const world = (): World => {
   return { temp, origin, publish, agent, runner, base };
 };
 
+/**
+ * Where the publish job finds the bundle: under `bundle/` for implement's,
+ * `implement:bundle`'s directory since #491, and at the top for
+ * implement-prd's.
+ */
+const bundleFile = (w: World, file = "implement.yml"): string =>
+  file === "implement.yml" ? path.join(w.runner, "bundle", "branch.bundle") : path.join(w.runner, "branch.bundle");
+
 const bundle = (w: World, ...refs: string[]): void => {
-  git(w.agent, "bundle", "create", "--quiet", path.join(w.runner, "branch.bundle"), ...refs, "^refs/heads/main");
+  bundleTo(w, "implement.yml", ...refs);
+};
+
+const bundleTo = (w: World, file: string, ...refs: string[]): void => {
+  fs.mkdirSync(path.dirname(bundleFile(w, file)), { recursive: true });
+  git(w.agent, "bundle", "create", "--quiet", bundleFile(w, file), ...refs, "^refs/heads/main");
 };
 
 interface Outcome {
@@ -184,7 +197,7 @@ describe.skipIf(!CAN_RUN)("implement's publish job pushes the agent's bundle onl
     () => {
       const w = world();
       bundle(w, `refs/heads/${BRANCH}`);
-      const file = path.join(w.runner, "branch.bundle");
+      const file = bundleFile(w);
       const bytes = fs.readFileSync(file);
       fs.writeFileSync(file, bytes.subarray(0, bytes.indexOf("\n\n") + 2 + 20));
 
@@ -198,7 +211,7 @@ describe.skipIf(!CAN_RUN)("implement's publish job pushes the agent's bundle onl
     () => {
       const w = world();
       bundle(w, `refs/heads/${BRANCH}`);
-      const file = path.join(w.runner, "branch.bundle");
+      const file = bundleFile(w);
       fs.writeFileSync(file, fs.readFileSync(file).subarray(0, 30));
 
       refused(push(w), /arrived damaged or incomplete/);
@@ -312,7 +325,7 @@ describe.skipIf(!CAN_RUN)("implement-prd's publish job pushes the slice only onc
     "pushes the PRD branch at the agent's commit, plainly, and reports it",
     () => {
       const w = world();
-      bundle(w, `refs/heads/${BRANCH}`);
+      bundleTo(w, "implement-prd.yml", `refs/heads/${BRANCH}`);
       const outcome = pushWith(w, "implement-prd.yml", env(w));
       const commit = git(w.agent, "rev-parse", "HEAD");
 
@@ -331,7 +344,7 @@ describe.skipIf(!CAN_RUN)("implement-prd's publish job pushes the slice only onc
       git(w.agent, "commit", "--quiet", "-m", "unrelated history");
       git(w.agent, "branch", "--quiet", "-D", BRANCH);
       git(w.agent, "branch", "--quiet", "-m", BRANCH);
-      bundle(w, `refs/heads/${BRANCH}`);
+      bundleTo(w, "implement-prd.yml", `refs/heads/${BRANCH}`);
 
       refused(pushWith(w, "implement-prd.yml", env(w)), /don't build on `agent\/issue-7-add-a-widget` as this run left it/);
     },

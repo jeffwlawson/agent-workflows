@@ -33,9 +33,10 @@ export const DEFAULT_LOOP_ACCOUNT = "github-actions[bot]";
 /**
  * Who the merge commits the loop makes are made by: the name and noreply
  * address every workflow's merge of a base branch, and the resolution of one,
- * is committed as. Handed to the engine's merge (`engine/git.ts`), which
- * spells no identity of its own. The workflows' shell steps that still merge
- * spell it too, until their steps move.
+ * is committed as, and the identity `implement:prepare` gives the checkout
+ * an implement agent commits in. Handed to the engine's merge
+ * (`engine/git.ts`), which spells no identity of its own. The workflows'
+ * shell steps that still merge spell it too, until their steps move.
  */
 export const LOOP_COMMITTER = {
   name: "sandcastle-agent[bot]",

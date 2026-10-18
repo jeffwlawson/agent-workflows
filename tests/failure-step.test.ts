@@ -337,6 +337,23 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
   }, 2 * SUBPROCESS_TIMEOUT);
 
   /**
+   * `implement:prepare` and `implement:bundle` write their reasons in
+   * directories of their own (#491), which the download puts under
+   * `prepare/` and `bundle/`: each is said, and a failure that left one is
+   * never measured against the clock as a stop.
+   */
+  it.each(["prepare", "bundle"])("implement: says the reason implement:%s wrote in its own directory", (dir) => {
+    const implement = CASES.find((c) => c.command === "implement") as Case;
+    const reason = `The ${dir} step wrote this.`;
+
+    const told = run(implement, "failure", implement.minutes * 60, String(implement.minutes), "false", {
+      [`${dir}/failure_reason.txt`]: `${reason}\n`,
+    });
+    expect(told.comment).toContain(`stopped:** ${reason}\n`);
+    expect(told.comment).not.toContain("timed out");
+  });
+
+  /**
    * A split run's publish job reads the agent's job's end from `needs`, not
    * from its own status, and a job that reached its limit may read there as
    * failed. A runner that was killed wrote no reason, so a failure without

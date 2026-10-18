@@ -136,7 +136,7 @@ trade below records why that changed.
 | A **draft slice PR** per sub-issue, based on the PRD branch, carrying `Part of #<sub-issue>` | ❌ | ➕ | CVM opens one PR per PRD. `Part of`, not `Closes`: the sub-issue's own state is the chain's "built" marker, and must not wait on a merge. Found by its **base**, never its name, and more than one open refuses rather than guessing which to merge |
 | Closes each finished sub-issue with a comment naming the commit SHA | ✅ | ✅ | when its slice PR opens, so "first open sub-issue" still means the next slice to build. The only record tying a closed sub-issue to its code once the slice branch is gone |
 | Adds `agent:review` to **every** slice PR | ❌ | ➕ | CVM adds it once, when no sub-issues remain — the trade below |
-| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance** in `review`'s posting job and `fix`'s `advance` job does, when a slice PR's round ends on 🟢, or on 🟡 with no fix round starting (§10). It parks on 🔵 and on a failed run, and a human's re-label of the parent is then the acceptance. Without the PAT it warns, and comments on the slice PR naming the by-hand re-label |
+| Advances by re-labelling the **parent** with `AGENT_PAT` | ✅ | ✅ | CVM's run re-labels itself after each slice. Ours re-labels nothing: the **advance** does, `review`'s `advance` job running `review:advance` (#423), when a slice round on the PRD PR ends on 🟢 (§10). `fix` carries no copy: on a PRD PR every fix run asks for a review, pushed or not (PRD #222), and that review's advance ends the round. It parks, with a comment on the parent, on every other ending but a fix round starting, and a human's re-label of the parent is then the acceptance. Without the App or the PAT it warns, and says on the PRD PR what it would have written on the parent |
 | **Merges the waiting slice PR first**, as a step of its own | ❌ | ➕ | refuses into `agent:blocked`, naming the slice PR, while `agent:review`, `agent:fix` or `agent:update-branch` is on it, or while it is conflicted, pointing at `agent:update-branch` on it. Pinned with `--match-head-commit` to the head it inspected; squash, then rebase, then a merge commit, whichever the repository allows first. It never reads the verdict, so a human's re-label and the advance's are one path |
 | A **draft PRD PR**, opened with the first slice merge and carrying `Closes #<parent>` | ✅ | ✅ | CVM's one PR, drafted until the chain finishes. Ours also carries the **slices table**: one row per slice, written by the run that merges it and never refreshed. Merged with `AGENT_PAT` so the PRD PR's CI and Follow-ups see each slice; the `GITHUB_TOKEN` fallback warns that neither ran |
 | A **finishing run** hands the PRD PR over | ❌ | ➕ | no model: merges the last slice PR, writes its row, then adds `agent:review` to the PRD PR for an **integration review** when more than one slice was merged, and marks it ready itself when one was |
@@ -387,7 +387,7 @@ PRD.
 | **Replies in review threads** | ✅ | ➕ | the review replies where it **closes** a thread, and only there (#111): `resolutionReason` is recorded by GitHub and readable nowhere afterwards, so the reply is the only record of why a finding closed. `agent:fix` replies in every thread it is asked about and closes none (§4) |
 | **Marks the PR ready for review** when done | ✅ | ✅ | `success()` only, so a failed review leaves the PR in draft — see the invariant in §10. Since #102 it also skips the pull requests whose automatic fix is about to run: it is not the human's turn yet, and the end of that round marks it ready — the re-review where the fix pushed, and the fix run itself where it did not (#159). **Requires `AGENT_PAT`**: `GITHUB_TOKEN` cannot convert a draft at all |
 | **Starts fix rounds by itself, on the verdict that says no reading is needed** | ❌ | ➕ | #102 (PRD #101), and the fix-round budget since #201 (PRD #200). Up to `AGENT_MAX_FIX_ROUNDS` automatic rounds per pull request, or on a PRD PR per slice round and for the final review (#331), default 3, counted from the `agent-fix-round` statuses posted beside the verdicts that asked for a round (#297); the `auto-fix` input it replaced was a deprecated alias from v0.7.5 and has been removed (#366). The last step of the review's posting job (#257), which has no checkout, no toolchain and no agent; one of the `AGENT_PAT` uses in the workflow, beside the advance below. Bounded twice: the budget stops it past N rounds on the same PR, and the early stop (#202) ends it after a fix round that closed none of the findings it was given, matched by id (§10). The round rule that bounded it before is retired |
-| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance**, a step of the review's posting job and a job in `fix`, both running the composite action `.github/actions/advance-prd` (#257): re-adds `agent:implement` to the slice PR's **parent** on 🟢 and on 🟡 with no fix round starting, and, in `fix`, when the fix run pushed nothing and posted no out-of-scope note, and so ended the round itself. The same shape as the fix round: no checkout, no model, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
+| **Advances the PRD chain when a slice PR's round ends** | ❌ | ➕ | #176 (PRD #171). The **advance**, `review`'s `advance` job after the posting job, running the command `review:advance` (#423): re-adds `agent:implement` to the PRD PR's **parent** when a slice round ends on 🟢, and parks on the parent on every other ending but a fix round starting. `fix` has no advance of its own: on a PRD PR every fix run asks for a review, whether or not it pushed (PRD #222), and that review's advance ends the round. The same shape as the fix round: no checkout, no model, the loop's App token, `AGENT_PAT` or nothing. Bounded by the number of sub-issues (§10) |
 | Emits a verdict (`improved` / `clean`) | ✅ | ❌ | only meaningful with self-improvement |
 | Approve / request-changes | ❌ | ❌ | both always post `COMMENT` |
 | Installs an external `code-review` skill at run time | ✅ | ❌ | CVM pulls `mattpocock/skills`; ours inlines the checklist in the prompt |
@@ -754,15 +754,16 @@ expensive to rediscover.
   adopter sets (and may set to 0), on the one verdict that says no reading is needed.
 
   **And since #176 review adds a second trigger label, on an issue rather than a pull request**
-  (PRD #171). The **advance**, the review's posting job's last step, and a job in `fix` for the
-  round a fix run ends itself by pushing nothing, both running the one composite action
-  `.github/actions/advance-prd` (#257), re-adds `agent:implement` to a **slice PR's parent** when that slice's round
-  ends on a verdict the chain moves on from: 🟢, or 🟡 with no fix round starting. It is an arrow for the same reasons the return leg is one. It lands on the parent, never on
-  a pull request, so no review round can be started by it. The run it starts either merges the slice
-  PR — closing it, so no later round on that PR can fire the job again — or refuses into
-  `agent:blocked`. And it is bounded by the number of sub-issues, since a finished PRD refuses the
-  label. It is in the fix round's shape (no checkout, no model, and `AGENT_PAT` or nothing), and
-  on by default, because it only ever fires on a slice PR, which only the PRD chain opens.
+  (PRD #171). The **advance**, `review`'s `advance` job, which runs after the posting job and
+  runs the command `review:advance` (#423), re-adds `agent:implement` to a **PRD PR's parent** when
+  a slice round ends on the one verdict the chain moves on from: 🟢. `fix` carries no copy: on a PRD
+  PR every fix run asks for a review, whether or not it pushed (PRD #222), so every round ends in a
+  review and its advance. It is an arrow for the same reasons the return leg is one. It lands on the
+  parent, never on a pull request, so no review round can be started by it. The run it starts either
+  builds the next slice on the PRD branch, hands the PRD PR over, or refuses into `agent:blocked`.
+  And it is bounded by the number of sub-issues, since a finished PRD refuses the label. It is in the
+  fix round's shape (no checkout, no model, and the loop's App token, `AGENT_PAT` or nothing), and on
+  by default, because it only ever fires on a PRD PR, which only the PRD chain opens.
 - **A trigger label is on while its run works, and never outlives it** (#236). It used to be
   consumed on entry and swapped for `agent:in-progress`; now every run leaves its trigger label on
   and takes it off in its last step, on success, failure, refusal, timeout and cancel alike, which

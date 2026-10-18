@@ -705,9 +705,12 @@ jobs:
       # gate claimed the run: what `fix:publish` checks the bundle in and
       # pushes from, and what `fix:conclude` rescues from. Nothing the agent
       # touched is on this runner, and no credential is left in it: each push
-      # passes its token itself.
+      # passes its token itself. `always()`, so a mint that failed still gets
+      # the checkout: without it `fix:conclude` checks the bundle in an empty
+      # workspace, reads it as damaged, and its comment never says the
+      # agent's commits went unsaved for want of a token.
       - name: Checkout PR head
-        if: needs.gate.outputs.refused == 'false'
+        if: always() && needs.gate.outputs.refused == 'false'
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}

@@ -230,10 +230,10 @@ interface Published {
 }
 
 const NOTHING_TO_DO =
-  "**`agent:fix` had nothing to do:** There are no open review findings or comments for it to act on.";
+  `**\`${FIX_LABEL}\` had nothing to do:** There are no open review findings or comments for it to act on.`;
 
 const NO_REVIEW_STARTS =
-  "This run asked for a re-review, but none will start on its own: neither the loop's App nor `AGENT_PAT` is set, so the `agent:review` label this run added triggers nothing. Remove and re-add `agent:review` by hand to review the fix and rule on any out-of-scope notes.";
+  `This run asked for a re-review, but none will start on its own: neither the loop's App nor \`AGENT_PAT\` is set, so the \`${REVIEW_LABEL}\` label this run added triggers nothing. Remove and re-add \`${REVIEW_LABEL}\` by hand to review the fix and rule on any out-of-scope notes.`;
 
 const STATUSES = ["addressed", "declined"] as const;
 
@@ -329,7 +329,7 @@ const requestReview = async (
   }
   if (inputs.LOOP_TOKEN_SOURCE === "app" || inputs.LOOP_TOKEN_SOURCE === "pat") return;
   console.log(
-    `::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add agent:review by hand on PR #${pr}.`,
+    `::warning::Neither the loop's App nor AGENT_PAT is set, so this label was added with GITHUB_TOKEN and will NOT trigger agent-review. Add ${REVIEW_LABEL} by hand on PR #${pr}.`,
   );
   await tolerated(() => workflow.comment(pr, NO_REVIEW_STARTS), "…and that could not be said on the pull request either.");
 };

@@ -228,16 +228,20 @@ const rescueCommits = async (inputs: Inputs, io: Io, loop: Writer, started: stri
     return { kind: "none" };
   }
   const rescue = inputs.RESCUE_BRANCH;
+  // The token first: with none there is nothing to push with whatever the
+  // bundle holds, and checked after the bundle, a check that failed for
+  // another reason (no checkout to place it in) would hide that the commits
+  // went unsaved.
+  if (inputs.LOOP_TOKEN === "" || inputs.MINT_OUTCOME !== "success") {
+    console.log(`::warning::The loop's token was not minted, so the agent's commits were not saved on ${rescue}.`);
+    return { kind: "no token" };
+  }
   let tip: string;
   try {
     tip = await checkBundle(io.git, path.join(inputs.BUNDLE_DIR, "branch.bundle"), inputs.BRANCH, started, "rescued");
   } catch (error) {
     console.log(`::warning::${describe(error)}`);
     return { kind: "none" };
-  }
-  if (inputs.LOOP_TOKEN === "" || inputs.MINT_OUTCOME !== "success") {
-    console.log(`::warning::The loop's token was not minted, so the agent's commits were not saved on ${rescue}.`);
-    return { kind: "no token" };
   }
 
   let lease: Lease;

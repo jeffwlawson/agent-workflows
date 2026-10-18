@@ -629,6 +629,22 @@ describe("fix:conclude rescues a stopped run's commits", () => {
     expect(warnings()).toContain("::warning::The loop's token was not minted, so the agent's commits were not saved on agent/rescue/fix-7.");
   });
 
+  /**
+   * The token is checked before the bundle: a bundle that cannot be checked,
+   * as in a workspace with no checkout, still leaves the comment saying the
+   * commits went unsaved for want of a token, not silence.
+   */
+  it("says the commits were not saved where the mint failed, whatever the bundle's check would say", async () => {
+    bundled();
+    git = fakeGit({});
+
+    await run(INPUTS(AGENT_FAILED({ MINT_OUTCOME: "failure", LOOP_TOKEN: "", LOOP_TOKEN_SOURCE: "", PUBLISH_OUTCOME: "skipped" })));
+
+    expect(git.calls).toEqual([]);
+    expect(comment()).toContain("Its commits were not saved on `agent/rescue/fix-7`: the loop's token was not minted");
+    expect(warnings().some((line) => line.includes("damaged"))).toBe(false);
+  });
+
   it("rescues nothing, and still comments, where the rescue could not be read", async () => {
     bundled();
     reader = {

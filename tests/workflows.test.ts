@@ -10139,13 +10139,14 @@ describe("fix's publish job posts the round with fix:publish and ends it with fi
   /**
    * One checkout, of the head the run started from, with no credential left
    * in it, wherever the gate claimed the run: the rescue's own mid-job
-   * checkout is gone.
+   * checkout is gone. `always()`, so a failed mint, the step before it, does
+   * not skip it: `fix:conclude` checks the bundle in it on every ending.
    */
-  it("checks out once, without credentials", () => {
+  it("checks out once, without credentials, whatever the mint did", () => {
     const checkouts = steps().filter((s) => (s.uses ?? "").startsWith("actions/checkout@"));
 
     expect(checkouts).toHaveLength(1);
-    expect(checkouts[0]?.if).toBe("needs.gate.outputs.refused == 'false'");
+    expect(checkouts[0]?.if).toBe("always() && needs.gate.outputs.refused == 'false'");
     expect(checkouts[0]?.with).toMatchObject({
       ref: "${{ github.event.pull_request.head.sha }}",
       "fetch-depth": 0,

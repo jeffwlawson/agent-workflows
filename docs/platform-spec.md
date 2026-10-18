@@ -59,7 +59,7 @@ cannot check is one only an orchestrator's author will catch.
   `review`, `fix` and `update-branch`. It reads its inputs from the environment, starts the agent,
   and writes files and commits. It is not the agent.
 - **Command.** A subcommand that does an orchestrator's work on the record and starts no agent,
-  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `review:gate`, `review:budget`,
+  named `<workflow>:<step>`: `fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish`, `fix:conclude`, `follow-ups:file`, `implement:gate`, `review:gate`, `review:budget`,
   `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`, `review:publish`,
   `review:conclude`, `review:advance`, `update-branch:gate`, `update-branch:merge`,
   `update-branch:prepare`, `update-branch:bundle`, `update-branch:publish` and
@@ -139,7 +139,7 @@ The inputs every runner reads, set once for any of them:
 |---|---|---|---|
 | `OUTPUT_DIR` | required | | The directory the runner writes its files into (§2.3). |
 | `GH_REPO` | required | | The repository, `owner/name`. Required rather than left to whatever `gh` infers. |
-| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
+| `GH_TOKEN` | required | | The token `gh` reads. The runners only read with it, `fix:prepare` reads and fetches the rescue branch with it, and `update-branch:merge`, `update-branch:prepare` and `update-branch:publish` fetch the base branch with it; `follow-ups:file` files issues with it, `implement:gate` makes its refusals, its start comment and its label transitions with it, and `review:publish` posts the review, the summary and the verdict with it, `review:conclude` its comments, its error verdict and the labels nothing fires on, `review:advance` a PRD PR's progress list and its notes there, `fix:gate` its refusals and its label transitions, `fix:publish` its thread replies, its comments and notes, and the rescue branch's deletion, `fix:conclude` its failure comment, the rescue-set-aside note where `fix:publish` did not post it, and `agent:fix` off and `agent:blocked` on, `update-branch:gate` its refusal and its label transitions, `update-branch:publish` the verdict it carries over, its comment, and the comment that no review will start, and `update-branch:conclude` its failure comment, `agent:update-branch` off and `agent:blocked` on, and the comment that no refresh of a moved head will start. |
 
 A command that runs where no token is held, as the red check's two do beside the pull request's own
 code and `fix:bundle` and `update-branch:bundle` do after the agent, reads `OUTPUT_DIR` alone of these: it reads no repository, so it declares neither `GH_REPO`
@@ -462,6 +462,7 @@ only a status whose creator is the loop's identity (§4.1).
 
 | Name | What it means | Written by | Read by |
 |---|---|---|---|
+| `agent/issue-<n>-<slug>` | The branch, and so the pull request's head, an `implement` run builds issue `<n>` on. `<slug>` is the issue's title, lowercased in ASCII alone, every run of anything but `[a-z0-9]` one `-`, the ends trimmed, then cut to 50, which can leave a trailing `-`. A retry lands on the branch an earlier run named. | named by `implement:gate`, as `ISSUE_BRANCH_PREFIX` and `issueBranch` in `shared/record.ts` spell it; pushed by the orchestrator | `implement:gate`, for its tip |
 | `agent/prd-<parent>-<slug>` | A PRD branch, and so a PRD PR, of parent issue `<parent>`. A pull request whose head does not match is an ordinary one. | the orchestrator | `review`, `fix` |
 | `agent/rescue/fix-<n>` | An earlier stopped fix run's commits on pull request `<n>`, its `RESCUE_BRANCH` (§9). Deleted, under a lease, by a run that succeeds. | `fix:conclude`, from `fix:bundle`'s `branch.bundle`; deleted by `fix:publish` | `fix:prepare`, which fetches it for the runner as `refs/rescue/…` |
 | `refs/rescue/<RESCUE_BRANCH>` | An earlier stopped run's commits, fetched for the runner to resume from (§7, §9). | `fix:prepare` for `fix`, and the orchestrator for `implement-prd`, from the rescue branch | `implement-prd`, `fix` |
@@ -554,8 +555,85 @@ it does not trust is left out of what the agent is shown. Nothing else of the re
 
 **`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
 
-> **Actions orchestrator:** a publish job pushes `BRANCH`, opens a draft pull request into the
-> default branch, links it on the issue, and adds `agent:review` to it.
+> **Actions orchestrator:** a gate job runs `implement:gate` first, before anything is checked
+> out, which defers to `implement-prd`, refuses the run on the issue, or claims it and names
+> `BRANCH`, the commit `BASE_REF` is at and the branch's tip; a glue step copies its decision and
+> those facts into the job's outputs, which every later job reads, and the job's last step starts
+> the agent's clock. The agent's job checks out the default branch and creates `BRANCH` from it. A
+> publish job pushes `BRANCH`, opens a draft pull request into the default branch, links it on the
+> issue, and adds `agent:review` to it; its failure step, where the gate failed after claiming the
+> run, posts the sentence the gate failed with.
+
+### `implement:gate`
+
+Refuses, defers or claims the issue, before anything is checked out and before the agent's job. It
+runs no model and needs no checkout. In order:
+
+- **The partition.** The issue's parent, sub-issue count and labels are read in one query. An
+  issue with sub-issues is `implement-prd`'s (§7), which answers the same label event, so it is
+  deferred: nothing is written to the record, whatever else is true of it, a closed issue
+  included. A query that fails, or answers with no issue, fails the command: "no answer" is never
+  read as "no sub-issues".
+- **The refusals**, in this order, each with its own sentence: an `ISSUE_STATE` that is not `open`;
+  a `wayfinder:*` label, blocked; a parent, blocked; open issues it is blocked by, blocked, one
+  sentence for one and another for several; an open pull request whose body closes the issue
+  (`Closes`, `Fixes` or `Resolves`, any case, then `#<n>`), not blocked. A failed read of the
+  blockers is none; a failed read of the pull requests fails the command.
+- **A refusal** is said in the loop's one order: the comment,
+  `` **`agent:implement` didn't run:** `` and the sentence; then `agent:implement` off; then
+  `agent:blocked` where it is blocked. Each of the three is tolerated, so a comment that fails
+  still takes the label off.
+- **The permission probe.** On a run it claims, it adds `agent:implement`, which the issue already
+  carries, so a token short of the write fails the command before the agent runs. Not tolerated.
+- **`agent:blocked` off**, tolerated: re-adding `agent:implement` is the retry after a block.
+- **The start comment**, `` **`agent:implement` started:** `` and a link to `RUN_URL`, tolerated.
+- **The facts the run builds on**: the branch's name (§4.3), the commit `BASE_REF` is at, and the
+  branch's current tip. A branch that does not exist is a tip of `""`; one that cannot be read
+  fails the command, as does a base that cannot be read.
+
+Every write is made with `GH_TOKEN`: none of them has to start a run. A refusal or a deferral is a
+decision, and the command succeeds. `gate.json` is written the moment the run is decided, ahead of
+the probe, and again as each fact is read and however the command ends, so a run that failed at
+the probe still says it went ahead, and one that died before deciding writes none.
+
+#### Inputs
+
+| Input | Kind | Default | What it is |
+|---|---|---|---|
+| `ISSUE_NUMBER` | required | | The issue. |
+| `ISSUE_TITLE` | required | | Its title, which the branch's name is made from. |
+| `ISSUE_STATE` | required | | The issue's state as the event saw it: `open` or `closed`. |
+| `BASE_REF` | required | | The branch the work is cut from, whose commit it reads. |
+| `RUN_URL` | required | | The run's page, which the start comment links. |
+
+#### Outputs
+
+| Output | When it is written |
+|---|---|
+| `gate.json` | Where it decided: `proceed`, `true` where the run goes ahead and `false` where it refused or deferred, then on a run it claims `branch`, `base` and `tip` as each is read, every value a string. |
+| `write_log.jsonl` | Every write as it lands, one JSON line each, and a last line for how the command ended, as `review:conclude`'s. Not written where it wrote nothing. |
+
+**`doctor` cannot check this.** These tables are the command's, for the reason §6 gives.
+
+#### What it reads from the record
+
+- The issue's parent, sub-issue count and labels, for `wayfinder:*`.
+- The issues it is blocked by, and whether each is open.
+- The open pull requests' bodies, for one that closes the issue.
+- The tip of `agent/issue-<n>-<slug>` (§4.3), or that there is none.
+
+**`doctor` cannot check this.** The record is written by the orchestrator's posting code, for the reason §4.3 gives.
+
+> **Actions orchestrator:** the gate job's first work, after a Node set up for it, since nothing is
+> checked out yet; no adopter step runs in that job. `ISSUE_STATE` and `ISSUE_TITLE` are the
+> label's event's, and `GH_TOKEN` is the job's own, with `issues: write`, held by this step alone.
+> `OUTPUT_DIR` is `runner.temp`. A glue step copies `gate.json` into step outputs, `always()`, and
+> the job's `refused` output is `false` where `proceed` is `true`, `true` where it is `false`, and
+> empty where there is none: a gate that died before deciding, which the failure step reads as
+> such. `branch`, `base` and `tip` become the job's outputs of the same names. The same step copies
+> `implement:gate`'s `failure_reason.txt`, where it wrote one, into the job's `failure-reason`
+> output, which the publish job's failure step posts where no reason file reached it. The job
+> fails where the command does, so a failed probe never starts the agent's job.
 
 ## 7. `implement-prd`
 

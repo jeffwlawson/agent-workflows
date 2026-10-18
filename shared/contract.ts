@@ -733,6 +733,18 @@ const REVIEW_RED_CHECK_PLACE = {
  *   runner's reason and set-aside rescue through `FIX_DIR`, and
  *   `fix:bundle`'s bundle and reason through `BUNDLE_DIR`,
  *   checked in `CHECKOUT` against `HEAD_SHA` before it is rescued.
+ * - `implement:gate` refuses, defers or claims the issue before any
+ *   checkout. An issue with sub-issues is `implement-prd`'s and is deferred
+ *   without a write; a closed one, a `wayfinder:*` one, a sub-issue, one
+ *   with open blockers and one an open pull request already closes are
+ *   refused on the issue, in that order. `ISSUE_STATE` is the issue as the
+ *   label's event saw it; its shape, its blockers and the open pull requests
+ *   it reads itself. One it claims has the permission probe, `agent:blocked`
+ *   off and the start comment linking `RUN_URL`, and then its branch, named
+ *   from `ISSUE_NUMBER` and `ISSUE_TITLE`, the commit `BASE_REF` is at, and
+ *   the branch's current tip, empty where it does not exist. It declares no
+ *   loop token. `gate.json` is its decision, `proceed`, written as soon as it
+ *   decides and however it ends, with `branch`, `base` and `tip` once read.
  * - `review:advance` moves a PRD PR's chain on after a review, or parks it:
  *   the progress table and status line for how the round ended, then
  *   `agent:implement` back on the parent on a slice round's approval, or the
@@ -860,6 +872,17 @@ export const COMMANDS = {
       PR_NUMBER: REQUIRED,
     },
     outputs: [...EVERY_SUBCOMMAND_OUTPUTS],
+  },
+  "implement:gate": {
+    inputs: {
+      ...EVERY_SUBCOMMAND,
+      ISSUE_NUMBER: REQUIRED,
+      ISSUE_TITLE: REQUIRED,
+      ISSUE_STATE: REQUIRED,
+      BASE_REF: REQUIRED,
+      RUN_URL: REQUIRED,
+    },
+    outputs: [...EVERY_SUBCOMMAND_OUTPUTS, "gate.json", WRITE_LOG],
   },
   "review:gate": {
     inputs: {

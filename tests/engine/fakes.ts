@@ -35,6 +35,16 @@ export interface FakePullRequest {
   labels: string[];
 }
 
+/**
+ * An issue's place in the hierarchy and its blockers. Its labels are
+ * `issueLabels`', which its writes move.
+ */
+export interface FakeIssue {
+  parent?: number;
+  subIssues: number;
+  blockedBy: { readonly number: number; readonly state: "open" | "closed" }[];
+}
+
 /** The live state both fakes share. */
 export interface FakeGitHub {
   readonly pullRequests: Map<number, FakePullRequest>;
@@ -46,6 +56,8 @@ export interface FakeGitHub {
   readonly conversation: Map<number, ConversationComment[]>;
   /** Labels on issues that are not pull requests. */
   readonly issueLabels: Map<number, string[]>;
+  /** Issues that are not pull requests, by number. One not here is not found. */
+  readonly issues: Map<number, FakeIssue>;
   /**
    * Each branch's tip, by name: what a push moves, and what `pushRef` and
    * `deleteRef` lease against, a `refs/heads/` ref by its branch name and any
@@ -116,6 +128,7 @@ export const fakeGitHub = (pullRequests: readonly Partial<FakePullRequest>[] = [
   threads: new Map(),
   conversation: new Map(),
   issueLabels: new Map(),
+  issues: new Map(),
   branches: new Map(),
   commits: new Map(),
   comparisons: new Map(),
@@ -131,6 +144,12 @@ const pullRequestOf = (github: FakeGitHub, number: number): FakePullRequest => {
   const pr = github.pullRequests.get(number);
   if (pr === undefined) throw new GitHubError(`pull request #${number}: 404 Not Found`, 404);
   return pr;
+};
+
+const issueOf = (github: FakeGitHub, number: number): FakeIssue => {
+  const issue = github.issues.get(number);
+  if (issue === undefined) throw new GitHubError(`issue #${number}: 404 Not Found`, 404);
+  return issue;
 };
 
 const labelsOf = (github: FakeGitHub, issue: number): string[] => {
@@ -155,6 +174,25 @@ export const fakeReader = (github: FakeGitHub): { readonly reader: GitHubReader;
       reads.push({ method: "pullRequest", args: [number] });
       const pr = pullRequestOf(github, number);
       return { ...pr, labels: [...pr.labels] } satisfies PullRequest;
+    },
+    issueShape: async (number) => {
+      reads.push({ method: "issueShape", args: [number] });
+      const issue = issueOf(github, number);
+      return { parent: issue.parent, subIssues: issue.subIssues, labels: [...(github.issueLabels.get(number) ?? [])] };
+    },
+    openBlockers: async (number) => {
+      reads.push({ method: "openBlockers", args: [number] });
+      return issueOf(github, number)
+        .blockedBy.filter((blocker) => blocker.state === "open")
+        .map((blocker) => blocker.number);
+    },
+    openPullRequestsClosing: async (pattern) => {
+      reads.push({ method: "openPullRequestsClosing", args: [pattern] });
+      // Newest first, as the endpoint lists them.
+      return [...github.pullRequests.values()]
+        .filter((pr) => pr.state === "open" && pattern.test(pr.body))
+        .map((pr) => pr.number)
+        .sort((a, b) => b - a);
     },
     commitStatuses: async (sha) => {
       reads.push({ method: "commitStatuses", args: [sha] });

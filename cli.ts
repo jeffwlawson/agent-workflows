@@ -361,6 +361,11 @@ export const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     "File a closed PR's recorded review findings as triageable issues (no model).",
   ),
   implement: runner("implement", () => import("./implement/implement.js")),
+  "implement:gate": writingCommand(
+    "implement:gate",
+    async () => (await import("./implement/gate.js")).gate,
+    "Refuse or defer an implement run on an issue of the wrong shape, or claim it and name its branch (no model).",
+  ),
   "implement-prd": runner("implement-prd", () => import("./implement-prd/implement-prd.js")),
   init: {
     kind: "install",

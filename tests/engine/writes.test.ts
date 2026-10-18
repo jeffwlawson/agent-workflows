@@ -330,6 +330,58 @@ describe("githubReader", () => {
     expect(sent).toEqual([{ rest: { method: "GET", path: "/repos/o/r/git/ref/heads/agent/issue-1-a%23b" } }]);
   });
 
+  it("reads an issue's parent, sub-issue count and labels in one query", async () => {
+    const { transport, sent } = recording(() => ({
+      repository: { issue: { parent: { number: 3 }, subIssues: { totalCount: 2 }, labels: { nodes: [{ name: "bug" }, { name: "wayfinder:map" }] } } },
+    }));
+
+    expect(await githubReader(REPO, transport).issueShape(9)).toEqual({ parent: 3, subIssues: 2, labels: ["bug", "wayfinder:map"] });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ variables: { owner: "o", name: "r", number: 9 } });
+  });
+
+  it("reads an issue with no parent as having none", async () => {
+    const { transport } = recording(() => ({ repository: { issue: { parent: null, subIssues: { totalCount: 0 }, labels: { nodes: [] } } } }));
+
+    expect(await githubReader(REPO, transport).issueShape(9)).toEqual({ parent: undefined, subIssues: 0, labels: [] });
+  });
+
+  /** "No answer" read as "standalone" is the isolated sub-issue run the shape guards against. */
+  it.each([
+    ["no issue", { repository: { issue: null } }],
+    ["no repository", { repository: null }],
+    ["no data", undefined],
+  ])("throws on an answer holding %s, rather than reading it as standalone", async (_, answer) => {
+    const { transport } = recording(() => answer);
+
+    await expect(githubReader(REPO, transport).issueShape(9)).rejects.toThrow("The shape of issue #9 came back empty.");
+  });
+
+  it("reads an issue's open blockers, every page, and leaves the closed ones out", async () => {
+    const { transport, sent } = recording((s) =>
+      "rest" in s && s.rest.path.endsWith("page=1")
+        ? Array.from({ length: 100 }, (_, i) => ({ number: i + 1, state: i === 0 ? "open" : "closed" }))
+        : [{ number: 200, state: "open" }],
+    );
+
+    expect(await githubReader(REPO, transport).openBlockers(9)).toEqual([1, 200]);
+    expect(paths(sent)).toEqual([
+      "/repos/o/r/issues/9/dependencies/blocked_by?per_page=100&page=1",
+      "/repos/o/r/issues/9/dependencies/blocked_by?per_page=100&page=2",
+    ]);
+  });
+
+  it("reads the open pull requests whose body the pattern matches, in the order listed", async () => {
+    const { transport, sent } = recording(() => [
+      { number: 12, body: "Closes #9" },
+      { number: 11, body: null },
+      { number: 10, body: "fixes #9" },
+    ]);
+
+    expect(await githubReader(REPO, transport).openPullRequestsClosing(/closes|fixes/i)).toEqual([12, 10]);
+    expect(paths(sent)).toEqual(["/repos/o/r/pulls?state=open&per_page=100&page=1"]);
+  });
+
   it("reads how one commit relates to another", async () => {
     const { transport, sent } = recording(() => ({ status: "ahead" }));
 

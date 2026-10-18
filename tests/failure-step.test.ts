@@ -317,6 +317,26 @@ describe.skipIf(!CAN_RUN)("a failure step says whether the run failed, timed out
   );
 
   /**
+   * `implement:gate` writes its reason on the gate's runner, so a gate that
+   * failed after claiming the run, at the probe or a read after it, reaches
+   * this step as `GATE_REASON` (#490): said where no reason file came, and
+   * never over one that did.
+   */
+  it("implement: says the reason the gate failed with, where no reason file came", () => {
+    const implement = CASES.find((c) => c.command === "implement") as Case;
+    const reason = "Couldn't add `agent:implement` to #135, which it already carries.";
+    const gate = { GATE_RESULT: "failure", AGENT_RESULT: "skipped", GATE_REASON: reason };
+
+    const told = run(implement, "failure", 120, String(implement.minutes), "false", {}, gate);
+    expect(told.comment).toContain(`stopped:** ${reason}\n`);
+    expect(told.gh).toContain(TRIGGER["implement"]);
+
+    const filed = run(implement, "failure", 120, String(implement.minutes), "false", undefined, gate);
+    expect(filed.comment).toContain("The runner wrote this.");
+    expect(filed.comment).not.toContain(reason);
+  }, 2 * SUBPROCESS_TIMEOUT);
+
+  /**
    * A split run's publish job reads the agent's job's end from `needs`, not
    * from its own status, and a job that reached its limit may read there as
    * failed. A runner that was killed wrote no reason, so a failure without

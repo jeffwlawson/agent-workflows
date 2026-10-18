@@ -349,8 +349,8 @@ jobs:
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
 
       # The package, installed once and early, the way the red check installs
-      # it (#422), for the commands this job runs: `fix:prepare` before the
-      # PR's code, and `fix:bundle` after the agent. Node and the registry the package installs from, a version its
+      # it (#422), for everything of it this job runs: `fix:prepare` before the
+      # PR's code, the runner, and `fix:bundle` after the agent. Node and the registry the package installs from, a version its
       # `engines.node` names, and no cache, since this job runs the PR's code
       # and a cache it saved would be restored on the base branch.
       - name: Set up Node for the package
@@ -432,6 +432,9 @@ jobs:
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
 
+      # The runner below runs from the install above and asks the registry for
+      # nothing, so here this step's work is the Node it names; the registry
+      # entry is the shape every runner's job shares, and unread in this one.
       # The runner package lives on GitHub Packages, which has no anonymous
       # install even for a public package — see the long note on the same step in
       # agent-review-reusable.yml. Short version: the scoped `.npmrc` is written
@@ -467,25 +470,26 @@ jobs:
       - name: Run fix agent
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Unset variable interpolates to "", and the runner falls back to its
           # own default. Change the model in Settings -> Variables, no commit.
           AGENT_MODEL: ${{ vars.AGENT_MODEL }}
           AGENT_MODEL_FIX: ${{ vars.AGENT_MODEL_FIX }}
           OUTPUT_DIR: ${{ runner.temp }}
-        # `npm exec --prefix` rather than a bare `npx`, and the prefix is the
-        # whole point. `npx pkg@version` reuses a package already present in the
-        # working directory when it satisfies the spec — and in the repository
-        # that *publishes* this package, the checkout is such a package. It has
-        # no `dist/` (CI installs, it does not build), so the bin resolves to
-        # nothing and the step dies `command not found` before any runner code
-        # runs (#8). Installing into RUNNER_TEMP sidesteps the name collision.
-        #
-        # A no-op for every consuming repo, which has no package of this name to
-        # collide with — verified against npm 10 and 11, both of which ignore
-        # `--ignore-existing` here. `--prefix` moves the *install*, not the
-        # process `cwd`: the runner still does its git work in the checkout.
-        run: npm exec --prefix "$RUNNER_TEMP" --yes --package=@jeffwlawson/agent-workflows@0.8.6 -- agent-workflows fix
+        # The binary *Install the package* linked, run by its path, from the
+        # checkout, where the runner does its git work. Not `npm exec`, as the
+        # commands of this job are: with the package already under its
+        # `--prefix`, `npm exec` installs nothing and puts no install directory
+        # on `PATH`, only `node_modules/.bin` of the directory it runs in and
+        # each one above it. So from the checkout it finds no command at all
+        # (`agent-workflows: not found`, exit 127, and no reason file), and a
+        # `PATH` entry handed in would come after the checkout's own
+        # `node_modules/.bin`, which the PR's code has just had the chance to
+        # write. By path, nothing is looked up, the version is the install's
+        # pin, and the registry token stays with the install: this step holds
+        # none (#482's rule for an agent's job). Where the PR's code removed
+        # the install, the step fails with no reason file, as the red check's
+        # classify does.
+        run: '"$RUNNER_TEMP/node_modules/.bin/agent-workflows" fix'
 
       # The agent's own record of the session (#269), so a run can be profiled
       # and debugged from what it did and not only from the log, which shows

@@ -157,17 +157,20 @@ commit, and no-ops if the version is already on the registry.
 
 **That first command is the whole release.** The version appears in twelve files and `npm
 version` bumps two of them; `scripts/sync-version.ts` writes the other ten — the `npm exec`
-pin of each step that runs the package (nineteen: one in each of the six reusable workflows, and
+pin of each step that runs the package (eighteen: the runner's or the filing command's in each of
+five reusable workflows, and
 `review:gate`, `review:budget`, `review:collect-checks`, `review:red-check-place`, `review:red-check-classify`,
 `review:publish`, `review:conclude` and `review:advance` beside the runner in `review.yml`, and
-`fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish` and `fix:conclude` beside the runner in `fix.yml`), the `npm install` pin of each step that installs it
-early, ahead of the commands that run from that install (two: one ahead of the red check's two in
-`review.yml`, and one ahead of `fix:prepare` and `fix:bundle` in `fix.yml`), the `uses:` ref of
+`fix:gate`, `fix:prepare`, `fix:bundle`, `fix:publish` and `fix:conclude` in `fix.yml`), the `npm install` pin of each step that installs it
+early, ahead of the steps that run from that install (two: one ahead of the red check's two in
+`review.yml`, and one ahead of `fix:prepare`, the runner and `fix:bundle` in `fix.yml`), the `uses:` ref of
 each caller in the two caller files
 of each of the two caller sets, and the `uses:` ref a reusable's step names a composite action in
 `.github/actions/` with (eight of those: `loop-token` once in each of `implement.yml`, `fix.yml`
 and `update-branch.yml`, twice in `implement-prd.yml` and three times in `review.yml`, so
-forty-one pins in the ten files). It
+forty pins in the ten files). Fix's runner carries no pin of its own: it runs that early install's
+binary by its path, from the checkout, because `npm exec` finds an install under its `--prefix`
+only from that directory (#486's fix round). It
 runs from the `version` lifecycle script, which npm fires *after* the manifest is bumped and
 *before* the commit is made, so everything it stages lands in the same `v<version>` commit. It
 stages **by path** — the ten it wrote, never `-A`: npm's dirty-tree check passes untracked
